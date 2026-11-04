@@ -36,7 +36,7 @@ fn a_question_from_the_run_takes_the_screen_back_from_the_confirmation() {
         "the yield is said rather than silent: {:?}",
         a.notice
     );
-    // **And `y` is the program's answer, not a kill**: the confirmation is gone, so the key
+    // And `y` is the program's answer, not a kill: the confirmation is gone, so the key
     // goes where the card that IS up says it goes.
     assert_eq!(a.key(Key::Char('y')), None);
     assert_eq!(a.prompt_buf, "y", "the letter reached the prompt card");
@@ -145,7 +145,7 @@ fn the_password_card_is_a_card_and_says_it_once() {
         screen.contains("run: sudo apt install x"),
         "the command is not named as a command:\n{screen}"
     );
-    // **The keys survive a narrow terminal along with the countdown** — they are the
+    // The keys survive a narrow terminal along with the countdown - they are the
     // way out, and the countdown is the only thing on the card that moves.
     for w in [44usize, 60, 80, 200] {
         let rows = a.secret_lines(a.secret.as_ref().expect("the ask"), w);
@@ -260,7 +260,7 @@ fn an_unreadable_card_says_it_could_not_look_and_offers_the_way_in_anyway() {
     // person can read with `job_output`.
     assert!(card.contains("!send"), "{card}");
     assert!(card.contains("j9"), "{card}");
-    // And it is a card you can still answer — that is the whole point of it being a card.
+    // And it is a card you can still answer - that is the whole point of it being a card.
     for c in "y".chars() {
         assert!(a.key(Key::Char(c)).is_none());
     }
@@ -291,17 +291,17 @@ fn a_prompt_card_owns_the_keys_shows_what_is_typed_and_never_becomes_a_secret() 
     )));
     let card = a.screen(100, 20).join("\n");
     assert!(card.contains("your command is asking"), "{card}");
-    // **The command the operator typed**, which is the one thing the daemon is certain
-    // of — it cannot know which process in a pipeline asked.
+    // The command the operator typed, which is the one thing the daemon is certain
+    // of - it cannot know which process in a pipeline asked.
     assert!(card.contains("run: sudo apt install mc"), "{card}");
-    // **The program's own last line, quoted.** Shown and never parsed.
+    // The program's own last line, quoted. Shown and never parsed.
     assert!(card.contains("Do you want to continue? [Y/n]"), "{card}");
     // The manual way in is ON the card, because that is the half of the feature a
     // person needs when the card does not appear at all.
     assert!(card.contains("!send"), "{card}");
     assert!(card.contains("j7"), "the job handle is named: {card}");
 
-    // **The text is typed and it is NOT masked.** The contrast with the password field
+    // The text is typed and it is NOT masked. The contrast with the password field
     // is the point: dots here would be this card claiming to be a secret channel.
     for c in "Yes".chars() {
         assert!(a.key(Key::Char(c)).is_none());
@@ -317,7 +317,7 @@ fn a_prompt_card_owns_the_keys_shows_what_is_typed_and_never_becomes_a_secret() 
     );
     assert!(a.input().is_empty(), "the composer must never hold it");
 
-    // Enter sends it once, as a `PromptAnswer` — and never as a `Secret`, which is the
+    // Enter sends it once, as a `PromptAnswer` - and never as a `Secret`, which is the
     // head's half of the rule that a password cannot travel this way.
     let sent = a.key(Key::Enter);
     assert_eq!(
@@ -335,7 +335,7 @@ fn a_prompt_card_owns_the_keys_shows_what_is_typed_and_never_becomes_a_secret() 
     let after = a.screen(100, 20).join("\n");
     assert!(!after.contains("your command is asking"), "{after}");
 
-    // **An empty line is a real answer.** `Continue? [Y/n]` takes Enter as its default,
+    // An empty line is a real answer. `Continue? [Y/n]` takes Enter as its default,
     // so a person accepting one must not have to type a letter to say so.
     a.apply(ServerFrame::Event(env(
         2,
@@ -355,7 +355,7 @@ fn a_prompt_card_owns_the_keys_shows_what_is_typed_and_never_becomes_a_secret() 
         })
     );
 
-    // **Esc puts the card away and refuses nothing.** The command is still running and
+    // Esc puts the card away and refuses nothing. The command is still running and
     // still waiting; there is nothing to refuse. What the operator gets is the card off
     // the screen and a sentence naming the verb that still works.
     a.apply(ServerFrame::Event(env(
@@ -411,7 +411,7 @@ fn a_settled_prompt_takes_the_card_down_and_says_which_way() {
     let screen = a.screen(100, 20).join("\n");
     assert!(!screen.contains("your command is asking"), "{screen}");
     assert!(screen.contains("answer sent by dead"), "{screen}");
-    // And the line itself is nowhere on the screen — the settlement is the record.
+    // And the line itself is nowhere on the screen - the settlement is the record.
     assert!(!screen.contains("Yes"), "{screen}");
 
     // The other ending: the command finished with the card still up.
@@ -441,7 +441,7 @@ fn a_settled_prompt_takes_the_card_down_and_says_which_way() {
     );
 }
 
-/// R13's two-clocks trap, checked in the second place it could live: a secret card that subtracted
+/// The two-clocks trap, checked in the second place it could live: a secret card that subtracted
 /// a Unix deadline from a monotonic clock would draw hundreds of thousands of seconds. Here the
 /// wire deadline and this head's clock are both the epoch, and that is asserted, not assumed.
 #[test]
@@ -471,7 +471,7 @@ fn the_password_cards_countdown_is_seconds_and_not_a_second_epoch() {
     let card = a.screen(200, 20).join("\n");
     assert!(card.contains("1m30s left"), "{card}");
     // Under a minute it is whole seconds, and never a decimal. (`60s` exactly is
-    // still the `1m00s` rung — the boundary is inclusive upward, which is the same
+    // still the `1m00s` rung - the boundary is inclusive upward, which is the same
     // `>= 120` rule one rung down.)
     a.clock(NOW + 61_000);
     let card = a.screen(200, 20).join("\n");

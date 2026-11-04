@@ -390,7 +390,7 @@ pub struct App {
     pub(crate) focused: Option<bool>,
     /// The terminal's answer to OSC 11: is its background light. `None` until it answers.
     pub(crate) light_background: Option<bool>,
-    /// What needed the person last tick — see [`App::take_notification`]. `None` until the
+    /// What needed the person last tick - see [`App::take_notification`]. `None` until the
     /// first look, which is a baseline and never a notification: attaching to a session with
     /// a card already open is not news.
     pub(crate) attention: Option<Attention>,
@@ -573,7 +573,7 @@ pub struct App {
     pub(crate) reseat: Option<reseat::ReseatCard>,
     /// Which mode row the cursor is on. Seeded to the mode the session is
     /// already under, so Enter on an untouched list is a no-op rather than a
-    /// surprise — the same rule the session picker's cursor follows.
+    /// surprise - the same rule the session picker's cursor follows.
     pub(crate) mode_sel: usize,
     /// Whether the open picker has been positioned by what it actually lists. `/mode` and `/models`
     /// open the card and ask for fresh rows in the same breath, so the seed reads an empty list and
@@ -1058,7 +1058,7 @@ pub struct App {
     /// Drawn as state ([`App::switch_line`]), because a note would scroll away inside the very
     /// turn it is about while the header keeps naming the old model - true, and half of it.
     pub(crate) model_pending: Option<String>,
-    /// **The number the next retry row is keyed by.** A series is ONE row whose value moves, so the
+    /// The number the next retry row is keyed by. A series is ONE row whose value moves, so the
     /// row needs an identity that survives those moves and that a later outage cannot reuse.
     pub(crate) retry_series: u64,
 }
@@ -1388,9 +1388,9 @@ impl App {
             todo_answered: Vec::new(),
             model_pending: None,
             retry_series: 0,
-            // **The done group starts folded**, matching `HeadPrefs::default` — this is the
+            // The done group starts folded, matching `HeadPrefs::default` - this is the
             // builder's value, and `apply_prefs` puts the file's answer over it at startup. The
-            // operator's ruling (2026-10-28): *"i want done collapsed by default"*.
+            // operator's ruling: *"i want done collapsed by default"*.
             todos_fold_done: true,
             todos_follow: false,
             layer_failure: None,

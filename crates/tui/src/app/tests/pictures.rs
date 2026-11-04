@@ -24,7 +24,7 @@ fn png_data_ref(w: u32, h: u32) -> String {
 /// The placeholder a kitty terminal replaces with a slice of the picture.
 const PLACEHOLDER: char = '\u{10EEEE}';
 
-/// **The operator's row as the daemon stores it**: their words with the chip in them, and the
+/// The operator's row as the daemon stores it: their words with the chip in them, and the
 /// picture's bytes beside them as an `Image` part (protocol 50).
 fn a_prompt_with_a_picture() -> App {
     let mut a = app();
@@ -72,7 +72,7 @@ fn a_picture_under_the_chip_is_drawn_where_the_terminal_can_fill_it() {
     let screen = a.screen(100, 30);
     let rows = picture_rows_on(&screen);
     assert!(!rows.is_empty(), "no thumbnail:\n{}", screen.join("\n"));
-    // **Under the chip**, which is on the operator's own line: the thumbnail's first row is below
+    // Under the chip, which is on the operator's own line: the thumbnail's first row is below
     // it and the rows are contiguous.
     let words = screen
         .iter()
@@ -84,7 +84,7 @@ fn a_picture_under_the_chip_is_drawn_where_the_terminal_can_fill_it() {
         0,
         "the rows are not contiguous: {rows:?}"
     );
-    // **Its own aspect, kept**: 320×200 in a box half of 100 columns wide and never under 20.
+    // Its own aspect, kept: 320×200 in a box half of 100 columns wide and never under 20.
     let (cols, want_rows) = rano::term::graphics::image_cells(
         Some(320),
         Some(200),
@@ -97,7 +97,7 @@ fn a_picture_under_the_chip_is_drawn_where_the_terminal_can_fill_it() {
         "half the frame's inner width, which is what the upload placed"
     );
 
-    // **And the bytes went out, once**, under the id the placeholders name.
+    // And the bytes went out, once, under the id the placeholders name.
     let uploads = a.take_image_uploads();
     // The image is the SECOND part - the chip's words are the first.
     let id = rano::term::graphics::image_id(&format!("s.0#{}1", crate::ui::render::USER_PART));
@@ -150,7 +150,7 @@ fn enter_opens_the_picture_larger_and_esc_deletes_it() {
     a.set_proto(rano::term::Proto::Kitty);
     a.screen(100, 30);
     let _ = a.take_image_uploads();
-    // **Enter on an empty composer, over a picture the frame drew.**
+    // Enter on an empty composer, over a picture the frame drew.
     assert_eq!(a.editor.text(), "");
     assert!(!a.picture_rows.is_empty(), "no picture on the screen");
     a.key(Key::Enter);
@@ -162,7 +162,7 @@ fn enter_opens_the_picture_larger_and_esc_deletes_it() {
         ),
         "enter opened no picture:\n{open}"
     );
-    // **Larger than the thumbnail**: the box the popup places is wider than half the frame, and
+    // Larger than the thumbnail: the box the popup places is wider than half the frame, and
     // the bytes are the same picture under the same id - a placement, not a second upload.
     let uploads = a.take_image_uploads();
     assert_eq!(uploads.len(), 1, "one placement: {uploads:?}");
@@ -183,7 +183,7 @@ fn enter_opens_the_picture_larger_and_esc_deletes_it() {
         "the picture was uploaded again rather than placed: {:?}",
         String::from_utf8_lossy(&uploads[0])
     );
-    // **Esc closes it, and the terminal is told to free the bytes** - a picture nothing draws is
+    // Esc closes it, and the terminal is told to free the bytes - a picture nothing draws is
     // memory with no owner.
     a.key(Key::Esc);
     assert!(a.diff_popup.is_none(), "esc left the picture open");
@@ -212,7 +212,7 @@ fn a_click_on_the_thumbnail_opens_the_same_picture() {
     );
 }
 
-/// **The frame's own record decides what a click opens** - a row of the operator's words is not a
+/// The frame's own record decides what a click opens - a row of the operator's words is not a
 /// picture's row, so a click there still falls through to the conversation.
 #[test]
 fn the_operators_words_are_not_the_picture() {

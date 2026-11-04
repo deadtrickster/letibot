@@ -4,10 +4,10 @@
 
 use super::*;
 
-/// **The name the daemon publishes a pane under**: `<layer name>/<hook name>`.
+/// The name the daemon publishes a pane under: `<layer name>/<hook name>`.
 const PANE: &str = "plan-dashboard/dashboard";
 
-/// **A dashboard's view**, as the plugin wrote it: two panels that draw and one that could not,
+/// A dashboard's view, as the plugin wrote it: two panels that draw and one that could not,
 /// a finding with everything a reader checks it by, a legend, a badge, and one block kind this
 /// head does not know.
 fn dashboard() -> serde_json::Value {
@@ -100,7 +100,7 @@ fn opened() -> App {
         asked,
         Some(Action::PaneOpen {
             pane: PANE.into(),
-            // **The open can only guess the rectangle** - this head has never drawn a pane, so
+            // The open can only guess the rectangle - this head has never drawn a pane, so
             // it says `0` and the frame that draws it sends the real one.
             w: 0,
             h: 0,
@@ -125,7 +125,7 @@ fn shown(a: &mut App, w: usize, h: usize) -> String {
     a.screen(w, h).join("\n")
 }
 
-/// **The overview is the whole language at once**: the title, the findings summary line, each
+/// The overview is the whole language at once: the title, the findings summary line, each
 /// panel's title with its denominator, and the one grid - every panel's numbers in the same
 /// columns, which is the thing a per-panel layout cannot do.
 #[test]
@@ -139,7 +139,7 @@ fn the_overview_draws_the_title_the_findings_and_one_grid_across_panels() {
         "a panel's title carries its denominator: {screen}"
     );
     assert!(screen.contains("hosts"), "{screen}");
-    // **The one grid**: the two panels' values end in the same column, so a reader can compare
+    // The one grid: the two panels' values end in the same column, so a reader can compare
     // them down the frame - the whole reason there is one layout function.
     let lines = a.screen(110, 40);
     let end = |needle: &str| {
@@ -158,7 +158,7 @@ fn the_overview_draws_the_title_the_findings_and_one_grid_across_panels() {
     assert!(screen.contains("3 in progress"), "and its tail: {screen}");
 }
 
-/// **A panel that could not get its data says why and how to fix it** - and draws none of its
+/// A panel that could not get its data says why and how to fix it - and draws none of its
 /// blocks: an empty result and a broken look are different facts and must not look the same.
 #[test]
 fn an_unavailable_panel_shows_the_reason_and_the_fix() {
@@ -172,7 +172,7 @@ fn an_unavailable_panel_shows_the_reason_and_the_fix() {
     );
 }
 
-/// **A panel's key opens its view, and Esc gives the overview back** - C3's ladder, one step.
+/// A panel's key opens its view, and Esc gives the overview back - C3's ladder, one step.
 #[test]
 fn a_panels_key_opens_its_view_and_esc_returns() {
     let mut a = opened();
@@ -204,7 +204,7 @@ fn a_panels_key_opens_its_view_and_esc_returns() {
     assert_eq!(a.top_surface(), None, "the second esc closes the pane");
 }
 
-/// **`f` is the findings list, and Enter reads one whole**: its detail, the numbers behind it,
+/// `f` is the findings list, and Enter reads one whole: its detail, the numbers behind it,
 /// what to do, and how to check it yourself - the whole of a finding, which is the point of
 /// collecting them.
 #[test]
@@ -238,7 +238,7 @@ fn f_lists_the_findings_and_enter_reads_one_whole() {
     );
 }
 
-/// **`l` is the legend**: every label the pane uses, and what it means.
+/// `l` is the legend: every label the pane uses, and what it means.
 #[test]
 fn l_shows_the_legend() {
     let mut a = opened();
@@ -249,7 +249,7 @@ fn l_shows_the_legend() {
     assert!(screen.contains("a machine the fleet runs on"), "{screen}");
 }
 
-/// **↓ moves the selection through the stops**, and the mark moves with it - the one
+/// ↓ moves the selection through the stops, and the mark moves with it - the one
 /// enumeration the arrows, Enter, the action keys and a click all read.
 #[test]
 fn down_moves_the_selection_through_the_stops() {
@@ -274,7 +274,7 @@ fn down_moves_the_selection_through_the_stops() {
     );
 }
 
-/// **An action key sends the stop's `event` back to the pane that drew it** - the `item` is the
+/// An action key sends the stop's `event` back to the pane that drew it - the `item` is the
 /// row's id, and the action is the word the plugin wrote.
 #[test]
 fn an_action_key_queues_a_pane_action() {
@@ -291,7 +291,7 @@ fn an_action_key_queues_a_pane_action() {
     );
 }
 
-/// **A `say` action submits the line through the composer's own path**, so it is queued and
+/// A `say` action submits the line through the composer's own path, so it is queued and
 /// announced exactly as a typed prompt is - and attributed to the operator, who pressed the
 /// key. It is not a `PaneAction`: a pane does not get a second door into the model.
 #[test]
@@ -304,7 +304,7 @@ fn a_say_action_submits_the_line_as_a_prompt() {
     );
 }
 
-/// **A `look` action re-runs the pane's look** - C3's third kind, and the one that sends the
+/// A `look` action re-runs the pane's look - C3's third kind, and the one that sends the
 /// same `look` word the wire spells.
 #[test]
 fn a_look_action_asks_for_a_fresh_look() {
@@ -336,7 +336,7 @@ fn the_bar_names_the_selected_stops_action_keys() {
         "the row the cursor moved to: {bar}"
     );
     assert!(!bar.contains("s start"), "and not the one it left: {bar}");
-    // **A tree's rows carry theirs the same way** - C3's `Row` has `actions`, exactly as a `Line`
+    // A tree's rows carry theirs the same way - C3's `Row` has `actions`, exactly as a `Line`
     // does, and rano's tree list takes them as data.
     let mut t = tree_opened();
     t.screen(110, 40);
@@ -348,7 +348,7 @@ fn the_bar_names_the_selected_stops_action_keys() {
     assert!(!bar.contains("s start"), "{bar}");
 }
 
-/// **A block kind this host does not draw is one muted line naming it** - never a silently
+/// A block kind this host does not draw is one muted line naming it - never a silently
 /// missing row: the plugin's answer is not wrong and this head is old.
 #[test]
 fn an_unknown_block_kind_is_a_muted_line_naming_it() {
@@ -360,7 +360,7 @@ fn an_unknown_block_kind_is_a_muted_line_naming_it() {
     );
 }
 
-/// **The badge is drawn in the status row**, like the waits-on-you counter - the pane's own
+/// The badge is drawn in the status row, like the waits-on-you counter - the pane's own
 /// counter, in the register the pane chose, and only while that pane is on the screen.
 #[test]
 fn the_badge_is_drawn_in_the_status_row() {
@@ -374,7 +374,7 @@ fn the_badge_is_drawn_in_the_status_row() {
     assert!(!closed.contains("3 running"), "{closed}");
 }
 
-/// **A click on a panel's title opens its view** - C3's one click, recorded by the frame that
+/// A click on a panel's title opens its view - C3's one click, recorded by the frame that
 /// drew the title.
 #[test]
 fn a_click_on_a_panel_opens_its_view() {
@@ -422,7 +422,7 @@ fn a_view_that_collides_with_the_hosts_keys_is_refused_and_says_why() {
     );
 }
 
-/// **`/pane` lists what the session has, by title**, and `/pane NAME` opens one - the panes
+/// `/pane` lists what the session has, by title, and `/pane NAME` opens one - the panes
 /// list, on a head whose panes are the daemon's and cannot be a fixed table.
 #[test]
 fn the_pane_verb_lists_them_by_title_and_opens_by_name() {
@@ -447,7 +447,7 @@ fn the_pane_verb_lists_them_by_title_and_opens_by_name() {
     );
 }
 
-/// **Esc at the overview closes the pane AND tells the daemon** - C4's `PaneClose`, and the only
+/// Esc at the overview closes the pane AND tells the daemon - C4's `PaneClose`, and the only
 /// thing that takes a pane off the host's refresh clock. The view below it is a step of Esc's
 /// ladder and says nothing: leaving a panel's view is not leaving the pane.
 #[test]
@@ -473,12 +473,12 @@ fn esc_at_the_overview_closes_the_pane_and_tells_the_daemon() {
     );
     assert!(!a.is_open(Surface::PluginPane));
     assert_eq!(a.plugin_open, None, "and the name went with it");
-    // **And the view this head holds stays** - it is the daemon's answer about the session, not
+    // And the view this head holds stays - it is the daemon's answer about the session, not
     // about this screen, so reopening the pane draws it while the new look travels.
     assert!(a.plugin_panes.contains_key(PANE));
 }
 
-/// **A label the view's legend documents answers on hover** - C3's second use of the legend
+/// A label the view's legend documents answers on hover - C3's second use of the legend
 /// (`the same text answers on hover`): point at a row and the bar says what its label means.
 #[test]
 fn hovering_a_documented_label_shows_the_legends_words() {
@@ -492,7 +492,7 @@ fn hovering_a_documented_label_shows_the_legends_words() {
         "the legend's text for the row's label: {hovered}"
     );
 
-    // **A label the legend does not document says nothing extra** - `tier 2` is not a key, and
+    // A label the legend does not document says nothing extra - `tier 2` is not a key, and
     // the bar keeps its key hints rather than guessing at a meaning.
     let (x, y) = find(&screen, "tier 2");
     a.key(Key::Hover { x: x + 1, y });
@@ -500,7 +500,7 @@ fn hovering_a_documented_label_shows_the_legends_words() {
     assert!(!plain.contains("the tier the release waits on"), "{plain}");
 }
 
-/// **A pane the daemon says is gone closes**, and its view goes with it: a surface left holding
+/// A pane the daemon says is gone closes, and its view goes with it: a surface left holding
 /// a name nobody answers is a screen whose keys do nothing.
 #[test]
 fn a_gone_pane_closes_and_is_dropped() {
@@ -514,7 +514,7 @@ fn a_gone_pane_closes_and_is_dropped() {
     assert!(a.plugin_panes.is_empty(), "and the view went with it");
 }
 
-/// **The arrow keys do not reach the transcript behind the pane** - the wheel router's rule,
+/// The arrow keys do not reach the transcript behind the pane - the wheel router's rule,
 /// and the scroll guard: a pane on top takes them.
 #[test]
 fn the_wheel_over_the_pane_scrolls_the_pane() {
@@ -658,7 +658,7 @@ fn a_rows_verb_act_and_verb_letter_go_to_the_host() {
     a.command(&format!("pane {ROOM}"));
     a.screen(100, 30);
 
-    // **Enter on a verb row is the verb, on the entry the row named.**
+    // Enter on a verb row is the verb, on the entry the row named.
     assert_eq!(
         a.key(Key::Enter),
         Some(Action::PaneAction {
@@ -669,7 +669,7 @@ fn a_rows_verb_act_and_verb_letter_go_to_the_host() {
         "the row's own entry and its own verb"
     );
 
-    // **And a letter is the same door** - `x` on the second row, whose `enter` is a different verb.
+    // And a letter is the same door - `x` on the second row, whose `enter` is a different verb.
     a.key(Key::Down);
     assert_eq!(
         a.key(Key::Char('x')),
@@ -682,7 +682,7 @@ fn a_rows_verb_act_and_verb_letter_go_to_the_host() {
     );
 }
 
-/// **A row with no act still opens its detail** - the behaviour every existing pane has, and the
+/// A row with no act still opens its detail - the behaviour every existing pane has, and the
 /// reason the act is checked first rather than instead.
 #[test]
 fn a_row_with_no_enter_act_still_opens_its_detail() {

@@ -39,7 +39,7 @@ impl App {
         }
     }
 
-    /// What needs the person right now, as counts and ids — compared tick to tick by
+    /// What needs the person right now, as counts and ids - compared tick to tick by
     /// [`App::take_notification`], so a notification is an EDGE and never a level.
     pub(crate) fn attention_now(&self) -> Attention {
         // The rows whose card is already up, or put away: both are counted in `asks`, and a row
@@ -70,7 +70,7 @@ impl App {
                 .collect(),
             // A reseat this head already sent is not waiting on the person any more.
             stale: self.reseat.as_ref().is_some_and(|c| !c.asked),
-            // **A row that waits with no card open**: alt-a is the only door to it and nobody
+            // A row that waits with no card open: alt-a is the only door to it and nobody
             // away presses it, so the board is the only thing that can tell them.
             board: self
                 .operator_asks()
@@ -120,7 +120,7 @@ impl App {
         {
             return Some(format!("{who}: subagent {} finished", self.child_label(id)));
         }
-        // **A stale prompt is a question only this head can put** - alt-r reseats, alt-p shows the
+        // A stale prompt is a question only this head can put - alt-r reseats, alt-p shows the
         // card - so it says so once, when the fact arrives.
         if now.stale && !before.stale {
             return Some(format!("{who}: the prompt is stale — alt-r reseats"));

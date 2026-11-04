@@ -4,7 +4,7 @@
 
 use super::*;
 
-/// **What answers whether the local model is up** - `/health` on an address, in production
+/// What answers whether the local model is up - `/health` on an address, in production
 /// [`health`]; a test puts a function here that answers without a network.
 pub(crate) type ReachProbe = std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
@@ -30,7 +30,7 @@ impl Default for Reach {
     }
 }
 
-/// **`GET /health` on `authority`, answered in a few seconds or not at all.** The launcher's own
+/// `GET /health` on `authority`, answered in a few seconds or not at all. The launcher's own
 /// `curl -sf -m 3` reading, which is what this replaces: a 2xx is up, and anything else is the
 /// sentence the chooser carries.
 pub(crate) fn health(authority: &str) -> Result<(), String> {
@@ -78,7 +78,7 @@ impl App {
     /// (or the chooser is already up) and the message goes when it passes. Not while a turn runs -
     /// the model is answering or being retried, and a line typed then is steering that turn.
     pub(crate) fn hold_for_model(&mut self, text: &str) -> bool {
-        // **A second message while the first is held joins it**, as steering joins a running
+        // A second message while the first is held joins it, as steering joins a running
         // turn: one held message, sent once.
         if let Some(held) = &mut self.reach.held {
             held.push('\n');
@@ -109,7 +109,7 @@ impl App {
         }
     }
 
-    /// **Collect the probe, and give back a message the chooser did not take.** Called from the
+    /// Collect the probe, and give back a message the chooser did not take. Called from the
     /// loop (`Driver::tick`), never from a paint; it never waits.
     pub fn poll_reach(&mut self) {
         if let Some(rx) = &self.reach.job {
@@ -123,7 +123,7 @@ impl App {
                     self.reach.job = None;
                     self.model_unreachable(why);
                 }
-                // **A probe that died without answering does not keep the message.** The check
+                // A probe that died without answering does not keep the message. The check
                 // is a courtesy in front of the send, and the daemon's own retry ladder is still
                 // behind it; a lost answer is not evidence the model is down.
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -132,7 +132,7 @@ impl App {
                 }
             }
         }
-        // **Every way the chooser closes without taking a cloud row lands here** - esc on the
+        // Every way the chooser closes without taking a cloud row lands here - esc on the
         // card or the key card, a local row, a surface that closed it - so the words go back
         // where they were typed rather than being lost behind a card that is gone.
         if self.reach.reason.is_some()
@@ -160,7 +160,7 @@ impl App {
         }
     }
 
-    /// **The chooser, with the reason on it.** `why` is the first half of the sentence; the
+    /// The chooser, with the reason on it. `why` is the first half of the sentence; the
     /// card and the transcript both say it, the card because that is where the eye is and the
     /// transcript because the card goes away.
     fn model_unreachable(&mut self, why: String) {
@@ -172,7 +172,7 @@ impl App {
         }
     }
 
-    /// **Bare `/models`'s card**, opened: seeded to what answers now. `false` when there is no
+    /// Bare `/models`'s card, opened: seeded to what answers now. `false` when there is no
     /// session to pick for. The caller asks the daemon for fresh rows (`Action::Settings`).
     pub(crate) fn open_model_pick(&mut self) -> bool {
         if self.session_id.is_empty() {

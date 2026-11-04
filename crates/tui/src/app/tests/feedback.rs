@@ -1,4 +1,4 @@
-//! **The operator's marks** (TODO R81): `/fb`, `/fb+`, `/fb-`, alt-g and alt-b - what each one
+//! The operator's marks: `/fb`, `/fb+`, `/fb-`, alt-g and alt-b - what each one
 //! sends, and alt-b staying word-left wherever there is a line to move over.
 
 use super::*;
@@ -68,7 +68,7 @@ fn alt_g_and_alt_b_mark_now_and_a_second_press_opens_the_note() {
     assert_eq!(mark(b.key(Key::AltB)).0, "bad");
 }
 
-/// **alt-b was word-left before it was a mark**, and on a line it still is.
+/// alt-b was word-left before it was a mark, and on a line it still is.
 #[test]
 fn alt_b_on_a_line_being_typed_is_still_word_left() {
     let mut a = attached();

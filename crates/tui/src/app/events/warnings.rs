@@ -1,4 +1,4 @@
-//! **Warnings**: a diagnostic the daemon raised, routed to the conversation, the notes or the
+//! Warnings: a diagnostic the daemon raised, routed to the conversation, the notes or the
 //! alarm.
 
 use super::*;
@@ -11,13 +11,13 @@ use letibot_ui::text::without_control;
 pub(crate) const DAEMON_STARTING: &str = "daemon_starting";
 pub(crate) const DAEMON_STARTED: &str = "daemon_started";
 
-/// **This daemon's binary is older than the store it serves** (`store::floor` in
+/// This daemon's binary is older than the store it serves (`store::floor` in
 /// `letibot-tokencore`). Said on every attach by `server::seat_in` while it is true, and taken as
 /// STATE rather than as a note - see [`App::store_newer`].
 pub(crate) const STORE_NEWER: &str = "store_newer";
 
 impl App {
-    /// **A boot step, taken as the state it is** - `true` when `code` was one, so the caller
+    /// A boot step, taken as the state it is - `true` when `code` was one, so the caller
     /// draws no row for it. The live arm and the snapshot both come here, so a head that attaches
     /// mid-boot (the hub's log replays them) and one that watched it agree.
     pub(crate) fn boot_warning(&mut self, code: &str, detail: &str) -> bool {
@@ -34,13 +34,9 @@ impl App {
         }
     }
 
-    /// **The model the daemon says answers now** - the `model` row's value, which may be a local
-    /// alias in the config pane's spelling. One door for the live arm and for a snapshot, and no
-    /// note either way: a name is what the header draws, not a finding to read.
-    ///
-    /// `at` is when this head HEARD it, which for a replayed row is when it heard the last one: a
-    /// snapshot's window is history, and stamped as news it outranks the settings row it is older
-    /// than.
+    /// The model the daemon says answers now - the `model` row's value, possibly a local alias. One door for the
+    /// live arm and a snapshot, and no note: a name is what the header draws, not a finding.
+    /// `at` is when this head HEARD it; a replayed row is history and must not outrank the settings row it is older than.
     pub(crate) fn model_set(&mut self, value: &str, at: u64) {
         let model = crate::ui::header::header_model(value);
         if !model.is_empty() {
@@ -50,7 +46,7 @@ impl App {
         }
     }
 
-    /// **A warning the daemon raised.** One family of
+    /// A warning the daemon raised. One family of
     /// [`App::event`]'s arms, moved here verbatim; `event` hands it only these variants.
     pub(crate) fn on_warning(&mut self, e: SessionEvent, ts: u64) -> Disposition {
         match e {
@@ -61,7 +57,7 @@ impl App {
                 if code == "turn_failed" {
                     return Disposition::Filtered;
                 }
-                // **The daemon's boot, as a state and not as rows** (R92.2) - the line on the
+                // The daemon's boot, as a state and not as rows - the line on the
                 // tail and the label on a queued prompt; the steps are not the conversation.
                 if self.boot_warning(&code, &detail) {
                     self.redraw = true;
@@ -75,13 +71,9 @@ impl App {
                     self.redraw = true;
                     return Disposition::Filtered;
                 }
-                // The fork has two halves: this warning precedes it, `compacted` and
-                // `reseated` follow. Resolving at the first half stops an echo saying
-                // `queued` for ever over a row the fork summarised away.
-                //
-                // An announcement is state, not a row: it says why the fold is running, which is
-                // what the progress line's click shows. Drawing it as a note made one compaction
-                // three rows.
+                // The fork has two halves: this warning precedes it, `compacted` and `reseated` follow. Resolving at the first
+                // stops an echo saying `queued` for ever over a row the fork summarised away. An announcement is state, not a
+                // row: it says why the fold is running, which the progress line's click shows.
                 if code == "compacting" {
                     self.mark_fork();
                     self.compacting_why = Some(detail.clone());
@@ -236,7 +228,7 @@ impl App {
                 // `/status` holding the number, and the daemon's sentence listed by `/notes` and
                 // drawn nowhere - filed BESIDE the conversation, which is why this is `Filtered`.
                 if letibot_sessionlog::warning::to_the_alarm(&code) {
-                    // **The sentence is filed, not dropped.** Filtering it here and filing it only on
+                    // The sentence is filed, not dropped. Filtering it here and filing it only on
                     // the snapshot door gave one warning two records decided by when you attached:
                     // a head that came later listed it and a live head kept only the count.
                     self.note_beside(Note::Warned(Warned {
@@ -265,7 +257,7 @@ impl App {
         }
     }
 
-    /// **A provider in trouble, as one row**: the same sentence a warning is, with the model and the
+    /// A provider in trouble, as one row: the same sentence a warning is, with the model and the
     /// reset time the type carries and the prose does not. The row's code is the kind, so a burst of
     /// rate limits reads as one line rather than as a paragraph.
     pub(crate) fn on_provider_trouble(&mut self, e: SessionEvent, ts: u64) -> Disposition {
@@ -298,11 +290,9 @@ impl App {
         Disposition::Rendered
     }
 
-    /// **One model call being retried, as ONE row**, whatever attempt it is at: the wire sends the
-    /// row's whole value, so the row the reader is watching is rewritten rather than added to.
-    ///
-    /// A count that goes DOWN is a second outage - the daemon settles a series before another starts,
-    /// but a head that attached late or missed the ending must not fold two series into one row.
+    /// One model call being retried, as ONE row whatever the attempt: the wire sends the row's whole value, so the row
+    /// is rewritten rather than added to. A count that goes DOWN is a second outage; a late head must not fold two
+    /// series into one row.
     pub(crate) fn on_model_retry(&mut self, e: SessionEvent, ts: u64) -> Disposition {
         let SessionEvent::ModelRetry {
             host,

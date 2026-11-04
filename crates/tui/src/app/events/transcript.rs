@@ -1,11 +1,11 @@
-//! **Events about the transcript**: a row appended, and its content arriving.
+//! Events about the transcript: a row appended, and its content arriving.
 
 use super::*;
 use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::view::{CallState, SnapshotItem};
 
 impl App {
-    /// **The transcript**: a row appended, and its content arriving. One family of
+    /// The transcript: a row appended, and its content arriving. One family of
     /// [`App::event`]'s arms, moved here verbatim; `event` hands it only these variants.
     pub(crate) fn on_transcript_event(&mut self, e: SessionEvent, ts: u64) -> Disposition {
         match e {
@@ -16,10 +16,9 @@ impl App {
                 item: body,
                 ..
             } => {
-                // **A row that arrives below the window is counted and not held.** This head let
-                // the tail go (see `App::drop_rows_below`), so a row spliced onto the end here
-                // would take the ordinal of one still missing: the page the reader comes down to
-                // is what fills that gap, and until then the count is the truth.
+                // A row that arrives below the window is counted, not held: this head let the tail go (see
+                // `App::drop_rows_below`), so a spliced row would take the ordinal of one still missing. The page the
+                // reader comes down to fills that gap; until then the count is the truth.
                 if self.items_below > 0 {
                     self.items_below += 1;
                     return Disposition::Rendered;
@@ -78,7 +77,7 @@ impl App {
                     item: None,
                 });
                 // A row landed, so the transcript moved and everything derived from it
-                // — the `!` candidates and the model's suggestions — is stale. The next
+                // - the `!` candidates and the model's suggestions - is stale. The next
                 // Tab for the same prefix is a fresh ask.
                 self.the_rows_moved();
                 // The body, when it rode the announcement: the row is whole now and waits for no
@@ -86,7 +85,7 @@ impl App {
                 if let Some((id, body)) = drawn {
                     self.record_item(&id, body);
                 }
-                // **And the restore this head was waiting on has begun to arrive.** The line that
+                // And the restore this head was waiting on has begun to arrive. The line that
                 // said *N rows are in the store and not here yet* was true until this row; from
                 // here the conversation draws itself, so it goes. See [`App::restoring`].
                 self.restoring = self.rows_the_store_holds();
@@ -99,7 +98,7 @@ impl App {
                 self.record_item(&item_id, *item);
                 Disposition::Rendered
             }
-            // **What a reply cited, read by the daemon when it landed** — put on the row, and the
+            // What a reply cited, read by the daemon when it landed - put on the row, and the
             // row drawn again so its fences show the lines.
             SessionEvent::Citations { item_id, citations } => {
                 if let Some(idx) = self.items.iter().position(|r| r.item_id == item_id) {

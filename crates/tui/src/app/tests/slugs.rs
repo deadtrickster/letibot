@@ -1,4 +1,4 @@
-//! **Subagents named by their slugs** - the operator: *"lets do slugs for subagents too"*. Every
+//! Subagents named by their slugs - the operator: *"lets do slugs for subagents too"*. Every
 //! place the head named a child by its session id (or by nothing but its brief) names it by the
 //! slug the daemon gave it, and a child nobody named is drawn exactly as before.
 
@@ -18,7 +18,7 @@ fn named_spawn(id: &str, slug: &str, task: &str) -> SessionEvent {
     }
 }
 
-/// **The pane names each child by its slug and short id**; a child with no name keeps its short
+/// The pane names each child by its slug and short id; a child with no name keeps its short
 /// id alone, as every pane before names drew it.
 #[test]
 fn the_subagents_pane_names_a_child_by_its_slug() {
@@ -45,7 +45,7 @@ fn the_subagents_pane_names_a_child_by_its_slug() {
     );
 }
 
-/// **A child rebuilt from the daemon's list keeps its name** - the list carries the slug after a
+/// A child rebuilt from the daemon's list keeps its name - the list carries the slug after a
 /// restart, when no spawn event is left to fold - and the header of a head standing in the child
 /// names it, and its parent, by their slugs.
 #[test]
@@ -73,7 +73,7 @@ fn the_list_carries_the_name_into_the_pane_and_the_header() {
     );
 }
 
-/// **A child's completion notice reads by its name**, whether the daemon wrote the label
+/// A child's completion notice reads by its name, whether the daemon wrote the label
 /// (`fix-login · s-…`, since names) or only the handle (every stored notice before them) - and an
 /// old notice of a child nobody named folds exactly as it always did.
 #[test]
@@ -116,7 +116,7 @@ fn a_folded_task_notice_names_the_child_by_its_slug_old_and_new() {
     );
 }
 
-/// **A wait on a child draws its name**, the handle first as a job's does (`j97 · pg-timing`).
+/// A wait on a child draws its name, the handle first as a job's does (`j97 · pg-timing`).
 #[test]
 fn a_wait_on_a_named_child_draws_its_slug() {
     use crate::app::todos::WaitOn;

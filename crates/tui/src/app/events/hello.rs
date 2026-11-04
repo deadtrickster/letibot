@@ -1,4 +1,4 @@
-//! **A `Hello`**: the daemon seating this head in a session - on the first attach, a switch, a
+//! A `Hello`: the daemon seating this head in a session - on the first attach, a switch, a
 //! reconnect - with the snapshot it brings.
 
 use super::*;
@@ -7,7 +7,7 @@ use letibot_sessionlog::protocol::ServerFrame;
 use letibot_sessionlog::view::Warned;
 
 impl App {
-    /// **A `Hello`**: the head seated in a session, and the snapshot loaded. One family of [`App::apply`]'s arms, moved here
+    /// A `Hello`: the head seated in a session, and the snapshot loaded. One family of [`App::apply`]'s arms, moved here
     /// verbatim; `apply` hands it only these frames.
     pub(crate) fn on_hello(&mut self, frame: ServerFrame) -> Disposition {
         match frame {
@@ -126,7 +126,7 @@ impl App {
                         self.restoring = self.rows_the_store_holds();
                     }
                 }
-                // **A reconnect's replay scrubs the held counts** (R91.12), so a count this head
+                // A reconnect's replay scrubs the held counts, so a count this head
                 // read before the gap may be one whose zero it never saw; the daemon says the
                 // count again after every attach.
                 self.held = None;
@@ -172,10 +172,8 @@ impl App {
                         prompt_tokens: tokens,
                         cached_tokens: b.context_cached.unwrap_or(0),
                         predicted_tokens: 0,
-                        // A backfilled row carries the prompt size, never the
-                        // cost: nothing recorded it per turn before now, and a
-                        // zero here would report a metered session as free. Nor a slot: a row
-                        // that predates the column cannot say which slot served those turns.
+                        // A backfilled row carries the prompt size, never the cost: a zero would report a metered session
+                        // as free. Nor a slot: a row that predates the column cannot say which slot served those turns.
                         cost_micros_usd: None,
                         ..Default::default()
                     });

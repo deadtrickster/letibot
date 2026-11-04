@@ -1,4 +1,4 @@
-//! **The turn in flight**: its calls, its rows, whether the model is generating or waiting on
+//! The turn in flight: its calls, its rows, whether the model is generating or waiting on
 //! a call, and a compaction's progress.
 
 use super::*;
@@ -29,8 +29,8 @@ pub(crate) struct CallRow {
     /// The most recent `ToolProgress { note }`.
     pub(crate) note: Option<String>,
     /// The settled decision this call was gated by, when there was one. Rendered on
-    /// the card in the dim register — the approval is a fact about the call, not a
-    /// stray note — and expanded to the brief the oracle saw and its reply.
+    /// the card in the dim register - the approval is a fact about the call, not a
+    /// stray note - and expanded to the brief the oracle saw and its reply.
     pub(crate) decision: Option<SettledDecision>,
 }
 
@@ -59,14 +59,8 @@ pub(crate) struct TurnPane {
     /// Once the turn has ended and those rows carry their content the transcript is authoritative, so
     /// the pane stands down and only its summary line survives; otherwise the answer is drawn twice.
     pub(crate) appended: Vec<String>,
-    /// **Every row this TURN has produced, across all of its rounds** — and the difference from
-    /// [`TurnPane::appended`] is the whole of a defect the operator caught twice.
-    ///
-    /// `appended` is per ROUND, because the daemon re-emits `TurnStarted` for every round of one
-    /// prompt (`run_turn_steered` does `turn_seq += 1` inside the round loop) and each one builds a
-    /// fresh `TurnPane`. That is right for what `appended` is used for — which rows the live pane is
-    /// still drawing, and whether the turn has been superseded — and it was silently wrong for the
-    /// one question asked with it: *does this run hold a row of the current turn.*
+    /// Every row this TURN has produced across all rounds. `appended` is per ROUND (each `TurnStarted` builds a fresh `TurnPane`), right for
+    /// what the live pane still draws and whether the turn is superseded, but wrong for *does this run hold a row of the current turn*:
     ///
     /// Their screen, and their question:
     ///
@@ -78,19 +72,10 @@ pub(crate) struct TurnPane {
     ///   ⠇ Responding · 1m42s
     /// ```
     ///
-    /// *"ok, still not here - [2 tool calls] empty line [N thinking lines]. why not [2 tool calls, N
-    /// thinking lines] on a single row?"* **Because round 3 forgot what rounds 1 and 2 did.** The run
-    /// of committed rows stopped reading as this turn's, so `live_here` and `walk_carried_live` both
-    /// answered *no*, the in-flight reasoning was not folded into the run, and the pane drew it
-    /// beside the run instead — two markers, and two different thinking counts.
-    ///
-    /// One turn is one `began_ms` (stamped once per prompt and carried on every round's
-    /// `TurnStarted`), so that is what this is carried on. **Cleared only when the turn is PROVEN
-    /// to have changed** — a `began_ms` that differs from the one this pane is counting from. A
-    /// boundary that carries no `began_ms` at all is *nobody measured this one* and not *a new
-    /// prompt*: read as the latter it emptied this field, the run stopped reading as the turn's,
-    /// and one run's work was drawn by two markers again (see the `TurnStarted` arm for the frame
-    /// that made it reachable, and for the second `Responding` it manufactured).
+    /// Because round 3 forgot what rounds 1 and 2 did: the run of committed rows stopped reading as this turn's, so `live_here` and
+    /// `walk_carried_live` answered *no* and the pane drew its reasoning beside the run - two markers, two thinking counts.
+    /// One turn is one `began_ms`, carried on every round's `TurnStarted`. Cleared only when the turn is PROVEN to have changed: a
+    /// boundary with no `began_ms` is *nobody measured this one*, not *a new prompt*.
     pub(crate) turn_rows: Vec<String>,
     /// How many of `calls` the transcript has taken over: rows are appended in call order after every call was invoked, so the nth row is about `calls[n-1]` with no id matching, the ids repeating every round.
     /// The mark advances at the row's BODY, not its announcement - a bodyless row draws nothing, so the call would be in neither half for the frames between - and the live cards, `live_work` and `round_answered` all read it.
@@ -109,10 +94,9 @@ pub(crate) struct TurnPane {
     /// snapshot and has no honest duration.
     pub(crate) think_started_ms: u64,
     pub(crate) think_last_ms: u64,
-    /// The daemon's word on the last finish this pane saw: `Some(false)` is a ROUND that ended
-    /// with the prompt still running, so the row stays up. `None` until one arrives, because a
-    /// snapshot carries a state and no finish, and reading that as *the turn continues* would
-    /// leave a row nobody can stand down.
+    /// The daemon's word on the last finish this pane saw: `Some(false)` is a ROUND that ended with the prompt still
+    /// running, so the row stays up. `None` until one arrives: a snapshot carries a state and no finish, and reading
+    /// that as *the turn continues* would leave a row nobody can stand down.
     pub(crate) ends_turn: Option<bool>,
 }
 
@@ -227,7 +211,7 @@ pub(crate) struct CompactionLine {
     pub(crate) prompt_tokens: u64,
     pub(crate) processed: u64,
     pub(crate) written: u64,
-    /// What `written` counts — `tokens` or `chars`, the daemon's word, because the two
+    /// What `written` counts - `tokens` or `chars`, the daemon's word, because the two
     /// transports do not report the same thing.
     pub(crate) unit: String,
 }
@@ -240,16 +224,16 @@ pub(crate) struct Bulk {
     /// The ids the snapshot announced with no body. A body landing removes its id; an
     /// empty set means the announcement is complete and the trigger clears itself.
     pub(crate) ids: std::collections::HashSet<String>,
-    /// How many the snapshot announced — `ids` as it was when it landed, so the status row can
+    /// How many the snapshot announced - `ids` as it was when it landed, so the status row can
     /// say how many of them have arrived rather than only how many are still missing.
     pub(crate) announced: usize,
-    /// When the snapshot landed, on this head's clock — [`BODY_PATIENCE`]'s origin.
+    /// When the snapshot landed, on this head's clock - [`BODY_PATIENCE`]'s origin.
     pub(crate) at_ms: u64,
     /// What the STORE said about each position, asked by session ordinal through `FetchRows` - the
     /// door that falls through to the store when the view cannot answer. A snapshot is cut from the daemon's
     /// in-memory view, so a resync re-cuts the same body-less row; only a re-seat rebuilds it.
     pub(crate) held: std::collections::HashSet<String>,
-    /// The ids the store answered **nothing** for — a row nothing the daemon can reach holds.
+    /// The ids the store answered nothing for - a row nothing the daemon can reach holds.
     /// Not the same statement as `held`, and the two must not look alike.
     pub(crate) absent: std::collections::HashSet<String>,
     /// The ids this head has already asked about, so one snapshot is one question per id and
@@ -275,38 +259,22 @@ impl App {
         )
     }
 
-    /// **Is the model WORKING — generating, or waiting on a call it made?**
+    /// Is the model WORKING - generating, or waiting on a call it made?
     ///
-    /// This is R51's `turn-busy-p`, and it is the question four of this head's call sites were
-    /// silently asking with the state name instead. Measured on 2026-09-25 with a `sleep 60`
-    /// executing, the daemon's own view reads:
+    /// The question the call sites must ask instead of the state name, as this daemon-side view shows for a
+    /// `sleep 60` in flight:
     ///
     /// ```text
     /// (:TURN-STATE "finished"  :CALLS (("call_…" "running")))
     /// ```
     ///
-    /// — *generating* is false and the turn is plainly working, so **every question of the form
-    /// "is the model busy" must ask the CALLS.** The fact is: generating, OR any call of this
-    /// turn has not finished.
-    ///
-    /// **What it is not.** It is not "a call exists" and not "a call is running": a call that has
-    /// finished is history, and the calls of earlier rounds are in `calls` until the pane stands
-    /// down.
-    ///
-    /// **The window R51 §3 recorded is closed, by the daemon.** It used to say *not busy* for the
-    /// few milliseconds between a last call finishing and the next round's `TurnStarted`, and that
-    /// was a limitation of the round-level events rather than of this predicate: *the prompt is
-    /// over* is a fact only the daemon has, and `PROTOCOL_VERSION` 52 publishes it —
-    /// `Waiting::Turn` is the PROMPT's span, from the harness taking it to its loop returning. So
-    /// the activity is asked first and the round-level state below is the fallback, for a daemon
-    /// older than 52 (whose value is always quiet).
-    ///
-    /// **One definition, because this colour and this line have now been wrong in four
-    /// directions** — see the call sites: the esc-esc gate dead exactly while a command ran, two
-    /// `queued` rows for one message, the promote message saying the wrong one of two silences,
-    /// and a status row that vanished during every call.
+    /// The turn is plainly working while *generating* is false, so "is the model busy" must ask the CALLS:
+    /// generating, OR any call of this turn has not finished. Not "a call exists" and not "a call is running":
+    /// a finished call is history. `Waiting::Turn` is the prompt's span (`PROTOCOL_VERSION` 52), asked first;
+    /// the round-level state below is the fallback for an older daemon. One definition, so the colour and the
+    /// status line cannot disagree.
     pub(crate) fn turn_busy(&self) -> bool {
-        // **The daemon's answer first** (`PROTOCOL_VERSION` 52) — see the paragraph above: `Turn`
+        // The daemon's answer first (`PROTOCOL_VERSION` 52) - see the paragraph above: `Turn`
         // is the prompt's span and `Calls` the round detail inside it, and together they hold this
         // row up across every round boundary of one prompt.
         if self
@@ -323,7 +291,7 @@ impl App {
         if matches!(t.state, Some(TurnState::Running)) {
             return true;
         }
-        // **And the same boundary from the frame that ended the round** (`TurnFinished::ends_turn`):
+        // And the same boundary from the frame that ended the round (`TurnFinished::ends_turn`):
         // a round whose calls have all landed is not the prompt's end, and the daemon said so. This
         // is what closes the window without the activity, which a head that attached late has none of.
         if t.ends_turn == Some(false) {

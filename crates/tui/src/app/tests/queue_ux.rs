@@ -1,9 +1,6 @@
-//! **What the queue's surfaces say to somebody who has never seen them**: one realistic fixture,
-//! drawn at eighty and a hundred and twenty columns, and the words a newcomer needs asserted.
-//!
-//! The surfaces here are the ones a person meets: the queue pane, the composer's bottom edge, a
-//! reviewer's verdict as one line and as its popup, and a queue notice from the hub. Each is a
-//! picture of the same fixture, so the pane and the card cannot disagree about a row.
+//! What the queue's surfaces say to somebody who has never seen them: one realistic fixture at eighty and a hundred
+//! and twenty columns. The surfaces are the queue pane, the composer's bottom edge, a reviewer's verdict (line and
+//! popup) and a hub notice, all pictures of one fixture so pane and card cannot disagree about a row.
 
 use super::redcard::{popup_text, with_notice, with_warning};
 use super::*;
@@ -30,7 +27,7 @@ const REVIEWER: &str = "s-gatekeeper-sub-17917";
 const REFUSED_MSG: &str = include_str!("fixtures/review_refused_message.txt");
 const NEEDS_HUMAN: &str = include_str!("fixtures/review_needs_human_warning.txt");
 
-/// **The head, with the real `queue` layer answering** - the pane's one renderer, through the
+/// The head, with the real `queue` layer answering - the pane's one renderer, through the
 /// same host a production head builds for this session.
 fn layer(mut a: App) -> App {
     a.session_id = "s1".into();
@@ -88,7 +85,7 @@ fn landing(
     }
 }
 
-/// **The fixture**: three branches in review (one being read, one waiting, one refused with
+/// The fixture: three branches in review (one being read, one waiting, one refused with
 /// findings), two landings (one queued, one gating at step 2 of 5), one that landed, and a merge
 /// target whose own tip is red.
 fn snapshot() -> letibot_sessionlog::event::QueueSnapshot {
@@ -157,7 +154,7 @@ fn snapshot() -> letibot_sessionlog::event::QueueSnapshot {
 fn pane() -> App {
     let mut a = layer(app());
     let mut snap = snapshot();
-    // **This session's repository**, so the pane is about one project and not about every queue
+    // This session's repository, so the pane is about one project and not about every queue
     // on the box - the scope a person meets on `/queue`.
     snap.here = Some(letibot_sessionlog::event::QueueHere {
         workspace: REPO.into(),
@@ -169,12 +166,12 @@ fn pane() -> App {
     a
 }
 
-/// **The lines the pane itself drew**, without the conversation's chrome around it.
+/// The lines the pane itself drew, without the conversation's chrome around it.
 fn pane_rows(a: &mut App, w: usize) -> Vec<String> {
     a.screen(w, 40)
 }
 
-/// **Where `needle` sits in the drawn pane** - the stop the cursor moves to, read off the view
+/// Where `needle` sits in the drawn pane - the stop the cursor moves to, read off the view
 /// the frame kept, so a test cannot aim at a row the pane does not have.
 fn stop_of(a: &App, needle: &str) -> usize {
     let view = a.queue_held.as_ref().expect("a drawn pane");
@@ -194,7 +191,7 @@ fn joined(rows: &[String]) -> String {
     rows.join("\n")
 }
 
-/// **The verdict surfaces, drawn** - the one line a notice becomes, its popup, and the queue
+/// The verdict surfaces, drawn - the one line a notice becomes, its popup, and the queue
 /// notice the hub raises. Written beside the pane's render so the before and after of a change to
 /// the words is a diff of two files.
 #[test]
@@ -234,7 +231,7 @@ fn the_queue_pane_reads_for_somebody_who_has_never_seen_it() {
     let rows = pane_rows(&mut a, 80);
     let screen = joined(&rows);
 
-    // **A title that says what this is.** Not `the queue`: the merge queue, and what it lists.
+    // A title that says what this is. Not `the queue`: the merge queue, and what it lists.
     assert!(screen.contains("the merge queue"), "{screen}");
     assert!(
         rows.iter()
@@ -242,7 +239,7 @@ fn the_queue_pane_reads_for_somebody_who_has_never_seen_it() {
         "the panel says what it lists: {screen}"
     );
 
-    // **Each row in plain words** - what it is, and what state it is in.
+    // Each row in plain words - what it is, and what state it is in.
     for word in [
         "a reviewer is reading it", // reviewing
         "waiting for a reviewer",   // waiting
@@ -252,7 +249,7 @@ fn the_queue_pane_reads_for_somebody_who_has_never_seen_it() {
         assert!(screen.contains(word), "`{word}` is missing: {screen}");
     }
 
-    // **No code, glyph or abbreviation a newcomer has to guess**: not the bracket mark, not
+    // No code, glyph or abbreviation a newcomer has to guess: not the bracket mark, not
     // `byte(s)`, not the bare `rm`.
     for jargon in ["[~]", "[ ]", "byte(s)", "· rm", " · ]"] {
         assert!(!screen.contains(jargon), "`{jargon}` is jargon: {screen}");
@@ -267,7 +264,7 @@ fn the_queue_pane_reads_for_somebody_who_has_never_seen_it() {
         "the repository is named: {screen}"
     );
 
-    // **The bar names the keys that would act on the row under the cursor** - and only those. On
+    // The bar names the keys that would act on the row under the cursor - and only those. On
     // the row a reviewer is reading, approve and withdraw both move it.
     let bar = a.hint_bar(80);
     for want in ["enter opens it whole", "a approve", "v veto", "d withdraw"] {
@@ -289,7 +286,7 @@ fn the_queue_pane_reads_for_somebody_who_has_never_seen_it() {
     );
 }
 
-/// **The composer's edge says which queue it counts** - it is a person's only sight of the queue
+/// The composer's edge says which queue it counts - it is a person's only sight of the queue
 /// until they open the pane, so the numbers lead with what they are about, and each count carries
 /// the noun it counts.
 #[test]
@@ -314,7 +311,7 @@ fn the_edge_says_which_queue_it_counts() {
     }
 }
 
-/// **A reviewer's verdict says who reviewed what, and what came of it** - the whole line, and the
+/// A reviewer's verdict says who reviewed what, and what came of it - the whole line, and the
 /// popup's title above the daemon's own words.
 #[test]
 fn a_verdict_says_who_reviewed_what_and_how_it_went() {
@@ -348,14 +345,14 @@ fn a_verdict_says_who_reviewed_what_and_how_it_went() {
     );
 }
 
-/// **Every surface drawn, for the report** - the pane at eighty and a hundred and twenty columns,
+/// Every surface drawn, for the report - the pane at eighty and a hundred and twenty columns,
 /// and the same fixture's edge. Written under `scratch/queue-ux/`, which the build never reads.
 #[test]
 fn dump_the_pane() {
     let mut out = String::new();
     for w in [80usize, 120] {
         let mut a = pane();
-        // **Twice**: the bar is built from the rows the last frame recorded, so the first frame -
+        // Twice: the bar is built from the rows the last frame recorded, so the first frame -
         // one no person ever reads - still offers every verb.
         a.screen(w, 40);
         out.push_str(&format!("\n===== the queue pane, {w} cols =====\n"));

@@ -45,7 +45,7 @@ fn clause_kind(clause: &str) -> Option<Option<Show>> {
     None
 }
 
-/// **The clauses of the marker on one line of text**, as `(from, to, kind)` in columns - the
+/// The clauses of the marker on one line of text, as `(from, to, kind)` in columns - the
 /// last `[…]` on the line whose every clause is a count.
 fn clauses(cells: &[char]) -> Vec<(usize, usize, Option<Show>)> {
     let Some(close) = cells.iter().rposition(|c| *c == ']') else {
@@ -246,7 +246,7 @@ impl App {
         })
     }
 
-    /// **Flip it** - what `ctrl-r`, `/think`, the config pane's row and a second click all ask.
+    /// Flip it - what `ctrl-r`, `/think`, the config pane's row and a second click all ask.
     pub(crate) fn flip_thinking(&mut self) -> Option<Action> {
         self.set_thinking(!self.thinking_open())
     }
@@ -283,7 +283,7 @@ impl App {
         })
     }
 
-    /// **The newest run a key can address**, by the id `payload_sel` names - the live tail's
+    /// The newest run a key can address, by the id `payload_sel` names - the live tail's
     /// sentinel for a turn whose work has no row yet.
     fn newest_run_id(&self) -> Option<String> {
         let at = crate::ui::transcript::markers::newest_unseen_run(
@@ -366,7 +366,7 @@ impl App {
         Some((top + m.y, m.from + gutter, m.to + gutter))
     }
 
-    /// **The live pane's marker clauses, as targets** - the rows of this frame below the history
+    /// The live pane's marker clauses, as targets - the rows of this frame below the history
     /// (`hist_lines`), which is where the turn in flight is drawn. Its run is [`LIVE_RUN`]: it has
     /// no rows of its own until they land.
     pub(crate) fn live_marker_rows(&self, start: usize, out: &[String]) -> Vec<MarkerHit> {
@@ -393,7 +393,7 @@ impl App {
         hits
     }
 
-    /// **The run the newest hidden rows make**, by its first row's id - what a lift in the live
+    /// The run the newest hidden rows make, by its first row's id - what a lift in the live
     /// pane is carried to when a round's rows land.
     pub(crate) fn newest_run_head(&self) -> Option<String> {
         let hidden = |k: usize| crate::ui::row_hidden(&self.items, self.visibility, k);
@@ -405,8 +405,8 @@ impl App {
         Some(self.items[first].item_id.clone())
     }
 
-    /// **A round's rows landed: what the live pane had lifted stays lifted on them** - the run
-    /// they make opens with the same kind. **The pane does not keep it**: the next round's pane
+    /// A round's rows landed: what the live pane had lifted stays lifted on them - the run
+    /// they make opens with the same kind. The pane does not keep it: the next round's pane
     /// starts as the rung draws it, and a new turn drops the lift entirely.
     pub(crate) fn carry_live_open(&mut self) {
         // The VALUE is not this function's business: a round's end moves the ADDRESS, from the pane
@@ -425,10 +425,10 @@ impl App {
         }
     }
 
-    /// **Open the run a clause stands for**, lifting only its kind - and put it back when the same
+    /// Open the run a clause stands for, lifting only its kind - and put it back when the same
     /// clause of the same run is clicked again.
     pub(crate) fn open_marker(&mut self, m: MarkerHit) {
-        // **The whole-run clause of the pane's own marker** names no kind (`ctrl-t`'s act is the
+        // The whole-run clause of the pane's own marker names no kind (`ctrl-t`'s act is the
         // run lifted whole), and the pane has no rows to lift whole - so it opens the calls, which
         // is what the marker it is drawn on counts.
         let show = m.show.or((m.run == LIVE_RUN).then_some(Show::Tools));
@@ -448,7 +448,7 @@ impl App {
         self.set_lift(show, &m.run);
     }
 
-    /// **Is `head` the run the work in flight belongs to** - [`run_carries_live`] asked of the head
+    /// Is `head` the run the work in flight belongs to - [`run_carries_live`] asked of the head
     /// rather than of the frame being drawn, so a click and the draw cannot disagree about which
     /// run's counts the marker carried.
     fn run_carries_live_now(&self, head: &str) -> bool {

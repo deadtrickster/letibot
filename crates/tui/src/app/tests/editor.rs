@@ -15,11 +15,11 @@ impl Drop for Workspace {
     }
 }
 
-/// **A `.txt`, on purpose**: rano starts a language server for the languages it knows, and a
+/// A `.txt`, on purpose: rano starts a language server for the languages it knows, and a
 /// test has no business starting `rust-analyzer`.
 const FILE: &str = "notes.txt";
 
-/// **One directory per CALL, not per tag.** Two tests both asked for `workspace("frame")`, and
+/// One directory per CALL, not per tag. Two tests both asked for `workspace("frame")`, and
 /// running in parallel one's `Drop` removed the other's file mid-test - the editor then opened
 /// nothing, now and then. A counter makes a repeated tag harmless.
 fn workspace(tag: &str) -> Workspace {
@@ -155,7 +155,7 @@ fn is_the_file(p: &Path) -> bool {
     p.file_name().is_some_and(|n| n == FILE)
 }
 
-/// **The map**: every screen row of the edit's row - its header and its diff - is a place in
+/// The map: every screen row of the edit's row - its header and its diff - is a place in
 /// `notes.txt` at the first changed line, and no other row is.
 #[test]
 fn the_rows_of_an_edit_are_mapped_to_its_file_and_its_first_changed_line() {
@@ -221,7 +221,7 @@ fn a_click_on_an_edit_row_opens_the_change_in_a_popup_not_the_editor() {
     assert!(screen.contains("esc closes"), "{screen}");
 }
 
-/// **The whole file is there, and it opens on the first change**: on a screen too short for
+/// The whole file is there, and it opens on the first change: on a screen too short for
 /// the file, the change is in view at once, and the file's first and last lines are a key away.
 #[test]
 fn the_popup_holds_the_whole_file_and_opens_on_the_first_change() {
@@ -250,7 +250,7 @@ fn the_popup_holds_the_whole_file_and_opens_on_the_first_change() {
     assert!(home.contains("line 1"), "and so is its start: {home}");
 }
 
-/// **Esc closes the popup, and only the popup.**
+/// Esc closes the popup, and only the popup.
 #[test]
 fn esc_closes_the_diff_popup_onto_the_conversation() {
     let ws = workspace("popesc");
@@ -297,7 +297,7 @@ fn a_decision_under_the_diff_popup_takes_its_keys() {
     a.key(Key::Down);
     assert_eq!(a.sel, 1, "↓ moved the card's mark");
     assert_eq!(a.diff_popup.as_ref().unwrap().scroll, scrolled);
-    // A row number marks the row, and Enter answers it (R90.2).
+    // A row number marks the row, and Enter answers it.
     assert_eq!(a.key(Key::Char('1')), None);
     assert_eq!(
         a.key(Key::Enter),
@@ -311,7 +311,7 @@ fn a_decision_under_the_diff_popup_takes_its_keys() {
     assert!(a.diff_popup.is_some(), "answering leaves the popup up");
 }
 
-/// **From the popup, `ctrl-]` is the editor** - on the same change, for when reading turns into
+/// From the popup, `ctrl-]` is the editor - on the same change, for when reading turns into
 /// changing.
 #[test]
 fn ctrl_bracket_in_the_popup_opens_the_editor_on_the_change() {
@@ -329,7 +329,7 @@ fn ctrl_bracket_in_the_popup_opens_the_editor_on_the_change() {
     assert_eq!(line, 11);
 }
 
-/// **A click anywhere else does what it did before** - nothing, on a row of the conversation.
+/// A click anywhere else does what it did before - nothing, on a row of the conversation.
 #[test]
 fn a_click_on_a_row_that_is_not_a_file_opens_nothing() {
     let ws = workspace("noclick");
@@ -344,7 +344,7 @@ fn a_click_on_a_row_that_is_not_a_file_opens_nothing() {
     assert_eq!(a.screen(100, 40), before, "and the screen is as it was");
 }
 
-/// **`ctrl-]` opens the newest change**, the way the click does, from the composer.
+/// `ctrl-]` opens the newest change, the way the click does, from the composer.
 #[test]
 fn the_chord_opens_the_newest_change() {
     let ws = workspace("chord");
@@ -358,7 +358,7 @@ fn the_chord_opens_the_newest_change() {
     assert!(a.editor_focused());
 }
 
-/// **With nothing changed, the chord says so** rather than doing nothing a reader can see.
+/// With nothing changed, the chord says so rather than doing nothing a reader can see.
 #[test]
 fn the_chord_with_no_change_in_the_conversation_says_so() {
     let mut a = app();
@@ -373,7 +373,7 @@ fn the_chord_with_no_change_in_the_conversation_says_so() {
     );
 }
 
-/// **`ctrl-]` crosses both ways, and the keys follow the keyboard**: typed into rano while the
+/// `ctrl-]` crosses both ways, and the keys follow the keyboard: typed into rano while the
 /// pane has it, into the composer once it has crossed - and in one read, the keys after the
 /// chord go where it sent them.
 #[test]
@@ -409,7 +409,7 @@ fn the_crossing_chord_moves_the_keyboard_and_the_keys_follow_it() {
     assert_eq!(a.editor.text(), "hi");
 }
 
-/// **rano's exit closes the pane - and never the head.** `^X` on an unmodified file, and
+/// rano's exit closes the pane - and never the head. `^X` on an unmodified file, and
 /// `ctrl-q`, which the head binds to the same command.
 #[test]
 fn rano_exit_closes_the_pane_and_never_the_head() {
@@ -429,7 +429,7 @@ fn rano_exit_closes_the_pane_and_never_the_head() {
     }
 }
 
-/// **An exit with unsaved edits is rano's question first**: the pane stays until it is answered.
+/// An exit with unsaved edits is rano's question first: the pane stays until it is answered.
 #[test]
 fn an_exit_over_unsaved_edits_asks_before_the_pane_goes() {
     let ws = workspace("unsaved");
@@ -447,7 +447,7 @@ fn an_exit_over_unsaved_edits_asks_before_the_pane_goes() {
     assert!(!disk.contains('z'), "nothing was saved");
 }
 
-/// **A send lands in the composer as a reference, and is not sent**: `path:line` and a space
+/// A send lands in the composer as a reference, and is not sent: `path:line` and a space
 /// for the operator's words, with the keyboard moved there to write them.
 #[test]
 fn a_send_lands_in_the_composer_as_a_reference_and_waits_for_enter() {
@@ -470,7 +470,7 @@ fn a_send_lands_in_the_composer_as_a_reference_and_waits_for_enter() {
     assert_eq!(a.editor.text(), "notes.txt:11 why?");
 }
 
-/// **A selection is sent as its range and its text, fenced**, and a range that ends at the
+/// A selection is sent as its range and its text, fenced, and a range that ends at the
 /// start of a line does not claim that line.
 #[test]
 fn a_send_with_a_selection_carries_the_range_and_the_text() {
@@ -491,7 +491,7 @@ fn a_send_with_a_selection_carries_the_range_and_the_text() {
     );
 }
 
-/// **The pane takes the conversation's rectangle, and the chrome keeps its rows**: the
+/// The pane takes the conversation's rectangle, and the chrome keeps its rows: the
 /// composer's box and the hint bar are still there, the bar naming the pane's keys - and the
 /// caret is rano's while rano has the keyboard, hidden over the review, back on the text after.
 #[test]
@@ -533,7 +533,7 @@ fn the_pane_takes_the_conversations_rectangle_and_the_composer_stays() {
     assert!(row > 20, "the composer's row, at the bottom");
 }
 
-/// **A press inside the pane takes the keyboard, and one outside gives it back** - the mouse
+/// A press inside the pane takes the keyboard, and one outside gives it back - the mouse
 /// crosses the way the chord does.
 #[test]
 fn a_press_in_the_pane_takes_the_keyboard_and_one_outside_gives_it_back() {
@@ -552,7 +552,7 @@ fn a_press_in_the_pane_takes_the_keyboard_and_one_outside_gives_it_back() {
     assert!(keys.is_empty() && took);
 }
 
-/// **The chord is advertised where the head's chords are**: `/help` names it, with what it does
+/// The chord is advertised where the head's chords are: `/help` names it, with what it does
 /// on each side of the crossing.
 #[test]
 fn the_crossing_chord_is_in_help() {
@@ -562,7 +562,7 @@ fn the_crossing_chord_is_in_help() {
     assert!(help.contains("alt-s"), "{help}");
 }
 
-/// **The acceptance suite's session, as the daemon would log it** - the operator's question,
+/// The acceptance suite's session, as the daemon would log it - the operator's question,
 /// the `edit` of [`change`] with the assistant row that made it, and a closing sentence - one
 /// `Envelope` per line, the shape `letibot-tui --replay` reads.
 fn acceptance_session() -> String {
@@ -646,7 +646,7 @@ fn acceptance_session() -> String {
         .collect()
 }
 
-/// **The acceptance suite replays this file, and it is generated, not hand-written**, so a
+/// The acceptance suite replays this file, and it is generated, not hand-written, so a
 /// change to the protocol shows up here as a failing test rather than as a fixture the head
 /// silently stops reading. `LETIBOT_BLESS=1` writes it again.
 #[test]
@@ -666,7 +666,7 @@ fn the_acceptance_fixture_is_this_session() {
     );
 }
 
-/// **A file changed since the edit falls back to the edit itself, and says so** - a whole-file
+/// A file changed since the edit falls back to the edit itself, and says so - a whole-file
 /// view of a file somebody has edited since would be a diff of their change, not this one.
 #[test]
 fn a_file_changed_since_the_edit_shows_the_edit_alone_and_says_why() {
@@ -816,7 +816,7 @@ fn ctrl_e_on_an_empty_prompt_opens_the_editor_asking_for_a_file() {
     );
 }
 
-/// **The editor stays on the screen while the prompt is typed in** - *"editor is just a
+/// The editor stays on the screen while the prompt is typed in - *"editor is just a
 /// pane"*. `ctrl-]` crosses to the composer and back; only `ctrl-e` puts it away, and `ctrl-]`
 /// (or a click on a change) brings a put-away pane back too.
 #[test]
@@ -845,7 +845,7 @@ fn typing_in_the_prompt_leaves_the_editor_up_and_ctrl_bracket_brings_back_a_hidd
     );
 }
 
-/// **With text in the prompt, `ctrl-e` is end-of-line, as it always was.** And inside a pane
+/// With text in the prompt, `ctrl-e` is end-of-line, as it always was. And inside a pane
 /// that reads `End` - the result window - it is still `End`.
 #[test]
 fn ctrl_e_with_text_in_the_prompt_is_end_of_line() {
@@ -866,7 +866,7 @@ fn ctrl_e_with_text_in_the_prompt_is_end_of_line() {
     );
 }
 
-/// **`ctrl-]` with nothing changed says where the editor is**, rather than dead-ending.
+/// `ctrl-]` with nothing changed says where the editor is, rather than dead-ending.
 #[test]
 fn ctrl_bracket_with_nothing_changed_points_at_ctrl_e() {
     let mut a = app();
@@ -966,7 +966,7 @@ fn the_editor_keeps_two_columns_clear_on_the_right_of_its_frame() {
     }
 }
 
-/// **The popup names its file once, in its top edge** - the operator, 2026-10-11: the path was
+/// The popup names its file once, in its top edge - the operator: the path was
 /// in the edge and again on the first row, because the diff renderer heads every edit view with
 /// the file's name (right for a card in the conversation, a repeat inside a frame that says it).
 #[test]
@@ -999,7 +999,7 @@ fn the_diff_popup_names_its_file_once() {
     );
 }
 
-/// **The diff's style is discoverable where the diff is drawn.** `/diff` switches split and
+/// The diff's style is discoverable where the diff is drawn. `/diff` switches split and
 /// unified, and the popup's own edge is the only thing a reader looking at a change sees; nothing
 /// there named it, which is the operator asking *"how to switch diff style?"*.
 #[test]
@@ -1036,7 +1036,7 @@ fn the_diff_popup_names_the_switch_that_draws_it_two_ways() {
     assert_eq!(a.take_injected(), b"/diff\r", "the hint types the verb");
 }
 
-/// **The popup closes by a click on its own `esc closes`** - the operator, 2026-10-11: *"i open
+/// The popup closes by a click on its own `esc closes` - the operator: *"i open
 /// diff popup by clicking - i cant close it by clicking … all keymap items anywhere must be
 /// clickable"*. The hint is a button that types its key, by the route a keypress takes.
 #[test]
@@ -1086,7 +1086,7 @@ fn a_click_on_a_key_hint_is_that_key() {
 }
 
 /// **The pointer: hover marks what a click would do, a still press is a click, and a drag
-/// selects and copies** - the operator, 2026-10-11: *"simple mouse selection doesnt work in
+/// selects and copies** - the operator: *"simple mouse selection doesnt work in
 /// letibot - only with shift"*, and *"i want clickable things to be somehow hinted"*.
 #[test]
 fn hover_marks_a_button_a_still_press_clicks_and_a_drag_copies() {
@@ -1204,7 +1204,7 @@ fn a_selection_does_not_swallow_what_is_typed() {
     );
 }
 
-/// **A code block copies as code** - the operator, 2026-10-12: *"can i copy code block without
+/// A code block copies as code - the operator: *"can i copy code block without
 /// vertical bars?"*. The block's frame is drawn as text (`┌─ lang`, a `│ ` rail, `└─`), and a
 /// selection across it copies the code alone, its own indentation kept.
 #[test]
@@ -1244,7 +1244,7 @@ fn a_selected_code_block_copies_without_its_frame() {
         x: 99,
         y: bottom as u16,
     });
-    // **The frame is not selectable**: mid-drag, a code line is marked from after its rail, and
+    // The frame is not selectable: mid-drag, a code line is marked from after its rail, and
     // the `┌─` row is not marked at all - what is highlighted is what will be copied.
     let during = a.screen(100, 30);
     let line = during
@@ -1305,8 +1305,8 @@ fn a_selected_code_block_copies_without_its_frame() {
     );
 }
 
-/// **A drag holds the view, and Esc drops the selection and lets it follow** - the operator,
-/// 2026-10-12: *"can we auto trigger ctrl-p once selection starts?"* and *"cancel selection on
+/// A drag holds the view, and Esc drops the selection and lets it follow - the operator,
+/// *"can we auto trigger ctrl-p once selection starts?"* and *"cancel selection on
 /// esc"*. A hold the operator took with ctrl-p is theirs: dropping a selection leaves it.
 #[test]
 fn a_drag_holds_the_view_and_esc_lets_it_follow() {
@@ -1361,7 +1361,7 @@ fn a_drag_holds_the_view_and_esc_lets_it_follow() {
     );
 }
 
-/// **The whole clickable block lights up** - the operator, 2026-10-12: *"can you light up the
+/// The whole clickable block lights up - the operator: *"can you light up the
 /// whole clickable block?"*. An edit card is several rows and any of them opens it, so the pointer
 /// over one of them brightens every one.
 #[test]
@@ -1432,8 +1432,8 @@ fn a_note_the_notes_tool_rewrote_is_drawn_and_clicked_as_an_edit() {
     assert!(a.diff_popup.is_some(), "a click opens the popup");
 }
 
-/// **R90.7: a decision arriving while the editor has the keyboard takes it back**, and the bar
-/// describes the card - `1` or Enter meant for the card used to edit the file.
+/// A decision arriving while the editor has the keyboard takes it back, and the bar
+/// describes the card - `1` or Enter meant for the card must not edit the file.
 #[test]
 fn a_decision_arriving_takes_the_keyboard_back_from_the_editor() {
     let ws = workspace("decision");

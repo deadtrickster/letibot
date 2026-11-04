@@ -78,7 +78,7 @@ impl App {
                         return ControlFlow::Break(None);
                     };
                     draft.take(&live);
-                    // **A title is required and the card stays up without one** — the only field
+                    // A title is required and the card stays up without one - the only field
                     // rule, and saying so beats storing a row of nothing.
                     if draft.title.trim().is_empty() {
                         self.todo_draft = Some(draft);
@@ -117,8 +117,8 @@ impl App {
                         status: letibot_sessionlog::event::TodoStatus::Pending,
                         by: letibot_sessionlog::event::TodoBy::Operator,
                         when,
-                        // **A row filed here waits on nothing**: the card's three fields are the
-                        // title, the detail and a JOB handle, and an edge is not one of them —
+                        // A row filed here waits on nothing: the card's three fields are the
+                        // title, the detail and a JOB handle, and an edge is not one of them -
                         // `todo_write` is where a row learns to wait on another.
                         needs: Vec::new(),
                     });
@@ -199,7 +199,7 @@ impl App {
                     }
                     Some(Action::TermClose { pane: ask.pane })
                 }
-                // **Anything that is not a deliberate yes is the cancel**, Esc included — the
+                // Anything that is not a deliberate yes is the cancel, Esc included - the
                 // only shape a destructive confirmation can have. It says what it did NOT do,
                 // because a card that vanishes in silence reads as an act.
                 _ => {
@@ -272,7 +272,7 @@ impl App {
                     let key = std::mem::take(&mut self.key_buf);
                     self.key_ask = None;
                     self.redraw = true;
-                    // **An empty enter is a cancelled ask, not a stored empty key** — the
+                    // An empty enter is a cancelled ask, not a stored empty key - the
                     // daemon would refuse it and the row was not taken.
                     if key.is_empty() {
                         self.say("no key given — the row was not taken");
@@ -282,11 +282,11 @@ impl App {
                         "storing the {} key and switching to {}…",
                         ask.provider, ask.choice
                     ));
-                    // The switch, then a re-read of the rows it changed — the same order the
+                    // The switch, then a re-read of the rows it changed - the same order the
                     // plain switch keeps, so the header names what answers now.
                     self.queued.push(Action::Settings);
                     // And, when the chooser was opened because the local model could not be
-                    // reached, the default and the held message after it — `app::reach`.
+                    // reached, the default and the held message after it - `app::reach`.
                     self.took_cloud_row(&ask.choice);
                     return ControlFlow::Break(Some(Action::Slash {
                         line: format!("models {} --key {}", ask.choice, key),
@@ -311,7 +311,7 @@ impl App {
     /// those keys mean the ladder, and Up/Down move it even with a line being typed, because
     /// emptying the composer must not be the price of choosing. Enter and digits keep the guard.
     pub(crate) fn key_decision(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
-        // **Not while a draft card is drawn in front of it** (R90.16): ↑↓ and the digits moved a
+        // Not while a draft card is drawn in front of it: ↑↓ and the digits moved a
         // ladder the operator could not see.
         if !self.open.is_empty() && self.todo_draft.is_none() && self.key_ask.is_none() {
             let n = decision_rows(&self.open[0]);
@@ -340,7 +340,7 @@ impl App {
                 Key::Enter if n > 0 && !typing => {
                     return ControlFlow::Break(self.answer_marked());
                 }
-                // **A card with no ladder** (R90.23): ↑↓ have nothing to walk and must not pull
+                // A card with no ladder: ↑↓ have nothing to walk and must not pull
                 // history into the answer field, and an empty Enter says what it wants.
                 Key::Up | Key::Down if n == 0 => return ControlFlow::Break(None),
                 Key::Enter if n == 0 && !typing => {
@@ -381,7 +381,7 @@ impl App {
                     self.redraw = true;
                     return ControlFlow::Break(None);
                 }
-                // **Enter has the digits' empty-composer guard** (R90.30): words typed after the
+                // Enter has the digits' empty-composer guard: words typed after the
                 // card opened were lost on an Enter that quit.
                 Key::Enter if !self.editor.text().is_empty() => {
                     self.say(
@@ -401,7 +401,7 @@ impl App {
                     }));
                 }
                 // Esc is "I did not mean to leave", which is the answer a card
-                // like this has to have — the alternative is an operator who
+                // like this has to have - the alternative is an operator who
                 // hit Ctrl+C twice by habit and cannot take it back.
                 Key::Esc | Key::CtrlC => {
                     self.quit_card = false;
@@ -433,8 +433,8 @@ impl App {
                     } else {
                         self.mode_sel - 1
                     };
-                    // **The reader has taken the cursor**, so a settings answer landing from
-                    // here on must not move it — see [`App::pick_unseeded`]. A worse defect
+                    // The reader has taken the cursor, so a settings answer landing from
+                    // here on must not move it - see [`App::pick_unseeded`]. A worse defect
                     // than the one the re-seed fixes: a cursor that jumps while they arrow.
                     self.pick_unseeded = false;
                     self.redraw = true;
@@ -449,7 +449,7 @@ impl App {
                 Key::Enter if self.editor.text().is_empty() => {
                     if n == 0 {
                         // A daemon older than protocol 18 sends no choices; the
-                        // pane says so rather than cycling a list it made up —
+                        // pane says so rather than cycling a list it made up -
                         // the same words the config pane's mode row says.
                         self.say(if subject == Pick::Model {
                             "this daemon does not send the model list; use `/models PROVIDER/MODEL`"
@@ -466,8 +466,8 @@ impl App {
                     self.mode_sel = at;
                     return ControlFlow::Break(self.take_pick(choices[at].clone()));
                 }
-                // **Esc leaves the setting alone and closes the card** — the card's own key now,
-                // because the card is in front of any surface (R69); it used to be one arm of a
+                // Esc leaves the setting alone and closes the card - the card's own key now,
+                // because the card is in front of any surface, not one arm of a
                 // block that closed every pane and card at once.
                 Key::Esc | Key::CtrlC => {
                     self.pick = None;

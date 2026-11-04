@@ -7,7 +7,7 @@ use std::process::Command;
 
 use letibot_sessionlog::protocol::{Attachment, AttachmentKind};
 
-/// **One chip in the composer** - the text the operator sees and the attachment it stands for.
+/// One chip in the composer - the text the operator sees and the attachment it stands for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Chip {
     /// The exact string inserted into the editor, and the thing this chip is found by.
@@ -105,7 +105,7 @@ fn macos_image_in(dir: &Path) -> Result<Option<Vec<u8>>, String> {
     }
 }
 
-/// **Linux: `wl-paste` on Wayland, `xclip` on X11**, and a sentence naming what to install when
+/// Linux: `wl-paste` on Wayland, `xclip` on X11, and a sentence naming what to install when
 /// neither is there - the only useful answer a head can give on a box that has neither.
 #[cfg(not(target_os = "macos"))]
 #[cfg_attr(test, allow(dead_code))]
@@ -289,7 +289,7 @@ fn split_escaped(text: &str) -> Vec<String> {
             }
         }
     }
-    // **An unterminated quote is not a path list** - a paste that started a `"` is prose that
+    // An unterminated quote is not a path list - a paste that started a `"` is prose that
     // happens to be shaped like one, and guessing at where it ends would swallow the rest.
     if quote.is_some() {
         return Vec::new();
@@ -424,7 +424,7 @@ pub(crate) fn save_clipboard_image(
     save_clipboard_image_under(&attachments_dir(), session_id, n, png)
 }
 
-/// **The same write, into a directory the caller names** - the seam `spill_sub_out_under` is, and
+/// The same write, into a directory the caller names - the seam `spill_sub_out_under` is, and
 /// for the same reason: a test must be able to put the file somewhere of its own, and there must be
 /// one implementation of the write for it to reach.
 pub(crate) fn save_clipboard_image_under(
@@ -461,13 +461,13 @@ impl Clipboard for FakeClipboard {
 }
 
 impl crate::app::App {
-    /// **A test's clipboard** - the one door, so no test can reach the operator's own.
+    /// A test's clipboard - the one door, so no test can reach the operator's own.
     #[cfg(test)]
     pub(crate) fn set_clipboard(&mut self, c: FakeClipboard) {
         self.clipboard = Box::new(c);
     }
 
-    /// **A test's directory for pasted pictures** - the other door, and the one that keeps a
+    /// A test's directory for pasted pictures - the other door, and the one that keeps a
     /// fixture's screenshot out of the operator's paste directory. See [`attachments_dir`].
     #[cfg(test)]
     pub(crate) fn set_attachments_dir(&mut self, dir: std::path::PathBuf) {
@@ -512,7 +512,7 @@ impl crate::app::App {
             }
             return true;
         }
-        // **An empty paste is the terminal's way of saying “no text”.** A clipboard holding a
+        // An empty paste is the terminal's way of saying “no text”. A clipboard holding a
         // picture is exactly that case, and it is the one the operator's question was about.
         if pasted.trim().is_empty() && self.attach_from_clipboard() {
             return true;
@@ -597,7 +597,7 @@ impl crate::app::App {
         else {
             return false;
         };
-        // **And the space it was inserted with**, when that is what stands between it and the word
+        // And the space it was inserted with, when that is what stands between it and the word
         // before it: a chip deleted out of `explain [image 1 …]` must not leave `explain ` where a
         // caret was.
         let start = if start > 0 && text.as_bytes()[start - 1] == b' ' {
@@ -654,13 +654,13 @@ mod tests {
         d
     }
 
-    /// A **real** PNG - the shared fixture, so this module's tests cannot drift back into a header
+    /// A real PNG - the shared fixture, so this module's tests cannot drift back into a header
     /// that is not a picture. See `letibot_transcript::testing` for why that matters.
     fn png() -> Vec<u8> {
         letibot_transcript::testing::png(2, 2)
     }
 
-    /// **The write goes where it is told**, and the seam is the reason a test can say so.
+    /// The write goes where it is told, and the seam is the reason a test can say so.
     #[test]
     fn a_clipboard_picture_is_written_into_the_directory_it_is_given() {
         let d = dir("under");
@@ -674,7 +674,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// **The default this build resolves is not the operator's directory** - the guard, from the
+    /// The default this build resolves is not the operator's directory - the guard, from the
     /// module that owns the answer. `tests/paste.rs` holds the same rule as behaviour.
     #[test]
     fn a_test_build_resolves_a_directory_of_its_own() {
@@ -695,7 +695,7 @@ mod tests {
         );
     }
 
-    /// **One path is one chip.**
+    /// One path is one chip.
     #[test]
     fn a_single_path_is_one_dropped_file() {
         let d = dir("single");
@@ -707,7 +707,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// **A drag-and-drop pastes SEVERAL, space-separated with the spaces escaped** - the shape
+    /// A drag-and-drop pastes SEVERAL, space-separated with the spaces escaped - the shape
     /// every terminal on this box produces, and the one a naive `split_whitespace` breaks.
     #[test]
     fn several_names_and_an_escaped_space_are_all_paths() {
@@ -729,7 +729,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// **Quoted paths, both kinds of quote** - Finder quotes a name with a space when the
+    /// Quoted paths, both kinds of quote - Finder quotes a name with a space when the
     /// terminal's setting says to.
     #[test]
     fn a_quoted_path_is_one_path() {
@@ -743,7 +743,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// **A paste that is not a file stays text**, which is the rule that keeps a sentence from
+    /// A paste that is not a file stays text, which is the rule that keeps a sentence from
     /// being rewritten: the words were the operator's.
     #[test]
     fn text_that_is_not_a_file_stays_text() {
@@ -782,7 +782,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// **The chip's words**, which the row in the transcript will show too.
+    /// The chip's words, which the row in the transcript will show too.
     #[test]
     fn a_chip_says_what_it_is_and_how_big() {
         let image = Attachment {
@@ -803,7 +803,7 @@ mod tests {
         assert_eq!(chip_text(2, &file), "[file 2 · report.csv · 12 KiB]");
     }
 
-    /// **`osascript`'s answer as bytes**, and every shape that is not one as `None` - measured
+    /// `osascript`'s answer as bytes, and every shape that is not one as `None` - measured
     /// against the string the real one prints.
     #[test]
     fn the_applescript_data_is_hex_between_the_guillemets() {

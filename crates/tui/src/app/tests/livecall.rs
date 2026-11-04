@@ -121,7 +121,7 @@ fn find(screen: &[String], needle: &str) -> (u16, u16) {
     panic!("{needle:?} not on screen:\n{}", screen.join("\n"));
 }
 
-/// **The marker clause drawn on screen row `y`** - a `MarkerHit`'s `y` is a row of the window and
+/// The marker clause drawn on screen row `y` - a `MarkerHit`'s `y` is a row of the window and
 /// the conversation starts below the header, so the two are not the same number (the shift every
 /// `*_rows` record gets in `main_area`).
 fn clause_on(a: &App, y: u16) -> Option<&crate::app::runclick::MarkerHit> {
@@ -191,7 +191,7 @@ fn the_counters_columns_are_the_cells_it_was_drawn_in() {
         .collect();
     let drawn = &cells[clause.from + gutter..clause.to + gutter];
     assert_eq!(drawn, "1 tool call", "the record is not on its own words");
-    // The LAST column of the clause is inside it - the click that used to fall off the end.
+    // The LAST column of the clause is inside it - the click that could fall off the end.
     let mut b = a_call_in_flight("bash");
     b.visibility = Visibility::of(Profile::CONVERSATION);
     b.invalidate_history();
@@ -315,7 +315,7 @@ fn a_cards_change_opens_the_popup_its_landed_row_opens() {
     );
 }
 
-/// **One rule for the rows that change shape while they are live** - the record is keyed by the
+/// One rule for the rows that change shape while they are live - the record is keyed by the
 /// CALL and not by the card's words, so the target survives the card going from `Running` to
 /// `Ran`, and a click after the change still answers about the same call.
 #[test]

@@ -16,7 +16,7 @@ const TWO: &str = "[task] 2 subagents you started have finished:\n  - `fix-login
                    green\n  - `audit · s-sub-2` failed: the cap is spent\nFull answer: \
                    `task_result` task=\"s-sub-1\", task=\"s-sub-2\".";
 
-/// **The same settlement for a child that failed** - reading *why* it failed is exactly what its
+/// The same settlement for a child that failed - reading *why* it failed is exactly what its
 /// own session holds, so a failure is the case the switch matters most in.
 const FAILED: &str = "[task] a subagent you started has finished:\n  - `fix-login · s-sub-1` failed: \
                       the cap is spent before the first read\nFull answer: `task_result` \
@@ -50,7 +50,7 @@ fn drawn(a: &mut App) -> (usize, String) {
     (y, a.task_switches[k].clone())
 }
 
-/// **The line records the child it is about, as data** - the id is carried out of the fold that
+/// The line records the child it is about, as data - the id is carried out of the fold that
 /// drew the line, so a click never has to read the row back to find out which child it is for.
 #[test]
 fn a_settlements_line_records_the_child_it_names() {
@@ -72,7 +72,7 @@ fn a_settlements_line_records_the_child_it_names() {
     assert_eq!(newest_notice(&mut a), ONE);
 }
 
-/// **A click goes to the child's session**, not to a popup of the notice the model already read.
+/// A click goes to the child's session, not to a popup of the notice the model already read.
 #[test]
 fn a_click_on_the_line_switches_to_the_child() {
     let mut a = with_settlement(ONE);
@@ -89,7 +89,7 @@ fn a_click_on_the_line_switches_to_the_child() {
     );
 }
 
-/// **Esc comes back up** - a switch from a card is not a one-way door, because it is the same
+/// Esc comes back up - a switch from a card is not a one-way door, because it is the same
 /// door `ctrl-s` uses: the child's `parent_session_id` is what the head reads.
 #[test]
 fn esc_comes_back_to_the_session_the_card_was_in() {
@@ -108,7 +108,7 @@ fn esc_comes_back_to_the_session_the_card_was_in() {
     );
 }
 
-/// **Two children in one wake are two doors** - each line names its own child, and a click on
+/// Two children in one wake are two doors - each line names its own child, and a click on
 /// one does not go to the other.
 #[test]
 fn each_childs_line_switches_to_that_child() {
@@ -142,7 +142,7 @@ fn each_childs_line_switches_to_that_child() {
     );
 }
 
-/// **A child that failed switches too** - its session is where the reason it failed is.
+/// A child that failed switches too - its session is where the reason it failed is.
 #[test]
 fn a_failed_childs_line_switches_to_it() {
     let mut a = with_settlement(FAILED);
@@ -193,7 +193,7 @@ fn a_finished_child_is_resumed_from_the_store() {
     );
 }
 
-/// **A child this head can no longer name keeps the popup** - a card whose subagent is gone is
+/// A child this head can no longer name keeps the popup - a card whose subagent is gone is
 /// not a switch to nothing. The same notice drawn by a head that does not hold the child.
 #[test]
 fn a_card_whose_child_is_gone_keeps_the_popup() {

@@ -112,7 +112,7 @@ fn at(frame: &[String], on_row: &str, needle: &str) -> (u16, u16) {
     (l[..byte].chars().count() as u16, y as u16)
 }
 
-/// **The slug is drawn**: for a `needs` job edge and for a `when` job condition alike; a job
+/// The slug is drawn: for a `needs` job edge and for a `when` job condition alike; a job
 /// with no slug, and one the head has never heard of, draw the bare handle and nothing else; a
 /// child draws the short name the subagents pane gives it, not its whole id.
 #[test]
@@ -137,7 +137,7 @@ fn a_wait_is_drawn_with_the_jobs_slug_and_the_childs_short_name() {
     assert!(!line_with(&lines, "plain row").contains("waits on"));
 }
 
-/// **The detail view says the same, and keeps the child's whole id** - the one place the id the
+/// The detail view says the same, and keeps the child's whole id - the one place the id the
 /// row shortened can still be read.
 #[test]
 fn the_detail_view_names_the_slug_and_keeps_the_childs_id() {
@@ -158,7 +158,7 @@ fn the_detail_view_names_the_slug_and_keeps_the_childs_id() {
     );
 }
 
-/// **A click on the link opens the real job's output** - the view Enter on that job in the jobs
+/// A click on the link opens the real job's output - the view Enter on that job in the jobs
 /// pane opens - and on a child's link reads the child, as the subagents pane's `p` does. The
 /// cursor goes to the clicked row. Esc comes back to the todos.
 #[test]
@@ -202,7 +202,7 @@ fn a_click_on_the_link_opens_the_job_and_the_child() {
     assert_eq!(a.sub_out_pending.as_deref(), Some(CHILD));
 }
 
-/// **A click elsewhere on the row keeps today's behaviour**: it selects the row and opens
+/// A click elsewhere on the row keeps today's behaviour: it selects the row and opens
 /// nothing - and so does a click on the ` · ` before `waits on`, and one just past the link.
 #[test]
 fn a_click_beside_the_link_only_selects_the_row() {
@@ -233,7 +233,7 @@ fn a_click_beside_the_link_only_selects_the_row() {
     assert_eq!(a.todos_sel, 6);
 }
 
-/// **`w` on the selected row does what the click does**, and the bar names it only on a row that
+/// `w` on the selected row does what the click does, and the bar names it only on a row that
 /// waits on something; on a row that waits on nothing it declines and the letter is the
 /// composer's.
 #[test]
@@ -276,7 +276,7 @@ fn w_on_the_selected_row_opens_what_it_waits_on() {
     assert_eq!(a.editor.text(), "w", "declined, so the letter was typed");
 }
 
-/// **A job the head does not know opens nothing and says so** - no crash, and no other job in
+/// A job the head does not know opens nothing and says so - no crash, and no other job in
 /// its place; a job only a completion notice still names opens that notice whole.
 #[test]
 fn an_unknown_job_is_safe() {
@@ -306,7 +306,7 @@ fn an_unknown_job_is_safe() {
     assert!(a.job_out.is_none());
 }
 
-/// **A row cut at the pane's edge links only what is still on the screen**, and a row cut before
+/// A row cut at the pane's edge links only what is still on the screen, and a row cut before
 /// its `waits on` begins has no link at all.
 #[test]
 fn a_cut_row_links_only_its_visible_part() {
@@ -345,7 +345,7 @@ fn a_wait_link_on_a_done_row_lands_on_the_row_it_is_drawn_on() {
     });
     let mut done = row("the finished rewrite", Some("j96"), Vec::new());
     done.status = TodoStatus::Completed;
-    // **The group is read OPEN**: the subject is where a done row's link is DRAWN, and the folded
+    // The group is read OPEN: the subject is where a done row's link is DRAWN, and the folded
     // default draws no done row to put one on.
     a.todos_fold_done = false;
     a.apply(ServerFrame::Todos {
@@ -378,7 +378,7 @@ fn a_wait_link_on_a_done_row_lands_on_the_row_it_is_drawn_on() {
         }),
         "the link did not land on the done row it is drawn on: {frame:#?}"
     );
-    // **And the frame rows the click map holds are the drawn ones**: a link recorded a row out
+    // And the frame rows the click map holds are the drawn ones: a link recorded a row out
     // would open nothing here, or open on a click a row above it.
     let link = a
         .todos_wait_links

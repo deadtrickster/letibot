@@ -1,10 +1,6 @@
-//! **What the todos, jobs, notes and picker panes say to somebody who has never seen them**: one
-//! realistic fixture each, drawn at eighty and a hundred and twenty columns, and the words a
-//! newcomer needs asserted.
-//!
-//! The queue pane set the pattern (`queue_ux`): plain status words, one row per item, aligned
-//! columns, detail folded away, and a legend for the verbs. These four are held to it here, so a
-//! pane that changes its words changes a picture in this file.
+//! What the todos, jobs, notes and picker panes say to somebody who has never seen them: one realistic fixture each,
+//! drawn at eighty and a hundred and twenty columns, with the words a newcomer needs asserted. Held to the
+//! pattern of `queue_ux`: plain status words, one row per item, aligned columns, a legend for the verbs.
 
 use super::*;
 

@@ -1,4 +1,4 @@
-//! **A run's marker opens by its parts** - the operator: *"when I see this "[7 tool calls, 11
+//! A run's marker opens by its parts - the operator: *"when I see this "[7 tool calls, 11
 //! thinking lines]" and then click on tool calls section or thinking section i wanted them to
 //! expand. Esc should fold them back"*.
 
@@ -24,7 +24,7 @@ fn a_run_of(think: &str, extra: usize) -> App {
         vec![brief("s", "one", false)],
         Hub::new("s").snapshot(),
     ));
-    // **The operator's own shape**: an answer that ENDS IN A COLON, then the work. An
+    // The operator's own shape: an answer that ENDS IN A COLON, then the work. An
     // assistant row is the conversation, so it is kept - and the marker has to read as
     // the continuation of the sentence it points at.
     a.apply(ServerFrame::Event(env(
@@ -329,7 +329,7 @@ fn a_run_opened_on_its_tool_calls_scrolls_to_both_ends() {
 
 // ───────────────── one switch: the click, the chord and esc ─────────────────
 
-/// **A head at `read-edits` with a turn in flight that has thought and committed no row** - the
+/// A head at `read-edits` with a turn in flight that has thought and committed no row - the
 /// state the operator's click is made in. The rung hides the working, so the live pane draws its
 /// own marker and the thinking is behind it; that is the marker whose thinking clause they click.
 fn a_live_thought(thought: &str) -> App {
@@ -433,7 +433,7 @@ fn a_second_click_on_the_same_clause_puts_it_back() {
         open.contains("let me check the file"),
         "the first click opens the thinking:\n{open}"
     );
-    // **The marker is still on the screen**, and its clause is still a target - that is what makes
+    // The marker is still on the screen, and its clause is still a target - that is what makes
     // the second press a click at all.
     let (x, y) = find(&a.screen(200, 40), "3 thinking lines");
     a.key(Key::Click { x: x + 1, y });
@@ -447,8 +447,8 @@ fn a_second_click_on_the_same_clause_puts_it_back() {
 }
 
 /// The marker is drawn while the run it opened is open: it is the counts line that says what is open
-/// and the only thing on the frame that toggles it back. Both walks used to ask for it only when the
-/// run was closed, so a click lifted the run and its marker vanished with it.
+/// and the only thing on the frame that toggles it back. Both walks must ask for it even when the
+/// run is closed, or a click lifts the run and its marker vanishes with it.
 #[test]
 fn an_open_runs_marker_is_drawn_over_the_rows_it_lifted() {
     let mut a = a_run();
@@ -468,7 +468,7 @@ fn an_open_runs_marker_is_drawn_over_the_rows_it_lifted() {
         open.contains("let me check the file"),
         "and the rows it stands over are drawn under it:\n{open}"
     );
-    // **The header comes first** - it is the run's first line, not a line under its content.
+    // The header comes first - it is the run's first line, not a line under its content.
     let header = open
         .lines()
         .position(|l| l.contains("4 tool calls"))
@@ -536,7 +536,7 @@ fn esc_on_a_window_does_not_fold_the_thinking() {
         a.thinking_open(),
         "closing a window folded the thinking with it"
     );
-    // **And the next press is the fold's own** - the general arm, which is what `esc` means when no
+    // And the next press is the fold's own - the general arm, which is what `esc` means when no
     // panel is in front of it.
     a.key(Key::Esc);
     assert!(!a.thinking_open(), "the second esc did not close the fold");
@@ -619,7 +619,7 @@ fn a_new_round_drops_the_panes_lift_without_a_clock() {
             turn_id: "r2".into(),
             model: "qwen3-next-80b".into(),
             ledger_head: "0000".into(),
-            // **No clock**: a turn the daemon ran without stamping it.
+            // No clock: a turn the daemon ran without stamping it.
             began_ms: None,
         },
     )));
@@ -639,7 +639,7 @@ fn the_live_markers_panel_is_a_run_and_not_a_window() {
         a.run_is_open(),
         "the panel on the pane's own marker does not read as a run"
     );
-    // **One sentinel for one panel**: what the click stored is what the chord addresses.
+    // One sentinel for one panel: what the click stored is what the chord addresses.
     assert_eq!(
         a.payload_sel.as_deref(),
         a.newest_openable().as_deref(),
@@ -672,7 +672,7 @@ fn a_panel_on_the_live_counter_scrolls_the_conversation() {
         vec![brief("s", "one", true)],
         Hub::new("s").snapshot(),
     ));
-    // **Rows above the pane to scroll back into.** The view scrolls by ROW, so a transcript of
+    // Rows above the pane to scroll back into. The view scrolls by ROW, so a transcript of
     // nothing but the live pane has nowhere to go: this is the history a reader is reading when
     // they reach for the wheel.
     let mut seq = 1u64;
@@ -706,7 +706,7 @@ fn a_panel_on_the_live_counter_scrolls_the_conversation() {
     let (w, h) = (100usize, 16usize);
     let (x, y) = find(&a.screen(w, h), "thinking line");
     a.key(Key::Click { x: x + 1, y });
-    // **The state facts first**: one panel, and it is a run.
+    // The state facts first: one panel, and it is a run.
     assert!(a.run_is_open(), "the panel does not read as a run");
     assert!(
         !a.payload_window_open(),
@@ -721,7 +721,7 @@ fn a_panel_on_the_live_counter_scrolls_the_conversation() {
         !open.contains("page the result"),
         "a window's keys for a window that is not there:\n{open}"
     );
-    // **And the keys move the conversation.** `following()` is the honest predicate here - the
+    // And the keys move the conversation. `following()` is the honest predicate here - the
     // view holds a ROW, and `scroll` is recomputed from it at the next draw - and a key that paged
     // a payload window instead leaves the view exactly where it was.
     assert!(a.following(), "the premise: the view is at the tail");
@@ -737,7 +737,7 @@ fn a_panel_on_the_live_counter_scrolls_the_conversation() {
     }
 }
 
-/// **A click on a different run's counter does not leave the first one latched** - one panel, one
+/// A click on a different run's counter does not leave the first one latched - one panel, one
 /// kind, one run: the lift names the run it was thrown on, and the run before it is drawn as the
 /// rung draws it.
 #[test]
@@ -852,7 +852,7 @@ fn a_click_does_not_follow_into_the_next_turn() {
         Some(Show::Thinking),
         "the panel is still open on the rows the work became"
     );
-    // **The next turn.** No key, no click: the operator typed a prompt.
+    // The next turn. No key, no click: the operator typed a prompt.
     a.apply(ServerFrame::Event(env_at(
         6,
         2_000,
@@ -936,7 +936,7 @@ fn a_round_boundary_does_not_touch_the_thinking() {
     assert_eq!(a.lift, None, "and no boundary threw the switch");
 }
 
-/// **A frame changes nothing** - three draws with no input are the same lines, and a click that has
+/// A frame changes nothing - three draws with no input are the same lines, and a click that has
 /// been made is the same state on every frame after it. A state re-derived or re-applied at DRAW
 /// time is the shape that made one session latch and another oscillate.
 #[test]
@@ -957,7 +957,7 @@ fn frames_with_no_input_do_not_move_the_switch() {
     assert_ne!(closed[0], open[0], "the click changed nothing at all");
 }
 
-/// **`ctrl-r` above the bottom rung is still the fold** - `terse` draws the reasoning rows (folded)
+/// `ctrl-r` above the bottom rung is still the fold - `terse` draws the reasoning rows (folded)
 /// and the ladder can draw them open, so the chord must move the fold there and not look for a run
 /// to lift. The two spellings are chosen by what the rung DRAWS, and `terse` draws the thinking.
 #[test]
@@ -991,7 +991,7 @@ fn ctrl_r_at_terse_still_moves_the_fold() {
     assert!(!frame(&mut a).contains(THOUGHT));
 }
 
-/// **`esc` returns the thinking to the default from the chord's spelling too** - a landed thought,
+/// `esc` returns the thinking to the default from the chord's spelling too - a landed thought,
 /// the fold opened with `ctrl-r`, and one Esc.
 #[test]
 fn esc_returns_the_fold_to_its_default() {

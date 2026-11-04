@@ -65,7 +65,7 @@ fn a_head_with_a_one_shot() -> App {
     a
 }
 
-/// **The project's layer answers, above the built-in, and the drawing is the project's** - the
+/// The project's layer answers, above the built-in, and the drawing is the project's - the
 /// `system` branch is renamed, its rows are gone, and every other row is the built-in's.
 #[test]
 fn a_projects_sessions_layer_renames_a_branch_and_hides_its_rows() {
@@ -104,7 +104,7 @@ fn a_projects_sessions_layer_renames_a_branch_and_hides_its_rows() {
         stack, workspace,
     ));
 
-    // **The branch the project hid is not drawn** - and its legend is the project's own words,
+    // The branch the project hid is not drawn - and its legend is the project's own words,
     // which is how a reader can tell the layer answered rather than the built-in.
     let text = a.picker_lines(100).join("\n");
     assert!(
@@ -119,11 +119,11 @@ fn a_projects_sessions_layer_renames_a_branch_and_hides_its_rows() {
         !text.contains("reviewers ("),
         "the rows the project hid are not drawn:\n{text}"
     );
-    // **Everything else is the built-in's**: the project's line and its conversations.
+    // Everything else is the built-in's: the project's line and its conversations.
     assert!(text.contains("letibot (5)"), "{text}");
     assert!(text.contains("the habr article"), "{text}");
 
-    // **And it still works as a list**: Enter takes the session a number names.
+    // And it still works as a list: Enter takes the session a number names.
     a.picker_sel = a
         .picker_rows()
         .iter()
@@ -131,7 +131,7 @@ fn a_projects_sessions_layer_renames_a_branch_and_hides_its_rows() {
         .expect("the package's row");
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-pkg".into())));
 
-    // **And the hidden rows are out of the numbering too**: a number is a place in the list that
+    // And the hidden rows are out of the numbering too: a number is a place in the list that
     // was drawn, so the three conversations are 1, 2 and 3.
     assert_eq!(
         a.pick("2"),

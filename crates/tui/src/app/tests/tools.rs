@@ -195,7 +195,7 @@ fn content_this_head_did_not_write_cannot_reconfigure_the_terminal() {
             !row.contains('\u{7}'),
             "{what}: a BEL survived into the row: {row:?}"
         );
-        // …and the row is still a row: the sequence went **whole**, leaving the text
+        // …and the row is still a row: the sequence went whole, leaving the text
         // standing rather than blanking the line.
         assert!(
             !row.trim().is_empty(),
@@ -258,7 +258,7 @@ fn a_running_call_counts_up_while_the_daemon_says_nothing() {
     assert_eq!(a.last_event_at, last_event, "the premise: no event arrived");
 
     // And thirty seconds of a silent build, which is the case the operator was
-    // looking at. Coarse on purpose — tenths, because that is what a person reads.
+    // looking at. Coarse on purpose - tenths, because that is what a person reads.
     a.clock(32_000);
     let late = a.screen(120, 24).join("\n");
     assert!(
@@ -267,7 +267,7 @@ fn a_running_call_counts_up_while_the_daemon_says_nothing() {
     );
     assert_eq!(a.last_event_at, last_event, "and still nothing arrived");
 
-    // **The spinner and the number are one clock now.** They were not before, and
+    // The spinner and the number are one clock now. They were not before, and
     // that is the whole of this defect: a row whose spinner turns while its
     // duration sits still reads as a stalled turn with a working clock beside it.
     assert!(
@@ -555,7 +555,7 @@ fn a_subject_too_long_for_the_row_never_pushes_the_outcome_off_it() {
         },
     )));
     // The subject comes from the round's assistant row; here there is none, so
-    // it is the correlation id — long enough to matter once the row narrows.
+    // it is the correlation id - long enough to matter once the row narrows.
     let screen = a.screen(60, 24).join("\n");
     assert!(screen.contains("not run"), "{screen}");
     assert!(
@@ -610,7 +610,7 @@ fn a_snapshot_that_carries_a_finished_call_is_seated_and_counts_as_nothing_execu
         });
     }
 
-    // **The daemon's own session, whose one call has finished** — the `ToolFinished` the runtime
+    // The daemon's own session, whose one call has finished - the `ToolFinished` the runtime
     // publishes from inside the call (`crates/tools/src/runtime.rs`), with no result row appended
     // yet, which is the frame a call's row is one frame away from.
     let hub = Hub::new("s");
@@ -681,7 +681,7 @@ fn a_settled_rows_register_comes_from_the_outcome_not_from_a_not_ok_test() {
             "{waiting:?} is something to look at, not something that failed"
         );
     }
-    // **A backgrounded call is neither loud nor lit**: finished work whose product is a job.
+    // A backgrounded call is neither loud nor lit: finished work whose product is a job.
     assert_eq!(
         outcome_role(&O::Backgrounded {
             handle: "j1".into(),
@@ -700,7 +700,7 @@ fn a_settled_rows_register_comes_from_the_outcome_not_from_a_not_ok_test() {
         Role::Failure
     );
     assert_eq!(outcome_role(&O::Ok), Role::Faint);
-    // A `not run` is the mapping's own answer, whatever it is — the point is that it comes
+    // A `not run` is the mapping's own answer, whatever it is - the point is that it comes
     // from there rather than from a second spelling here.
     assert_eq!(
         outcome_role(&O::NotRun {
@@ -713,46 +713,23 @@ fn a_settled_rows_register_comes_from_the_outcome_not_from_a_not_ok_test() {
     );
 }
 
-/// **The three lines read as one paragraph** — the requirement's own claim, asserted in
-/// the only form that can: the order.
+/// The three lines read as one paragraph: the screen carries the prose, then the marker, then the report, with no blank line
+/// between. Run with `--nocapture` to see it. A run of hidden rows neither count can describe says `[1 head event]`, never `[]`:
+/// the counts walked only `ToolResult` and `Reasoning` while the rung also hides `System` and `SegmentMark`.
 ///
-/// The operator's shape is *prompt → narration → work → report*, and the marker sits
-/// between the last two. So the assertion is that the screen carries the prose, then the
-/// marker, then the report, **with no blank line anywhere between them** — which is what
-/// "the marker does not have to say what was concluded" is worth in practice. Run with
-/// `--nocapture` to see it: the paragraph is the evidence and the three positions are the
-/// claim.
-/// **A run of hidden rows neither count can describe says `[1 head event]`, never `[]`.**
-///
-/// R53 §1.5, and it is a defect this head could put on the screen: the counts walked a run
-/// counting `ToolResult` and `Reasoning` and nothing else (`_ => {}`), while the rung also
-/// hides `System` and `SegmentMark`. A run made only of those had no calls and no thinking
-/// lines, so its marker had no body — `[]`, on the line whose whole job is to be the fact the
-/// rung was hiding.
-///
-/// leticl's fallback is the answer and its wording is the one used: *"a run neither count can
-/// describe … falls back to their count, because `[]` is not a marker"* — `%hidden-run-counts`
-/// ends `(t (incf events))`. The clause is drawn **only** when the other two are empty, which
-/// the second half of this test pins: a run of real calls must not grow a `, 1 head event`.
-/// **One call, one word, live or settled** — R53 §1.5, and the second spelling this tree kept.
-///
-/// The live card's word came from `card::Outcome`, the settled transcript row's from a function
-/// in this file, and they disagreed. MEASURED on the same call before the fix:
+/// The clause is drawn only when the other two counts are empty: a run of real calls must not grow a `, 1 head event`.
+/// One call, one word, live or settled. The live card's word came from `card::Outcome` and the settled row's from a function
+/// in this file, and they disagreed on the same call:
 ///
 /// ```text
 ///   live       refused            failed · timed out        failed · not run — {why}
 ///   settled    REFUSED            timeout                   not run
 /// ```
 ///
-/// — the word changed as the row landed, twice into a different word and once only in case.
-/// leticl paid for this once already (`bceef58`: *"the two spellings disagreed about `not_run`
-/// and about backgrounded"*), and its docstring for its own `%outcome-word` names this head's
-/// spelling as the reference. So the card moved, and this test is the table that says so: one
-/// place decides, and it is pinned for every outcome rather than for the three that were wrong.
+/// The word changed as the row landed, twice into a different word and once only in case. One place decides now, and this
+/// table pins every outcome, not only the three that were wrong.
 ///
-/// **What would fail it.** Putting the word back in either renderer — a `timeout` that reads
-/// `failed`, a `refused` in lower case, a `not run` collapsed into `Failed`. The table has to be
-/// edited, which is the point: the words are a vocabulary and not a coincidence.
+/// Putting the word back in either renderer fails it: the words are a vocabulary, not a coincidence.
 #[test]
 fn one_call_reads_the_same_word_whatever_row_draws_it() {
     use letibot_transcript::ToolOutcome as O;
@@ -826,7 +803,7 @@ fn one_call_reads_the_same_word_whatever_row_draws_it() {
     }
 }
 
-/// **R38's second setting, and the one that was `slash_refused` until today.** `/diff` bare
+/// **The diff layout setting.** `/diff` bare
 /// is a card; `/diff NAME` is the same function the card calls.
 #[test]
 fn the_diff_card_offers_both_styles_and_sets_the_one_taken() {
@@ -865,7 +842,7 @@ fn the_diff_card_offers_both_styles_and_sets_the_one_taken() {
     assert!(notice.contains("diff unified"), "{notice}");
 }
 
-/// **A change reaches the rows already drawn**, which is the difference between a setting
+/// A change reaches the rows already drawn, which is the difference between a setting
 /// and a preference for what comes next: the history holds rendered rows, so the whole buffer
 /// is stale at the moment the style changes.
 #[test]
@@ -905,7 +882,7 @@ fn the_diff_verb_sets_the_style_and_redraws_what_is_already_drawn() {
     );
     assert!(unified.contains("x();"), "{unified}");
     assert!(unified.contains('+'), "{unified}");
-    // A name that is not a style is refused BY NAME, listing the two — the shape `/verbosity`
+    // A name that is not a style is refused BY NAME, listing the two - the shape `/verbosity`
     // already had, so a typo reads as a refusal and not as silence.
     assert_eq!(a.command("diff sideways"), None);
     let notice = a.notice.clone().unwrap();
@@ -989,8 +966,8 @@ fn an_edit_call_renders_the_two_panel_diff_when_it_is_on() {
         "{joined}"
     );
     assert!(joined.contains('+') && joined.contains("x();"), "{joined}");
-    // The removed and added first lines share one row — the change reads
-    // across — and the two added lines that have no old counterpart get
+    // The removed and added first lines share one row - the change reads
+    // across - and the two added lines that have no old counterpart get
     // their own rows with an empty left panel.
     assert!(
         rows.iter()
@@ -1227,7 +1204,7 @@ fn a_call_draws_a_panel_for_the_pair_it_carries_and_never_for_one_it_does_not() 
     let rows = call_card(&row, &plain_cfg(120), 0, Fold::Open, true);
     assert!(!rows.join("\n").contains('│'), "{rows:?}");
 
-    // A pair on a call whose verb is not an edit — the shape `bash` arrives in — draws it,
+    // A pair on a call whose verb is not an edit - the shape `bash` arrives in - draws it,
     // and the header still says what the call was rather than claiming `Edited`.
     let mut row = edit_row(Some(edit_excerpt()));
     row.name = "bash".into();
@@ -1269,12 +1246,12 @@ fn the_live_event_path_feeds_the_two_panel_view() {
     )));
     let screen = a.screen(120, 24).join("\n");
     // The diff body, not the byte-count fallback: the added line is on
-    // the screen. (The screen always contains `│` — the composer's box —
+    // the screen. (The screen always contains `│` - the composer's box  -
     // so the separator proves nothing; the code does.)
     assert!(screen.contains("x();"), "{screen}");
     assert!(screen.contains("fn a() {}"), "{screen}");
     // And the setting the pane flips is the one the card reads: off, the
-    // same change is drawn as a unified diff — signed, still there.
+    // same change is drawn as a unified diff - signed, still there.
     flip_diff_view(&mut a);
     let screen = a.screen(120, 24).join("\n");
     assert!(screen.contains("x();"), "{screen}");
@@ -1398,7 +1375,7 @@ fn ctrl_o_promotes_a_running_command_even_after_the_turn_went_terminal() {
     // Mid-call, with the turn still running: promote, as it always did.
     assert_eq!(a.key(Key::CtrlO), Some(Action::Promote));
 
-    // Now the turn goes terminal with the call still executing — the state the
+    // Now the turn goes terminal with the call still executing - the state the
     // `TurnFinished` arm's own comment describes, and which the engine reaches
     // on every interrupt path.
     a.apply(ServerFrame::Event(env(

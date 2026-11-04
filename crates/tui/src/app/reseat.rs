@@ -7,7 +7,7 @@ use std::ops::ControlFlow;
 
 /// The card's first row: the bare `/reseat`, which carries the conversation across.
 pub(crate) const RESEAT_NOW: &str = "Reseat now — carry the conversation onto the current prompt";
-/// **The first row once the daemon has said the conversation no longer fits verbatim**:
+/// The first row once the daemon has said the conversation no longer fits verbatim:
 /// `/reseat summarise`, the reseat that can work. The operator pasted the card still offering
 /// `alt-r reseats now` under the refusal that said it could not.
 pub(crate) const RESEAT_SUMMARISE: &str =
@@ -15,7 +15,7 @@ pub(crate) const RESEAT_SUMMARISE: &str =
 /// The card's second row: abstain, which pins the card rather than closing it.
 pub(crate) const NOT_NOW: &str = "Not now — continue on the old prompt (at my risk)";
 
-/// **The reseat card's state** - `App::reseat` is `Some` exactly while the daemon says this
+/// The reseat card's state - `App::reseat` is `Some` exactly while the daemon says this
 /// session's prompt is stale.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReseatCard {
@@ -35,7 +35,7 @@ pub(crate) struct ReseatCard {
 }
 
 impl App {
-    /// **The daemon said the prompt is stale.** A card that is already up keeps its state and
+    /// The daemon said the prompt is stale. A card that is already up keeps its state and
     /// takes the newer sentence: the daemon says it on every attach, so a second head attaching
     /// to the same session must not pop this head's pinned card open again.
     pub(crate) fn prefix_stale(&mut self, said: String) {
@@ -55,7 +55,7 @@ impl App {
         self.redraw = true;
     }
 
-    /// **The prompt is current**: the card comes down, wherever it was.
+    /// The prompt is current: the card comes down, wherever it was.
     pub(crate) fn prefix_current(&mut self) {
         if self.reseat.take().is_some() {
             self.redraw = true;
@@ -83,7 +83,7 @@ impl App {
     /// every one of them and is drawn as the strip meanwhile, so it is never off the screen.
     pub(crate) fn slot_taken(&self) -> bool {
         self.focused_surface().is_some()
-            // **The reading window is a surface too**: its bar names the arrows and the wheel for
+            // The reading window is a surface too: its bar names the arrows and the wheel for
             // paging, and the card underneath took both and Enter with them, so a press meant for
             // a long result sent `/reseat`.
             || self.payload_sel.is_some()
@@ -98,12 +98,12 @@ impl App {
             || self.mode_confirm.is_some()
     }
 
-    /// **The open card is what the slot shows.**
+    /// The open card is what the slot shows.
     pub(crate) fn reseat_card_up(&self) -> bool {
         self.reseat.as_ref().is_some_and(|c| c.open) && !self.slot_taken()
     }
 
-    /// **Reseat now** - exactly the line `/reseat` typed and sent, so the same refusals (no
+    /// Reseat now - exactly the line `/reseat` typed and sent, so the same refusals (no
     /// session yet, a read-only attach) and the same notice apply.
     pub(crate) fn reseat_now(&mut self) -> Option<Action> {
         match self.reseat.as_ref() {
@@ -136,7 +136,7 @@ impl App {
         action
     }
 
-    /// **Not now** - the card is pinned, never dismissed.
+    /// Not now - the card is pinned, never dismissed.
     pub(crate) fn reseat_abstain(&mut self) {
         if let Some(c) = self.reseat.as_mut() {
             c.open = false;

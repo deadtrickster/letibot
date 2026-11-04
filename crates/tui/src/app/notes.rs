@@ -1,9 +1,9 @@
-//! **The notes**: disclosures filed, retired and counted, and the one-line notice.
+//! The notes: disclosures filed, retired and counted, and the one-line notice.
 
 use super::*;
 use letibot_sessionlog::view::{SettledDecision, Warned};
 
-/// **How many notes this head holds.** One list serves two doors - the conversation's own and the
+/// How many notes this head holds. One list serves two doors - the conversation's own and the
 /// edge's - so the cap belongs to the list, and a door that forgot it would grow for the life of the
 /// box.
 pub(crate) const NOTES_KEPT: usize = 64;
@@ -28,10 +28,9 @@ impl App {
         self.file_note(n);
     }
 
-    /// **File a note BESIDE the conversation**: `/notes` lists it, `/status` counts it, and no row is
-    /// drawn for it, because it is not news about one. The edge-bound diagnostics are filed here -
-    /// their placement is *off the transcript* and their sentence must still be readable - through
-    /// the same identity test and the same cap as [`App::note`], since two doors into one list drift.
+    /// File a note BESIDE the conversation: `/notes` lists it, `/status` counts it, and no row is drawn for it. The
+    /// edge-bound diagnostics are filed here, through the same identity test and cap as [`App::note`], since two
+    /// doors into one list drift.
     pub(crate) fn note_beside(&mut self, n: Note) {
         if holds(&self.notes, &n) {
             return;
@@ -93,7 +92,7 @@ impl App {
         self.dismissed.contains(&note_key(n)) || already_read(&self.read_marks, n)
     }
 
-    /// **What this reader has read of one kind of notice** - the newest `ts` a `ctrl-n`
+    /// What this reader has read of one kind of notice - the newest `ts` a `ctrl-n`
     /// covered, or `None` for a kind it has never read.
     #[cfg(test)]
     pub(crate) fn read_upto(&self, kind: &str) -> Option<u64> {
@@ -231,7 +230,7 @@ impl App {
         self.counters().exceeds(self.acked)
     }
 
-    /// **This head's six disclosure counters, as one value** - the shape the alarm and its
+    /// This head's six disclosure counters, as one value - the shape the alarm and its
     /// acknowledgement both compare, so *"has anything moved"* has one definition.
     pub(crate) fn counters(&self) -> Counters {
         Counters {
@@ -329,7 +328,7 @@ impl Counters {
 pub(crate) enum Placed {
     /// At this many rows: the seam the walk puts it back into.
     Seam(usize),
-    /// **Before this window.** Reachable - `/notes` lists it, `/status` counts it, and a
+    /// Before this window. Reachable - `/notes` lists it, `/status` counts it, and a
     /// reader who wants it is one verb away - and not drawn, because it is not news.
     Before,
 }
@@ -358,12 +357,12 @@ pub(crate) enum Note {
         /// What they said, rendered by the tool's own renderer.
         said: String,
     },
-    /// A pane's ending, as a row that is still there a minute later. An ending used to be a notice, which lives for
+    /// A pane's ending, as a row that is still there a minute later. A notice lives for
     /// `NOTICE_MS`, so a program that died at once flashed and was gone.
     Pane {
         /// The line that was run, verb included - *what ended* is half the fact.
         line: String,
-        /// **The last rows the program left on the screen**, in order and with the blank
+        /// The last rows the program left on the screen, in order and with the blank
         /// ones dropped. See [`TermPane::last_rows`] for why the screen and not the bytes,
         /// and why the tail.
         said: Vec<String>,
@@ -375,7 +374,7 @@ pub(crate) enum Note {
         /// is a detach now.
         closed: bool,
     },
-    /// **One model call being retried, as ONE row.** The wire sends the row's whole value on every
+    /// One model call being retried, as ONE row. The wire sends the row's whole value on every
     /// failed attempt, so a head that holds the row rewrites it - which is what makes five attempts
     /// one line rather than five, and what lets that line settle to how the call ended.
     Retrying(Retry),
@@ -450,7 +449,7 @@ pub(crate) fn note_kind(n: &Note) -> Option<&str> {
         // The FAMILY and not the code: a refusal's code carries its request id, which is the notice's identity, so
         // what kind of thing it is has to be read off the prefix.
         Note::Warned(w) | Note::NotRun(w) => Some(letibot_sessionlog::warning::family(&w.code)),
-        // **A series is a kind of its own**, so `ctrl-n` retires a settled one and [`LIVE`] keeps it
+        // A series is a kind of its own, so `ctrl-n` retires a settled one and [`LIVE`] keeps it
         // out of a burst: its attempts are counted in its line, not in a count of rows.
         Note::Retrying(_) => Some(MODEL_RETRY),
         Note::Decided(_) | Note::Answered { .. } | Note::Pane { .. } => None,
@@ -554,7 +553,7 @@ pub const COALESCE_MS: u64 = 60_000;
 /// and a line saying *this is still true* is not one of them.
 pub const LIVE: &[&str] = &["store_busy_wait", "model_retry"];
 
-/// **The plural a burst of this code is counted in** - `5 reviews could not run` rather than
+/// The plural a burst of this code is counted in - `5 reviews could not run` rather than
 /// `5 × queue_blocked`. A code with no row here is counted by its code, which is the head's own
 /// vocabulary everywhere else (`notice_card::warning_notice` leads with it too).
 pub const COUNTED_AS: &[(&str, &str)] = &[
@@ -617,7 +616,7 @@ pub(crate) fn chains(a: &Note, b: &Note) -> bool {
     }
 }
 
-/// **Is this note one the reader has retired?** - [`App::is_retired`] as a free function, for the
+/// Is this note one the reader has retired? - [`App::is_retired`] as a free function, for the
 /// walk and for [`burst_at`], which hold the head's fields destructured.
 pub(crate) fn note_retired(dismissed: &[String], marks: &[(String, u64)], n: &Note) -> bool {
     dismissed.contains(&note_key(n)) || already_read(marks, n)
@@ -634,7 +633,7 @@ fn chained_ts(notes: &[(Placed, Note)], j: usize, kind: &str) -> Option<u64> {
     }
 }
 
-/// **The first member of the burst `i` belongs to** - the chain walked backwards.
+/// The first member of the burst `i` belongs to - the chain walked backwards.
 pub(crate) fn burst_head(notes: &[(Placed, Note)], i: usize) -> usize {
     let Some((kind, ts)) = coalescable(&notes[i].1) else {
         return i;
@@ -674,14 +673,14 @@ fn burst_end(notes: &[(Placed, Note)], i: usize) -> usize {
     end
 }
 
-/// **What the walk does with one note**, as far as a burst is concerned.
+/// What the walk does with one note, as far as a burst is concerned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Burst {
     /// A member of a burst whose counted row has already been drawn - draw nothing.
     Drawn,
     /// Draw the note as it always was: it is not coalescable, or it is alone.
     Single,
-    /// **The head of a burst of two or more** - the indices of the live members, oldest first.
+    /// The head of a burst of two or more - the indices of the live members, oldest first.
     Counted(Vec<usize>),
 }
 

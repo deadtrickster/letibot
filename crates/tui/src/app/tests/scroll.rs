@@ -96,7 +96,7 @@ fn a_scrolled_viewport_holds_while_the_transcript_grows() {
     let under = visible(&mut a);
     let top_before = a.view_top;
 
-    // 1. **Rows arrive BELOW the anchor** - the ordinary case: a turn commits what it
+    // 1. Rows arrive BELOW the anchor - the ordinary case: a turn commits what it
     //    has done and the transcript grows under a reader who is reading.
     for i in 100..108u64 {
         a.apply(ServerFrame::Event(env(
@@ -115,7 +115,7 @@ fn a_scrolled_viewport_holds_while_the_transcript_grows() {
     );
     assert_eq!(a.anchor, Some(held.clone()), "and moved the held row");
 
-    // 2. **A row ABOVE the anchor grows** - R29's remedy line, a note, a tail that
+    // 2. A row ABOVE the anchor grows - a remedy line, a note, a tail that
     //    expanded. This is the case a line count cannot survive: every line below it
     //    shifts, and a count moves with them.
     {
@@ -137,7 +137,7 @@ fn a_scrolled_viewport_holds_while_the_transcript_grows() {
     );
     assert_eq!(a.anchor, Some(held.clone()), "and moved the held row");
 
-    // 3. **A tool row GROWS as its output lands**, under the running turn - the third
+    // 3. A tool row GROWS as its output lands, under the running turn - the third
     //    way a line count creeps, and the one the live case is for.
     a.apply(ServerFrame::Event(env(
         3000,
@@ -197,7 +197,7 @@ fn a_scrolled_viewport_holds_while_the_transcript_grows() {
         .collect();
     assert_eq!(window, under, "a growing tool row moved the held view");
 
-    // 4. **The hold is a PLACE, not a count**: the window's top line is where it was,
+    // 4. The hold is a PLACE, not a count: the window's top line is where it was,
     //    which a count could not have kept with 38 lines added below it.
     assert_eq!(
         a.view_top, top_before,
@@ -205,7 +205,7 @@ fn a_scrolled_viewport_holds_while_the_transcript_grows() {
     );
     assert!(a.body_len > 84, "nothing was added to the body at all");
 
-    // 5. **Nothing that arrived returned the reader to the stream.** Only an explicit
+    // 5. Nothing that arrived returned the reader to the stream. Only an explicit
     //    act does, and it is the one the banner names.
     assert!(!a.following());
     a.key(Key::Esc);
@@ -368,7 +368,7 @@ fn a_held_view_draws_the_same_frame_while_the_turn_streams() {
     )));
     assert!(!a.hold, "the premise: the view is following");
 
-    // **The freeze, and the one write it owes** - the marker, on the hint bar's row.
+    // The freeze, and the one write it owes - the marker, on the hint bar's row.
     assert_eq!(a.key(Key::CtrlP), None, "the hold is not a daemon action");
     assert!(a.hold);
     let frozen = a.screen(100, 24);
@@ -378,7 +378,7 @@ fn a_held_view_draws_the_same_frame_while_the_turn_streams() {
         frozen.join("\n")
     );
 
-    // **And then nothing is written, however much arrives.** A turn streams, a round lands,
+    // And then nothing is written, however much arrives. A turn streams, a round lands,
     // two rows are appended - the frame must not move by a byte.
     for i in 0..20u64 {
         a.apply(ServerFrame::Event(env(
@@ -404,7 +404,7 @@ fn a_held_view_draws_the_same_frame_while_the_turn_streams() {
         "the held frame moved while the turn streamed"
     );
 
-    // **`redraw` cannot force a repaint behind the hold's back**, which is the other way
+    // `redraw` cannot force a repaint behind the hold's back, which is the other way
     // bytes could reach the glass: a full repaint writes every row.
     a.mark_redraw();
     assert!(
@@ -413,7 +413,7 @@ fn a_held_view_draws_the_same_frame_while_the_turn_streams() {
     );
     assert_eq!(a.screen(100, 24), frozen);
 
-    // **The release follows again, and says how much arrived - once**, which is what makes
+    // The release follows again, and says how much arrived - once, which is what makes
     // the count honest: a live count while held would be an animation.
     assert_eq!(a.key(Key::CtrlP), None);
     assert!(!a.hold, "the second press releases");
@@ -599,7 +599,7 @@ fn enter_on_an_ask_answers_it_and_holds_the_half_typed_line() {
     let mut a = app();
     a.apply(ServerFrame::Event(env(1, testing::requested("r1", "rm"))));
     typed(&mut a, "some prose");
-    // The arrows reach the ladder even mid-line, and the line is untouched. They used to belong to the
+    // The arrows reach the ladder even mid-line, and the line is untouched. They do not belong to the
     // composer, so choosing an option while typing meant emptying it first.
     a.key(Key::Down);
     assert_eq!(a.sel, 1, "the ladder moved");
@@ -664,7 +664,7 @@ fn parked_in_the_scrollback_the_arrows_are_the_scrollbacks_and_down_is_the_botto
         "the banner is up: {screen:#?}"
     );
 
-    // **↑ scrolls the transcript and does NOT walk history.** The composer is where a
+    // ↑ scrolls the transcript and does NOT walk history. The composer is where a
     // recalled prompt appeared, so it is what the assertion is about.
     let top = a.view_top;
     a.key(Key::Up);
@@ -677,7 +677,7 @@ fn parked_in_the_scrollback_the_arrows_are_the_scrollbacks_and_down_is_the_botto
     assert!(!a.following(), "↑ returned the reader to the stream");
     assert!(a.view_top <= top, "↑ did not move the view up");
 
-    // **↓ is the bottom in ONE press**, which is what the banner says and what a key moving
+    // ↓ is the bottom in ONE press, which is what the banner says and what a key moving
     // one line can never be against a stream that adds lines faster.
     a.key(Key::Down);
     assert!(a.following(), "↓ did not return the reader to the stream");
@@ -710,7 +710,7 @@ fn a_key_that_scrolls_a_pane_moves_that_pane_and_not_the_transcript_behind_it() 
         vec![daemon_job("j3", "cargo build", false)],
     ));
     a.key(Key::CtrlQ);
-    // **The job is settled**, so Enter on the group row unfolds it and one Down lands on
+    // The job is settled, so Enter on the group row unfolds it and one Down lands on
     // it; then Enter opens the overlay the rest of this test drives.
     a.key(Key::Enter);
     a.key(Key::Down);
@@ -754,7 +754,7 @@ fn a_key_that_scrolls_a_pane_moves_that_pane_and_not_the_transcript_behind_it() 
     );
     assert_eq!(a.scroll, 0, "and the transcript stayed put");
 
-    // **The wheel is the key the operator actually reaches for**, three lines a
+    // The wheel is the key the operator actually reaches for, three lines a
     // notch and toward the beginning for a `WheelUp`.
     let before = a.job_out.as_ref().unwrap().scroll;
     a.screen(100, 24);
@@ -1075,7 +1075,7 @@ fn scroll_still_works_after_ctrl_t() {
     );
 
     // Close the window, and it still scrolls. **The chord toggles the window and
-    // nothing else now** (R10), so this is one press to open and one to close.
+    // nothing else now**, so this is one press to open and one to close.
     a.key(Key::CtrlV);
     a.screen(80, 24);
     assert!(a.payload_sel.is_some(), "ctrl-t did not open the window");
@@ -1112,7 +1112,7 @@ fn the_waiting_frame_is_a_centred_cat_that_walks_in_place() {
 
     let (row, first) = cat_row(&mut a, 80);
     let cat_at = first.find("(=^").expect("the cat");
-    // The **slot**, not the cat: see `CAT_SLOT`. A 7-wide and an 8-wide frame
+    // The slot, not the cat: see `CAT_SLOT`. A 7-wide and an 8-wide frame
     // cannot both be exactly centred, and the choice made here is that the slot is
     // centred and the cat sits at its left edge.
     let left = width::width(&first[..cat_at]);
@@ -1129,7 +1129,7 @@ fn the_waiting_frame_is_a_centred_cat_that_walks_in_place() {
     let (_, later) = cat_row(&mut a, 80);
     assert_ne!(first.trim(), later.trim(), "the cat did not move at 120 ms");
 
-    // And it walks **in place**: the same left margin at every frame.
+    // And it walks in place: the same left margin at every frame.
     for t in [0u64, 120, 240, 360, 480, 600, 720, 840] {
         a.clock(t);
         let (_, r) = cat_row(&mut a, 80);
@@ -1390,7 +1390,7 @@ fn scrolling_up_back_fills() {
     );
 }
 
-/// A change above the window is not left stale: a tail walk leaves no `hist_marks`, and "no mark" used to
+/// A change above the window is not left stale: a tail walk leaves no `hist_marks`, and "no mark" must not
 /// mean "nothing to do", so the only correct answer is to throw the history away and render the tail again.
 #[test]
 fn a_change_above_the_window_is_not_left_stale() {
@@ -1419,7 +1419,7 @@ fn a_change_above_the_window_is_not_left_stale() {
     );
 }
 
-/// **The number R19.1 exists for**: a tail frame against a full walk, on a transcript
+/// The number the tail walk exists for: a tail frame against a full walk, on a transcript
 /// big enough to matter. Ignored because it is slow.
 #[test]
 #[ignore]
@@ -1471,7 +1471,7 @@ fn a_tail_frame_is_far_cheaper_than_a_full_walk() {
     }
 }
 
-/// **How much of an attach is the history walk.** The cold frame over a big
+/// How much of an attach is the history walk. The cold frame over a big
 /// session is the number the operator waited for; the warm frames are the steady
 /// state. Ignored because timing is not an assertion.
 #[test]
@@ -1533,7 +1533,7 @@ fn the_bang_row_walks_the_history_once_not_once_a_frame() {
         a.shell_walks, 1,
         "one walk for twenty frames of one transcript"
     );
-    // **A row landing is a new walk.** The list is the transcript's and not this
+    // A row landing is a new walk. The list is the transcript's and not this
     // head's, so a command that has just run has to appear in it.
     shell_row(&mut a, 1000, "a1", "assistant", bash_row("cargo build"));
     let _ = a.screen(100, 40);
@@ -1596,7 +1596,7 @@ fn the_fork_line_keeps_its_width_as_the_cat_and_the_count_change() {
              below says nothing about the count either"
     );
 
-    // **The line is the status row's now** (`ui::progress_row`): one line, label · bar ·
+    // The line is the status row's now (`ui::progress_row`): one line, label · bar ·
     // count · clock, and the rule is the same - the count must not shove the clock about.
     let mut a = app();
     let mut seen: Vec<usize> = Vec::new();
@@ -1657,7 +1657,7 @@ fn a_fork_announces_three_hundred_rows_and_draws_one_progress_line() {
             testing::appended(&format!("s.{i}"), "user"),
         )));
     }
-    // **And the daemon names the operation.** This is the half that makes the line
+    // And the daemon names the operation. This is the half that makes the line
     // honest: without it there is no bar at all, because a body-less row is not
     // evidence of a carry.
     a.apply(ServerFrame::Event(env(
@@ -1785,7 +1785,7 @@ fn the_wheel_in_the_subagent_view_does_not_move_the_conversation_underneath() {
     assert!(a.following(), "a pane on top swallowed the wheel");
     a.close_surface(Surface::Todos);
     a.key(Key::WheelUp);
-    // The wheel takes the viewport off the stream, and `following` is where that state lives. It used to be
+    // The wheel takes the viewport off the stream, and `following` is where that state lives. It is not
     // `scroll == 3`, and a count is what the requirement stops trusting: between a key and a paint it is
     // the previous frame's number.
     assert!(
@@ -1816,7 +1816,7 @@ fn the_card_body_scrolls_without_the_ladder_moving() {
     );
     assert!(scrolled.contains("pgup/pgdn scrolls"), "{scrolled}");
 
-    // **The ladder is where it was**, which is the point of the whole item.
+    // The ladder is where it was, which is the point of the whole item.
     for opt in ["Allow once", "Allow session", "Deny"] {
         assert!(
             scrolled.contains(opt),
@@ -1829,7 +1829,7 @@ fn the_card_body_scrolls_without_the_ladder_moving() {
         "the ladder moved"
     );
 
-    // **Walk to the end**, and the seam moves to the top of the window with it.
+    // Walk to the end, and the seam moves to the top of the window with it.
     for _ in 0..8 {
         a.key(Key::PageDown);
     }
@@ -1880,7 +1880,7 @@ fn a_card_that_fits_is_whole_and_leaves_the_transcript_its_scroll() {
         );
     }
 
-    // **The transcript's scroll keys are still the transcript's** - the card's content
+    // The transcript's scroll keys are still the transcript's - the card's content
     // fits, so nothing here takes them.
     a.items = (0..80)
         .map(|i| SnapshotItem {
@@ -1899,7 +1899,7 @@ fn a_card_that_fits_is_whole_and_leaves_the_transcript_its_scroll() {
     a.invalidate_history();
     a.screen(80, 24);
     a.key(Key::PageUp);
-    // **R36: the assertion is the HOLD, not a count.** `scroll` is derived and is only
+    // The assertion is the HOLD, not a count. `scroll` is derived and is only
     // recomputed by a paint, so a reader of it between a key and a frame sees the
     // previous frame's number - which is why `following` is a question about the anchor.
     assert!(
@@ -1908,7 +1908,7 @@ fn a_card_that_fits_is_whole_and_leaves_the_transcript_its_scroll() {
     );
 }
 
-/// **A new card starts at its head.** The offset is reset in one place, so a second
+/// A new card starts at its head. The offset is reset in one place, so a second
 /// permission cannot inherit the first one's scroll and open in the middle of its wall.
 #[test]
 fn a_second_card_does_not_inherit_the_first_ones_scroll() {
@@ -1918,7 +1918,7 @@ fn a_second_card_does_not_inherit_the_first_ones_scroll() {
     a.screen(80, 24);
     assert!(a.dec_scroll > 0, "the premise: the window moved");
 
-    // **Answer the first one**, because an open set is a queue and `open[0]` is the
+    // Answer the first one, because an open set is a queue and `open[0]` is the
     // card on the screen (§1.4: oldest first) - a second `DecisionRequested` while the
     // first is unanswered is a second card behind it, not a replacement.
     a.apply(ServerFrame::Event(env(
@@ -2028,7 +2028,7 @@ fn the_model_picker_greens_the_providers_this_box_holds_a_key_for() {
         "a provider with no key is greened: {:?}",
         line("deepseek/deepseek-flash")
     );
-    // **`local` is green for a reason of its own**, and the row is found by its number rather
+    // `local` is green for a reason of its own, and the row is found by its number rather
     // than by the words: the colour sits between the number and the name, so a needle spanning
     // both does not exist in the bytes.
     let local_row = screen
@@ -2046,7 +2046,7 @@ fn the_model_picker_greens_the_providers_this_box_holds_a_key_for() {
         "the meaning is not on the card in words, so a colourless head is told nothing:\n{screen}"
     );
 
-    // **A daemon that sends no such row greens nothing** - older than the field, and the head
+    // A daemon that sends no such row greens nothing - older than the field, and the head
     // reads an absent row as *no greening* rather than as *no keys*. `local` stays green,
     // which is its own rule and not this row's.
     let mut b = App::new(RenderConfig {
@@ -2077,7 +2077,7 @@ fn the_model_picker_greens_the_providers_this_box_holds_a_key_for() {
     );
 }
 
-/// **`unclaimed_prompts` is the walk, stated as the three answers it gives.**
+/// `unclaimed_prompts` is the walk, stated as the three answers it gives.
 #[test]
 fn the_claiming_walk_keeps_the_entries_the_rows_are_not_drawing() {
     let entry = |s: &str| s.to_string();
@@ -2101,10 +2101,10 @@ fn the_claiming_walk_keeps_the_entries_the_rows_are_not_drawing() {
         unclaimed_prompts(&[entry("A\nB\nC")], &[drawing("A")]),
         vec![(0, "B\nC".into(), Some("A".into()))]
     );
-    // **A blank line in an entry claims nothing**, so an entry whose words are all claimed but
+    // A blank line in an entry claims nothing, so an entry whose words are all claimed but
     // which carries a blank is not drawn as a row of nothing.
     assert!(unclaimed_prompts(&[entry("A\n")], &[drawing("A")]).is_empty());
-    // **A line is spent once.** Two entries that read the same, and one line on screen: the
+    // A line is spent once. Two entries that read the same, and one line on screen: the
     // first claims it, the second keeps its own.
     assert_eq!(
         unclaimed_prompts(&[entry("A"), entry("A")], &[drawing("A")]),
@@ -2250,7 +2250,7 @@ fn a_turn_starting_does_not_shove_the_transcript_up_a_row() {
             },
         );
     }
-    // **Idle first**, which is the frame the row has to be reserved in: nothing is running, so
+    // Idle first, which is the frame the row has to be reserved in: nothing is running, so
     // the status text is empty and only the reservation puts a row there.
     let idle = a.screen(100, 24);
     assert!(
@@ -2263,7 +2263,7 @@ fn a_turn_starting_does_not_shove_the_transcript_up_a_row() {
     );
     let row_of = |v: &[String], what: &str| v.iter().position(|l| l.contains(what));
 
-    // **And a turn starts**, which is the moment the shove happened.
+    // And a turn starts, which is the moment the shove happened.
     a.apply(ServerFrame::Event(env_at(
         7,
         1_000,
@@ -2310,7 +2310,7 @@ fn the_wheel_scrolls_and_wheeling_back_follows_the_stream() {
         !a.following(),
         "two notches up left the reader on the stream"
     );
-    // **Six lines above the bottom**, which is the measurement the count was standing
+    // Six lines above the bottom, which is the measurement the count was standing
     // in for: two notches of three, where a notch is three lines because one body line
     // can be two screen rows after wrapping.
     assert_eq!(
@@ -2356,7 +2356,7 @@ fn a_wheel_notch_down_walks_and_a_run_of_notches_is_what_reaches_the_tail() {
     a.screen(80, 24);
     assert!(!a.following(), "the notch parked the reader");
 
-    // **And the stream keeps arriving while the reader is parked.**
+    // And the stream keeps arriving while the reader is parked.
     rows(&mut a, 60, 90);
     a.screen(80, 24);
     let above = a.view_top;
@@ -2364,7 +2364,7 @@ fn a_wheel_notch_down_walks_and_a_run_of_notches_is_what_reaches_the_tail() {
     // the thirty rows did - the head's loop reads it at the top of every pass.
     let _ = a.take_redraw();
 
-    // **One notch down is a STEP, not the tail** - the opposite of what this test asserted
+    // One notch down is a STEP, not the tail - the opposite of what this test asserted
     // before, and the whole of the reversal.
     assert_eq!(a.key(Key::WheelDown), None);
     a.screen(80, 24);
@@ -2384,7 +2384,7 @@ fn a_wheel_notch_down_walks_and_a_run_of_notches_is_what_reaches_the_tail() {
              removed from the scroll path"
     );
 
-    // **A RUN of notches is what returns the reader to the live stream**, because arriving at
+    // A RUN of notches is what returns the reader to the live stream, because arriving at
     // the bottom is the one act that resumes following. Bounded, so a walk that never gets
     // there fails here rather than looping.
     let mut notches = 1;
@@ -2439,7 +2439,7 @@ fn three_notches_down_walk_three_lines_each_and_only_arriving_follows() {
         "three notches up did not walk nine lines"
     );
 
-    // **The walk down, three lines a notch**, and every notch short of the bottom leaves the
+    // The walk down, three lines a notch, and every notch short of the bottom leaves the
     // reader parked exactly where the notch put them.
     for (n, want) in [(1, bottom - 6), (2, bottom - 3)] {
         assert_eq!(a.key(Key::WheelDown), None);
@@ -2455,7 +2455,7 @@ fn three_notches_down_walk_three_lines_each_and_only_arriving_follows() {
         );
     }
 
-    // **And the third one arrives, which is the one act that resumes following.**
+    // And the third one arrives, which is the one act that resumes following.
     assert_eq!(a.key(Key::WheelDown), None);
     a.screen(80, 24);
     assert!(
@@ -2750,7 +2750,7 @@ fn a_carry_that_lengthens_the_transcript_leaves_the_reader_on_their_row() {
     a.apply(hello("s", vec![brief("s", "one", false)], snap));
     let frame = a.screen(100, 30);
 
-    // **The index is not the place.** Row `held.ordinal` in the new transcript is two rows
+    // The index is not the place. Row `held.ordinal` in the new transcript is two rows
     // above the reader's, and it is a different row - which is what the old fallback would
     // have held, silently, as though nothing had happened.
     assert_ne!(
@@ -2758,7 +2758,7 @@ fn a_carry_that_lengthens_the_transcript_leaves_the_reader_on_their_row() {
         was,
         "the fixture does not shift the rows, so this test could not tell a row from an index"
     );
-    // **The row is.** Two rows down, under a new id, saying what it said.
+    // The row is. Two rows down, under a new id, saying what it said.
     let now = a.anchor.clone().expect("the reader is still holding a row");
     assert_eq!(
         now.ordinal,
@@ -2774,13 +2774,13 @@ fn a_carry_that_lengthens_the_transcript_leaves_the_reader_on_their_row() {
         was,
         "and the row it holds says the same thing"
     );
-    // **And the reader is looking at it.** The frame is the contract, not the field.
+    // And the reader is looking at it. The frame is the contract, not the field.
     let screen = frame.join("\n");
     assert!(
         screen.contains(&was),
         "the row the reader was reading is not on the screen: {screen}"
     );
-    // **Nothing was said, because nothing was lost.** A row that is found again is not a row
+    // Nothing was said, because nothing was lost. A row that is found again is not a row
     // that went missing, and the old code announced it as lost on the way past.
     assert!(
         a.notice.is_none(),
@@ -2831,7 +2831,7 @@ fn a_rows_words_are_what_the_carry_matches_it_by() {
         "the engine's JOIN is the row's words"
     );
     assert!(row_says(&merged, &words), "and the row says them back");
-    // **The whole of it, and not a piece.** A row is found by what it says entire - a
+    // The whole of it, and not a piece. A row is found by what it says entire - a
     // prefix match would put the reader on the wrong row of a conversation that repeats
     // itself, which is the residue this match has to refuse.
     assert!(!row_says(&merged, "first"), "a piece is not the row");
@@ -2841,7 +2841,7 @@ fn a_rows_words_are_what_the_carry_matches_it_by() {
     );
     assert!(!row_says(&merged, "second"), "nor is a later part alone");
 
-    // **A body-less row has no words**, which is what the carry reports rather than
+    // A body-less row has no words, which is what the carry reports rather than
     // guessing: an empty string would match the first empty row in the next transcript.
     let silent = row(None, "assistant");
     assert_eq!(
@@ -2901,7 +2901,7 @@ fn a_fork_that_arrives_as_appends_leaves_the_view_where_it_was_and_says_nothing(
     }
     a.screen(100, 30);
 
-    // **The row is still here under its own id.** Nothing was re-anchored, and nothing
+    // The row is still here under its own id. Nothing was re-anchored, and nothing
     // needed to be: this path never crosses the boundary the rule is about.
     assert_eq!(
         a.anchor,
@@ -2942,7 +2942,7 @@ fn a_carry_that_drops_the_row_follows_the_tail_and_says_so() {
     a.apply(hello("s", vec![brief("s", "one", false)], snap));
     let frame = a.screen(100, 30);
 
-    // **The reader's row is not in the new transcript**, so the place cannot be held - and
+    // The reader's row is not in the new transcript, so the place cannot be held - and
     // the fixture says so rather than leaving it to the code: no row here says `was`.
     assert!(
         !a.items.iter().any(|it| row_says(it, &was)),
@@ -2958,7 +2958,7 @@ fn a_carry_that_drops_the_row_follows_the_tail_and_says_so() {
         "and the view follows the tail, which is where it went"
     );
 
-    // **And it is SAID** - on the screen, where the reader is looking, and named for the row
+    // And it is SAID - on the screen, where the reader is looking, and named for the row
     // so the sentence is checkable rather than a shrug.
     let said = a
         .notice
@@ -2976,7 +2976,7 @@ fn a_carry_that_drops_the_row_follows_the_tail_and_says_so() {
         said.contains(&held.item_id),
         "and names the row that was not carried: {said}"
     );
-    // **The durable half too**, so `/notes` can answer *why did my view move* after the
+    // The durable half too, so `/notes` can answer *why did my view move* after the
     // transient line has gone.
     let noted = a
         .notes
@@ -2991,7 +2991,7 @@ fn a_carry_that_drops_the_row_follows_the_tail_and_says_so() {
         "the note names the row: {noted}"
     );
 
-    // **And the tail is what is on the screen**: the last row the new transcript carries.
+    // And the tail is what is on the screen: the last row the new transcript carries.
     let screen = frame.join("\n");
     assert!(
         screen.contains("row 38 says a thing"),
@@ -3021,7 +3021,7 @@ fn a_carry_whose_bodies_are_still_coming_holds_the_window_and_then_the_row() {
     a.apply(hello("s", vec![brief("s", "one", false)], snap));
     a.screen(100, 30);
 
-    // **Nothing has been decided and nothing has been said**: the row is named, not lost.
+    // Nothing has been decided and nothing has been said: the row is named, not lost.
     assert_eq!(
         a.anchor.as_ref().map(|h| h.item_id.as_str()),
         Some(held.item_id.as_str()),
@@ -3054,7 +3054,7 @@ fn a_carry_whose_bodies_are_still_coming_holds_the_window_and_then_the_row() {
         a.screen(100, 30);
     }
 
-    // **The window is still where the reader left it**, and the row is still only named:
+    // The window is still where the reader left it, and the row is still only named:
     // fifty-nine bodies have landed and not one of them is the reader's.
     assert!(a.carry.is_some(), "the reader's row has no body yet");
     assert_eq!(
@@ -3069,7 +3069,7 @@ fn a_carry_whose_bodies_are_still_coming_holds_the_window_and_then_the_row() {
     );
     assert!(a.notice.is_none(), "and nothing was said: {:?}", a.notice);
 
-    // **The reader's own row lands**, and it is placed under the new transcript's id - at the
+    // The reader's own row lands, and it is placed under the new transcript's id - at the
     // line it was at, because the conversation carried across is the same one.
     a.apply(ServerFrame::Event(env(2100, body(19))));
     let frame = a.screen(100, 30);
@@ -3105,7 +3105,7 @@ fn a_carry_whose_bodies_are_still_coming_holds_the_window_and_then_the_row() {
 // taken only in `load` is one a live fork never takes, and the ordinal fallback lands one row off.
 
 /// The carried rows, published the way the daemon publishes them: an announcement, and then
-/// its body, under the **new** transcript's ids.
+/// its body, under the new transcript's ids.
 fn carried_appends(a: &mut App, seq: u64, ids: &[String], text: impl Fn(usize) -> String) {
     for (i, id) in ids.iter().enumerate() {
         a.apply(ServerFrame::Event(env(
@@ -3126,7 +3126,7 @@ fn carried_appends(a: &mut App, seq: u64, ids: &[String], text: impl Fn(usize) -
     }
 }
 
-/// **A fork as an ATTACHED head receives one**: the rows, and then the statement that names
+/// A fork as an ATTACHED head receives one: the rows, and then the statement that names
 /// the boundary - `harness.rs`'s own order, which is the one a live `/reseat` is.
 fn fork_live(
     a: &mut App,
@@ -3143,7 +3143,7 @@ fn fork_live(
     )));
 }
 
-/// **A fork re-bases the window on the transcript the session now speaks.** The head kept the rows
+/// A fork re-bases the window on the transcript the session now speaks. The head kept the rows
 /// before the first one that went, and `items_base` with them, so after a compaction the ordinal it
 /// asked a page for named a row of the transcript the fork replaced.
 #[test]
@@ -3212,7 +3212,7 @@ fn a_live_fork_leaves_the_reader_on_the_row_they_were_on() {
     });
     let frame = a.screen(100, 30);
 
-    // **The index is not the place.** Row `held.ordinal` in the transcript that arrived is two
+    // The index is not the place. Row `held.ordinal` in the transcript that arrived is two
     // above the reader's and says something else - which is what the old fallback would have
     // held, silently, as though nothing had happened.
     assert_ne!(
@@ -3220,7 +3220,7 @@ fn a_live_fork_leaves_the_reader_on_the_row_they_were_on() {
         was,
         "the fixture does not shift the rows, so this test could not tell a row from an index"
     );
-    // **The row is**, two down, under the new transcript's id, saying what it said.
+    // The row is, two down, under the new transcript's id, saying what it said.
     let now = a.anchor.clone().expect("the reader is still holding a row");
     assert_eq!(
         now.ordinal,
@@ -3233,13 +3233,13 @@ fn a_live_fork_leaves_the_reader_on_the_row_they_were_on() {
         was,
         "and the row it holds says the same thing"
     );
-    // **And the reader is looking at it.** The frame is the contract, not the field.
+    // And the reader is looking at it. The frame is the contract, not the field.
     let screen = frame.join("\n");
     assert!(
         screen.contains(&was),
         "the row the reader was reading is not on the screen: {screen}"
     );
-    // **Nothing was said, because nothing was lost.** A row that is found again is not a row
+    // Nothing was said, because nothing was lost. A row that is found again is not a row
     // that went missing, and the ordinal fallback announced it as lost on the way past.
     assert!(
         a.notice.is_none(),
@@ -3273,7 +3273,7 @@ fn a_live_fork_that_does_not_carry_the_row_follows_the_tail_and_says_so() {
     });
     let frame = a.screen(100, 30);
 
-    // **The reader's row is not in the new transcript**, and the fixture says so rather than
+    // The reader's row is not in the new transcript, and the fixture says so rather than
     // leaving it to the code: no row here says `was`.
     assert!(
         !a.items.iter().any(|it| row_says(it, &was)),
@@ -3289,7 +3289,7 @@ fn a_live_fork_that_does_not_carry_the_row_follows_the_tail_and_says_so() {
         "and the view follows the tail, which is where it went"
     );
 
-    // **And it is SAID** - on the screen, where the reader is looking, and named for the row.
+    // And it is SAID - on the screen, where the reader is looking, and named for the row.
     let said = a
         .notice
         .as_deref()
@@ -3307,7 +3307,7 @@ fn a_live_fork_that_does_not_carry_the_row_follows_the_tail_and_says_so() {
         said.contains(&held.item_id),
         "and names the row that was not carried: {said}"
     );
-    // **The durable half too**, so `/notes` can answer *why did my view move* afterwards.
+    // The durable half too, so `/notes` can answer *why did my view move* afterwards.
     let noted = a
         .notes
         .iter()
@@ -3321,7 +3321,7 @@ fn a_live_fork_that_does_not_carry_the_row_follows_the_tail_and_says_so() {
         "the note names the row: {noted}"
     );
 
-    // **And the tail is what is on the screen**: the last row the new transcript carries.
+    // And the tail is what is on the screen: the last row the new transcript carries.
     let screen = frame.join("\n");
     assert!(
         screen.contains("row 38 says a thing"),
@@ -3439,7 +3439,7 @@ fn a_held_view_moves_for_the_readers_keys_and_not_for_the_stream() {
     );
 }
 
-/// **A hold a selection took ends when the reader acts elsewhere** - it was the selection's, so
+/// A hold a selection took ends when the reader acts elsewhere - it was the selection's, so
 /// that the text under it stayed put while it was made; a wheel afterwards is the reader moving
 /// on, and leaves the view moving and following as it did before the drag.
 #[test]
@@ -3462,7 +3462,7 @@ fn a_selections_hold_ends_with_the_next_key() {
 }
 
 // ---------------------------------------------------------------------------
-// **The reply drawn twice, once on each side of the question** - 2026-10-30.
+// The reply drawn twice, once on each side of the question.
 //
 // The operator's photograph, in order:
 //
@@ -3478,29 +3478,12 @@ fn a_selections_hold_ends_with_the_next_key() {
 // Different thread, and a useful one - §20.8 has been waiting on a real *-json.log: [1 tool call, 36 thinking lines]
 // ```
 //
-// Their words: *"the reply started before my question was visible and then duplicated after."*
-//
-// **Which copy is which, from the code and not from the look.** The counts are drawn AFTER the
-// reply in the pane (`ui::transcript::live`, whose own comment records the operator's ruling
-// *"all of it after the reply"*), and the pane is drawn after every row - so the copy carrying
-// `[1 tool call, 36 thinking lines]` is the LIVE one, and the copy above the question is the
-// stored row. That is the opposite of what the shape suggests, and it is what makes the search
-// land in the right place.
-//
-// **The two copies are two buffers, not one list written twice.** `items` holds the row;
-// `TurnPane::text` holds the prose the deltas streamed into; the frame draws the rows and then
-// the pane. Nothing in the item list is duplicated, so a rule about the list cannot see this.
-//
-// **The live path already hands the prose over** - at the row's BODY (`App::record_item`), which
-// is why the first test below passes on the tree before this change. What it cannot cover is a
-// row that arrives already holding its body: a snapshot. A snapshot is a *replacement*, and it
-// carries the turn's accumulated text (`Snapshot::turn`) beside rows whose bodies are in `items`
-// - and the daemon's view never trims that text when a row lands, so a head that re-attaches,
-// resyncs or switches back mid-turn is handed one paragraph twice, with no later event to take
-// the pane's copy away: the body it waits for has already happened. The second test is that door,
-// and it is the one that failed before the fix.
+// The counts are drawn AFTER the reply in the pane, so the copy carrying `[1 tool call, 36 thinking lines]` is the LIVE one and
+// the copy above the question is the stored row. The two copies are two buffers (`items` and `TurnPane::text`), so a rule
+// about the list cannot see this. The live path hands the prose over at the row's BODY; a snapshot carries the turn's text
+// beside rows whose bodies are in `items`, so a re-attach would show one paragraph twice. The second test is that door.
 
-/// **How many times the frame draws this text**, which is the assertion a duplicate needs - a
+/// How many times the frame draws this text, which is the assertion a duplicate needs - a
 /// count of rows can be right while the screen shows a paragraph twice.
 fn drawn_times(frame: &str, words: &str) -> usize {
     frame.matches(words).count()
@@ -3603,7 +3586,7 @@ fn a_reply_streamed_while_a_prompt_lands_is_drawn_once_below_it() {
         },
     );
     let frame = a.screen(90, 40).join("\n");
-    // **Once**, and after the question it answers.
+    // Once, and after the question it answers.
     assert_eq!(
         drawn_times(&frame, "Different thread, and the useful one:"),
         1,
@@ -3687,7 +3670,7 @@ fn a_reattach_mid_turn_does_not_draw_the_reply_twice() {
         "the answer to the first prompt is drawn above the second prompt:\n{frame}"
     );
 
-    // **And the next round streams where it belongs** - under the question, not above it, and
+    // And the next round streams where it belongs - under the question, not above it, and
     // still without a second copy of the sentence that landed before the attach.
     a.apply(ServerFrame::Event(env_at(
         100,
@@ -3891,7 +3874,7 @@ fn railed(frame: &str) -> usize {
     frame.lines().filter(|l| l.contains('┃')).count()
 }
 
-/// **The number in `[N thinking lines]`, read off the frame** - what a reader sees, not the field.
+/// The number in `[N thinking lines]`, read off the frame - what a reader sees, not the field.
 fn thinking_count(frame: &str) -> Option<usize> {
     frame.lines().find_map(|l| {
         let (_, rest) = l.split_once('[')?;
@@ -3974,7 +3957,7 @@ fn landed_thinking_is_drawn_once_when_the_fold_is_open() {
     );
 }
 
-/// The number and the text it is a number about agree, in both states on one frame: the count used to be
+/// The number and the text it is a number about agree, in both states on one frame: the count must not be
 /// taken over a different string than the fold drew, and then over a different width, since the body is
 /// drawn four columns narrower.
 #[test]
@@ -3997,7 +3980,7 @@ fn the_thinking_count_equals_what_the_fold_draws() {
             began_ms: Some(1_000),
         },
     )));
-    // **Long enough that the arithmetic and the drawing can part company**: 169 columns of
+    // Long enough that the arithmetic and the drawing can part company: 169 columns of
     // five-column words at an eighty-six-column frame is two lines by the frame's width and three
     // by the eighty-two the step and the rail leave - which is what the fold actually draws.
     let thought = format!("{}word", "word ".repeat(33));
@@ -4155,7 +4138,7 @@ fn a_round_that_thinks_in_two_blocks_hands_each_over() {
     );
 }
 
-/// **The head holds a window of the conversation and not the buffer.** A session that runs for hours
+/// The head holds a window of the conversation and not the buffer. A session that runs for hours
 /// appends rows for ever, and a body it holds is text: without a bound the head's copy of a long
 /// session grows with the session, and so does every line it has ever drawn.
 #[test]
@@ -4428,7 +4411,7 @@ fn asked_for(a: &App) -> Option<(usize, usize)> {
     })
 }
 
-/// **A page that does not join the window is the last one.** The daemon answers short when a row
+/// A page that does not join the window is the last one. The daemon answers short when a row
 /// in the page is one this build cannot read, and the head dropped such a page and then asked for
 /// it again on every frame, for ever: nothing drawn, nothing said.
 #[test]
@@ -4463,7 +4446,7 @@ fn a_page_that_does_not_join_the_window_is_not_asked_for_again() {
     );
 }
 
-/// **An empty page says where the transcript begins.** At `from == 0` the head cleared the ask and
+/// An empty page says where the transcript begins. At `from == 0` the head cleared the ask and
 /// set nothing else, so the same request went out on every frame and the reader was told nothing
 /// about why the rows above are not there.
 #[test]
@@ -4495,7 +4478,7 @@ fn an_empty_page_says_the_window_holds_the_beginning() {
     );
 }
 
-/// **The byte bound is a bound.** `trim_held` capped its drop at the row the reader was holding, so
+/// The byte bound is a bound. `trim_held` capped its drop at the row the reader was holding, so
 /// one `PageUp` to the beginning of a live session kept every row that arrived afterwards for the
 /// life of the head.
 #[test]
@@ -4544,7 +4527,7 @@ fn a_reader_holding_the_top_row_does_not_keep_the_whole_session() {
     );
 }
 
-/// **And the bound is a bound when there is nothing below to let go.** A reader at the oldest row with
+/// And the bound is a bound when there is nothing below to let go. A reader at the oldest row with
 /// no tail under it leaves the trim only their own row to take, so it takes it and holds the survivor.
 #[test]
 fn a_window_with_nothing_below_takes_the_held_row_rather_than_overshoot_its_bound() {
@@ -4598,10 +4581,9 @@ fn a_window_with_nothing_below_takes_the_held_row_rather_than_overshoot_its_boun
     );
 }
 
-/// **A head at the tail asks for nothing.** `hist_floor == 0` means *everything this head holds is
-/// rendered*, which is true at the tail of every session short enough to walk whole - and the page
-/// ask read it as *the reader has scrolled up*, so a head that had just attached pulled the rows
-/// above its window a hundred at a time, for ever.
+/// A head at the tail asks for nothing. `hist_floor == 0` means *everything this head holds is rendered*, true at
+/// the tail of every short session, so the page ask must not read it as *the reader has scrolled up*, or a head
+/// that just attached pulls the rows above its window a hundred at a time, for ever.
 #[test]
 fn a_head_following_the_tail_asks_for_no_rows() {
     let mut a = app();
@@ -4644,7 +4626,7 @@ fn a_head_following_the_tail_asks_for_no_rows() {
     );
 }
 
-/// **Attaching to a long session draws its end.** The daemon sends a window of a session it has
+/// Attaching to a long session draws its end. The daemon sends a window of a session it has
 /// trimmed 4500 rows of, and the head must draw the last screen of that window without lexing the
 /// rows above it: the first frame is the current one, not a walk of the conversation.
 #[test]
@@ -4701,11 +4683,9 @@ fn a_fresh_attach_to_a_long_session_draws_its_tail() {
     );
 }
 
-/// **The window has two ends.** A reader parked far above the tail is not reading what arrives
-/// below them, so those rows are let go and counted; coming back down asks for them a page at a
-/// time, in the direction the session runs, and the tail follows again once the window reaches it.
-/// The row bodies are generated from the ordinal, so a page the fixture answers is the row the
-/// session really had there.
+/// The window has two ends. A reader parked far above the tail is not reading what arrives below, so those rows
+/// are let go and counted; coming back down asks for them a page at a time, and the tail follows again once the
+/// window reaches it. Row bodies are generated from the ordinal, so a page the fixture answers is the real row.
 #[test]
 fn rows_below_a_parked_reader_are_let_go_and_fetched_back() {
     const ROWS: u64 = 6_000;
@@ -4766,7 +4746,7 @@ fn rows_below_a_parked_reader_are_let_go_and_fetched_back() {
         }
     }
     let _ = a.screen(100, 40);
-    // **And the wheel still knows the session is moving.** The window stopped growing when it became
+    // And the wheel still knows the session is moving. The window stopped growing when it became
     // a window, so a count of what this head holds would call a living session still: a park the
     // tail keeps running away from is walked out of, not notched out of at three lines.
     let mut step: Vec<usize> = Vec::new();
@@ -4781,7 +4761,7 @@ fn rows_below_a_parked_reader_are_let_go_and_fetched_back() {
     );
     let total = ROWS + 3;
 
-    // **The window is bounded at both ends.** The rows arriving below the reader are not the rows
+    // The window is bounded at both ends. The rows arriving below the reader are not the rows
     // the reader is reading, so they are a count and not a copy.
     assert!(
         a.items_below > 0,
@@ -4910,7 +4890,7 @@ fn rows_below_a_parked_reader_are_let_go_and_fetched_back() {
     );
 }
 
-/// **The count below the window is a guess and the daemon's answer is the truth.** A page that
+/// The count below the window is a guess and the daemon's answer is the truth. A page that
 /// comes back empty says the session ends where the window does, and asking again would be a
 /// loop on a number nothing can pay.
 #[test]
@@ -4968,7 +4948,7 @@ fn an_empty_page_below_the_window_ends_the_asking() {
     assert_eq!(a.items.last().map(|r| r.item_id.as_str()), Some("s.new"));
 }
 
-/// **A page answers the session it was asked about, and no other.** A page of session A that
+/// A page answers the session it was asked about, and no other. A page of session A that
 /// arrives after a switch was placed by its ordinal alone, so one whose window joined B's base put
 /// A's rows in B's conversation, and one that did not told the reader B's transcript stops there.
 #[test]
@@ -5019,10 +4999,9 @@ fn a_page_for_a_session_the_head_has_left_lands_nowhere() {
     );
 }
 
-/// **A snapshot says where its base starts.** A resume republishes the ancestors of the transcript
-/// a compaction put behind this one, and they arrive in the same list as the base's own rows - so a
-/// head that took the lead as zero believed its first row was ordinal 0 while the daemon called it
-/// row five, and every page it asked for above the window was answered five rows too far in.
+/// A snapshot says where its base starts. A resume republishes the ancestors of the compacted transcript in the same
+/// list as the base's rows, so a head that took the lead as zero would call its first row ordinal 0 where the
+/// daemon calls it row five, and every page asked above the window would be answered five rows too far in.
 #[test]
 fn a_snapshot_tells_the_head_where_its_base_starts() {
     use letibot_sessionlog::view::{SessionView, ViewBounds};
@@ -5096,7 +5075,7 @@ fn above_a_base_with_a_lead(lead: usize, rows: u64, base: usize, below: usize) -
     a
 }
 
-/// **The row after the window is the base's ordinal plus the rows the base numbers.** A resume
+/// The row after the window is the base's ordinal plus the rows the base numbers. A resume
 /// republishes ancestor rows above a base that does not number them, and the tail ask counted them
 /// in: it named an ordinal `items_lead` rows past the end, so no page it got ever joined.
 #[test]
@@ -5129,7 +5108,7 @@ fn the_page_below_the_window_starts_after_the_rows_the_base_numbers() {
     );
 }
 
-/// **A page below the window that does not join is a stale tail, not the top of the transcript.**
+/// A page below the window that does not join is a stale tail, not the top of the transcript.
 /// The no-join branch called it the daemon's last word above, so one short tail page killed upward
 /// paging for the life of the session and left the tail ask armed on an ordinal no page can fill.
 #[test]
@@ -5187,7 +5166,7 @@ fn settled(call: &str) -> SettledDecision {
     }
 }
 
-/// **A row that leaves the window takes its call facts with it.** The window bounds `items`, and the
+/// A row that leaves the window takes its call facts with it. The window bounds `items`, and the
 /// tables the renderer reads are keyed by a row's id and were pruned by nothing but a switch: an
 /// `edit` excerpt for every edit the conversation ever carried stayed for the life of the head.
 #[test]
@@ -5239,7 +5218,7 @@ fn a_row_that_leaves_the_window_takes_its_call_facts_with_it() {
     );
 }
 
-/// **And a switch takes them too.** `call_decisions` was left out of the arm that clears its two
+/// And a switch takes them too. `call_decisions` was left out of the arm that clears its two
 /// siblings, so a decision about a call in one conversation drew on a row of the next.
 #[test]
 fn a_switch_takes_the_last_sessions_call_decisions_with_it() {
@@ -5266,7 +5245,7 @@ fn a_switch_takes_the_last_sessions_call_decisions_with_it() {
     );
 }
 
-/// **A note filed at the row the trim takes is filed beside the conversation, not at its end.**
+/// A note filed at the row the trim takes is filed beside the conversation, not at its end.
 /// `keep` is the first index that goes, so a seam left at exactly `keep` names a row the head no
 /// longer holds and draws at the bottom, where only what just happened belongs.
 #[test]
@@ -5343,7 +5322,7 @@ fn a_note_at_the_row_the_window_drops_is_filed_beside_it() {
     }
 }
 
-/// **A refused page is not a seq disagreement.** The daemon answers an unknown session with a
+/// A refused page is not a seq disagreement. The daemon answers an unknown session with a
 /// `fetchrows:` refusal, and the head had no case for it: the ask stayed in flight, so that
 /// direction was dead until a snapshot, and the reader was told their view was behind the session.
 #[test]
@@ -5406,7 +5385,7 @@ fn a_long_session(a: &mut App, from: u64, to: u64, body: &str) {
 const RING_BODY: &str = "and enough words to make a row cost its bytes on the way out\n\n\
                          ```rust\nfn f() { let n = 1; }\n```\n";
 
-/// **A long session keeps the head to a window of lines.** `hist_lines` never shrank: a reader who
+/// A long session keeps the head to a window of lines. `hist_lines` never shrank: a reader who
 /// scrolled back through a session rendered every row they passed and kept it for the life of the
 /// head, so the head's memory was the whole rendered transcript however far they had come.
 #[test]
@@ -5449,7 +5428,7 @@ fn a_long_session_keeps_the_head_to_a_window_of_lines() {
     );
 }
 
-/// **A row the ring let go is drawn again when the reader comes back to it.** The ring drops the
+/// A row the ring let go is drawn again when the reader comes back to it. The ring drops the
 /// rows at the end the reader has left; the row is still held, so coming back down to it is a
 /// re-render and not a page, and it lands where it belongs.
 #[test]
@@ -5512,7 +5491,7 @@ fn a_row_the_ring_let_go_comes_back_when_the_reader_scrolls_to_it() {
     );
 }
 
-/// **A window that stops short of the session draws nothing of its tail.** The live pane and the
+/// A window that stops short of the session draws nothing of its tail. The live pane and the
 /// queued echo belong under the newest row, and a row from long ago with `Responding` under it is a
 /// claim about where the reader is that is not true.
 #[test]
@@ -5571,7 +5550,7 @@ fn a_window_that_stops_short_of_the_session_draws_no_tail() {
     );
 }
 
-/// **The window stays one run of the session.** Whatever the ring cuts, the spans are a single
+/// The window stays one run of the session. Whatever the ring cuts, the spans are a single
 /// ascending run inside the buffer, every one of them is a row this head holds, and the lines a
 /// span covers are that row's own.
 #[test]
@@ -5640,7 +5619,7 @@ fn a_window_the_ring_cut_stays_one_run_of_the_session() {
     }
 }
 
-/// **A window whose tail was let go of whole draws no tail either.** The rows under a parked
+/// A window whose tail was let go of whole draws no tail either. The rows under a parked
 /// reader's window are a count and not a copy, so the live pane and the echo belong where the
 /// session ends - not under the last row the window happens to hold.
 #[test]

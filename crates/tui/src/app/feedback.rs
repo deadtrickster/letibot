@@ -52,7 +52,7 @@ impl App {
     }
 
     /// Whether alt-g may mark right now: nothing in front of the conversation that owns the
-    /// keys. alt-b additionally needs an empty composer — see the module header.
+    /// keys. alt-b additionally needs an empty composer - see the module header.
     pub(crate) fn feedback_key_free(&self, needs_empty: bool) -> bool {
         (!needs_empty || self.editor.text().is_empty())
             && self.mode_confirm.is_none()

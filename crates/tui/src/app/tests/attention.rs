@@ -7,7 +7,7 @@ use super::*;
 /// ordinary text to the width count and the diff - and the upload is the same size the rows draw.
 #[test]
 fn a_png_result_is_drawn_inline_and_uploaded_once() {
-    // **Small enough to be ONE chunk of the kitty transmit** (rano cuts the base64 at 4096 bytes),
+    // Small enough to be ONE chunk of the kitty transmit (rano cuts the base64 at 4096 bytes),
     // so this test is about the drawing and not about rano's chunking - and 8×4 is the same 2:1
     // box a 200×100 screenshot is, which is the arithmetic the assertions below are about.
     let media = letibot_transcript::media::Media::of("shot.png", &png_header(8, 4)).expect("a png");
@@ -70,7 +70,7 @@ fn a_png_result_is_drawn_inline_and_uploaded_once() {
         "uploaded once, not every frame"
     );
 
-    // **A resize places it again at the new size**, without sending the bytes again - and
+    // A resize places it again at the new size, without sending the bytes again - and
     // the rows drawn at the new width are the new placement's.
     let narrow = a.screen(60, 40);
     let box2 = rano::term::graphics::image_box(a.cfg.width);
@@ -164,7 +164,7 @@ fn a_png_the_reply_names_is_drawn_at_the_reference() {
     );
 }
 
-/// **`/copy` takes the open window's output, else the last reply** - and says so when the
+/// `/copy` takes the open window's output, else the last reply - and says so when the
 /// terminal is not known to take OSC 52 rather than pretending.
 #[test]
 fn copy_takes_the_open_window_else_the_last_reply() {
@@ -326,7 +326,7 @@ fn line(a: &mut App) -> String {
     a.waiting_line(200).join("")
 }
 
-/// **A row that waits on the operator notifies with no card open.** Opening the card is a key
+/// A row that waits on the operator notifies with no card open. Opening the card is a key
 /// nobody away presses, so the board is the only thing that can tell them - and the card opening
 /// afterwards is the same ask, said once.
 #[test]
@@ -384,7 +384,7 @@ fn a_question_the_head_has_read_the_board_for_dies_with_its_row() {
     // A row that leaves the board takes its question with it, and so does a completed one.
     board(&mut a, vec![asking("deploy", "which db?")]);
     assert!(!line(&mut a).is_empty());
-    // **And alt-a says `nothing`, not `still being read`** - the settings row still quotes the
+    // And alt-a says `nothing`, not `still being read` - the settings row still quotes the
     // question, and telling the operator to try again would be the same stale sentence twice.
     board(&mut a, vec![taken_back("deploy")]);
     a.key(Key::AltA);
@@ -540,7 +540,7 @@ fn a_reattach_asks_for_the_board_and_draws_nothing_the_board_no_longer_has() {
             .is_none()
     );
 
-    // **And a resync is the same fact said another way** - the daemon saying this head fell
+    // And a resync is the same fact said another way - the daemon saying this head fell
     // behind. The board is not in a snapshot, so a head that dropped the events would keep the
     // copy it had; the resync asks for the board too.
     board(&mut a, vec![asking("deploy", "which db?")]);

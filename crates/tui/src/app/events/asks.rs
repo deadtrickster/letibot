@@ -1,4 +1,4 @@
-//! **Events that ask the person something, and their answers**: a decision, a secret, a prompt,
+//! Events that ask the person something, and their answers: a decision, a secret, a prompt,
 //! an explanation, a denial.
 
 use super::*;
@@ -6,10 +6,9 @@ use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::view::{OpenDecision, SettledDecision, Warned};
 
 impl App {
-    /// **A question the operator answered as the daemon stopped holding it.** A snapshot is the
-    /// truth about what is still open, and the words typed on a card that went are an answer, not
-    /// a prompt: left in the composer, the next Enter sent them to the model. Said, not silent,
-    /// and undoable - a permission's words are the operator's own and are never touched.
+    /// A question the operator answered as the daemon stopped holding it. The words typed on a card that went are an
+    /// answer, not a prompt: left in the composer, the next Enter would send them to the model. Said, not silent,
+    /// and undoable; a permission's words are the operator's own and are never touched.
     pub(crate) fn drop_a_gone_questions_draft(
         &mut self,
         was_asking: Option<OpenDecision>,
@@ -48,7 +47,7 @@ impl App {
         self.redraw = true;
     }
 
-    /// **Asks and their answers**: decisions, secrets, prompts, explanations, denials. One family of
+    /// Asks and their answers: decisions, secrets, prompts, explanations, denials. One family of
     /// [`App::event`]'s arms, moved here verbatim; `event` hands it only these variants.
     pub(crate) fn on_ask_event(&mut self, e: SessionEvent, ts: u64) -> Disposition {
         match e {
@@ -71,12 +70,12 @@ impl App {
                 subagent,
                 ..
             } => {
-                // **An answer is already on its way**, and this say is a replay or a resync: putting
+                // An answer is already on its way, and this say is a replay or a resync: putting
                 // the card back would let the next Enter send the same answer a second time.
                 if self.answering.iter().any(|a| a.decision.req_id == req_id) {
                     return Disposition::Rendered;
                 }
-                // **A card the operator put away stays away** when its question is said again
+                // A card the operator put away stays away when its question is said again
                 // (a replay, a second head's resync): refreshed in place, still not on screen.
                 if let Some(a) = self.away.iter_mut().find(|a| a.decision.req_id == req_id) {
                     a.decision = OpenDecision {
@@ -123,7 +122,7 @@ impl App {
                     on_timeout,
                     subagent,
                     // Not `ts`. A head renders how long a decision has been waiting
-                    // from the view's own stamp, and this arm is the live one — the
+                    // from the view's own stamp, and this arm is the live one - the
                     // snapshot path at `apply` carries the real `asked_ts`.
                     asked_ts: 0,
                 });
@@ -136,15 +135,15 @@ impl App {
                 basis,
                 late,
             } => {
-                // **A question put away and settled while away** — its deadline lapsed, another
-                // head answered it — settles exactly as an open one does, and its kept draft
+                // A question put away and settled while away - its deadline lapsed, another
+                // head answered it - settles exactly as an open one does, and its kept draft
                 // goes with it: there is nothing left to answer.
                 if let Some(i) = self.away.iter().position(|a| a.decision.req_id == req_id) {
                     let a = self.away.remove(i);
                     self.open.push(a.decision);
                     self.redraw = true;
                 }
-                // …and one this head answered (R90.29), closed when the answer left: it settles
+                // …and one this head answered, closed when the answer left: it settles
                 // here like an open one, read off the same card.
                 let mut answered_here = false;
                 if let Some(i) = self
@@ -297,7 +296,7 @@ impl App {
                 self.redraw = true;
                 Disposition::Rendered
             }
-            // The card comes down, whether it was answered or the command ended — and the
+            // The card comes down, whether it was answered or the command ended - and the
             // sentence says which, because those are different things to have happened to a
             // person who was about to type.
             SessionEvent::PromptSettled { req_id, sent, by } => {

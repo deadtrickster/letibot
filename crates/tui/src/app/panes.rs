@@ -1,4 +1,4 @@
-//! **The subagents', jobs' and queue panes' state**: their rows, which row is under a click,
+//! The subagents', jobs' and queue panes' state: their rows, which row is under a click,
 //! folding the tree, and a job's output paged.
 
 use super::*;
@@ -34,7 +34,7 @@ impl App {
             if b.parent_session_id.as_deref() != Some(parent.as_str()) {
                 continue;
             }
-            // The merge queue's reviewer, rebuilt from the list — which carries no role, so it is
+            // The merge queue's reviewer, rebuilt from the list - which carries no role, so it is
             // known by the brief its title was cut from. See `on_child_event`.
             if b.title
                 .starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX)
@@ -46,7 +46,7 @@ impl App {
                 // everything except whether a turn is generating in it right now.
                 Some(k) => {
                     let mut k = k.clone();
-                    // **The list's measurement of NOW**, kept beside the lifecycle word rather
+                    // The list's measurement of NOW, kept beside the lifecycle word rather
                     // than written over it. See [`SubagentState::generating`].
                     k.generating = b.status.running;
                     k.state = if b.status.running {
@@ -62,13 +62,13 @@ impl App {
                         // instant*, which is exactly a child parked on its own background job.
                         k.state
                     };
-                    // **The daemon's own stamp wins over the event's**, when the list carries one:
+                    // The daemon's own stamp wins over the event's, when the list carries one:
                     // that is the session's creation time, and an event's `ts` is only when this
                     // head heard about the child.
                     if b.created_ms > 0 {
                         k.spawned_ms = b.created_ms;
                     }
-                    // **The list's name for a child the event did not name** — a spawn this
+                    // The list's name for a child the event did not name - a spawn this
                     // head heard from a daemon that published no slug, then listed by one that
                     // records it.
                     if k.slug.is_empty() {
@@ -143,8 +143,8 @@ impl App {
         self.jobs_view().stops()
     }
 
-    /// **The pane row the job stop at the cursor was DRAWN on**, read out of
-    /// [`App::jobs_stop_rows`] — the record the pane wrote while drawing, never arithmetic over
+    /// The pane row the job stop at the cursor was DRAWN on, read out of
+    /// [`App::jobs_stop_rows`] - the record the pane wrote while drawing, never arithmetic over
     /// the table it drew from. The sibling of [`App::subagents_row_of`].
     pub(crate) fn jobs_row_of(&self) -> usize {
         let at = self
@@ -208,8 +208,8 @@ impl App {
         })
     }
 
-    /// A running job's open window follows what it writes: the pane used to be one read at Enter and another only at
-    /// the end, so a `docker pull` showed the bytes it had at Enter for as long as it ran.
+    /// A running job's open window follows what it writes, so a `docker pull` shows its bytes as they arrive:
+    /// the pane is re-read while the job runs, not once at Enter.
     pub(crate) fn poll_job_out(&mut self) {
         if self.top_surface() != Some(Surface::JobOut) {
             return;
@@ -252,29 +252,29 @@ pub(crate) struct SubagentState {
     /// first line once it has finished. A new row reads [`SubagentState::task`]; this is here for an older daemon.
     pub(crate) prompt: String,
     pub(crate) role: String,
-    /// **The subtask in full, from the event's `task`.** Empty against a daemon that
+    /// The subtask in full, from the event's `task`. Empty against a daemon that
     /// predates the field, and the pane then falls back to `prompt`.
     pub(crate) task: String,
-    /// **The model this child runs on**, from the event's `model` — `local`, or
+    /// The model this child runs on, from the event's `model` - `local`, or
     /// `PROVIDER/MODEL`. Empty when the child inherited its parent's model, which is the
     /// default: the pane then draws no model clause rather than claiming one.
     pub(crate) model: String,
-    /// **The child's answer's first line**, `Some` only once it has finished — the
+    /// The child's answer's first line, `Some` only once it has finished - the
     /// subtitle, kept apart from the row so a completion cannot be mistaken for the
     /// question.
     pub(crate) answer: Option<String>,
     /// When this child was spawned, for the pane's order, which is newest first. Two sources and the daemon's wins:
     /// the session's own `created_ms` over the event's stamp, since the list is the fresher of the two.
     pub(crate) spawned_ms: u64,
-    /// **The child's name — its slug** (`fix-login`), from the event's `slug` or the daemon's
+    /// The child's name - its slug (`fix-login`), from the event's `slug` or the daemon's
     /// list. Empty for a child nobody named (a daemon from before names), which is drawn by its
     /// short id exactly as before. See [`SubagentState::name`].
     pub(crate) slug: String,
 }
 
 impl SubagentState {
-    /// **How a person is shown this child**: `fix-login · …14688401` — its name and the short id,
-    /// the pane's spelling of the label the model reads (`fix-login · s-…`) — or the short id
+    /// How a person is shown this child: `fix-login · …14688401` - its name and the short id,
+    /// the pane's spelling of the label the model reads (`fix-login · s-…`) - or the short id
     /// alone for a child nobody named.
     pub(crate) fn name(&self) -> String {
         child_name(&self.slug, &self.session_id)
@@ -287,7 +287,7 @@ impl SubagentState {
     }
 }
 
-/// **A child as a person reads it**: `slug · …tail`, or the short id alone when nobody named it.
+/// A child as a person reads it: `slug · …tail`, or the short id alone when nobody named it.
 /// One function, because the pane, its output view, the todos' `waits on …`, the attention line
 /// and the header all name a child and must not spell it four ways.
 pub(crate) fn child_name(slug: &str, session_id: &str) -> String {
@@ -313,7 +313,7 @@ pub(crate) use rano::agent::jobs::JobStop;
 #[derive(Debug, Clone)]
 pub(crate) struct SubOut {
     pub(crate) session_id: String,
-    /// One line per rendered row — **and which renderer produced them is [`SubOut::degraded`]'s
+    /// One line per rendered row - **and which renderer produced them is [`SubOut::degraded`]'s
     /// business**: the session's own rows go through `item_lines`, the same one every row of the
     /// transcript uses, and the event-ring fallback goes through `subagent_out_lines`.
     pub(crate) lines: Vec<String>,
@@ -338,7 +338,7 @@ pub(crate) const JOB_OUT_FOLLOW_MS: u64 = 1_000;
 #[derive(Debug, Clone)]
 pub(crate) struct JobOut {
     pub(crate) job: String,
-    /// The daemon's word for where the job is — `running`, `exited 0`, … Empty
+    /// The daemon's word for where the job is - `running`, `exited 0`, … Empty
     /// until the first answer arrives.
     pub(crate) state: String,
     /// Whether anything was ever executed for this job. The daemon's answer and not the head's inference: an empty
@@ -372,10 +372,10 @@ pub(crate) struct JobOut {
     /// A background re-read of a running job's tail is in flight, which is separate from `loading`: the window on
     /// screen is still true while it is out, and `loading` would blank the `nothing yet` line.
     pub(crate) polling: bool,
-    /// When this head last asked for this window or was last answered (its clock, ms) — the
+    /// When this head last asked for this window or was last answered (its clock, ms) - the
     /// follow's interval runs from it.
     pub(crate) asked_ms: u64,
-    /// The daemon's refusal, when the read could not be answered — a job that fell
+    /// The daemon's refusal, when the read could not be answered - a job that fell
     /// out of the host's table between the listing and Enter. Shown in place of the
     /// window so the pane does not sit at `reading…` forever.
     pub(crate) error: Option<String>,

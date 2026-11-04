@@ -18,7 +18,7 @@ impl App {
             || self.diff_popup.is_some()
     }
 
-    /// **Is the target still what is on the screen** — a key earlier in the same read can have
+    /// Is the target still what is on the screen - a key earlier in the same read can have
     /// closed the pane or answered the card the last frame drew, and a click measured against
     /// that frame must not be answered by whatever is in its place now.
     fn still_drawn(&self, t: Target) -> bool {
@@ -28,13 +28,13 @@ impl App {
             Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture => {
                 self.drawn() == Drawn::Conversation
             }
-            // **A finished child's line is a row of the conversation** — the same test, and for
+            // A finished child's line is a row of the conversation - the same test, and for
             // the same reason: a key earlier in the same read can have put a pane over it.
             Target::TaskAgent => self.drawn() == Drawn::Conversation,
-            // **And so is a call the turn is still drawing** — it is below the history, inside
+            // And so is a call the turn is still drawing - it is below the history, inside
             // the conversation's own rectangle, and a pane over it is a pane over that.
             Target::LiveCall => self.drawn() == Drawn::Conversation,
-            // **A line of the window is a line only while the window is open** — a key earlier in
+            // A line of the window is a line only while the window is open - a key earlier in
             // the same read can have closed it (Esc, `ctrl-v`, a prompt sent), and the rows the
             // last frame recorded are then text again.
             Target::PayloadLine => self.payload_window_open(),
@@ -42,18 +42,18 @@ impl App {
             Target::QuitCard => self.quit_card,
             Target::ReseatCard => self.reseat_card_up(),
             Target::SettingCard => self.pick.is_some(),
-            // **The chrome's labels are drawn by whatever screen is up** — the composer's two
+            // The chrome's labels are drawn by whatever screen is up - the composer's two
             // edges and the header belong to no surface, so there is none that can have closed
             // under them between the frame and the click.
             Target::CountLabel(_)
             | Target::GitField
             | Target::HeaderRepo
             | Target::QueueStandings => true,
-            // **A link is drawn by whatever screen is up** — the reply, a note, a pane — so the
+            // A link is drawn by whatever screen is up - the reply, a note, a pane - so the
             // record is the frame's own and nothing can have closed under it. A link the frame
             // no longer has is not in `link_targets`, which the click checks before it acts.
             Target::Link => true,
-            // **A panel's title is a door only while its pane is the one on the screen**: the
+            // A panel's title is a door only while its pane is the one on the screen: the
             // frame that recorded it may have been covered by another pane since.
             Target::PluginPanel => self.focused_surface() == Some(Surface::PluginPane),
             Target::FlashNotice => self.status_click.is_some(),
@@ -70,7 +70,7 @@ impl App {
         let Some(hit) = self.hit_at(x, y).cloned() else {
             return ControlFlow::Continue(());
         };
-        // **Anywhere on an entry is the entry** — its second line too (a subagent's facts), the
+        // Anywhere on an entry is the entry - its second line too (a subagent's facts), the
         // same block that lights up under the pointer. See `App::stop_block`.
         let row = usize::from(y);
         let stop = hit
@@ -80,7 +80,7 @@ impl App {
         if !self.still_drawn(target) {
             return ControlFlow::Break(None);
         }
-        // **A run marker's clause opens its run, that kind only** (`app::runclick`).
+        // A run marker's clause opens its run, that kind only (`app::runclick`).
         if target == Target::Conversation
             && let Some(m) = self.marker_at(x, y).cloned()
         {
@@ -97,7 +97,7 @@ impl App {
 
     fn click_on(&mut self, target: Target, stop: Option<usize>) -> ControlFlow<Option<Action>> {
         match (target, stop) {
-            // **The git field opens the repo card** — the same card `/repo` opens.
+            // The git field opens the repo card - the same card `/repo` opens.
             (Target::GitField, _) => {
                 let _ = self.command("repo");
                 return ControlFlow::Break(None);
@@ -112,7 +112,7 @@ impl App {
                 );
             }
             (Target::CountLabel(l), _) => {
-                // **The label's chord, through the one door** — the operator's ask: *"make so that
+                // The label's chord, through the one door - the operator's ask: *"make so that
                 // when i click on running subagents or jobs count labels i get to respective
                 // panes"*.
                 return ControlFlow::Break(self.toggle_surface(match l {
@@ -132,7 +132,7 @@ impl App {
                 let url = self.link_targets.get(k).cloned();
                 return ControlFlow::Break(url.and_then(|u| self.open_link(&u)));
             }
-            // **An edit or write row opens its change in the diff popup** — the whole file with
+            // An edit or write row opens its change in the diff popup - the whole file with
             // the change inline; `ctrl-]` from there is the editor. A click elsewhere in the
             // conversation is nobody's and falls through.
             (Target::Conversation, Some(k)) => {
@@ -147,7 +147,7 @@ impl App {
                 }
                 return ControlFlow::Break(None);
             }
-            // **A job's completion notice opens whole** — the operator: *"click behaves similar
+            // A job's completion notice opens whole - the operator: *"click behaves similar
             // to diff click - popup with full card"*.
             (Target::Notice, Some(k)) => {
                 self.open_notice_popup(k);
@@ -171,7 +171,7 @@ impl App {
                 };
                 return ControlFlow::Break(self.switch_to(session));
             }
-            // **And a red target's warning opens whole** — the operator: *"a one-line similar
+            // And a red target's warning opens whole - the operator: *"a one-line similar
             // to job - with a popup"*.
             (Target::NoteCard, Some(i)) => {
                 self.open_card_popup(i);
@@ -189,12 +189,12 @@ impl App {
             (Target::TodoWait, Some(k)) => {
                 return ControlFlow::Break(self.open_wait_link(k));
             }
-            // **A click on a panel's title opens that panel's view** — C3's one click, and the
+            // A click on a panel's title opens that panel's view - C3's one click, and the
             // same act its key runs, through the same door.
             (Target::PluginPanel, Some(i)) => {
                 return ControlFlow::Break(self.plugin_panel_key(i));
             }
-            // **A picture's row opens the picture, larger** — the same act Enter does, and the
+            // A picture's row opens the picture, larger - the same act Enter does, and the
             // reason the thumbnail is a target at all (see `app::pictures`).
             (Target::Picture, Some(k)) => {
                 if let Some(r) = self.picture_refs.get(k).cloned() {
@@ -202,7 +202,7 @@ impl App {
                 }
                 return ControlFlow::Break(None);
             }
-            // **A line of the open window takes the reader there** — the act is the offset the
+            // A line of the open window takes the reader there - the act is the offset the
             // arrows and the wheel move, not a second cursor. A row of the window that carries no
             // line (the header, the `… +N lines` seam) is the window's and moves nothing.
             (Target::PayloadLine, Some(line)) => {
@@ -215,7 +215,7 @@ impl App {
             }
             (_, None) => return ControlFlow::Break(None),
             (Target::Surface(s), Some(k)) => match s {
-                // **A click on a group's line folds it** (`App::click_picker`): a session's row
+                // A click on a group's line folds it (`App::click_picker`): a session's row
                 // only marks, and Enter still switches.
                 Surface::Picker => self.click_picker(k),
                 Surface::Todos => {
@@ -251,7 +251,7 @@ impl App {
             (Target::SettingCard, Some(k)) => {
                 self.mode_sel = k;
                 // The reader has taken the cursor, so a settings answer landing from here on must
-                // not move it — see [`App::pick_unseeded`].
+                // not move it - see [`App::pick_unseeded`].
                 self.pick_unseeded = false;
             }
         }
@@ -273,7 +273,7 @@ impl App {
             return ControlFlow::Break(None);
         }
         const NOTCH: usize = 3;
-        // **A link is a click, not a wheel** — a notch over a URL is handed on with no position,
+        // A link is a click, not a wheel - a notch over a URL is handed on with no position,
         // so the transcript under the pointer still scrolls. A long reply is mostly URLs, and a
         // wheel that stopped dead over one would be the worse defect.
         if target == Target::Link {
@@ -283,7 +283,7 @@ impl App {
             Target::Surface(_) | Target::TodoWait | Target::PluginPanel => {
                 self.scroll_pane(up, NOTCH)
             }
-            // A window, not an open run — a run is the conversation's own rows and the
+            // A window, not an open run - a run is the conversation's own rows and the
             // conversation scrolls under it (see [`App::run_is_open`]).
             Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture
             | Target::TaskAgent
@@ -295,7 +295,7 @@ impl App {
             }
             Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture
             | Target::TaskAgent
-            // **A wheel over a live call's card scrolls the conversation** — the card is a row of
+            // A wheel over a live call's card scrolls the conversation - the card is a row of
             // it, and a notch that stopped dead over one would read as a frozen head.
             | Target::LiveCall => {
                 let k = if up { Key::WheelUp } else { Key::WheelDown };
@@ -310,7 +310,7 @@ impl App {
             | Target::HeaderRepo
             | Target::QueueStandings
             | Target::FlashNotice
-            // A line of the window with no window up — `still_drawn` has already refused
+            // A line of the window with no window up - `still_drawn` has already refused
             // this one, so it is here for the enum and not for a pointer that can reach it.
             | Target::PayloadLine => {}
             // A link returned above, with the notch handed on: the arm is here because this

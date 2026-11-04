@@ -1,4 +1,4 @@
-//! **The walls the review measured on real rows, one notice at a time.** A notice drawn at eighty
+//! The walls the review measured on real rows, one notice at a time. A notice drawn at eighty
 //! columns is one screen row or two, and the whole of it is a click away. The texts here are the
 //! producers' own: each wall was a stored row, so a fixture that is shorter than one proves nothing.
 
@@ -135,7 +135,7 @@ fn a_length_cap_salvage_is_one_row_at_eighty_columns() {
     ));
 }
 
-/// **The length cap's closing as it reads now** (R93.D3): cut off, not run, and what to do.
+/// The length cap's closing as it reads now: cut off, not run, and what to do.
 #[test]
 fn the_length_caps_new_closing_is_one_row_at_eighty_columns() {
     let text = "Tool call write was cut off and not run. Send it again complete (split a large \
@@ -167,7 +167,7 @@ fn a_parents_message_is_one_row_at_eighty_columns() {
     assert_eq!(popup, text);
 }
 
-/// **A parent's message as the daemon writes it now** (R93.C11): the tag is the relation, and the
+/// A parent's message as the daemon writes it now: the tag is the relation, and the
 /// session id that the child cannot act on is gone.
 #[test]
 fn a_tagged_parent_message_is_one_row_at_eighty_columns() {
@@ -401,7 +401,7 @@ fn a_system_row_is_one_row_at_eighty_columns() {
          no tool calls.\n\n## Objective\n\n- {}\n",
         "THE RECORD OF TWENTY THOUSAND CHARACTERS ".repeat(400)
     );
-    // R93.E5: the note as the daemon writes it now, with no transcript id in it.
+    // The note as the daemon writes it now, with no transcript id in it.
     let now = format!(
         "Earlier conversation is replaced by this summary (full history: `transcript` tool). The \
          most recent messages follow verbatim. The verbatim part starts mid-exchange; its first \
@@ -597,7 +597,7 @@ fn a_panes_ending_names_one_row_and_keeps_what_the_program_said() {
     assert!(rows[4].contains("error: test failed"), "{:?}", rows[4]);
 }
 
-/// **A settled decision leads with its verdict.** The card led with the summary, so at eighty
+/// A settled decision leads with its verdict. The card led with the summary, so at eighty
 /// columns the verdict began past the cut and an allow and a refuse drew identically in monochrome;
 /// and a summary carrying a newline put the verdict on a line the card never read.
 #[test]

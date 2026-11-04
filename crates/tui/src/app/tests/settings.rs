@@ -115,7 +115,7 @@ fn the_config_pane_edits_head_rows_in_place_and_persists_them() {
     let screen = a.screen(120, 30).join("\n");
     assert!(screen.contains("writes allowed"), "{screen}");
     assert!(screen.contains("20.0s"), "{screen}");
-    // **The rung is a row too**, and it points at the verb rather than cycling (R38).
+    // The rung is a row too, and it points at the verb rather than cycling.
     assert!(
         screen.contains("verbosity") && screen.contains("normal"),
         "the pane does not show the rung: {screen}"
@@ -190,7 +190,7 @@ fn prefs_on_disk_are_applied_at_start() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The format is the operator's, and changing it re-renders the SAME reading** - the
+/// The format is the operator's, and changing it re-renders the SAME reading - the
 /// `/config` cycle through its three stops, each persisted, none of them re-reading the
 /// repository.
 #[test]
@@ -262,8 +262,8 @@ fn a_row_number_marks_the_ask_and_the_quit_card_and_enter_answers() {
         1,
         testing::requested("r1", "`bash` wants exec access"),
     )));
-    // **R90.2: on a decision the row number MARKS the row** - the numbers are drawn - and
-    // Enter answers it; the quit card's digits mark too (R90.6).
+    // On a decision the row number MARKS the row - the numbers are drawn - and
+    // Enter answers it; the quit card's digits mark too.
     assert_eq!(a.key(Key::Char('2')), None, "the digit is a move");
     assert_eq!(a.sel, 1);
     assert_eq!(
@@ -277,7 +277,7 @@ fn a_row_number_marks_the_ask_and_the_quit_card_and_enter_answers() {
         "row 2 of the ask is `deny`"
     );
 
-    // The quit card. **The digit marks here too** (R90.6): it answered at once, so `2` typed as
+    // The quit card. The digit marks here too: it answered at once, so `2` typed as
     // the first character of a line stopped the daemon while the bar said "then enter".
     let mut b = app();
     b.clock(1_000);
@@ -379,7 +379,7 @@ fn allow_all_asks_before_it_is_sent_and_nothing_else_does() {
     assert!(a.mode_confirm.is_none(), "the question outlived its answer");
 }
 
-/// Enter confirms, like every other card in this head: it used to cancel on the fail-closed
+/// Enter confirms, like every other card in this head: it does not cancel on the fail-closed
 /// argument that a mistyped answer should be a no, which is right about stray keys and wrong
 /// about the one key a person presses on a confirmation.
 #[test]
@@ -407,7 +407,7 @@ fn enter_confirms_the_allow_all_card_like_every_other_card() {
     assert!(line.contains("[y] or [enter] confirm"), "{line}");
 }
 
-/// **A stray key is still a no.** The card owns the keyboard, so keystrokes
+/// A stray key is still a no. The card owns the keyboard, so keystrokes
 /// aimed at the composer land on it, and those must not be consent.
 #[test]
 fn a_stray_key_cancels_the_allow_all_confirmation() {
@@ -495,7 +495,7 @@ fn a_confirmation_another_head_asked_for_is_the_same_card_answered_by_its_id() {
         })
     );
 
-    // **The settlement takes the card away, whoever answered.** Another head may have said yes
+    // The settlement takes the card away, whoever answered. Another head may have said yes
     // first (the daemon settles with whoever answers), and a card left up would own the keyboard
     // for a request nobody can settle.
     a.apply(ServerFrame::ModeConfirm {
@@ -537,7 +537,7 @@ fn a_confirmation_another_head_asked_for_is_the_same_card_answered_by_its_id() {
         "another head's card was dismissed"
     );
 
-    // **The operator's own `/mode allow-all` while that card is up** is still their keystroke,
+    // The operator's own `/mode allow-all` while that card is up is still their keystroke,
     // and it must not settle somebody else's request: the answered card is theirs.
     a.take_mode("allow-all".into());
     assert!(
@@ -553,7 +553,7 @@ fn a_confirmation_another_head_asked_for_is_the_same_card_answered_by_its_id() {
     );
 }
 
-/// **An older daemon greens what it always greened.** No `models.keyless` row means
+/// An older daemon greens what it always greened. No `models.keyless` row means
 /// a daemon from before it existed, and the fallback is `local` alone - which is
 /// precisely the behaviour this head had before, so nothing reads as newly broken.
 #[test]
@@ -622,7 +622,7 @@ fn every_named_mode_opens_with_its_own_row_highlighted() {
             .iter()
             .find(|l| l.contains('\u{25b8}') && l.contains("  "))
             .expect("a marked row");
-        // **The two facts together, on ONE row** - where am I, and what does Enter take. The
+        // The two facts together, on ONE row - where am I, and what does Enter take. The
         // defect broke both, and asserting either alone would have passed for one of them.
         assert!(
             row.contains('\u{2190}') && row.contains("now"),
@@ -810,7 +810,7 @@ fn a_click_on_the_mode_card_picks_the_row_under_the_pointer() {
     assert!(a.pick.is_none());
 }
 
-/// **A click on the setting card is measured from where the card was drawn** (R67 item 3).
+/// A click on the setting card is measured from where the card was drawn.
 /// The card's first row was taken from the top of the whole chrome, so every line pushed above
 /// it - the daemon link line here - shifted every click by that many rows.
 #[test]
@@ -838,7 +838,7 @@ fn a_click_on_the_mode_card_lands_under_a_link_line() {
     }
 }
 
-/// **Every value of every setting card is clickable, its wrapped meaning included** (R67 item 3).
+/// Every value of every setting card is clickable, its wrapped meaning included.
 /// `/verbosity` carries a `why` under each value, wrapped, so one row is not one value - and the
 /// count of clickable rows was the MODE row's choices whatever the card was about.
 #[test]
@@ -911,7 +911,7 @@ fn the_mode_picker_takes_a_row_number_a_name_and_refuses_an_ambiguous_prefix() {
     ));
     a.apply(mode_settings("read-only", MODES));
     assert_eq!(a.command("mode"), Some(Action::Settings));
-    // A row number takes that row **on the keypress** - it is focus and
+    // A row number takes that row on the keypress - it is focus and
     // enter in one, which is what a numbered list means. See `digit_row`.
     assert_eq!(
         a.key(Key::Char('5')),
@@ -1049,8 +1049,8 @@ fn a_long_config(n: usize) -> App {
     a
 }
 
-/// **Down keeps the cursor on the screen, all the way round, and comes back to the top.**
-/// The operator, 2026-10-08: *"if i keep pressing down the selector eventually goes out of
+/// Down keeps the cursor on the screen, all the way round, and comes back to the top.
+/// The operator: *"if i keep pressing down the selector eventually goes out of
 /// view and doesnt wrap … until i reenter config pane"*.
 #[test]
 fn down_keeps_the_config_cursor_in_view_and_wraps_to_the_first_row() {
@@ -1166,7 +1166,7 @@ fn a_paused_plan_check_draws_a_resident_line_until_it_is_resumed() {
         screen.contains("nags PAUSED until 14:30") && screen.contains("/nag resume"),
         "the resident line names the end and the verb that ends it: {screen}"
     );
-    // **On every frame**, not once: a second draw still carries it.
+    // On every frame, not once: a second draw still carries it.
     assert!(a.screen(120, 30).join("\n").contains("nags PAUSED"));
 
     // `/status` carries it as a state row too.
@@ -1174,7 +1174,7 @@ fn a_paused_plan_check_draws_a_resident_line_until_it_is_resumed() {
     let status = a.screen(120, 60).join("\n");
     assert!(status.contains("PAUSED until 14:30"), "{status}");
 
-    // **The live channel**: the daemon's `nags_resumed` row clears it at once.
+    // The live channel: the daemon's `nags_resumed` row clears it at once.
     let hub = letibot_sessionlog::hub::Hub::new("s");
     let e = hub.publish(letibot_sessionlog::SessionEvent::Warning {
         code: "nags_resumed".into(),
@@ -1199,7 +1199,7 @@ fn a_paused_plan_check_draws_a_resident_line_until_it_is_resumed() {
     );
 }
 
-/// **A paused session is marked in the picker**, from its brief's `nags_paused` - the session
+/// A paused session is marked in the picker, from its brief's `nags_paused` - the session
 /// list is where a silent board on ANOTHER session would otherwise be read as a broken one.
 #[test]
 fn the_picker_marks_a_paused_session() {
@@ -1224,7 +1224,7 @@ fn the_picker_marks_a_paused_session() {
     );
 }
 
-/// **The todos pane's `n` is `/nag pause`, and `/nag resume` while paused** - declared in the
+/// The todos pane's `n` is `/nag pause`, and `/nag resume` while paused - declared in the
 /// binding table, so the hint bar names it.
 #[test]
 fn n_in_the_todos_pane_pauses_and_resumes_the_plan_checks() {
@@ -1251,7 +1251,7 @@ fn n_in_the_todos_pane_pauses_and_resumes_the_plan_checks() {
     );
 }
 
-/// **The todos pane's `d` is a row here too** - every switch this head keeps is on `/config`, and
+/// The todos pane's `d` is a row here too - every switch this head keeps is on `/config`, and
 /// the row and the pane's bar read the same flag, so the two cannot disagree about which way it
 /// stands. Enter goes through the pane's own toggle, which is what writes the file.
 #[test]

@@ -1,4 +1,4 @@
-//! **R69: a click and a wheel notch go to what the last frame drew under the pointer** - every
+//! A click and a wheel notch go to what the last frame drew under the pointer - every
 //! clickable surface clicked against the frame it was drawn in, the wheel routed by position,
 //! a click that hits nothing falling through, and a click in the same read as a scroll.
 
@@ -47,7 +47,7 @@ fn running(a: &mut App, seq: u64, id: &str, prompt: &str) {
     )));
 }
 
-/// **The surfaces that had row maps and took no clicks**: the subagents, jobs, standing and
+/// The surfaces that had row maps and took no clicks: the subagents, jobs, standing and
 /// config panes. A click moves the cursor to the row drawn under the pointer; Enter still acts.
 #[test]
 fn a_click_on_each_pane_selects_the_row_drawn_under_it() {
@@ -98,7 +98,7 @@ fn a_click_on_each_pane_selects_the_row_drawn_under_it() {
     );
 }
 
-/// **The decision card and the quit card take clicks on their rows**, read against where the
+/// The decision card and the quit card take clicks on their rows, read against where the
 /// frame put them - below whatever chrome was pushed above the card.
 #[test]
 fn a_click_on_the_decision_ladder_and_the_quit_card_selects_that_row() {
@@ -157,7 +157,7 @@ fn a_click_on_a_wrapped_rung_selects_that_rung() {
     }
 }
 
-/// **A click that lands on nothing a pane drew falls through.** The todos pane took every
+/// A click that lands on nothing a pane drew falls through. The todos pane took every
 /// click, hit or miss, so the count labels on the composer's edge stopped working while it was
 /// open - and worked while the jobs or subagents pane was.
 #[test]
@@ -180,7 +180,7 @@ fn a_click_outside_the_pane_reaches_the_count_label() {
     );
 }
 
-/// **The wheel scrolls what is under the pointer.** A decision card with overflowing content
+/// The wheel scrolls what is under the pointer. A decision card with overflowing content
 /// took every notch anywhere on the screen, so a reader scrolling the transcript moved the
 /// card's evidence instead.
 #[test]
@@ -210,7 +210,7 @@ fn the_wheel_over_the_transcript_scrolls_the_transcript_not_the_card() {
     assert!(!a.following(), "the transcript did not move");
 }
 
-/// **And over the card, the card scrolls** - the same notch, aimed at it.
+/// And over the card, the card scrolls - the same notch, aimed at it.
 #[test]
 fn the_wheel_over_the_card_scrolls_the_card() {
     let mut a = tall_card(true);
@@ -221,7 +221,7 @@ fn the_wheel_over_the_card_scrolls_the_card() {
     assert!(a.dec_scroll > 0, "the notch over the card did not move it");
 }
 
-/// **A click in the same read as a wheel step is measured against the frame the operator saw.**
+/// A click in the same read as a wheel step is measured against the frame the operator saw.
 /// The todos and queue panes combined the UPDATED scroll with the last frame's stop rows, so
 /// trackpad momentum followed by a click selected a row three off.
 #[test]
@@ -264,10 +264,9 @@ fn a_click_after_a_wheel_step_in_the_same_read_picks_the_row_that_was_drawn() {
     );
 }
 
-/// **The consequence sentence under the quit card is not a target for the row above it.** The card
-/// grew rows saying what else stops, and the second choice's click range took them in, so a click on
-/// that sentence armed *stop the daemon* - and the Enter that followed stopped every job and
-/// subagent on the box.
+/// The consequence sentence under the quit card is not a target for the row above it. The second choice's click
+/// range took in the added rows, so a click on that sentence armed *stop the daemon* and the Enter that followed
+/// stopped every job and subagent on the box.
 #[test]
 fn a_click_on_the_quit_cards_consequence_arms_nothing() {
     let mut a = app();

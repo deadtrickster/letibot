@@ -96,7 +96,7 @@ fn a_head_with_two_sessions() -> App {
     a
 }
 
-/// **A layer that traps is skipped and the built-in below it answers** - the list is still the
+/// A layer that traps is skipped and the built-in below it answers - the list is still the
 /// list, and the person is TOLD what happened to their layer when they open it.
 #[test]
 fn a_layer_that_traps_falls_down_to_the_builtin() {
@@ -136,7 +136,7 @@ fn a_layer_that_traps_falls_down_to_the_builtin() {
         "{drawn:?}"
     );
 
-    // **And the failure is said**, once, in the words of the layer that met it.
+    // And the failure is said, once, in the words of the layer that met it.
     let said = a
         .take_sessions_failure()
         .expect("a refused layer is news the person is owed");
@@ -144,7 +144,7 @@ fn a_layer_that_traps_falls_down_to_the_builtin() {
     assert!(said.contains("drawn from below it"), "{said}");
     assert!(a.take_sessions_failure().is_none(), "and only once");
 
-    // **Switching still works**: the second session, which is the third row - the project's line
+    // Switching still works: the second session, which is the third row - the project's line
     // is the first.
     a.picker_sel = 2;
     assert_eq!(
@@ -183,14 +183,14 @@ fn a_broken_builtin_falls_to_the_plain_list() {
         plain.iter().any(|l| l.contains("the habr article")),
         "the head's own list is drawn: {plain:?}"
     );
-    // **And it is the head's own TREE**: a project's line, and both conversations under it. The
+    // And it is the head's own TREE: a project's line, and both conversations under it. The
     // way out draws the same shape the layer does, through the same primitive.
     assert!(
         plain.iter().any(|l| l.contains("letibot (2)")),
         "the project's line is drawn: {plain:?}"
     );
 
-    // **The keys act on the rows that were drawn.** The project's line, then the two sessions: the
+    // The keys act on the rows that were drawn. The project's line, then the two sessions: the
     // third row is the second session.
     a.picker_sel = 2;
     assert_eq!(
@@ -201,7 +201,7 @@ fn a_broken_builtin_falls_to_the_plain_list() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
-/// **A layer that answers something the host cannot draw is treated as no answer**, and the head's
+/// A layer that answers something the host cannot draw is treated as no answer, and the head's
 /// own list is drawn - the same rule as a trap, one step later in the pipeline.
 #[test]
 fn an_answer_that_is_not_a_list_falls_to_the_plain_list() {

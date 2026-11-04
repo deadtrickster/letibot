@@ -1,11 +1,11 @@
-//! **What the app asks of the driver** (`Action`), and what applying a frame did (`Disposition`).
+//! What the app asks of the driver (`Action`), and what applying a frame did (`Disposition`).
 
 /// What `apply` did with a frame. The driver counts these into the ack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Disposition {
     /// It changed the screen.
     Rendered,
-    /// It was read and deliberately not shown. **Counted.**
+    /// It was read and deliberately not shown. Counted.
     Filtered,
     /// Not an event: a Hello, a Resync, a command reply.
     Control,
@@ -16,7 +16,7 @@ pub enum Disposition {
 /// [`Prompt::new`] as the door with nothing attached.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prompt {
-    /// The words, chips and all — the same string the operator saw in the composer.
+    /// The words, chips and all - the same string the operator saw in the composer.
     pub text: String,
     /// The files and pictures, in the order their chips were minted. Empty is the ordinary case.
     pub attachments: Vec<letibot_sessionlog::Attachment>,
@@ -55,7 +55,7 @@ impl From<String> for Prompt {
     }
 }
 
-/// **A message compares with its words.** What a caller means by `prompt == "hi"` is the sentence;
+/// A message compares with its words. What a caller means by `prompt == "hi"` is the sentence;
 /// the attachments are asserted where they are made (`app::attachments`) and sent (the daemon's
 /// own tests), not at every site that checks what the composer said.
 impl PartialEq<str> for Prompt {
@@ -104,7 +104,7 @@ pub enum Action {
         /// the daemon derives the pattern from the call, which is what every answer
         /// did before this existed.
         pattern: Option<String>,
-        /// **What to tell the model**, typed after `deny_and_tell`. The option's
+        /// What to tell the model, typed after `deny_and_tell`. The option's
         /// label promised this and nothing carried it.
         note: Option<String>,
     },
@@ -115,7 +115,7 @@ pub enum Action {
         req_id: String,
         answer: letibot_sessionlog::question::QuestionAnswer,
     },
-    /// **Answer the question a todo ROW waits on** (`ClientFrame::AnswerTodo`) — the same card
+    /// Answer the question a todo ROW waits on (`ClientFrame::AnswerTodo`) - the same card
     /// and the same four shapes as [`Action::AnswerQuestion`], sent to the row rather than to an
     /// open decision: the row's words, the question, and what the person did.
     AnswerTodo {
@@ -126,7 +126,7 @@ pub enum Action {
     Resync,
     /// Ask the daemon what sessions it holds.
     ListSessions,
-    /// Ask for this session's todo list — the pane's bootstrap read.
+    /// Ask for this session's todo list - the pane's bootstrap read.
     ListTodos,
     /// The operator's half of the board, replaced wholesale, plus the state moves they asked for
     /// on rows that are not theirs. The whole list, because a delta for tens of items would be a
@@ -142,7 +142,7 @@ pub enum Action {
     /// decided by the module that assembles the section, with the session's token counter, and a
     /// head holds no counter. Asked on every open, so a note written a minute ago is a row.
     ListNotes,
-    /// **Ask what this session can be handed** — the `/skills` pane's bootstrap read. Rows only:
+    /// Ask what this session can be handed - the `/skills` pane's bootstrap read. Rows only:
     /// the name, its one line and where it was found. A body travels on [`Action::LoadSkill`],
     /// because a listing of bodies is not a listing.
     ListSkills,
@@ -151,16 +151,16 @@ pub enum Action {
     RoomChat {
         op: serde_json::Value,
     },
-    /// **Hand this session one skill's body** — the pane's `s`, and `/skills NAME rest`. The
+    /// Hand this session one skill's body - the pane's `s`, and `/skills NAME rest`. The
     /// daemon loads it, writes the operator's message and runs the turn; `then` is what followed
     /// the name on the line.
     LoadSkill {
         name: String,
         then: String,
     },
-    /// **Ask for the merge queue, whole.** The queue pane's bootstrap read, and
+    /// Ask for the merge queue, whole. The queue pane's bootstrap read, and
     /// daemon-level: there is one `main` and one queue, so the answer is not scoped to this
-    /// session — see `ClientFrame::ListMergeQueue`.
+    /// session - see `ClientFrame::ListMergeQueue`.
     ListMergeQueue,
     /// Make one. The head switches to it when the daemon says which id it minted;
     /// see [`App::apply`]'s `Sessions` arm.
@@ -170,10 +170,9 @@ pub enum Action {
     /// Read a subagent's output without leaving this session: the daemon answers with `Peeked`
     /// and the pane is built from it. Lazy - nothing is read until this is sent.
     Peek(String),
-    /// Ask the daemon for a page of whole rows by session ordinal: what a reader who scrolls past
-    /// the oldest row this head holds, or back down toward a tail it let go of, is missing. The one
-    /// door for rows: a window inside one row's body does not carry the row's kind, and a head that
-    /// holds a window can only ask by ordinal.
+    /// Ask the daemon for a page of whole rows by session ordinal: what a reader who scrolls past the oldest row
+    /// this head holds, or back down toward a tail it let go of, is missing. The one door for rows, since a window
+    /// inside one row's body does not carry the row's kind.
     FetchRows {
         session: String,
         /// The first ordinal wanted, oldest first.
@@ -198,7 +197,7 @@ pub enum Action {
         w: u32,
         h: u32,
     },
-    /// **A plugin's pane is off the screen**, so the daemon stops refreshing it: the opposite of
+    /// A plugin's pane is off the screen, so the daemon stops refreshing it: the opposite of
     /// [`Action::PaneOpen`], and the reason a closed dashboard does not keep reading files every
     /// `every_s` until the session ends.
     PaneClose {
@@ -246,14 +245,14 @@ pub enum Action {
         yes: bool,
     },
     /// Take back every prompt this head queued that the running turn has not
-    /// consumed yet — the companion of a recall: Up pulled the queued line into
+    /// consumed yet - the companion of a recall: Up pulled the queued line into
     /// the composer to edit it, and the original must not land behind the edit.
     WithdrawPrompts,
     /// A command the daemon handles: `flowy …`, `models …`. The line minus `/`.
     Slash {
         line: String,
     },
-    /// **An operator's mark** — `/fb`, `/fb+`, `/fb-`, alt-g / alt-b (TODO R81). Its own frame,
+    /// An operator's mark - `/fb`, `/fb+`, `/fb-`, alt-g / alt-b. Its own frame,
     /// `ClientFrame::Feedback`; `at_ms` is this head's clock at the press.
     Feedback {
         at_ms: u64,
@@ -291,7 +290,7 @@ pub enum Action {
         pane: u32,
         bytes: Vec<u8>,
     },
-    /// **The pane's rectangle moved.** The head's fact — the daemon has no screen — and the
+    /// The pane's rectangle moved. The head's fact - the daemon has no screen - and the
     /// only way the program is told the size it is being drawn at.
     TermResize {
         pane: u32,

@@ -66,7 +66,7 @@ fn the_pane_keeps_the_header_the_composer_and_the_status_their_rows() {
     let before = a.screen(80, 24);
     pane(&mut a, b"\x1b[2J\x1b[Hhello from mc\r\n");
     let during = a.screen(80, 24);
-    // **`size().0`, and not `rows()`** - on this screen `rows()` hands back the cells of
+    // `size().0`, and not `rows()` - on this screen `rows()` hands back the cells of
     // every row (`Chunks<Cell>`), and the number the pane was given is the size. The
     // rectangle is what this test is about, so it is asked for by name.
     let room = a.term.as_ref().expect("a pane").screen.size().0;
@@ -90,7 +90,7 @@ fn the_pane_keeps_the_header_the_composer_and_the_status_their_rows() {
     assert!(room >= 1, "the pane got a rectangle");
 }
 
-/// **The pane's rows are exactly `room`, at every size** - the property `vt-one` is
+/// The pane's rows are exactly `room`, at every size - the property `vt-one` is
 /// preserving, asserted from the head's side rather than from the screen's.
 #[test]
 fn the_pane_draws_exactly_the_rows_it_is_given() {
@@ -151,7 +151,7 @@ fn the_panes_keys_go_down_verbatim_and_ctrl_backslash_detaches() {
              back to"
     );
     assert_eq!(a.input(), "", "the composer saw none of it");
-    // **The disclosure is the chrome line, and it is drawn while it is true** - see
+    // The disclosure is the chrome line, and it is drawn while it is true - see
     // [`App::detach`] for why the sentence is not a notice as well: a notice cannot be taken
     // back, and this one would have outlived the pane.
     let frame = a.screen(80, 24);
@@ -345,7 +345,7 @@ fn a_term_close_asks_first_and_only_a_deliberate_yes_ends_anything() {
         "both keys, and which one is the default: {card:?}"
     );
 
-    // **Every key that is not a deliberate yes cancels**, Enter included - and the program
+    // Every key that is not a deliberate yes cancels, Enter included - and the program
     // is still running afterwards.
     for k in [Key::Enter, Key::Esc, Key::Char('n'), Key::Up] {
         let mut b = app();
@@ -422,7 +422,7 @@ fn a_close_the_head_cannot_answer_is_asked_for_and_not_guessed() {
     );
     assert_eq!(b.key(Key::Char('y')), Some(Action::TermClose { pane: 1 }));
 
-    // **Not asked yet**: the read goes out and the line is HELD, then the same decision runs
+    // Not asked yet: the read goes out and the line is HELD, then the same decision runs
     // on the answer. A head that read this as *no pane* would refuse to end a program the
     // operator can see.
     let mut c = app();
@@ -571,7 +571,7 @@ fn show_the_sessions_pane_tree() {
         Hub::new("s-root").snapshot(),
     ));
     a.push_surface(Surface::Picker);
-    // **A ruler, because the question here is COLUMNS.** *Does the pane render the tree*
+    // A ruler, because the question here is COLUMNS. *Does the pane render the tree*
     // is a question about which column a row's name starts in, and an eyeball on a frame
     // answers it wrongly at one column per level - which is what the first look did.
     let ruler: String = (0..96)
@@ -616,7 +616,7 @@ fn the_newest_agent_is_at_the_top_of_the_pane() {
     let mut newer = brief("s-sub-new", "the newer one", true);
     newer.parent_session_id = Some("s".into());
     newer.created_ms = 2_000;
-    // **The daemon's order, which is the order the pane must not keep**: oldest first.
+    // The daemon's order, which is the order the pane must not keep: oldest first.
     a.apply(hello(
         "s",
         vec![brief("s", "parent", true), older, newer],
@@ -644,7 +644,7 @@ fn the_newest_agent_is_at_the_top_of_the_pane() {
         screen.join("\n")
     );
 
-    // **A row nobody can date sorts LAST**, not first: `created_ms` is `0` for a replay and for
+    // A row nobody can date sorts LAST, not first: `created_ms` is `0` for a replay and for
     // a brief from a daemon that does not stamp the row, and an undated row belongs at the
     // bottom rather than at the top pretending to be the newest thing in the pane.
     let mut b = app();
@@ -693,7 +693,7 @@ fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_
         carried.contains("Carrying the conversation") && carried.contains("/2702 rows"),
         "a named fill draws the bar: {carried}"
     );
-    // **A small one draws no bar** - under `MIN_FILLING` - and still no sentence, because
+    // A small one draws no bar - under `MIN_FILLING` - and still no sentence, because
     // the daemon did name it.
     a.apply(ServerFrame::Event(env(
         2,
@@ -719,7 +719,7 @@ fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_
         waiting.contains("Rows arriving") && waiting.contains("0/4 rows"),
         "a snapshot with no bodies is a bulk announcement and is said: {waiting}"
     );
-    // **Past the patience it stops claiming to be progress** - and this is the sentence
+    // Past the patience it stops claiming to be progress - and this is the sentence
     // that found the operator a real daemon-side hole, so it is not gated by the bar's
     // threshold either.
     b.clock(1_000 + BODY_PATIENCE + 1);
@@ -728,13 +728,13 @@ fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_
         stalled.contains("4 row(s) never filled"),
         "after the patience it says they are not coming: {stalled}"
     );
-    // **And it NAMES them.** A count is the least useful form of this fact and the ids are
+    // And it NAMES them. A count is the least useful form of this fact and the ids are
     // what make it checkable; the head held them all along and printed only the number.
     assert!(
         stalled.contains("snap.0, snap.1, snap.2"),
         "the ids must be on the line, sorted, so the claim can be checked: {stalled}"
     );
-    // **And ALL of them on `/status`, because the line is trimmed to the frame.** An
+    // And ALL of them on `/status`, because the line is trimmed to the frame. An
     // 80-column line holds a count and about three names; a pane holds the rest, and the
     // operator asked for the names rather than the count.
     typed(&mut b, "/status");

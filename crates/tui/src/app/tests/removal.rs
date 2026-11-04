@@ -118,7 +118,7 @@ fn del_asks_before_it_removes() {
     );
 }
 
-/// **`ctrl-z` brings the last one back**, and says how many are still off the list.
+/// `ctrl-z` brings the last one back, and says how many are still off the list.
 #[test]
 fn ctrl_z_brings_the_last_removed_row_back() {
     let mut a = a_head(vec![
@@ -181,7 +181,7 @@ fn a_typed_name_is_never_a_removal() {
     }
 }
 
-/// **The row this head is standing in cannot be removed** - the list is the whole answer to
+/// The row this head is standing in cannot be removed - the list is the whole answer to
 /// *where am I*, and a list that removes where you are standing has none.
 #[test]
 fn the_session_you_are_in_cannot_be_removed() {
@@ -203,7 +203,7 @@ fn the_session_you_are_in_cannot_be_removed() {
     assert_eq!(a.removal_armed, None, "and nothing was armed");
 }
 
-/// **A session ABOVE the one this head is in cannot be removed either.** The row you are standing
+/// A session ABOVE the one this head is in cannot be removed either. The row you are standing
 /// in is drawn through its chain, so removing a parent takes the row with it - the same defect as
 /// removing the row itself, one step out, and it was reachable before this test.
 #[test]
@@ -237,7 +237,7 @@ fn an_ancestor_of_the_session_you_are_in_cannot_be_removed() {
         "the refusal names the row that would go with it: {first}"
     );
     assert_eq!(a.removal_armed, None, "and nothing was armed");
-    // **The grandparent too**, which is the same walk one link further up.
+    // The grandparent too, which is the same walk one link further up.
     let mut deep = a_head_at(
         "s-sub-2",
         vec![
@@ -255,7 +255,7 @@ fn an_ancestor_of_the_session_you_are_in_cannot_be_removed() {
     assert_eq!(deep.removed.len(), 0);
 }
 
-/// **A removed parent takes its subtree with it** - a child whose parent is not on a tree has no
+/// A removed parent takes its subtree with it - a child whose parent is not on a tree has no
 /// place on it, and the sentence says how many rows go.
 #[test]
 fn removing_a_parent_takes_its_children_off_the_list() {
@@ -372,7 +372,7 @@ fn the_heads_list_and_the_layers_list_both_drop_the_removed_row() {
         .filter_map(|r| r.idx.map(|i| a.sessions[i].session_id.clone()))
         .collect();
     assert_eq!(head, vec!["s-habr"], "the head's own walk");
-    // **The layer's answer, not the fallback's** - `sessions_list` is `Some` above, so these rows
+    // The layer's answer, not the fallback's - `sessions_list` is `Some` above, so these rows
     // came through the guest, the feed and the tree block it answers.
     let layer: Vec<String> = a
         .sessions_list(100)
@@ -385,7 +385,7 @@ fn the_heads_list_and_the_layers_list_both_drop_the_removed_row() {
         layer, head,
         "and the layer's, which is what the person sees"
     );
-    // **And the feed itself says so**, which is the mechanism: the layer cannot draw a row the
+    // And the feed itself says so, which is the mechanism: the layer cannot draw a row the
     // feed does not carry.
     let feed = a.sessions_feed();
     let ids: Vec<&str> = feed["sessions"]
@@ -436,7 +436,7 @@ fn forget_refuses_a_live_session_by_name() {
     assert_eq!(a.removed.len(), 0, "and nothing was hidden either");
 }
 
-/// **A dead session that holds rows cannot be forgotten by anybody** - `transcript_item` carries a
+/// A dead session that holds rows cannot be forgotten by anybody - `transcript_item` carries a
 /// `BEFORE DELETE` trigger, so `letibot --delete` refuses it too, and the sentence says which rule
 /// it is rather than blaming this head.
 #[test]
@@ -456,7 +456,7 @@ fn forget_names_the_append_only_rule_for_a_session_that_holds_rows() {
     assert!(first.contains("letibot --delete s-old"), "{first}");
 }
 
-/// **The empty case is the one the store CAN forget - and the door is not this head's.** This is
+/// The empty case is the one the store CAN forget - and the door is not this head's. This is
 /// the finding, as a sentence: `Store::delete_empty_session` exists, no frame reaches it, and the
 /// one-shot on the store file is the only way in.
 #[test]
@@ -500,7 +500,7 @@ fn forget_resolves_the_id_it_is_given() {
     assert!(said(&a).contains("will not guess"), "{}", said(&a));
     a.command("forget nothing-like-this");
     assert!(said(&a).contains("no session matches"), "{}", said(&a));
-    // **A unique one resolves and is then refused for the real reason** - which is the point: the
+    // A unique one resolves and is then refused for the real reason - which is the point: the
     // resolution works and the answer is still no, with the sentence that says why.
     a.command("forget s-rust-1");
     assert!(
@@ -510,7 +510,7 @@ fn forget_resolves_the_id_it_is_given() {
     );
 }
 
-/// **A key pressed on a group's line says what the key is for** rather than doing nothing.
+/// A key pressed on a group's line says what the key is for rather than doing nothing.
 #[test]
 fn del_on_a_group_line_says_what_the_key_is_for() {
     let mut keeper = in_tree("s-keeper", "You are the notes keeper. tidy", false);
@@ -527,7 +527,7 @@ fn del_on_a_group_line_says_what_the_key_is_for() {
     assert_eq!(a.removal_armed, None);
 }
 
-/// **Any other key on the pane disarms** - the second press has to be a press, not a coincidence
+/// Any other key on the pane disarms - the second press has to be a press, not a coincidence
 /// minutes later.
 #[test]
 fn another_key_disarms_the_removal() {
@@ -549,7 +549,7 @@ fn another_key_disarms_the_removal() {
     );
 }
 
-/// **The bar offers the keys, and the destructive sense as the verb it is** - a bar that promised
+/// The bar offers the keys, and the destructive sense as the verb it is - a bar that promised
 /// one press would be a bar that removed something on the first one.
 #[test]
 fn the_bar_offers_the_removal_keys() {
@@ -560,7 +560,7 @@ fn the_bar_offers_the_removal_keys() {
         "{bar}"
     );
     assert!(bar.contains("ctrl-z brings the last removed back"), "{bar}");
-    // **And nothing on the bar is a bare letter** - the picker's typed line is a name.
+    // And nothing on the bar is a bare letter - the picker's typed line is a name.
     assert!(
         !bar.contains(" f ") && !bar.contains(" x ") && !bar.contains(" u "),
         "no letter of the alphabet is a key here: {bar}"

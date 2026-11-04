@@ -114,14 +114,14 @@ fn the_pane_draws_the_indexes_abstract_and_the_files_own_size_and_age() {
         screen.contains("under a minute ago"),
         "the file's own mtime, as an age: {screen}"
     );
-    // **The two forms, and the legend that says what the second one means.**
+    // The two forms, and the legend that says what the second one means.
     assert!(screen.contains("verbatim"), "{screen}");
     assert!(screen.contains("indexed"), "{screen}");
     assert!(
         screen.contains("1 of 2 indexed"),
         "the budget's effect is the field this pane exists for: {screen}"
     );
-    // **A derived abstract says so, and an author's own line does not** - once each, so the
+    // A derived abstract says so, and an author's own line does not - once each, so the
     // marker cannot be decorating both halves.
     assert_eq!(
         screen.matches("(derived)").count(),
@@ -166,7 +166,7 @@ fn a_note_whose_file_is_gone_says_so() {
         notice.contains("gone.md") && notice.contains("cannot open"),
         "the key says why, and names the file: {notice:?}"
     );
-    // **And the list stays where it was**, on the row that said it: a key that failed has not
+    // And the list stays where it was, on the row that said it: a key that failed has not
     // earned taking the reader's screen away.
     let screen = a.screen(120, 24).join("\n");
     assert!(screen.contains("gone — the file is not there"), "{screen}");
@@ -251,7 +251,7 @@ fn leaving_rano_lands_back_on_the_notes_list() {
         !a.screen(120, 24).join("\n").contains("standing notes"),
         "and the list is under it, not beside it"
     );
-    // **And the list's keys are off while rano is over it**: a bar naming keys that do nothing
+    // And the list's keys are off while rano is over it: a bar naming keys that do nothing
     // would be advertising a pane the reader cannot see.
     assert!(
         !a.hint_bar(160).contains("↑↓ moves"),
@@ -349,7 +349,7 @@ fn the_rows_are_what_list_notes_said() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// **An empty corpus says so rather than drawing an empty pane** - and Enter in it does
+/// An empty corpus says so rather than drawing an empty pane - and Enter in it does
 /// nothing rather than falling through to the composer.
 #[test]
 fn an_empty_corpus_says_so() {
@@ -400,7 +400,7 @@ fn a_note_edited_while_the_pane_is_open_makes_the_pane_ask_again() {
     a.screen(120, 24);
     assert!(!a.take_actions().contains(&Action::ListNotes));
 
-    // **The note grows, with the pane open.** The size on the row moves at once - it is read
+    // The note grows, with the pane open. The size on the row moves at once - it is read
     // here - so the form must be asked for again rather than left saying `verbatim` beside a
     // size that no longer fits.
     std::fs::write(&p, "x".repeat(4096)).unwrap();
@@ -413,7 +413,7 @@ fn a_note_edited_while_the_pane_is_open_makes_the_pane_ask_again() {
     a.screen(120, 24);
     assert!(!a.take_actions().contains(&Action::ListNotes));
 
-    // **And a note that did not exist before is a change too**, in the workspace's own notes
+    // And a note that did not exist before is a change too, in the workspace's own notes
     // directory - watched whether or not it has anything in it, so an empty pane does not sit
     // there saying there are none while one is being written.
     let mut b = app();

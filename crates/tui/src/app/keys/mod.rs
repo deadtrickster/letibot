@@ -1,4 +1,4 @@
-//! **A key, handled**: the dispatch from a keystroke to whichever card, pane, window or the
+//! A key, handled: the dispatch from a keystroke to whichever card, pane, window or the
 //! composer owns it, and the matching of a typed answer to a decision's options.
 
 use super::*;
@@ -25,11 +25,11 @@ impl App {
     /// are the head's: the rest is the composer's, because interaction policy in a match arm is how two heads
     /// drift apart.
     pub fn key(&mut self, k: Key) -> Option<Action> {
-        // **The front card is settled before and after every key** (R90.3, R90.4) - see
+        // The front card is settled before and after every key - see
         // [`App::sync_front`].
         self.sync_front();
         let r = self.key_dispatch(k);
-        // R90.29: an answer that leaves closes its card at once.
+        // An answer that leaves closes its card at once.
         if let Some(Action::Answer { req_id, .. } | Action::AnswerQuestion { req_id, .. }) = &r {
             let req_id = req_id.clone();
             self.answer_leaving(&req_id);
@@ -39,7 +39,7 @@ impl App {
     }
 
     fn key_dispatch(&mut self, k: Key) -> Option<Action> {
-        // **The terminal talking about itself**, not the person: focus and the background
+        // The terminal talking about itself, not the person: focus and the background
         // colour. Recorded and nothing else - they must not dismiss a notice, end a recall or
         // reach a pane the way a keystroke does.
         match k {
@@ -55,7 +55,7 @@ impl App {
                 }
                 return None;
             }
-            // **The pointer's own reports** - hover, and the press, drag and release a selection
+            // The pointer's own reports - hover, and the press, drag and release a selection
             // is made of - before anything a keystroke does: moving the mouse must not dismiss
             // a notice. A release with no drag is a click, and goes on as one. See `app::pointer`.
             Key::Hover { x, y } => {
@@ -76,7 +76,7 @@ impl App {
                     None => None,
                 };
             }
-            // **Esc drops a selection first** - the operator: *"and cancel selection on esc"*  -
+            // Esc drops a selection first - the operator: *"and cancel selection on esc"*  -
             // and that Esc is spent on it: a pane, a popup, a running turn stay as they were.
             Key::Esc if self.selection.is_some() => {
                 self.drop_selection();
@@ -111,7 +111,7 @@ impl App {
             }
             _ => {}
         }
-        // **The session's prompts, before a recall starts** - see `refresh_prompt_history`.
+        // The session's prompts, before a recall starts - see `refresh_prompt_history`.
         // Up may yet be taken by a card or a pane further down; refreshing the list then
         // changes nothing a reader sees, and the editor ignores it mid-recall.
         if matches!(k, Key::Up) {
@@ -149,14 +149,14 @@ impl App {
             Key::CtrlE => Key::End,
             k => k,
         };
-        // **alt-g / alt-b, settled once, here** - the `ctrl-e` shape: a mark when nothing owns
+        // alt-g / alt-b, settled once, here - the `ctrl-e` shape: a mark when nothing owns
         // the keys (alt-b also needs an empty composer), word-left / nothing otherwise.
         let k = match k {
             Key::AltB if !self.feedback_key_free(true) => Key::WordLeft,
             Key::AltG if !self.feedback_key_free(false) => return None,
             Key::AltG => return self.feedback_key(true),
             Key::AltB => return self.feedback_key(false),
-            // **alt-a opens the question a row is waiting on you for** - wherever the keyboard is,
+            // alt-a opens the question a row is waiting on you for - wherever the keyboard is,
             // because the line that names it is drawn on every frame - and brings back a question
             // card Esc put away, of either kind (see [`App::bring_back_question`]).
             Key::AltA => {
@@ -178,7 +178,7 @@ impl App {
                 self.open_latest_notice();
                 return None;
             }
-            // **alt-h folds the questions waiting on you away, and back** - not Esc, which already
+            // alt-h folds the questions waiting on you away, and back - not Esc, which already
             // means "stop" and "back to the bottom" (the operator: *"esc is ambigous here"*).
             Key::AltH => {
                 self.toggle_asks_folded();
@@ -186,7 +186,7 @@ impl App {
             }
             k => k,
         };
-        // **A wheel notch goes to the surface under the pointer** - see [`App::wheel_at`]. One
+        // A wheel notch goes to the surface under the pointer - see [`App::wheel_at`]. One
         // that nothing on the frame claims, or that arrives while a card owning every key is up,
         // goes on below as a notch with no position, which is what the wheel always was.
         let k = match k {
@@ -218,12 +218,12 @@ impl App {
         if let ControlFlow::Break(r) = self.key_todo_draft(&k) {
             return r;
         }
-        // **An open diff popup owns the keyboard**, below the cards and asks above (a question
+        // An open diff popup owns the keyboard, below the cards and asks above (a question
         // that arrives while the operator reads stays answerable) and above everything else.
         if let ControlFlow::Break(r) = self.key_diff_popup(&k) {
             return r;
         }
-        // **A click goes to what the last frame drew under it** - see [`App::key_click`]. Placed
+        // A click goes to what the last frame drew under it - see [`App::key_click`]. Placed
         // after the cards that own every key (they take clicks as theirs) and before every
         // surface: no surface decides any more whether a click is its own.
         if let ControlFlow::Break(r) = self.key_click(&k) {
@@ -232,12 +232,12 @@ impl App {
         if let ControlFlow::Break(r) = self.key_chords(&k) {
             return r;
         }
-        // **The quit card takes the arrows from an open window too**: its bar promises `1/2 or
+        // The quit card takes the arrows from an open window too: its bar promises `1/2 or
         // up/down then enter`, and a mark that did not move answered a row nobody chose.
         if let ControlFlow::Break(r) = self.key_quit_card(&k) {
             return r;
         }
-        // **An open ctrl-v window keeps the arrows and Esc** - its own seam prints `esc closes`, so a
+        // An open ctrl-v window keeps the arrows and Esc - its own seam prints `esc closes`, so a
         // decision arriving over it must not take the row being read away (see
         // [`App::key_payload_window`]).
         if let ControlFlow::Break(r) = self.key_payload_window(&k) {
@@ -252,12 +252,12 @@ impl App {
         if let ControlFlow::Break(r) = self.key_pick(&k) {
             return r;
         }
-        // **The reseat card, behind every card above** - it is drawn only while none of them
+        // The reseat card, behind every card above - it is drawn only while none of them
         // holds the slot (`App::reseat_card_up`), and typing past it pins it.
         if let ControlFlow::Break(r) = self.key_reseat_card(&k) {
             return r;
         }
-        // **The surface in front, and nothing behind it** - see [`App::key_surface`].
+        // The surface in front, and nothing behind it - see [`App::key_surface`].
         if let ControlFlow::Break(r) = self.key_surface(&k) {
             return r;
         }
@@ -265,8 +265,8 @@ impl App {
         // then does Esc start arming an interrupt, and not while a payload window is open, since that window's own
         // seam prints `esc closes`.
         if matches!(k, Key::Esc) && !self.following() && self.payload_sel.is_none() {
-            // **Back to following**, which is what the banner says this key does - and it
-            // clears the anchor as well as the count, because the two are one state (R36).
+            // Back to following, which is what the banner says this key does - and it
+            // clears the anchor as well as the count, because the two are one state.
             self.scroll = 0;
             self.anchor = None;
             return None;
@@ -343,7 +343,7 @@ impl App {
                 self.redraw = true;
                 return None;
             }
-            // **A card put away here keeps the operator here too** (R90.15): the parent's
+            // A card put away here keeps the operator here too: the parent's
             // waiting line is filtered to the parent's session, so a child's question left
             // behind with its deadline would be invisible from up there.
             let sid = self.session_id.clone();
@@ -409,8 +409,8 @@ impl App {
                     None
                 }
             }
-            // The second Ctrl+C asks instead of leaving: it used to detach, and an operator who wanted the daemon
-            // stopped needed a second terminal. The card makes the irreversible half a choice, and it does not open
+            // The second Ctrl+C asks instead of leaving: an operator who wanted the daemon
+            // stopped would need a second terminal. The card makes the irreversible half a choice, and it does not open
             // over a decision, which takes the digits first.
             Reaction::Quit if !self.open.is_empty() => {
                 self.say(
@@ -517,7 +517,7 @@ impl App {
             (None, PaneFact::Running(list)) if list.len() == 1 => {
                 Some(format!("!term {}", list[0].command))
             }
-            // **Several, by number** - `!term N` is how each comes back (protocol 44).
+            // Several, by number - `!term N` is how each comes back (protocol 44).
             (None, PaneFact::Running(list)) => Some(crate::app::session::panes_said(list)),
             (None, PaneFact::None | PaneFact::Unasked) => None,
         }
@@ -547,7 +547,7 @@ impl App {
                 if at > 0 {
                     out.extend(self.pane_input(&raw[..at]));
                 }
-                // **Detach: nothing leaves the head.** Not a frame and not a keystroke - the
+                // Detach: nothing leaves the head. Not a frame and not a keystroke - the
                 // whole point is that the program keeps running and this head stops drawing it.
                 self.detach();
                 out
@@ -600,7 +600,7 @@ impl App {
         }
         if to != from {
             self.payload_page = to;
-            // **The history buffer is a cache of the rendered rows**, and a page offset
+            // The history buffer is a cache of the rendered rows, and a page offset
             // changes what one of those rows renders to - so `redraw` alone re-draws the
             // *old* lines.
             self.invalidate_history();
@@ -722,7 +722,7 @@ pub(crate) fn match_option(d: &OpenDecision, typed: &str) -> OptionChoice {
             note: None,
         },
         // The reason, for the option that promised one: `deny_and_tell` is labelled *deny, and tell the model why*,
-        // and typing the why used to land here and be refused, with the line left in the composer and nothing
+        // and typing the why must not be refused, with the line left in the composer and nothing
         // answered at all.
         letibot_sessionlog::event::OptionKind::RejectAlways => OptionChoice::One {
             option_id: id.option_id.clone(),
@@ -755,7 +755,7 @@ pub(crate) fn question_answer(
 ) -> letibot_sessionlog::question::QuestionAnswer {
     use letibot_sessionlog::question::QuestionAnswer;
     let line = typed.trim();
-    // **Abstention first**, because it is the one shape whose spelling is a word rather
+    // Abstention first, because it is the one shape whose spelling is a word rather
     // than one of the model's: a choice that happened to be called `abstain` is still a
     // choice, and a person who chose it typed its exact words, which is checked below.
     if line.eq_ignore_ascii_case(ABSTAIN) {
@@ -767,7 +767,7 @@ pub(crate) fn question_answer(
     {
         return QuestionAnswer::choosing(i);
     }
-    // **The choice, then the note.** The choice has to be a prefix of the line for the
+    // The choice, then the note. The choice has to be a prefix of the line for the
     // note to have anything to qualify, and the separator has to be there for the rest
     // to BE a note.
     for (i, c) in choices.iter().enumerate() {
@@ -834,24 +834,24 @@ pub enum Key {
     Enter,
     /// Alt+Enter: a newline that does not submit.
     SoftEnter,
-    /// **alt-g: mark the current turn good** (TODO R81, `app/feedback.rs`).
+    /// alt-g: mark the current turn good.
     AltG,
-    /// **alt-a: answer the operator's question** - bring back a question card Esc put away, or
+    /// alt-a: answer the operator's question - bring back a question card Esc put away, or
     /// open the card for the first todo row that is waiting on the operator (`app/todos.rs`'s
     /// `bring_back_question`). The resident `waiting on you` line names it.
     AltA,
-    /// **alt-b: mark the current turn bad** - on an empty composer; readline's word-left
+    /// alt-b: mark the current turn bad - on an empty composer; readline's word-left
     /// everywhere else, which is what alt-b always was (`app/feedback.rs`).
     AltB,
-    /// **alt-r: reseat now** - the reseat card's first row from anywhere, while the session's
+    /// alt-r: reseat now - the reseat card's first row from anywhere, while the session's
     /// prompt is stale (`app::reseat`).
     AltR,
-    /// **alt-p: show the reseat card** - open the card the strip is the pinned form of.
+    /// alt-p: show the reseat card - open the card the strip is the pinned form of.
     AltP,
-    /// **alt-n: open the newest notice whole** - the popup a click on its one line opens (R89):
+    /// alt-n: open the newest notice whole - the popup a click on its one line opens:
     /// every notice is one line, and the keyboard needs a way to the rest of it.
     AltN,
-    /// **alt-h: fold what is waiting on you away, or back** - the questions' yellow line goes,
+    /// alt-h: fold what is waiting on you away, or back - the questions' yellow line goes,
     /// and the composer's bottom edge counts them (`app/waiting.rs`).
     AltH,
     Backspace,
@@ -935,7 +935,7 @@ pub enum Key {
         x: u16,
         y: u16,
     },
-    /// **The left button went down** - not yet a click: with no motion before the release it
+    /// The left button went down - not yet a click: with no motion before the release it
     /// becomes one ([`Key::Click`]), and with motion it is a selection. See `app::pointer`.
     Press {
         x: u16,

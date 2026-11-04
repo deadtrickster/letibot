@@ -113,7 +113,7 @@ fn a_card_that_was_never_taken_to_an_oracle_says_so_and_one_that_was_does_not() 
     );
     assert!(drawn.contains("model says unavailable"), "{drawn}");
 
-    // **A question is not a gate, so it says neither.** Nothing is ever consulted
+    // A question is not a gate, so it says neither. Nothing is ever consulted
     // for one, and a line about oracles on a card offering plain-text choices is
     // noise in the register a reader is taught to skim.
     let mut q = decision_with(&[]);
@@ -126,7 +126,7 @@ fn a_card_that_was_never_taken_to_an_oracle_says_so_and_one_that_was_does_not() 
     );
 }
 
-/// **A glob typed after the option id is the rule's coverage.**
+/// A glob typed after the option id is the rule's coverage.
 ///
 /// > *"please add globbing to my answers somehow too"*
 #[test]
@@ -468,7 +468,7 @@ fn the_card_says_the_declared_access_is_what_asks() {
         .expect("the row");
     assert!(line.contains(sgr::DIM), "not in the dim register: {line:?}");
 
-    // **Absent where the access is not what asks** - a read call, a write call, a
+    // Absent where the access is not what asks - a read call, a write call, a
     // network call, and a daemon that did not say.
     for other in ["read", "write", "network", ""] {
         let drawn = says(other);
@@ -750,7 +750,7 @@ fn an_operator_answer_over_an_oracles_advice_keeps_the_two_reasons_apart() {
         .find(|c| c.call_id == "c1")
         .expect("the call");
     let d = c.decision.as_ref().expect("the decision");
-    // The advice survived the settle. It used to be dropped here.
+    // The advice survives the settle.
     assert!(d.advice.is_some(), "the oracle's reply was carried across");
 
     let open = call_card(c, &plain_cfg(120), 0, Fold::Open, true).join("\n");
@@ -1002,7 +1002,7 @@ fn a_digit_inside_a_half_typed_line_is_not_an_answer() {
     assert_eq!(a.input(), "give me 2");
 }
 
-/// **A rung is the answer, not its id**: the card drew `Allow session  (allow_session)`, an id
+/// A rung is the answer, not its id: the card drew `Allow session  (allow_session)`, an id
 /// beside a label that already says it, on every row. Typing the id still answers and a prefix is
 /// what names the list, so the row carries the label alone.
 #[test]
@@ -1053,7 +1053,7 @@ fn the_ladder_survives_a_card_whose_content_is_taller_than_the_screen() {
     let mut a = tall_card(true);
     let screen = a.screen(80, 24).join("\n");
 
-    // **The answer is on the screen**, all of it: every option, and the line that
+    // The answer is on the screen, all of it: every option, and the line that
     // says how to press one. This is the whole of the requirement.
     for opt in ["Allow once", "Allow session", "Deny"] {
         assert!(screen.contains(opt), "`{opt}` was trimmed away:\n{screen}");
@@ -1062,7 +1062,7 @@ fn the_ladder_survives_a_card_whose_content_is_taller_than_the_screen() {
         screen.contains(crate::ui::cards::decision::LADDER_HINT),
         "the hint is the fourth thing the loop used to eat:\n{screen}"
     );
-    // **And the wall is where it belongs: above, with a seam.** The count is the
+    // And the wall is where it belongs: above, with a seam. The count is the
     // disclosure - how much is out of view, not that there is more.
     let has_seam = screen
         .lines()
@@ -1100,7 +1100,7 @@ fn the_gate_card_says_how_long_there_is_and_what_silence_does() {
         a.decision_lines(&d, 200).join("\n")
     };
 
-    // **The ladder, on the card.** Whole minutes while there is time to think,
+    // The ladder, on the card. Whole minutes while there is time to think,
     // rounded up; seconds from where the number is acted on.
     const NOW: u64 = 1_788_984_000_000;
     assert!(
@@ -1124,7 +1124,7 @@ fn the_gate_card_says_how_long_there_is_and_what_silence_does() {
         "never a decimal on a whole second"
     );
 
-    // **What silence does, in the daemon's three words.** `RUNS` is upper case
+    // What silence does, in the daemon's three words. `RUNS` is upper case
     // because it is the only one of the three that does something nobody asked for.
     let deny = ladder(NOW + 300_000, NOW, OnTimeout::Deny);
     assert!(deny.contains("if nobody answers, nothing runs"), "{deny}");
@@ -1139,7 +1139,7 @@ fn the_gate_card_says_how_long_there_is_and_what_silence_does() {
         "{ask}"
     );
 
-    // **Below the options**, because the order a person reads is the question, the
+    // Below the options, because the order a person reads is the question, the
     // choices, then what happens if they do nothing.
     let at_clause = deny.find("if nobody answers").expect("the clause");
     let at_options = deny.find("Allow once").expect("the ladder");
@@ -1162,7 +1162,7 @@ fn the_gate_card_says_how_long_there_is_and_what_silence_does() {
         "a countdown below zero is a rendering fault: {expired}"
     );
 
-    // **No deadline, nothing drawn.** `null` is §11.5's *wait forever* - a policy,
+    // No deadline, nothing drawn. `null` is §11.5's *wait forever* - a policy,
     // not missing information - so there is no silence for a clause to describe and
     // no countdown to draw. §13.2b, answered the other way round from `unreadable 0`.
     let a = app();
@@ -1241,7 +1241,7 @@ fn the_card_names_the_files_the_action_would_write() {
         "a single file grew a count: {one}"
     );
 
-    // **Several, and the count goes above the names** so a viewport cannot hide it: a window that
+    // Several, and the count goes above the names so a viewport cannot hide it: a window that
     // shows two of five still says five.
     d.write_targets = vec![
         WriteTarget {
@@ -1274,7 +1274,7 @@ fn the_card_names_the_files_the_action_would_write() {
         "the count is below the names: {many}"
     );
 
-    // **An unresolved target is not drawn as a path.** `Path.home() / name` is the case the
+    // An unresolved target is not drawn as a path. `Path.home() / name` is the case the
     // requirement calls the one a person most needs to see.
     d.write_targets = vec![
         WriteTarget {
@@ -1296,7 +1296,7 @@ fn the_card_names_the_files_the_action_would_write() {
         "an unresolved target is drawn as though it were a path: {mixed}"
     );
 
-    // **And an empty list says nothing.** This is the assertion that keeps *empty* from meaning
+    // And an empty list says nothing. This is the assertion that keeps *empty* from meaning
     // *writes nothing*.
     d.write_targets = Vec::new();
     let none = a.decision_lines(&d, 200).join("\n");
@@ -1319,7 +1319,7 @@ fn a_deadline_arriving_in_a_snapshot_reads_the_same_as_one_arriving_live() {
     let from_live = live.decision_lines(&d, 200).join("\n");
     assert!(from_live.contains("expires in 5 min"), "{from_live}");
 
-    // **The snapshot arm** - the half that goes wrong in this family: the same card,
+    // The snapshot arm - the half that goes wrong in this family: the same card,
     // arriving in a view rather than as an event.
     let mut snap = app();
     snap.clock(NOW);
@@ -1362,7 +1362,7 @@ fn a_deadline_arriving_in_a_snapshot_reads_the_same_as_one_arriving_live() {
     );
 }
 
-/// **A refused call is not a decision, so nothing about deadlines is drawn on one.**
+/// A refused call is not a decision, so nothing about deadlines is drawn on one.
 /// The clause belongs to a card that will wait for an answer, and a card that has
 /// already settled cannot be left to expire again.
 #[test]

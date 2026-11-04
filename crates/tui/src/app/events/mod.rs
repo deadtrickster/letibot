@@ -1,4 +1,4 @@
-//! **The daemon's events, applied**: a snapshot loaded, a frame applied, a transcript row
+//! The daemon's events, applied: a snapshot loaded, a frame applied, a transcript row
 //! recorded, and the bookkeeping of forks and echoed prompts.
 
 use super::*;
@@ -32,9 +32,9 @@ impl App {
     /// Apply one frame. Never sends anything; see the module note on acking.
     pub fn apply(&mut self, frame: ServerFrame) -> Disposition {
         let d = self.apply_frame(frame);
-        // R89: one event, one row — a warning and the session rows that say the same event.
+        // One event, one row - a warning and the session rows that say the same event.
         self.pair_one_event();
-        // **The front card is settled after every frame** (R90.3, R90.4) — see
+        // The front card is settled after every frame - see
         // [`App::sync_front`].
         self.sync_front();
         d
@@ -60,8 +60,8 @@ impl App {
             | ServerFrame::Accepted { .. }
             | ServerFrame::Rejected { .. }
             | ServerFrame::Bye { .. }) => self.on_replies(frame),
-            // **A confirmation of `allow-all` that another head asked for, and how it ended**
-            // (`PROTOCOL_VERSION` 54, B8). Neither a list nor a reply to anything this head
+            // A confirmation of `allow-all` that another head asked for, and how it ended
+            // (`PROTOCOL_VERSION` 54). Neither a list nor a reply to anything this head
             // sent: the card is the daemon's and the answer is the person's.
             frame @ (ServerFrame::ModeConfirm { .. } | ServerFrame::ModeSettled { .. }) => {
                 self.on_mode_card(frame)
@@ -82,10 +82,10 @@ impl App {
     /// Replace all state from a snapshot. This is the late-join path and the
     /// resync path; they are the same path, which is why resync is not special.
     pub(crate) fn load(&mut self, s: Snapshot) {
-        // **The held counts are not in a snapshot** (R91.12): the daemon says them again right
+        // The held counts are not in a snapshot: the daemon says them again right
         // after one, so whatever this head last read is dropped rather than carried over.
         self.held = None;
-        // **The activity IS in one** (`PROTOCOL_VERSION` 52), and it is read from the snapshot for
+        // The activity IS in one (`PROTOCOL_VERSION` 52), and it is read from the snapshot for
         // the reason the turn in flight is: a head that attached between two rounds has seen no
         // `ActivityChanged`, and the round-level turn would draw it as idle while a call runs.
         self.activity = s.activity.clone();
@@ -93,8 +93,8 @@ impl App {
         // pruned below where the new rows are known. Clearing them here was the event that un-collapsed every
         // notice. The same session or a different one is read once at the top, since three things ask.
         let same_session = self.session_id == s.session_id;
-        // **This head's own todo cards are put away before the open list is replaced** (R90.14)
-        // — under the session they were asked in, which is still `self.session_id` here.
+        // This head's own todo cards are put away before the open list is replaced
+        // - under the session they were asked in, which is still `self.session_id` here.
         self.stash_todo_cards();
         // Everything session-scoped goes, not just the transcript: a snapshot is a replacement and this is
         // also the switch path, and carrying the previous session's model name or a tool target keyed by a call
@@ -142,7 +142,7 @@ impl App {
                 .map(|v| SubagentState {
                     session_id: v.session_id.clone(),
                     state: v.state.clone(),
-                    // **The event's own word for the instant**, read exactly as the live arm
+                    // The event's own word for the instant, read exactly as the live arm
                     // reads it: `running` is the one state it names in which a turn is
                     // generating. See [`SubagentState::generating`].
                     generating: v.state == "running",
@@ -169,11 +169,11 @@ impl App {
             // words from a conversation no longer on the screen is the same lie a carried model name is.
             self.pending_prompts.clear();
             self.unconfirmed.clear();
-            // **And the viewport's place, which is a place in the rows that just went**
-            // (R36). Carrying it across a switch would hold the reader on a row of another
-            // conversation's transcript — the same lie a carried-over model name is.
+            // And the viewport's place, which is a place in the rows that just went
+            //. Carrying it across a switch would hold the reader on a row of another
+            // conversation's transcript - the same lie a carried-over model name is.
             self.anchor = None;
-            // **And the carry with it**, for the same reason and one more: a carry is a
+            // And the carry with it, for the same reason and one more: a carry is a
             // place taken in THIS conversation's rows, and a place in another session's
             // transcript is not a place to look for here. See [`App::carry`].
             self.carry = None;
@@ -223,21 +223,20 @@ impl App {
             words: self.held_row_words(),
             line: self.held_line(),
             // A snapshot carries its rows in the same breath as the replacement, so there is
-            // nothing left to wait for — unlike a fork, whose rows follow the statement on the
+            // nothing left to wait for - unlike a fork, whose rows follow the statement on the
             // wire. See [`Carry::arriving`].
             arriving: false,
         });
         self.items = s.items;
-        // **Where this snapshot's first row sits in the session.** The daemon trims its own view, so a
-        // head that attached to a long conversation holds a window whose first row is not row 0, and the
-        // ordinal is how it asks for the rows above: `items_dropped` is that count and it is already on
-        // the wire. A resync replaces the window, so what the head knew about rows below it goes too.
+        // Where this snapshot's first row sits in the session. The daemon trims its own view, so the window's first
+        // row may not be row 0, and `items_dropped` (on the wire) is the ordinal to ask for the rows above.
+        // A resync replaces the window, so what the head knew about rows below it goes too.
         self.items_base = s.items_dropped as usize;
         // And how many of those rows are ABOVE the base: a resume's republished ancestors arrive in
         // the same list, and a head that took them as the base's own asked for every page above its
         // window that many rows too far into the conversation.
         self.items_lead = s.items_lead;
-        // **And a snapshot reaches the tail**, so nothing sits below this window: the count a
+        // And a snapshot reaches the tail, so nothing sits below this window: the count a
         // parked reader was holding names rows of the transcript this one replaced.
         self.items_below = 0;
         // A page asked for against the transcript this one replaced is a page nobody will place, and
@@ -255,15 +254,15 @@ impl App {
         // are replaced, since a snapshot can be the empty one a registered but unopened session is handed. See
         // [`App::rows_the_store_holds`].
         self.restoring = self.rows_the_store_holds();
-        // A snapshot replaces the rows, so everything derived from them — the `!`
-        // candidates and the model's suggestions — is stale and goes with them.
+        // A snapshot replaces the rows, so everything derived from them - the `!`
+        // candidates and the model's suggestions - is stale and goes with them.
         self.the_rows_moved();
         // The fill's bar goes with the stream that carried it: its only exit is a tick whose `done` reached
         // `total`, and a republish that overruns a head's queue demotes the head, so every later tick is skipped.
         // A fill still running is not lost, since its next tick re-arms the line and the bar ends by fact.
         self.filling = None;
-        // **The two maps keyed by a row's id are pruned to the rows that are still here.**
-        // One rule, two doors onto a replacement — this one and [`App::rows_replaced`].
+        // The two maps keyed by a row's id are pruned to the rows that are still here.
+        // One rule, two doors onto a replacement - this one and [`App::rows_replaced`].
         self.prune_to_the_rows();
         // The snapshot's turn carries its calls with their edit excerpts and the rows it appended in order,
         // and only the live path filled `call_edits`, so a restarted head drew every landed edit panel-less.
@@ -291,7 +290,7 @@ impl App {
         // and kept off the screen, one the snapshot no longer holds was settled meanwhile and goes, and a todo
         // row's card is this head's own. A switch takes away nothing.
         let mut open = s.open_decisions;
-        // R90.29: the snapshot is the truth about what is still open — a card whose answer was
+        // The snapshot is the truth about what is still open - a card whose answer was
         // in flight comes back if the daemon still holds its question, and goes if it does not.
         self.answering.clear();
         let sid = self.session_id.clone();
@@ -306,10 +305,9 @@ impl App {
         open.retain(|d| !self.away.iter().any(|a| a.decision.req_id == d.req_id));
         let was_asking = self.open.first().cloned();
         self.open = open;
-        // **The question the operator was answering went while they typed it** - a deadline, or
-        // another head answering it - and its draft would be sent as a prompt by the next Enter.
-        // A SWITCH is not a question closing: the other session's list says nothing about this
-        // one's cards, and its answer would be cleared with a sentence that is not true.
+        // The question the operator was answering went while they typed it (a deadline, or another head), and
+        // its draft would be sent as a prompt by the next Enter. A SWITCH is not a question closing: the other
+        // session's list says nothing about this one's cards.
         self.drop_a_gone_questions_draft(was_asking, same_session);
         // A snapshot can replace the open set wholesale; the highlight is reset only if the
         // front card changed (`App::sync_front`), and kept in range here when it did not.
@@ -431,7 +429,7 @@ impl App {
                 // duplicate this field prevents until the next `TurnStarted`. Closing that needs a daemon field.
                 ..TurnPane::default()
             };
-            // The snapshot carries the accumulated text **once**. Everything after
+            // The snapshot carries the accumulated text once. Everything after
             // this is an increment. That is §13.3's wire half, arriving.
             pane.text.push(&t.text);
             pane.reasoning.push(&t.reasoning);
@@ -540,7 +538,7 @@ impl App {
                 scroll.saturating_sub(by)
             }
         };
-        // **The one on top, and only while it is drawn** (R69): an output under another pane,
+        // The one on top, and only while it is drawn: an output under another pane,
         // or under rano, is not on the screen and does not move.
         match (self.focused_surface(), &mut self.sub_out, &mut self.job_out) {
             (Some(Surface::SubOut), Some(v), _) => v.scroll = moved(v.scroll),
@@ -593,7 +591,7 @@ impl App {
             .collect();
         self.bound_prompts
             .retain(|id, _| bodyless.contains(id.as_str()));
-        // **A call's facts are the row's, not the session's.** The window lets rows go and nothing
+        // A call's facts are the row's, not the session's. The window lets rows go and nothing
         // else was pruned with them, so an excerpt per edit the conversation ever carried stayed for
         // the life of the head: the bounded window grew anyway.
         let held: std::collections::HashSet<&str> =
@@ -622,7 +620,7 @@ impl App {
             line: self.held_line(),
             arriving,
         });
-        // **The rows before the first one that goes keep their places** - a resume republishes the tail
+        // The rows before the first one that goes keep their places - a resume republishes the tail
         // of the transcripts a compaction put behind the current one, and the reader draws them.
         let kept = self
             .items
@@ -630,7 +628,7 @@ impl App {
             .position(|r| r.item_id.starts_with(gone.as_str()))
             .unwrap_or(self.items.len());
         self.items.retain(|r| !r.item_id.starts_with(gone.as_str()));
-        // **But the ordinal space is the new base's.** It is numbered from zero, so the rows held
+        // But the ordinal space is the new base's. It is numbered from zero, so the rows held
         // above it are rows no ordinal names: `items_lead` says where the base starts, and a page
         // above the window belongs there and not at the front.
         self.items_lead = self
@@ -663,13 +661,13 @@ impl App {
         // window, measured from the bottom of the transcript that just went. `load` has always zeroed it; the
         // live door did not, so a `/reseat` left the reader placed by a number that means nothing here.
         self.scroll = 0;
-        // A row went, so everything derived from the rows — the `!` candidates and the model's
-        // suggestions — is stale, by the same rule the live append follows.
+        // A row went, so everything derived from the rows - the `!` candidates and the model's
+        // suggestions - is stale, by the same rule the live append follows.
         self.the_rows_moved();
         // The rendered history is of rows that are not here: dropped whole rather than from a row,
         // because the row indices themselves are about to mean something else.
         self.invalidate_history();
-        // **And the tables keyed by a row's id go with the rows that left.** The same rule
+        // And the tables keyed by a row's id go with the rows that left. The same rule
         // `load` applies to a replacement it can see the whole of.
         self.prune_to_the_rows();
     }
@@ -697,8 +695,8 @@ impl App {
         // removal of the row's text. The row's text is the engine's join, so `retain(|u| u != row)` matches
         // nothing and a mark whose row landed inside a merged item would stay for ever.
         let lines: Vec<&str> = row.split('\n').collect();
-        // **A line is spent once.** Two prompts that say the same thing stay queued
-        // separately until each of their rows lands — the property the equality rule
+        // A line is spent once. Two prompts that say the same thing stay queued
+        // separately until each of their rows lands - the property the equality rule
         // gave, which a rule retiring every matching entry would lose.
         let mut claimed = vec![false; lines.len()];
         let mut cursor = 0usize;
@@ -790,15 +788,15 @@ impl App {
     pub fn record_item(&mut self, item_id: &str, item: TranscriptItem) {
         let prose = matches!(item, TranscriptItem::Assistant { .. });
         // A reasoning row takes over the reasoning it carries ([`TurnPane::hand_over_reasoning`]), called
-        // once the body is in `items` for it to read. It used to advance a byte mark before the body was placed,
-        // which is why the mark could only trim the count.
+        // once the body is in `items` for it to read. A byte mark advanced before the body was placed
+        // could only trim the count.
         let reasoning = matches!(item, TranscriptItem::Reasoning { .. });
         // Content ends the binding either way. Confirmed, the row renders from its real body and the echo
         // retires by text; contradicted, the row was never this head's prompt and the echo goes back to the
         // tail. Neither branch may retire on the announcement.
         self.bound_prompts.remove(item_id);
-        // **A body landing takes its id off the bulk announcement**, so the count follows
-        // the evidence and not a clock — and an empty set means the carry is complete and
+        // A body landing takes its id off the bulk announcement, so the count follows
+        // the evidence and not a clock - and an empty set means the carry is complete and
         // the trigger clears itself.
         if let Some(b) = self.bulk.as_mut() {
             b.ids.remove(item_id);
@@ -818,7 +816,7 @@ impl App {
             }
         }
         let Some(idx) = self.items.iter().position(|r| r.item_id == item_id) else {
-            // **A head holding a window is sent bodies for rows it let go**, above and below it:
+            // A head holding a window is sent bodies for rows it let go, above and below it:
             // the page the reader asks for brings the row back whole, so this is the window doing
             // its job and not a body with nowhere to go.
             if self.items_base > 0 || self.items_below > 0 {
@@ -908,8 +906,8 @@ pub(crate) fn strip_landed(
     let mut kept: Vec<&str> = Vec::with_capacity(pieces.len());
     let mut hit = false;
     for piece in &pieces {
-        // **A blank line is not a claim.** It carries no words, so it can say
-        // nothing about whether a prompt landed — and two prompts that differ only
+        // A blank line is not a claim. It carries no words, so it can say
+        // nothing about whether a prompt landed - and two prompts that differ only
         // in blank lines would otherwise retire each other.
         if piece.is_empty() {
             kept.push(piece);
@@ -970,7 +968,7 @@ pub(crate) fn unclaimed_prompts(
         // the first line this entry claimed is what says which row is drawing it.
         let before = cursor;
         let rest = strip_landed(q, &lines, &mut claimed, &mut cursor);
-        // **The drawing that claimed the FIRST line of this entry.** Cursor order is queue order,
+        // The drawing that claimed the FIRST line of this entry. Cursor order is queue order,
         // so the earliest claim is the one the entry's head belongs to; a later one is drawing a
         // line further down the same prompt.
         let by = (before..cursor)

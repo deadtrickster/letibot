@@ -282,7 +282,7 @@ fn the_corners_repository_survives_a_todo_md_beside_it() {
         "the path is not the session's workspace: {drawn}"
     );
 
-    // **The field is a target, and its FIRST column is inside it.** The record was made two
+    // The field is a target, and its FIRST column is inside it. The record was made two
     // columns left of the drawing (no `+ gutter`), which a click in the middle of a six-column
     // field survived and a click on its edge did not - so this clicks the edge.
     let hit = a
@@ -312,7 +312,7 @@ fn the_corners_repository_survives_a_todo_md_beside_it() {
         "the card's first row is the option to track the work: {rows:?}"
     );
 
-    // **And the list is still the folder's.** The split's other half: the pane reads the same
+    // And the list is still the folder's. The split's other half: the pane reads the same
     // `TODO.md` the operator wrote, not the repository's (which does not exist here).
     let rows = crate::ui::panes::todos::repo_todos_map(&a.wiring.workspace);
     let text = rows
@@ -325,8 +325,8 @@ fn the_corners_repository_survives_a_todo_md_beside_it() {
         "the pane read the wrong TODO.md: {text}"
     );
 
-    // **And a list beside the code is still read from there.** The fallback is what every layout
-    // before 2026-10-31 used, so the split must not cost it: a folder with no `TODO.md` of its
+    // And a list beside the code is still read from there. The fallback is what every layout
+    // read, so the split must not cost it: a folder with no `TODO.md` of its
     // own opens the repository's.
     let g = one_repo("beside", None);
     let beside = g.0.join("letibot");

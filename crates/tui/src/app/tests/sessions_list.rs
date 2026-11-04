@@ -1,16 +1,9 @@
-//! **The session list's drawing, pinned** - the picture the picker drew on 2026-10-27, before the
+//! The session list's drawing, pinned - the picture the picker drew before the
 //! list became a built-in plugin, and the assertions the port must keep true.
 //!
-//! `docs/plugins-plan.md` §7 step 10 moves the decisions this fixture exercises - which groups
-//! exist, what a row says, what `WAITING ON YOU` means, which rows fold - out of the head and into
-//! `plugins/builtin/sessions`. A port that changed what a person sees while claiming to move
-//! policy would be a port nobody could review, so the drawing is pinned FIRST: two committed
-//! pictures of one daemon (as the picker opens, and with every fold opened), taken from the head's
-//! own list before a line of the port existed.
-//!
-//! The plugin path is held to these same pictures by
-//! `the_heads_list_and_the_plugins_list_draw_the_same_rows`, which is written for the port: two
-//! paths, one daemon, one width, and the drawings must be identical.
+//! `docs/plugins-plan.md` §7 step 10 moves the decisions this fixture exercises (groups, what a row says, `WAITING ON YOU`, folds)
+//! into `plugins/builtin/sessions`. The drawing is pinned FIRST: two committed pictures of one daemon (as the picker opens,
+//! and with every fold opened), held against the plugin path by `the_heads_list_and_the_plugins_list_draw_the_same_rows`.
 //!
 //! # Regenerating a picture
 //!
@@ -79,7 +72,7 @@ fn the_daemon() -> App {
     a
 }
 
-/// **The home this fixture's daemon is read under** - deliberately not whatever `$HOME` the test
+/// The home this fixture's daemon is read under - deliberately not whatever `$HOME` the test
 /// process happens to have: the picture must be the same file on every runner.
 const HOME: &str = "/home/dead";
 
@@ -118,17 +111,17 @@ fn the_session_list_looks_like_this_as_it_opens() {
     // pass for ever.
     assert!(now.contains("the habr article"), "{now}");
     assert!(now.contains("system ("), "{now}");
-    // **And no group under it** - the branch is closed, so `system`'s own line is the whole of it.
+    // And no group under it - the branch is closed, so `system`'s own line is the whole of it.
     assert!(!now.contains("reviewers ("), "the folded picture: {now}");
     assert!(!now.contains("gatekeepers ("), "{now}");
 }
 
-/// **The same daemon with every fold opened** - the rows a reader sees after pressing → on each
+/// The same daemon with every fold opened - the rows a reader sees after pressing → on each
 /// line, and the nesting inside a group.
 #[test]
 fn the_session_list_looks_like_this_with_every_fold_open() {
     let mut a = the_daemon();
-    // **The folds are the drawn list's**, keyed by row id - the head's own tree reads the same
+    // The folds are the drawn list's, keyed by row id - the head's own tree reads the same
     // state, and `set_row_fold` keeps both in step (`app::sessions_pane`). Opening a project puts
     // rows on the list that were not there to open, so the walk runs until it adds nothing.
     for _ in 0..4 {
@@ -151,7 +144,7 @@ fn the_session_list_looks_like_this_with_every_fold_open() {
     assert!(now.contains("reviewers (1)"), "{now}");
 }
 
-/// **The drawn picture does not depend on the runner's `HOME`.** The rows say `~/Projects/letibot`
+/// The drawn picture does not depend on the runner's `HOME`. The rows say `~/Projects/letibot`
 /// because THIS head's home is the one the fixture set, whatever the process was started with  -
 /// the defect that made these tests green here and red in the gate, where `HOME` was `/home/dead`.
 #[test]
@@ -195,7 +188,7 @@ fn the_heads_list_and_the_plugins_list_draw_the_same_rows() {
     assert_eq!(own, plugins, "the plugin's list is the head's list");
 }
 
-/// **A daemon whose head is standing in `here`** - the family view, and the state a head is in
+/// A daemon whose head is standing in `here` - the family view, and the state a head is in
 /// after Enter on a sub-session.
 fn standing_in(here: &str, sessions: Vec<SessionBrief>) -> App {
     let mut a = app();
@@ -261,7 +254,7 @@ fn the_family_of_a_review_is_drawn_by_both_lists() {
     );
 }
 
-/// **The same rule on the other pair the tree creates**: a notes keeper spawned as a `task` child
+/// The same rule on the other pair the tree creates: a notes keeper spawned as a `task` child
 /// of an ordinary conversation has a parent with no group at all, and it is that conversation's
 /// child on both lists.
 #[test]
@@ -284,7 +277,7 @@ fn the_family_of_a_keeper_is_drawn_by_both_lists() {
     );
 }
 
-/// **A title and a workspace are somebody's text, and both lists draw it the same way** - the
+/// A title and a workspace are somebody's text, and both lists draw it the same way - the
 /// layer turned a control character into a space and the head did not, so one row was two
 /// pictures, and one of them carried an escape to the terminal.
 #[test]
@@ -333,7 +326,7 @@ fn open_everything(a: &mut App) {
     }
 }
 
-/// **A `task` child, and its own child under it** - the shape `HarnessTaskRunner::start` leaves:
+/// A `task` child, and its own child under it - the shape `HarnessTaskRunner::start` leaves:
 /// an id minted `…-sub-<ns>`, and the child's own id as the grandchild's parent.
 #[test]
 fn a_task_child_and_its_own_child_are_drawn_under_their_parents() {

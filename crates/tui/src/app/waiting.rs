@@ -6,7 +6,7 @@ use super::*;
 use crate::app::todos::TODO_ASK;
 
 impl App {
-    /// **Everything the waiting line speaks for**, one key each: the operator's own command
+    /// Everything the waiting line speaks for, one key each: the operator's own command
     /// blocked on a line, every question or permission card put away in this session, every todo
     /// row's question. What a fold remembers, and what decides that the fold still holds.
     pub(crate) fn waiting_keys(&self) -> Vec<String> {
@@ -25,7 +25,7 @@ impl App {
         out
     }
 
-    /// **Whether the waiting line is folded now**: a fold holds while everything waiting is
+    /// Whether the waiting line is folded now: a fold holds while everything waiting is
     /// something it hid. A new question, or nothing waiting at all, ends it.
     pub(crate) fn asks_folded(&self) -> bool {
         let Some(hidden) = &self.asks_hidden else {
@@ -40,7 +40,7 @@ impl App {
         self.asks_folded().then(|| self.waiting_keys().len())
     }
 
-    /// **alt-h** — fold what waits on you away, or bring it back.
+    /// alt-h - fold what waits on you away, or bring it back.
     pub(crate) fn toggle_asks_folded(&mut self) {
         if self.asks_folded() {
             self.asks_hidden = None;
@@ -61,7 +61,7 @@ impl App {
         self.redraw = true;
     }
 
-    /// **`/asks`: every question waiting on you, whole, answering none** — the cards put away,
+    /// `/asks`: every question waiting on you, whole, answering none - the cards put away,
     /// then the todo rows' questions, each with its options.
     pub(crate) fn asks_lines(&self) -> Vec<String> {
         let mut out = Vec::new();

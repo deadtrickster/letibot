@@ -1,4 +1,4 @@
-//! **The app's tests**, one file per theme, and the fixtures they share. Each theme file
+//! The app's tests, one file per theme, and the fixtures they share. Each theme file
 //! reaches the fixtures, the app and the imports below through `use super::*`.
 
 use super::*;
@@ -44,7 +44,7 @@ pub(crate) fn app() -> App {
     })
 }
 
-/// **The newest notice, read whole** - every notice is one line now (R89), so a test that reads
+/// The newest notice, read whole - every notice is one line now, so a test that reads
 /// a notice's words opens it the way the operator does (`alt-n`), reads the popup and closes it.
 fn newest_notice(a: &mut App) -> String {
     a.screen(120, 30);
@@ -187,7 +187,7 @@ fn a_family() -> Vec<SessionBrief> {
     ]
 }
 
-/// **The head in the child's session, with the daemon's list in hand** - the state Enter
+/// The head in the child's session, with the daemon's list in hand - the state Enter
 /// leaves it in when the `Switch` is answered.
 fn inside_a_subagent() -> App {
     let mut a = app();
@@ -277,7 +277,7 @@ fn bang_rows(a: &mut App, seq: u64, id: &str, line: &str, payload: &str) {
     )));
 }
 
-/// **The control for the operator-act ruling**: the same row with no `origin`, which is a
+/// The control for the operator-act ruling: the same row with no `origin`, which is a
 /// call the MODEL proposed - and also every row written before `CallOrigin` existed, since
 /// a missing key reads as `None`. No `User` row goes with it: nobody at the keyboard acted.
 fn model_bash_rows(a: &mut App, seq: u64, id: &str, payload: &str) {
@@ -791,7 +791,7 @@ fn child_event(id: &str, state: &str, answer: Option<&str>) -> SessionEvent {
     }
 }
 
-/// **The footer's `N subagents running` line, off the glass** - read from the frame rather
+/// The footer's `N subagents running` line, off the glass - read from the frame rather
 /// than recomputed, so the assertion is about what the operator sees.
 fn count_row(a: &mut App) -> String {
     let screen = a.screen(100, 24);
@@ -873,7 +873,7 @@ fn the_counts_are_plain_and_the_seam_is_faint_body() {
     a.visibility = Visibility::of(Profile::CONVERSATION);
     a.invalidate_history();
     let screen = a.screen(120, 30).join("\n");
-    // **Glued to the model's sentence**: the counts in the sentence's own register, and
+    // Glued to the model's sentence: the counts in the sentence's own register, and
     // only the seam in the faint one.
     assert!(
         screen.contains("first the helpers: [1 tool call]"),
@@ -886,7 +886,7 @@ fn the_counts_are_plain_and_the_seam_is_faint_body() {
         "the counts were painted faint: {screen:?}"
     );
 
-    // **Alone, after the operator's message** - the other placement, same registers.
+    // Alone, after the operator's message - the other placement, same registers.
     let mut b = app();
     b.cfg.color = true;
     b.apply(hello(
@@ -1140,7 +1140,7 @@ fn plain_cfg(width: usize) -> RenderConfig {
     }
 }
 
-/// A **real** PNG, `w`×`h` - `letibot_transcript::testing`'s, because a fixture that only *looks*
+/// A real PNG, `w`×`h` - `letibot_transcript::testing`'s, because a fixture that only *looks*
 /// like an image is what let a 33-byte header be stored as a picture and wedge a session. A test
 /// that needs the bytes that are NOT a picture asks for `png_header_only` by name.
 fn png_header(w: u32, h: u32) -> Vec<u8> {
@@ -1151,7 +1151,7 @@ fn placeholders(screen: &[String]) -> usize {
     screen.iter().filter(|l| l.contains('\u{10EEEE}')).count()
 }
 
-/// **The same row, with the name the caller stated.** The slug is the agent's own intent and
+/// The same row, with the name the caller stated. The slug is the agent's own intent and
 /// arrives on the wire beside the command; nothing derives one.
 fn named_job(
     id: &str,
@@ -1170,7 +1170,7 @@ fn daemon_job(id: &str, command: &str, running: bool) -> letibot_sessionlog::pro
     letibot_sessionlog::protocol::JobEntry {
         id: id.into(),
         command: command.into(),
-        // **Unnamed by default**, which is the row every one of these tests was written
+        // Unnamed by default, which is the row every one of these tests was written
         // against; `named_job` is the one that states a name.
         slug: String::new(),
         how: "asked".into(),
@@ -1232,7 +1232,7 @@ fn seeded_head(dir: &std::path::Path, template: &str, workspace: &str) -> App {
 //
 // The HEAD's half of the queues, drawn from the daemon's one snapshot; a `QueueMoved` asks for it again.
 
-/// **One review row**, as the snapshot carries it.
+/// One review row, as the snapshot carries it.
 fn queue_review_row(id: &str, state: &str) -> letibot_sessionlog::event::QueueReview {
     letibot_sessionlog::event::QueueReview {
         id: id.into(),
@@ -1251,7 +1251,7 @@ fn queue_review_row(id: &str, state: &str) -> letibot_sessionlog::event::QueueRe
     }
 }
 
-/// **One merge row**, as the snapshot carries it.
+/// One merge row, as the snapshot carries it.
 fn queue_merge_row(id: &str, state: &str) -> letibot_sessionlog::event::QueueMerge {
     letibot_sessionlog::event::QueueMerge {
         id: id.into(),
@@ -1269,7 +1269,7 @@ fn queue_merge_row(id: &str, state: &str) -> letibot_sessionlog::event::QueueMer
     }
 }
 
-/// **One gate step**, as the landing records it.
+/// One gate step, as the landing records it.
 fn gate_step(
     command: &str,
     outcome: letibot_sessionlog::event::MergeGateOutcome,
@@ -1285,7 +1285,7 @@ fn gate_step(
     }
 }
 
-/// **A snapshot**, read at `at_ms`.
+/// A snapshot, read at `at_ms`.
 fn queues(
     reviews: Vec<letibot_sessionlog::event::QueueReview>,
     merges: Vec<letibot_sessionlog::event::QueueMerge>,

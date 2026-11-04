@@ -36,7 +36,7 @@ fn frame(skills: Vec<SkillRow>) -> ServerFrame {
     }
 }
 
-/// **`/skills` opens the pane and asks the daemon**, and the pane draws every row with the source
+/// `/skills` opens the pane and asks the daemon, and the pane draws every row with the source
 /// it came from - the one fact a reader weighs a skill by.
 #[test]
 fn slash_skills_opens_the_pane_and_the_rows_carry_their_sources() {
@@ -58,7 +58,7 @@ fn slash_skills_opens_the_pane_and_the_rows_carry_their_sources() {
     }
 }
 
-/// **`/skills NAME` hands that skill over**, and the rest of the line goes on as the operator's
+/// `/skills NAME` hands that skill over, and the rest of the line goes on as the operator's
 /// prompt in the same turn - which is why the action carries it rather than a second send.
 #[test]
 fn slash_skills_names_one_and_carries_the_rest_of_the_line() {
@@ -81,7 +81,7 @@ fn slash_skills_names_one_and_carries_the_rest_of_the_line() {
     );
 }
 
-/// **Enter opens the skill's file in the editor** - the row under the cursor - and sends nothing
+/// Enter opens the skill's file in the editor - the row under the cursor - and sends nothing
 /// to the session.
 #[test]
 fn enter_on_a_skill_row_opens_its_file_in_the_editor() {
@@ -119,7 +119,7 @@ fn enter_on_a_skill_without_a_file_says_so() {
     );
 }
 
-/// **`s` hands the row under the cursor over**, by name - the deliberate act.
+/// `s` hands the row under the cursor over, by name - the deliberate act.
 #[test]
 fn s_on_a_skill_row_hands_that_skill_over() {
     let mut a = app();

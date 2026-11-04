@@ -10,7 +10,7 @@ use crate::ui::transcript::stale_card::stale_of;
 // Every fixture but the two `pasted` ones is what `harnessd` writes - pinned byte for byte by
 // `harness::tests::card_fixtures`.
 
-/// **The operator's restart, as the daemon writes it now**: the old daemon kept no record, one
+/// The operator's restart, as the daemon writes it now: the old daemon kept no record, one
 /// job reminded.
 const UNKNOWN_NOTICE: &str = include_str!("fixtures/restart_unknown_notice.txt");
 const UNKNOWN_WARNING: &str = include_str!("fixtures/restart_unknown_warning.txt");
@@ -20,16 +20,16 @@ const LATE_NOTICE: &str = include_str!("fixtures/restart_late_notice.txt");
 const LATE_WARNING: &str = include_str!("fixtures/restart_late_warning.txt");
 const JOBS_ONLY_NOTICE: &str = include_str!("fixtures/restart_jobs_only_notice.txt");
 const JOBS_ONLY_WARNING: &str = include_str!("fixtures/restart_jobs_only_warning.txt");
-/// **A restart with nothing to restore** - the daemon came back, says when, and nothing was
+/// A restart with nothing to restore - the daemon came back, says when, and nothing was
 /// running. Its own code (`restart_nothing`) because it is its own sentence.
 const NOTHING_NOTICE: &str = include_str!("fixtures/restart_nothing_notice.txt");
 const NOTHING_WARNING: &str = include_str!("fixtures/restart_nothing_warning.txt");
-/// **The operator's paste, as the daemon before this build wrote it** - *"down for 0s …
+/// The operator's paste, as the daemon before this build wrote it - *"down for 0s …
 /// estimated from nothing (no record said when)"*. A head attached to an older daemon still
 /// reads it; not pinned, because no daemon from this build writes it.
 const PASTED_NOTICE: &str = include_str!("fixtures/restart_pasted_notice.txt");
 const PASTED_WARNING: &str = include_str!("fixtures/restart_pasted_warning.txt");
-/// **pg-noop's restart of 2026-10-14, as its store and its daemon log hold it** - the notice the
+/// A real restart, as its store and its daemon log hold it - the notice the
 /// model got (the restart's header and the `[task]` group of the twelve children it handed over)
 /// and the warning the daemon raised. Not pinned: real text, from the build before this change.
 const DELIVERED_NOTICE: &str = include_str!("fixtures/restart_with_deliveries_notice.txt");
@@ -38,7 +38,7 @@ const DELIVERED_WARNING: &str = include_str!("fixtures/restart_with_deliveries_w
 const STALE: &str = include_str!("fixtures/prefix_stale_warning.txt");
 const STALE_MANY: &str = include_str!("fixtures/prefix_stale_many_warning.txt");
 
-/// **Every restart text is one line, the same for its warning and its notice.**
+/// Every restart text is one line, the same for its warning and its notice.
 #[test]
 fn every_restart_reads_as_its_one_line() {
     for (what, code, warning, notice, line) in [
@@ -102,7 +102,7 @@ fn every_restart_reads_as_its_one_line() {
     );
 }
 
-/// **The warning is ONE note line** - none of the header's prose, no `/notes` seam - and a click
+/// The warning is ONE note line - none of the header's prose, no `/notes` seam - and a click
 /// opens the detail whole.
 #[test]
 fn the_restart_warning_is_one_line_and_opens_whole() {
@@ -141,7 +141,7 @@ fn the_restart_warning_is_one_line_and_opens_whole() {
     );
 }
 
-/// **The session notice the model got is ONE `session ·` line** - not the job's command, not
+/// The session notice the model got is ONE `session ·` line - not the job's command, not
 /// its explanation - and a click opens all of it.
 #[test]
 fn the_restart_notice_is_one_session_line_and_opens_whole() {
@@ -176,7 +176,7 @@ fn the_restart_notice_is_one_session_line_and_opens_whole() {
     }
 }
 
-/// **The empty restart is one `session ·` line too**, and the colon in its sentence does not end
+/// The empty restart is one `session ·` line too, and the colon in its sentence does not end
 /// the notice: the card splits a row only where another notice follows, and nothing follows this.
 #[test]
 fn an_empty_restart_notice_is_one_session_line() {
@@ -198,7 +198,7 @@ fn an_empty_restart_notice_is_one_session_line() {
     );
 }
 
-/// **A narrow screen cuts the line** - it never wraps.
+/// A narrow screen cuts the line - it never wraps.
 #[test]
 fn a_narrow_screen_cuts_the_restart_line() {
     let mut a = with_warning("restart_restored", RESTORED_WARNING);
@@ -211,7 +211,7 @@ fn a_narrow_screen_cuts_the_restart_line() {
     }
 }
 
-/// **The stale prompt's note is a pointer** - what changed, and the key that shows the card.
+/// The stale prompt's note is a pointer - what changed, and the key that shows the card.
 #[test]
 fn the_stale_prompt_note_is_one_line_pointing_at_the_card() {
     let s = stale_of(STALE).expect("the operator's sentence parses");
@@ -256,7 +256,7 @@ fn the_stale_prompt_note_is_one_line_pointing_at_the_card() {
     }
 }
 
-/// **What it does not know, it does not read** - and the note is still ONE line (R89): the
+/// What it does not know, it does not read - and the note is still ONE line: the
 /// generic `<mark> <code> · <first clause>`, the detail a click away. Nothing is guessed.
 #[test]
 fn a_restart_or_stale_shape_this_head_does_not_know_falls_back() {
@@ -310,7 +310,7 @@ fn a_restart_or_stale_shape_this_head_does_not_know_falls_back() {
     assert_eq!(a.notice_rows.len(), 1, "{:?}", a.notice_rows);
 }
 
-/// **A restart notice beside a job's completion in one wake** is one line and the job's.
+/// A restart notice beside a job's completion in one wake is one line and the job's.
 #[test]
 fn a_restart_notice_beside_a_job_completion_keeps_both_compact() {
     const ONE: &str = "[job] a job you backgrounded has ended:\n  - `build · j7` exited 0 after \
@@ -332,7 +332,7 @@ fn a_restart_notice_beside_a_job_completion_keeps_both_compact() {
     assert!(!joined.contains("Their wait is RELEASED"), "{joined}");
 }
 
-/// **R89: one event, one row.** A restart's warning and the session's `[restart]` notice are one
+/// One event, one row. A restart's warning and the session's `[restart]` notice are one
 /// line - the warning's card - whichever arrives first, and its popup carries the notice too.
 #[test]
 fn a_restart_warning_and_its_notice_are_one_line() {
@@ -452,7 +452,7 @@ fn a_restart_card_opens_with_its_header_once() {
     }
 }
 
-/// **A card whose rows open some other way keeps its own text first** - only a row that repeats
+/// A card whose rows open some other way keeps its own text first - only a row that repeats
 /// the card's header replaces it.
 #[test]
 fn a_card_popup_keeps_its_text_when_no_row_repeats_its_header() {
@@ -559,7 +559,7 @@ fn a_restart_and_the_children_it_handed_over_are_one_line() {
     }
 }
 
-/// **A restart carries `[task]` groups and nothing else** - a `[job]` that ended in the same wake
+/// A restart carries `[task]` groups and nothing else - a `[job]` that ended in the same wake
 /// is still its own two lines, and a row with one is not absorbed into the warning.
 #[test]
 fn a_restart_with_a_job_beside_its_deliveries_keeps_the_job() {

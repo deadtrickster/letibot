@@ -40,7 +40,7 @@ fn the_daemons_verbs_come_from_its_row_and_are_not_guessed_at() {
             "`/{v}` works and was not offered: {all:?}"
         );
     }
-    // **Once each.** `/tools` is in this head's table too, and a list that named it
+    // Once each. `/tools` is in this head's table too, and a list that named it
     // twice would teach it as two verbs.
     let tools = all.iter().filter(|(n, _)| n == "tools").count();
     assert_eq!(tools, 1, "{all:?}");
@@ -95,7 +95,7 @@ fn the_notice_fold_refuses_anything_it_cannot_account_for() {
     }
 }
 
-/// **And the row on the glass is the compact card** - the complaint was about what the operator
+/// And the row on the glass is the compact card - the complaint was about what the operator
 /// was reading, so the assertion is on a frame and not only on the function.
 #[test]
 fn a_settled_jobs_row_draws_compact_and_not_as_the_promise() {
@@ -129,7 +129,7 @@ fn a_settled_jobs_row_draws_compact_and_not_as_the_promise() {
         },
     )));
     let screen = a.screen(120, 30).join("\n");
-    // **Two lines since the compact card** (`job_card`): the job, how it ended and what it ran,
+    // Two lines since the compact card (`job_card`): the job, how it ended and what it ran,
     // then what it wrote - the operator's *"first line is j<id> - slug - truncated cmd and
     // second line is truncated output"*.
     assert!(
@@ -331,7 +331,7 @@ fn the_top_edge_counts_running_jobs_and_says_which_cannot_be_watched() {
         job("j2", false, Some("/tmp/build.log")),
     ]));
     assert_eq!(a.jobs_line().as_deref(), Some("1 job running"));
-    // **And it is pinned to the top edge, beside the subagent count.** The screen is where the
+    // And it is pinned to the top edge, beside the subagent count. The screen is where the
     // placement is actually decided, so this is asserted on the frame rather than on the string.
     let screen = a.screen(100, 24).join("\n");
     let top = screen
@@ -355,7 +355,7 @@ fn a_job_starting_ending_or_a_turn_ending_re_reads_the_count() {
         vec![brief("s", "one", false)],
         Hub::new("s").snapshot(),
     ));
-    // **Drained, and the assertion below depends on it.** An attach asks for the table too (a
+    // Drained, and the assertion below depends on it. An attach asks for the table too (a
     // job already running when this head joined is announced by no event at all), so a
     // leftover `ListJobs` here would make the next assertion pass for the wrong reason.
     assert!(
@@ -485,7 +485,7 @@ fn the_jobs_pane_joins_the_command_and_marks_a_running_job() {
             daemon_job("j2", "sleep 30", false),
         ],
     ));
-    // **Both jobs, so the settled one is unfolded to be drawn** - it lives under the
+    // Both jobs, so the settled one is unfolded to be drawn - it lives under the
     // `finished` group by default (the operator's ask), and this test is about the ROW.
     a.jobs_finished_open = true;
     let lines = a.jobs_lines(100).join("\n");
@@ -594,7 +594,7 @@ fn enter_on_a_job_row_reads_its_output() {
     ));
     a.key(Key::CtrlQ);
     assert!(a.is_open(Surface::Jobs));
-    // **The job is settled, so it sits under the folded `finished` group**: Enter on the
+    // The job is settled, so it sits under the folded `finished` group: Enter on the
     // group row (where the cursor starts) unfolds it, and one Down lands on the job.
     a.key(Key::Enter);
     a.key(Key::Down);
@@ -902,7 +902,7 @@ fn a_running_jobs_window_follows_its_output() {
     a.clock(20_000);
     assert!(a.take_actions().is_empty(), "one read at a time");
 
-    // **Nothing written yet: one line says so**, not a blank pane.
+    // Nothing written yet: one line says so, not a blank pane.
     a.apply(ServerFrame::Event(env(
         1,
         window("running", vec![], 0, None),

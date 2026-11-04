@@ -1,4 +1,4 @@
-//! **The terminal pane's state**: the program it shows, what it said last, and the ask it puts
+//! The terminal pane's state: the program it shows, what it said last, and the ask it puts
 //! to the person. The pane's way out is [`WAY_OUT`].
 
 use super::*;
@@ -9,7 +9,7 @@ use letibot_vt::MouseTracking;
 /// the composer consumed has no way out in it, because there the byte is content.
 pub const WAY_OUT: u8 = 0x1c;
 
-/// **How many rows one wheel notch moves**, in the scrollback or as cursor keys to a program on
+/// How many rows one wheel notch moves, in the scrollback or as cursor keys to a program on
 /// the alternate screen. Three, which is what xterm, VTE and this head's own conversation scroll
 /// by - a person's wrist already knows it.
 pub(crate) const WHEEL_ROWS: usize = 3;
@@ -40,18 +40,18 @@ impl Report {
     }
 }
 
-/// **What [`report_at`] found at one position of a read.**
+/// What [`report_at`] found at one position of a read.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Scan {
     /// A whole report, ending (exclusive) here.
     Report(Report, usize),
-    /// The start of one that the read ended inside - R74 item 30.
+    /// The start of one that the read ended inside.
     Partial,
     /// Not a report.
     No,
 }
 
-/// **Is there a mouse report at `at`?** SGR (`ESC [ < b ; x ; y M|m`) and the legacy X10 form
+/// Is there a mouse report at `at`? SGR (`ESC [ < b ; x ; y M|m`) and the legacy X10 form
 /// (`ESC [ M` and three bytes, each offset by 32), which a terminal that ignored `?1006` sends.
 pub(crate) fn report_at(raw: &[u8], at: usize) -> Scan {
     let rest = &raw[at..];
@@ -125,7 +125,7 @@ pub(crate) fn report_at(raw: &[u8], at: usize) -> Scan {
     Scan::No
 }
 
-/// **One report, in the encoding the program asked for**, at the pane's own coordinates
+/// One report, in the encoding the program asked for, at the pane's own coordinates
 /// (one-based). `None` when the X10 form cannot carry it - a column or row past 223.
 pub(crate) fn encode(r: &Report, sgr: bool, x: usize, y: usize) -> Option<Vec<u8>> {
     if sgr {
@@ -160,7 +160,7 @@ pub(crate) struct TermPane {
     /// The line the operator submitted, verb included - kept for the one sentence this head
     /// says when the pane ends, so *what ended* is not a mystery.
     pub(crate) line: String,
-    /// **The rectangle last sent to the daemon.** A resize is a frame, and a frame per tick
+    /// The rectangle last sent to the daemon. A resize is a frame, and a frame per tick
     /// would be a frame per keystroke - this is what makes `TermResize` fire on a change and
     /// not on a redraw.
     pub(crate) sent: (usize, usize),
@@ -172,21 +172,21 @@ pub(crate) struct TermPane {
     /// bytes keep arriving and an ending is filed as the row it would have been, which is why
     /// [`App::detach`] drops nothing.
     pub(crate) detached: bool,
-    /// **How far into the scrollback the operator has wheeled**, in rows; `0` is the live screen.
+    /// How far into the scrollback the operator has wheeled, in rows; `0` is the live screen.
     /// See [`TermPane::route`] for what moves it and what puts it back.
     pub(crate) back: usize,
-    /// **Where the pane was last drawn**, in the terminal's cells (zero-based column and row of
+    /// Where the pane was last drawn, in the terminal's cells (zero-based column and row of
     /// its top-left) - what turns the operator's click into the program's. Recorded by the draw,
     /// because the draw is the one layer that knows; see [`TermPane::route`].
     pub(crate) origin: (usize, usize),
-    /// **The start of a mouse report that the read ended inside** (R74 item 30), kept for the
+    /// The start of a mouse report that the read ended inside, kept for the
     /// next read rather than forwarded in halves. See [`report_at`].
     pub(crate) held: Vec<u8>,
-    /// **The daemon's number for this pane** (protocol 44), `None` between the Enter that put
+    /// The daemon's number for this pane (protocol 44), `None` between the Enter that put
     /// the rectangle up and the `TermAttached` that names it. Every frame about a pane carries
     /// its number, and this head feeds only the one it holds.
     pub(crate) pane: Option<u32>,
-    /// **Keys typed before the number arrived**, sent in order the moment it does - see
+    /// Keys typed before the number arrived, sent in order the moment it does - see
     /// [`App::pane_input`].
     pub(crate) waiting: Vec<u8>,
 }
@@ -207,7 +207,7 @@ impl TermPane {
         }
     }
 
-    /// **The pane's rows for this frame** - exactly `room` of them, which is the property the
+    /// The pane's rows for this frame - exactly `room` of them, which is the property the
     /// composer's own row budget depends on. See the type's note.
     pub(crate) fn rows(
         &mut self,
@@ -310,7 +310,7 @@ impl TermPane {
         Vec::new()
     }
 
-    /// **The program's bytes, into the screen** - and the scrollback view held where the operator
+    /// The program's bytes, into the screen - and the scrollback view held where the operator
     /// left it: rows pushed past the top while they read are counted into `back`, so the page
     /// stays put rather than sliding under them.
     pub(crate) fn feed(&mut self, bytes: &[u8]) {
@@ -357,7 +357,7 @@ pub(crate) enum PaneFact {
 }
 
 impl PaneFact {
-    /// **This fact with one pane added or renamed** - what a `TermAttached` tells every head.
+    /// This fact with one pane added or renamed - what a `TermAttached` tells every head.
     pub(crate) fn with(&self, pane: u32, command: &str) -> PaneFact {
         let mut list = match self {
             PaneFact::Running(list) => list.clone(),
@@ -372,7 +372,7 @@ impl PaneFact {
         PaneFact::Running(list)
     }
 
-    /// **This fact with one pane gone** - what a `TermEnded` tells every head. A list that
+    /// This fact with one pane gone - what a `TermEnded` tells every head. A list that
     /// empties is `None`, which is a fact; `Unasked` stays unasked.
     pub(crate) fn without(&self, pane: u32) -> PaneFact {
         match self {
@@ -394,11 +394,11 @@ impl PaneFact {
 /// nothing, and anything that is not a deliberate yes cancels.
 #[derive(Debug, Clone)]
 pub(crate) struct TermAsk {
-    /// **What is about to end, as a line a person reads** - `!term nano notes.txt`, the spelling
+    /// What is about to end, as a line a person reads - `!term nano notes.txt`, the spelling
     /// the operator typed at the composer when there is one, or `!term <command>` rebuilt from
     /// the daemon's own word when the pane is another head's.
     pub(crate) line: String,
-    /// **Which pane** - the daemon's number, which is what `TermClose` carries. The card names
+    /// Which pane - the daemon's number, which is what `TermClose` carries. The card names
     /// it beside the line, so a person ending one of several knows which one.
     pub(crate) pane: u32,
 }

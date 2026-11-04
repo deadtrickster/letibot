@@ -34,7 +34,7 @@ fn reseat(hub: &Hub) -> Vec<letibot_sessionlog::event::Envelope> {
     out
 }
 
-/// A head that attached empty and then **watched** the reseat happen - the row, then the warning,
+/// A head that attached empty and then watched the reseat happen - the row, then the warning,
 /// which is the order the daemon writes them in and the order that files the note at the row's
 /// seam.
 fn watched() -> (App, std::sync::Arc<Hub>) {
@@ -95,7 +95,7 @@ fn a_retired_notice_keeps_its_row_collapsed() {
         "the row of the notice the reader retired is drawn again\n{s}"
     );
     assert_eq!(a.card_rows.len(), 0, "and the card it retired is gone\n{s}");
-    // Retired is not deleted (R10): the note is still held, still counted, still listed.
+    // Retired is not deleted: the note is still held, still counted, still listed.
     assert_eq!(a.notes.len(), 1, "{:?}", a.notes);
     assert_eq!(a.retired_notes(), 1);
     assert!(

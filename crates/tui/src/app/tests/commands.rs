@@ -15,12 +15,12 @@ fn a_door_verb_is_typed_with_hyphens() {
     ));
     a.apply(door_row("web_search", "query", "text"));
 
-    // **Offered hyphenated.** Tab from `/web-` reaches it.
+    // Offered hyphenated. Tab from `/web-` reaches it.
     typed(&mut a, "/web-");
     a.key(Key::Tab);
     assert_eq!(a.input(), "/web-search");
 
-    // **And the underscore form is accepted rather than refused** - an operator who
+    // And the underscore form is accepted rather than refused - an operator who
     // types what the daemon calls it should not be told they are wrong.
     assert_eq!(
         a.command("web-search blabla"),
@@ -68,7 +68,7 @@ fn the_bare_form_is_built_from_the_row_and_nothing_else() {
         })
     );
 
-    // **A default travels with the line**, so a bare form sends what a model's minimal
+    // A default travels with the line, so a bare form sends what a model's minimal
     // call would have sent.
     let mut b = app();
     b.apply(hello(
@@ -83,7 +83,7 @@ fn the_bare_form_is_built_from_the_row_and_nothing_else() {
             .insert("format".into(), "markdown".into());
     }
     b.apply(row);
-    // **Compared as a VALUE, not as a string.** Key order in a JSON object is not a fact
+    // Compared as a VALUE, not as a string. Key order in a JSON object is not a fact
     // about the call, and an assertion on it would fail the day the map's iteration
     // changes while the call stayed the same.
     let Some(Action::HeadRun { name, arguments }) = b.command("web-fetch http://example.invalid")
@@ -136,7 +136,7 @@ fn the_bare_form_is_built_from_the_row_and_nothing_else() {
     );
     assert!(why.contains("path"), "the kind is named: {why}");
 
-    // **And the JSON form stays**, which is what a tool with several arguments needs.
+    // And the JSON form stays, which is what a tool with several arguments needs.
     let Some(Action::HeadRun { arguments, .. }) = a.command(r#"read {"path":"x","limit":3}"#)
     else {
         panic!("the JSON form was not accepted");
@@ -146,7 +146,7 @@ fn the_bare_form_is_built_from_the_row_and_nothing_else() {
         serde_json::json!({"path": "x", "limit": 3}),
         "the JSON form goes through untouched — checked for BEING json and nothing else"
     );
-    // **The JSON form is entered by the brace, and only by it.** A line with spaces is
+    // The JSON form is entered by the brace, and only by it. A line with spaces is
     // ONE bare argument, which is how a path with a space in it works; a line that opens
     // with `{` is the operator asking for the JSON form and is parsed as one.
     let Some(Action::HeadRun { arguments, .. }) = a.command("read x y") else {
@@ -251,7 +251,7 @@ fn every_verb_the_dispatcher_acts_on_is_offered_by_tab() {
     }
     let body = &SRC[start..end];
 
-    // **Plain string surgery, no regex**: this crate has no regex dependency and
+    // Plain string surgery, no regex: this crate has no regex dependency and
     // adding one to a test would be a dependency for the test's convenience.
     let mut acted: Vec<String> = Vec::new();
     let quoted = |hay: &str| -> Vec<String> {
@@ -346,7 +346,7 @@ fn the_facts_and_the_keys_are_on_their_own_rows_not_in_the_field() {
     assert!(!screen[row].contains("ctrl-r"), "{:?}", screen[row]);
     assert!(!joined.contains("dropped 0"), "{joined}");
     // Reachable in one command, with the sequence numbers, the full id, and
-    // the verbosity the border used to carry.
+    // the verbosity.
     a.command("status");
     let stats = a.screen(100, 40).join("\n");
     assert!(stats.contains("dropped"), "{stats}");
@@ -380,7 +380,7 @@ fn every_listed_slash_command_is_one_this_head_answers() {
                 a.is_open(Surface::Config),
                 a.pick == Some(Pick::Mode),
                 a.pick == Some(Pick::Model),
-                // **R38 added two settings to the same card**, so a verb that opens one
+                // The card has two settings, so a verb that opens one
                 // is a verb that did something - and this closure is where "something"
                 // is defined for the self-documentation check.
                 a.pick == Some(Pick::Verbosity),
@@ -610,7 +610,7 @@ fn a_command_that_merely_starts_like_a_verb_is_not_that_verb() {
     assert_eq!(verb_arg("cellsomething", "cells"), None);
 }
 
-/// **The queue's person-verbs are typed, and they go over as typed.** A bare `/queue` opens the pane;
+/// The queue's person-verbs are typed, and they go over as typed. A bare `/queue` opens the pane;
 /// every verb the daemon's own warnings name is a line the head does not know and does not need to -
 /// the daemon parses it, scopes it to this session's repository and answers on the log.
 #[test]

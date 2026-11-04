@@ -5,7 +5,7 @@
 use super::*;
 use crate::ui::panes::queue::Verb;
 
-/// **Which keys a binding answers to.**
+/// Which keys a binding answers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum On {
     Up,
@@ -19,7 +19,7 @@ pub(crate) enum On {
     /// means. It is also the one spelling a typed line can never be, so it cannot eat the first
     /// letter of the picker's typed filter the way a letter bound there would.
     Delete,
-    /// **Ctrl+Z, or ⌘Z** - both decode to [`Key::Undo`]. The undo of a removal, spelled as the
+    /// Ctrl+Z, or ⌘Z - both decode to [`Key::Undo`]. The undo of a removal, spelled as the
     /// chord everybody's hands already know, and never as a letter for the same reason as
     /// [`On::Delete`].
     Undo,
@@ -71,7 +71,7 @@ impl On {
     }
 }
 
-/// **When a binding holds.**
+/// When a binding holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Guard {
     Always,
@@ -79,7 +79,7 @@ pub(crate) enum Guard {
     EmptyComposer,
 }
 
-/// **What a binding does.** The surface decides what each means for it (`App::surface_act`).
+/// What a binding does. The surface decides what each means for it (`App::surface_act`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Act {
     /// ↑↓ move the cursor through the list's stops.
@@ -121,21 +121,21 @@ pub(crate) enum Act {
     PluginKey,
     /// Take the key and do nothing - it is not the composer's while this surface is up.
     Swallow,
-    /// **The todos pane's `d`: fold the done group away, or open it**  -
+    /// The todos pane's `d`: fold the done group away, or open it  -
     /// [`App::toggle_todos_fold_done`], and the switch it flips is remembered in `head.toml`.
     FoldDone,
-    /// **The session list's `del`: take the row under the cursor off this list**  -
+    /// The session list's `del`: take the row under the cursor off this list  -
     /// [`App::remove_selected`], asked twice: the first press names what would go, the second does
     /// it. See `app::removal` for the three senses of *remove* and which one this is.
     Remove,
     /// The rooms view's `r`: the selected channel's roster, on or off.
     Roster,
-    /// **The session list's `ctrl-z`: put the last removed row back** - [`App::restore_removed`],
+    /// The session list's `ctrl-z`: put the last removed row back - [`App::restore_removed`],
     /// the undo a removal has to have if it is to be the sense worth building.
     Undo,
 }
 
-/// **What the bar and the help say about a binding.**
+/// What the bar and the help say about a binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Says {
     /// Nothing: a key that is there to be swallowed, or that another binding already names.
@@ -174,7 +174,7 @@ const PAGE: Binding = b(&[On::Page], Always, Act::Scroll, Text("scroll"));
 const WHEEL: Binding = b(&[On::Wheel], Always, Act::Scroll, Nothing);
 const LIST: Binding = b(UPDOWN, Always, Act::Cursor, Text("moves"));
 
-// **↑↓ scroll a reading surface** (R90.10), as they do on every other one: they fell through to
+// ↑↓ scroll a reading surface, as they do on every other one: they fell through to
 // the composer and recalled history under /help, and the Enter that followed was swallowed.
 const READING: &[Binding] = &[b(UPDOWN, Always, Act::Scroll, Text("scroll")), PAGE, WHEEL];
 const PICKER: &[Binding] = &[
@@ -240,7 +240,7 @@ const TODOS: &[Binding] = &[
     WHEEL,
 ];
 
-/// **The words `d` carries now**: what it would DO, which is the half of the switch the bar must
+/// The words `d` carries now: what it would DO, which is the half of the switch the bar must
 /// not get wrong - a bar that went on saying `folds done` over a group that is already shut names
 /// a key whose press does the opposite of what it says.
 fn fold_done_says(folded: bool) -> &'static str {
@@ -256,7 +256,7 @@ const TODO_ROW: &[Binding] = &[
 ];
 const QUEUE: &[Binding] = &[
     LIST,
-    // **The verbs first, and the two that are not about the row last.** A bar at eighty columns
+    // The verbs first, and the two that are not about the row last. A bar at eighty columns
     // keeps its head, so the keys that act on the row under the cursor come before Enter, and
     // Enter before `g` (the row's TARGET) and `o` (another session).
     b(
@@ -282,7 +282,7 @@ const QUEUE: &[Binding] = &[
         &[On::Enter],
         Always,
         Act::Open,
-        // **The row's own words**, because Enter means two things on this pane: it opens an
+        // The row's own words, because Enter means two things on this pane: it opens an
         // entry whole, and it opens the history's fold (`App::row_says`).
         Row,
     ),
@@ -324,7 +324,7 @@ const STANDING: &[Binding] = &[
     PAGE,
     WHEEL,
 ];
-/// **The skills: Enter opens the row's file in the editor** like the standing notes. Handing a
+/// The skills: Enter opens the row's file in the editor like the standing notes. Handing a
 /// body to the session is its own key, because it starts a turn.
 const SKILLS: &[Binding] = &[
     LIST,
@@ -422,7 +422,7 @@ const PLUGIN_DETAIL: &[Binding] = &[
 ];
 
 impl Surface {
-    /// **The surface's keys** - the one table its dispatch, its bar and its help read.
+    /// The surface's keys - the one table its dispatch, its bar and its help read.
     pub(crate) fn bindings(self) -> &'static [Binding] {
         match self {
             Surface::Help | Surface::Stats => READING,
@@ -446,7 +446,7 @@ impl Surface {
         }
     }
 
-    /// **What Esc does here**, said last on the bar: a pane closes; an overlay goes back to the
+    /// What Esc does here, said last on the bar: a pane closes; an overlay goes back to the
     /// list it was opened from, because that list is the next entry on the stack.
     pub(crate) fn esc_says(self) -> &'static str {
         match self {
@@ -459,7 +459,7 @@ impl Surface {
         }
     }
 
-    /// **The surface as the bar names it after "esc back to the"** (R90.17).
+    /// The surface as the bar names it after "esc back to the".
     pub(crate) fn short_name(self) -> &'static str {
         match self {
             Surface::Help => "help",
@@ -484,7 +484,7 @@ impl Surface {
         }
     }
 
-    /// **What a surface takes that is not a key**: the typed path a list advertises.
+    /// What a surface takes that is not a key: the typed path a list advertises.
     pub(crate) fn typed_says(self) -> Option<&'static str> {
         match self {
             Surface::Picker => Some("type a number or a name to switch · /new [title]"),
@@ -494,7 +494,7 @@ impl Surface {
         }
     }
 
-    /// **The chord that opens it**, read by `key_chords` to dispatch and by the bar and the help
+    /// The chord that opens it, read by `key_chords` to dispatch and by the bar and the help
     /// to say - one entry, so a chord cannot be advertised and do nothing.
     pub(crate) fn chord(self) -> Option<(&'static str, Key)> {
         match self {
@@ -513,7 +513,7 @@ impl Surface {
             .find(|s| s.chord().is_some_and(|(_, c)| &c == k))
     }
 
-    /// **The verb that opens it**, for the help.
+    /// The verb that opens it, for the help.
     pub(crate) fn verb(self) -> Option<&'static str> {
         match self {
             Surface::Help => Some("/help"),
@@ -534,7 +534,7 @@ impl Surface {
         }
     }
 
-    /// **What it is**, in the help's words.
+    /// What it is, in the help's words.
     pub(crate) fn about(self) -> &'static str {
         match self {
             Surface::Help => "this list",
@@ -592,7 +592,7 @@ impl Surface {
 }
 
 impl App {
-    /// **The binding a key reaches on surface `s`**, guard and all - the dispatch's question.
+    /// The binding a key reaches on surface `s`, guard and all - the dispatch's question.
     pub(crate) fn binding_for(&self, s: Surface, k: &Key) -> Option<Binding> {
         let empty = self.editor.text().is_empty();
         s.bindings()
@@ -601,7 +601,7 @@ impl App {
             .find(|b| b.on.iter().any(|o| o.matches(k)) && (b.guard == Guard::Always || empty))
     }
 
-    /// **The words for a row-dependent binding**, from the row under the cursor.
+    /// The words for a row-dependent binding, from the row under the cursor.
     fn row_says(&self, s: Surface, b: &Binding) -> Option<String> {
         match (s, b.act) {
             // What Enter does on the session under the cursor is the ROW's own words, read by
@@ -612,7 +612,7 @@ impl App {
                 .selected(self.picker_sel)
                 .and_then(|row| self.list_says(row))
                 .map(str::to_string),
-            // **Said only on a row that waits on something** - `w` is not on the bar over a
+            // Said only on a row that waits on something - `w` is not on the bar over a
             // row it would do nothing on.
             (Surface::Todos, Act::WaitsOn) => self.selected_wait().map(|w| match w {
                 WaitOn::Job(_) => "opens the job it waits on".to_string(),
@@ -626,8 +626,8 @@ impl App {
                 Some(
                     match (stops.get(at), act) {
                         (Some(TodoStop::Add), _) => "opens the card",
-                        // **A row waiting on you opens its question** (`todos_read`), and the bar
-                        // says so (R90.8) - it said "reads it whole".
+                        // A row waiting on you opens its question (`todos_read`), and the bar
+                        // says so - it said "reads it whole".
                         (Some(TodoStop::Mine(c) | TodoStop::Theirs(c)), Act::Open)
                             if waits_on_you(c) =>
                         {
@@ -655,7 +655,7 @@ impl App {
                 }
                 .to_string(),
             ),
-            // **Enter on the queue opens a row or the history's fold**, and the bar says which of
+            // Enter on the queue opens a row or the history's fold, and the bar says which of
             // the two this row is - the same question the key answers (`App::queue_fold`).
             (Surface::Queue, Act::Open) => Some(
                 match self.queue_row_folds() {
@@ -669,7 +669,7 @@ impl App {
         }
     }
 
-    /// **The words for a SWITCH binding**, from the head - see [`Says::Switch`]. `None` for an act
+    /// The words for a SWITCH binding, from the head - see [`Says::Switch`]. `None` for an act
     /// this table has no words for, and the bar then says nothing rather than guessing.
     pub(crate) fn switch_says(&self, b: &Binding) -> Option<String> {
         match b.act {
@@ -678,7 +678,7 @@ impl App {
         }
     }
 
-    /// **The bar's words for surface `s`, generated from its table**: each binding that says
+    /// The bar's words for surface `s`, generated from its table: each binding that says
     /// something, two bindings that say the same thing joined (`enter or tab opens the card`),
     /// the typed path the surface advertises, and what Esc does.
     pub(crate) fn surface_hint(&self, s: Surface) -> String {
@@ -691,14 +691,14 @@ impl App {
                     Some(t) => t,
                     None => continue,
                 },
-                // **A switch says what its next press would do**, which is the head's answer and
+                // A switch says what its next press would do, which is the head's answer and
                 // not the row's.
                 Says::Switch(_) => match self.switch_says(b) {
                     Some(t) => t,
                     None => continue,
                 },
             };
-            // **The queue's verbs are the ROW's**: the bar names the keys that would move the row
+            // The queue's verbs are the ROW's: the bar names the keys that would move the row
             // under the cursor, so it never offers an action the daemon would refuse, and the keys
             // that would are not pushed off a narrow bar by ones that would not.
             if s == Surface::Queue && !self.queue_key_moves(b.act) {
@@ -721,7 +721,7 @@ impl App {
         }
         let mut out: Vec<String> = parts.into_iter().map(|(l, s)| format!("{l} {s}")).collect();
         out.extend(s.typed_says().map(str::to_string));
-        // **Esc goes back to whatever is under this surface**, and a job's output or a child's
+        // Esc goes back to whatever is under this surface, and a job's output or a child's
         // read can be opened from the todos pane's `waits on` link as well as from its own list  -
         // so when the surface below is the todos pane, the bar says so instead of the fixed words.
         out.push(self.esc_hint(s));
@@ -742,7 +742,7 @@ impl App {
         }
     }
 
-    /// **The help's row for surface `s`**: how it is opened, and what it is and its keys  -
+    /// The help's row for surface `s`: how it is opened, and what it is and its keys  -
     /// generated, so the help cannot name a key the surface does not take. `None` for a surface
     /// nothing opens by name (an overlay its list opens).
     pub(crate) fn surface_help(s: Surface) -> Option<(String, String)> {
@@ -758,7 +758,7 @@ impl App {
             .filter_map(|b| match b.says {
                 Says::Text(t) => Some(format!("{} {t}", keys_label(b.on))),
                 Says::Row => Some(format!("{} acts on the row", keys_label(b.on))),
-                // **Both directions on the help screen**: it is read without a list in front of
+                // Both directions on the help screen: it is read without a list in front of
                 // it, so a reader is owed what the key does in either state of the switch.
                 Says::Switch(help) => Some(format!("{} {help}", keys_label(b.on))),
                 Says::Nothing => None,

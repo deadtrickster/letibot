@@ -27,7 +27,7 @@ fn result(a: &mut App, seq: u64, id: &str, call: &str, lines: usize) {
     );
 }
 
-/// **A session whose newest row is one long result** - what `ctrl-v` opens a window on.
+/// A session whose newest row is one long result - what `ctrl-v` opens a window on.
 fn long_result(lines: usize) -> App {
     let mut a = app();
     a.visibility = Visibility::of(Profile::NORMAL);
@@ -75,7 +75,7 @@ fn row_of(screen: &str, text: &str) -> u16 {
         .unwrap_or_else(|| panic!("{text:?} is not on the screen:\n{screen}")) as u16
 }
 
-/// **`ctrl-v` opens the window on the newest result, at its top** - and it says both counts: how
+/// `ctrl-v` opens the window on the newest result, at its top - and it says both counts: how
 /// long the payload is, and how much of it is under the seam.
 #[test]
 fn ctrl_v_opens_the_newest_result_at_its_top() {
@@ -91,7 +91,7 @@ fn ctrl_v_opens_the_newest_result_at_its_top() {
         "the head of the payload is not what is drawn:\n{screen}"
     );
     assert!(screen.contains("97 lines"), "the header count:\n{screen}");
-    // **The report's own numbers** - 36 lines drawn of 97, so 61 elided.
+    // The report's own numbers - 36 lines drawn of 97, so 61 elided.
     assert_eq!(
         seam(&screen, "lines · ↓ pages down"),
         61,
@@ -99,7 +99,7 @@ fn ctrl_v_opens_the_newest_result_at_its_top() {
     );
 }
 
-/// **The arrows and the page keys move the window, each by its own step, and the count follows.**
+/// The arrows and the page keys move the window, each by its own step, and the count follows.
 #[test]
 fn the_keys_page_the_window_and_the_elided_count_follows() {
     let mut a = long_result(97);
@@ -134,7 +134,7 @@ fn the_keys_page_the_window_and_the_elided_count_follows() {
     assert_eq!(drawn(&screen).first().copied(), Some(0), "{screen}");
 }
 
-/// **The wheel pages the window under the pointer** - a notch is the house's three lines, the same
+/// The wheel pages the window under the pointer - a notch is the house's three lines, the same
 /// step the transcript takes, and the seam above it says so.
 #[test]
 fn the_wheel_pages_the_window_under_the_pointer() {
@@ -174,7 +174,7 @@ fn the_wheel_pages_the_window_under_the_pointer() {
     );
 }
 
-/// **The clamp is honest at both ends**: the last full page is the bottom and says so, the head is
+/// The clamp is honest at both ends: the last full page is the bottom and says so, the head is
 /// the top and says nothing is above it, and a key pressed past either moves the window no further.
 #[test]
 fn the_window_clamps_at_both_ends_and_says_so() {
@@ -200,7 +200,7 @@ fn the_window_clamps_at_both_ends_and_says_so() {
     a.key(Key::Down);
     assert_eq!(a.payload_page, max, "the window went past its last page");
 
-    // **Up from the end moves at once** - no unwinding of invisible steps.
+    // Up from the end moves at once - no unwinding of invisible steps.
     a.key(Key::Up);
     assert_eq!(a.payload_page, max - 10, "Up had to unwind to move");
 
@@ -216,7 +216,7 @@ fn the_window_clamps_at_both_ends_and_says_so() {
     assert_eq!(a.payload_page, 0, "Up at the head moved the window");
 }
 
-/// **A resize keeps the reader where they are and re-measures the window** - the body is sized
+/// A resize keeps the reader where they are and re-measures the window - the body is sized
 /// from the terminal's height, so a shorter screen draws fewer lines of the same payload from the
 /// same offset.
 #[test]
@@ -238,7 +238,7 @@ fn a_resize_keeps_the_window_where_it_is_and_re_measures_it() {
         );
     }
 
-    // **And the body was measured again for each height** - a 24-row frame draws fewer lines of
+    // And the body was measured again for each height - a 24-row frame draws fewer lines of
     // the same payload than a 47-row one, and a stale body is what made a window overflow.
     let tall = drawn(&a.screen(100, 47).join("\n")).len();
     let short = drawn(&a.screen(100, 24).join("\n")).len();
@@ -249,7 +249,7 @@ fn a_resize_keeps_the_window_where_it_is_and_re_measures_it() {
     );
 }
 
-/// **A new result opens at its top** - the offset is where the reader was in ONE payload, and a
+/// A new result opens at its top - the offset is where the reader was in ONE payload, and a
 /// second payload inheriting it would skip the head of a result nobody has read.
 #[test]
 fn a_new_result_opens_at_its_top() {
@@ -280,7 +280,7 @@ fn a_new_result_opens_at_its_top() {
     assert!(screen.contains("50 lines"), "{screen}");
 }
 
-/// **A click on a line reads the window from that line** - the same offset the keys move, so a key
+/// A click on a line reads the window from that line - the same offset the keys move, so a key
 /// pressed after a click continues from where the click left the reader.
 #[test]
 fn a_click_on_a_line_reads_the_window_from_that_line() {
@@ -298,7 +298,7 @@ fn a_click_on_a_line_reads_the_window_from_that_line() {
     );
     assert_eq!(a.payload_page, 6);
 
-    // **One offset, two doors** - Down from where the click left it.
+    // One offset, two doors - Down from where the click left it.
     a.key(Key::Down);
     let screen = a.screen(100, 47).join("\n");
     assert_eq!(
@@ -308,7 +308,7 @@ fn a_click_on_a_line_reads_the_window_from_that_line() {
     );
 }
 
-/// **A click that is not on a line of the payload is not a click on the window** - the header, the
+/// A click that is not on a line of the payload is not a click on the window - the header, the
 /// `↑ N more lines above` seam and the `… +N lines` seam all act on nothing, so a reader pointing
 /// at *"61 elided"* cannot move the window by accident.
 #[test]
@@ -335,7 +335,7 @@ fn a_click_on_the_header_or_a_seam_acts_on_nothing() {
     }
 }
 
-/// **A drag over the window selects its cells and copies them** - the pointer's own selection,
+/// A drag over the window selects its cells and copies them - the pointer's own selection,
 /// which is drawn on the finished frame and so was never a per-row handler: what a drag does to a
 /// diff's rows it does to these.
 #[test]
@@ -369,7 +369,7 @@ fn a_drag_over_the_window_selects_and_copies_its_lines() {
     assert!(lines[2].contains("LINE-2"), "the copy: {copied:?}");
 }
 
-/// **The seam tells the truth at every page**: what is drawn, what is above and what is elided add
+/// The seam tells the truth at every page: what is drawn, what is above and what is elided add
 /// up to the payload, so *"97 lines, 61 elided"* is arithmetic a reader can check.
 #[test]
 fn the_counts_add_up_to_the_payload_at_every_page() {
@@ -394,10 +394,8 @@ fn the_counts_add_up_to_the_payload_at_every_page() {
     }
 }
 
-/// **The quit card owns the arrows and Esc even over an open window.** The card is the question
-/// the operator asked by pressing ctrl-c twice, and its bar promises `1/2 or up/down then enter`;
-/// the window's paging under it left the mark where it was, and Enter then answered the row
-/// nobody chose.
+/// The quit card owns the arrows and Esc even over an open window. Its bar promises `1/2 or up/down then enter`,
+/// so the window's paging under it must not leave the mark where it was, or Enter answers the row nobody chose.
 #[test]
 fn the_quit_card_takes_the_arrows_and_esc_from_an_open_window() {
     let mut a = long_result(97);

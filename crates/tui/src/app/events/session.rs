@@ -1,4 +1,4 @@
-//! **Events about the session and its heads**: a rename, a head attaching or leaving, a screen
+//! Events about the session and its heads: a rename, a head attaching or leaving, a screen
 //! asked for, a command another head issued.
 
 use super::*;

@@ -1,4 +1,4 @@
-//! **The slash commands**: `/verbosity`, `/notes`, `/todo`, a door tool run by the head, and
+//! The slash commands: `/verbosity`, `/notes`, `/todo`, a door tool run by the head, and
 //! the dispatcher that reads the rest.
 
 use super::*;
@@ -50,7 +50,7 @@ impl App {
         ));
     }
 
-    /// **The one place a mode leaves the head**, so the `allow-all` confirmation
+    /// The one place a mode leaves the head, so the `allow-all` confirmation
     /// cannot be reached by one route and skipped by another. The picker, `/mode
     /// NAME` and the config pane's cycle all end here.
     pub(crate) fn mode_action(&mut self, name: String) -> Option<Action> {
@@ -58,9 +58,9 @@ impl App {
         // mode list, and this is the one name it has to recognise.
         if name == "allow-all" {
             self.mode_confirm = Some(name);
-            // **This card is the operator's own**, so nothing another head asked for may still
+            // This card is the operator's own, so nothing another head asked for may still
             // be riding it: an answer that carried a stale request id would settle somebody
-            // else's question with this person's keystroke (B8).
+            // else's question with this person's keystroke.
             self.mode_asked = None;
             self.redraw = true;
             return None;
@@ -78,7 +78,7 @@ impl App {
         let t = typed.trim().to_ascii_lowercase();
         let next = if t == "v" || t == "next" {
             // `/v` is the next profile in `Profile::ALL`'s order, and cycling one key's worth is a
-            // promise this head made; R38 only rules out having to cycle to learn the values.
+            // promise this head made; the new setting only rules out having to cycle to learn the values.
             let at = self
                 .visibility
                 .profile()
@@ -149,8 +149,8 @@ impl App {
             }
         }
         self.raw_calls = next.shows(Show::RawCalls);
-        // **A set that hides rows can hide the one the reader is holding** (R37's consequence
-        // for R36), so the view moves onto its nearest surviving neighbour at the moment of the
+        // A set that hides rows can hide the one the reader is holding,
+        // so the view moves onto its nearest surviving neighbour at the moment of the
         // change, where the fact is known for certain.
         self.reanchor_off_hidden();
         // Whatever was open is closed, because it was open in the other rendering: `payload_sel` names one
@@ -186,15 +186,15 @@ impl App {
         None
     }
 
-    /// **The one writer of the two folds** - so a switch moved by a chord, by `/t`, by the
+    /// The one writer of the two folds - so a switch moved by a chord, by `/t`, by the
     /// config pane or by a profile all land in the same field, and none of them can move the
     /// other's.
     pub(crate) fn set_fold(&mut self, show: Show, fold: Fold) {
         match show {
             Show::Tools => {
                 self.tools = fold;
-                // **`/t` moves one key for the long rows**, and an echo's headline is one of
-                // them (R33), so the two travel together here as they did at every other
+                // `/t` moves one key for the long rows, and an echo's headline is one of
+                // them, so the two travel together here as they did at every other
                 // writing of this field.
                 self.echo_open = fold.is_open();
             }
@@ -233,7 +233,7 @@ impl App {
             return None;
         }
         self.diff_split = split;
-        // **The history holds RENDERED rows**, and a diff style decides what one of them
+        // The history holds RENDERED rows, and a diff style decides what one of them
         // renders to - so the whole buffer is stale, not just the row that changed. The same
         // invalidation `/think` and `/t` make, for the same reason.
         self.invalidate_history();
@@ -259,7 +259,7 @@ impl App {
     ) -> Result<String, String> {
         let line = line.trim();
         if line.starts_with('{') {
-            // **Checked for BEING json and for nothing else** - the original rule, kept.
+            // Checked for BEING json and for nothing else - the original rule, kept.
             let v: serde_json::Value = serde_json::from_str(line)
                 .map_err(|e| format!("`{}` with `{{…}}` arguments: {e}", tool.name))?;
             if !v.is_object() {
@@ -521,7 +521,7 @@ impl App {
                 // others do not.
                 self.flip_thinking()
             }
-            // `/tools` asks what this conversation can call. It used to be a second spelling of ctrl-t, which
+            // `/tools` asks what this conversation can call. It is not a second spelling of ctrl-t, which
             // already folds tool output and is the key anybody uses for it.
             // With a run open it is that run's rows the verb unfolds, as the rows' own seams say.
             "t" if self.flip_run_tools() => None,
@@ -547,9 +547,9 @@ impl App {
                 }
                 self.set_verbosity(&rest)
             }
-            // **`/diff` - R38's new setting.** It was `slash_refused` until today, and that
-            // refusal is the card R29 was filed from.
-            // **`/repo` - the repo card**, which a click on the header's git field also opens.
+            // `/diff` - the diff layout setting. A refused slash would be
+            // the card this setting exists to avoid.
+            // `/repo` - the repo card, which a click on the header's git field also opens.
             _ if verb_arg(cmd, "repo").is_some() => {
                 self.git_repos = crate::gitfield::repos_in(&self.wiring.workspace);
                 self.repo_rows = self.read_repo_rows();
@@ -578,18 +578,18 @@ impl App {
             // One list on the screen at a time, and the settings asked for on the way in - both
             // in `open_surface`'s arm for `Config`.
             "config" | "settings" => self.toggle_surface(Surface::Config),
-            // **`/jobs` is `ctrl-q`'s other spelling** - the same function the chord and a click
+            // `/jobs` is `ctrl-q`'s other spelling - the same function the chord and a click
             // on the count label run, so the three cannot drift.
             "jobs" => self.toggle_surface(Surface::Jobs),
-            // **Every question waiting on you, answering none** - see `app/waiting.rs`.
+            // Every question waiting on you, answering none - see `app/waiting.rs`.
             "asks" => {
                 self.slash_out = Some(("/asks".to_string(), self.asks_lines()));
                 self.push_surface(Surface::Listing);
                 None
             }
-            // **What this session is watching** - the monitors the model armed.
+            // What this session is watching - the monitors the model armed.
             "monitors" => self.toggle_surface(Surface::Monitors),
-            // **The plugin panes this session has** - C3/C4's `pane_` hooks. Bare, it is the
+            // The plugin panes this session has - C3/C4's `pane_` hooks. Bare, it is the
             // list of them by title; `/pane NAME` opens one, through the same door a row of
             // that list names, and asks the daemon for a fresh look as it opens.
             "pane" => {
@@ -716,7 +716,7 @@ impl App {
                     self.say("not attached to a session yet");
                     return None;
                 }
-                // **R16: the fork this head is asking for.** The daemon announces a
+                // The fork this head is asking for. The daemon announces a
                 // manual compaction only when it has finished (`compacted`), so the
                 // mark has to be taken here, on the way out.
                 self.mark_fork();
@@ -732,7 +732,7 @@ impl App {
                     return None;
                 }
                 let summarise = cmd.ends_with("summarise") || cmd.ends_with("summarize");
-                // **R16: the same mark, for the other fork.**
+                // The same mark, for the other fork.
                 self.mark_fork();
                 if summarise {
                     self.say("re-seating: summarising, so the summary replaces the conversation…");
@@ -763,8 +763,8 @@ impl App {
                     // the whole provider listing.
                     return Some(Action::Settings);
                 }
-                // Every other verb goes to the daemon and the head keeps no list. There used to be an allowlist here,
-                // which was a second copy of the daemon's verb table.
+                // Every other verb goes to the daemon and the head keeps no list: a list here would be
+                // a second copy of the daemon's verb table.
                 if self.session_id.is_empty() {
                     self.say("not attached to a session yet");
                     return None;
@@ -783,7 +783,7 @@ impl App {
             return None;
         }
         let mut mine = self.operator_todos();
-        // **The state moves this command makes on rows that are not the operator's** - see the
+        // The state moves this command makes on rows that are not the operator's - see the
         // `postpone|resume` arm below, which is the only verb that can make one. Sent beside the
         // half, in one frame, because both are the board as the operator wants it.
         let mut moved: Vec<letibot_sessionlog::event::TodoState> = Vec::new();
@@ -807,7 +807,7 @@ impl App {
                 let done = match add_todo_words(&answer) {
                     Some(content) => self.add_operator_row(content, mine, moved),
                     None => {
-                        // **Said, not swallowed.** The line did nothing, and the person who typed it
+                        // Said, not swallowed. The line did nothing, and the person who typed it
                         // is owed the reason: a layer may ask only for what its `plugin.toml`
                         // declares, and this head performs exactly one act name.
                         let what = act_name(&answer).unwrap_or("no act at all");
@@ -929,7 +929,7 @@ impl App {
                                 content: content.clone(),
                                 status,
                             });
-                            // **Shown at once**, the same trust `echo_operator_todos` places: the
+                            // Shown at once, the same trust `echo_operator_todos` places: the
                             // write publishes when it lands, and until then the pane draws what was
                             // sent rather than a row that has not moved yet.
                             if let Some(t) = self.todos.iter_mut().find(|t| t.content == content) {
@@ -1005,7 +1005,7 @@ impl App {
             // Anything else is the text of a new row, including a line that begins with a number or with `done` and no
             // argument, since those are sentences somebody could type. Reached only when no layer answered.
             _ if !rest.is_empty() => return self.add_operator_row(rest.to_string(), mine, moved),
-            // **Bare `/todo` opens the card**, which is the shape `/mode` and `/models` keep: a
+            // Bare `/todo` opens the card, which is the shape `/mode` and `/models` keep: a
             // setting or an act with more than one part is CHOSEN from a card rather than typed
             // blind. The three forms are still there and the card's hint line says where.
             _ => {
@@ -1050,14 +1050,11 @@ impl App {
         Some(Action::SetOperatorTodos { items: mine, moved })
     }
 
-    /// **What a `command_` layer is handed beside the line** - the `feeds` object of
+    /// What a `command_` layer is handed beside the line - the `feeds` object of
     /// `docs/plugins-plan.md` §4.9's Feeds section, in the head's own reading of it.
     ///
-    /// A feed is a fact the head ALREADY HOLDS and is already showing; handing it over adjudicates
-    /// nothing and grants nothing, which is why it is a field on the input rather than a capability.
-    /// Three here, and each is a shape written by hand rather than `serde_json::to_value` of the
-    /// head's struct - an added field on `TodoEntry` must not silently become a field of the
-    /// contract:
+    /// A feed is a fact the head ALREADY HOLDS and shows; handing it over adjudicates and grants nothing, so it is a field on the
+    /// input. Each shape is written by hand, not `serde_json::to_value` of the head's struct, so a new field is not silently contract:
     ///
     /// ```jsonc
     /// {"todos":      [{"content": "…", "status": "pending", "by": "operator"}],
@@ -1065,22 +1062,10 @@ impl App {
     ///  "repo_todos": [{"text": "T1 git init", "mark": "[x]", "indent": 4, "item": true}]}
     /// ```
     ///
-    /// * **`todos`** is the WHOLE board - the model's half and the operator's - in board order, with
-    ///   the wire's own words for `status` (`pending`, `in_progress`, `completed`, `postponed`,
-    ///   `cancelled`) and `by` (`model`, `operator`, `queue`, `Parent s-…`). Both halves, because a
-    ///   layer deciding whether to add a row needs the rows that exist, and the model already reads
-    ///   this same board through `todo_write`'s getter.
-    /// * **`session`** is where the head is standing: the id and the folder a layer's own policy
-    ///   may key on.
-    /// * **`repo_todos`** is the workspace's `TODO.md` as the todos pane drew it - and it is
-    ///   **absent, not empty, when the head has not read the file** (the pane reads it at draw
-    ///   time, so a head that never opened the pane holds none). The two are different facts: `[]`
-    ///   would say the file is empty, and a layer that wanted to check *is this already in the
-    ///   project's list* would believe it.
-    ///
-    /// **What is deliberately not here**: a row's `when` and `needs`. They are the board's edges,
-    /// no act in `actions` can move one, and a word a layer cannot act on is a contract somebody has
-    /// to keep for nobody's benefit.
+    /// `todos` is the WHOLE board (model's and operator's halves) in board order, with the wire's words for `status` and `by`.
+    /// `session` is where the head stands: the id and folder. `repo_todos` is the workspace's `TODO.md` as the todos pane drew it,
+    /// absent (not empty) when the head has not read the file, since `[]` would say the file is empty.
+    /// Not here: a row's `when` and `needs`, which no act in `actions` can move.
     fn command_feeds(&self) -> serde_json::Value {
         let todos: Vec<serde_json::Value> = self
             .todos
@@ -1203,7 +1188,7 @@ impl App {
                     self.say("nothing to retire");
                     return None;
                 }
-                // **Union.** A dismissal asserts a key IS retired, and no other head's save
+                // Union. A dismissal asserts a key IS retired, and no other head's save
                 // is evidence to the contrary - this is the write `merge_retired` exists for.
                 let saved = self.save_prefs(RetiredWrite::Union);
                 self.say(&format!(
@@ -1355,11 +1340,8 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("stats", "this head's counters — the same as /status"),
 ];
 
-/// **Which of a daemon row's `choices` its `value` names** - the reading both the picker's cursor
-/// and the card's `← now` are made of.
-///
-/// A row's `value` is not always a choice verbatim. The daemon spells it as a name **plus whatever
-/// qualifies it**:
+/// Which of a daemon row's `choices` its `value` names - the reading both the picker's cursor and the card's `← now` use.
+/// A row's `value` is a name plus whatever qualifies it:
 ///
 /// ```text
 /// value   "writes allowed"                     choice  "writes allowed"
@@ -1367,31 +1349,10 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
 /// value   "local (qwen-3.8-27b)"               choice  "local"
 /// value   "deepseek/deepseek-flash --key …"    choice  "deepseek/deepseek-flash"
 /// ```
-///
-/// # The rule, and the two ways of getting it wrong
-///
-/// **The value itself; failing that, the longest choice the value begins with at a boundary.**
-///
-/// * **Not the value's first word - that was the defect, and the whole-value comparison is the
-///   branch that fixed it.** A NAME CAN ITSELF CONTAIN A SPACE (`Mode::WRITES_ALLOWED` is
-///   `writes allowed`), so taking the first word turns it into `writes`, which names no choice,
-///   and both readers fall back together to row 0. Measured on the real wire row: `writes allowed`
-///   gave no cursor and no `← now` while every other named mode gave both.
-///
-///   **The daemon's own parser is why nobody noticed.** `Mode::parse` folds `_` and spaces to `-`
-///   on *both* sides, so `writes-allowed` and `writes allowed` both select that point - the head's
-///   fixture said the hyphenated one and agreed with itself while the wire said the other.
-/// * **A boundary, so one name is not read as a prefix of another.** `automode-edits` begins with
-///   `automode`, so a bare prefix match would seed on the shorter row. This branch is for the
-///   QUALIFIED values the daemon writes - `allow-all (this box, consented)`,
-///   `local (qwen-3.8-27b)` - where the qualifier follows a space and the name itself has
-///   none, which is why the old first-word rule happened to survive them.
-///
-/// A whitespace boundary and not a list of separators: the daemon writes `name (note)` and
-/// `name --flag`, and inventing a grammar for the qualifier would be a rule about a spelling this
-/// head does not own. If a future row qualifies a name with something that is not whitespace-
-/// separated, it shows up here as *no choice named* - which renders as no `← now`, the honest
-/// answer, rather than as a mark on the wrong row.
+/// The value itself; failing that, the longest choice the value begins with at a whitespace boundary. Not the first word:
+/// a name can contain a space (`writes allowed`), and `Mode::parse` folds `_` and spaces to `-`, so a fixture can agree with
+/// itself while the wire differs. A boundary, so `automode-edits` is not read as `automode`. There is no separator list:
+/// an unrecognised qualifier shows as *no choice named* and no `← now`, never a mark on the wrong row.
 pub(crate) fn named_choice<'a>(value: &str, choices: &'a [String]) -> Option<&'a str> {
     choices
         .iter()

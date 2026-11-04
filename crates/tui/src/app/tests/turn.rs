@@ -59,13 +59,9 @@ fn esc_twice_interrupts_a_turn_that_is_only_waiting_on_a_call() {
     );
 }
 
-/// The status row is drawn for the whole life of the turn: through a call, and across the round
-/// boundary after it. A round's `TurnFinished` says `ends_turn: false`, so nothing a head writes
-/// about an ending is written until the daemon marks the PROMPT's end.
-///
-/// The assertion this test used to make - *the call lands and nothing else is outstanding, so the
-/// work is over and the row stands down* - pinned the flicker the operator reported on leticl:
-/// `Responding → Responded → Responding` across every round boundary of one prompt.
+/// The status row is drawn for the whole life of the turn: through a call, and across the round boundary after it.
+/// A round's `TurnFinished` says `ends_turn: false`, so nothing is written about an ending until the daemon marks
+/// the PROMPT's end, or `Responding → Responded → Responding` flickers across every round boundary.
 #[test]
 fn the_status_row_survives_a_tool_call() {
     // `began_ms` is the PROMPT's stamp, the same on every round of it, which is
@@ -131,7 +127,7 @@ fn the_status_row_survives_a_tool_call() {
         "so the row is still drawn: {:?}",
         a.turn_status(120)
     );
-    // **And a second round does not move the base** (R51 item 2's *must not differ*). Round
+    // And a second round does not move the base. Round
     // two's `TurnStarted` arrives three seconds later carrying the SAME `began_ms`, and the clock
     // must not restart at it - that is the `2.1s` a minute into a turn the operator reported.
     a.apply(started(5, 4_000, "t2", 1_000));
@@ -217,9 +213,9 @@ fn the_prefill_line_reads_as_nearly_done_when_the_prompt_was_mostly_cached() {
     }
 }
 
-/// **A turn that only thinks and writes calls still draws its row, and the row still moves.**
+/// A turn that only thinks and writes calls still draws its row, and the row still moves.
 ///
-/// MEASURED LIVE on the deepseek (`messages`) backend, 2026-09-27, and this test is that
+/// MEASURED LIVE on the deepseek (`messages`) backend, and this test is that
 /// measurement written down. The operator's screen read
 ///
 /// ```text
@@ -227,21 +223,10 @@ fn the_prefill_line_reads_as_nearly_done_when_the_prompt_was_mostly_cached() {
 ///   ⠼ Responding · 2m34s · 145 chars      header: 15.1s · 2826 out · 188 tok/s
 /// ```
 ///
-/// The number was frozen for two and a half minutes across a window in which the turn
-/// produced 2826 output tokens. Their report: *"still thinking glued to Responding"*.
-///
-/// **Two answers came out of that, and this test pins the second.** The first was to make the
-/// number count every channel instead of the answer's prose alone - that landed in `2aada71`
-/// and was measured against the previous build (`107 chars` against `6384` on the same turn at
-/// the same instant, `docs/evidence/turn-row-liveness-2026-09-27/`). The second is the
-/// operator's ruling on what the row is for: *"i dont care about those chars"* / *"just dont
-/// show me them"* - so **the number is gone entirely**, and what says the turn is alive is the
-/// spinner and the clock, which move on the head's own clock whether or not any event arrives.
-///
-/// So the assertions below are that a turn made only of reasoning and tool-call deltas is still
-/// drawn, still says `Responding`, carries no figure, and moves with nothing arriving - the
-/// four things that have to hold together for that row to be honest on a backend that sends no
-/// token counter at all.
+/// The number was frozen for two and a half minutes while the turn produced 2826 output tokens (*"still thinking glued to Responding"*).
+/// Two answers: the number counts every channel (`107 chars` against `6384` on the same turn), and, the operator's ruling, the number
+/// is gone entirely; the spinner and clock move on the head's own clock. So a turn of only reasoning and tool-call deltas is still
+/// drawn, says `Responding`, carries no figure, and moves with nothing arriving.
 #[test]
 fn a_turn_that_only_thinks_and_writes_calls_still_draws_its_row() {
     let mut a = app();
@@ -289,7 +274,7 @@ fn a_turn_that_only_thinks_and_writes_calls_still_draws_its_row() {
     assert!(!line.contains("chars"), "the count is not drawn: {line}");
     assert!(!line.contains(" tok"), "nor the server's: {line}");
 
-    // **And it is alive on the clock, with no event at all in between** - which is the whole of
+    // And it is alive on the clock, with no event at all in between - which is the whole of
     // what replaced the number: a spinner and a duration that move because the head reads its
     // own clock, rather than because something arrived.
     let glyph = |s: &str| s.chars().find(|c| "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".contains(*c));
@@ -514,7 +499,7 @@ fn the_thinking_verb_in_read_edits_says_why_rather_than_storing_it() {
         "and the mirror must not move either"
     );
     let screen = a.screen(100, 30).join("\n");
-    // **The whole clause, a click away when it does not fit** (R89). `say` draws the sentence
+    // The whole clause, a click away when it does not fit. `say` draws the sentence
     // cut to the frame, and a cut one ends `· click for details` and opens whole on a click  -
     // before, a refusal whose facts sat past the frame was a refusal that lost them.
     let hit = a
@@ -539,7 +524,7 @@ fn the_thinking_verb_in_read_edits_says_why_rather_than_storing_it() {
         "and the way back, in the verb's own words — INSIDE the notice's own width, which \
              is why the remedy is the first clause:\n{screen}"
     );
-    // **And only the switch BELOW it.** `system` sits above `thinking` and is not something
+    // And only the switch BELOW it. `system` sits above `thinking` and is not something
     // `thinking=open` needs, so naming it would be a requirement that is not one - the third
     // fault this test found, and the reason the assertion is a negative as well.
     assert!(
@@ -679,7 +664,7 @@ fn the_session_header_degrades_by_deletion_and_never_wraps() {
     for w in [40usize, 60, 80, 110, 200] {
         let l = a.header_line(w);
         assert!(line_width(&l) <= w, "w={w}: {} cols: {l}", line_width(&l));
-        // **The operator's drop order, 2026-10-13**: the out count, then the position counter,
+        // The operator's drop order: the out count, then the position counter,
         // then `% cached`, the model, the duration, tok/s, the spend, and `ctx` last - so the
         // counter going while `ctx` stays is the order, and `ctx` going first would break it.
         if l.contains("1/2") {
@@ -795,7 +780,7 @@ fn while_a_turn_runs_the_header_shows_no_clock() {
         1_000,
         testing::turn_started("t1"),
     )));
-    // A round finishes, so `last_timings` carries a SHORT wall-ms - the number that used to be
+    // A round finishes, so `last_timings` carries a SHORT wall-ms - the number that must not be
     // the header's, and the whole of the defect.
     a.apply(ServerFrame::Event(env(
         2,
@@ -837,7 +822,7 @@ fn while_a_turn_runs_the_header_shows_no_clock() {
     let row = a.turn_status(200);
     let header = a.header_line(200);
 
-    // **The row says the turn's elapsed**, and it is the only clock on screen.
+    // The row says the turn's elapsed, and it is the only clock on screen.
     // 151204 - 1000 = 150204 ms, spelled `2m30s`.
     assert!(row.contains("2m30s"), "the row's clock: {row}");
     assert!(
@@ -849,7 +834,7 @@ fn while_a_turn_runs_the_header_shows_no_clock() {
         "the header repeats the composer row's clock: {header}"
     );
 
-    // **And the rate and the count did NOT move with it.** `last_timings` is what they are for,
+    // And the rate and the count did NOT move with it. `last_timings` is what they are for,
     // and the operator's earlier complaint about them was *"the rate comes and goes"* - so the
     // rate stays on the round that just ended while the duration becomes the turn's.
     assert!(
@@ -967,8 +952,8 @@ fn the_spinner_spins_on_the_heads_clock_not_on_the_daemons_events() {
         glyph(&second),
         "the glyph moved with no event in between: {first} → {second}"
     );
-    // **And it is a ROW of its own, immediately above the box** (R51 item 1) - not inlaid in
-    // the bottom border, which is where it used to be and where an edge truncated it.
+    // And it is a ROW of its own, immediately above the box - not inlaid in
+    // the bottom border, where an edge truncates it.
     let screen = a.screen(100, 24);
     let at = screen
         .iter()
@@ -986,7 +971,7 @@ fn the_spinner_spins_on_the_heads_clock_not_on_the_daemons_events() {
         below.contains('╭'),
         "the status row's next line is the box top: {row} / {below}"
     );
-    // And the bottom border no longer carries it - the edge that used to hold it is empty of
+    // And the bottom border no longer carries it - the edge is empty of
     // the turn's words, which is what makes this a moved row rather than a second copy.
     let bottom = screen
         .iter()
@@ -1065,7 +1050,7 @@ fn the_counts_move_as_the_round_runs() {
         "the second call moved it, with no row landing: {:?}",
         count(&mut a)
     );
-    // **And the thinking the turn has streamed**, which is also not a row yet.
+    // And the thinking the turn has streamed, which is also not a row yet.
     a.apply(ServerFrame::Event(env(
         7,
         SessionEvent::Delta {
@@ -1179,7 +1164,7 @@ fn the_thinking_count_never_falls_not_even_when_its_reasoning_lands() {
     }
     assert!(last > 0, "the stream was never counted at all");
 
-    // **And its row lands.** The transcript now holds the reasoning, so the live part must stop
+    // And its row lands. The transcript now holds the reasoning, so the live part must stop
     // counting it - while the TOTAL, which is row plus live, must not move.
     a.apply(ServerFrame::Event(env(
         20,
@@ -1200,7 +1185,7 @@ fn the_thinking_count_never_falls_not_even_when_its_reasoning_lands() {
              twice: {last} → {after_landing}"
     );
 
-    // **And the next round rebuilds the pane**, which is when the inflated number collapsed:
+    // And the next round rebuilds the pane, which is when the inflated number collapsed:
     // the committed row still counts, and nothing else disappears with the pane.
     a.apply(ServerFrame::Event(env_at(
         21,
@@ -1251,7 +1236,7 @@ fn the_thinking_count_moves_while_the_thinking_streams() {
         },
     )));
 
-    // **The count, read off the marker itself** - the same arithmetic `live_work` does, taken
+    // The count, read off the marker itself - the same arithmetic `live_work` does, taken
     // from the row a reader is looking at rather than from the field behind it.
     let shown = |a: &mut App| -> usize {
         let screen = a.screen(100, 24).join("\n");
@@ -1273,7 +1258,7 @@ fn the_thinking_count_moves_while_the_thinking_streams() {
 
     // Nothing yet.
     assert_eq!(shown(&mut a), 0, "no thinking has arrived");
-    // **And it grows with the stream**, a paragraph at a time - long enough that the wrapped
+    // And it grows with the stream, a paragraph at a time - long enough that the wrapped
     // count must change, and with NO answer text at all.
     let mut last = 0;
     for i in 0..6 {
@@ -1317,7 +1302,7 @@ fn a_boundary_nobody_measured_does_not_split_the_run() {
         a.turn_status(120)
     );
 
-    // **The boundary, with no start in it at all.**
+    // The boundary, with no start in it at all.
     a.apply(ServerFrame::Event(env_at(
         5,
         9_000,
@@ -1363,8 +1348,7 @@ fn a_boundary_nobody_measured_does_not_split_the_run() {
     );
 }
 
-/// **The work in flight is ONE fold with the run it is about to join** - R37 AMENDED, and the
-/// operator's screen twice in one evening.
+/// The work in flight is ONE fold with the run it is about to join; the pair on the operator's screen was two folds:
 ///
 /// Their screen, verbatim, and the pair is two folds where one belongs:
 ///
@@ -1373,27 +1357,13 @@ fn a_boundary_nobody_measured_does_not_split_the_run() {
 ///   [94 thinking lines]
 /// ```
 ///
-/// **The first is the walk's marker for the run of rows the conversation rung hides; the second
-/// was the live pane's**, drawn for the thinking that is still streaming with no row of its own.
-/// The gate that should have folded it in - `live_here`, and `walk_carried_live` beside it  -
-/// asked *does this run hold a row of the CURRENT TURN*, and **a turn that has committed no row
-/// yet has an empty `turn_rows`**: `TurnStarted` has landed and the round's rows have not. Both
-/// answered no, so the pane drew the work in flight BESIDE the run instead of inside it, and the
-/// reader got two folds for one stretch of thinking. Their own account of when it goes away is
-/// the diagnosis: *"again not merged - tho when you start to reply it merges"* - the merge is
-/// the round's first row landing, which is the moment that gate can answer.
+/// The first is the walk's marker for the run the conversation rung hides; the second was the live pane's, for thinking still
+/// streaming with no row of its own. `live_here` and `walk_carried_live` asked *does this run hold a row of the CURRENT TURN*, and a
+/// turn that has committed no row yet has an empty `turn_rows`, so the pane drew the work BESIDE the run, not inside it. Not only a new
+/// prompt: `Sessions::wake` opens a turn with no prompt row, which puts the two folds on ADJACENT lines, the shape this fixture drives.
 ///
-/// **And it is not only a new prompt.** `Sessions::wake` - a job settlement, a monitor, a todo
-/// nag - opens a turn with no prompt row at all, so nothing the reader can see separates that
-/// turn's live work from the run above it; that is the shape this fixture drives, because it is
-/// the one that puts the two folds on ADJACENT lines.
-///
-/// **Driven through the live path, one frame at a time** - the rows appended and the reasoning
-/// arriving as deltas, in the order the daemon sends them, with every assertion made on a screen
-/// drawn in that state - because that is the difference the bug lives in.
-///
-/// See [`run_carries_live`] for the rule, and for the second clause the fix keeps: a run of an
-/// EARLIER turn's rows must not fold the live counts in.
+/// Driven through the live path one frame at a time, rows appended and reasoning arriving as deltas in the daemon's order. See
+/// [`run_carries_live`]: a run of an EARLIER turn's rows must not fold the live counts in.
 #[test]
 fn thinking_that_is_still_arriving_is_one_fold_with_the_run_it_will_join() {
     /// One display line at this frame's width.
@@ -1414,7 +1384,7 @@ fn thinking_that_is_still_arriving_is_one_fold_with_the_run_it_will_join() {
     // The operator's own message, which is what a turn follows.
     a.apply(ServerFrame::Event(env(1, testing::appended("s.u", "user"))));
     a.record_item("s.u", operator_row("run the tests"));
-    // **ROUND 1**: two calls answered and the model's own working-out. All three are rows this
+    // ROUND 1: two calls answered and the model's own working-out. All three are rows this
     // rung hides, so they are ONE run - `[2 tool calls, 1 thinking line]`.
     a.apply(ServerFrame::Event(env_at(
         2,
@@ -1502,7 +1472,7 @@ fn thinking_that_is_still_arriving_is_one_fold_with_the_run_it_will_join() {
         },
     )));
     seq += 1;
-    // **The premise**, so a failure below is about the live work and not about the fixture: the
+    // The premise, so a failure below is about the live work and not about the fixture: the
     // run is on the screen, and it is one fold.
     let before = a.screen(100, 30).join("\n");
     assert_eq!(markers(&before), 1, "one run, one fold: {before}");
@@ -1511,7 +1481,7 @@ fn thinking_that_is_still_arriving_is_one_fold_with_the_run_it_will_join() {
         "and it carries what is committed: {before}"
     );
 
-    // **THE BUG.** The model thinks, with no row of its own yet - two display lines. That is the
+    // THE BUG. The model thinks, with no row of its own yet - two display lines. That is the
     // work in flight, it is contiguous with the run above it, and it is the same fold: one
     // marker, and the counts are the SUM. The pane drew a second `[2 thinking lines]` here.
     a.apply(ServerFrame::Event(env(
@@ -1580,7 +1550,7 @@ fn thinking_that_is_still_arriving_is_one_fold_with_the_run_it_will_join() {
         "and the block counts the sum of them: {landed}"
     );
 
-    // **And the reply starting does not change the merge.** The round's prose lands: it is a row
+    // And the reply starting does not change the merge. The round's prose lands: it is a row
     // the reader can SEE, so it ends the run - which is what the run's marker must still obey  -
     // and the fold above it keeps the same counts and stays one fold.
     a.apply(ServerFrame::Event(env(
@@ -1789,7 +1759,7 @@ fn the_held_counter_rides_the_responding_row_while_something_is_held() {
     assert!(row.contains("Responding") && !row.contains("held"), "{row}");
 }
 
-/// **A snapshot drops the held counter this head last read** (R91.12): the counts are in no
+/// A snapshot drops the held counter this head last read: the counts are in no
 /// snapshot and the daemon says them again right after one, so a count carried across a resync
 /// or a reconnect is one whose zero this head may never have seen.
 #[test]
@@ -1850,7 +1820,7 @@ fn a_waiting_list_is_drawn_while_no_turn_runs() {
         "the row says what it waits on: {line:?}"
     );
 
-    // **A turn of its own takes the row back.** `Responding · …` is the turn's, and a list of what
+    // A turn of its own takes the row back. `Responding · …` is the turn's, and a list of what
     // is running beside it would say the same thing twice.
     a.apply(ServerFrame::Event(env(2, testing::turn_started("t1"))));
     let line = a.turn_status(120);
@@ -1863,20 +1833,15 @@ fn a_waiting_list_is_drawn_while_no_turn_runs() {
     assert!(a.turn_status(120).is_empty(), "quiet draws nothing");
 }
 
-/// **A child is named the way the subagents pane names it, and a kind that repeats is counted**  -
-/// the operator's screen, 2026-10-27:
+/// A child is named the way the subagents pane names it, and a kind that repeats is counted:
 ///
 /// ```text
 /// waiting on: monitor letibot-gate-after-wired · child s-1793010881933039000-sub-1793225939092557000 · child s-1793010881933039000-sub-1793225939285082000 · child s-1793010881933039000-sub-1793225939482158000
 /// ```
 ///
-/// Every fact in it is right - one monitor, three children - and the line is unusable: a session id
-/// is not a name a person can hold on to, and three of them are a wall that pushes the monitor off
-/// a narrow row. So the child is `child fix-login · …<tail>` (the pane's own
-/// [`crate::app::child_name`]), and three of a kind is `3 subagents`.
-///
-/// **One of a kind keeps the singular spelling**, which is the half a count must not swallow: a
-/// reader who sees `1 subagent` learns nothing about *which*, and the id is what they act on.
+/// Every fact in it is right and the line is unusable: a session id is not a name, and three of them push the monitor off a narrow row.
+/// So the child is `child fix-login · …<tail>` ([`crate::app::child_name`]) and three of a kind is `3 subagents`. One of a kind keeps
+/// the singular, since a reader who sees `1 subagent` learns nothing about *which*.
 #[test]
 fn a_waiting_list_names_its_children_and_counts_what_repeats() {
     use letibot_sessionlog::activity::{Activity, Waiting};
@@ -1937,7 +1902,7 @@ fn a_waiting_list_names_its_children_and_counts_what_repeats() {
         "a session id is not a name: {line:?}"
     );
 
-    // **One child is named, not counted** - its slug and the short id, exactly as the pane draws it.
+    // One child is named, not counted - its slug and the short id, exactly as the pane draws it.
     a.apply(ServerFrame::Event(env(
         11,
         waiting(vec![Waiting::Child(kids[0].0.into())]),
@@ -1968,7 +1933,7 @@ fn a_prompt_in_flight_holds_the_row_up_between_its_rounds() {
     let activity = |waiting_on: Vec<Waiting>| SessionEvent::ActivityChanged {
         activity: Activity::of(waiting_on),
     };
-    // A round that has finished, with its call finished too: the state R51 §3 recorded as *not
+    // A round that has finished, with its call finished too: the state once reported as *not
     // busy* over a turn that is plainly working.
     a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
     a.apply(ServerFrame::Event(env(

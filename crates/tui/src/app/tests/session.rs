@@ -22,7 +22,7 @@ fn a_bare_term_line_attaches_and_the_daemon_says_what_is_running() {
         })
     );
     assert!(a.pane_open());
-    // **Nothing has been drawn yet** - the rectangle is empty because the head has never
+    // Nothing has been drawn yet - the rectangle is empty because the head has never
     // seen this program. That is the state the replay has to fill.
     assert!(
         !a.screen(80, 24).iter().any(|r| r.contains("mc's screen")),
@@ -139,7 +139,7 @@ fn a_program_that_exits_while_detached_still_leaves_its_ending_row() {
         "and with the last thing the program printed — the rows a detach must not hide: \
              {frame:?}"
     );
-    // **`×` and not `·`**: nobody chose this ending, so it is the answer to what the
+    // `×` and not `·`: nobody chose this ending, so it is the answer to what the
     // operator is about to read rather than housekeeping.
     assert!(
         frame
@@ -208,7 +208,7 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
         vec![brief("s-root", "root", false), child],
         Hub::new("s-root").snapshot(),
     ));
-    // **Kept.** The daemon told this head about two sessions and it holds two.
+    // Kept. The daemon told this head about two sessions and it holds two.
     assert_eq!(
         a.sessions.len(),
         2,
@@ -216,7 +216,7 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
     );
     a.push_surface(Surface::Picker);
 
-    // **The project's line and the conversation, the child folded away** - the whole reason the
+    // The project's line and the conversation, the child folded away - the whole reason the
     // default is not noisy.
     let folded: Vec<String> = a
         .session_rows()
@@ -233,7 +233,7 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
         "a folded session's child was drawn anyway:\n{closed}"
     );
 
-    // **The fold, on the parent's row** - the cursor starts on the session this head is in, so
+    // The fold, on the parent's row - the cursor starts on the session this head is in, so
     // set it on that row and open it. Expanding is a fold, not a daemon action.
     a.picker_sel = a
         .session_rows()
@@ -247,7 +247,7 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
         "the child is not drawn:\n{open}"
     );
 
-    // **The cursor reaches it, and the row it reaches is the row Enter takes.** One
+    // The cursor reaches it, and the row it reaches is the row Enter takes. One
     // enumeration, so the indentation the eye sees and the row the key acts on cannot drift.
     assert_eq!(a.key(Key::Down), None);
     let picked = a.screen(100, 30).join("\n");
@@ -267,7 +267,7 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
         "Enter on a sub-session must be an ordinary attach"
     );
 
-    // **`←` on the child row closes the TREE EDGE it sits on** - the parent stays open in the
+    // `←` on the child row closes the TREE EDGE it sits on - the parent stays open in the
     // project, and the child goes back under it.
     assert_eq!(
         a.session_rows().len(),
@@ -282,7 +282,7 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
     );
 }
 
-/// **A child is a session the head DRIVES** - under its parent on the picker's list, taken by the
+/// A child is a session the head DRIVES - under its parent on the picker's list, taken by the
 /// same pick, typed into by the same composer, and left by the same way up. Nothing on that path
 /// reads the parent edge, which is the point: the filter that hid these rows must not come back.
 #[test]
@@ -299,7 +299,7 @@ fn a_child_is_listed_attached_to_sent_to_and_left_like_any_other_session() {
     a.push_surface(Surface::Picker);
     a.set_row_fold("s-root", true);
 
-    // **Listed one level under its parent, and numbered like any other row** - the number is the
+    // Listed one level under its parent, and numbered like any other row - the number is the
     // drawn list's, so a child a person can see is a child a number can name.
     let rows: Vec<(String, usize)> = a
         .session_rows()
@@ -318,7 +318,7 @@ fn a_child_is_listed_attached_to_sent_to_and_left_like_any_other_session() {
         "the second session on the list is the child"
     );
 
-    // **And the drawing is that list** - whichever of the two drew it, the child is a row a person
+    // And the drawing is that list - whichever of the two drew it, the child is a row a person
     // reads, since a row the eyes cannot find is a row the keys might as well not reach.
     let picture = a.picker_lines(100).join("\n");
     assert!(
@@ -326,7 +326,7 @@ fn a_child_is_listed_attached_to_sent_to_and_left_like_any_other_session() {
         "the picker does not draw the child:\n{picture}"
     );
 
-    // **The pick on it is an ordinary attach.** No refusal, no second verb.
+    // The pick on it is an ordinary attach. No refusal, no second verb.
     assert_eq!(
         a.pick("2"),
         Some(Action::Switch("s-child".into())),
@@ -339,7 +339,7 @@ fn a_child_is_listed_attached_to_sent_to_and_left_like_any_other_session() {
     ));
     assert_eq!(a.session_id, "s-child");
 
-    // **A line typed while standing in it is a prompt to the child**, and one Esc is the way back:
+    // A line typed while standing in it is a prompt to the child, and one Esc is the way back:
     // this is the same send and the same detach every other session gets.
     typed(&mut a, "and the sizes");
     assert_eq!(
@@ -380,7 +380,7 @@ fn a_protocol_skew_is_said_at_the_handshake_and_the_head_stays_attached() {
         a.notes
     );
     a.command("status");
-    // Taller than it was: `/status` is a scrolling pane and this row is near its end, so a frame that used to
+    // Taller than it was: `/status` is a scrolling pane and this row is near its end, so a frame that would
     // reach the bottom no longer does, and the failure is a missing row rather than a wrong one.
     let status = a.screen(120, 96).join("\n");
     let row = status
@@ -440,7 +440,7 @@ fn a_protocol_skew_is_said_at_the_handshake_and_the_head_stays_attached() {
     assert!(!a.should_quit());
     // `/status` names the direction too, and has it after the note has scrolled away.
     a.command("status");
-    // Taller than it was: `/status` gained three rows in R17, so a fixed-height frame that used to reach the
+    // Taller than it was: `/status` gained rows, so a fixed-height frame that would reach the
     // bottom no longer does.
     let status = a.screen(120, 96).join("\n");
     let row = status
@@ -557,7 +557,7 @@ fn ctrl_caret_lifts_the_read_only_and_pays_the_seatings_asks() {
         "an overridden head sends"
     );
 
-    // **The override belongs to the seat it was given on.** A second `Hello` from the same
+    // The override belongs to the seat it was given on. A second `Hello` from the same
     // daemon - what a `Switch` produces - must not re-lock a head the operator unlocked,
     // while the same pid speaking a *different* older protocol is a new party and re-locks.
     a.apply(hello_at(
@@ -579,7 +579,7 @@ fn ctrl_caret_lifts_the_read_only_and_pays_the_seatings_asks() {
     );
 }
 
-/// **A NEWER daemon disables nothing**: the skew is said and counted, but the seating's
+/// A NEWER daemon disables nothing: the skew is said and counted, but the seating's
 /// asks go out and the composer sends, exactly as on a matching build.
 #[test]
 fn a_newer_daemon_attaches_with_nothing_disabled() {
@@ -677,7 +677,7 @@ fn a_head_with_no_daemon_says_so_keeps_its_screen_and_holds_the_line() {
     let back = a.screen(100, 24).join("\n");
     assert!(!back.contains("daemon connection is down"), "{back}");
     assert!(back.contains("daemon is back after 4.4s"), "{back}");
-    // One line on the glass (R89); the sentence whole a click - or alt-n - away.
+    // One line on the glass; the sentence whole a click - or alt-n - away.
     let back = newest_notice(&mut a);
     assert!(back.contains("Resuming from seq"), "{back}");
     // The ordinary reconnect succeeds on its first try, so there is no attempt count
@@ -737,7 +737,7 @@ fn a_link_that_stays_down_stops_saying_reconnecting_and_starts_saying_how_long()
     );
 }
 
-/// **The backoff is the head's, and it is flat.** A caller asks once per pass and the
+/// The backoff is the head's, and it is flat. A caller asks once per pass and the
 /// head answers whether the two seconds are up; two attempts inside one window would
 /// be a busy loop against a socket that is not there.
 #[test]
@@ -812,7 +812,7 @@ fn a_bye_does_not_report_a_stop_that_has_not_happened() {
     );
 }
 
-/// **And when the process really has gone, there is nothing to say.** The correction
+/// And when the process really has gone, there is nothing to say. The correction
 /// above must not turn every orderly stop into a warning.
 #[test]
 fn a_stop_whose_process_is_gone_says_nothing_even_after_a_bye() {
@@ -944,7 +944,7 @@ fn a_switch_away_and_back_re_asks_for_the_rows_the_jobs_and_the_settings() {
         );
     }
 
-    // **Away.** The daemon answers a `Switch` with a second `Hello` on the same connection,
+    // Away. The daemon answers a `Switch` with a second `Hello` on the same connection,
     // and that is the whole of the switch path - so the ask rides the same arm.
     a.key(Key::CtrlG);
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
@@ -954,7 +954,7 @@ fn a_switch_away_and_back_re_asks_for_the_rows_the_jobs_and_the_settings() {
         "the switch into a child did not re-ask for its children"
     );
 
-    // **And back**, which is the return the operator was watching.
+    // And back, which is the return the operator was watching.
     assert_eq!(a.key(Key::Esc), Some(Action::Switch("s".into())));
     a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
     let back = a.take_actions();
@@ -970,7 +970,7 @@ fn a_switch_away_and_back_re_asks_for_the_rows_the_jobs_and_the_settings() {
 /// head switches in and back, and the daemon's list says `running: false` because the child is parked on a job.
 #[test]
 fn a_running_child_is_still_counted_after_a_switch_away_and_back() {
-    // The parent's log, with one child watched come alive. **Through a real `Hub`**, so the
+    // The parent's log, with one child watched come alive. Through a real `Hub`, so the
     // snapshot is the daemon's own fold of the event and not a fixture written to agree
     // with the head.
     let hub = Hub::new("s");
@@ -998,7 +998,7 @@ fn a_running_child_is_still_counted_after_a_switch_away_and_back() {
         "the premise: the child is counted while the head is at home"
     );
 
-    // Away, and back. **The list says `running: false` at the instant of return** - the
+    // Away, and back. The list says `running: false` at the instant of return - the
     // child is between turns - and it says it in both directions, so the only thing that
     // differs between the two halves of this test is the snapshot.
     let mut parked = a_family();
@@ -1010,7 +1010,7 @@ fn a_running_child_is_still_counted_after_a_switch_away_and_back() {
     a.apply(hello("s", parked.clone(), snapshot.clone()));
     assert_eq!(a.session_id, "s");
 
-    // **The count is still there.** The child is alive: the head watched it come alive and
+    // The count is still there. The child is alive: the head watched it come alive and
     // has seen no completion, and the list's `false` is not one.
     let row = count_row(&mut a);
     assert!(
@@ -1130,7 +1130,7 @@ fn a_peek_drawn_from_the_session_rows_shows_a_tool_card_and_does_not_claim_degra
     );
 }
 
-/// **Tick until the git reading in flight is collected** - the reading runs on its own thread
+/// Tick until the git reading in flight is collected - the reading runs on its own thread
 /// ([`App::refresh_git`]), so a test that wants its answer drives the loop's half until the
 /// job is gone. Bounded, so a reader that never answers fails the test instead of hanging it.
 fn collect_git(a: &mut App) {
@@ -1410,7 +1410,7 @@ fn the_frame_before_the_attach_claims_nothing_about_the_session() {
         "the pre-attach frame draws the empty-session banner anyway"
     );
     // The chrome is there, which is the point of drawing early: the composer's hint bar says the program is
-    // alive. Asserted on its tail, since the keys that used to open it are deliberately gone.
+    // alive. Asserted on its tail, since the keys that opened it are deliberately gone.
     assert!(
         flat.contains("ctrl-s sessions"),
         "no chrome at all: {flat:?}"
@@ -1488,7 +1488,7 @@ fn a_snapshot_full_of_bodiless_rows_draws_no_bar_and_renders_as_bodies_land() {
         sessions: Vec::new(),
     });
     let first = a.screen(80, 40).join("\n");
-    // **No bar.** The head has been told nothing about an operation, and a count of
+    // No bar. The head has been told nothing about an operation, and a count of
     // body-less rows is exactly the proxy this design removed.
     assert!(
         !first.contains("carrying the conversation"),
@@ -1534,7 +1534,7 @@ fn a_snapshot_ends_a_fill_whose_ticks_were_thrown_away() {
     let armed = a.screen(100, 30).join("\n");
     assert!(armed.contains("897/2000 rows"), "{armed}");
 
-    // **The demotion's own delivery**: a snapshot, with the reason it happened.
+    // The demotion's own delivery: a snapshot, with the reason it happened.
     a.apply(ServerFrame::Resync {
         reason: "queue of 1024 overflowed at seq 1800".into(),
         dropped: 0,
@@ -1834,7 +1834,7 @@ fn the_picker_moves_with_arrows_and_enter_takes_the_marked_row() {
     a.key(Key::Up);
     a.key(Key::Up);
     assert_eq!(a.picker_sel, 1);
-    // **One more Up is the project's line**, which is a stop of its own - Enter folds it - and the
+    // One more Up is the project's line, which is a stop of its own - Enter folds it - and the
     // one after that is the last session again.
     a.key(Key::Up);
     assert_eq!(a.picker_sel, 0);
@@ -1843,7 +1843,7 @@ fn the_picker_moves_with_arrows_and_enter_takes_the_marked_row() {
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s3".into())));
 }
 
-/// A click picks the session DRAWN under the pointer. This test used to encode the bug: it clicked a row and
+/// A click picks the session DRAWN under the pointer. This test must not count as the old bug did: it clicks a row and
 /// expected an index counted one screen row per session, while rano draws two. The rows are found on the frame
 /// now, so the test cannot drift from the drawing.
 #[test]
@@ -1867,7 +1867,7 @@ fn a_click_picks_the_row_under_the_pointer_and_enter_still_switches() {
             .unwrap_or_else(|| panic!("{needle} is drawn: {frame:#?}")) as u16
     };
     // The header takes row 0, the title and blank two more, then the project's line and legend, so two rows per
-    // session: that is the arithmetic the handler used to get wrong. The first row is found by its number.
+    // session: that is the arithmetic the handler must get right. The first row is found by its number.
     assert_eq!(at("two"), at("1  one") + 2, "{frame:#?}");
     a.key(Key::Click {
         x: 10,
@@ -1883,7 +1883,7 @@ fn a_click_picks_the_row_under_the_pointer_and_enter_still_switches() {
         row.contains('▸'),
         "the mark moved to the clicked row: {row}"
     );
-    // **The id line under a session picks THAT session**, not the next one.
+    // The id line under a session picks THAT session, not the next one.
     a.key(Key::Click { x: 8, y: at("s3") });
     assert_eq!(a.picker_sel, 3, "a click on three's id line picks three");
     a.key(Key::Click {
@@ -1911,9 +1911,9 @@ fn a_click_picks_the_row_under_the_pointer_and_enter_still_switches() {
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s3".into())));
 }
 
-/// **The picker scrolls to keep its cursor on the screen**, and a click is measured against the
-/// scrolled frame. It used to be cut at the window with no scrolling, so the arrows walked a
-/// cursor below the cut and Enter switched to a session nobody could see.
+/// The picker scrolls to keep its cursor on the screen, and a click is measured against the
+/// scrolled frame. It must not be cut at the window with no scrolling, or the arrows walk a
+/// cursor below the cut and Enter switches to a session nobody can see.
 #[test]
 fn the_picker_scrolls_its_cursor_into_view_and_clicks_follow() {
     let mut a = app();
@@ -2000,7 +2000,7 @@ fn the_header_follows_a_mid_session_model_switch() {
         vec![brief("s", "one", false)],
         Hub::new("s").snapshot(),
     ));
-    // What `Hello` said, which is all the header used to read.
+    // What `Hello` said, which is all the header reads.
     assert!(
         a.header_line(200).contains("qwen-3.8-flash-next"),
         "{}",
@@ -2026,10 +2026,9 @@ fn the_header_follows_a_mid_session_model_switch() {
     );
 }
 
-/// **A switch somebody else made reaches this head.** `Settings` has one send site and it answers a
-/// request, so a head that did not type `/models` went on naming the model `Hello` carried until its
-/// next turn. The daemon names the model on the session's hub; the header takes that word, and a
-/// model is not a warning, so no note is filed for it.
+/// A switch somebody else made reaches this head. `Settings` answers a request, so a head that did not type
+/// `/models` must still take the model the session's hub names, not keep the one `Hello` carried until its
+/// next turn. A model is not a warning, so no note is filed.
 #[test]
 fn a_switch_reaches_the_heads_that_did_not_type_it() {
     let mut a = app();
@@ -2118,7 +2117,7 @@ fn taking_a_keyless_row_asks_for_the_key_and_enter_stores_and_switches() {
         screen.contains("deepseek needs a key this box does not hold"),
         "the card names the provider the ask is for:\n{screen}"
     );
-    // **Typed characters are dots and never on the screen as text** - the key cannot be
+    // Typed characters are dots and never on the screen as text - the key cannot be
     // read off the glass by anything else that sees it.
     for c in "sk-live-12345".chars() {
         a.key(Key::Char(c));
@@ -2132,7 +2131,7 @@ fn taking_a_keyless_row_asks_for_the_key_and_enter_stores_and_switches() {
         !masked.contains("sk-live-12345"),
         "the key itself is never rendered:\n{masked}"
     );
-    // **Enter does both things in one verb**, and nothing is sent before it.
+    // Enter does both things in one verb, and nothing is sent before it.
     let act = a.key(Key::Enter).expect("enter acts");
     assert!(a.key_ask.is_none(), "the ask is closed");
     match act {
@@ -2143,7 +2142,7 @@ fn taking_a_keyless_row_asks_for_the_key_and_enter_stores_and_switches() {
         other => panic!("enter on the ask sends a slash, not {other:?}"),
     }
 
-    // **Esc cancels with nothing stored and the row not taken.**
+    // Esc cancels with nothing stored and the row not taken.
     let mut b = App::new(RenderConfig {
         width: 110,
         color: true,
@@ -2172,7 +2171,7 @@ fn taking_a_keyless_row_asks_for_the_key_and_enter_stores_and_switches() {
     b.key(Key::Char('k'));
     assert_eq!(b.key(Key::Esc), None);
     assert!(b.key_ask.is_none(), "esc closes the ask");
-    // **Nothing was SENT for the key** - the queue may hold the attach's own asks
+    // Nothing was SENT for the key - the queue may hold the attach's own asks
     // (`Settings`, `ListJobs`, planted by the `Hello` arm), but no `Slash` left the head.
     assert!(
         b.take_actions()
@@ -2181,7 +2180,7 @@ fn taking_a_keyless_row_asks_for_the_key_and_enter_stores_and_switches() {
         "esc sent nothing for the key"
     );
 
-    // **An older daemon - no `models.keys` row at all - never asks**, and the switch goes
+    // An older daemon - no `models.keys` row at all - never asks, and the switch goes
     // through as it always did. Absent is *no greening*, never *no keys*.
     let mut c = App::new(RenderConfig {
         width: 110,
@@ -2209,7 +2208,7 @@ fn taking_a_keyless_row_asks_for_the_key_and_enter_stores_and_switches() {
     }
     assert!(c.key_ask.is_none(), "an absent keys row blocks nothing");
 
-    // **And `local` never asks** - it needs no credential, which is `choice_ready`'s own rule.
+    // And `local` never asks - it needs no credential, which is `choice_ready`'s own rule.
     let mut d = App::new(RenderConfig {
         width: 110,
         color: true,
@@ -2235,7 +2234,7 @@ fn taking_a_keyless_row_asks_for_the_key_and_enter_stores_and_switches() {
     assert!(d.key_ask.is_none());
 }
 
-/// **`/models` is a menu now.** It printed a wall of provider rows in which
+/// `/models` is a menu now. It printed a wall of provider rows in which
 /// the switch - the thing anybody types it for - was the least visible part.
 /// The operator: *"for starters i want it to be usual menu, like /mode"*.
 #[test]
@@ -2304,7 +2303,7 @@ fn the_two_pickers_do_not_open_together() {
 }
 
 /// `/sessions` and `ctrl-s` open the picker the same way: both close a setting card that is up and seed the
-/// cursor on the session this head is in. `/sessions` used to set the picker and nothing else, leaving two lists
+/// cursor on the session this head is in. `/sessions` sets the cursor too, not the picker alone, which would leave two lists
 /// on the screen.
 #[test]
 fn slash_sessions_opens_the_picker_the_way_ctrl_s_does() {
@@ -2652,7 +2651,7 @@ fn a_forced_stop_holds_the_head_and_is_said_either_way() {
     );
 }
 
-/// **An older daemon: the line names both protocols, and no stop frame is claimed.**
+/// An older daemon: the line names both protocols, and no stop frame is claimed.
 #[test]
 fn an_older_daemon_is_said_as_one() {
     let mut a = app();
@@ -2737,8 +2736,8 @@ fn a_picker_enter_on_the_parent_of_the_session_you_are_in_goes_there() {
     );
 }
 
-/// A list does not seat a head: a `Sessions` frame naming another session asks for the rows, and the arm used to
-/// write `current` over `self.session_id`, so a head could claim a session whose transcript it did not hold.
+/// A list does not seat a head: a `Sessions` frame naming another session asks for the rows, and the arm must not
+/// write `current` over `self.session_id`: a head could claim a session whose transcript it does not hold.
 #[test]
 fn a_session_list_does_not_move_the_head_without_seating_it() {
     let mut a = app();
@@ -2773,7 +2772,7 @@ fn a_session_list_does_not_move_the_head_without_seating_it() {
     );
 }
 
-/// **A replayed `model_set` is history, not news.** A snapshot's warning window carries switches from
+/// A replayed `model_set` is history, not news. A snapshot's warning window carries switches from
 /// before the head attached; stamped as if they had just arrived, an old one outranked the settings
 /// row the head already held, and the header drew the model the session had left.
 #[test]

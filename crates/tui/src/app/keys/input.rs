@@ -26,7 +26,7 @@ fn key(k: KeyEvent) -> Option<Key> {
         // the TERMINAL copies the selection and this head's drag release copies it too
         // (`App::copy_selection`), so acting here would be a second copy of one fact.
         KeyCode::Char('c') if m == Mods::SUPER => return None,
-        // ⌘V: the clipboard's picture, through the door ctrl-v already opens — the clipboard
+        // ⌘V: the clipboard's picture, through the door ctrl-v already opens - the clipboard
         // first, unless a payload window is open (`App::attach_from_clipboard`).
         KeyCode::Char('v') if m == Mods::SUPER => Key::CtrlV,
         // ⌘Z undoes and ⌘⇧Z redoes, the chords everybody's hands already know. The shifted
@@ -34,8 +34,8 @@ fn key(k: KeyEvent) -> Option<Key> {
         KeyCode::Char('z') if m == Mods::SUPER => Key::Undo,
         KeyCode::Char('z') | KeyCode::Char('Z') if m == Mods::SUPER | Mods::SHIFT => Key::Redo,
         // Alt arrives as an ESC before the key; only these four mean anything. alt-b is a MARK on
-        // an empty composer and word-left otherwise — settled in `App::key`, which can see the
-        // composer (`app/feedback.rs`); alt-g is the other mark (TODO R81).
+        // an empty composer and word-left otherwise - settled in `App::key`, which can see the
+        // composer (`app/feedback.rs`); alt-g is the other mark.
         KeyCode::Char('b') if m == Mods::ALT => Key::AltB,
         KeyCode::Char('g') if m == Mods::ALT => Key::AltG,
         // alt-a: answer the question a todo row is waiting on you for (`app/todos.rs`).
@@ -43,7 +43,7 @@ fn key(k: KeyEvent) -> Option<Key> {
         // alt-r / alt-p: reseat now, and show the reseat card (`app/reseat.rs`).
         KeyCode::Char('r') if m == Mods::ALT => Key::AltR,
         KeyCode::Char('p') if m == Mods::ALT => Key::AltP,
-        // alt-n: open the newest notice line whole — the key for what a click on one does (R89).
+        // alt-n: open the newest notice line whole - the key for what a click on one does.
         KeyCode::Char('n') if m == Mods::ALT => Key::AltN,
         // alt-h: fold the questions waiting on you away, and back (`app/asks.rs`).
         KeyCode::Char('h') if m == Mods::ALT => Key::AltH,
@@ -124,7 +124,7 @@ fn mouse(m: MouseEvent) -> Option<Key> {
         return None;
     }
     match m.kind {
-        // The position is kept: the notch scrolls what is under the pointer (R69).
+        // The position is kept: the notch scrolls what is under the pointer.
         MouseKind::WheelUp => Some(Key::Wheel {
             up: true,
             x: m.x,
@@ -194,7 +194,7 @@ mod tests {
         assert_eq!(decode(b"\x7f"), vec![Key::Backspace]);
         assert_eq!(decode(b"\x1b"), vec![Key::Esc]);
         assert_eq!(decode(b"\x18"), vec![Key::CtrlX]);
-        // **R22's chord.** `0x0e` had no arm in letibot's first decoder, so it was eaten —
+        // `0x0e` had no arm in letibot's first decoder, so it was eaten -
         // a key that did nothing rather than a key bound to nothing, which is why it was free.
         assert_eq!(decode(b"\x0e"), vec![Key::CtrlN]);
         // Every C0 byte, as letibot's decoder read it. `None` is a byte it had no arm for.
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn a_read_that_ends_mid_utf8_loses_nothing() {
-        // A read that split a character used to fail the whole decode and drop the bytes,
+        // A read that split a character must not fail the whole decode and drop the bytes,
         // silently. Pasting a stack trace with an arrow or a box-drawing character in it
         // lost bytes.
         let whole = "héllo → wörld ⣿".as_bytes();
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn the_wheel_arrives_as_sgr_mouse_and_every_other_report_is_dropped() {
-        // **The wheel keeps where the pointer was** (R69), 0-based like a click.
+        // The wheel keeps where the pointer was, 0-based like a click.
         assert_eq!(
             decode(b"\x1b[<64;10;5M"),
             vec![Key::Wheel {
@@ -367,7 +367,7 @@ mod tests {
             // The reseat card's two (`app/reseat.rs`): reseat now, show the card.
             (b"\x1br", Key::AltR),
             (b"\x1bp", Key::AltP),
-            // The newest notice, opened whole (R89).
+            // The newest notice, opened whole.
             (b"\x1bn", Key::AltN),
             (b"\x1bh", Key::AltH),
             (b"\x01", Key::Home),
@@ -407,7 +407,7 @@ mod tests {
         ] {
             assert_eq!(decode(bytes), vec![want.clone()], "{bytes:?}");
         }
-        // And the spellings it decoded to nothing — whole, so nothing is typed after them.
+        // And the spellings it decoded to nothing - whole, so nothing is typed after them.
         for bytes in [
             &b"\x1bj"[..],
             b"\x1bB",
@@ -526,7 +526,7 @@ mod tests {
         );
         // ⌘C types nothing and interrupts nothing: the terminal owns the copy.
         assert_eq!(decode(b"\x1b[99;9u"), Vec::<Key>::new());
-        // ⌘⌃C keeps both bits — it is NOT the interrupt it used to be.
+        // ⌘⌃C keeps both bits - it is NOT the interrupt.
         assert_eq!(
             rano::term::decode(b"\x1b[99;13u"),
             vec![Event::Key(KeyEvent::new(
@@ -535,7 +535,7 @@ mod tests {
             ))]
         );
         assert_eq!(decode(b"\x1b[99;13u"), Vec::<Key>::new());
-        // ⌘V asks the clipboard for a picture — the door ctrl-v opens.
+        // ⌘V asks the clipboard for a picture - the door ctrl-v opens.
         assert_eq!(decode(b"\x1b[118;9u"), vec![Key::CtrlV]);
         // ⌘Z undoes, ⌘⇧Z redoes, in either spelling of the shifted letter.
         assert_eq!(decode(b"\x1b[122;9u"), vec![Key::Undo]);
@@ -564,8 +564,8 @@ mod tests {
         assert_eq!(decode(b"\x1a"), vec![Key::Undo]);
     }
 
-    /// **The pane's program reads legacy bytes**, whatever spelling the operator's terminal
-    /// used — and the way out, `ctrl-\`, is still the byte the pane scans for.
+    /// The pane's program reads legacy bytes, whatever spelling the operator's terminal
+    /// used - and the way out, `ctrl-\`, is still the byte the pane scans for.
     #[test]
     fn the_pane_gets_legacy_bytes_under_the_kitty_keyboard() {
         assert_eq!(legacy_bytes(b"ls\x1b[99;5u"), b"ls\x03".to_vec());

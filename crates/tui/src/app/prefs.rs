@@ -68,7 +68,7 @@ impl App {
                 // Still reading this one: one at a time, and nothing to draw yet.
                 Err(std::sync::mpsc::TryRecvError::Empty) if of == &key => return,
                 // Reading a workspace (or a repository) the head has left: abandoned, and its
-                // answer with it — the thread's send fails on a dropped receiver and it ends.
+                // answer with it - the thread's send fails on a dropped receiver and it ends.
                 Err(std::sync::mpsc::TryRecvError::Empty) => self.git_job = None,
                 Ok(state) => {
                     let of = of.clone();
@@ -267,7 +267,7 @@ impl App {
         self.todo_seed = p.todo_seed;
         self.git_format = p.git_format;
         // A format that was loaded before the first reading still has nothing to render
-        // over — but a head that RESUMES into a session renders the header at once, so the
+        // over - but a head that RESUMES into a session renders the header at once, so the
         // format is applied here too and not only on the reader's first tick.
         self.apply_git_format();
         // The retired notes come from the file, not from the process: a dismissal that lived only
@@ -588,11 +588,11 @@ pub(crate) struct ConfigRow {
     pub(crate) section: &'static str,
     pub(crate) key: String,
     pub(crate) value: String,
-    /// Where the value came from — a path, a flag, "default" — shown under the
+    /// Where the value came from - a path, a flag, "default" - shown under the
     /// selected row. Empty when nobody tracks it.
     pub(crate) source: String,
     /// The values this row may take, as the DAEMON sent them. Empty for a row
-    /// with no closed set, and for a daemon older than protocol 18 — the pane
+    /// with no closed set, and for a daemon older than protocol 18 - the pane
     /// then says it cannot cycle rather than cycling a list it invented.
     pub(crate) choices: Vec<String>,
     pub(crate) edit: ConfigEdit,

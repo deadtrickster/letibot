@@ -28,7 +28,7 @@ fn the_todos_pane_footer_names_the_keys_the_pane_answers() {
     )));
     a.push_surface(Surface::Todos);
 
-    // **The add control**, which is where the cursor starts.
+    // The add control, which is where the cursor starts.
     a.todos_sel = 0;
     let bar = a.hint_bar(200);
     assert!(bar.contains("↑↓ moves"), "the movement key is named: {bar}");
@@ -42,7 +42,7 @@ fn the_todos_pane_footer_names_the_keys_the_pane_answers() {
     );
     assert!(!bar.contains("unfolds"), "nothing here unfolds: {bar}");
 
-    // **One of the operator's own rows** — one Down from the add control. TAB toggles it, which
+    // One of the operator's own rows - one Down from the add control. TAB toggles it, which
     // is the sentence rano's pinned footer got wrong, and `/todo rm` is named because deletion is
     // the operator's own act and this is the only place it is spelled.
     a.todos_sel = 1;
@@ -64,7 +64,7 @@ fn the_todos_pane_footer_names_the_keys_the_pane_answers() {
         "and the operator's own delete verb is discoverable: {bar}"
     );
 
-    // **A repo item unfolds**, which is the one stop where the old sentence was true — and it is
+    // A repo item unfolds, which is the one stop where the old sentence was true - and it is
     // still said, so the fix is a correction rather than a deletion. Enter reads it; Tab unfolds it.
     a.repo_todos = Some(vec![TodoRow {
         indent: 0,
@@ -80,8 +80,8 @@ fn the_todos_pane_footer_names_the_keys_the_pane_answers() {
         "the repo's own act is still named: {bar}"
     );
 
-    // **A model's row: the read and nothing else.** No key of this pane moves one — the R44
-    // boundary — and the bar says only what it does do rather than promising an act.
+    // A model's row: the read and nothing else. No key of this pane moves one - the
+    // boundary - and the bar says only what it does do rather than promising an act.
     a.apply(ServerFrame::Event(env(
         2,
         SessionEvent::TodosUpdated {
@@ -103,7 +103,7 @@ fn the_todos_pane_footer_names_the_keys_the_pane_answers() {
 #[test]
 fn ctrl_t_opens_the_todos_pane_and_esc_closes_it() {
     let mut a = app();
-    // Opening asks for the list — the bootstrap read — and the pane draws
+    // Opening asks for the list - the bootstrap read - and the pane draws
     // both of its sections, labelled as the two different things they are.
     assert_eq!(a.key(Key::CtrlT), Some(Action::ListTodos));
     let screen = a.screen(100, 30).join("\n");
@@ -143,7 +143,7 @@ fn the_todos_pane_reads_a_nested_layouts_todo_md() {
     let ws = base.join("letibot");
     let repo = ws.join("letibot");
     // The child is a real-enough repository for the resolver (a `.git` directory), because
-    // that is the marker both consumers share — the file alone would not mark it.
+    // that is the marker both consumers share - the file alone would not mark it.
     std::fs::create_dir_all(repo.join(".git")).expect("scratch");
     std::fs::write(
         repo.join("TODO.md"),
@@ -199,8 +199,8 @@ fn the_pane_says_which_of_its_two_lists_the_model_is_told_about() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// **Restored.** This test had lost its `#[test]` to a stray attribute that sat before the
-// *next* test's doc — so it never ran. Found while inserting the nested-layout test beside
+// Restored. This test had lost its `#[test]` to a stray attribute that sat before the
+// *next* test's doc - so it never ran. Found while inserting the nested-layout test beside
 // it; running it is the only way to know whether it passes.
 #[test]
 fn a_click_on_the_todos_pane_puts_the_cursor_on_the_row_it_is_on() {
@@ -230,7 +230,7 @@ fn a_click_on_the_todos_pane_puts_the_cursor_on_the_row_it_is_on() {
         )
         .expect("fits")
     };
-    // **The screen is an argument and not a capture** — a closure over the frame the test
+    // The screen is an argument and not a capture - a closure over the frame the test
     // happened to take first is a test that passes and fails for reasons nothing to do with
     // the click, which is how this one first read as a broken click.
     let marked = |screen: &[String], what: &str| {
@@ -258,7 +258,7 @@ fn a_click_on_the_todos_pane_puts_the_cursor_on_the_row_it_is_on() {
         screen.join("\n")
     );
     assert_eq!(a.repo_sel, 2, "and the repo cursor followed");
-    // **Enter does not confirm the click — it READS the row it landed on**, which is the same
+    // Enter does not confirm the click - it READS the row it landed on, which is the same
     // two-acts rule said one key over: the click moved the cursor, and the read is what Enter does
     // with it. Esc puts the reader back on the same row.
     assert_eq!(a.key(Key::Enter), None);
@@ -271,7 +271,7 @@ fn a_click_on_the_todos_pane_puts_the_cursor_on_the_row_it_is_on() {
         screen.join("\n")
     );
 
-    // A click on the add control — **the row `line - header` used to make negative** — lands
+    // A click on the add control - the row `line - header` could make negative - lands
     // on it, which is the whole of the operator's report.
     a.key(Key::Click {
         x: 6,
@@ -297,7 +297,7 @@ fn a_click_on_the_todos_pane_puts_the_cursor_on_the_row_it_is_on() {
         screen.join("\n")
     );
 
-    // And a click into the blank space below the list moves nothing either — the guard is the
+    // And a click into the blank space below the list moves nothing either - the guard is the
     // WINDOW, not the list.
     let below = row_of(&screen, "this pane never writes it");
     a.key(Key::Click { x: 6, y: below });
@@ -313,7 +313,7 @@ fn a_click_on_the_todos_pane_puts_the_cursor_on_the_row_it_is_on() {
 #[test]
 fn the_todos_pane_shows_both_sources_and_says_which_is_which() {
     let mut a = app();
-    // **The board is read UNFOLDED here**, because the subject is that both sources are drawn and
+    // The board is read UNFOLDED here, because the subject is that both sources are drawn and
     // named: the folded default takes a `[x]` row out of both halves, and `d` has its own tests.
     a.todos_fold_done = false;
     // The session's list, as the event carried it.
@@ -359,8 +359,8 @@ fn the_todos_pane_shows_both_sources_and_says_which_is_which() {
         screen.contains("TODO.md"),
         "the second source is named: {screen}"
     );
-    // A heading carries org's cookie rather than a sentence of counts, and —
-    // the point — the items under it are actually drawn.
+    // A heading carries org's cookie rather than a sentence of counts, and  -
+    // the point - the items under it are actually drawn.
     assert!(
         screen.contains("/") && screen.contains("["),
         "headings carry a [done/total] cookie: {screen}"
@@ -386,7 +386,7 @@ fn the_todo_card_takes_a_title_and_a_detail_and_adds_them_as_yours() {
     assert!(card.contains("adding a todo item"), "{card}");
     assert!(card.contains("moves between the fields"), "{card}");
 
-    // **A title alone.** Type it and press Enter.
+    // A title alone. Type it and press Enter.
     typed(&mut a, "ship the parity row");
     assert!(matches!(
         a.key(Key::Enter),
@@ -395,7 +395,7 @@ fn the_todo_card_takes_a_title_and_a_detail_and_adds_them_as_yours() {
     assert!(a.todo_draft.is_none(), "the card came down");
     assert_eq!(a.input(), "", "and the composer is empty again");
 
-    // **An empty title is refused and the card STAYS UP**, which is the one field rule.
+    // An empty title is refused and the card STAYS UP, which is the one field rule.
     a.command("todo");
     assert!(a.key(Key::Enter).is_none());
     assert!(
@@ -448,7 +448,7 @@ fn the_todo_card_takes_a_title_and_a_detail_and_adds_them_as_yours() {
         other => panic!("expected the add, got {other:?}"),
     }
 
-    // **Esc cancels and adds nothing** — the card asks, and a question has to be able to be
+    // Esc cancels and adds nothing - the card asks, and a question has to be able to be
     // answered no.
     a.command("todo");
     typed(&mut a, "never mind");
@@ -488,7 +488,7 @@ fn the_operator_can_add_and_dispose_of_their_own_todo_rows() {
     )));
     let mine = |a: &App| a.operator_todos();
 
-    // **Adding one sends the WHOLE list, tagged as the operator's.** There is no per-row frame.
+    // Adding one sends the WHOLE list, tagged as the operator's. There is no per-row frame.
     let act = a.command("todo ship the parity row");
     match &act {
         Some(Action::SetOperatorTodos { items, .. }) => {
@@ -503,7 +503,7 @@ fn the_operator_can_add_and_dispose_of_their_own_todo_rows() {
         }
         other => panic!("expected a SetOperatorTodos, got {other:?}"),
     }
-    // The daemon takes it and publishes the union back — which is how the head learns its own
+    // The daemon takes it and publishes the union back - which is how the head learns its own
     // list: it keeps no second copy.
     a.apply(ServerFrame::Event(env(
         2,
@@ -528,7 +528,7 @@ fn the_operator_can_add_and_dispose_of_their_own_todo_rows() {
     )));
     assert_eq!(mine(&a).len(), 1, "the head sees its own row back");
 
-    // **`done 1` marks the FIRST OF THE OPERATOR'S ROWS** — not the first of the union, which
+    // **`done 1` marks the FIRST OF THE OPERATOR'S ROWS** - not the first of the union, which
     // is the model's. A number over the union would edit a row that is not theirs to edit.
     match a.command("todo done 1") {
         Some(Action::SetOperatorTodos { items, .. }) => {
@@ -538,7 +538,7 @@ fn the_operator_can_add_and_dispose_of_their_own_todo_rows() {
         }
         other => panic!("expected completion, got {other:?}"),
     }
-    // **A number out of range is REFUSED by name**, not clamped onto a neighbour.
+    // A number out of range is REFUSED by name, not clamped onto a neighbour.
     assert_eq!(a.command("todo done 9"), None);
     assert!(
         a.notice.as_deref().unwrap_or("").contains("no row 9"),
@@ -559,15 +559,15 @@ fn the_operator_can_add_and_dispose_of_their_own_todo_rows() {
         }
         other => panic!("expected a write of the operator's half, got {other:?}"),
     }
-    // **And the model cannot do the same.** The word is not one `todo_write` takes, and the
-    // refusal names the three it does — so a row can never be retired by the half that wrote it,
+    // And the model cannot do the same. The word is not one `todo_write` takes, and the
+    // refusal names the three it does - so a row can never be retired by the half that wrote it,
     // which is the whole of the ruling.
     assert!(
         a.notice.as_deref().unwrap_or("").contains("struck off"),
         "the act is said out loud, and says the row stays: {:?}",
         a.notice
     );
-    // **A bare `/todo` opens the CARD** — the shape `/mode` and `/models` keep, where an act
+    // **A bare `/todo` opens the CARD** - the shape `/mode` and `/models` keep, where an act
     // with more than one part is chosen from a card rather than typed blind.
     assert_eq!(a.command("todo"), None);
     assert!(
@@ -626,12 +626,12 @@ fn the_todo_header_counts_the_rows_the_pane_draws() {
             },
         ],
     });
-    // **Every state is drawn, so the board is read UNFOLDED** — the numbers below are counted
+    // Every state is drawn, so the board is read UNFOLDED - the numbers below are counted
     // against the marks the pane paints, and the folded default paints no `[x]` at all.
     a.todos_fold_done = false;
     a.key(Key::CtrlT);
 
-    // **The marks the pane painted**, read off its own lines: each mark is followed by a space
+    // The marks the pane painted, read off its own lines: each mark is followed by a space
     // and the row's words, which is what tells a row from the legend under the list.
     let lines = a.todos_lines(120);
     let drawn = |mark: &str| lines.iter().filter(|l| l.contains(mark)).count();
@@ -647,7 +647,7 @@ fn the_todo_header_counts_the_rows_the_pane_draws() {
     );
     // The numbers and the marks are the same rows: 2 + 1 open, 1 set aside.
     assert_eq!(todo_counts(&a.todos), (3, 1));
-    // **And a postponed row says what it is still waiting on**, which is the other half of the
+    // And a postponed row says what it is still waiting on, which is the other half of the
     // state: the handle is KEPT and does not fire while the row is set aside, so a pane that
     // drew only `[p]` would leave a reader to guess whether the condition was dropped.
     assert!(
@@ -703,7 +703,7 @@ fn a_row_is_set_aside_and_lifted_by_number() {
     let screen = a.screen(120, 40).join("\n");
     assert!(screen.contains("0 open · 1 postponed"), "{screen}");
 
-    // **And the lift.** Back to open work, with the same condition on it.
+    // And the lift. Back to open work, with the same condition on it.
     match a.command("todo resume 1") {
         Some(Action::SetOperatorTodos { items, .. }) => {
             assert_eq!(items[0].status, TodoStatus::Pending);
@@ -726,7 +726,7 @@ fn a_row_is_set_aside_and_lifted_by_number() {
     );
     assert_eq!(a.command("todo resume 9"), None);
 
-    // **And the verbs are listed where every other verb is** — `SLASH_COMMANDS` is what `/help`
+    // And the verbs are listed where every other verb is - `SLASH_COMMANDS` is what `/help`
     // and the completion table read, so a verb missing here is a verb nobody finds.
     let hint = SLASH_COMMANDS
         .iter()
@@ -786,7 +786,7 @@ fn a_row_the_model_wrote_can_be_set_aside_by_its_words() {
         }
         other => panic!("expected a state move, got {other:?}"),
     }
-    // **And it is on the pane at once**, the same trust the operator's own rows get: the write
+    // And it is on the pane at once, the same trust the operator's own rows get: the write
     // publishes when it lands, and until then the head draws what it sent.
     assert_eq!(
         a.todos
@@ -803,7 +803,7 @@ fn a_row_the_model_wrote_can_be_set_aside_by_its_words() {
         a.notice
     );
 
-    // **And the lift**, by the same words — the state is reversible, which is what makes it a
+    // And the lift, by the same words - the state is reversible, which is what makes it a
     // silence rather than a way to drop a row.
     match a.command("todo resume operator: paste the token") {
         Some(Action::SetOperatorTodos { moved, .. }) => {
@@ -813,8 +813,8 @@ fn a_row_the_model_wrote_can_be_set_aside_by_its_words() {
         other => panic!("expected a state move, got {other:?}"),
     }
 
-    // **A NUMBER still means the operator's own row**, even though the model's row is first in
-    // the union — the pane prints numbers for that half and for nothing else.
+    // A NUMBER still means the operator's own row, even though the model's row is first in
+    // the union - the pane prints numbers for that half and for nothing else.
     match a.command("todo postpone 1") {
         Some(Action::SetOperatorTodos { items, moved }) => {
             assert_eq!(items[0].content, "mine", "row 1 of YOUR rows: {items:?}");
@@ -824,7 +824,7 @@ fn a_row_the_model_wrote_can_be_set_aside_by_its_words() {
         other => panic!("expected a write of the operator's half, got {other:?}"),
     }
 
-    // **A name that resolves to nothing is REFUSED**, and it says what it could have named — a
+    // A name that resolves to nothing is REFUSED, and it says what it could have named - a
     // guess here would set aside a row nobody meant.
     assert_eq!(a.command("todo postpone nobody says this"), None);
     assert!(
@@ -836,7 +836,7 @@ fn a_row_the_model_wrote_can_be_set_aside_by_its_words() {
         a.notice
     );
 
-    // **A parent's row is refused by name**, because a parent owns its own rows' states and a
+    // A parent's row is refused by name, because a parent owns its own rows' states and a
     // silence written here would be taken back by the parent's next write.
     a.apply(ServerFrame::Todos {
         session_id: "s1".into(),
@@ -912,40 +912,19 @@ fn a_cancelled_row_stays_on_the_board_and_is_not_open_work() {
     }
 }
 
-/// **A row is drawn ONCE, under the author that wrote it** — R51 item 18, and the defect it
-/// records is the one leticl measured and handed back.
-///
-/// The wire's list is the **union** (`TodoBoard::snapshot`: the model's rows, then the
-/// operator's), because that is what the model has to see. A pane that drew it under one
-/// heading therefore showed the operator's rows **as the model's plan** — on leticl's head the
-/// same row appeared twice with two different authors:
+/// A row is drawn ONCE, under the author that wrote it. The wire's list is the union (`TodoBoard::snapshot`: the model's rows,
+/// then the operator's), so a pane drawing it under one heading showed the operator's rows as the model's plan:
 ///
 /// ```text
 /// [x] push leticl to github  — you
 /// [x] push leticl to github  — model
 /// ```
 ///
-/// a duplicate AND a false author, from one row on the board. This asserts the two halves of
-/// the fix: each row once, and each under the heading of the half that owns it.
-/// **`by: Operator` does NOT mean "came from the file"** — and the design that assumes it would
-/// delete the operator's own rows.
-///
-/// The rule being proposed is that the file IS the operator's half, so a `by: Operator` row's
-/// state lives in `TODO.md` and a re-migration cannot lose anything. **The rule has an exception,
-/// and it is destructive**: this head can put a `by: Operator` row on the board with no line in
-/// the file behind it. `SetOperatorTodos` is a whole-half write from the head — `/todo TEXT`, the
-/// `[+]` card, and the pane's own toggle all go through it — and none of those three is a file
-/// edit.
-///
-/// So under a whole-file migration the next re-read **replaces the operator's half with the
-/// file's rows**, and the rows this test adds are not replaced-with-different-state: they are
-/// *gone*. The state-level wipe that `a_whole_file_migration_would_wipe_the_state_the_model_set`
-/// records is the milder version of the same defect.
-///
-/// **What this pins is the fact that decides the wire.** Either the operator's own rows stop
-/// being session-scoped — every one of them comes from the file, so `/todo TEXT` and the toggle
-/// write the file and the session half retires — or a row has to say which origin it came from,
-/// and that is a field. Both are honest; inferring origin from `by` is neither.
+/// A duplicate AND a false author, from one row on the board. This asserts both halves of the fix: each row once, under the heading of
+/// the half that owns it. `by: Operator` does NOT mean "came from the file": `SetOperatorTodos` is a whole-half write from the head
+/// (`/todo TEXT`, the `[+]` card, the pane's toggle) with no line in the file behind it, so a whole-file migration would replace
+/// the operator's half and lose those rows. What this pins decides the wire: either the operator's rows all come from the file,
+/// or a row says which origin it came from. Inferring origin from `by` is neither.
 #[test]
 fn the_operators_own_rows_are_not_in_the_file_so_by_operator_is_not_file_sourced() {
     let dir = std::env::temp_dir().join(format!(
@@ -969,7 +948,7 @@ fn the_operators_own_rows_are_not_in_the_file_so_by_operator_is_not_file_sourced
         Some(Action::SetOperatorTodos { items, .. }) => {
             assert_eq!(items.len(), 1);
             assert_eq!(items[0].by, TodoBy::Operator, "it IS the operator's row");
-            // **And it is not in the file**, which is the exception.
+            // And it is not in the file, which is the exception.
             let on_disk = std::fs::read_to_string(dir.join("TODO.md")).expect("read");
             assert!(
                 !on_disk.contains("something only this session knows about"),
@@ -1013,7 +992,7 @@ fn a_todo_row_is_drawn_once_under_the_author_that_wrote_it() {
     )));
     a.push_surface(Surface::Todos);
     let screen = a.screen(110, 40).join("\n");
-    // **Once each.** The duplicate is the defect, so a count is the assertion.
+    // Once each. The duplicate is the defect, so a count is the assertion.
     for content in ["seat the tool", "push leticl to github"] {
         assert_eq!(
             screen.matches(content).count(),
@@ -1066,7 +1045,7 @@ fn each_half_of_the_board_says_when_it_is_the_empty_one() {
     )));
     a.push_surface(Surface::Todos);
     let screen = a.screen(110, 40).join("\n");
-    // **One list now, so there is one empty sentence** — and the operator's row is drawn with
+    // One list now, so there is one empty sentence - and the operator's row is drawn with
     // its author beside it.
     assert!(
         screen.contains("todos") && screen.contains("my own row"),
@@ -1101,7 +1080,7 @@ fn a_heading_rolls_up_its_items_the_way_org_does() {
              - [ ] **Z1** nothing yet\n",
     );
 
-    // Every child done makes the parent done — org's own rule for a heading.
+    // Every child done makes the parent done - org's own rule for a heading.
     assert!(all.contains("[x] Phase 0 — repo  [2/2]"), "{all}");
     // One started makes it started, and the cookie counts only the finished.
     assert!(all.contains("[~] Phase 7 — parity  [1/3]"), "{all}");
@@ -1157,7 +1136,7 @@ fn a_todo_is_painted_by_its_state_in_both_halves() {
         ..plain_cfg(110)
     });
     a.wiring.workspace = dir.display().to_string();
-    // **Both halves are read UNFOLDED**: the subject is that a finished row is painted GREEN in
+    // Both halves are read UNFOLDED: the subject is that a finished row is painted GREEN in
     // the session's list and in the file's, and the folded default draws neither of them.
     a.todos_fold_done = false;
     a.apply(ServerFrame::Event(env(
@@ -1194,7 +1173,7 @@ fn a_todo_is_painted_by_its_state_in_both_halves() {
         screen.contains(&format!("{}[~]{} seating", sgr::YELLOW, sgr::RESET)),
         "{screen:?}"
     );
-    // The repo's half, painted the same way — including the heading, which
+    // The repo's half, painted the same way - including the heading, which
     // carries the rolled-up state and so carries its colour.
     assert!(
         screen.contains(&format!("{}[~]{} Phase 0", sgr::YELLOW, sgr::RESET)),
@@ -1225,7 +1204,7 @@ fn a_subsection_owns_its_own_items() {
 }
 
 /// A block of calls with a slow one in the middle: the fast ones go green as they finish, not when the block does.
-/// The pane used to retire when the assistant row's body landed, which is before the calls run.
+/// The pane must not retire when the assistant row's body landed, which is before the calls run.
 #[test]
 fn a_finished_call_is_finished_while_the_call_beside_it_still_runs() {
     let mut a = app();
@@ -1327,7 +1306,7 @@ fn an_operators_todo_is_on_the_pane_the_moment_it_is_sent() {
     ));
     // A model row on the board, so the union has both halves and the echo can be seen to
     // keep the model's half where it was. Sent under the session id the head actually
-    // holds — the `Todos` arm answers only for the session it is in.
+    // holds - the `Todos` arm answers only for the session it is in.
     let sid = a.session_id.clone();
     a.apply(ServerFrame::Todos {
         session_id: sid,
@@ -1339,7 +1318,7 @@ fn an_operators_todo_is_on_the_pane_the_moment_it_is_sent() {
             needs: Vec::new(),
         }],
     });
-    // Add one of ours. No `TodosUpdated` is applied afterwards — the row must be on the
+    // Add one of ours. No `TodosUpdated` is applied afterwards - the row must be on the
     // pane off the back of the send alone.
     a.key(Key::CtrlT);
     assert!(matches!(
@@ -1356,8 +1335,8 @@ fn an_operators_todo_is_on_the_pane_the_moment_it_is_sent() {
         "the echo replaces only the operator's half; the model's stays:\n{screen}"
     );
 
-    // **The daemon's answer still wins.** The echo is a drawing, not a second board: when
-    // `TodosUpdated` lands — in the daemon's own order, possibly reordered — it replaces
+    // The daemon's answer still wins. The echo is a drawing, not a second board: when
+    // `TodosUpdated` lands - in the daemon's own order, possibly reordered - it replaces
     // the union wholesale.
     a.apply(ServerFrame::Todos {
         session_id: a.session_id.clone(),
@@ -1407,7 +1386,7 @@ fn a_condition_is_attached_to_a_row_by_number_and_can_be_taken_off() {
         ),
         other => panic!("expected a write of the operator's half, got {other:?}"),
     }
-    // **And off again.** A row whose job has ended must be able to stop waiting on it, or the
+    // And off again. A row whose job has ended must be able to stop waiting on it, or the
     // store reports the same row due on every wake for the rest of the session.
     match a.command("todo when 1 -") {
         Some(Action::SetOperatorTodos { items, .. }) => {
@@ -1415,7 +1394,7 @@ fn a_condition_is_attached_to_a_row_by_number_and_can_be_taken_off() {
         }
         other => panic!("expected a write, got {other:?}"),
     }
-    // A number that is not a row of theirs is refused BY NAME, and nothing is sent — the same
+    // A number that is not a row of theirs is refused BY NAME, and nothing is sent - the same
     // rule `done N` keeps, so a typo cannot quietly attach a condition to the wrong row.
     assert_eq!(a.command("todo when 9 j121"), None);
     assert!(
@@ -1447,7 +1426,7 @@ fn a_row_filed_from_the_card_can_carry_a_condition() {
     typed(&mut a, "push once CI lands");
     a.key(Key::Tab);
     typed(&mut a, "and say so in the reply");
-    // **Tab a second time reaches the third field**, which is what the enum is for: the `bool`
+    // Tab a second time reaches the third field, which is what the enum is for: the `bool`
     // this replaced could not name it, and a reader who tabbed twice would have been back on
     // the title with `j121` typed into it.
     a.key(Key::Tab);
@@ -1481,7 +1460,7 @@ fn a_row_filed_from_the_card_can_carry_a_condition() {
     }
     assert!(a.todo_draft.is_none(), "the card came down");
 
-    // **The same card with the `when` field left alone files an unconditional row** — empty is
+    // **The same card with the `when` field left alone files an unconditional row** - empty is
     // *not recorded here*, the convention the whole record keeps.
     let mut b = app();
     b.session_id = "s1".into();
@@ -1494,7 +1473,7 @@ fn a_row_filed_from_the_card_can_carry_a_condition() {
         other => panic!("expected the add, got {other:?}"),
     }
 
-    // **And a title that reads as a verb is still a title.** The card's words are fields, not a
+    // And a title that reads as a verb is still a title. The card's words are fields, not a
     // command line, so nothing here moves row 2.
     let mut c = app();
     c.session_id = "s1".into();
@@ -1534,7 +1513,7 @@ fn a_row_filed_from_the_card_can_carry_a_condition() {
 }
 
 /// **The attach queues the board read when a seed is due, and the template's items land
-/// on the operator's half — text, body and mark copied, the daemon's rows kept.**
+/// on the operator's half - text, body and mark copied, the daemon's rows kept.**
 #[test]
 fn starter_todos_copy_onto_the_operators_half() {
     let dir = std::env::temp_dir().join(format!("letibot-seed-{}", std::process::id()));
@@ -1552,8 +1531,8 @@ fn starter_todos_copy_onto_the_operators_half() {
         "the board read the seed waits on was queued: {:?}",
         a.queued
     );
-    // The daemon's answer carries both halves — an operator row it already holds and a
-    // model row — so the seed can be seen to ADD to the one and leave the other alone.
+    // The daemon's answer carries both halves - an operator row it already holds and a
+    // model row - so the seed can be seen to ADD to the one and leave the other alone.
     a.apply(ServerFrame::Todos {
         session_id: "s1".into(),
         todos: vec![
@@ -1599,7 +1578,7 @@ fn starter_todos_copy_onto_the_operators_half() {
         sent[2].status,
         letibot_sessionlog::event::TodoStatus::Pending
     );
-    // `[~]` seeds open — leticl's own rule: only `[x]` seeds a done row.
+    // `[~]` seeds open - leticl's own rule: only `[x]` seeds a done row.
     assert_eq!(
         sent[3].status,
         letibot_sessionlog::event::TodoStatus::Pending
@@ -1623,7 +1602,7 @@ fn starter_todos_copy_onto_the_operators_half() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **ONCE PER PROJECT.** A second board read — the pane opening, a switch landing —
+/// ONCE PER PROJECT. A second board read - the pane opening, a switch landing  -
 /// finds the record and adds nothing; a deleted starter row must not come back.
 #[test]
 fn a_seed_runs_once_per_project() {
@@ -1638,7 +1617,7 @@ fn a_seed_runs_once_per_project() {
         todos: Vec::new(),
     });
     assert_eq!(a.operator_todos().len(), 1);
-    // The operator deletes the starter row — the record is what must keep it dead.
+    // The operator deletes the starter row - the record is what must keep it dead.
     let sent = a
         .queued
         .iter()
@@ -1686,9 +1665,9 @@ fn a_seed_does_not_write_another_heads_dismissals_away() {
     let path = dir.join("head.toml");
     let key = "w|model_endpoint_retry|3000|deadbeefdeadbeef".to_string();
 
-    // **Two heads up at once, which is the arrangement the shared file exists for** (measured
-    // 2026-09-22: two `letibot-tui` processes against one `head.toml`). The second one is already
-    // running — it has read the file, and it dismissed nothing — when the first retires a notice.
+    // Two heads up at once, which is the arrangement the shared file exists for
+    // (two `letibot-tui` processes against one `head.toml`). The second one is already
+    // running - it has read the file, and it dismissed nothing - when the first retires a notice.
     let mut b = app();
     b.prefs_path = Some(path.clone());
     b.load_prefs();
@@ -1708,7 +1687,7 @@ fn a_seed_does_not_write_another_heads_dismissals_away() {
         "the premise: the dismissal is on disk"
     );
 
-    // And the second head now attaches to a project it has never seeded — a write nobody asked
+    // And the second head now attaches to a project it has never seeded - a write nobody asked
     // for, carrying its own (empty) list into a file it shares.
     b.todo_template = crate::prefs::TodoTemplate::Default;
     b.apply(ServerFrame::Hello {
@@ -1746,13 +1725,13 @@ fn a_seed_does_not_write_another_heads_dismissals_away() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The refusals are notes.** A template with no items seeds nothing and is MARKED
+/// The refusals are notes. A template with no items seeds nothing and is MARKED
 /// (the alternative re-reads it on every start); a missing template is said and NOT
 /// marked, so the file the operator was going to write still gets its chance.
 #[test]
 fn template_refusals_are_notes() {
     let dir = std::env::temp_dir().join(format!("letibot-seed-refuse-{}", std::process::id()));
-    // No items — a heading is not a checkbox row.
+    // No items - a heading is not a checkbox row.
     let mut a = seeded_head(&dir, "## Phase 0\n\nprose only\n", "/home/dead/Projects/z");
     a.apply(ServerFrame::Todos {
         session_id: "s1".into(),
@@ -1771,7 +1750,7 @@ fn template_refusals_are_notes() {
         "said, not silent: {:?}",
         a.notice
     );
-    // Missing — the Default template with the file taken away.
+    // Missing - the Default template with the file taken away.
     let mut b = seeded_head(&dir, "- [ ] row\n", "/home/dead/Projects/w");
     std::fs::remove_file(dir.join("todo-template.md")).unwrap();
     // A project not yet seeded: clear the record the first head wrote.
@@ -1792,7 +1771,7 @@ fn template_refusals_are_notes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The switch off is off** — an ordinary head, template at its default, attaches and
+/// The switch off is off - an ordinary head, template at its default, attaches and
 /// queues no board read for a seed and adds nothing.
 #[test]
 fn the_starter_todos_switch_is_off_by_default() {
@@ -1844,7 +1823,7 @@ fn a_title_over_the_cap_is_refused_at_the_operators_own_doors() {
         Hub::new("s").snapshot(),
     ));
 
-    // **The typed door.** `/todo <a long title>` says why and sends nothing at all.
+    // The typed door. `/todo <a long title>` says why and sends nothing at all.
     let long = "x".repeat(TODO_TITLE_MAX + 1);
     assert_eq!(a.command(&format!("todo {long}")), None, "nothing was sent");
     let said = a.notice.clone().unwrap_or_default();
@@ -1865,7 +1844,7 @@ fn a_title_over_the_cap_is_refused_at_the_operators_own_doors() {
         a.queued
     );
 
-    // **A title AT the cap passes** — the bound is a bound and not a shave.
+    // A title AT the cap passes - the bound is a bound and not a shave.
     let exact = "y".repeat(TODO_TITLE_MAX);
     match a.command(&format!("todo {exact}")) {
         Some(Action::SetOperatorTodos { items, .. }) => {
@@ -1875,7 +1854,7 @@ fn a_title_over_the_cap_is_refused_at_the_operators_own_doors() {
         other => panic!("expected the add, got {other:?}"),
     }
 
-    // **The card**, which measures the COMPOSED row — so a long title is refused with the card still
+    // The card, which measures the COMPOSED row - so a long title is refused with the card still
     // up, and what was typed is not lost.
     a.command("todo");
     typed(&mut a, &long);
@@ -2009,7 +1988,7 @@ fn a_template_item_over_the_cap_is_not_seeded_and_is_said() {
 // ===== One row, whole: the overlay the pane's Enter opens =====
 
 /// A head with the todos pane open and one row per `(author, content)`, the cursor parked on the
-/// FIRST of them — the add control is where the cursor starts, so one Down is what reaches it.
+/// FIRST of them - the add control is where the cursor starts, so one Down is what reaches it.
 fn todos_head(rows: &[(letibot_sessionlog::event::TodoBy, &str)]) -> App {
     use letibot_sessionlog::event::{TodoEntry, TodoStatus};
     let mut a = app();
@@ -2066,7 +2045,7 @@ fn enter_reads_the_row_under_the_cursor_and_esc_goes_back_to_it() {
         "the overlay is ONE row and not the list: {screen}"
     );
 
-    // Esc goes back to the LIST — the pane is still there — and the cursor is where it was.
+    // Esc goes back to the LIST - the pane is still there - and the cursor is where it was.
     a.key(Key::Esc);
     assert!(a.todos_open.is_none(), "esc leaves the row");
     assert!(
@@ -2101,7 +2080,7 @@ fn tab_toggles_one_of_the_operators_rows_and_enter_reads_it() {
     a.todos_fold_done = false;
     // The pane's own open (`ListTodos`) is drained first, so what is left is what the keys sent.
     let _ = a.take_actions();
-    // Enter READS it — the same overlay, and nothing is sent by the read.
+    // Enter READS it - the same overlay, and nothing is sent by the read.
     assert_eq!(a.key(Key::Enter), None);
     assert_eq!(
         a.todos_open,
@@ -2110,7 +2089,7 @@ fn tab_toggles_one_of_the_operators_rows_and_enter_reads_it() {
     assert!(a.take_actions().is_empty(), "reading a row sends nothing");
     a.key(Key::Esc);
 
-    // Tab toggles it, and again puts it back — a cursor that can only go one way is one you cannot
+    // Tab toggles it, and again puts it back - a cursor that can only go one way is one you cannot
     // correct.
     match a.key(Key::Tab) {
         Some(Action::SetOperatorTodos { items, .. }) => {
@@ -2210,7 +2189,7 @@ fn the_cursor_walks_every_row_and_the_mark_follows_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A row that carries newlines is shown WHOLE** — the shape a model writes, and the one the pane
+/// A row that carries newlines is shown WHOLE - the shape a model writes, and the one the pane
 /// cannot draw: rano's row is `clean_line(content)`, which turns the newline into a space, so the
 /// row's own lines are not rows on the pane at all.
 #[test]
@@ -2235,8 +2214,8 @@ fn a_row_that_carries_newlines_is_shown_whole() {
         screen.contains("the pane cannot show in full"),
         "the row's second line is on the overlay: {screen}"
     );
-    // **The newline is a break and not a space**: the row's second line begins a row of its own,
-    // which is the shape the author wrote — rano's own row is `clean_line(content)`, where that
+    // The newline is a break and not a space: the row's second line begins a row of its own,
+    // which is the shape the author wrote - rano's own row is `clean_line(content)`, where that
     // newline is a space and the two lines are one run of text.
     assert!(
         screen
@@ -2309,7 +2288,7 @@ fn a_row_that_moves_under_the_overlay_is_drawn_as_it_stands_now() {
         "the state is read at draw time: {screen}"
     );
 
-    // And a row renamed is a DIFFERENT row — the board has no ids — so the overlay says so rather
+    // And a row renamed is a DIFFERENT row - the board has no ids - so the overlay says so rather
     // than showing words that are not on the board any more.
     a.apply(ServerFrame::Event(env(
         3,
@@ -2328,7 +2307,7 @@ fn a_row_that_moves_under_the_overlay_is_drawn_as_it_stands_now() {
         screen.contains("is not on the board any more"),
         "a renamed row is a different row: {screen}"
     );
-    // **And the row that took its place is not drawn as though it were it.** The words appear once,
+    // And the row that took its place is not drawn as though it were it. The words appear once,
     // quoted in the sentence that says they are gone; what must NOT appear is the new row's text or
     // a facts line, which is what a lookup that had fallen back to the index would have drawn.
     assert!(
@@ -2337,7 +2316,7 @@ fn a_row_that_moves_under_the_overlay_is_drawn_as_it_stands_now() {
     );
 }
 
-/// **A parent's row says who wrote it, in the words it arrived with** — the fourth author on the
+/// A parent's row says who wrote it, in the words it arrived with - the fourth author on the
 /// wire, and the one a reader cannot guess: `Parent <session-id>` is the string the operator
 /// specified, and the overlay shows it rather than re-spelling it as *the model's*.
 #[test]
@@ -2355,7 +2334,7 @@ fn a_parents_row_names_its_author() {
     );
 }
 
-/// **A row's `needs` are part of reading it** — the edges that say what has to land first, which
+/// **A row's `needs` are part of reading it** - the edges that say what has to land first, which
 /// the pane's one-line row cannot carry at all.
 #[test]
 fn the_overlay_shows_what_the_row_needs() {
@@ -2415,14 +2394,14 @@ fn keys_typed_in_the_overlay_do_not_reach_the_composer() {
         "and it did not close the row either"
     );
 
-    // Up is the overlay's — it scrolls — and NOT the queued line's recall.
+    // Up is the overlay's - it scrolls - and NOT the queued line's recall.
     a.pending_prompts = vec!["a queued line".into()];
     a.key(Key::Up);
     assert_eq!(a.editor.text(), "", "the queued line was not recalled");
     assert_eq!(a.pending_prompts, vec!["a queued line".to_string()]);
 
     // And Enter in the overlay does not send anything: there is nothing to send, and the row stays
-    // open — a second Enter is not a way out of a screen whose way out is named on it.
+    // open - a second Enter is not a way out of a screen whose way out is named on it.
     assert_eq!(a.key(Key::Enter), None);
     assert!(a.todos_open.is_some());
     assert_eq!(a.editor.text(), "");
@@ -2628,7 +2607,7 @@ fn the_pane_marks_the_row_and_enter_opens_its_question_card() {
     }
 }
 
-/// **The picker marks a session that is waiting on you** — from its brief, so a person can see it
+/// The picker marks a session that is waiting on you - from its brief, so a person can see it
 /// from the list without attaching to every session.
 #[test]
 fn the_picker_marks_a_session_waiting_on_the_operator() {
@@ -2710,7 +2689,7 @@ fn a_question_the_model_takes_back_takes_its_card_and_its_line_down() {
 }
 // ───────────────────── the done rows, in a group of their own ─────────────────────
 
-/// **A head on a board of the statuses given** — `todos_head`'s sibling, for the tests about rows
+/// A head on a board of the statuses given - `todos_head`'s sibling, for the tests about rows
 /// that are DONE, which `todos_head` never makes (it is the walk's, and the walk is over open work).
 fn status_head(
     rows: &[(
@@ -2772,7 +2751,7 @@ fn the_done_rows_are_gathered_under_a_line_of_their_own_below_the_rows_owed() {
             TodoStatus::Completed,
         ),
     ]);
-    // **The group is read OPEN**, which is what this test is about: the folded default draws the
+    // The group is read OPEN, which is what this test is about: the folded default draws the
     // line where the rows are, and there would be nothing to compare the order of.
     a.todos_fold_done = false;
     let screen = a.screen(110, 40);
@@ -2785,7 +2764,7 @@ fn the_done_rows_are_gathered_under_a_line_of_their_own_below_the_rows_owed() {
         "a row still owed is drawn under the group line: {}",
         screen.join("\n")
     );
-    // **The rows owed keep the board's own order between themselves** — the grouping is a split
+    // The rows owed keep the board's own order between themselves - the grouping is a split
     // into two halves, not a sort.
     assert!(
         owed[0] < owed[1] && owed[1] < owed[2],
@@ -2802,7 +2781,7 @@ fn the_done_rows_are_gathered_under_a_line_of_their_own_below_the_rows_owed() {
         "the done rows were reordered among themselves: {done:?}\n{}",
         screen.join("\n")
     );
-    // **The line names the count and nothing else while the group is open** — the key that folds
+    // The line names the count and nothing else while the group is open - the key that folds
     // it is the bar's to name (`d folds done`), and the folded line is where the reminder belongs.
     let line = screen[group].trim();
     assert_eq!(line, "done (3)", "the group line reads: {line:?}");
@@ -2818,8 +2797,8 @@ fn the_numbers_are_the_boards_and_a_row_moving_into_the_group_keeps_its_own() {
         ("the second, done", TodoBy::Operator, TodoStatus::Completed),
         ("the third", TodoBy::Operator, TodoStatus::Pending),
     ]);
-    // **The board is read UNFOLDED**, because a number is a property of a DRAWN row: the folded
-    // default draws `done (1)` where the second row's number used to stand.
+    // The board is read UNFOLDED, because a number is a property of a DRAWN row: the folded
+    // default draws `done (1)` where the second row's number stands.
     a.todos_fold_done = false;
     let screen = a.screen(110, 40);
     assert!(
@@ -2839,8 +2818,8 @@ fn the_numbers_are_the_boards_and_a_row_moving_into_the_group_keeps_its_own() {
         screen.join("\n")
     );
 
-    // **And the verb takes that number.** Row 3 is drawn SECOND of the operator's rows — it is the
-    // third row of the BOARD — and `/todo done 3` must move the third and not the one above it.
+    // And the verb takes that number. Row 3 is drawn SECOND of the operator's rows - it is the
+    // third row of the BOARD - and `/todo done 3` must move the third and not the one above it.
     match a.command("todo done 3") {
         Some(Action::SetOperatorTodos { items, .. }) => {
             assert_eq!(items[2].content, "the third", "{items:?}");
@@ -2875,7 +2854,7 @@ fn toggling_a_row_into_the_group_takes_the_cursor_with_it() {
         ),
         ("the last", TodoBy::Operator, TodoStatus::Pending),
     ]);
-    // **The group is read OPEN**: the row this test marks done has to stay DRAWN for the cursor to
+    // The group is read OPEN: the row this test marks done has to stay DRAWN for the cursor to
     // be found on it, and under the folded default it would leave the list the moment it is marked.
     a.todos_fold_done = false;
     a.screen(110, 40);
@@ -2962,7 +2941,7 @@ fn d_opens_the_folded_group_and_d_again_folds_it() {
         );
     }
 
-    // **The first press is the SHOWING half**, because the head opens folded.
+    // The first press is the SHOWING half, because the head opens folded.
     a.key(Key::Char('d'));
     let after = a.screen(110, 40).join("\n");
     for row in [
@@ -2987,7 +2966,7 @@ fn d_opens_the_folded_group_and_d_again_folds_it() {
         a.notice
     );
 
-    // **And `d` again folds it** — the fold is not a one-way door, and the rows go back under the
+    // **And `d` again folds it** - the fold is not a one-way door, and the rows go back under the
     // same line and the same count.
     a.key(Key::Char('d'));
     let back = a.screen(110, 40).join("\n");
@@ -3042,7 +3021,7 @@ fn the_cursor_keeps_the_row_it_was_on_when_the_group_folds() {
         ),
         ("the last row", TodoBy::Model, TodoStatus::Pending),
     ]);
-    // **The group is read OPEN**: this test walks INTO it and then folds it shut under the cursor,
+    // The group is read OPEN: this test walks INTO it and then folds it shut under the cursor,
     // and the folded default would have the first press opening rather than folding.
     a.todos_fold_done = false;
     // The add control, then the FIRST row still owed: onto the row this test is about.
@@ -3068,11 +3047,11 @@ fn the_cursor_keeps_the_row_it_was_on_when_the_group_folds() {
         screen.join("\n")
     );
 
-    // **And a cursor INSIDE the group is the other half**: folding takes the row out from under it,
+    // And a cursor INSIDE the group is the other half: folding takes the row out from under it,
     // and the index it had is then a place rather than a row.
     a.key(Key::Char('d'));
     // The add control, the two owed rows, then the group's two: the second of them is the last stop
-    // of the list — three Downs from the row the cursor is on.
+    // of the list - three Downs from the row the cursor is on.
     a.key(Key::Down);
     a.key(Key::Down);
     a.key(Key::Down);
@@ -3115,11 +3094,11 @@ fn the_arrows_and_a_click_walk_the_rows_in_the_order_they_are_drawn() {
         ("owed second", TodoBy::Model, TodoStatus::InProgress),
         ("done above", TodoBy::Model, TodoStatus::Completed),
     ]);
-    // **The stops are the DRAWN order**, so the group is read OPEN — the folded default draws
+    // The stops are the DRAWN order, so the group is read OPEN - the folded default draws
     // three stops where this test counts five.
     a.todos_fold_done = false;
     let _ = a.screen(110, 40);
-    // The add control, then the two rows owed, then — past the group line — the two done ones.
+    // The add control, then the two rows owed, then - past the group line - the two done ones.
     assert_eq!(
         a.todos_stops(),
         vec![
@@ -3132,9 +3111,9 @@ fn the_arrows_and_a_click_walk_the_rows_in_the_order_they_are_drawn() {
         "the stops are not the drawn order"
     );
 
-    // **A click on a done row lands on that row**, one row below the group's line: the row's
+    // A click on a done row lands on that row, one row below the group's line: the row's
     // PANE place is what a click reads, and the grouping has moved it away from its place on the
-    // board — which is the whole defect a click could have kept while the drawing was fixed.
+    // board - which is the whole defect a click could have kept while the drawing was fixed.
     let screen = a.screen(110, 40);
     let row = at(&screen, "done above");
     a.key(Key::Click {
@@ -3167,8 +3146,8 @@ fn the_arrows_and_a_click_walk_the_rows_in_the_order_they_are_drawn() {
         drawn.join("\n")
     );
 
-    // **And the arrows walk the same order**: four Downs from the control reach the second done
-    // row, which is the fourth stop — not the second row of the board.
+    // And the arrows walk the same order: four Downs from the control reach the second done
+    // row, which is the fourth stop - not the second row of the board.
     let mut a = status_head(&[
         ("done below", TodoBy::Model, TodoStatus::Completed),
         ("owed first", TodoBy::Model, TodoStatus::Pending),
@@ -3191,7 +3170,7 @@ fn the_arrows_and_a_click_walk_the_rows_in_the_order_they_are_drawn() {
     );
 }
 
-/// **A board with nothing done draws no group line at all** — `done (0)` is furniture about
+/// A board with nothing done draws no group line at all - `done (0)` is furniture about
 /// nothing, and the ordinary board is the one with work left.
 #[test]
 fn a_board_with_nothing_done_draws_no_group_line() {
@@ -3239,7 +3218,7 @@ fn a_board_of_only_done_rows_draws_the_group_and_does_not_say_none_yet() {
         "the folded line does not stand in its place: {folded}"
     );
 
-    // **And the line opens onto the rows it counts**, under the same words and the same number.
+    // And the line opens onto the rows it counts, under the same words and the same number.
     a.key(Key::Char('d'));
     let screen = a.screen(110, 40).join("\n");
     let line = screen
@@ -3253,7 +3232,7 @@ fn a_board_of_only_done_rows_draws_the_group_and_does_not_say_none_yet() {
     );
 }
 
-/// **The repo's `[x]` items are gathered the same way, one section at a time** — a `TODO.md` is
+/// **The repo's `[x]` items are gathered the same way, one section at a time** - a `TODO.md` is
 /// sections, and an item belongs to the heading over it, so the grouping stops at the heading and
 /// the heading keeps the file's own cookie (`[1/2]`), which counts the file and not this pane.
 #[test]
@@ -3272,7 +3251,7 @@ fn the_files_done_items_are_gathered_under_a_line_in_their_own_section() {
     )
     .expect("write");
     let mut a = status_head(&[("a session row", TodoBy::Model, TodoStatus::Pending)]);
-    // **The sections are read UNFOLDED**: the subject is where the file's `[x]` item is drawn, and
+    // The sections are read UNFOLDED: the subject is where the file's `[x]` item is drawn, and
     // the folded default draws its section's line in its place.
     a.todos_fold_done = false;
     a.wiring.workspace = dir.display().to_string();
@@ -3288,7 +3267,7 @@ fn the_files_done_items_are_gathered_under_a_line_in_their_own_section() {
         "the section is not heading, owed, group, done: {}",
         screen.join("\n")
     );
-    // **The next section is untouched** — a section with nothing done gets no line of its own.
+    // The next section is untouched - a section with nothing done gets no line of its own.
     let next = at(&screen, "another open one");
     assert!(next > done, "{}", screen.join("\n"));
     assert_eq!(
@@ -3298,7 +3277,7 @@ fn the_files_done_items_are_gathered_under_a_line_in_their_own_section() {
         screen.join("\n")
     );
 
-    // **And the fold takes the file's item away with the session's**, under its own section's line.
+    // And the fold takes the file's item away with the session's, under its own section's line.
     a.key(Key::Char('d'));
     let folded = a.screen(110, 40).join("\n");
     assert!(
@@ -3323,7 +3302,7 @@ fn the_files_done_items_are_gathered_under_a_line_in_their_own_section() {
 #[test]
 fn folding_the_group_under_the_cursor_keeps_the_cursor_on_the_screen() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
-    // **Distinct words matter** — a board's identity is its text ([`TodoStop`]), so sixty rows
+    // Distinct words matter - a board's identity is its text ([`TodoStop`]), so sixty rows
     // saying the same thing would all draw the mark and prove nothing about which one it is on.
     let contents: Vec<String> = (0..60)
         .map(|i| {
@@ -3347,10 +3326,10 @@ fn folding_the_group_under_the_cursor_keeps_the_cursor_on_the_screen() {
         })
         .collect();
     let mut a = status_head(&rows);
-    // **The group is read OPEN**, because the cursor has to be able to walk INTO it: the case is a
+    // The group is read OPEN, because the cursor has to be able to walk INTO it: the case is a
     // cursor five rows inside the group when it shuts, and the folded default has no such rows.
     a.todos_fold_done = false;
-    // **Drawn between presses**, because the arrows scroll by the rows the last DRAW recorded: a
+    // Drawn between presses, because the arrows scroll by the rows the last DRAW recorded: a
     // walk with no frames in it never moves the window, and the case this test is about is a
     // window that HAS moved.
     a.screen(110, 20);
@@ -3379,8 +3358,8 @@ fn folding_the_group_under_the_cursor_keeps_the_cursor_on_the_screen() {
     );
 }
 
-/// **`d` says which way it stands** — a bar that went on offering `folds done` over a group that is
-/// already shut names a key whose press does the opposite of what it says. **The head opens folded**
+/// **`d` says which way it stands** - a bar that went on offering `folds done` over a group that is
+/// already shut names a key whose press does the opposite of what it says. The head opens folded
 /// (`HeadPrefs::default`), so the first sentence a reader meets is the showing one.
 #[test]
 fn the_bar_says_d_shows_the_group_and_then_that_it_folds_it() {
@@ -3414,7 +3393,7 @@ fn the_bar_says_d_shows_the_group_and_then_that_it_folds_it() {
 fn a_word_typed_over_the_todos_pane_reaches_the_composer_even_with_a_d_in_it() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
     let mut a = status_head(&[("done already", TodoBy::Model, TodoStatus::Completed)]);
-    // The head opens folded, so the first `d` OPENS the group — the key is still the pane's, which
+    // The head opens folded, so the first `d` OPENS the group - the key is still the pane's, which
     // is what this test is about.
     assert!(
         a.todos_fold_done,

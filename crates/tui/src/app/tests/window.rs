@@ -16,7 +16,7 @@ fn a_short_payload_opens_no_view() {
     );
 }
 
-/// **The ctrl-v window does not hold the composer's Enter.** The operator: *"untill i
+/// The ctrl-v window does not hold the composer's Enter. The operator: *"untill i
 /// hit ctrl-v again - i couldnt sent my new prompt"*. With a window open and a line
 /// typed, Enter sends it and closes the window; with nothing typed it does nothing.
 #[test]

@@ -126,7 +126,7 @@ fn the_tool_call_counter_lists_the_calls_that_are_still_running() {
         open.contains("esc folds the run back"),
         "the panel names no way out:\n{open}"
     );
-    // **And Esc folds it**, rather than leaving a lift nobody can undo.
+    // And Esc folds it, rather than leaving a lift nobody can undo.
     a.key(Key::Esc);
     let folded = a.screen(120, 30).join("\n");
     assert!(
@@ -136,7 +136,7 @@ fn the_tool_call_counter_lists_the_calls_that_are_still_running() {
     assert!(folded.contains("2 tool calls"), "{folded}");
 }
 
-/// **The counter's panel keeps its place when the round's rows land** - the calls stop being live
+/// The counter's panel keeps its place when the round's rows land - the calls stop being live
 /// and become transcript rows, and the reader who opened the panel is looking at the same calls,
 /// not at an empty one that lost its lift.
 #[test]

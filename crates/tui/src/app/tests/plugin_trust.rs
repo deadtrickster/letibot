@@ -105,7 +105,7 @@ fn plugin_trust_pins_what_is_on_disk_and_reports_the_hash() {
     assert!(said.contains("module sha256"), "{said}");
     assert!(said.contains("manifest sha256"), "{said}");
 
-    // **The pin is what the book holds, and it is about the bytes on disk now.**
+    // The pin is what the book holds, and it is about the bytes on disk now.
     let pins = trust.pins();
     assert_eq!(pins.len(), 1, "{pins:?}");
     let module = letibot_plugins::Trust::open(project.join("plugin-trust.json")).pins()[0]
@@ -125,7 +125,7 @@ fn plugin_trust_pins_what_is_on_disk_and_reports_the_hash() {
     }
 }
 
-/// **`/plugin` lists the layers a person placed, and says which are pinned.**
+/// `/plugin` lists the layers a person placed, and says which are pinned.
 #[test]
 fn plugin_lists_the_placed_layers_and_their_standing() {
     let project = a_project("list");
@@ -144,7 +144,7 @@ fn plugin_lists_the_placed_layers_and_their_standing() {
     assert!(!listed.contains("not pinned"), "{listed}");
 }
 
-/// **A built-in needs no pin, and the door says so rather than pinning it.** The operator's rule
+/// A built-in needs no pin, and the door says so rather than pinning it. The operator's rule
 /// is *"only the builtins run freely"*: a built-in is the binary's own bytes, so a `/plugin
 /// trust` over one would be a record that changes nothing.
 #[test]

@@ -18,7 +18,7 @@ pub(crate) struct PluginState {
 }
 
 impl PluginState {
-    /// **The view, parsed and checked** — the daemon validates a plugin's answer before it
+    /// The view, parsed and checked - the daemon validates a plugin's answer before it
     /// publishes one, and the head checks it again for the view it is about to draw, because
     /// a head is the half that knows which keys it can honour.
     fn of(value: serde_json::Value) -> PluginState {
@@ -42,8 +42,8 @@ impl PluginState {
 }
 
 impl App {
-    /// **A view arrived from the daemon.** Stored under its pane's name, and the screen
-    /// redrawn; nothing is opened and nothing is closed — a pane the operator has not opened is
+    /// A view arrived from the daemon. Stored under its pane's name, and the screen
+    /// redrawn; nothing is opened and nothing is closed - a pane the operator has not opened is
     /// simply held, so opening it draws what is already known instead of an empty frame.
     pub(crate) fn on_plugin_event(&mut self, e: SessionEvent) -> Disposition {
         match e {
@@ -61,8 +61,8 @@ impl App {
         }
     }
 
-    /// **The pane is gone**: its view is dropped, and the pane is closed if it is the one on
-    /// screen — a surface left holding a name nobody answers is a screen whose keys do nothing.
+    /// The pane is gone: its view is dropped, and the pane is closed if it is the one on
+    /// screen - a surface left holding a name nobody answers is a screen whose keys do nothing.
     pub(crate) fn plugin_gone(&mut self, pane: &str) {
         self.plugin_panes.remove(pane);
         if self.plugin_open.as_deref() == Some(pane) {
@@ -70,19 +70,19 @@ impl App {
         }
     }
 
-    /// **The view of the pane on the screen**, if it parsed and validated.
+    /// The view of the pane on the screen, if it parsed and validated.
     pub(crate) fn plugin_view(&self) -> Option<&pv::View> {
         let name = self.plugin_open.as_deref()?;
         self.plugin_panes.get(name)?.held.as_ref()
     }
 
-    /// **Why the pane on the screen has no view**, when it has none.
+    /// Why the pane on the screen has no view, when it has none.
     pub(crate) fn plugin_why(&self) -> Option<&str> {
         let name = self.plugin_open.as_deref()?;
         self.plugin_panes.get(name)?.why.as_deref()
     }
 
-    /// **The stop under the cursor**, clamped to a list that can move under it — a view is
+    /// The stop under the cursor, clamped to a list that can move under it - a view is
     /// replaced wholesale on every look, and an arrow pressed against a shorter list must land
     /// on a stop rather than on an index that no longer exists.
     pub(crate) fn plugin_selected(&self) -> Option<view::Target<'_>> {
@@ -104,7 +104,7 @@ impl App {
         self.plugin_view()?.legend.get(&key).map(String::as_str)
     }
 
-    /// The stops of the screen on the screen — the list the arrows walk, Enter acts on, and a
+    /// The stops of the screen on the screen - the list the arrows walk, Enter acts on, and a
     /// click is measured against.
     pub(crate) fn plugin_stops(&self) -> Vec<view::Stop> {
         match self.plugin_view() {
@@ -113,8 +113,8 @@ impl App {
         }
     }
 
-    /// **The pane row the stop at the cursor was DRAWN on**, read out of
-    /// [`App::plugin_stop_rows`] — the record the pane wrote while drawing, and never
+    /// The pane row the stop at the cursor was DRAWN on, read out of
+    /// [`App::plugin_stop_rows`] - the record the pane wrote while drawing, and never
     /// arithmetic over the view. The sibling of [`App::jobs_row_of`], clamp and all.
     pub(crate) fn plugin_row_of(&self) -> usize {
         let at = self
@@ -145,7 +145,7 @@ impl App {
         self.plugin_screen = view::Screen::Overview;
         self.plugin_sel = 0;
         self.push_surface(Surface::PluginPane);
-        // **The rectangle is a guess here and a measurement on the next frame** — see
+        // The rectangle is a guess here and a measurement on the next frame - see
         // [`Action::PaneOpen`]. What this head last sent is the best it has.
         let (w, h) = self
             .plugin_sent
@@ -164,7 +164,7 @@ impl App {
     /// opposite of the `PaneOpen` `open_plugin` sends. The name is read BEFORE the close, because
     /// `forget_surface` clears `plugin_open` with the pane.
     pub(crate) fn close_plugin(&mut self) -> Option<Action> {
-        // **The surface closes whatever the name says**: a pane left on the stack with no name is
+        // The surface closes whatever the name says: a pane left on the stack with no name is
         // a screen whose keys go nowhere, and the name is only needed for the frame.
         let pane = self.plugin_open.clone();
         self.close_surface(Surface::PluginPane);
@@ -196,7 +196,7 @@ impl App {
         let Key::Char(c) = *k else {
             return ControlFlow::Continue(());
         };
-        // **`f` and `l` are the host's**, and they are the two views that are not a panel's.
+        // `f` and `l` are the host's, and they are the two views that are not a panel's.
         let panel = self.plugin_view().and_then(|v| v.panel_of_key(c));
         let target = match c {
             'f' => Some(view::Screen::Findings),
@@ -220,7 +220,7 @@ impl App {
             self.plugin_panel_key(i);
             return ControlFlow::Break(None);
         }
-        // **The selected stop's own action letter.** Read out as owned values, so the borrow
+        // The selected stop's own action letter. Read out as owned values, so the borrow
         // on the view ends before anything below writes to this head.
         let chosen = self.plugin_selected().map(|t| {
             let action = t.actions().iter().find(|a| a.letter() == Some(c)).cloned();
@@ -237,7 +237,7 @@ impl App {
             // announced as a typed one is, attributed to the operator who pressed the key. Not a
             // `PaneAction` - a pane does not get a second door into the model.
             Some(pv::ActionKind::Say(text)) => ControlFlow::Break(self.submit(text)),
-            // **A call back into the plugin**, answered with a new view on the log.
+            // A call back into the plugin, answered with a new view on the log.
             Some(pv::ActionKind::Look) => ControlFlow::Break(Some(Action::PaneAction {
                 pane,
                 item,
@@ -266,7 +266,7 @@ impl App {
     /// The act comes first: `View::validate_for` has already refused a row reaching an undeclared
     /// verb, so by here it is one the layer was allowed to ask for. No act falls to the detail.
     pub(crate) fn plugin_enter(&mut self) -> Option<Action> {
-        // Nothing under the cursor — an empty list, or a view that did not parse — is a pane
+        // Nothing under the cursor - an empty list, or a view that did not parse - is a pane
         // that has nothing to open, and Enter is still the pane's.
         let act = self.plugin_selected()?.enter().cloned();
         let item = self
@@ -275,7 +275,7 @@ impl App {
             .unwrap_or_default();
         match act {
             Some(pv::Act::Switch { session }) => {
-                // **The pane leaves with the switch.** A plugin pane is a screen, not a column the
+                // The pane leaves with the switch. A plugin pane is a screen, not a column the
                 // host lays out beside the conversation: leaving it open would show the session
                 // list of the session you just left, over the conversation you just arrived in.
                 if let Some(close) = self.close_plugin() {
@@ -311,7 +311,7 @@ impl App {
         }
     }
 
-    /// **The detail's rows** — the stop the overlay was opened on, read out of the screen it
+    /// The detail's rows - the stop the overlay was opened on, read out of the screen it
     /// was opened FROM (a value, kept at open: the overlay is not the pane's screen and never
     /// becomes it). `None` when the view moved under the overlay and its row is gone.
     pub(crate) fn plugin_detail_lines(&self, w: usize) -> Option<Vec<rano::render::Line>> {
@@ -320,7 +320,7 @@ impl App {
         Some(view::detail(v, screen, index, w).lines)
     }
 
-    /// **A click on panel `i`'s title, or that panel's key** — one door for the two, so a
+    /// A click on panel `i`'s title, or that panel's key - one door for the two, so a
     /// click and a key cannot come to disagree about what opening a panel means. It toggles,
     /// as the key does: the view you are in closes back to the overview.
     pub(crate) fn plugin_panel_key(&mut self, i: usize) -> Option<Action> {
@@ -335,11 +335,11 @@ impl App {
         None
     }
 
-    /// **The pane's rows, recording where each stop and each panel title landed** — the record
+    /// The pane's rows, recording where each stop and each panel title landed - the record
     /// the arrows scroll by and a click is tested against, written by the frame that drew them.
     pub(crate) fn plugin_lines(&mut self, w: usize) -> Vec<String> {
         let Some(v) = self.plugin_view() else {
-            // **A pane with no readable view says why**: an empty dashboard and a plugin this
+            // A pane with no readable view says why: an empty dashboard and a plugin this
             // head cannot read look identical on a screen and mean opposite things.
             self.plugin_stop_rows.clear();
             self.plugin_panel_rows.clear();
@@ -364,7 +364,7 @@ impl App {
         row_strings(&content.lines.lines, self.cfg.palette())
     }
 
-    /// **The plugin panes this head holds, by title** — `/pane`'s list, and the panes list the
+    /// The plugin panes this head holds, by title - `/pane`'s list, and the panes list the
     /// operator picks from. `(name, title, badge)`.
     pub(crate) fn plugin_list(&self) -> Vec<(String, String, String)> {
         self.plugin_panes
@@ -421,7 +421,7 @@ impl App {
         out
     }
 
-    /// **The status row's badge for the pane on the screen** — the pane's own counter, drawn
+    /// The status row's badge for the pane on the screen - the pane's own counter, drawn
     /// where a turn's progress is, and only while the pane is on the screen: a counter about a
     /// screen nobody is looking at is furniture.
     pub(crate) fn plugin_badge(&self) -> Option<(String, rano::style::Role)> {
@@ -429,7 +429,7 @@ impl App {
     }
 
     // ----------------------------------------------------------------------------------------
-    // D17's ladder: the operator's own door
+    // The operator's own door
     // ----------------------------------------------------------------------------------------
 
     /// `/plugin` - every layer this session has that a person PLACED, and whether its bytes are
@@ -486,7 +486,7 @@ impl App {
             Some((verb, rest)) => (verb, rest.trim()),
             None => (arg.trim(), ""),
         };
-        // Build the stack first — the host is lazy, and the borrow it takes has to end before the
+        // Build the stack first - the host is lazy, and the borrow it takes has to end before the
         // mutable one below.
         {
             let _ = self.plugin_host();

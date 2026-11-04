@@ -38,7 +38,7 @@ fn a_bare_reseat_is_the_lossless_one() {
             "{spelling}"
         );
     }
-    // And the old spellings still mean what they said — they asked to keep
+    // And the old spellings still mean what they said - they asked to keep
     // the conversation, which is now simply what the bare verb does.
     for spelling in ["/reseat keep", "/reseat verbatim"] {
         let mut a = app();
@@ -92,7 +92,7 @@ fn the_quit_card_offers_both_exits_and_defaults_to_the_cheap_one() {
         !screen.contains("stop with the daemon"),
         "nothing is running, so nothing is claimed to die: {screen}"
     );
-    // And the footer names the keys this card actually takes — it used to
+    // And the footer names the keys this card actually takes - it does not
     // say "ctrl+c again to exit", which a third press no longer does.
     assert!(screen.contains("esc stays"), "{screen}");
     assert!(!screen.contains("ctrl+c again to exit"), "{screen}");

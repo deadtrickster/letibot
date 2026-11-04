@@ -1,4 +1,4 @@
-//! **The head's place in the daemon**: attaching, the link and getting it back, stopping,
+//! The head's place in the daemon: attaching, the link and getting it back, stopping,
 //! and the tree of sessions this head can switch between.
 
 use super::*;
@@ -34,7 +34,7 @@ impl App {
         self.stopping.as_mut()
     }
 
-    /// **The head has asked, and is now waiting.** Called by the driver once, when the
+    /// The head has asked, and is now waiting. Called by the driver once, when the
     /// frame has been written (or failed to be), and never before - a head that showed
     /// this line while it had not sent anything would be lying about what it did.
     pub fn stop_began(&mut self, who: &str, sent: bool, pid: Option<i32>, now_ms: u64) {
@@ -53,7 +53,7 @@ impl App {
         self.redraw = true;
     }
 
-    /// **The head is stopping the daemon the forced way from the start**, because the
+    /// The head is stopping the daemon the forced way from the start, because the
     /// daemon is an older build. No stop frame went out - see [`ForceWhy::OlderDaemon`]  -
     /// so `sent` is false and the farewell says why rather than *could NOT be sent*.
     pub fn force_stop_began(&mut self, who: &str, pid: Option<i32>, why: ForceWhy, now_ms: u64) {
@@ -246,7 +246,7 @@ impl App {
         let projects = self.projects(&place);
         let here = self.here_nodes(&place);
         for project in &projects {
-            // **A removed session is not counted either** - a project line saying `(7)` over six
+            // A removed session is not counted either - a project line saying `(7)` over six
             // rows is a number that lies about what it hides, and the same filter feeds the
             // built-in layer's copy of this list (`App::sessions_feed`).
             let members: Vec<usize> = (0..self.sessions.len())
@@ -267,7 +267,7 @@ impl App {
             if !open {
                 continue;
             }
-            // **The project's own tree** - the sessions nobody spawned, and their children at any
+            // The project's own tree - the sessions nobody spawned, and their children at any
             // depth. A child whose parent is not on this list (a session whose parent is gone) is
             // a root here, which is the honest reading: an orphan is not a subagent.
             let branch = Branch {
@@ -281,7 +281,7 @@ impl App {
                 }
                 self.push_session(&mut out, i, 1, &path, false, Some(branch));
             }
-            // **The `system` branch**, when this project has one.
+            // The `system` branch, when this project has one.
             let system: Vec<usize> = members
                 .iter()
                 .copied()
@@ -334,7 +334,7 @@ impl App {
                     place: &place,
                 };
                 for &i in &group {
-                    // **A row is drawn once**, under its parent when that parent is in this same
+                    // A row is drawn once, under its parent when that parent is in this same
                     // group; a reviewer whose parent is the operator's own conversation is a root
                     // of `reviewers`, because its parent is not on this branch.
                     if self.parent_on_list(i).is_some_and(|p| {
@@ -381,7 +381,7 @@ impl App {
         }
     }
 
-    /// **Whether a session's own children are on the list** - the operator opened it, or the chain
+    /// Whether a session's own children are on the list - the operator opened it, or the chain
     /// to where this head is standing runs through it.
     fn children_open(&self, id: &str, path: &[String]) -> bool {
         self.expanded.iter().any(|e| e == id) || self.child_on_path(id, path)
@@ -394,7 +394,7 @@ impl App {
             .any(|s| s.parent_session_id.as_deref() == Some(id) && path.contains(&s.session_id))
     }
 
-    /// **Whether a session has a child drawn in `branch`** - the fact the fold glyph is made of: a
+    /// Whether a session has a child drawn in `branch` - the fact the fold glyph is made of: a
     /// `+` over a row whose children are in another branch opens nothing.
     fn children_in(&self, id: &str, branch: Option<Branch<'_>>) -> bool {
         self.sessions.iter().enumerate().any(|(k, s)| {
@@ -461,7 +461,7 @@ impl App {
             .collect()
     }
 
-    /// **The session at the top of this one's chain** - itself for a session nobody spawned.
+    /// The session at the top of this one's chain - itself for a session nobody spawned.
     fn root_of(&self, i: usize) -> usize {
         let mut at = i;
         for _ in 0..MAX_CHAIN {
@@ -515,7 +515,7 @@ impl App {
         None
     }
 
-    /// **The projects this daemon holds, in the order it lists them** - the top level of the tree.
+    /// The projects this daemon holds, in the order it lists them - the top level of the tree.
     pub(crate) fn projects(&self, place: &[Placement]) -> Vec<Project> {
         let mut out: Vec<Project> = Vec::new();
         for p in place {
@@ -949,7 +949,7 @@ impl App {
         None
     }
 
-    /// **Raise the confirmation card**, and it is the only place [`App::term_ask`] is set - so
+    /// Raise the confirmation card, and it is the only place [`App::term_ask`] is set - so
     /// there is one place a pane can be ended from, and it is the one that asks.
     pub(crate) fn ask_close(&mut self, line: &str, pane: u32) {
         // A card that names one of several says which by number; one that is the only pane
@@ -1090,42 +1090,25 @@ impl Link {
     }
 }
 
-/// **A head that has asked the daemon to stop, and is waiting to find out.** (R30)
+/// A head that has asked the daemon to stop, and is waiting to find out.
 ///
-/// The operator chose *exit, and stop the daemon too*, and on 2026-09-23 they got the exit
-/// without the stop: the head was gone and `harnessd` was still there at `PPID 1`, idle,
-/// its socket bound. Nothing ever asked it, or nothing checked. The old code was two
-/// discarded results and a return:
+/// The operator chose *exit, and stop the daemon too* and got the exit without the stop, leaving `harnessd`
+/// idle. The old code discarded both results and returned:
 ///
 /// ```text
 /// let _ = self.client.stop(app.seq, &who);
 /// let _ = self.client.detach();
 /// ```
 ///
-/// Whether the frame reached the socket was a race against the head's own shutdown, and
-/// **a request is not an outcome**. This is the state that makes the difference: while it
-/// is unresolved the head does not leave, and the three facts it observes are kept apart,
-/// because each one is a different answer for the operator:
-///
-/// * `sent` - the write returned `Ok`. The frame is in the kernel's buffer for this socket,
-///   which is the most a writer can ever know.
-/// * `acked` - the daemon answered `Accepted { note: "stopping" }`. **This is the one that
-///   says the request was read**, and the daemon sends it before it closes anything.
-/// * `closed` - the daemon's socket file is gone. Its `shutdown` unlinks that file after
-///   joining the accept loop, which is what the wrapper's *"the record is removed only
-///   after the process is gone"* is the same shape of.
-/// * `gone` - **the daemon's process has exited and been collected.** Observed by reaping it
-///   when it is this head's own child (`waitpid(WNOHANG)`) and by its `/proc` entry otherwise,
-///   **a zombie counting as gone** - because a child that has exited stays in `/proc` until its
-///   parent waits for it, and this head is that parent. The strongest observation available,
-///   and the only one that is *the daemon has actually gone*.
-///
-///   **It was `fs::metadata("/proc/{pid}")`, and that is the defect the operator reported
-///   twice**: *"they always tell me daemon not stopped after waiting for 5 sec, then `letibot
-///   --stop` tells nothing runs."* Both true - the daemon had stopped, and the test said
-///   otherwise, because a zombie keeps its directory. The wrapper's test is right where the
-///   wrapper runs and wrong here, and the difference is the relationship. See
-///   [`crate::driver::Parentage`].
+/// A request is not an outcome: the head does not leave while the stop is unresolved, and keeps apart three
+/// observations, each a different answer for the operator:
+/// - `sent`: the write returned `Ok`, the most a writer can know.
+/// - `acked`: the daemon answered `Accepted { note: "stopping" }`, so the request was read.
+/// - `closed`: the daemon's socket file is gone.
+/// - `gone`: the process has exited and been collected, by `waitpid(WNOHANG)` for this head's own child and
+///   by `/proc` otherwise, a zombie counting as gone. The only observation that is *the daemon has gone*.
+/// A bare `fs::metadata("/proc/{pid}")` test would report a stopped daemon as running, since a zombie keeps its
+/// directory until its parent waits. See [`crate::driver::Parentage`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stopping {
     /// The identity that asked, as the daemon will have announced it.
@@ -1146,7 +1129,7 @@ pub struct Stopping {
     /// out, so this is not a turn finishing its round. It is what tells a stop inside a command from a daemon that
     /// did not go.
     pub turn_busy: bool,
-    /// **The force path, when the head took it** - directly for an older daemon, or once,
+    /// The force path, when the head took it - directly for an older daemon, or once,
     /// automatically, when the ordinary stop's deadline passed with the process still there.
     /// `None` for a stop that never needed it.
     pub forced: Option<Forcing>,
@@ -1193,7 +1176,7 @@ pub struct Forcing {
     pub outcome: Option<ForceOutcome>,
 }
 
-/// **What the force path did** - `crate::head::force_stop`'s answer.
+/// What the force path did - `crate::head::force_stop`'s answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForceOutcome {
     /// The daemon's process is gone, observed (zombie-aware, as `watch_stop` observes it).
@@ -1203,7 +1186,7 @@ pub struct ForceOutcome {
     pub said: String,
 }
 
-/// **How long the force path gives SIGTERM before SIGKILL**: five seconds, the figure
+/// How long the force path gives SIGTERM before SIGKILL: five seconds, the figure
 /// `scripts/letibot --stop --force` waits (`wait_gone`) between the two, so the head's force
 /// path and the wrapper's are one path with one number.
 pub const FORCE_TERM_GRACE_MS: u64 = 5_000;
@@ -1303,7 +1286,7 @@ impl Branch<'_> {
     }
 }
 
-/// **Where one session is drawn** - the project, and the `system` group it belongs in when it is
+/// Where one session is drawn - the project, and the `system` group it belongs in when it is
 /// one of the harness's own agents.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Placement {
@@ -1311,7 +1294,7 @@ pub(crate) struct Placement {
     pub(crate) system: Option<SystemKind>,
 }
 
-/// **A project: the top level of the tree** - a workspace root, shown by its name.
+/// A project: the top level of the tree - a workspace root, shown by its name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Project {
     /// The path the project is, and the key its fold state is kept under.
@@ -1359,7 +1342,7 @@ impl SystemKind {
     }
 }
 
-/// **What a row of the session list is** - a session, or one of the three lines the tree is built
+/// What a row of the session list is - a session, or one of the three lines the tree is built
 /// from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Node {
@@ -1381,7 +1364,7 @@ pub(crate) enum Node {
 }
 
 impl Node {
-    /// **The key this node's fold state is kept under** - a path for a project, `…/system` and
+    /// The key this node's fold state is kept under - a path for a project, `…/system` and
     /// `…/system/<group>` below it. Session ids begin `s-`, so the two can never collide.
     pub(crate) fn key(&self) -> &str {
         match self {
@@ -1411,7 +1394,7 @@ impl Node {
     }
 
     /// How a node stands before anybody has folded it: closed, all four. A project's line and its `system` branch
-    /// used to be open, which on a box with a hundred sessions buried the one being looked for.
+    /// are closed too: on a box with a hundred sessions open ones bury the one being looked for.
     pub(crate) fn default_open(&self) -> bool {
         false
     }
@@ -1422,14 +1405,14 @@ impl Node {
 /// is the second way of answering one question.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionRow {
-    /// Index into `App::sessions`, or **`None` for a node's own line** - a stop with an act of its
+    /// Index into `App::sessions`, or `None` for a node's own line - a stop with an act of its
     /// own (`enter` folds it) and no session to switch to.
     pub(crate) idx: Option<usize>,
     /// 0 for a project, deeper inside the tree.
     pub(crate) depth: usize,
     /// What this row is: a session, or one of the tree's own lines.
     pub(crate) node: Node,
-    /// **Whether this row's rows are drawn under it** - `None` for a row that has none in this
+    /// Whether this row's rows are drawn under it - `None` for a row that has none in this
     /// branch, `Some(open)` for one that folds. The glyph and the enumeration are this one answer.
     pub(crate) open: Option<bool>,
 }
@@ -1438,7 +1421,7 @@ pub(crate) struct SessionRow {
 /// always created after its parent, so a real chain is short; this is a store somebody edited.
 pub(crate) const MAX_CHAIN: usize = 64;
 
-/// **How far in a row is drawn.** The renderer caps the indent at three steps (rano's tree list,
+/// How far in a row is drawn. The renderer caps the indent at three steps (rano's tree list,
 /// and a name pushed four steps in is off the right edge), and the built-in `sessions` layer caps
 /// at the same number - one picture, two drawings.
 const MAX_INDENT: usize = 3;
@@ -1488,7 +1471,7 @@ fn named(key: &str) -> Project {
     }
 }
 
-/// **What a project is called**: the folder's name, which is what the operator asked for - *"shown
+/// What a project is called: the folder's name, which is what the operator asked for - *"shown
 /// by its name, not its full path"*.
 fn project_name(key: &str) -> String {
     if key.is_empty() {
@@ -1514,7 +1497,7 @@ pub(crate) fn group_key(project: &str, kind: SystemKind) -> String {
     format!("{}/system/{}", project, kind.title())
 }
 
-/// **The live panes, as a person reads them**: `1 `!term mc`, 2 `!term nano``.
+/// The live panes, as a person reads them: `1 `!term mc`, 2 `!term nano``.
 pub(crate) fn panes_said(list: &[letibot_sessionlog::PaneBrief]) -> String {
     list.iter()
         .map(|b| format!("{} `!term {}`", b.pane, b.command))

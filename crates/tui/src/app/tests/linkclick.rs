@@ -78,7 +78,7 @@ fn workspace(tag: &str) -> Workspace {
     Workspace(dir)
 }
 
-/// **A row with a URL in it records a hit, and a click opens that exact URL** - the hit covers
+/// A row with a URL in it records a hit, and a click opens that exact URL - the hit covers
 /// the URL's own cells and nothing else, so the prose around it is still the conversation's.
 #[test]
 fn a_click_on_a_link_opens_the_url_the_frame_drew() {
@@ -93,7 +93,7 @@ fn a_click_on_a_link_opens_the_url_the_frame_drew() {
         "a click on a link opens the URL the frame drew"
     );
 
-    // **And a click beside it is not the link's** - the prose is text, selected and not clicked.
+    // And a click beside it is not the link's - the prose is text, selected and not clicked.
     let mut b = replied("Read https://example.com/x/guide first.");
     b.screen(80, 20);
     let hit = link_hit(&b, "https://example.com/x/guide");
@@ -106,7 +106,7 @@ fn a_click_on_a_link_opens_the_url_the_frame_drew() {
         "the words in front of a link are not the link"
     );
 
-    // **The pointer finds it without a click** - the head cannot leave detection to the terminal
+    // The pointer finds it without a click - the head cannot leave detection to the terminal
     // (it takes the mouse), so the link lights its own cells under the pointer.
     let mut c = replied("Read https://example.com/x/guide first.");
     c.screen(80, 20);
@@ -122,7 +122,7 @@ fn a_click_on_a_link_opens_the_url_the_frame_drew() {
     );
 }
 
-/// **The copy path still copies the words** - a selection over a linked row carries the URL's
+/// The copy path still copies the words - a selection over a linked row carries the URL's
 /// text and none of the escape bytes that made it a link.
 #[test]
 fn a_rows_copied_text_carries_no_escape_bytes() {
@@ -146,7 +146,7 @@ fn a_rows_copied_text_carries_no_escape_bytes() {
     );
 }
 
-/// **A wrapped link is one well-formed pair per row** - rano reopens at a break what it closed
+/// A wrapped link is one well-formed pair per row - rano reopens at a break what it closed
 /// at the end of the last row, so no row ends with an opener whose closer is on the next row,
 /// and each row's pair covers exactly the cells that row shows.
 #[test]
@@ -185,7 +185,7 @@ fn a_wrapped_link_is_one_well_formed_pair_per_row() {
     );
 }
 
-/// **A row with no link records no link target** - the assertion `ghlinks`/`standing` keep from
+/// A row with no link records no link target - the assertion `ghlinks`/`standing` keep from
 /// the other side, here as the hit map's own.
 #[test]
 fn a_row_with_no_link_records_no_link_target() {
@@ -196,7 +196,7 @@ fn a_row_with_no_link_records_no_link_target() {
     assert!(!a.hits.iter().any(|h| h.target == Target::Link));
 }
 
-/// **A URL in the composer is text, not a link** - a click in the middle of one the operator is
+/// A URL in the composer is text, not a link - a click in the middle of one the operator is
 /// typing belongs to the caret, so the chrome is where a link stops being a target.
 #[test]
 fn a_url_in_the_composer_is_text_and_not_a_link() {
@@ -212,7 +212,7 @@ fn a_url_in_the_composer_is_text_and_not_a_link() {
     assert!(!a.hits.iter().any(|h| h.target == Target::Link));
 }
 
-/// **`path:line` in a reply is a link, and it opens the file at the line** - through the editor
+/// `path:line` in a reply is a link, and it opens the file at the line - through the editor
 /// pane this head already opens files with, which is the door an edit row and a note use.
 #[test]
 fn a_path_and_line_in_a_reply_opens_the_file_there() {
@@ -248,7 +248,7 @@ fn a_path_and_line_in_a_reply_opens_the_file_there() {
     );
 }
 
-/// **A `file://` URL is read back into a path and a line** - rano's `uri_path` decoded, and this
+/// A `file://` URL is read back into a path and a line - rano's `uri_path` decoded, and this
 /// head's `:N` taken off the end.
 #[test]
 fn a_file_url_is_read_back_into_a_path_and_a_line() {
@@ -261,7 +261,7 @@ fn a_file_url_is_read_back_into_a_path_and_a_line() {
     assert_eq!(crate::app::links::file_target("https://x/y"), None);
 }
 
-/// **A URL with a port is a URL, not a path** - `link_path_lines` runs after `link_urls`, so
+/// A URL with a port is a URL, not a path - `link_path_lines` runs after `link_urls`, so
 /// `https://example.com/x:8080` is one link and not a file called `example.com/x`.
 #[test]
 fn a_url_with_a_port_is_not_read_as_a_path_and_line() {

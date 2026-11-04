@@ -100,7 +100,7 @@ fn an_answer_opens_the_next_waiting_row_and_the_last_one_closes_the_card() {
     );
     assert_eq!(notice(&a), "answered — 2 more waiting on you");
     let l = line(&a);
-    // The row whose card is up is not "waiting to be opened" (R90.26): the line names the next.
+    // The row whose card is up is not "waiting to be opened": the line names the next.
     assert!(
         l.contains("\"ship on friday?\"") && !l.contains("call it staging?"),
         "the resident line moved with the answer: {l}"
@@ -136,7 +136,7 @@ fn an_answer_opens_the_next_waiting_row_and_the_last_one_closes_the_card() {
     assert!(line(&a).is_empty());
 }
 
-/// **The stale `asks` settings row does not bring the line back after the last answer** - it was
+/// The stale `asks` settings row does not bring the line back after the last answer - it was
 /// written before the answer, and the line fell back to it whenever the board read empty.
 #[test]
 fn the_last_answer_is_not_undone_by_the_settings_row() {
@@ -158,7 +158,7 @@ fn the_last_answer_is_not_undone_by_the_settings_row() {
     assert!(line(&a).is_empty(), "{}", line(&a));
 }
 
-/// **A refused answer is asked again**: the board that comes back is the truth, and a row still
+/// A refused answer is asked again: the board that comes back is the truth, and a row still
 /// waiting on it is still waiting.
 #[test]
 fn a_board_still_asking_after_an_answer_asks_again() {
@@ -171,7 +171,7 @@ fn a_board_still_asking_after_an_answer_asks_again() {
     assert!(line(&a).contains("postgres or sqlite?"), "{}", line(&a));
 }
 
-/// **Esc on a todo card: nothing sent, the line stays, alt-a brings it back with the draft.**
+/// Esc on a todo card: nothing sent, the line stays, alt-a brings it back with the draft.
 /// *"sometimes i need time to think and just let the card stay"*.
 #[test]
 fn esc_puts_a_todo_card_away_and_alt_a_brings_back_its_draft() {
@@ -250,7 +250,7 @@ fn esc_puts_the_models_question_away_and_the_line_shows_its_deadline() {
     );
 }
 
-/// **The question lapsing while away takes the line down** - it is settled, nothing is left to
+/// The question lapsing while away takes the line down - it is settled, nothing is left to
 /// bring back.
 #[test]
 fn a_question_settled_while_away_is_gone() {
@@ -276,7 +276,7 @@ fn a_question_settled_while_away_is_gone() {
     assert!(line(&a).is_empty(), "{}", line(&a));
 }
 
-/// **The Esc that puts the card away is not the first half of esc-esc.** A busy turn (the model's
+/// The Esc that puts the card away is not the first half of esc-esc. A busy turn (the model's
 /// call is waiting on the question) is interrupted by two presses of Esc; the press that stepped
 /// away from the card must not count, or a second Esc "to be sure" kills the turn.
 #[test]
@@ -301,7 +301,7 @@ fn the_put_away_esc_does_not_arm_the_interrupt() {
     );
 }
 
-/// **Abstain stays an explicit choice** - typed, and sent as one, from both kinds of card; Esc is
+/// Abstain stays an explicit choice - typed, and sent as one, from both kinds of card; Esc is
 /// never read as it.
 #[test]
 fn abstain_still_sends_abstain() {
@@ -335,7 +335,7 @@ fn abstain_still_sends_abstain() {
     );
 }
 
-/// **alt-a brings back the oldest pending question of either kind** - the model's first (the one
+/// alt-a brings back the oldest pending question of either kind - the model's first (the one
 /// with a clock and a call held on it), then a todo card that was put away (with its draft), and
 /// only then the first waiting row in board order.
 #[test]
@@ -381,7 +381,7 @@ fn alt_a_brings_back_the_models_question_first_then_a_put_away_row() {
     assert_eq!(a.editor.text(), "yes");
 }
 
-/// **A permission card is put away by Esc too** (R90.5) - its Esc used to fall through, close a
+/// A permission card is put away by Esc too - its Esc must not fall through to close a
 /// pane behind it or arm the Esc-Esc interrupt - and alt-a brings it back.
 #[test]
 fn esc_puts_a_permission_card_away_and_alt_a_brings_it_back() {
@@ -410,7 +410,7 @@ fn esc_puts_a_permission_card_away_and_alt_a_brings_it_back() {
     assert!(card.contains("esc puts it away"), "{card}");
 }
 
-/// **The cards and the hint bar say how to step away** - `esc puts it away - alt-a brings it back`.
+/// The cards and the hint bar say how to step away - `esc puts it away - alt-a brings it back`.
 #[test]
 fn the_question_card_and_its_bar_name_esc_and_alt_a() {
     let mut a = app();
@@ -458,7 +458,7 @@ fn alt_h_folds_the_waiting_line_into_a_count_on_the_edge_and_news_unfolds_it() {
     );
 }
 
-/// **`/asks` lists every question waiting, answering none** - *"a way for me to see all
+/// `/asks` lists every question waiting, answering none - *"a way for me to see all
 /// questions without answering them"*.
 #[test]
 fn slash_asks_lists_every_question_and_answers_none() {

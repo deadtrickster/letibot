@@ -101,7 +101,7 @@ pub enum Show {
 }
 
 impl Show {
-    /// **Every switch, in the order the card and the refusal list them** - R38's one list, one
+    /// Every switch, in the order the card and the refusal list them. The switch names are the words
     /// rung down. The switch names are the words `head.toml` and `/verbosity` take, so a reader
     /// who read the name once can spell it everywhere.
     pub const ALL: [Show; 5] = [
@@ -218,7 +218,7 @@ impl Level {
 pub struct Profile {
     /// The word `/verbosity` takes, the card lists and `head.toml` keeps.
     pub name: &'static str,
-    /// **The whole definition**: what is on, at which level. Nothing else is.
+    /// The whole definition: what is on, at which level. Nothing else is.
     pub set: &'static [(Show, Level)],
     /// What it gives you, as the card says it - *what will be on the screen*, never *what is
     /// filtered*: a reader choosing a profile is not reasoning about the event stream.
@@ -275,7 +275,7 @@ impl Profile {
         Self::LOUD,
     ];
 
-    /// **The profile whose set is exactly this set** - the table's own answer, walked rather
+    /// The profile whose set is exactly this set - the table's own answer, walked rather
     /// than written down a second time.
     pub fn of(vis: Visibility) -> Option<Profile> {
         Self::ALL
@@ -367,7 +367,7 @@ impl Visibility {
         }
     }
 
-    /// The set with one switch moved - **the only way a set is built**, so a switch that is in
+    /// The set with one switch moved - the only way a set is built, so a switch that is in
     /// [`Show::ALL`] cannot be missing from it.
     pub fn with(self, s: Show, l: Level) -> Visibility {
         let mut v = self;
@@ -381,13 +381,13 @@ impl Visibility {
         v
     }
 
-    /// **Is this switch showing at all** - `folded` is showing: the row is drawn, and its body
+    /// Is this switch showing at all - `folded` is showing: the row is drawn, and its body
     /// is the fold's.
     pub fn shows(self, s: Show) -> bool {
         self.level(s) != Level::Hidden
     }
 
-    /// **Which profile this set is, if any** - `None` is `custom …`.
+    /// Which profile this set is, if any - `None` is `custom …`.
     pub fn profile(self) -> Option<Profile> {
         Profile::of(self)
     }
@@ -420,7 +420,7 @@ impl Visibility {
         if let Some(p) = Profile::parse(&t) {
             return Ok(Change::Set(Visibility::of(p)));
         }
-        // **`custom edits=hidden thinking=open …`** - the name `as_str` writes for a set that is
+        // `custom edits=hidden thinking=open …` - the name `as_str` writes for a set that is
         // no profile, read back against the head's own start. Without this a stored preference
         // would be a caption: the status row would name a set no file could restore.
         let mut words: Vec<&str> = t.split_whitespace().collect();
@@ -574,7 +574,7 @@ pub(crate) fn is_edit_card(item: &letibot_transcript::TranscriptItem) -> bool {
     edit.is_some() || matches!(card::Verb::of(name), card::Verb::Edit | card::Verb::Write)
 }
 
-/// **What a refused word is told**, and the whole of it: the two vocabularies are named by the
+/// What a refused word is told, and the whole of it: the two vocabularies are named by the
 /// tables themselves in the longer refusals ([`Visibility::parse`]), and this is the half a
 /// sentence can carry on one line of a status row.
 pub(crate) const VISIBILITY_REFUSAL: &str = "name a profile or a switch, or SWITCH=LEVEL — `/verbosity` with nothing after it shows the \

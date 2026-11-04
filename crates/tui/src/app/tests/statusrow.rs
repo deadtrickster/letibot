@@ -32,7 +32,7 @@ fn still(before: &[String], during: &[String], after: &[String], needle: &str) -
             during.join("\n")
         );
     }
-    // **It is the status row** - the line directly above the composer's box, not a row of its
+    // It is the status row - the line directly above the composer's box, not a row of its
     // own somewhere else.
     assert!(
         during[at + 1].trim_start().starts_with('╭'),
@@ -82,7 +82,7 @@ fn boot(code: &str, detail: &str) -> SessionEvent {
 #[test]
 fn transients_are_drawn_in_the_status_row_and_the_conversation_never_moves() {
     for busy in [false, true] {
-        // **resync** - the violet line the operator saw.
+        // resync - the violet line the operator saw.
         let (mut a, hub) = conversation(busy);
         let before = a.screen(W, H);
         a.apply(ServerFrame::Resync {
@@ -108,7 +108,7 @@ fn transients_are_drawn_in_the_status_row_and_the_conversation_never_moves() {
             );
         }
 
-        // **"reading output of job …"** - the acknowledgement an older daemon sends for every
+        // "reading output of job …" - the acknowledgement an older daemon sends for every
         // read, and so for every one-second refresh of the jobs pane.
         let (mut a, _hub) = conversation(busy);
         let before = a.screen(W, H);
@@ -120,7 +120,7 @@ fn transients_are_drawn_in_the_status_row_and_the_conversation_never_moves() {
         let at = still(&before, &during, &after, "reading output of job j7");
         assert_eq!(busy, during[at].contains("Responding"), "{}", during[at]);
 
-        // **The link down for a moment** - a daemon restart, under the impatient threshold.
+        // The link down for a moment - a daemon restart, under the impatient threshold.
         let (mut a, _hub) = conversation(busy);
         let before = a.screen(W, H);
         a.link_down("the daemon closed the connection");
@@ -131,7 +131,7 @@ fn transients_are_drawn_in_the_status_row_and_the_conversation_never_moves() {
         let after = a.screen(W, H);
         still(&before, &during, &after, "reconnecting");
 
-        // **The daemon's boot step** (R92.2), which used to be a row at the foot of the body.
+        // The daemon's boot step, which is not a row at the foot of the body.
         let (mut a, _hub) = conversation(busy);
         let before = a.screen(W, H);
         let seq = a.seq;
@@ -154,7 +154,7 @@ fn transients_are_drawn_in_the_status_row_and_the_conversation_never_moves() {
     }
 }
 
-/// **Mid-turn, a transient is the first thing the row gives up** - the turn's own words are never
+/// Mid-turn, a transient is the first thing the row gives up - the turn's own words are never
 /// cut for it, and a notice cut to the room it has ends in the click hint and is a target.
 #[test]
 fn a_narrow_status_row_drops_the_transient_before_the_turn() {
@@ -180,7 +180,7 @@ fn a_narrow_status_row_drops_the_transient_before_the_turn() {
     assert!(cut.is_none());
 }
 
-/// **The jobs pane's read and its one-second refresh**: with the output window on screen, each
+/// The jobs pane's read and its one-second refresh: with the output window on screen, each
 /// re-read the older daemon acknowledges says `reading output of job …` - in the status row, and
 /// the window above it does not move.
 #[test]
@@ -302,12 +302,12 @@ fn body_still(frames: &[(&str, &Vec<String>)]) -> usize {
     at
 }
 
-/// **Each progress kind, before / start / mid / end, idle and mid-turn**: nothing above the status
+/// Each progress kind, before / start / mid / end, idle and mid-turn: nothing above the status
 /// row moves, and the status row carries the one-line form - label, bar, numbers.
 #[test]
 fn every_progress_rides_the_status_row_and_the_conversation_never_moves() {
     for busy in [false, true] {
-        // **A fill the daemon named** - a restore, an import, a compaction's carry.
+        // A fill the daemon named - a restore, an import, a compaction's carry.
         let (mut a, _hub) = watched(busy);
         let before = a.screen(W, H);
         let seq = a.seq;
@@ -353,7 +353,7 @@ fn every_progress_rides_the_status_row_and_the_conversation_never_moves() {
             );
         }
 
-        // **A reseat's carry** (cb380cf): the render onto the new prompt ticks its own bar, then
+        // A reseat's carry: the render onto the new prompt ticks its own bar, then
         // the write has its own from zero - two operations, each its own label and clock, and
         // still nothing above the row moves.
         let (mut a, _hub) = watched(busy);
@@ -390,7 +390,7 @@ fn every_progress_rides_the_status_row_and_the_conversation_never_moves() {
         // The write is its own operation: its clock starts at its own first tick.
         assert_eq!(a.filling_since, 3_000);
 
-        // **A fold**: reading its half (a bar), then writing (a count), then landing.
+        // A fold: reading its half (a bar), then writing (a count), then landing.
         let (mut a, _hub) = watched(busy);
         let before = a.screen(W, H);
         let seq = a.seq;
@@ -429,7 +429,7 @@ fn every_progress_rides_the_status_row_and_the_conversation_never_moves() {
         assert!(!writing[at].contains('▐'), "{}", writing[at]);
         assert!(!end[at].contains("Compacting"), "{}", end[at]);
 
-        // **A snapshot's announced rows**: the snapshot itself replaces the conversation, and
+        // A snapshot's announced rows: the snapshot itself replaces the conversation, and
         // every body that lands is a row - so what is asserted is that the LINE costs no row:
         // arriving, then past the patience the finding, then cleared, all on one body.
         let mut a = app();
@@ -460,7 +460,7 @@ fn every_progress_rides_the_status_row_and_the_conversation_never_moves() {
     }
 }
 
-/// **A narrow row gives up the numbers, then the bar - never the label.** Idle, at every width
+/// A narrow row gives up the numbers, then the bar - never the label. Idle, at every width
 /// from wide to tiny; and mid-turn the turn's own words are never cut for the progress.
 #[test]
 fn a_narrow_status_row_drops_the_numbers_then_the_bar_and_keeps_the_label() {
@@ -491,7 +491,7 @@ fn a_narrow_status_row_drops_the_numbers_then_the_bar_and_keeps_the_label() {
         assert!(!counts || bar, "the counts outlived the bar ({w}): {row}");
         seen_bar_without_counts |= bar && !counts;
         seen_label_alone |= !bar;
-        // **The detail is a click away** - the fold's block said more than any row holds.
+        // The detail is a click away - the fold's block said more than any row holds.
         let (title, text) = click.expect("a fold's row is a click target");
         assert_eq!(title, "progress");
         assert!(
@@ -504,7 +504,7 @@ fn a_narrow_status_row_drops_the_numbers_then_the_bar_and_keeps_the_label() {
     let (row, _) = a.status_row(16);
     assert!(row.contains("Compacting"), "{row}");
 
-    // **Mid-turn** the turn's words stay whole and the progress follows them, cut or dropped.
+    // Mid-turn the turn's words stay whole and the progress follows them, cut or dropped.
     let (mut a, _hub) = conversation(true);
     let seq = a.seq;
     a.apply(ServerFrame::Event(env(seq + 1, folding(41_200, 0))));
@@ -521,7 +521,7 @@ fn a_narrow_status_row_drops_the_numbers_then_the_bar_and_keeps_the_label() {
     assert!(!row.contains("Compacting"), "{row}");
 }
 
-/// **Two at once: the one that started last, and `+1`.** A fold carries its conversation onto the
+/// Two at once: the one that started last, and `+1`. A fold carries its conversation onto the
 /// new prompt - a fill - while the fold's own line is still up; the row shows the newer, counts
 /// the other, and the click opens both.
 #[test]
@@ -582,7 +582,7 @@ fn two_progresses_show_the_one_that_started_last_and_count_the_other() {
     assert!(!one[at].contains("+1"), "{}", one[at]);
 }
 
-/// **A notice while a progress is up**: the progress gives up its numbers to keep the notice
+/// A notice while a progress is up: the progress gives up its numbers to keep the notice
 /// whole, keeps its label, and gets the numbers back when the notice goes.
 #[test]
 fn a_notice_over_a_progress_takes_its_numbers_not_its_label() {
@@ -644,7 +644,7 @@ fn a_switch_waiting_for_the_turn_rides_the_status_row_until_it_lands() {
             during[at]
         );
         if busy {
-            // **After the turn's own clock**, which is how every other segment on this row is
+            // After the turn's own clock, which is how every other segment on this row is
             // ordered: what the turn is doing, then what else is true of the session.
             let (turn, switch) = (
                 during[at].find("Responding").expect("the turn's words"),
@@ -657,7 +657,7 @@ fn a_switch_waiting_for_the_turn_rides_the_status_row_until_it_lands() {
             );
         }
 
-        // **And it goes when the switch lands** - the applied sentence replaces it in the record,
+        // And it goes when the switch lands - the applied sentence replaces it in the record,
         // and the row stops claiming something is waiting.
         a.apply(ServerFrame::Event(env(
             seq + 2,
@@ -706,7 +706,7 @@ fn a_daemon_older_than_its_store_says_so_in_red_and_stays() {
                     during.join("\n")
                 )
             });
-        // **It is the status row**: the line directly above the composer's box, and the whole
+        // It is the status row: the line directly above the composer's box, and the whole
         // sentence is there - the fix included, which is the half a cut would take.
         assert!(
             during[at + 1].trim_start().starts_with('╭'),
@@ -727,7 +727,7 @@ fn a_daemon_older_than_its_store_says_so_in_red_and_stays() {
             );
             assert!(turn < store, "the turn's clock comes first: {}", during[at]);
         }
-        // **Nothing above it moved** - a transient in this row takes no line from the conversation.
+        // Nothing above it moved - a transient in this row takes no line from the conversation.
         assert_eq!(
             &before[..at],
             &during[..at],
@@ -748,7 +748,7 @@ fn a_daemon_older_than_its_store_says_so_in_red_and_stays() {
             "`store_newer` is drawn in the register this row paints red"
         );
 
-        // **And it is state, not a note** - a minute later the same row still says it, and no
+        // And it is state, not a note - a minute later the same row still says it, and no
         // notice timer takes it down.
         a.clock(1_000 + 60_000);
         let later = a.screen(WIDE, H);

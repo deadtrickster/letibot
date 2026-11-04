@@ -34,15 +34,15 @@ pub struct DiffPopup {
 pub(crate) enum PopupBody {
     /// An edit or write, read in its whole file.
     Change(FileRef),
-    /// **A job's completion notice, whole**: the daemon's text as the model read it, and the
+    /// A job's completion notice, whole: the daemon's text as the model read it, and the
     /// jobs it reports, whose output the popup shows under it when this head holds it.
     Notice {
         text: String,
         jobs: Vec<(bool, EndedJob)>,
-        /// **The operator's answer, when the notice is a question to them** (`asked_card`): the
+        /// The operator's answer, when the notice is a question to them (`asked_card`): the
         /// row the session wrote right after it, so the popup can mark what they chose.
         answer: Option<String>,
-        /// **The top edge, when the opener knew it** - a note card's (whose code the text no
+        /// The top edge, when the opener knew it - a note card's (whose code the text no
         /// longer carries), a System row's, the flash notice's. `None` reads it from the text.
         title: Option<(String, Role)>,
     },
@@ -64,7 +64,7 @@ pub(crate) enum PopupBody {
     },
 }
 
-/// **A note drawn as a card's one line** - where the line is in `hist_lines`, and the text the
+/// A note drawn as a card's one line - where the line is in `hist_lines`, and the text the
 /// popup shows whole. See [`App::note_cards`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NoteCard {
@@ -91,7 +91,7 @@ impl App {
     }
 
     pub(crate) fn open_popup(&mut self, body: PopupBody) {
-        // **One popup at a time, and the old one gives back what it held** - a picture's bytes are
+        // One popup at a time, and the old one gives back what it held - a picture's bytes are
         // placed where that view put it, and the rows that named it go with the view: the terminal
         // cannot free what nothing draws.
         self.close_popup();
@@ -104,7 +104,7 @@ impl App {
         });
     }
 
-    /// **Close the popup, and let go of what it drew** - a change's rows need nothing, a picture's
+    /// Close the popup, and let go of what it drew - a change's rows need nothing, a picture's
     /// bytes do: they are deleted in the terminal's own terms (see
     /// [`Pictures`](rano::term::Pictures)).
     pub(crate) fn close_popup(&mut self) {
@@ -114,7 +114,7 @@ impl App {
         }
     }
 
-    /// **The bytes a picture popup needs, for the box the frame drew** - the rano widget's own
+    /// The bytes a picture popup needs, for the box the frame drew - the rano widget's own
     /// decision (upload once, place when the box moves, delete when the view closes), so a resize
     /// under an open picture costs a placement and not the picture.
     pub(crate) fn sync_picture_popup(&mut self, want: Option<rano::term::Picture>) {
@@ -131,7 +131,7 @@ impl App {
         let Some(it) = self.items.get(k) else {
             return;
         };
-        // **A System row is a notice too** (R89): its one line opens its text whole.
+        // A System row is a notice too: its one line opens its text whole.
         if let Some((text, bootstrap)) = system_row_text(it) {
             let c = crate::ui::transcript::notice_card::system_notice(&text, bootstrap);
             self.open_popup(PopupBody::Notice {
@@ -147,7 +147,7 @@ impl App {
             self.open_text_popup(text, ("skill handed to the session".into(), Role::Faint));
             return;
         }
-        // **And every row the session spoke is one** (R89): a card's, a job's, a fold's, or the
+        // And every row the session spoke is one: a card's, a job's, a fold's, or the
         // fallback's line - each is a summary, and the popup is the text.
         let Some(mut text) = agent_row_text(it) else {
             return;
@@ -182,8 +182,8 @@ impl App {
         });
     }
 
-    /// **Open a text whole in the notice popup** under `title` - the flash notice's, cut on its
-    /// line (R89).
+    /// Open a text whole in the notice popup under `title` - the flash notice's, cut on its
+    /// line.
     pub(crate) fn open_text_popup(&mut self, text: String, title: (String, Role)) {
         self.open_popup(PopupBody::Notice {
             text,
@@ -193,7 +193,7 @@ impl App {
         });
     }
 
-    /// **The newest notice line on the conversation, opened** - `alt-n` (R89): the keyboard's way
+    /// The newest notice line on the conversation, opened - `alt-n`: the keyboard's way
     /// to what a click on the line does. The newest of the notes' cards and the rows a click
     /// opens, by where they are drawn.
     pub(crate) fn open_latest_notice(&mut self) {
@@ -217,7 +217,7 @@ impl App {
         }
     }
 
-    /// **Open the note card `i` whole** - the click on a card's one line (a `target_red` warning, a
+    /// Open the note card `i` whole - the click on a card's one line (a `target_red` warning, a
     /// review's warning): the detail as the daemon raised it, the gate's output or the reviewer's
     /// reasons included, in the job card's popup.
     pub(crate) fn open_card_popup(&mut self, i: usize) {
@@ -234,7 +234,7 @@ impl App {
         });
     }
 
-    /// **The note-card lines among lines `start..end` of the conversation**, as `(row of the
+    /// The note-card lines among lines `start..end` of the conversation, as `(row of the
     /// window, index into `note_cards`)` - [`App::notice_rows_in`] for the notes.
     pub(crate) fn card_rows_in(&self, start: usize, end: usize) -> Vec<(usize, usize)> {
         let end = end.min(self.hist_lines.len());
@@ -265,7 +265,7 @@ impl App {
                 continue;
             }
             self.job_tails.insert(job.clone(), JobTail::Asked);
-            // A notice from after R93.C3 carries no byte count: offset 0 is the daemon's
+            // A newer notice carries no byte count: offset 0 is the daemon's
             // "the tail" (`job_window_for`), which is what this read wants anyway.
             self.queued.push(Action::ReadJobOutput {
                 job,
@@ -274,7 +274,7 @@ impl App {
         }
     }
 
-    /// **A job's tail landed (or was refused)**: kept, and every row that draws it is drawn
+    /// A job's tail landed (or was refused): kept, and every row that draws it is drawn
     /// again - the notice rows from the first one that names the job, and the popup if it is
     /// open on it.
     pub(crate) fn job_tail_landed(&mut self, job: &str, tail: JobTail) {
@@ -324,7 +324,7 @@ impl App {
                                 .map(|(_, j)| (j.id.clone(), j.produced)),
                         );
                     }
-                    // **Every row the session spoke is a notice, and every System row** (R89):
+                    // Every row the session spoke is a notice, and every System row:
                     // each is drawn as notice lines - a card's, a job's, a fold's or the
                     // fallback's - and a click opens the text whole.
                     let is = text.is_some()
@@ -381,7 +381,7 @@ impl App {
                         ),
                         _ => Vec::new(),
                     };
-                    // **One list or none** - see this function's docstring.
+                    // One list or none - see this function's docstring.
                     if ids.len() != sp.lines {
                         ids.clear();
                     }
@@ -400,7 +400,7 @@ impl App {
         out
     }
 
-    /// **The notice popup's rows at `width`**: the notice as the model read it, wrapped - the
+    /// The notice popup's rows at `width`: the notice as the model read it, wrapped - the
     /// paragraph addressed to the model included, because this is the full card the compact
     /// rows stand for - and under it, for each job, the end of what it wrote.
     pub(crate) fn notice_popup_layout(
@@ -421,7 +421,7 @@ impl App {
                 });
             }
         };
-        // **A question to the operator is drawn with its options one per line**, theirs marked
+        // A question to the operator is drawn with its options one per line, theirs marked
         // (`asked_card::full_lines`); every other notice as the daemon wrote it.
         let asked = crate::ui::transcript::asked_card::full_lines(text, answer, width);
         let as_written = if asked.is_some() { "" } else { text };
@@ -535,7 +535,7 @@ impl App {
             &dcfg,
             rano::sidediff::edit_view(split),
         );
-        // **The file is named once, in the popup's top edge.** The renderer heads every edit view
+        // The file is named once, in the popup's top edge. The renderer heads every edit view
         // with the file's name - right for a card in the conversation, a repeat inside a frame
         // that already says it. Dropped only when the first row IS that name.
         if rows
@@ -578,7 +578,7 @@ impl App {
                 ),
             };
         }
-        // **Four fifths of the frame** - `image_box` halves what it is given, so it is handed the
+        // Four fifths of the frame - `image_box` halves what it is given, so it is handed the
         // width a box of 4/5 would have been cut at.
         let box_cols = rano::term::graphics::image_box(width.saturating_mul(8) / 5);
         let (cols, rows) = rano::term::graphics::image_cells(px.0, px.1, box_cols);
@@ -621,7 +621,7 @@ impl App {
             Key::Esc | Key::CtrlC => {
                 self.close_popup();
             }
-            // **`ctrl-]` edits a change**; a notice has no file behind it, so the key is the
+            // `ctrl-]` edits a change; a notice has no file behind it, so the key is the
             // popup's and does nothing.
             Key::CtrlBracket => {
                 if let PopupBody::Change(f) = &p.body {
@@ -660,7 +660,7 @@ fn changed(l: &Line) -> bool {
             .any(|s| s.style.roles().any(tint) || s.content == "-" || s.content == "+")
 }
 
-/// **The whole file as it was before the edit**: the file now, with the edit's `after` excerpt
+/// The whole file as it was before the edit: the file now, with the edit's `after` excerpt
 /// put back to its `before`. `None` when the file at the excerpt's place is not what the edit
 /// left - then the whole-file view would be a diff of somebody else's change.
 pub(crate) fn whole_file_before(now: &str, c: &rano::review::Change) -> Option<String> {
@@ -680,7 +680,7 @@ pub(crate) fn whole_file_before(now: &str, c: &rano::review::Change) -> Option<S
     Some(s)
 }
 
-/// **A System row's text, and whether it is the prompt the session opened with** - `None` for
+/// A System row's text, and whether it is the prompt the session opened with - `None` for
 /// any other row.
 /// The text of an operator row that hands a skill over, or `None` for any other row.
 pub(crate) fn skill_row_text(it: &letibot_sessionlog::view::SnapshotItem) -> Option<String> {

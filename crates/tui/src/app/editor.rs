@@ -17,11 +17,11 @@ use std::time::{Duration, Instant};
 /// The host command rano hands back for `ctrl-]`: the keyboard goes to the composer.
 pub(crate) const TO_COMPOSER: &str = "letibot-to-composer";
 
-/// **The chord that crosses between the pane and the composer**, in rano's notation, for the
+/// The chord that crosses between the pane and the composer, in rano's notation, for the
 /// host keymap. The head's own half of it is [`Key::CtrlBracket`].
 const CROSS: &str = "C-]";
 
-/// **The chord that closes the pane** - bound to rano's own `exit`, not to a host command, so
+/// The chord that closes the pane - bound to rano's own `exit`, not to a host command, so
 /// it asks about unsaved edits exactly as `^X` does. `ctrl-q` is the head's jobs pane while the
 /// composer has the keys; the two cannot collide, because only one side has them.
 const CLOSE: &str = "C-q";
@@ -40,7 +40,7 @@ pub(crate) struct FileRef {
     /// The line to put the reader on, 1-based: the first changed line of an edit's new file, or
     /// the first line of a file opened to be read.
     pub(crate) line: usize,
-    /// **The change, when the row is about one.** `None` is a row that names a file and nothing
+    /// The change, when the row is about one. `None` is a row that names a file and nothing
     /// else, and it is what decides the view: a change opens on rano's review, no change opens
     /// on the text itself, from the top.
     pub(crate) change: Option<Change>,
@@ -74,7 +74,7 @@ impl FileRef {
     }
 }
 
-/// **The pane's state**: rano itself, who has the keyboard, and the last frame it drew.
+/// The pane's state: rano itself, who has the keyboard, and the last frame it drew.
 pub struct EditorPane {
     pub(crate) ed: Rano,
     /// The pane has the keyboard. False is the composer's turn, with the pane still drawn.
@@ -123,7 +123,7 @@ fn track_graphics(held: &mut std::collections::BTreeSet<u32>, bytes: &[u8]) {
 
 impl EditorPane {
     fn new(proto: rano::term::Proto) -> EditorPane {
-        // **The operator's own rano config** in a live head, so the pane is the editor they
+        // The operator's own rano config in a live head, so the pane is the editor they
         // already use; the defaults under test, so no test reads a home directory.
         #[cfg(not(test))]
         let config = rano::config::load();
@@ -198,7 +198,7 @@ impl App {
         self.drawn() == Drawn::Editor
     }
 
-    /// **Does the editor pane have the keyboard.**
+    /// Does the editor pane have the keyboard.
     pub fn editor_focused(&self) -> bool {
         self.editor_drawn() && self.edit_pane.as_ref().is_some_and(|p| p.focused)
     }
@@ -223,7 +223,7 @@ impl App {
         let area = self.edit_area;
         let proto = self.proto;
         let pane = self.edit_pane.get_or_insert_with(|| EditorPane::new(proto));
-        // **The rectangle first**, when a frame has already measured it: rano centres the
+        // The rectangle first, when a frame has already measured it: rano centres the
         // change in the view it has, and a review drawn for no width is a review redrawn a
         // tick later.
         if !area.is_empty() {
@@ -251,7 +251,7 @@ impl App {
         }
     }
 
-    /// **Close the pane**: the conversation has its rectangle back and the composer its keys.
+    /// Close the pane: the conversation has its rectangle back and the composer its keys.
     pub(crate) fn close_editor(&mut self) {
         if let Some(mut p) = self.edit_pane.take() {
             self.image_uploads.extend(p.release());
@@ -268,7 +268,7 @@ impl App {
         }
     }
 
-    /// **`ctrl-]` from the composer side**: back into an open pane, or open one on the newest
+    /// `ctrl-]` from the composer side: back into an open pane, or open one on the newest
     /// change - and when this conversation has changed nothing, say so rather than nothing.
     pub(crate) fn editor_chord(&mut self) -> Option<Action> {
         if let Some(p) = self.edit_pane.as_mut() {
@@ -300,9 +300,8 @@ impl App {
             && self.diff_popup.is_none()
             && self.payload_sel.is_none()
             && !self.pane_open()
-            // **No surface on the stack**, open or covered - every one of them reads `End` as its
-            // own key, and this used to be a list of eleven fields that the standing pane was
-            // missing from.
+            // No surface on the stack, open or covered - every one of them reads `End` as its
+            // own key, so the standing pane is covered without a hand-kept list of fields.
             && self.surfaces.is_empty()
     }
 
@@ -334,7 +333,7 @@ impl App {
         pane.dirty = true;
     }
 
-    /// **The newest file this conversation changed**, for `ctrl-]`: the live turn's finished
+    /// The newest file this conversation changed, for `ctrl-]`: the live turn's finished
     /// calls first (their rows may not have landed yet), then the rows, newest first.
     pub(crate) fn newest_change(&self) -> Option<FileRef> {
         let live = self.turn.as_ref().and_then(|t| {
@@ -354,7 +353,7 @@ impl App {
         })
     }
 
-    /// **The place row `k` is about**, when it is a finished edit or write whose change this
+    /// The place row `k` is about, when it is a finished edit or write whose change this
     /// head holds - from the row itself, or from what this head watched the call do.
     pub(crate) fn change_of_row(&self, k: usize) -> Option<FileRef> {
         let it = self.items.get(k)?;
@@ -373,7 +372,7 @@ impl App {
     /// call's own row performs once it lands, because a click that answers nothing reads as a head
     /// that stopped listening. A call that has not returned has no body, so the running case says so.
     pub(crate) fn open_call(&mut self, call_id: &str) {
-        // **The call, copied out** - the frame's record names it by id, and everything below
+        // The call, copied out - the frame's record names it by id, and everything below
         // writes to the head.
         let (name, state) = match self
             .turn
@@ -410,7 +409,7 @@ impl App {
         }
     }
 
-    /// **How long the head's loop may wait for input** before rano wants another tick - `None`
+    /// How long the head's loop may wait for input before rano wants another tick - `None`
     /// with no pane on the screen, when the head's own pace is the only one.
     pub fn editor_wait(&self) -> Option<Duration> {
         self.edit_pane
@@ -419,7 +418,7 @@ impl App {
             .map(|p| p.ed.next_wakeup())
     }
 
-    /// **rano's work between events**, once a pass of the head's loop and before the frame  -
+    /// rano's work between events, once a pass of the head's loop and before the frame  -
     /// rano's own rule: a host that draws must tick first. Then whatever rano decided in the
     /// meantime: a send to take, an exit to honour.
     pub fn editor_tick(&mut self, now: Instant) {
@@ -471,7 +470,7 @@ impl App {
                 }
             }
             match key_of(e) {
-                // **The crossing chord acts at once**, so the keys after it in the same read go
+                // The crossing chord acts at once, so the keys after it in the same read go
                 // where it sent the keyboard rather than where the keyboard was.
                 Some(Key::CtrlBracket) => {
                     let _ = self.key(Key::CtrlBracket);
@@ -497,7 +496,7 @@ impl App {
         self.after_editor();
     }
 
-    /// **What rano decided, acted on**: an exit closes the pane - and only the pane - and each
+    /// What rano decided, acted on: an exit closes the pane - and only the pane - and each
     /// send lands in the composer.
     fn after_editor(&mut self) {
         let Some(p) = self.edit_pane.as_mut() else {

@@ -1,4 +1,4 @@
-//! **A round's counts are drawn after its reply** - the operator: *"we still have problems with
+//! A round's counts are drawn after its reply - the operator: *"we still have problems with
 //! [n tools called, m thinking lines] they often appear above the current reply or backfilled"*,
 //! and their ruling on where they go: *all of it after the reply*.
 
@@ -81,7 +81,7 @@ fn line_of(screen: &[String], needle: &str) -> usize {
         .unwrap_or_else(|| panic!("{needle:?} not on screen:\n{}", screen.join("\n")))
 }
 
-/// **Work after the model's reply is drawn after it, and the marker above keeps its own count.**
+/// Work after the model's reply is drawn after it, and the marker above keeps its own count.
 #[test]
 fn work_after_a_reply_is_drawn_below_it_and_not_folded_into_the_run_above() {
     let mut a = conversation();
@@ -112,7 +112,7 @@ fn work_after_a_reply_is_drawn_below_it_and_not_folded_into_the_run_above() {
     assert_ne!(live, above, "and not folded into the marker above:\n{text}");
 }
 
-/// **While the reply is still streaming, the counts sit below it.**
+/// While the reply is still streaming, the counts sit below it.
 #[test]
 fn the_live_counts_sit_below_the_reply_that_is_streaming() {
     let mut a = conversation();

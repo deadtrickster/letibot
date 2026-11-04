@@ -191,7 +191,7 @@ fn a_warning_no_card_reads_is_one_clickable_line() {
     let (y, _) = a.card_rows[0];
     a.key(Key::Click { x: 10, y: y as u16 });
     assert!(holds(&popup_text(&mut a), "Runs in flight are ended."));
-    // The title says what it is, in its register — not `notice` in red.
+    // The title says what it is, in its register - not `notice` in red.
     let top = a.screen(160, 30).join("\n");
     assert!(
         top.contains("daemon_stopping · `deadtrickster` asked"),
@@ -217,7 +217,7 @@ fn a_narrow_screen_cuts_the_facts_and_keeps_the_hint() {
     }
 }
 
-/// **The hint outlives the facts at every width a terminal comes in.** A reader who cannot see
+/// The hint outlives the facts at every width a terminal comes in. A reader who cannot see
 /// `click for details` never learns the row opens, so the facts give way first and the hint goes
 /// last - only when not even a stub of them fits beside it.
 #[test]
@@ -275,7 +275,7 @@ fn alt_n_with_no_notice_says_so() {
     );
 }
 
-/// **A plan check is ONE notice, whatever it carries** - a row per item was the worst wall the
+/// A plan check is ONE notice, whatever it carries - a row per item was the worst wall the
 /// review measured, and a stored check from before the daemon named one item at a time still has
 /// its whole list in it.
 #[test]
@@ -305,8 +305,8 @@ fn a_plan_check_with_many_open_items_is_one_line() {
     assert_eq!(newest_notice(&mut a), text);
 }
 
-/// **Whose the row is, read off the row itself** - the bullet the daemon writes ends `— yours`,
-/// `— the operator's`, `— the merge queue's` or `— Parent <id>`, and the advice under it is prose
+/// Whose the row is, read off the row itself - the bullet the daemon writes ends ` -  yours`,
+/// ` -  the operator's`, ` -  the merge queue's` or ` -  Parent <id>`, and the advice under it is prose
 /// that changed wording once already.
 #[test]
 fn a_plan_check_names_the_rows_owner() {

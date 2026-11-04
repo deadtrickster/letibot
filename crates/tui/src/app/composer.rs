@@ -1,4 +1,4 @@
-//! **The composer's behaviour**: sending what was typed, completing a slash verb, a path or a
+//! The composer's behaviour: sending what was typed, completing a slash verb, a path or a
 //! shell command, and the prompt history Up recalls.
 
 use super::*;
@@ -105,8 +105,8 @@ impl App {
         if self.focused_surface() == Some(Surface::Rooms) {
             return self.rooms_say(&text);
         }
-        // The mode picker takes the line the same way — a row number or a name
-        // prefix — for the same reason: while the list is on the screen a bare
+        // The mode picker takes the line the same way - a row number or a name
+        // prefix - for the same reason: while the list is on the screen a bare
         // `2` means the second mode and cannot sensibly mean anything else.
         if self.pick == Some(Pick::Mode) {
             return self.pick_mode(text.trim());
@@ -200,7 +200,7 @@ impl App {
             self.redraw = true;
             return None;
         }
-        // **The model is checked before the words leave** — see `app::reach`. Held there, not
+        // The model is checked before the words leave - see `app::reach`. Held there, not
         // here: a message the chooser does not take comes back to this field.
         if self.hold_for_model(&text) {
             return None;
@@ -223,7 +223,7 @@ impl App {
         } else {
             self.pending_prompts.push(text.clone());
         }
-        // **The chips went with it.** The composer is empty again — the editor took its buffer —
+        // The chips went with it. The composer is empty again - the editor took its buffer -
         // so a chip left in this list would be a chip with no words to be found in, and the next
         // message would carry it a second time.
         self.chips.clear();
@@ -250,14 +250,14 @@ impl App {
             .map(|(n, h)| ((*n).to_string(), (*h).to_string()))
             .collect();
         for v in self.daemon_verbs() {
-            // **A verb both halves reach is offered once, with the head's hint.** `/jobs`
+            // A verb both halves reach is offered once, with the head's hint. `/jobs`
             // is the live case: the head opens the pane and the daemon reads a job's
             // output, and the head's arm wins. Drawn twice it would read as two verbs.
             if !out.iter().any(|(n, _)| *n == v) {
                 out.push((v, String::new()));
             }
         }
-        // **And the door's, hyphenated** — R34. Offered from the daemon's own row, so this
+        // And the door's, hyphenated. Offered from the daemon's own row, so this
         // head still holds no schema: it knows a name, a field and a kind, and the verb it
         // offers is a textual transform of the name rather than a second list.
         for t in self.door_tools() {
@@ -266,8 +266,8 @@ impl App {
                 continue;
             }
             let hint = if t.field.is_empty() {
-                // **Said on the row rather than left to a refusal**, which is R31's own
-                // requirement: *the head says which kind it is refusing* rather than
+                // Said on the row rather than left to a refusal: the head says which kind it
+                // is refusing rather than
                 // leaving the operator to guess which tools are which.
                 "JSON arguments".to_string()
             } else {
@@ -278,7 +278,7 @@ impl App {
         out
     }
 
-    /// **The door's tools, as the daemon described them** — R31.
+    /// The door's tools, as the daemon described them.
     pub(crate) fn door_tools(&self) -> Vec<letibot_sessionlog::HeadRunTool> {
         self.settings
             .iter()
@@ -343,7 +343,7 @@ impl App {
     pub(crate) fn complete_shell(&mut self) {
         let text = self.editor.text().to_string();
         // The one recogniser: a `!` line is what the sessionlog crate says it is,
-        // and a bang with no command after it is not one — so `!` alone does
+        // and a bang with no command after it is not one - so `!` alone does
         // nothing, the same refusal the send makes.
         if letibot_sessionlog::operator_shell_command(&text).is_none() {
             return;
@@ -612,7 +612,7 @@ impl App {
 /// What a Tab on a `!` line's last word found in the filesystem.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PathCompletion {
-    /// One match: the whole line with the word completed — `/` after a directory, a space
+    /// One match: the whole line with the word completed - `/` after a directory, a space
     /// after a file, so the next word can be typed at once.
     Line(String),
     /// Several: the line with the word extended to what they share (maybe unchanged), and

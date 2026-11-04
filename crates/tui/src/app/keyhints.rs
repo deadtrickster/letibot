@@ -438,7 +438,7 @@ mod tests {
                 ("/help".into(), b"/help\r".to_vec()),
             ]
         );
-        // The diff popup's edge, in the bar's casing (R90.28): every key still its own button.
+        // The diff popup's edge, in the bar's casing: every key still its own button.
         let keys: Vec<Vec<u8>> =
             hints("  ╰─ esc closes · ↑↓ pgup/pgdn home/end · ctrl-] edits it ─╯")
                 .into_iter()

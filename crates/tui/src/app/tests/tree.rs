@@ -101,7 +101,7 @@ fn row_of(a: &App, id: &str) -> usize {
         .unwrap_or_else(|| panic!("`{id}` is drawn: {:?}", rows(a)))
 }
 
-/// **A project's line per workspace root** - two checkouts, two lines, and no line for the folder
+/// A project's line per workspace root - two checkouts, two lines, and no line for the folder
 /// above them.
 #[test]
 fn a_project_line_per_workspace_root() {
@@ -111,7 +111,7 @@ fn a_project_line_per_workspace_root() {
         vec!["letibot (6)", "rano (1)"],
         "one line per project, and the count is every session it holds"
     );
-    // **By NAME, not by path** - the operator's own words, and the reason a project's line is
+    // By NAME, not by path - the operator's own words, and the reason a project's line is
     // readable at 80 columns.
     let screen = a.screen(100, 48).join("\n");
     assert!(screen.contains("letibot (6)"), "{screen}");
@@ -121,7 +121,7 @@ fn a_project_line_per_workspace_root() {
     );
 }
 
-/// **A top-level session is drawn under its project**, one step in.
+/// A top-level session is drawn under its project, one step in.
 #[test]
 fn a_top_level_session_is_drawn_under_its_project() {
     let a = a_daemon_with_two_projects();
@@ -144,7 +144,7 @@ fn a_top_level_session_is_drawn_under_its_project() {
     assert_eq!(rows(&a), vec!["[letibot (1)]", "make me a landing page"]);
 }
 
-/// **A child sits under its parent, and a grandchild under the child** - the tree nests, and it
+/// A child sits under its parent, and a grandchild under the child - the tree nests, and it
 /// nests only as far as the operator has opened it.
 #[test]
 fn a_child_sits_under_its_parent_and_a_grandchild_under_it() {
@@ -177,7 +177,7 @@ fn a_child_sits_under_its_parent_and_a_grandchild_under_it() {
     );
 }
 
-/// **A `task_start` child's row names the worktree it runs in** - the one fact that tells two
+/// A `task_start` child's row names the worktree it runs in - the one fact that tells two
 /// children of one parent apart, and it is the row's own second line.
 #[test]
 fn a_task_starts_child_names_the_worktree_it_runs_in() {
@@ -190,7 +190,7 @@ fn a_task_starts_child_names_the_worktree_it_runs_in() {
     );
 }
 
-/// **A worktree is a place a project keeps, not a project** - a session whose workspace is a
+/// A worktree is a place a project keeps, not a project - a session whose workspace is a
 /// worktree is drawn under the project that owns it.
 #[test]
 fn a_worktree_groups_under_the_project_that_owns_it() {
@@ -254,7 +254,7 @@ fn the_gatekeeper_and_the_reviewers_are_under_the_projects_system_branch() {
         Some(false),
         "`system` starts closed — a head in an ordinary conversation is not standing in it"
     );
-    // **The rows themselves**: opened, and each in its own group and nowhere else.
+    // The rows themselves: opened, and each in its own group and nowhere else.
     a.set_row_fold(&format!("{LETIBOT}/system"), true);
     for group in ["gatekeepers", "reviewers", "keepers"] {
         a.set_row_fold(&format!("{LETIBOT}/system/{group}"), true);
@@ -282,7 +282,7 @@ fn the_gatekeeper_and_the_reviewers_are_under_the_projects_system_branch() {
             "and the row is drawn ONCE: {drawn:?}"
         );
     }
-    // **The reviewer's workspace would have made a project of its own** - a `/tmp` review clone  -
+    // The reviewer's workspace would have made a project of its own - a `/tmp` review clone  -
     // and it is not one: the chain it hangs from says where it belongs.
     assert!(
         !projects(&a).iter().any(|p| p.contains("review-")),
@@ -299,7 +299,7 @@ fn the_gatekeeper_and_the_reviewers_are_under_the_projects_system_branch() {
     );
 }
 
-/// **The empty case**: one project, one session, no children - and no `system` line, because a
+/// The empty case: one project, one session, no children - and no `system` line, because a
 /// branch with no rows is a fold that teaches a reader to skip folds.
 #[test]
 fn one_project_one_session_and_no_system_line() {
@@ -332,7 +332,7 @@ fn the_keepers_brief_and_the_trees_mark_are_one_string() {
     );
 }
 
-/// **The fold glyph and the state work at every level** - a project, a session, `system` and a
+/// The fold glyph and the state work at every level - a project, a session, `system` and a
 /// group, each opened by the same key and drawn by the same record.
 #[test]
 fn the_fold_works_at_every_level() {
@@ -384,7 +384,7 @@ fn the_fold_works_at_every_level() {
     );
 }
 
-/// **A click selects what it points at, and acts on a node's line** - the row under the pointer,
+/// A click selects what it points at, and acts on a node's line - the row under the pointer,
 /// from the same enumeration the drawing wrote.
 #[test]
 fn a_click_selects_the_row_it_points_at() {
@@ -420,7 +420,7 @@ fn a_click_selects_the_row_it_points_at() {
     );
 }
 
-/// **Enter still switches to the session under the cursor**, at any depth - the tree changed where
+/// Enter still switches to the session under the cursor, at any depth - the tree changed where
 /// a row is drawn, not what Enter does on it.
 #[test]
 fn enter_still_switches_to_the_row_under_the_cursor() {
@@ -430,7 +430,7 @@ fn enter_still_switches_to_the_row_under_the_cursor() {
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
 }
 
-/// **A number is the n-th SESSION, not the n-th row** - a project's line and every group's line
+/// A number is the n-th SESSION, not the n-th row - a project's line and every group's line
 /// take none, because a number is somewhere to go.
 #[test]
 fn a_number_is_the_nth_session_and_a_nodes_line_has_none() {
@@ -469,7 +469,7 @@ fn a_number_is_the_nth_session_and_a_nodes_line_has_none() {
     );
 }
 
-/// **The bar says what Enter does on the row under the cursor** - `switches` on a session, and the
+/// The bar says what Enter does on the row under the cursor - `switches` on a session, and the
 /// fold's own word on a node's line.
 #[test]
 fn the_bar_follows_the_cursor_onto_a_nodes_line() {
@@ -522,7 +522,7 @@ fn every_project_line_is_drawn_and_the_others_are_shut() {
         ],
         "the project the head is in draws its rows; the other is a line"
     );
-    // **And it opens on its own**, by the person's key, and draws only its own rows.
+    // And it opens on its own, by the person's key, and draws only its own rows.
     a.set_row_fold(RANO, true);
     assert!(
         rows(&a).contains(&"the rano rewrite".to_string()),
@@ -536,7 +536,7 @@ fn every_project_line_is_drawn_and_the_others_are_shut() {
     );
 }
 
-/// **The two exceptions a closed default must keep**, in the head's drawing: the project holding
+/// The two exceptions a closed default must keep, in the head's drawing: the project holding
 /// the session this head is in, and the chain down to it - *a list that hides where you are cannot
 /// answer where am I*.
 #[test]
@@ -569,7 +569,7 @@ fn the_project_holding_here_is_open_and_the_chain_to_it_is_drawn() {
     );
 }
 
-/// **Enter on a project's line opens and closes it** - the key the bar names (`enter folds it
+/// Enter on a project's line opens and closes it - the key the bar names (`enter folds it
 /// away`), which is the gesture a closed default exists to be undone by.
 #[test]
 fn enter_on_a_project_line_opens_and_closes_it() {
@@ -592,7 +592,7 @@ fn enter_on_a_project_line_opens_and_closes_it() {
     );
 }
 
-/// **Two projects with the same name are told apart by their paths** - the one case the name
+/// Two projects with the same name are told apart by their paths - the one case the name
 /// cannot do the job.
 #[test]
 fn two_projects_with_one_name_say_where_they_are() {
@@ -614,7 +614,7 @@ fn two_projects_with_one_name_say_where_they_are() {
     );
 }
 
-/// **A session whose parent this daemon does not hold is a root of its project's tree** - an
+/// A session whose parent this daemon does not hold is a root of its project's tree - an
 /// orphan is not a subagent, and the row is still reachable.
 #[test]
 fn an_orphan_is_a_root_of_its_projects_tree() {

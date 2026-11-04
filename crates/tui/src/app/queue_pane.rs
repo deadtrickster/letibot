@@ -43,7 +43,7 @@ fn quantised(now: u64) -> u64 {
 /// The feed's name in `plugin.toml` and in `Input::feeds` - one word, both sides.
 pub(crate) const FEED: Feed = Feed::Queue;
 
-/// **What the feed is called in a sentence** - a layer that failed is told which pane it was
+/// What the feed is called in a sentence - a layer that failed is told which pane it was
 /// drawing, and *the queue* is the word the operator uses.
 const PANE: &str = "the queue";
 
@@ -68,9 +68,9 @@ impl App {
             .saturating_add(self.now_ms.saturating_sub(self.queues_got_ms))
     }
 
-    /// **The queue, as a plugin reads it** - see this module's doc for what is here and why.
+    /// The queue, as a plugin reads it - see this module's doc for what is here and why.
     pub(crate) fn queue_feed(&self) -> Value {
-        // **The clock is quantised** - see [`CLOCK_QUANTUM_MS`]: the input is the host's cache key,
+        // The clock is quantised - see [`CLOCK_QUANTUM_MS`]: the input is the host's cache key,
         // so a millisecond clock is a wasm call per frame for a number no row can draw.
         let now = quantised(self.queue_plugin_now());
         let q = &self.queues;
@@ -79,7 +79,7 @@ impl App {
         let serving_owner = |owner: &str, repo: &str| {
             !owner.is_empty() && serving(repo).is_some_and(|l| l.owner == owner)
         };
-        // **A row's verbs, from the daemon's own rule** - which of them would move it, and for each
+        // A row's verbs, from the daemon's own rule - which of them would move it, and for each
         // that would not, the sentence saying why. The plugin prints the ones that act.
         let verbs_of = |row: &Selected<'_>| -> Value {
             Value::Array(
@@ -93,7 +93,7 @@ impl App {
             )
         };
         let running = gates_running(q, now);
-        // **The entry being read whole travels whole**; a finished row's long fields are cut,
+        // The entry being read whole travels whole; a finished row's long fields are cut,
         // because the store never deletes a row and the guest's input region is one mebibyte.
         let open = self.queue_open.clone().unwrap_or_default();
         let cut = |text: &str, whole: bool| -> String {
@@ -167,7 +167,7 @@ impl App {
                 "pushed": m.pushed,
                 "evidence": cut(&m.evidence, whole),
                 "fixes": m.fixes.as_deref().map(|f| cut(f, whole)),
-                // **What a queued landing waits for** - the gate in flight in its repository,
+                // What a queued landing waits for - the gate in flight in its repository,
                 // already in the pane's words (`gate running on 1f2a3b4 for 2m`).
                 "waits_on": (m.state == "queued")
                     .then(|| running.get(m.repository.as_str()).cloned())
@@ -177,7 +177,7 @@ impl App {
                     .iter()
                     .map(|s| step_of(s, whole))
                     .collect::<Vec<Value>>(),
-                // **The step its gate is running right now**, with the tail and how long since it
+                // The step its gate is running right now, with the tail and how long since it
                 // last changed - the facts that tell whether a `gating` row is working or stuck
                 // without opening a file on the daemon's box.
                 "running_gate": m.running_gate.as_ref().map(|g| {
@@ -199,7 +199,7 @@ impl App {
             .filter(|m| merge_open(&m.state))
             .map(merge_of)
             .collect();
-        // **The finished rows, newest first, within the budget.** The counts still say the true
+        // The finished rows, newest first, within the budget. The counts still say the true
         // numbers, so the layer's folded line says `the last N` rather than pretending.
         let mut done: Vec<&QueueReview> = q
             .reviews
@@ -279,16 +279,16 @@ impl App {
             .filter(|l| l["stale"].as_bool() == Some(true))
             .count();
         json!({
-            // **The host's clock**, so a plugin that wants to measure an age can - and so the
+            // The host's clock, so a plugin that wants to measure an age can - and so the
             // `*_ms` fields above are one subtraction and not a guess. A guest has no clock.
             "now_ms": now,
             "at_ms": q.at_ms,
-            // **Whose queues these are** - the words the pane's own header uses, so a project's
+            // Whose queues these are - the words the pane's own header uses, so a project's
             // layer can reword the scope without knowing how the head resolved it.
             "scope": {
                 "kind": self.queue_scope.kind(),
                 "words": self.queue_scope_words(),
-                // **Whether a row must name its repository** - the host's answer, because the
+                // Whether a row must name its repository - the host's answer, because the
                 // question is *how many are in scope* and the head is what resolved the scope.
                 // A plugin reading this instead of the words is the whole point of the field.
                 "several": several_of(&scope),
@@ -297,7 +297,7 @@ impl App {
                 }).unwrap_or_default(),
             },
             "view": self.queue_view.word(),
-            // **The entry whose detail the overlay is reading**, so the layer draws that row even
+            // The entry whose detail the overlay is reading, so the layer draws that row even
             // when it has left the live list - an overlay must not vanish under the row it reads.
             "open": open,
             // Which row the cursor is on, by the entry id it names, so a row can print its id and sha
@@ -312,7 +312,7 @@ impl App {
             "targets": targets,
             "leases": leases,
             "recent": recent,
-            // **The counters the pane's tab strip carries**, so a plugin's header says the same
+            // The counters the pane's tab strip carries, so a plugin's header says the same
             // numbers without counting rows itself - and `finished` is the count the parent asked
             // for, because the finished rows are the ones that must not compete with live work.
             "counts": {
@@ -331,7 +331,7 @@ impl App {
         })
     }
 
-    /// **The scope, in the words the pane's own header uses** - `this session's repository  -
+    /// The scope, in the words the pane's own header uses - `this session's repository  -
     /// letibot`, `every repository`, `/path - named`. One string, so a plugin draws it rather than
     /// re-deriving it from `kind` and a path.
     fn queue_scope_words(&self) -> String {
@@ -403,7 +403,7 @@ impl App {
         }
     }
 
-    /// **What the queue's layer is asked with** - the one feed it declared, the fold state of the
+    /// What the queue's layer is asked with - the one feed it declared, the fold state of the
     /// rows the person has opened, and the size of the pane it will be drawn in.
     fn queue_input(&self, state: Option<Value>) -> Input {
         let mut feeds = std::collections::BTreeMap::new();
@@ -423,12 +423,12 @@ impl App {
         }
     }
 
-    /// **The plugin's answer, drawn** - the view through the head's one plugin-pane renderer, with
+    /// The plugin's answer, drawn - the view through the head's one plugin-pane renderer, with
     /// the rows its stops landed on recorded so the arrows, Enter and a click read what was drawn.
     pub(crate) fn queue_plugin_lines(&mut self, w: usize) -> Option<Vec<String>> {
         let view = self.queue_plugin_view()?;
         let screen = crate::ui::panes::plugin::Screen::Overview;
-        // **The stops are the view's**, so the arrows walk what the plugin drew and `queue_sel`
+        // The stops are the view's, so the arrows walk what the plugin drew and `queue_sel`
         // means one thing to the cursor, to Enter and to a click.
         self.queue_plugin_stops = crate::ui::panes::plugin::stops(&view, screen).len();
         // The cursor cannot be left past the end of the list it is on: folding the history away
@@ -476,10 +476,9 @@ impl App {
             .then(|| self.queue_folds.get(&id).copied().unwrap_or(false))
     }
 
-    /// **Would this key move the row under the cursor?** The bar asks it for every verb, so the keys
-    /// it names are the ones that would act on the row it is under: `a` is not offered over a landing
-    /// (approved already) and `o` only over a row that has a reviewer. A head with no row drawn yet
-    /// answers yes, because a bar that hid everything before the first frame would say nothing.
+    /// Would this key move the row under the cursor? The bar asks it per verb: `a` is not offered over a landing
+    /// (approved already), `o` only over a row with a reviewer. A head with no row drawn yet answers yes, since a
+    /// bar that hid everything before the first frame would say nothing.
     pub(crate) fn queue_key_moves(&self, act: crate::app::keys::bindings::Act) -> bool {
         use crate::app::keys::bindings::Act;
         let verb = match act {
@@ -524,7 +523,7 @@ impl App {
         let Some((id, Some(Act::Fold { .. }))) = self.queue_plugin_row() else {
             return false;
         };
-        // **The act's own `fold` is not the direction.** `Act::fold()` carries `true` because the
+        // The act's own `fold` is not the direction. `Act::fold()` carries `true` because the
         // wire needs a bool; what the key means is *toggle*, the same way the session list's Enter
         // reads it (`sessions_pane::perform`).
         let open = !self.queue_folds.get(&id).copied().unwrap_or(false);
@@ -569,7 +568,7 @@ fn gate_of(
     })
 }
 
-/// **One gate step, in the words a person reads** - `"timed out"`, not `timed_out`; the outcome's
+/// One gate step, in the words a person reads - `"timed out"`, not `timed_out`; the outcome's
 /// own word rather than the Rust enum's serde spelling. `whole` is whether the row is live or
 /// being read: a finished row's output is cut, so the history cannot outgrow the guest's region.
 fn step_of(step: &MergeGateStep, whole: bool) -> Value {

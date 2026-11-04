@@ -105,9 +105,9 @@ fn reseat_now_sends_the_bare_reseat_exactly_as_typing_it_would() {
         "a reseat already on its way is not sent again"
     );
 
-    // **The digit is a move, as on every card** (R90.6): `1` typed as the first character of a
+    // The digit is a move, as on every card: `1` typed as the first character of a
     // line sent `/reseat` and forked the conversation, so a row number now marks the row and
-    // Enter answers it - the rule R90.2 put on the decision card, applied to this one.
+    // Enter answers it - the rule of the decision card, applied to this one.
     let (mut a, _hub) = stale();
     assert_eq!(a.key(Key::Char('1')), None, "the digit marks");
     assert_eq!(a.key(Key::Enter), Some(Action::Reseat { summarise: false }));
@@ -260,7 +260,7 @@ fn a_refused_reseat_lets_the_strip_send_again() {
     assert_eq!(a.key(Key::AltR), Some(Action::Reseat { summarise: false }));
 }
 
-/// **A reattach after a restart**: the `Hello` forgets the card, and the daemon's `prefix_stale`
+/// A reattach after a restart: the `Hello` forgets the card, and the daemon's `prefix_stale`
 /// right after it raises it again, open - or, when the restarted daemon found the prompt
 /// current, nothing does and the card is gone.
 #[test]
@@ -340,7 +340,7 @@ fn a_reseat_too_big_to_carry_verbatim_offers_one_with_a_summary() {
     assert_eq!(a.key(Key::AltR), Some(Action::Reseat { summarise: true }));
 }
 
-/// **R90.1: a pane's keys are the pane's.** With the card up, ctrl-t then Enter on a row, `1` in
+/// A pane's keys are the pane's. With the card up, ctrl-t then Enter on a row, `1` in
 /// the session picker, Tab and Esc in todos all acted on the card - Enter and `1` sent `/reseat`.
 /// While a pane has the keyboard the card is the strip, and it is back when the pane closes.
 #[test]
@@ -390,7 +390,7 @@ fn an_open_pane_takes_the_slot_and_its_keys_never_reach_the_card() {
     ));
 }
 
-/// **The ctrl-v window is a reading surface too** (R90.1): with it open the card is the strip, so
+/// The ctrl-v window is a reading surface too: with it open the card is the strip, so
 /// the arrows page the result and Enter sends rather than reseating, which is what the bar under
 /// the window promises.
 #[test]
@@ -435,7 +435,7 @@ fn strip(a: &mut App) -> String {
         .to_string()
 }
 
-/// **The strip never offers a key that would refuse.** `alt-p` answers "the card waits behind what
+/// The strip never offers a key that would refuse. `alt-p` answers "the card waits behind what
 /// is open now" whenever something holds the slot, so while it does the strip names only `alt-r`,
 /// which is handled wherever the keyboard is. With nothing in front of the card it names both.
 #[test]
@@ -508,7 +508,7 @@ fn a_digit_on_the_reseat_card_marks_the_row_and_reseats_nothing() {
     );
 }
 
-/// **R90.22: the card that says "pgdn scrolls" scrolls on PgDn** - `scroll_card` asked for an open
+/// The card that says "pgdn scrolls" scrolls on PgDn - `scroll_card` asked for an open
 /// decision, so the page keys scrolled the transcript under the reseat card instead.
 #[test]
 fn the_page_keys_scroll_the_reseat_card_that_says_they_do() {
@@ -522,7 +522,7 @@ fn the_page_keys_scroll_the_reseat_card_that_says_they_do() {
     assert!(after.contains("pgup"), "{after}");
 }
 
-/// **R90.31: the reseat rows wrap rather than being cut** - the 79-character summarise row lost
+/// The reseat rows wrap rather than being cut - the 79-character summarise row lost
 /// its reason on an ordinary terminal; a click on its second line still chooses it.
 #[test]
 fn the_reseat_rows_wrap_on_a_narrow_screen() {

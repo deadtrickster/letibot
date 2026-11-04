@@ -1,4 +1,4 @@
-//! **The daemon's other frames**: the lists it answers with (sessions, jobs, the merge queue,
+//! The daemon's other frames: the lists it answers with (sessions, jobs, the merge queue,
 //! shell suggestions, todos, settings), its replies (accepted, rejected, a resync, a row fetched,
 //! a peek, a diagnostic, a secret, bye), and the frame that carries an event.
 
@@ -64,7 +64,7 @@ impl App {
         }
     }
 
-    /// **A list the daemon answered with**: sessions, jobs, the merge queue, shell suggestions, todos, settings. One family of [`App::apply`]'s arms, moved here
+    /// A list the daemon answered with: sessions, jobs, the merge queue, shell suggestions, todos, settings. One family of [`App::apply`]'s arms, moved here
     /// verbatim; `apply` hands it only these frames.
     pub(crate) fn on_lists(&mut self, frame: ServerFrame) -> Disposition {
         match frame {
@@ -73,7 +73,7 @@ impl App {
                 current,
                 created,
             } => {
-                // Kept whole, like the `Hello` arm above — see it for why the filter is gone.
+                // Kept whole, like the `Hello` arm above - see it for why the filter is gone.
                 self.sessions = sessions;
                 // A LIST DOES NOT SEAT A HEAD: `current` is where the daemon's socket is and
                 // `self.session_id` is the session this head is DRAWING. When they disagree the ROWS
@@ -87,7 +87,7 @@ impl App {
                 self.fold_subagents();
                 match created {
                     // A session was made *because this head asked*. Going there is
-                    // what was meant — `/new` that leaves you where you were is a
+                    // what was meant - `/new` that leaves you where you were is a
                     // command whose effect is invisible.
                     Some(id) if self.want_new_session => {
                         self.want_new_session = false;
@@ -113,7 +113,7 @@ impl App {
                 if session_id == self.session_id {
                     self.jobs = jobs;
                     self.jobs_sel = self.jobs_sel.min(self.job_stops().len().saturating_sub(1));
-                    // **And the monitors, from the same answer** — what this session is watching.
+                    // And the monitors, from the same answer - what this session is watching.
                     self.monitors = monitors;
                     self.monitors_sel = self
                         .monitors_sel
@@ -134,7 +134,7 @@ impl App {
                 }
                 Disposition::Control
             }
-            // **The skills pane's rows.** Names, one line each and where each was found — the
+            // The skills pane's rows. Names, one line each and where each was found - the
             // index the prompt carries, which is what makes the pane and the prompt one list.
             ServerFrame::Skills { session_id, skills } => {
                 if session_id == self.session_id {
@@ -144,14 +144,14 @@ impl App {
                 }
                 Disposition::Control
             }
-            // **Both queues, whole** (R61) — the daemon's one snapshot, kept as it came, and
-            // cut to the pane's scope (R92 item 5): the daemon names the asking session's
+            // Both queues, whole - the daemon's one snapshot, kept as it came, and
+            // cut to the pane's scope: the daemon names the asking session's
             // repository, and the pane and the edge are about that one unless told otherwise.
             ServerFrame::Queues { snapshot } => {
                 self.queues_all = snapshot;
                 self.queues_got_ms = self.now_ms.max(1);
                 self.rescope_queues();
-                // **The one thing a snapshot cannot say about itself** — whether a running step's
+                // The one thing a snapshot cannot say about itself - whether a running step's
                 // output has moved since the last one (see `App::track_gate_tails`).
                 self.track_gate_tails();
                 self.redraw = true;
@@ -179,7 +179,7 @@ impl App {
                     // attach time that nothing refreshes.
                     self.asks_board = Some(self.session_id.clone());
                     // The board is the truth once it arrives: a row answered from here is either
-                    // off it or — the answer refused — still asking, and asked again.
+                    // off it or - the answer refused - still asking, and asked again.
                     self.todo_answered.clear();
                     self.prune_todo_asks();
                     // A waiting seed runs here too: this is the REPLY to the `ListTodos` the attach
@@ -244,11 +244,11 @@ impl App {
         }
     }
 
-    /// **A reply**: a diagnostic, a fetched row, a peek, a secret, a resync, accepted, rejected, bye. One family of [`App::apply`]'s arms, moved here
+    /// A reply: a diagnostic, a fetched row, a peek, a secret, a resync, accepted, rejected, bye. One family of [`App::apply`]'s arms, moved here
     /// verbatim; `apply` hands it only these frames.
     pub(crate) fn on_replies(&mut self, frame: ServerFrame) -> Disposition {
         match frame {
-            // R11's locator, answered: the bytes go to the pane that asked, on the channel `Peeked` and
+            // The locator, answered: the bytes go to the pane that asked, on the channel `Peeked` and
             // `JobOutput` use - a pane, not the conversation, because a brief scrolled past in the chat
             // is one nobody finds again. `None` reads as NOT RECORDED, never as empty.
             ServerFrame::Diagnostic {
@@ -322,7 +322,7 @@ impl App {
                 events,
                 snapshot,
             } => {
-                // **A read nobody is waiting for any more is not opened** (R90.17): the surface
+                // A read nobody is waiting for any more is not opened: the surface
                 // that asked was closed meanwhile (`App::forget_surface`), and the output would
                 // land over whatever the operator went on to.
                 if self.sub_out_pending.take().is_none() {
@@ -356,8 +356,8 @@ impl App {
                     spill,
                     dropped,
                 });
-                // **On top of whatever is drawn** — the tree it was read from, or the
-                // conversation for a `/peek` typed with no pane open — so Esc goes back to it.
+                // On top of whatever is drawn - the tree it was read from, or the
+                // conversation for a `/peek` typed with no pane open - so Esc goes back to it.
                 self.push_surface(Surface::SubOut);
                 Disposition::Rendered
             }
@@ -413,7 +413,7 @@ impl App {
                 expected_seq,
                 actual_seq,
             } => {
-                // **A refused page is not a seq disagreement.** The ask is spent and both directions
+                // A refused page is not a seq disagreement. The ask is spent and both directions
                 // go, or the one that was refused is dead until a snapshot; nothing in a `FetchRows`
                 // is a seq, so the daemon's own sentence is the whole notice.
                 if client_request_id.starts_with("fetchrows:") {
@@ -422,7 +422,7 @@ impl App {
                     self.say(&format!("rejected: {reason}"));
                     return Disposition::Control;
                 }
-                // **A refused answer puts its card back** (R90.29): it was closed when the
+                // A refused answer puts its card back: it was closed when the
                 // answer left.
                 self.answer_refused(&client_request_id, &reason);
                 // Both numbers, so the operator can see what they were looking at.
@@ -456,7 +456,7 @@ impl App {
         }
     }
 
-    /// **A frame carrying a session event**, handed on to [`App::event`]. One family of [`App::apply`]'s arms, moved here
+    /// A frame carrying a session event, handed on to [`App::event`]. One family of [`App::apply`]'s arms, moved here
     /// verbatim; `apply` hands it only these frames.
     pub(crate) fn on_event_frame(&mut self, frame: ServerFrame) -> Disposition {
         match frame {
@@ -483,7 +483,7 @@ impl App {
                         ),
                         ts: 0,
                     }));
-                    // **Repaired, and the repair is the daemon's to make.** A resync
+                    // Repaired, and the repair is the daemon's to make. A resync
                     // is the one thing that can put the two back in step, and the head
                     // cannot take a snapshot of a transcript it does not hold.
                     if !self.queued.iter().any(|a| matches!(a, Action::Resync)) {

@@ -91,16 +91,16 @@ fn the_operators_own_ls_payload_is_drawn_in_the_palettes_own_roles() {
     a.key(Key::CtrlV);
     let rows = a.screen(100, 40);
     let frame = rows.join("\n");
-    // The colour arrived - as **this head's** role for `ls`'s `01;34`, built from the palette
+    // The colour arrived - as this head's role for `ls`'s `01;34`, built from the palette
     // rather than spelled as an escape here: a test that knew the sequence would pass on the
     // day the role moved.
     assert!(
         frame.contains(&rano::style::Palette::Colour.open(Role::Subheading)),
         "`ls`'s directory colour must be drawn in the palette's own role: {frame:?}"
     );
-    // And the text is kept, **line for line and column for column**: the visible frame, with
+    // And the text is kept, line for line and column for column: the visible frame, with
     // this head's own sequences taken off, is the payload's own text with nothing in it - no
-    // `[0m`, no `[01;34m`, and no space where a sequence used to be.
+    // `[0m`, no `[01;34m`, and no space where a sequence was.
     let visible = rows.iter().map(|r| seen(r)).collect::<Vec<_>>().join("\n");
     for kept in [
         "total 124",
@@ -113,7 +113,7 @@ fn the_operators_own_ls_payload_is_drawn_in_the_palettes_own_roles() {
             "{kept:?} is not on the glass as text: {visible:?}"
         );
     }
-    // **No sequence body survives as text**, and every escape that does reach the frame is
+    // No sequence body survives as text, and every escape that does reach the frame is
     // one this head chose. The `[` in the paste is the thing being asserted absent.
     for (n, row) in rows.iter().enumerate() {
         assert!(
@@ -347,7 +347,7 @@ fn an_operators_tool_row_is_the_models_row_with_the_persons_own_mark_on_it() {
         "the count, the fold and the body must be the model's, byte for byte"
     );
 
-    // **And with no palette at all** - the pipe, `--replay` and CI case. The provenance is a
+    // And with no palette at all - the pipe, `--replay` and CI case. The provenance is a
     // glyph, so it survives the sequences going away, and nothing else on the row is painted.
     let plain = item_rows(
         false,
@@ -650,7 +650,7 @@ fn no_escape_from_content_this_head_did_not_author_reaches_the_terminal() {
             !shown.iter().any(|l| l.contains('\u{1b}')),
             "the {name} pane emitted an escape with no colour configured"
         );
-        // **And the pane really was on the screen**, or the assertion above is about
+        // And the pane really was on the screen, or the assertion above is about
         // a frame that never drew it - the mistake this loop made first time.
         let flat = shown.join("\n");
         let drawn = match only {
@@ -754,7 +754,7 @@ fn the_plain_palette_emits_no_escapes_and_keeps_the_glyphs() {
     assert!(screen.contains("no such path"), "{screen}");
 }
 
-/// Size tells you what matters before you read a word - by **attribute**, so
+/// Size tells you what matters before you read a word - by attribute, so
 /// it survives a terminal-native theme, and never by a cube colour.
 #[test]
 fn a_big_result_weighs_more_than_a_small_one_and_costs_no_cube_colour() {
@@ -868,7 +868,7 @@ fn the_header_has_no_bar_and_no_emphasis() {
         .iter()
         .find(|l| l.contains("▌") || l.contains("one"))
         .expect("the header is drawn");
-    // **The bar is DELETED, not recoloured** - a grey bar is still a bar and still claims a
+    // The bar is DELETED, not recoloured - a grey bar is still a bar and still claims a
     // person said this. The glyph is what says it; the register only underlines it.
     assert!(
         !head.contains('▌'),
@@ -982,7 +982,7 @@ fn a_declared_local_model_is_ready_without_a_key() {
     );
 }
 
-/// **A light background, once the terminal says so, renders the light palette** - and only
+/// A light background, once the terminal says so, renders the light palette - and only
 /// where the feature is on: an answer the head did not ask for changes nothing.
 #[test]
 fn a_light_background_reply_switches_the_palette() {

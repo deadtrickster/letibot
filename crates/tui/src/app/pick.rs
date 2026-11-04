@@ -42,7 +42,7 @@ impl App {
                 self.switch_to(id)
             }
             0 => {
-                // **A number nothing named is answered as a number** - the list numbers its
+                // A number nothing named is answered as a number - the list numbers its
                 // sessions, so `no session matches "9"` would read like a naming problem rather
                 // than a list that is shorter than what was typed.
                 match numbered {
@@ -251,7 +251,7 @@ impl App {
         }
     }
 
-    /// **Commit the highlighted row.** The four subjects differ only here.
+    /// Commit the highlighted row. The four subjects differ only here.
     pub(crate) fn take_pick(&mut self, name: String) -> Option<Action> {
         match self.pick {
             // The daemon's two: a mode is a protocol command this head already has, a model
@@ -285,7 +285,7 @@ impl App {
                 // the daemon honours, so the header names what answers now rather than what
                 // answered a moment ago.
                 self.queued.push(Action::Settings);
-                // **A cloud row taken because the local model could not be reached** becomes the
+                // A cloud row taken because the local model could not be reached becomes the
                 // default, and the message held for it follows the switch - `app::reach`.
                 if !self.keyless_choices().iter().any(|k| k == &name) {
                     self.took_cloud_row(&name);
@@ -294,7 +294,7 @@ impl App {
                     line: format!("models {name}"),
                 })
             }
-            // **The head's own two are local settings**, so taking one is a write to this
+            // The head's own two are local settings, so taking one is a write to this
             // head's config and not a frame - the same act `/verbosity NAME` and `/diff NAME`
             // perform, through the same function, so a card and a typed word cannot disagree.
             Some(Pick::Verbosity) => {
@@ -361,11 +361,11 @@ pub enum Pick {
     Mode,
     /// What answers this conversation - the daemon's models.
     Model,
-    /// **How much of the stream reaches the transcript** - R37's ladder.
+    /// How much of the stream reaches the transcript.
     Verbosity,
-    /// **How a diff is laid out** - R38's new setting.
+    /// How a diff is laid out.
     Diff,
-    /// **Which repository the header follows**, in a workspace of several - the operator: *"I
+    /// Which repository the header follows, in a workspace of several - the operator: *"I
     /// guess we can make git thing clickable with a popup"*. Opened by a click on the git field
     /// or `/repo`; this head's own setting, and not kept across a restart.
     Repo,
@@ -384,7 +384,7 @@ impl Pick {
     }
 
     /// The settings row the daemon publishes the choices on, or `None` for a setting this
-    /// head owns. **The daemon's lists are read, never kept** - the mistake the `mode` row's
+    /// head owns. The daemon's lists are read, never kept - the mistake the `mode` row's
     /// own comment records.
     pub(crate) fn row_key(self) -> Option<&'static str> {
         match self {
@@ -425,7 +425,7 @@ impl Pick {
                  untouched",
                 "`/default-model NAME` is what new sessions start on · this is not that",
             ],
-            // **The one that surprises people**, and R38 asks for it in as many words: the
+            // The one that surprises people: the
             // ladder is applied to the whole transcript at once, so a rung takes effect on
             // what is already drawn rather than on what comes next.
             Pick::Verbosity => &[
@@ -455,7 +455,7 @@ pub(crate) fn repo_name(p: &std::path::Path) -> String {
 }
 
 impl App {
-    /// **The repo card's rows**: following the work, then each repository with its branch and
+    /// The repo card's rows: following the work, then each repository with its branch and
     /// marks as `git status` reads them - one reading per repository, all at once, when the card
     /// opens (`/repo`); kept in `App::repo_rows` while it is up.
     pub(crate) fn read_repo_rows(&self) -> Vec<(String, String)> {

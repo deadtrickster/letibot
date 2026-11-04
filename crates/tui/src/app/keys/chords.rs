@@ -1,4 +1,4 @@
-//! **The global chords**: the keys that mean the same thing whatever is open.
+//! The global chords: the keys that mean the same thing whatever is open.
 
 use super::*;
 use std::ops::ControlFlow;
@@ -40,7 +40,7 @@ impl App {
                 if self.payload_sel.is_some() {
                     self.payload_sel = None;
                     self.payload_page = 0;
-                    // **And the switch goes with the panel** — `drop_lift` takes both, so a run
+                    // And the switch goes with the panel - `drop_lift` takes both, so a run
                     // this key opened cannot outlive the window that named it. (The two fields
                     // this replaces were cleared here by hand and one of them was missed.)
                     self.drop_lift();
@@ -49,12 +49,12 @@ impl App {
                     // on screen because the run is open.
                     self.invalidate_history();
                 } else if let Some(id) = self.newest_openable() {
-                    // **The window opens at its top, through the one door** — see
+                    // The window opens at its top, through the one door - see
                     // [`App::open_payload_window`]. A new result never inherits the offset of the
                     // one the reader was in.
                     self.open_payload_window(id);
                 }
-                // **Not `refold`.** That is the fold's own: it resets the scroll and
+                // Not `refold`. That is the fold's own: it resets the scroll and
                 // announces the fold state, and neither happened here.
                 self.invalidate_history();
                 self.redraw = true;
@@ -88,11 +88,11 @@ impl App {
                 let _ = self.notes_command("notes", "dismiss all");
                 return ControlFlow::Break(None);
             }
-            // **Ctrl+O: move the running command to the background**, the same action
+            // Ctrl+O: move the running command to the background, the same action
             // `/promote` names. See [`App::promote`] for why the fact it guards is a
             // running CALL and not a running turn.
             Key::CtrlO => return ControlFlow::Break(self.promote()),
-            // **Ctrl+]: to the editor pane** — back into it when it is open, onto the newest
+            // Ctrl+]: to the editor pane - back into it when it is open, onto the newest
             // change when it is not. See [`App::editor_chord`].
             Key::CtrlBracket => return ControlFlow::Break(self.editor_chord()),
             // The wheel and the page keys move what is on the SCREEN: the subagent output view
@@ -109,9 +109,9 @@ impl App {
                 return ControlFlow::Break(None);
             }
             Key::PageUp | Key::PageDown | Key::WheelUp | Key::WheelDown => {
-                // **A page is a screen, not ten lines.** `PageUp` moved by a constant ten,
+                // A page is a screen, not ten lines. `PageUp` moved by a constant ten,
                 // which on a 40-row terminal is a quarter of the page the key is named for
-                // — and on the tail path it compounded with the crawl `scroll_up` fixes.
+                // - and on the tail path it compounded with the crawl `scroll_up` fixes.
                 let (up, by) = match k {
                     Key::PageUp => (true, self.screen_rows.max(1)),
                     Key::PageDown => (false, self.screen_rows.max(1)),
@@ -173,7 +173,7 @@ impl App {
         true
     }
 
-    /// **The focused surface's own scroll**: an output view's tail, nothing for the session
+    /// The focused surface's own scroll: an output view's tail, nothing for the session
     /// picker (it keeps its cursor in view itself), and `pane_scroll` for every pane drawn
     /// through `pane_window`.
     pub(crate) fn scroll_pane(&mut self, up: bool, by: usize) {
@@ -192,7 +192,7 @@ impl App {
         self.redraw = true;
     }
 
-    /// **The conversation's own scroll** — a page key's or a wheel notch's, once nothing in front
+    /// The conversation's own scroll - a page key's or a wheel notch's, once nothing in front
     /// of the conversation took it.
     pub(crate) fn scroll_conversation(&mut self, k: &Key, up: bool, by: usize) {
         if up {

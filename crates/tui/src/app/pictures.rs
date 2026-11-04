@@ -9,13 +9,13 @@ use letibot_transcript::{TranscriptItem, UserPart};
 /// the row, so a click cannot name a picture that is not the one it was drawn for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PictureRef {
-    /// The row that carries it — the only durable name a picture has.
+    /// The row that carries it - the only durable name a picture has.
     pub(crate) item_id: String,
     /// Which image part of that row, so two pictures in one prompt are two pictures.
     pub(crate) part: usize,
     /// The id the bytes were uploaded under (`ui::render::USER_PART` of the key).
     pub(crate) id: u32,
-    /// Pixels, when the header gave them — what the popup's box keeps its aspect from.
+    /// Pixels, when the header gave them - what the popup's box keeps its aspect from.
     pub(crate) px: (Option<u32>, Option<u32>),
     /// The PNG's own size, for the popup's edge.
     pub(crate) bytes: usize,

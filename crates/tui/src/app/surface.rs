@@ -4,7 +4,7 @@
 
 use super::*;
 
-/// **One thing that can hold the conversation's rectangle.** The data a surface shows lives
+/// One thing that can hold the conversation's rectangle. The data a surface shows lives
 /// where it always did (`sub_out`, `job_out`, `slash_out`, `todos_open`, `queue_open` for the
 /// overlays that carry some); the stack says which one is in front.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -13,39 +13,39 @@ pub(crate) enum Surface {
     Help,
     /// `/status`.
     Stats,
-    /// The session picker — `ctrl-s`, `/sessions`.
+    /// The session picker - `ctrl-s`, `/sessions`.
     Picker,
     /// `/config`.
     Config,
-    /// The todos pane — `ctrl-t`, `/todos`.
+    /// The todos pane - `ctrl-t`, `/todos`.
     Todos,
     /// One todo row read whole, opened by the todos pane's Enter.
     TodoRow,
-    /// The merge queue — `/queue`.
+    /// The merge queue - `/queue`.
     Queue,
     /// One queue entry, opened by the queue pane's Enter.
     QueueEntry,
-    /// The standing notes — `/standing`.
+    /// The standing notes - `/standing`.
     Standing,
-    /// **The skills this box has** — `/skills`. One row each: the name, where it was found and
+    /// The skills this box has - `/skills`. One row each: the name, where it was found and
     /// its one line; Enter hands the body to the session.
     Skills,
-    /// The subagent tree — `ctrl-g`, `/subagents`.
+    /// The subagent tree - `ctrl-g`, `/subagents`.
     Subagents,
-    /// One subagent's output — the tree's `p`, `/peek ID`.
+    /// One subagent's output - the tree's `p`, `/peek ID`.
     SubOut,
-    /// The background jobs — `ctrl-q`, `/jobs`.
+    /// The background jobs - `ctrl-q`, `/jobs`.
     Jobs,
     /// One job's output, opened by the jobs pane's Enter.
     JobOut,
-    /// The monitors the model armed, live and ended — `/monitors`, or a click on the edge's
+    /// The monitors the model armed, live and ended - `/monitors`, or a click on the edge's
     /// `N monitors watching`.
     Monitors,
     /// A plugin's pane - the dashboard a `pane_<name>` hook answered, open by `/pane NAME` or by a
     /// row of `/pane`'s list. The surface says where on the screen; which pane it shows is
     /// `App::plugin_open`, and the data is `slash_out`.
     PluginPane,
-    /// **One of that pane's stops read whole** — its Enter. An overlay like every other, so Esc
+    /// One of that pane's stops read whole - its Enter. An overlay like every other, so Esc
     /// gives the pane back rather than reopening a screen the reader was done with.
     PluginDetail,
     /// A slash command's listing (`/notes`, a diagnostic, a long warning).
@@ -55,7 +55,7 @@ pub(crate) enum Surface {
 }
 
 impl Surface {
-    /// **The pane an overlay was opened from.** Closing the pane takes the overlay with it —
+    /// The pane an overlay was opened from. Closing the pane takes the overlay with it -
     /// a row left standing over the list it belonged to, after the list was closed by some
     /// other door, is a screen whose Esc goes nowhere the reader expects.
     pub(crate) fn parent(self) -> Option<Surface> {
@@ -100,7 +100,7 @@ impl Surface {
     ];
 }
 
-/// **A card in the chrome that owns every key**, in the order `App::key` asks them. One list, so the
+/// A card in the chrome that owns every key, in the order `App::key` asks them. One list, so the
 /// keyboard, the bottom bar and [`App::focused_surface`] cannot disagree about which card is up: a
 /// surface under a card is not focused, whatever it is, because the next keystroke is the card's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,7 +146,7 @@ pub(crate) struct Open {
 }
 
 impl App {
-    /// **What the conversation's rectangle holds**, in the order the frame draws it. See
+    /// What the conversation's rectangle holds, in the order the frame draws it. See
     /// [`Drawn`].
     pub(crate) fn drawn(&self) -> Drawn {
         if self.pane_open() {
@@ -162,16 +162,14 @@ impl App {
         }
     }
 
-    /// The surface on top of the stack — drawn unless a layer above the stack covers it.
+    /// The surface on top of the stack - drawn unless a layer above the stack covers it.
     pub(crate) fn top_surface(&self) -> Option<Surface> {
         self.surfaces.last().map(|o| o.surface)
     }
 
-    /// **The surface that is drawn and has the keys**, or nothing — the stack's top, unless a
-    /// `!term` pane, the diff popup or rano is in front of it, or a card in the chrome holds every
-    /// key. A card is drawn over the chrome slot and the pane under it stays on the screen, but the
-    /// reader's next keystroke is the card's, so a pane that answered as focused put the wheel, a
-    /// hover and a click on rows nothing could act on.
+    /// The surface that is drawn and has the keys, or nothing - the stack's top, unless a `!term` pane, the diff
+    /// popup or rano is in front, or a card in the chrome holds every key. The pane under a card stays on screen,
+    /// but the next keystroke is the card's, so it must not answer wheel, hover or click as focused.
     pub(crate) fn focused_surface(&self) -> Option<Surface> {
         if self.card_up().is_some() {
             return None;
@@ -202,7 +200,7 @@ impl App {
         }
     }
 
-    /// Whether `s` is anywhere on the stack — open, drawn or not.
+    /// Whether `s` is anywhere on the stack - open, drawn or not.
     pub(crate) fn is_open(&self, s: Surface) -> bool {
         self.surfaces.iter().any(|o| o.surface == s)
     }
@@ -225,7 +223,7 @@ impl App {
         });
         self.pane_scroll = 0;
         self.redraw = true;
-        // **The session list's own failure, said where a person will see it.** Opening the list is
+        // The session list's own failure, said where a person will see it. Opening the list is
         // the moment their broken layer matters (`app::sessions_pane`).
         if s == Surface::Picker
             && let Some(said) = self.take_sessions_failure()
@@ -234,7 +232,7 @@ impl App {
         }
     }
 
-    /// **Take `s` off the stack, and every overlay opened from it.** The data an overlay
+    /// Take `s` off the stack, and every overlay opened from it. The data an overlay
     /// carries goes with it, so an `Option` that is `Some` is always a surface that is on the
     /// stack. When the top changes, the new top's scroll comes back from its entry.
     pub(crate) fn close_surface(&mut self, s: Surface) {
@@ -258,20 +256,20 @@ impl App {
         self.redraw = true;
     }
 
-    /// **Pop the top** — Esc's act on a surface. Returns what was closed.
+    /// Pop the top - Esc's act on a surface. Returns what was closed.
     pub(crate) fn pop_surface(&mut self) -> Option<Surface> {
         let top = self.top_surface()?;
         self.close_surface(top);
         Some(top)
     }
 
-    /// **Every surface at once** — for a test that sets one pane up after another.
+    /// Every surface at once - for a test that sets one pane up after another.
     #[cfg(test)]
     pub(crate) fn close_all_surfaces(&mut self) {
         while self.pop_surface().is_some() {}
     }
 
-    /// **Ask for a subagent's output**, remembering which surface asked (R90.17).
+    /// Ask for a subagent's output, remembering which surface asked.
     pub(crate) fn ask_peek(&mut self, id: &str) {
         self.sub_out_pending = Some(id.to_string());
         self.sub_out_from = self.focused_surface();
@@ -314,7 +312,7 @@ impl App {
         self.push_surface(s);
         match s {
             Surface::Picker => {
-                // **The two pickers are never open together**: the setting card goes, so the
+                // The two pickers are never open together: the setting card goes, so the
                 // screen holds one list and the arrows mean one thing. The cursor starts on
                 // the session this head is in, so Enter on an untouched list is a no-op.
                 self.pick = None;
@@ -336,7 +334,7 @@ impl App {
                 (!self.session_id.is_empty()).then_some(Action::Settings)
             }
             Surface::Todos => {
-                // Read at open, and re-read on every draw the file has moved under — see
+                // Read at open, and re-read on every draw the file has moved under - see
                 // `refresh_repo_todos`.
                 self.refresh_repo_todos();
                 Some(Action::ListTodos)
@@ -358,12 +356,12 @@ impl App {
             Surface::Jobs => Some(Action::ListJobs),
             // The monitors come on the job table's answer.
             Surface::Monitors => Some(Action::ListJobs),
-            // **A plugin's pane is opened by NAME**, and the name is not this function's
+            // A plugin's pane is opened by NAME, and the name is not this function's
             // argument: [`App::open_plugin`] asks the daemon for a fresh look and pushes this
             // surface itself. Nothing here could name which pane, so nothing here asks.
             Surface::PluginPane => None,
             Surface::Stats => {
-                // **Opening the screen IS the acknowledgement** (R51 item 17) — and only on the
+                // Opening the screen IS the acknowledgement - and only on the
                 // way in; see the `/status` verb.
                 self.acknowledge_counters();
                 None

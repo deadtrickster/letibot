@@ -21,14 +21,14 @@ fn dir(tag: &str) -> std::path::PathBuf {
     d
 }
 
-/// A **real** PNG, 2×2 - `letibot_transcript::testing`'s, because a fixture that only *looks* like
+/// A real PNG, 2×2 - `letibot_transcript::testing`'s, because a fixture that only *looks* like
 /// an image is what this module's incident was made of: a header-only PNG went in as a chip, was
 /// sent, was stored, and a provider refused every turn that carried it.
 fn png() -> Vec<u8> {
     letibot_transcript::testing::png(2, 2)
 }
 
-/// **The bytes the incident wrote** - a signature, an `IHDR`, and no picture.
+/// The bytes the incident wrote - a signature, an `IHDR`, and no picture.
 fn png_header_only() -> Vec<u8> {
     letibot_transcript::testing::png_header_only(640, 480)
 }
@@ -43,7 +43,7 @@ fn a_picture_with_clipboard(tag: &str) -> App {
     a
 }
 
-/// **Ctrl-V takes the picture off the clipboard and puts a chip in the composer.**
+/// Ctrl-V takes the picture off the clipboard and puts a chip in the composer.
 #[test]
 fn ctrl_v_with_an_image_on_the_clipboard_makes_a_chip() {
     let mut a = a_picture_with_clipboard("ctrl-v");
@@ -65,7 +65,7 @@ fn ctrl_v_with_an_image_on_the_clipboard_makes_a_chip() {
     assert_eq!(written, png());
 }
 
-/// **The terminal's paste key with an image** arrives as an EMPTY bracketed paste - there is no
+/// The terminal's paste key with an image arrives as an EMPTY bracketed paste - there is no
 /// text on the clipboard - and it is the same act as ctrl-v.
 #[test]
 fn an_empty_paste_with_an_image_on_the_clipboard_makes_a_chip() {
@@ -126,7 +126,7 @@ fn a_test_build_cannot_name_the_operators_attachment_directory() {
     );
 }
 
-/// **And with no picture on the clipboard ctrl-v is the window it always was** - the regression
+/// And with no picture on the clipboard ctrl-v is the window it always was - the regression
 /// this feature must not cause. `app()`'s fake holds nothing, which is the ordinary case.
 #[test]
 fn ctrl_v_with_no_image_still_opens_the_payload_window() {
@@ -142,7 +142,7 @@ fn ctrl_v_with_no_image_still_opens_the_payload_window() {
     );
 }
 
-/// **A bracketed paste that is exactly a file path becomes a chip** - the drag-and-drop door.
+/// A bracketed paste that is exactly a file path becomes a chip - the drag-and-drop door.
 #[test]
 fn a_pasted_path_is_a_chip_and_not_text() {
     let d = dir("one-path");
@@ -160,7 +160,7 @@ fn a_pasted_path_is_a_chip_and_not_text() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// **Several files at once, with an escaped space** - what dragging three files into a terminal
+/// Several files at once, with an escaped space - what dragging three files into a terminal
 /// pastes.
 #[test]
 fn a_paste_of_several_paths_makes_several_chips() {
@@ -188,7 +188,7 @@ fn a_paste_of_several_paths_makes_several_chips() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// **A paste that is not files stays text** - the rule that keeps a sentence from being rewritten.
+/// A paste that is not files stays text - the rule that keeps a sentence from being rewritten.
 #[test]
 fn a_paste_of_words_is_still_words() {
     let mut a = app();
@@ -197,7 +197,7 @@ fn a_paste_of_words_is_still_words() {
     assert_eq!(a.input(), "what does README.md say about retries?");
 }
 
-/// **Backspace takes the chip whole**, one press, and leaves the sentence around it.
+/// Backspace takes the chip whole, one press, and leaves the sentence around it.
 #[test]
 fn backspace_deletes_a_chip_as_one_unit() {
     let d = dir("backspace");
@@ -217,7 +217,7 @@ fn backspace_deletes_a_chip_as_one_unit() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// **Enter sends the words WITH the attachments**, and the words keep the chip the operator saw.
+/// Enter sends the words WITH the attachments, and the words keep the chip the operator saw.
 #[test]
 fn the_prompt_is_sent_with_its_attachments() {
     let d = dir("send");
@@ -243,7 +243,7 @@ fn the_prompt_is_sent_with_its_attachments() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// **A chip whose file is gone is refused, and the line is kept.** Nothing is sent empty, and
+/// A chip whose file is gone is refused, and the line is kept. Nothing is sent empty, and
 /// nothing is sent as though the picture had gone with it.
 #[test]
 fn a_chip_whose_file_vanished_is_refused_and_nothing_is_sent() {
@@ -264,7 +264,7 @@ fn a_chip_whose_file_vanished_is_refused_and_nothing_is_sent() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// **The user row in the transcript shows the chips** - the operator's own words, with the chip in
+/// The user row in the transcript shows the chips - the operator's own words, with the chip in
 /// them, and no second marker for the part beside it and no bytes.
 #[test]
 fn the_transcript_row_draws_the_chips_and_not_the_bytes() {

@@ -165,7 +165,7 @@ pub(crate) fn is_absorbed(
     })
 }
 
-/// **The texts of the rows a note's card stands for**, in transcript order - appended to its
+/// The texts of the rows a note's card stands for, in transcript order - appended to its
 /// popup under the warning's own text.
 pub(crate) fn absorbed_texts(
     absorbed: &std::collections::HashMap<String, String>,

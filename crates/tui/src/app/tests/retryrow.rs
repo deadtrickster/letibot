@@ -1,4 +1,4 @@
-//! **A retried model call is ONE row**: it moves in place as the ladder tries, and it settles to how
+//! A retried model call is ONE row: it moves in place as the ladder tries, and it settles to how
 //! the call ended.
 //!
 //! The measurement is the frame at eighty columns, which is what a terminal actually is. Before this
@@ -20,7 +20,7 @@
 
 use super::*;
 
-/// **One attempt, as the daemon's durable warning says it** - the row a head drew per attempt before
+/// One attempt, as the daemon's durable warning says it - the row a head drew per attempt before
 /// the series had a row of its own, kept here as the before half of the comparison.
 fn attempt_warning(n: u32) -> SessionEvent {
     SessionEvent::Warning {
@@ -185,7 +185,7 @@ fn one_retried_call_is_one_row_at_eighty_columns() {
     );
 }
 
-/// **A second outage is a second row.** The count going back down is the one signal a head has that
+/// A second outage is a second row. The count going back down is the one signal a head has that
 /// the daemon has started another series, and rewriting the settled row would hide that the endpoint
 /// failed twice rather than for longer.
 #[test]
@@ -208,7 +208,7 @@ fn a_second_series_is_a_second_row() {
     assert!(rows[1].contains("retrying: 2 attempts"));
 }
 
-/// **The attempts are behind the row**, in the popup a click opens: the row is the one line a frame
+/// The attempts are behind the row, in the popup a click opens: the row is the one line a frame
 /// keeps, and the shape of the outage - every attempt with its clock - is what a reader asking *how
 /// bad was it* wants, without six rows of it in the conversation.
 #[test]

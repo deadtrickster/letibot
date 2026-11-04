@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// **Every input a layer was asked with** - the only way to see what the head HANDS a layer, since
+/// Every input a layer was asked with - the only way to see what the head HANDS a layer, since
 /// the answer alone cannot tell a layer that read the feeds from one that ignored them.
 #[derive(Clone, Default)]
 struct Seen(Arc<Mutex<Vec<(String, Value)>>>);
@@ -97,7 +97,7 @@ fn tempdir(tag: &str) -> PathBuf {
     dir
 }
 
-/// **A project's `todo` layer**, as a person's `edit` leaves it: a manifest that declares the hook
+/// A project's `todo` layer, as a person's `edit` leaves it: a manifest that declares the hook
 /// and the one act, and a `plugin.wasm` whose content the scripted loader ignores.
 fn project_layer(root: &Path, seen: &Seen, answer: Option<&str>, traps: bool) -> Stack {
     let dir = root.join(".letibot").join("plugins").join("todo");
@@ -230,7 +230,7 @@ fn the_heads_own_verbs_never_reach_a_layer() {
     seen.take();
     assert_eq!(a.operator_todos().len(), 1);
 
-    // **Every word the head answers**, and not one of them is offered.
+    // Every word the head answers, and not one of them is offered.
     for line in [
         "done 1",
         "rm 1",
@@ -248,7 +248,7 @@ fn the_heads_own_verbs_never_reach_a_layer() {
         "the head's own verbs are the head's: {:?}",
         seen.take()
     );
-    // **And `done 1` still does what it did**: the first of the operator's rows is completed.
+    // And `done 1` still does what it did: the first of the operator's rows is completed.
     assert!(matches!(
         a.command("todo done 1"),
         Some(Action::SetOperatorTodos { items, .. })
@@ -295,13 +295,13 @@ fn an_act_the_head_does_not_know_adds_nothing() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
-/// **A layer that passes leaves the line to the head** - the way out, and what every `/todo` was
+/// A layer that passes leaves the line to the head - the way out, and what every `/todo` was
 /// before there was a layer. `-1` is not *no*, it is *not mine*.
 #[test]
 fn a_layer_that_passes_leaves_the_line_to_the_head() {
     let seen = Seen::default();
     let tmp = tempdir("pass");
-    // **No built-ins, and a layer that traps**, so the line reaches the head's own reading - the
+    // No built-ins, and a layer that traps, so the line reaches the head's own reading - the
     // fallback arm - with a failure in hand. With `project_layer` the built-in answered `buy milk`
     // itself and this test measured nothing of the arm it names.
     let stack = project_layer_without_builtins(&tmp, &seen);
@@ -316,7 +316,7 @@ fn a_layer_that_passes_leaves_the_line_to_the_head() {
         other => panic!("expected the head's own add, got {other:?}"),
     }
     assert_eq!(seen.len(), 1, "it was asked, and it passed");
-    // **And the layer's failure is what the person reads LAST** - `say` keeps only the last line,
+    // And the layer's failure is what the person reads LAST - `say` keeps only the last line,
     // so a failure said before the row's own sentence is overwritten by it and a session whose
     // layer is broken adds rows silently. This assertion is the one that fails on the old order.
     let said = a.notice.clone().unwrap_or_default();
@@ -348,7 +348,7 @@ fn the_head_hands_the_layer_the_board_and_the_session_and_the_repo_outline() {
     );
     let mut a = a_head_with(stack);
 
-    // **A board with both halves on it**, as the daemon publishes it.
+    // A board with both halves on it, as the daemon publishes it.
     a.apply(ServerFrame::Event(env(
         1,
         SessionEvent::TodosUpdated {
@@ -370,7 +370,7 @@ fn the_head_hands_the_layer_the_board_and_the_session_and_the_repo_outline() {
             ],
         },
     )));
-    // **No `TODO.md` read yet** - the pane has not drawn.
+    // No `TODO.md` read yet - the pane has not drawn.
     a.repo_todos = None;
     assert!(a.command("todo anything").is_some());
     let asked = seen.take();
@@ -395,7 +395,7 @@ fn the_head_hands_the_layer_the_board_and_the_session_and_the_repo_outline() {
         "absent, not empty: the head holds no outline yet — {feeds}"
     );
 
-    // **Now the head has drawn the pane**, and the outline travels as the pane drew it.
+    // Now the head has drawn the pane, and the outline travels as the pane drew it.
     a.repo_todos = Some(vec![TodoRow {
         indent: 4,
         mark: Some(TodoMark::Done),
@@ -413,7 +413,7 @@ fn the_head_hands_the_layer_the_board_and_the_session_and_the_repo_outline() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
-/// **A layer that traps is said, and the layer below answers** - fail down, loudly
+/// A layer that traps is said, and the layer below answers - fail down, loudly
 /// (`docs/plugins-plan.md` §1, principle 4). The broken layer costs the person a sentence and
 /// nothing else: the built-in `todo` below it reads the line, and the row is added.
 #[test]

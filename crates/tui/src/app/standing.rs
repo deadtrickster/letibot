@@ -56,7 +56,7 @@ impl Corpus {
         }
     }
 
-    /// **Watch a directory whether or not any row sits in it** - the workspace's own notes
+    /// Watch a directory whether or not any row sits in it - the workspace's own notes
     /// directory, so that a note which does not exist YET is still a change when it is
     /// written, and an empty pane does not sit there claiming there are none.
     pub(crate) fn watch_dir(&mut self, dir: &std::path::Path) {

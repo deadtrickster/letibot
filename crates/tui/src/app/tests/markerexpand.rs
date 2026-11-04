@@ -177,7 +177,7 @@ fn an_expansion_draws_no_notice_the_watermark_covers() {
         "the mark is the newest one drawn"
     );
 
-    // **The wall, re-said.** Same kind, same instants, other words - and then one notice that is
+    // The wall, re-said. Same kind, same instants, other words - and then one notice that is
     // genuinely newer than the mark, which is the line the screen owes him.
     resay(&mut a, 1, 1_000);
     resay(&mut a, 2, 2_000);
@@ -210,7 +210,7 @@ fn an_expansion_draws_no_notice_the_watermark_covers() {
             .map(|(_, n)| (note_stamp(n), a.is_retired(n)))
             .collect::<Vec<_>>()
     );
-    // **And the row is the news one**, not a survivor: the head's last note is the fourth
+    // And the row is the news one, not a survivor: the head's last note is the fourth
     // attempt and it is live, while the two re-said copies are retired.
     let newest = a.notes.last().expect("the fourth was filed").1.clone();
     assert!(
@@ -223,7 +223,7 @@ fn an_expansion_draws_no_notice_the_watermark_covers() {
         note_stamp(&newest)
     );
 
-    // **And the next tool call does not change the answer.** The run is still open; the round's
+    // And the next tool call does not change the answer. The run is still open; the round's
     // rows land, `carry_live_open` re-applies the lift to them, and the wall stays where the press
     // put it - the operator's *"then they hide on the next tool call. then they show."*
     for (i, (id, path)) in [("c0", "a.rs"), ("c1", "b.rs")].iter().enumerate() {
@@ -259,7 +259,7 @@ fn an_expansion_draws_no_notice_the_watermark_covers() {
         "the round's rows brought the wall back:\n{landed}"
     );
 
-    // **Collapse and expand again** - the toggle is the operator's *"then they show"*, and the
+    // Collapse and expand again - the toggle is the operator's *"then they show"*, and the
     // second door must answer what the first one did.
     a.key(Key::Esc);
     let folded = a.screen(120, 40).join("\n");
@@ -276,7 +276,7 @@ fn an_expansion_draws_no_notice_the_watermark_covers() {
         "the second expansion drew the retired wall back:\n{again}"
     );
 
-    // **And the watermark is the same value it was** - the expansion re-renders the transcript,
+    // And the watermark is the same value it was - the expansion re-renders the transcript,
     // and a door that re-rendered it by *reading* it would move the mark and hide the notice that
     // is genuinely new.
     assert_eq!(
@@ -287,7 +287,7 @@ fn an_expansion_draws_no_notice_the_watermark_covers() {
     );
 }
 
-/// **The same, on a run of settled rows** - the expansion there is the *other* walk's state
+/// The same, on a run of settled rows - the expansion there is the *other* walk's state
 /// (`hist_lines` rebuilt from row 0 rather than a pane's), and the mark has to answer in both.
 #[test]
 fn a_settled_runs_expansion_draws_no_notice_the_watermark_covers() {

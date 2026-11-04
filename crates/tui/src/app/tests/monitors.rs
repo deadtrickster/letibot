@@ -45,7 +45,7 @@ fn ended(name: &str, how: &str) -> MonitorEntry {
     }
 }
 
-/// **A monitor that is still waiting is on the screen** - counted on the composer's edge, and a
+/// A monitor that is still waiting is on the screen - counted on the composer's edge, and a
 /// click on the count opens its pane and asks for the table. Before this a monitor showed only
 /// once it fired; an ended one is not counted.
 #[test]
@@ -80,7 +80,7 @@ fn a_watching_monitor_is_counted_and_the_count_opens_its_pane() {
     );
 }
 
-/// **`/monitors` opens it, and `x` retires the one under the cursor** through the daemon's verb,
+/// `/monitors` opens it, and `x` retires the one under the cursor through the daemon's verb,
 /// so the record says the operator did it. With nothing live, `x` is the composer's letter.
 #[test]
 fn x_retires_the_monitor_under_the_cursor() {
@@ -106,7 +106,7 @@ fn x_retires_the_monitor_under_the_cursor() {
     );
 }
 
-/// **Enter shows a monitor whole, with the call that armed it** - the operator: *"i want to see
+/// Enter shows a monitor whole, with the call that armed it - the operator: *"i want to see
 /// monitor command in the details"*, looking at a timer whose row said nothing of what it was for.
 #[test]
 fn enter_shows_the_monitor_and_the_call_that_armed_it() {

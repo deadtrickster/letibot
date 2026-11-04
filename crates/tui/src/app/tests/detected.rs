@@ -14,7 +14,7 @@ fn git(root: &std::path::Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?}: {out:?}");
 }
 
-/// **The operator's own shape, end to end.** A `python3` heredoc rewrites `X.md`; the tool
+/// The operator's own shape, end to end. A `python3` heredoc rewrites `X.md`; the tool
 /// detects it; the head draws the two sides; and the note beside them still says the change
 /// was detected after the command rather than made by `edit`.
 #[test]
@@ -111,9 +111,9 @@ fn a_python_edit_detected_after_a_command_draws_its_diff() {
     )));
     a.record_item("s.1", row);
 
-    // **Folded, which is the row the operator was looking at.** Their line was `▸`, and a
+    // Folded, which is the row the operator was looking at. Their line was `▸`, and a
     // diff that appears only once you unfold a row you did not know held one is the same no
-    // diff — so the panel is drawn folded too, exactly as a real edit's is.
+    // diff - so the panel is drawn folded too, exactly as a real edit's is.
     assert_eq!(
         a.tools,
         Fold::Folded,
@@ -180,7 +180,7 @@ fn a_detected_panel_folds_the_way_an_edits_does() {
         !folded.iter().any(|r| r.contains("line 24")),
         "the tail is what the count above stands for: {folded:?}"
     );
-    // **Folded, the panel carries its own provenance** — the payload's note can be cut by the
+    // Folded, the panel carries its own provenance - the payload's note can be cut by the
     // fold whenever another note precedes it (see `detected_diff_rows`), and a diff under `Ran`
     // with nothing saying how it was obtained reads as the model's `edit`.
     assert!(

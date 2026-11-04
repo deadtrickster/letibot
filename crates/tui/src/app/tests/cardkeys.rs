@@ -17,7 +17,7 @@ fn answer(req_id: &str, option_id: &str) -> Option<Action> {
     })
 }
 
-// ─────────────────────── R90.4: the highlight follows the front card ───────────────────────
+// ─────────────────────── the highlight follows the front card ───────────────────────
 
 /// ↓ to deny, a second permission arrives behind the card on screen, Enter still denies.
 #[test]
@@ -43,7 +43,7 @@ fn the_next_card_up_starts_at_its_own_top() {
     assert_eq!(a.key(Key::Enter), answer("r2", "allow"));
 }
 
-// ───────────────── R90.3: a question over typed words does not take them ─────────────────
+// ───────────────── a question over typed words does not take them ─────────────────
 
 /// A question that arrives while a prompt is half typed: the words are held, the card's field is
 /// empty, Enter answers the marked row, and the words come back when the card is gone.
@@ -122,7 +122,7 @@ fn a_question_brought_back_over_typed_words_holds_them() {
     assert_eq!(b.input(), "rel", "the card's own draft comes back with it");
 }
 
-// ──────────────── R90.2 / R90.23: a row number marks a permission's row ────────────────
+// ──────────────── a row number marks a permission's row ────────────────
 
 /// On a permission a row number marks the row it names - the numbers are drawn and the bar says
 /// so - and only Enter answers. A question's rows carry no number: its digits are its answer.
@@ -173,7 +173,7 @@ fn a_question_without_choices_offers_no_arrows_and_an_empty_choice_is_named() {
     assert!(!card.contains("1  (an empty answer)"), "no number: {card}");
 }
 
-// ───────────────────── R90.5: the prompt card has a way back ─────────────────────
+// ───────────────────── the prompt card has a way back ─────────────────────
 
 /// Esc puts the prompt card away; a resident line says the command waits, and alt-a brings the
 /// card back.
@@ -211,7 +211,7 @@ fn the_prompt_card_put_away_has_a_resident_line_and_alt_a_brings_it_back() {
     );
 }
 
-// ─────────────── R90.6 / R90.30: the quit card and what it can be answered by ───────────────
+// ─────────────── the quit card and what it can be answered by ───────────────
 
 /// ctrl-c ctrl-c over a permission card does not open the quit card (whose `1` would answer the
 /// permission); a decision arriving over an open quit card closes it.
@@ -276,7 +276,7 @@ fn a_digit_on_the_quit_card_marks_the_row_and_stops_nothing() {
     );
 
     // The line being typed when the card opened is not an answer either: the first digit marks,
-    // the rest is the operator's, and Enter refuses while the composer holds words (R90.30).
+    // the rest is the operator's, and Enter refuses while the composer holds words.
     let mut b = app();
     b.clock(1_000);
     b.key(Key::CtrlC);
@@ -287,7 +287,7 @@ fn a_digit_on_the_quit_card_marks_the_row_and_stops_nothing() {
     assert!(!b.quit && b.quit_card, "still up, nothing quit");
 }
 
-// ──────────── R90.16 / R90.18 / R90.19: one order for the slot, the keys and the bar ────────────
+// ──────────── one order for the slot, the keys and the bar ────────────
 
 /// The todo card is open and a permission arrives: the todo card stays drawn and keeps its keys,
 /// the permission's ladder does not move under it, and the bar is the todo card's.
@@ -355,7 +355,7 @@ fn a_card_that_owns_the_keyboard_has_its_own_bar() {
     assert!(!bar.contains("ctrl-s"), "{bar}");
 }
 
-// ──────────────────── R90.8 / R90.10 / R90.11 / R90.17: the panes' bars ────────────────────
+// ──────────────────── the panes' bars ────────────────────
 
 fn waiting_board(a: &mut App) {
     use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoNeed, TodoStatus};
@@ -442,7 +442,7 @@ fn a_peek_over_no_pane_names_the_conversation_as_where_esc_goes() {
     assert!(b.hint_bar(400).contains("esc back to the jobs"));
 }
 
-// ──────────── R90.12 / R90.13 / R90.14 / R90.27: todo cards follow the board ────────────
+// ──────────── todo cards follow the board ────────────
 
 /// Another head answered the row: the board no longer has it waiting, so this head's card closes
 /// and what was typed on it does not become a prompt.
@@ -575,7 +575,7 @@ fn a_question_a_resync_drops_takes_its_draft_with_it() {
     assert_eq!(b.input(), "half a line", "not the card's to take");
 }
 
-/// **A switch carries the line being typed.** `load` is the switch path as well as the resync
+/// A switch carries the line being typed. `load` is the switch path as well as the resync
 /// path, and the question it read as gone was the OUTGOING session's card: nothing about that
 /// card's answer is in this line, so leaving takes nothing with it.
 #[test]
@@ -630,7 +630,7 @@ fn a_switch_with_no_question_up_keeps_the_typed_line() {
     assert_eq!(a.input(), "half a line", "the line is the operator's");
 }
 
-/// **A command is never a card's answer**: `/`, `!`, `!term` and `!send` are taken by
+/// A command is never a card's answer: `/`, `!`, `!term` and `!send` are taken by
 /// [`App::submit`] before the open card is consulted, so a verb typed under a question that goes
 /// is the operator's line and stays.
 #[test]
@@ -674,7 +674,7 @@ fn a_notification_names_the_kind_of_card() {
     assert!(n.contains("question for you"), "{n}");
 }
 
-// ─────────────────────── R90.28 / R90.31: the popup and narrow widths ───────────────────────
+// ─────────────────────── the popup and narrow widths ───────────────────────
 
 fn notice_popup(a: &mut App) {
     a.diff_popup = Some(crate::app::diff_popup::DiffPopup {
@@ -717,7 +717,7 @@ fn the_popup_fits_a_narrow_screen() {
     }
 }
 
-// ──────────── R90.9 / R90.20 / R90.26 / R90.33: what waits, said and clickable ────────────
+// ──────────── what waits, said and clickable ────────────
 
 /// The card says how many more wait behind it, and whether one has a deadline.
 #[test]
@@ -798,7 +798,7 @@ fn a_late_peek_reply_after_its_pane_closed_is_not_opened() {
     assert!(a.sub_out.is_none());
 }
 
-// ──────────── R90.29: an answered card closes at once, and comes back if refused ────────────
+// ──────────── an answered card closes at once, and comes back if refused ────────────
 
 /// Enter closes the permission card the moment the answer leaves, so a second Enter sends
 /// nothing; a refusal of that answer puts the card back with its marked row; the daemon's
@@ -919,7 +919,7 @@ fn a_replayed_decision_does_not_reopen_the_card_it_answered() {
     assert_eq!(a.key(Key::Enter), None, "and a second Enter sends nothing");
 }
 
-// ────────── R90.27: a notification names what needs the person, a stale prompt too ──────────
+// ────────── a notification names what needs the person, a stale prompt too ──────────
 
 /// The kinds are named for what they are - a permission, a model's question, a todo row's question -
 /// and the reseat card notifies too: it is this head's own, and nothing else says it is waiting.
@@ -954,7 +954,7 @@ fn a_notification_names_what_needs_the_person_including_a_stale_prompt() {
     assert_eq!(c.take_notification(), None, "a fact said twice is one ask");
 }
 
-/// **A question the daemon settles while the operator types** - a deadline lapsed, or another head
+/// A question the daemon settles while the operator types - a deadline lapsed, or another head
 /// answered it - takes the words typed under it, which were an answer and would otherwise be sent
 /// by the next Enter as a prompt. The same defect the snapshot door had, at the live door.
 #[test]
@@ -991,7 +991,7 @@ fn a_question_settled_live_takes_its_draft_with_it() {
     assert_eq!(b.input(), "half a line", "not the card's to take");
 }
 
-/// **Looking at another session is not the question closing.** A switch's snapshot replaces the open
+/// Looking at another session is not the question closing. A switch's snapshot replaces the open
 /// list with the other session's, which says nothing about this one's cards; the typed answer was
 /// cleared and a sentence said its card had closed while the question was still open.
 #[test]
@@ -1027,7 +1027,7 @@ fn a_session_switch_keeps_the_answer_being_typed() {
 
 // ────────────────────── a card in the chrome is what holds the keyboard ──────────────────────
 
-/// **No surface under a card is focused.** A card is drawn in the chrome slot with the pane still on
+/// No surface under a card is focused. A card is drawn in the chrome slot with the pane still on
 /// the screen above it, and every key the reader presses is the card's - so a pane that answered
 /// `Some(s)` put the wheel, a hover and a click on rows nothing could act on.
 #[test]

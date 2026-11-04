@@ -22,7 +22,7 @@ impl App {
                     // either lift, through one writer (`App::drop_lift`), so neither is left
                     // standing where no key could reach it. The fold's own Esc is the general arm.
                     self.drop_lift();
-                    // An open run's rows are in the history cache, so it is rebuilt — as
+                    // An open run's rows are in the history cache, so it is rebuilt - as
                     // ctrl-t's close does.
                     self.invalidate_history();
                     self.redraw = true;

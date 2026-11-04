@@ -66,7 +66,7 @@ fn a_merge(id: &str, state: &str) -> QueueMerge {
     }
 }
 
-/// **A snapshot with everything a reviewer will want to see in the feed**: a live review, a
+/// A snapshot with everything a reviewer will want to see in the feed: a live review, a
 /// finished one, a landing with a gate that timed out, a red target, a stale lease, a repository
 /// that is no queue's, and a move.
 fn a_snapshot() -> QueueSnapshot {
@@ -83,7 +83,7 @@ fn a_snapshot() -> QueueSnapshot {
             pid: 4242,
             host: "mac".into(),
             build: "0.5.1".into(),
-            // **Older than the lease's lifetime**, so the feed must say STALE.
+            // Older than the lease's lifetime, so the feed must say STALE.
             heartbeat_ms: 1_600_000,
             acquired_ms: 1_000_000,
         }],
@@ -97,7 +97,7 @@ fn a_snapshot() -> QueueSnapshot {
             gate_steps: vec![],
             running_gate: None,
         }],
-        // **One project, two repositories, one of which never asked for a queue** - the shape the
+        // One project, two repositories, one of which never asked for a queue - the shape the
         // `not_queued` list exists for, and the only shape in which the scope filter keeps it: a
         // repository outside this session's scope is not this pane's to name.
         not_queued: vec!["/home/dead/Projects/letim".into()],
@@ -137,7 +137,7 @@ fn a_head() -> App {
     a
 }
 
-/// **The feed's own clock**: the snapshot's `at_ms` plus however long the head has held it, so an
+/// The feed's own clock: the snapshot's `at_ms` plus however long the head has held it, so an
 /// age the plugin draws is measured from the same instant the host pane measures from - rounded down
 /// to the second, which is the finest thing a row can say (see `CLOCK_QUANTUM_MS`).
 #[test]
@@ -170,14 +170,14 @@ fn the_feed_carries_the_hosts_clock_and_its_scope() {
 fn the_feeds_clock_moves_once_a_second_and_not_once_a_frame() {
     let mut a = a_head();
     let first = a.queue_feed();
-    // **Within the second, the input is the SAME input** - 899 ms of frames, one answer.
+    // Within the second, the input is the SAME input - 899 ms of frames, one answer.
     a.now_ms += 899;
     assert_eq!(
         a.queue_feed(),
         first,
         "a frame inside the second is not a new question"
     );
-    // **And at the next second it is a new one** - the ages have moved, and a cache hit would draw
+    // And at the next second it is a new one - the ages have moved, and a cache hit would draw
     // the previous second's answer.
     a.now_ms += 101;
     let second = a.queue_feed();
@@ -189,7 +189,7 @@ fn the_feeds_clock_moves_once_a_second_and_not_once_a_frame() {
     );
 }
 
-/// **A row names its repository only when the scope keeps more than one** - the host's answer, from
+/// A row names its repository only when the scope keeps more than one - the host's answer, from
 /// the scope it RESOLVED, so a path scope over several repositories names them and a one-repository
 /// project does not.
 #[test]
@@ -230,7 +230,7 @@ fn the_scope_says_whether_a_row_must_name_its_repository() {
     assert_eq!(none.queue_feed()["scope"]["several"], false);
 }
 
-/// **A review, in the words a person reads it in** - the state as the daemon spells it, the age in
+/// A review, in the words a person reads it in - the state as the daemon spells it, the age in
 /// milliseconds, `live` from the host's own rule, and the verbs the daemon would actually take.
 #[test]
 fn a_review_row_is_the_states_own_words_and_the_verbs_that_would_move_it() {
@@ -259,7 +259,7 @@ fn a_review_row_is_the_states_own_words_and_the_verbs_that_would_move_it() {
     assert_eq!(live["short_sha"], "1f2a3b4c5d");
     assert_eq!(live["evidence"], "the reason r-live is where it is");
     assert_eq!(live["brief"], "the ask behind r-live");
-    // **The daemon's own answer about the verbs**: `approve` and `veto` would move a `reviewing`
+    // The daemon's own answer about the verbs: `approve` and `veto` would move a `reviewing`
     // row, `restart` would not, and the feed says WHY rather than leaving the plugin to guess.
     let verbs = live["verbs"].as_array().expect("a verb list");
     let why = |word: &str| {
@@ -279,13 +279,13 @@ fn a_review_row_is_the_states_own_words_and_the_verbs_that_would_move_it() {
         why("restart")
     );
 
-    // **A finished row says so**, and a `landed` review is not the queue's work any more.
+    // A finished row says so, and a `landed` review is not the queue's work any more.
     let done = &feed["reviews"][1];
     assert_eq!(done["live"], false);
     assert_eq!(done["state"], "landed");
 }
 
-/// **A landing's gate, in the words a person reads** - `"timed out"`, not the Rust enum's serde
+/// A landing's gate, in the words a person reads - `"timed out"`, not the Rust enum's serde
 /// spelling - and what a queued row is waiting for.
 #[test]
 fn a_gate_step_is_the_persons_words_and_not_the_enums_spelling() {
@@ -304,7 +304,7 @@ fn a_gate_step_is_the_persons_words_and_not_the_enums_spelling() {
     assert_eq!(step["output"], "the gate's own words");
 }
 
-/// **The lease's heartbeat and the STALE warning** - the two facts the pane's chrome carries, so a
+/// The lease's heartbeat and the STALE warning - the two facts the pane's chrome carries, so a
 /// plugin can draw them without inventing a lifetime.
 #[test]
 fn a_stale_lease_is_flagged_with_the_daemons_own_lifetime() {
@@ -325,7 +325,7 @@ fn a_stale_lease_is_flagged_with_the_daemons_own_lifetime() {
     assert_eq!(feed["counts"]["stale_leases"], 1);
 }
 
-/// **A red target is the emergency, and the counts say what the pane's strip says.**
+/// A red target is the emergency, and the counts say what the pane's strip says.
 #[test]
 fn a_red_target_and_the_counters_the_strip_carries() {
     let a = a_head();
@@ -342,7 +342,7 @@ fn a_red_target_and_the_counters_the_strip_carries() {
     assert_eq!(counts["red_targets"], 1);
 }
 
-/// **A move, and the repository that is no queue's** - the last two things the pane says.
+/// A move, and the repository that is no queue's - the last two things the pane says.
 #[test]
 fn a_move_and_a_repository_that_never_asked_for_a_queue() {
     let a = a_head();
@@ -357,7 +357,7 @@ fn a_move_and_a_repository_that_never_asked_for_a_queue() {
     assert_eq!(feed["not_queued"][0], "letim");
 }
 
-/// **A row the daemon would refuse says why, in the feed** - so a plugin's row can name the verb
+/// A row the daemon would refuse says why, in the feed - so a plugin's row can name the verb
 /// that would do something instead of printing four and letting the person find out.
 #[test]
 fn a_row_nothing_would_move_carries_every_reason() {
@@ -376,7 +376,7 @@ fn a_row_nothing_would_move_carries_every_reason() {
     );
 }
 
-/// **`live` is the HOST's rule, not a word the plugin greps for.** The two sets are the ones
+/// `live` is the HOST's rule, not a word the plugin greps for. The two sets are the ones
 /// `ui/panes/queue.rs` opens and closes with, and this is the test that keeps the feed's copy of
 /// them the same copy.
 #[test]

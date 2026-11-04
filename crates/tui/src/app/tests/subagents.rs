@@ -30,7 +30,7 @@ fn the_card_says_when_the_call_is_a_subagents_and_names_it() {
         drawn.contains("count the rows the store never reads"),
         "{drawn}"
     );
-    // **Above the ladder**, so it is read on the same pass of the eye as the question:
+    // Above the ladder, so it is read on the same pass of the eye as the question:
     // under the wall it would be read after the answer was already chosen.
     let clause = drawn.find("a subagent's call").unwrap();
     let ladder = drawn.find("Allow once").unwrap();
@@ -81,7 +81,7 @@ fn ctrl_g_opens_the_subagent_tree_and_esc_closes_it() {
         },
     )));
     // A spawn that the head saw. The running count lives in the pane  -
-    // the composer's border used to repeat it, and that border is plain now.
+    // the composer's border does not repeat it, and that border is plain.
     assert_eq!(a.subagents.len(), 1);
 
     a.key(Key::CtrlG);
@@ -108,7 +108,7 @@ fn a_fresh_head_rebuilds_the_subagent_rows_and_the_count_from_the_session_list()
     let ids: Vec<&str> = a.subagents.iter().map(|s| s.session_id.as_str()).collect();
     assert_eq!(ids, vec!["s-sub-1", "s-sub-2"], "{ids:?}");
 
-    // **The count**, which is the same defect: `running` is the list's own fact about
+    // The count, which is the same defect: `running` is the list's own fact about
     // whether a turn is generating in that session right now.
     let screen = a.screen(100, 24);
     let row = screen
@@ -117,7 +117,7 @@ fn a_fresh_head_rebuilds_the_subagent_rows_and_the_count_from_the_session_list()
         .expect("the count is on the screen");
     assert!(row.contains("1 subagent running"), "{row}");
 
-    // **The pane**, with the subtask the daemon named it by.
+    // The pane, with the subtask the daemon named it by.
     a.key(Key::CtrlG);
     let screen = a.screen(100, 24).join("\n");
     assert!(screen.contains("find the bug in the reader"), "{screen}");
@@ -126,14 +126,14 @@ fn a_fresh_head_rebuilds_the_subagent_rows_and_the_count_from_the_session_list()
         !screen.contains("someone else's child"),
         "another conversation's child is in this session's tree:\n{screen}"
     );
-    // **The finished child is folded, and the pane says how many** - the group the operator
+    // The finished child is folded, and the pane says how many - the group the operator
     // asked for. `s-sub-2` is `running: false` in the list, so it is a finished row.
     assert!(screen.contains("finished (1)"), "{screen}");
     assert!(
         !screen.contains("audit the store"),
         "a finished child is drawn though its group is folded:\n{screen}"
     );
-    // **And the state word is not invented.** The list says whether a turn is generating;
+    // And the state word is not invented. The list says whether a turn is generating;
     // it says nothing about how a settled child ended, so the row this head did not watch
     // says so rather than claiming `done` - unfolded, where a `done` would be a lie.
     a.key(Key::Down);
@@ -242,7 +242,7 @@ fn the_running_subagent_is_drawn_above_the_folded_finished_ones() {
     let joined = screen.join("\n");
     assert!(joined.contains("the one that is running"), "{joined}");
     assert!(joined.contains("finished (26)"), "{joined}");
-    // **At the TOP** - the running child's row is above the group row, so it is the first
+    // At the TOP - the running child's row is above the group row, so it is the first
     // thing on the pane rather than the twenty-seventh.
     let run_at = screen
         .iter()
@@ -269,7 +269,7 @@ fn enter_into_a_subagent_and_one_esc_goes_back_up_to_the_list_it_came_from() {
     a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
     a.key(Key::CtrlG);
 
-    // **Down a level: Enter IS the switch.**
+    // Down a level: Enter IS the switch.
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
     assert!(
         !a.is_open(Surface::Subagents),
@@ -290,14 +290,14 @@ fn enter_into_a_subagent_and_one_esc_goes_back_up_to_the_list_it_came_from() {
         "the parent's running child is counted on the child's own composer:\n{screen}"
     );
 
-    // **The ONE piece of info: this is a subagent, and whose.** On the row that already
+    // The ONE piece of info: this is a subagent, and whose. On the row that already
     // names the session - the header - and nothing else added anywhere.
     assert!(
         screen.contains("subagent of parent"),
         "the header does not say whose child this is:\n{screen}"
     );
 
-    // **And one Esc goes back up**, to the parent, with the list open.
+    // And one Esc goes back up, to the parent, with the list open.
     assert_eq!(
         a.key(Key::Esc),
         Some(Action::Switch("s".into())),
@@ -337,9 +337,9 @@ fn esc_keeps_every_other_meaning_it_has_while_inside_a_subagent() {
         "esc also switched out of the session"
     );
 
-    // **A half-typed line goes up WITH the operator** - it used to keep Esc for the composer,
-    // which armed the interrupt, and the next Esc stopped the child the operator was only
-    // leaving (2026-10-08). The composer is the head's, so the draft is still there above.
+    // A half-typed line goes up WITH the operator - Esc is not kept for the composer,
+    // which would arm the interrupt, and the next Esc stop the child the operator was only
+    // leaving. The composer is the head's, so the draft is still there above.
     let mut a = inside_a_subagent();
     a.clock(1_000);
     a.key(Key::Char('x'));
@@ -354,8 +354,8 @@ fn esc_keeps_every_other_meaning_it_has_while_inside_a_subagent() {
     a.open.push(decision_with(&[
         letibot_sessionlog::event::OptionKind::AllowOnce,
     ]));
-    // The first Esc puts the card away (R90.5) and the second is kept from leaving with it
-    // unanswered (R90.15) - and neither arms the interrupt.
+    // The first Esc puts the card away and the second is kept from leaving with it
+    // unanswered - and neither arms the interrupt.
     assert_eq!(a.key(Key::Esc), None);
     assert_eq!(a.session_id, "s-sub-1");
     assert!(a.open.is_empty() && a.away.len() == 1, "put away");
@@ -469,7 +469,7 @@ fn the_session_list_owns_the_word_running_and_the_event_owns_everything_else() {
     )));
     assert_eq!(a.subagents[0].state, "done");
 
-    // **The list says a turn is generating in that child.** The word is the list's, and the
+    // The list says a turn is generating in that child. The word is the list's, and the
     // row's own richer facts survive it - a child asked for more work is a running child.
     let mut live = a_family();
     live[1].status.running = true;
@@ -523,7 +523,7 @@ fn switching_into_a_subagent_drops_the_parents_tree_and_coming_back_rebuilds_it(
     };
     a.apply(ServerFrame::Event(env(1, spawn.clone())));
     a.key(Key::CtrlG);
-    // **`o` is the alias and Enter is the key**, and both are the same act - the switch.
+    // `o` is the alias and Enter is the key, and both are the same act - the switch.
     // This test reads the pane's key for the way IN; the way here is the older spelling.
     assert_eq!(
         a.key(Key::Char('o')),
@@ -772,7 +772,7 @@ fn a_peeked_subagent_shows_its_tool_output_and_spills_the_whole_view() {
 #[test]
 fn esc_leaves_the_output_and_enter_and_o_both_switch_into_the_subagent() {
     let mut a = app();
-    // **`running`, not `done`** - a finished child is under the folded `finished` group and is
+    // `running`, not `done` - a finished child is under the folded `finished` group and is
     // not a stop, and this test is about the keys acting on a child that is one.
     a.apply(ServerFrame::Event(env(
         1,
@@ -888,18 +888,18 @@ fn a_subagent_row_shows_the_task_and_the_answer_beside_it() {
             slug: String::new(),
         },
     )));
-    // **Unfold the `finished` group**, where a `done` child lives; the cursor starts on the
+    // Unfold the `finished` group, where a `done` child lives; the cursor starts on the
     // group row because it is the only stop.
     a.key(Key::Enter);
     let frame = a.screen(120, 40);
     let screen = frame.join("\n");
-    // **The whole task, flattened to the row** - both of its lines are there, and *both*
+    // The whole task, flattened to the row - both of its lines are there, and *both*
     // words of it, which is the difference from the legacy field's first line alone.
     assert!(
         screen.contains("audit the session store and say which rows are never read"),
         "{screen}"
     );
-    // **And the answer is its own clause**, the subtitle, not the row.
+    // And the answer is its own clause, the subtitle, not the row.
     assert!(screen.contains("twelve rows have no reader"), "{screen}");
     let row = frame
         .iter()
@@ -983,7 +983,7 @@ fn the_stop_row_names_the_jobs_and_subagents_that_die_with_the_daemon() {
     );
 }
 
-/// **The quit card says what else a stop kills**: another session's running turn, a reviewer
+/// The quit card says what else a stop kills: another session's running turn, a reviewer
 /// mid-verdict and a gate on a target. The card's own counts are this session's jobs and subagents,
 /// so on a daemon with four busy sessions the cheap row and the killing row read alike.
 #[test]
@@ -1086,7 +1086,7 @@ fn a_child_with_a_tool_call_in_flight_is_counted() {
         1,
         child_event("s-sub-1", "running", None),
     )));
-    // **The call is executing, so nothing is generating.** The list is cut now, and its word
+    // The call is executing, so nothing is generating. The list is cut now, and its word
     // about this instant is the only thing it can say.
     let mut list = a_family();
     list[1].status.running = false;
@@ -1101,7 +1101,7 @@ fn a_child_with_a_tool_call_in_flight_is_counted() {
     );
     let row = count_row(&mut a);
     assert!(row.contains("1 subagent running"), "{row}");
-    // **And the pane says which of the two facts it is** - up, with no turn generating this
+    // And the pane says which of the two facts it is - up, with no turn generating this
     // instant, which is exactly what a call in flight looks like from here. The word is the
     // head's, like `state unknown` beside it; the child's own words are the four states.
     a.key(Key::CtrlG);
@@ -1176,7 +1176,7 @@ fn the_footers_number_is_the_rows_the_pane_draws() {
         !a.subagents_finished_open,
         "the premise: the finished group is folded, so every `Agent` stop is a live row"
     );
-    // **The pane's own enumeration**, read the way the pane and its keys read it.
+    // The pane's own enumeration, read the way the pane and its keys read it.
     let drawn = a
         .subagent_stops()
         .iter()
@@ -1185,7 +1185,7 @@ fn the_footers_number_is_the_rows_the_pane_draws() {
     assert_eq!(drawn, 2, "the two live children are the pane's active rows");
     let row = count_row(&mut a);
     assert!(row.contains("2 subagents running"), "{row}");
-    // **And the same number, counted off the marks the pane drew.** The two live rows wear a
+    // And the same number, counted off the marks the pane drew. The two live rows wear a
     // mark - `[~]` for `running`, `[…]` for `opening` - and the finished one is under the fold.
     a.key(Key::CtrlG);
     let screen = a.screen(100, 24).join("\n");
@@ -1282,7 +1282,7 @@ fn the_fold_survives_going_down_into_a_child_and_back_up() {
     a.apply(hello("s-sub-1", a_family(), Hub::new("s-sub-1").snapshot()));
     assert_eq!(a.session_id, "s-sub-1");
 
-    // **The child ENDS while the operator is inside it** - the event, and the list that no
+    // The child ENDS while the operator is inside it - the event, and the list that no
     // longer measures a turn generating in it. This is the whole of the reproduction.
     a.apply(ServerFrame::Event(env(
         5,
@@ -1365,7 +1365,7 @@ fn a_child_ending_does_not_re_open_the_fold() {
     );
 }
 
-/// **A subagent's two lines are one entry**: the pointer over its facts lights both, and a click
+/// A subagent's two lines are one entry: the pointer over its facts lights both, and a click
 /// there selects it - the same block, under the pointer and under the click.
 #[test]
 fn a_two_line_entry_is_one_block_under_the_pointer_and_the_click() {
@@ -1431,7 +1431,7 @@ fn entering_a_subagent_says_that_a_switch_is_in_flight() {
     a.key(Key::CtrlG);
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
 
-    // **The wait, which is the whole finding.** Nothing has answered yet.
+    // The wait, which is the whole finding. Nothing has answered yet.
     assert!(
         a.attaching,
         "the head asked for a session and draws as though it had arrived"
@@ -1491,7 +1491,7 @@ fn esc_out_of_a_subagent_lists_the_parent_before_the_switch_lands() {
     assert_eq!(a.key(Key::Esc), Some(Action::Switch("s".into())));
     assert!(a.is_open(Surface::Subagents));
 
-    // **Before the parent's `Hello`** - the state the operator sat in.
+    // Before the parent's `Hello` - the state the operator sat in.
     let ids: Vec<&str> = a.subagents.iter().map(|s| s.session_id.as_str()).collect();
     assert_eq!(
         ids,
@@ -1551,7 +1551,7 @@ fn entering_a_subagent_stops_drawing_the_conversation_it_is_leaving() {
     a.key(Key::CtrlG);
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
 
-    // **Nothing has answered yet.** The pane is the one the operator reported: a full screen
+    // Nothing has answered yet. The pane is the one the operator reported: a full screen
     // of the session he asked to leave.
     let during = a.screen(100, 24).join("\n");
     assert!(
@@ -1595,7 +1595,7 @@ fn entering_a_subagent_stops_drawing_the_conversation_it_is_leaving() {
     );
 }
 
-/// **The resume arm is the same rule** - a session the daemon does not hold is fetched from the
+/// The resume arm is the same rule - a session the daemon does not hold is fetched from the
 /// store, which is the slower wait of the two, and the conversation being left must not be
 /// passed off as the one asked for while it happens.
 #[test]

@@ -4,7 +4,7 @@
 
 use super::*;
 
-/// **The head, with the real `queue` layer answering** - the pane's one renderer, through the
+/// The head, with the real `queue` layer answering - the pane's one renderer, through the
 /// same host a production head builds for this session.
 fn layer(mut a: App) -> App {
     a.session_id = "s1".into();
@@ -15,7 +15,7 @@ fn layer(mut a: App) -> App {
     a
 }
 
-/// **The stop index of the row whose cells carry `needle`**, read from the view the last draw
+/// The stop index of the row whose cells carry `needle`, read from the view the last draw
 /// kept - the same list the cursor and the verbs walk, so a test cannot aim a key at a row the
 /// pane does not have.
 fn stop_of(a: &App, needle: &str) -> usize {
@@ -31,7 +31,7 @@ fn stop_of(a: &App, needle: &str) -> usize {
     panic!("{needle} is not on the pane");
 }
 
-/// **`/queue` asks for the snapshot and draws nothing it was not sent** - and until one arrives
+/// `/queue` asks for the snapshot and draws nothing it was not sent - and until one arrives
 /// the host says it is asking, rather than letting the layer draw an empty queue.
 #[test]
 fn the_queue_pane_asks_for_the_queues_and_draws_what_comes_back() {
@@ -52,7 +52,7 @@ fn the_queue_pane_asks_for_the_queues_and_draws_what_comes_back() {
     assert!(!a.is_open(Surface::Queue));
 }
 
-/// **`tab` switches the view**, and the pane's header follows: the strip the layer draws says
+/// `tab` switches the view, and the pane's header follows: the strip the layer draws says
 /// which queue is drawn first, so the person can tell what `tab` did.
 #[test]
 fn tab_switches_between_the_review_queue_and_the_merge_queue() {
@@ -79,7 +79,7 @@ fn tab_switches_between_the_review_queue_and_the_merge_queue() {
     );
 }
 
-/// **A row names an owner only when the claim is not the serving daemon's** - the daemon holding
+/// A row names an owner only when the claim is not the serving daemon's - the daemon holding
 /// the repository's lease is the pane's own, and its name on every row was one of the fields the
 /// operator read past.
 #[test]
@@ -105,7 +105,7 @@ fn a_row_names_an_owner_only_from_elsewhere() {
     );
 }
 
-/// **A repository that never asked for a queue is one muted line**, and nothing is counted for
+/// A repository that never asked for a queue is one muted line, and nothing is counted for
 /// it - the daemon keeps them out of `targets` and names them in `not_queued`.
 #[test]
 fn a_repository_that_is_not_queued_is_one_muted_line_and_no_count() {
@@ -127,7 +127,7 @@ fn a_repository_that_is_not_queued_is_one_muted_line_and_no_count() {
     );
 }
 
-/// **A red target is an alarm on the pane and on the edge**, and its own review reads as the
+/// A red target is an alarm on the pane and on the edge, and its own review reads as the
 /// target it is about.
 #[test]
 fn a_red_target_is_an_alarm_and_its_review_reads_as_the_target() {
@@ -182,7 +182,7 @@ impl QueueReviewExt for letibot_sessionlog::event::QueueReview {
     }
 }
 
-/// **A snapshot that could not be read says so** - never drawn as an empty queue.
+/// A snapshot that could not be read says so - never drawn as an empty queue.
 #[test]
 fn an_unreadable_snapshot_is_said_not_drawn_empty() {
     let mut a = layer(app());
@@ -194,7 +194,7 @@ fn an_unreadable_snapshot_is_said_not_drawn_empty() {
     assert!(screen.contains("database is locked"), "{screen}");
 }
 
-/// **The selected row carries its last moves, and Enter opens it whole** - the moves are the
+/// The selected row carries its last moves, and Enter opens it whole - the moves are the
 /// layer's faint lines under the picked row; the overlay is the layer's `detail` prose, hosted.
 #[test]
 fn the_selected_row_shows_its_moves_and_enter_opens_it_whole() {
@@ -234,7 +234,7 @@ fn the_selected_row_shows_its_moves_and_enter_opens_it_whole() {
     assert!(a.is_open(Surface::Queue), "esc goes back to the queue");
 }
 
-/// **A row that is waiting says why, and it has no attempts to its name** - the overlay draws
+/// A row that is waiting says why, and it has no attempts to its name - the overlay draws
 /// the failure whether or not an attempt was counted, which is the whole use of the pane.
 #[test]
 fn a_waiting_row_says_why_even_with_no_attempts_counted() {
@@ -266,7 +266,7 @@ fn a_waiting_row_says_why_even_with_no_attempts_counted() {
     );
 }
 
-/// **A merge row's gate steps draw in the overlay**, a timed-out step in its own words.
+/// A merge row's gate steps draw in the overlay, a timed-out step in its own words.
 #[test]
 fn a_merge_rows_gate_steps_draw_and_timed_out_is_its_own_word() {
     use letibot_sessionlog::event::MergeGateOutcome as O;
@@ -336,7 +336,7 @@ fn the_verbs_send_for_the_row_under_the_cursor_and_refuse_what_the_daemon_would(
             line: "queue restart m-two".into()
         })
     );
-    // **`g` re-gates the row's TARGET**, named with its repository.
+    // `g` re-gates the row's TARGET, named with its repository.
     assert_eq!(
         a.key(Key::Char('g')),
         Some(Action::Slash {
@@ -349,7 +349,7 @@ fn the_verbs_send_for_the_row_under_the_cursor_and_refuse_what_the_daemon_would(
     assert_eq!(a.editor.text(), "pd");
 }
 
-/// **A queue move asks for the snapshot again, open pane or not** - the edge draws this session's
+/// A queue move asks for the snapshot again, open pane or not - the edge draws this session's
 /// repository's standing from the same snapshot, and a head that re-read only with the pane open
 /// kept `‼ 1 red target(s)` on its edge after `main` went green. A burst of moves is one read.
 #[test]
@@ -385,7 +385,7 @@ fn a_queue_move_asks_for_the_snapshot_again_whether_or_not_the_pane_is_open() {
     );
 }
 
-/// **The head asks for the queues when it is seated, not when the pane first opens** - the root
+/// The head asks for the queues when it is seated, not when the pane first opens - the root
 /// of *"not all heads still show the queue"*: a head that never opened the pane never drew a
 /// standing on its edge.
 #[test]
@@ -406,7 +406,7 @@ fn an_attach_asks_for_the_queues_so_the_edge_has_a_standing() {
     );
 }
 
-/// **The edge's snapshot is asked for again on the head's own clock** - a gate's step moves while
+/// The edge's snapshot is asked for again on the head's own clock - a gate's step moves while
 /// no row does, and the daemon only answers, so a standing nobody opened anything to see was the
 /// one from the first answer for ever.
 #[test]
@@ -483,7 +483,7 @@ fn two_repositories() -> letibot_sessionlog::event::QueueSnapshot {
     snap
 }
 
-/// **`/queue` is this session's repository; `/queue all` is every one** - the pane, the edge and
+/// `/queue` is this session's repository; `/queue all` is every one - the pane, the edge and
 /// the verbs' lines all follow the scope.
 #[test]
 fn the_queue_pane_and_the_edge_are_scoped_to_the_sessions_repository() {
@@ -505,7 +505,7 @@ fn the_queue_pane_and_the_edge_are_scoped_to_the_sessions_repository() {
         edge_row(&rows)
     );
 
-    // **Explicitly every repository** - and a verb sent from it carries the scope.
+    // Explicitly every repository - and a verb sent from it carries the scope.
     assert_eq!(a.command("queue all"), None, "the open pane is re-cut");
     a.screen(140, 40);
     let screen = a.screen(160, 40).join("\n");
@@ -526,7 +526,7 @@ fn the_queue_pane_and_the_edge_are_scoped_to_the_sessions_repository() {
         "the daemon is told the scope the row was drawn in"
     );
 
-    // **A bare `/queue` closes, and reopens on this session's repository.**
+    // A bare `/queue` closes, and reopens on this session's repository.
     a.command("queue");
     assert!(!a.is_open(Surface::Queue));
     a.command("queue");
@@ -534,7 +534,7 @@ fn the_queue_pane_and_the_edge_are_scoped_to_the_sessions_repository() {
     assert!(!screen.contains("agent/theirs"), "{screen}");
 }
 
-/// **A session of no repository is told so and offered `/queue all`** - and its edge draws no
+/// A session of no repository is told so and offered `/queue all` - and its edge draws no
 /// other project's standing.
 #[test]
 fn a_session_outside_every_repository_is_told_and_offered_all() {
@@ -564,7 +564,7 @@ fn a_session_outside_every_repository_is_told_and_offered_all() {
     assert!(screen.contains("agent/theirs"), "{screen}");
 }
 
-/// **An unjudged target is an alarm on the edge, and a green one clears it** - and the target's
+/// An unjudged target is an alarm on the edge, and a green one clears it - and the target's
 /// own red-tip review stops counting once the target is green.
 #[test]
 fn the_edge_alarms_on_an_unjudged_target_and_clears_when_it_is_green() {
@@ -599,11 +599,11 @@ fn the_edge_alarms_on_an_unjudged_target_and_clears_when_it_is_green() {
     );
 }
 
-/// **The edge counts the queues by what stands**, and says nothing when nothing does.
+/// The edge counts the queues by what stands, and says nothing when nothing does.
 #[test]
 fn the_edge_counts_the_queues_and_is_silent_when_nothing_stands() {
     let mut a = app();
-    // **Nothing that stands** - an approved review is the merge queue's business now, and a
+    // Nothing that stands - an approved review is the merge queue's business now, and a
     // rejected one, a withdrawn one and a landing that moved on are the queue's past.
     a.apply(queue_frame(queues(
         vec![
@@ -635,7 +635,7 @@ fn the_edge_counts_the_queues_and_is_silent_when_nothing_stands() {
     );
 }
 
-/// **A landing is a standing, and the zeros are not** - a queue that landed two branches today
+/// A landing is a standing, and the zeros are not - a queue that landed two branches today
 /// and holds nothing else still has something to say, so the words are drawn on the count alone.
 #[test]
 fn the_edge_says_the_four_columns_and_a_landing_stands_on_its_own() {
@@ -652,7 +652,7 @@ fn the_edge_says_the_four_columns_and_a_landing_stands_on_its_own() {
     assert!(!screen.contains("0 in review"), "a zero is drawn: {screen}");
 }
 
-/// **A terminal row inflates no live column**: a `rejected` review is terminal, so it is not
+/// A terminal row inflates no live column: a `rejected` review is terminal, so it is not
 /// stuck; a `failed` landing is the reader's to move, so it is.
 #[test]
 fn a_rejected_review_is_not_stuck_and_a_failed_landing_is() {
@@ -672,7 +672,7 @@ fn a_rejected_review_is_not_stuck_and_a_failed_landing_is() {
         "the failed landing is the one"
     );
 
-    // **Take the landing away and the edge goes quiet.**
+    // Take the landing away and the edge goes quiet.
     a.apply(queue_frame(queues(
         vec![
             queue_review_row("one", "rejected"),
@@ -689,12 +689,12 @@ fn a_rejected_review_is_not_stuck_and_a_failed_landing_is() {
     assert_eq!(a.queue_standings().stuck, 0);
 }
 
-/// **`landed` is the last day, not for ever** - the same window the edge's landed column uses,
+/// `landed` is the last day, not for ever - the same window the edge's landed column uses,
 /// and the stamp is the row's own: `state_ms` is when the store moved it to `landed`.
 #[test]
 fn a_landing_older_than_the_recent_window_is_not_counted() {
     let mut a = app();
-    // **A snapshot ten days old on its own clock**, so that a landing CAN be outside the window.
+    // A snapshot ten days old on its own clock, so that a landing CAN be outside the window.
     let mut snap = queues(Vec::new(), vec![queue_merge_row("m-old", "landed")]);
     snap.at_ms = 10 * crate::ui::panes::queue::RECENT_MS;
     snap.merges[0].state_ms = snap.at_ms - (crate::ui::panes::queue::RECENT_MS + 1_000);
@@ -705,7 +705,7 @@ fn a_landing_older_than_the_recent_window_is_not_counted() {
         "a landing outside the window is not today's work: {screen}"
     );
 
-    // **And one second inside it is** - the boundary is the window's, not the fixture's.
+    // And one second inside it is - the boundary is the window's, not the fixture's.
     let mut snap = queues(Vec::new(), vec![queue_merge_row("m-new", "landed")]);
     snap.at_ms = 10 * crate::ui::panes::queue::RECENT_MS;
     snap.merges[0].state_ms = snap.at_ms - (crate::ui::panes::queue::RECENT_MS - 1_000);
@@ -714,7 +714,7 @@ fn a_landing_older_than_the_recent_window_is_not_counted() {
     assert!(screen.contains("1 done"), "{screen}");
 }
 
-/// **A red target still leads at its own severity**, and neither the word nor the role is a
+/// A red target still leads at its own severity, and neither the word nor the role is a
 /// function of how many columns follow it.
 #[test]
 fn a_red_target_still_leads_the_grown_columns_at_its_own_severity() {
@@ -736,7 +736,7 @@ fn a_red_target_still_leads_the_grown_columns_at_its_own_severity() {
 //
 // All four columns can be zero while a red target is the only live fact, and a zero is not news.
 
-/// **A repository whose only live fact is a red `main` reads `1 red`** - the four columns have
+/// A repository whose only live fact is a red `main` reads `1 red` - the four columns have
 /// nothing to say and are not drawn.
 #[test]
 fn a_red_target_alone_reads_as_one_red_and_no_zeros() {
@@ -772,11 +772,11 @@ fn a_red_target_alone_reads_as_one_red_and_no_zeros() {
         rano::style::Role::Failure,
         "the red target is the register a stuck row is drawn in"
     );
-    // **And it is the badge**: the pane was never opened, so this is what a reader's edge says.
+    // And it is the badge: the pane was never opened, so this is what a reader's edge says.
     assert!(!a.is_open(Surface::Queue));
 }
 
-/// **A red target and a stuck landing are both said** - neither hides the other, and no zero
+/// A red target and a stuck landing are both said - neither hides the other, and no zero
 /// between them.
 #[test]
 fn a_red_target_and_a_stuck_landing_are_both_said() {
@@ -792,7 +792,7 @@ fn a_red_target_and_a_stuck_landing_are_both_said() {
     assert!(!edge.contains("landed"), "{edge:?}");
 }
 
-/// **A green target adds no word**, and the columns read as they always have.
+/// A green target adds no word, and the columns read as they always have.
 #[test]
 fn an_all_green_repository_reads_the_columns_and_no_target_word() {
     let mut a = app();
@@ -848,7 +848,7 @@ fn the_longest_standings_fit_on_an_eighty_column_edge() {
         "the edge is the 80-column edge's row"
     );
     assert_eq!(words.chars().count(), 70, "the premise: seventy cells");
-    // **Drawn whole means clickable whole** - the record is the drawn span's own columns.
+    // Drawn whole means clickable whole - the record is the drawn span's own columns.
     let rect = standings_rect(&a);
     assert_eq!(column_of(&edge, words), rect.x, "{edge:?}");
     assert_eq!(rect.w, 70, "the target is the whole line");
@@ -884,7 +884,7 @@ fn gating_target(
     t
 }
 
-/// The edge says which step of the gate is running, at 80 columns, where the merge column used to
+/// The edge says which step of the gate is running, at 80 columns, where the merge column could
 /// say only `1 being merged` - and it says it without fusing the two queues: the step rides in
 /// parentheses beside the merge queue's own word instead of standing in for it.
 #[test]
@@ -913,7 +913,7 @@ fn the_edge_names_the_gates_step_at_eighty_columns() {
         edge.contains("queue: 2 to land (gate step 3 of 4)"),
         "drawn whole at eighty columns: {edge:?}"
     );
-    // **And it is still the door** - the span the frame drew is the span a click acts on.
+    // And it is still the door - the span the frame drew is the span a click acts on.
     let words = "queue: 2 to land (gate step 3 of 4)";
     let rect = standings_rect(&a);
     assert_eq!(column_of(&edge, words), rect.x, "{edge:?}");
@@ -924,7 +924,7 @@ fn the_edge_names_the_gates_step_at_eighty_columns() {
     );
 }
 
-/// **The step is spent only when the whole stand fits.** With all six columns non-zero the step
+/// The step is spent only when the whole stand fits. With all six columns non-zero the step
 /// pushes the line past an eighty-column edge, and the edge is cut from its right end: `stuck` and
 /// `done` went first, and the click target, read off words drawn whole, went with them.
 #[test]
@@ -954,7 +954,7 @@ fn the_gate_step_is_dropped_rather_than_the_counts_at_eighty_columns() {
         !edge.contains("(gate step"),
         "the step was drawn into a line it does not fit: {edge:?}"
     );
-    // **And the stand is still the door**: the words were drawn whole, so a click acts on them.
+    // And the stand is still the door: the words were drawn whole, so a click acts on them.
     let rect = standings_rect(&a);
     assert_eq!(
         column_of(&edge, "queue: 1 red"),
@@ -978,7 +978,7 @@ fn the_gate_step_is_dropped_rather_than_the_counts_at_eighty_columns() {
     );
 }
 
-/// **A target that is not gating reads as it always did** - a green target leaves `1 to land`
+/// A target that is not gating reads as it always did - a green target leaves `1 to land`
 /// alone, and a `gating` target whose snapshot carries no step does not invent one.
 #[test]
 fn a_target_that_is_not_gating_keeps_the_old_word() {
@@ -1010,7 +1010,7 @@ fn a_target_that_is_not_gating_keeps_the_old_word() {
 //
 // The standings ride every screen, so the click is the only queue door a reader finds without `/queue`.
 
-/// **The composer's bottom edge** - the row the standings are drawn on, and the row a reader
+/// The composer's bottom edge - the row the standings are drawn on, and the row a reader
 /// who never opens the pane reads them off.
 fn edge_row(rows: &[String]) -> String {
     rows.iter()
@@ -1020,7 +1020,7 @@ fn edge_row(rows: &[String]) -> String {
         .clone()
 }
 
-/// **The standings' rectangle, as the last frame recorded it.**
+/// The standings' rectangle, as the last frame recorded it.
 fn standings_rect(a: &App) -> crate::app::hits::Rect {
     a.hits
         .iter()
@@ -1034,7 +1034,7 @@ fn standings_rect(a: &App) -> crate::app::hits::Rect {
         })
 }
 
-/// **The column a drawn row carries `needle` in**, counted in cells - the record's own
+/// The column a drawn row carries `needle` in, counted in cells - the record's own
 /// arithmetic done independently, so the two can disagree and say so.
 fn column_of(row: &str, needle: &str) -> usize {
     let cells = crate::app::keyhints::cells(row);
@@ -1044,7 +1044,7 @@ fn column_of(row: &str, needle: &str) -> usize {
         .unwrap_or_else(|| panic!("{needle:?} is not drawn on {row:?}"))
 }
 
-/// **A click on the standings opens the merge queue** - `/queue`'s act, through the verb's own
+/// A click on the standings opens the merge queue - `/queue`'s act, through the verb's own
 /// door, and the hover mark covers exactly the words the frame drew.
 #[test]
 fn a_click_on_the_standings_opens_the_queue() {
@@ -1055,8 +1055,8 @@ fn a_click_on_the_standings_opens_the_queue() {
     let screen = a.screen(120, 24);
     let rect = standings_rect(&a);
     let words = "queue: 1 in review";
-    // The record and the glass agree — the rectangle IS the span the frame drew, gutter and
-    // all — or the click below proves nothing.
+    // The record and the glass agree - the rectangle IS the span the frame drew, gutter and
+    // all - or the click below proves nothing.
     let row = screen
         .get(rect.y)
         .unwrap_or_else(|| panic!("the recorded row is not in the frame: {rect:?}"));
@@ -1071,7 +1071,7 @@ fn a_click_on_the_standings_opens_the_queue() {
         "the target is not the words' width"
     );
 
-    // **The hover lights the drawn span and nothing beside it.**
+    // The hover lights the drawn span and nothing beside it.
     a.hover_at(rect.x as u16 + 1, rect.y as u16);
     assert_eq!(
         a.hovered.as_ref().map(|h| h.rows.clone()),
@@ -1094,7 +1094,7 @@ fn a_click_on_the_standings_opens_the_queue() {
     );
 }
 
-/// **The click still lands after the words grew a column** - the record is read off the drawn
+/// The click still lands after the words grew a column - the record is read off the drawn
 /// row (`screen::drawn_span`) rather than rebuilt from the counts, so the longest form this
 /// head can draw is the case that proves it.
 #[test]
@@ -1171,7 +1171,7 @@ fn a_click_one_cell_outside_the_standings_asks_for_nothing() {
     }
 }
 
-/// **The two target alarms carry their own word, and the click still opens the queue.**
+/// The two target alarms carry their own word, and the click still opens the queue.
 #[test]
 fn a_click_on_the_standings_with_an_alarm_prefix_opens_the_queue() {
     for (state, prefix) in [("timed_out", "queue: 1 unjudged"), ("red", "queue: 1 red")] {
@@ -1209,7 +1209,7 @@ fn a_click_on_the_standings_with_an_alarm_prefix_opens_the_queue() {
     }
 }
 
-/// **A click while the queue is open closes it** - the click is `/queue`'s spelling and the verb
+/// A click while the queue is open closes it - the click is `/queue`'s spelling and the verb
 /// TOGGLES: the standings stay drawn on the queue's own edge, and pressing that door again
 /// leaves, exactly as the count labels do for their panes.
 #[test]
@@ -1236,7 +1236,7 @@ fn a_click_on_the_standings_of_an_open_queue_closes_it() {
     );
 }
 
-/// **The edge's standings are a target on whatever screen is up** - a click from the subagents
+/// The edge's standings are a target on whatever screen is up - a click from the subagents
 /// pane opens the queue just as one from the conversation does.
 #[test]
 fn the_standings_are_a_target_from_another_pane_too() {
@@ -1259,7 +1259,7 @@ fn the_standings_are_a_target_from_another_pane_too() {
     assert_eq!(a.top_surface(), Some(Surface::Queue));
 }
 
-/// **A narrow edge keeps no target for standings it cut** - the edge truncates from the right
+/// A narrow edge keeps no target for standings it cut - the edge truncates from the right
 /// and the standings are the last thing on it, so a terminal too narrow to hold the words draws
 /// a piece of them and records nothing.
 #[test]
@@ -1293,7 +1293,7 @@ fn a_narrow_edge_records_no_standings_target_for_words_it_cut() {
     );
 }
 
-/// **A queue that stands nothing has no standings, and the edge records no target for them.**
+/// A queue that stands nothing has no standings, and the edge records no target for them.
 #[test]
 fn a_head_whose_queue_stands_nothing_records_no_standings_target() {
     let mut a = app();
@@ -1323,7 +1323,7 @@ fn a_head_whose_queue_stands_nothing_records_no_standings_target() {
     assert!(!a.is_open(Surface::Queue), "some pane opened anyway");
 }
 
-/// **A click on a row opens THAT row, and so does Enter on the row the cursor is on.**
+/// A click on a row opens THAT row, and so does Enter on the row the cursor is on.
 #[test]
 fn a_click_on_a_queue_row_opens_the_row_drawn_there() {
     let mut a = layer(app());
@@ -1348,13 +1348,13 @@ fn a_click_on_a_queue_row_opens_the_row_drawn_there() {
         "the click opened the row it landed on"
     );
     assert_eq!(a.top_surface(), Some(Surface::QueueEntry));
-    // **And the keyboard reaches the same row** - the cursor stayed where the click put it.
+    // And the keyboard reaches the same row - the cursor stayed where the click put it.
     a.key(Key::Esc);
     a.key(Key::Enter);
     assert_eq!(a.queue_open.as_deref(), Some("three"));
 }
 
-/// **The wheel and the page keys scroll the pane, not the conversation under it.**
+/// The wheel and the page keys scroll the pane, not the conversation under it.
 #[test]
 fn the_wheel_and_page_keys_scroll_the_queue_pane() {
     let mut a = layer(app());
@@ -1372,7 +1372,7 @@ fn the_wheel_and_page_keys_scroll_the_queue_pane() {
     assert!(a.pane_scroll > 3);
 }
 
-/// **The bar names the verbs in the words a person uses** - generated from the `QUEUE` table, so a
+/// The bar names the verbs in the words a person uses - generated from the `QUEUE` table, so a
 /// key cannot be advertised with a word the pane no longer uses (`rm` is `withdraw` now).
 #[test]
 fn the_hint_line_names_the_person_verbs() {
@@ -1384,7 +1384,7 @@ fn the_hint_line_names_the_person_verbs() {
     }
 }
 
-/// **A folder that is one project of several repositories sees each of their queues** - the
+/// A folder that is one project of several repositories sees each of their queues - the
 /// edge and the pane hold every one of them, and nothing of a repository outside it.
 #[test]
 fn a_one_project_folder_sees_the_queues_of_each_of_its_repositories() {
@@ -1408,7 +1408,7 @@ fn a_one_project_folder_sees_the_queues_of_each_of_its_repositories() {
     assert!(!screen.contains("is in no repository"), "{screen}");
 }
 
-/// **`o` goes into the reviewer's session** - from the list, and from a row opened whole; a row
+/// `o` goes into the reviewer's session - from the list, and from a row opened whole; a row
 /// nobody is reviewing says so.
 #[test]
 fn o_goes_into_the_reviewers_session() {
@@ -1463,7 +1463,7 @@ fn withdraw_is_offered_on_a_gating_landing_and_not_on_a_landed_one() {
         verb_moves(Verb::Rm, &Selected::Merge(&landed)).is_err(),
         "a landed row has nothing to withdraw"
     );
-    // **`restart` keeps its own ground** - a running gate is not a parked row, and a failed one is.
+    // `restart` keeps its own ground - a running gate is not a parked row, and a failed one is.
     assert!(
         verb_moves(Verb::Restart, &Selected::Merge(&gating)).is_err(),
         "a gate that is running is not restarted"

@@ -21,7 +21,7 @@ fn a_bare_line_while_the_runs_request_is_open_is_not_spent_on_the_model() {
             reading: letibot_sessionlog::PromptReading::Blocked,
         },
     )));
-    // **The card is put away, not answered** - esc's own act. The daemon keeps the request
+    // The card is put away, not answered - esc's own act. The daemon keeps the request
     // open and the run keeps waiting, which is exactly the window the measured `y` fell
     // through.
     a.key(Key::Esc);
@@ -87,7 +87,7 @@ fn an_ambiguous_prefix_answers_nothing_and_keeps_the_words() {
     );
 }
 
-/// **A `!` line's word completes as a file name**, the way a shell's does - the
+/// A `!` line's word completes as a file name, the way a shell's does - the
 /// operator's `! ./stroppy/build/stroppy`, typed out whole because nothing offered it.
 #[test]
 fn a_bang_lines_word_completes_against_the_workspace() {
@@ -390,7 +390,7 @@ fn the_panes_and_the_promote_are_reachable_as_verbs() {
     );
     assert!(f.want_new_session);
 
-    // **`/promote` needs a command actually running**, and says which of the two
+    // `/promote` needs a command actually running, and says which of the two
     // silences it is in - the distinction the chord was fixed for.
     let mut g = app();
     g.session_id = "s1".into();
@@ -447,7 +447,7 @@ fn a_verb_the_head_has_never_heard_of_goes_to_the_daemon_unjudged() {
         a.input()
     );
 
-    // **A head verb is still the head's** and is not forwarded - the arms above
+    // A head verb is still the head's and is not forwarded - the arms above
     // the fallthrough keep it, which is what makes the fallthrough safe.
     let mut b = app();
     b.session_id = "s1".into();
@@ -619,7 +619,7 @@ fn the_send_verb_is_recognised_before_the_bare_bang() {
         }),
         "the text is one line and is not re-split"
     );
-    // **No echo.** A `!` line leaves an echo because a `User` row is coming to retire it;
+    // No echo. A `!` line leaves an echo because a `User` row is coming to retire it;
     // a `!send` line goes into a running program's stdin and leaves no row behind, so an
     // echo would be this head claiming a line the transcript will never carry.
     assert!(
@@ -638,7 +638,7 @@ fn the_send_verb_is_recognised_before_the_bare_bang() {
 }
 
 /// A question can be answered: it carries `options: []` with the model's choices in `choices`, so a
-/// ladder bounded on `options.len()` is a ladder with nothing to wrap on. D10's three answers are
+/// ladder bounded on `options.len()` is a ladder with nothing to wrap on. The three answers are
 /// the index, the choice's own text, and free text - the last a first-class one.
 #[test]
 fn a_question_is_drawn_with_its_choices_and_can_be_answered_three_ways() {
@@ -653,7 +653,7 @@ fn a_question_is_drawn_with_its_choices_and_can_be_answered_three_ways() {
     };
     let one = question(&["postgres", "sqlite", "a new one"]);
 
-    // **The card draws the model's choices**, and it no longer claims the ask
+    // The card draws the model's choices, and it no longer claims the ask
     // offered none - which is what it said while drawing an empty ladder.
     let a = app();
     let card = a.decision_lines(&one, 200).join("\n");
@@ -673,7 +673,7 @@ fn a_question_is_drawn_with_its_choices_and_can_be_answered_three_ways() {
     assert!(card.contains("or type your own answer"), "{card}");
     assert!(!card.contains("type the id"), "{card}");
 
-    // **1. By index, with the arrows and Enter.** The marker is the answer, the same
+    // 1. By index, with the arrows and Enter. The marker is the answer, the same
     // contract every other ladder in this file keeps.
     let mut a = app();
     a.open.push(one.clone());
@@ -689,7 +689,7 @@ fn a_question_is_drawn_with_its_choices_and_can_be_answered_three_ways() {
         other => panic!("the marked row is the answer, got {other:?}"),
     }
 
-    // **2. By the choice's own text**, which is how a person answers a menu they
+    // 2. By the choice's own text, which is how a person answers a menu they
     // were shown. Answered as an INDEX rather than as free prose, because the model
     // should get back which of the three it offered.
     let mut a = app();
@@ -725,7 +725,7 @@ fn a_question_is_drawn_with_its_choices_and_can_be_answered_three_ways() {
         other => panic!("got {other:?}"),
     }
 
-    // **3. Free text** - a sentence the model did not offer. This is the field the
+    // 3. Free text - a sentence the model did not offer. This is the field the
     // requirement names as first-class, and the one the old code path could not
     // reach at all: it held the words and answered the marked row instead.
     let mut a = app();
@@ -746,7 +746,7 @@ fn a_question_is_drawn_with_its_choices_and_can_be_answered_three_ways() {
         a.input()
     );
 
-    // **And a question whose model offered nothing is still answerable in words.**
+    // And a question whose model offered nothing is still answerable in words.
     // This is the boundary the four call sites have to agree about: no rows, so no
     // marked answer and no digits - but the composer still answers.
     let bare = question(&[]);
@@ -788,14 +788,14 @@ fn a_question_takes_a_note_on_a_choice_and_an_abstention() {
     };
     let one = question(&["postgres", "sqlite", "a new one"]);
 
-    // **The card says how**, and it says it in the half R20 never trims - the row
+    // The card says how, and it says it in the half that is never trimmed - the row
     // nearest the composer, where a person is already looking when they answer.
     let a = app();
     let card = a.decision_lines(&one, 200).join("\n");
     assert!(card.contains("type `abstain`"), "{card}");
     assert!(card.contains("puts your note on that choice"), "{card}");
 
-    // **A choice with the person's own note on it.** The note rides the INDEX, so the
+    // A choice with the person's own note on it. The note rides the INDEX, so the
     // model gets back which of the three it offered *and* what was said about it  -
     // folding the note into free text would lose the choice it qualifies.
     let mut a = app();
@@ -820,7 +820,7 @@ fn a_question_takes_a_note_on_a_choice_and_an_abstention() {
         other => panic!("got {other:?}"),
     }
 
-    // **A note needs a choice to qualify.** A separator with nothing before it, or a
+    // A note needs a choice to qualify. A separator with nothing before it, or a
     // choice with nothing after it, is not a note: both are the person's own words,
     // which is the answer they gave rather than the one a guess would make for them.
     for words in ["-- only for the CUDA box", "sqlite --", "sqlite --   "] {
@@ -835,7 +835,7 @@ fn a_question_takes_a_note_on_a_choice_and_an_abstention() {
             other => panic!("got {other:?}"),
         }
     }
-    // **A line that merely begins with a choice is not that choice.** `sqlite is fine`
+    // A line that merely begins with a choice is not that choice. `sqlite is fine`
     // is a sentence; reading it as a note on `sqlite` would be the harness deciding
     // what a person meant.
     let mut a = app();
@@ -848,7 +848,7 @@ fn a_question_takes_a_note_on_a_choice_and_an_abstention() {
         other => panic!("got {other:?}"),
     }
 
-    // **An abstention is a deliberate no-answer, and it is an answer.** It goes through
+    // An abstention is a deliberate no-answer, and it is an answer. It goes through
     // the same frame as any other, saying so - not as an empty answer (which the daemon
     // refuses) and not as silence (which is no frame at all).
     let mut a = app();
@@ -869,7 +869,7 @@ fn a_question_takes_a_note_on_a_choice_and_an_abstention() {
         Some(Action::AnswerQuestion { answer, .. }) => assert!(answer.abstain, "{answer:?}"),
         other => panic!("got {other:?}"),
     }
-    // **And a question that offered nothing can still be abstained from**, which is the
+    // And a question that offered nothing can still be abstained from, which is the
     // case an abstention exists for: *I am not choosing between these.*
     let mut a = app();
     a.open.push(question(&[]));
@@ -912,7 +912,7 @@ fn a_child_whose_completion_arrived_does_not_count() {
         !screen.contains("subagent running"),
         "a finished child is still counted:\n{screen}"
     );
-    // **And it is drawn where finished children go**, under the fold - with `s-sub-2`, the
+    // And it is drawn where finished children go, under the fold - with `s-sub-2`, the
     // child this head never watched, which the list rebuilt and which is finished too.
     a.key(Key::CtrlG);
     let pane = a.screen(100, 24).join("\n");
@@ -935,7 +935,7 @@ fn a_completion_row_holds_a_whole_brief_on_one_line() {
         vec![brief("s", "one", false)],
         Hub::new("s").snapshot(),
     ));
-    // **The row after the `Hello`**, because attaching rewrites the pane: a child this head
+    // The row after the `Hello`, because attaching rewrites the pane: a child this head
     // watched spawn is what `SubagentState` is for, and the fixture has to be in the state the
     // live head is in when the notice arrives.
     a.subagents = vec![SubagentState {
@@ -1118,7 +1118,7 @@ fn tab_completes_a_slash_command_and_more_tabs_cycle_the_matches() {
     assert_eq!(a.input(), "/standing");
     a.key(Key::Tab);
     assert_eq!(a.input(), "/subagents");
-    // R32's two: `/settings` and `/stats` are the dispatcher's aliases for `/config` and `/status`,
+    // The two aliases: `/settings` and `/stats` are the dispatcher's aliases for `/config` and `/status`,
     // and both worked while neither was offered until the table gained them - the mechanism this
     // test is, catching a listed verb nobody could find.
     a.key(Key::Tab);
@@ -1420,7 +1420,7 @@ fn the_model_lines_are_drawn_as_proposals_and_the_historys_as_facts() {
     assert_eq!(a.input(), "! ls -la --color", "the line itself, unmarked");
 }
 
-/// **A suggestion only fills the composer.** Nothing in the path submits: a Tab
+/// A suggestion only fills the composer. Nothing in the path submits: a Tab
 /// replaces the line, and Enter - the operator's own key - is what sends it.
 #[test]
 fn a_suggestion_only_fills_the_composer_and_never_submits() {
@@ -1507,7 +1507,7 @@ fn the_suggestions_are_in_the_bottom_edge_and_nothing_moves() {
     let empty = a.screen(100, 24);
     let top = composer_at(&empty);
 
-    // 1. Candidates - **in the composer's bottom edge**, and nothing above it moved.
+    // 1. Candidates - in the composer's bottom edge, and nothing above it moved.
     typed(&mut a, "! cargo");
     let candidates = a.screen(100, 24);
     assert!(
@@ -1530,7 +1530,7 @@ fn the_suggestions_are_in_the_bottom_edge_and_nothing_moves() {
     );
     assert_eq!(conversation(&candidates), conversation(&empty));
 
-    // 2. **Dismissed** - one character on, where nothing matches: the edge goes plain, and
+    // 2. Dismissed - one character on, where nothing matches: the edge goes plain, and
     //    still nothing moves.
     typed(&mut a, " x");
     let dismissed = a.screen(100, 24);
@@ -1555,7 +1555,7 @@ fn the_suggestions_are_in_the_bottom_edge_and_nothing_moves() {
         near_the_composer(&again)
     );
 
-    // **The `/command` half is the same edge** - the door the operator reported.
+    // The `/command` half is the same edge - the door the operator reported.
     a.set_composer("/se");
     let slash = a.screen(100, 24);
     assert_eq!(composer_at(&slash), top, "{:#?}", near_the_composer(&slash));
@@ -1611,7 +1611,7 @@ fn a_bare_bang_is_an_empty_command_and_does_nothing() {
     assert_eq!(a.input(), "! ls -la", "a ! prefix matches, newest first");
 }
 
-/// **A `!` line with no history match leaves the text untouched** and says
+/// A `!` line with no history match leaves the text untouched and says
 /// so in the notice, the way `complete_slash` does.
 #[test]
 fn a_bang_line_with_no_history_match_leaves_the_text_untouched() {
@@ -1668,8 +1668,8 @@ fn a_prompt_queued_behind_a_reseat_says_so() {
     assert!(!s.contains("queued behind"), "{s}");
 }
 
-/// **A prompt typed while the daemon is still starting says it runs once the daemon has started**
-/// (TODO R92.2) - the rano "took ages and showed nothing but the queued prompt" report. The boot's
+/// A prompt typed while the daemon is still starting says it runs once the daemon has started
+/// - the rano "took ages and showed nothing but the queued prompt" report. The boot's
 /// steps are a line on the tail, never rows; `daemon_started` takes both away.
 #[test]
 fn a_prompt_typed_while_the_daemon_boots_says_it_runs_once_started() {

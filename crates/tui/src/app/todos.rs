@@ -1,14 +1,14 @@
-//! **The todos' state**: the operator's list, the todo card's draft, the repository's queue,
+//! The todos' state: the operator's list, the todo card's draft, the repository's queue,
 //! and the stops a click lands on.
 
 use super::*;
 
-/// **The id a todo row's question card carries** — `todo-ask:<the row's words>`. Not a daemon
+/// The id a todo row's question card carries - `todo-ask:<the row's words>`. Not a daemon
 /// `req_id` (those are minted by the gate), so it cannot collide with one, and
 /// [`App::settle_question`] reads the row back out of it.
 pub(crate) const TODO_ASK: &str = "todo-ask:";
 
-/// **One row's question for the operator**, as this head's board holds it.
+/// One row's question for the operator, as this head's board holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OperatorAsk {
     pub(crate) content: String,
@@ -27,13 +27,13 @@ pub(crate) struct AwayCard {
     pub(crate) sel: usize,
 }
 
-/// **A card whose answer has left and is not settled yet** (R90.29) — see [`App::answering`].
+/// A card whose answer has left and is not settled yet - see [`App::answering`].
 #[derive(Debug, Clone)]
 pub(crate) struct Answering {
     pub(crate) decision: letibot_sessionlog::view::OpenDecision,
     /// The row that was marked, so a refused answer puts the card back as it was.
     pub(crate) sel: usize,
-    /// The frame's `client_request_id`, once the driver has sent it — what a `Rejected` names.
+    /// The frame's `client_request_id`, once the driver has sent it - what a `Rejected` names.
     pub(crate) request: Option<String>,
 }
 
@@ -55,15 +55,15 @@ impl App {
             .collect()
     }
 
-    /// **Whether the board this head is holding is the session's own** — i.e. the `asks` settings
+    /// Whether the board this head is holding is the session's own - i.e. the `asks` settings
     /// row has nothing left to say. See [`App::asks_board`]: until a board has been read, the
     /// settings row is the only thing that knows a question was asked; after it, the board is.
     pub(crate) fn board_read_here(&self) -> bool {
         self.asks_board.as_deref() == Some(self.session_id.as_str())
     }
 
-    /// **The rows on this head's board that wait on the operator**, with the question and the
-    /// options — open rows only (a done or struck-off row asks nobody anything), in board order.
+    /// The rows on this head's board that wait on the operator, with the question and the
+    /// options - open rows only (a done or struck-off row asks nobody anything), in board order.
     /// The same reading as the daemon's `operator_asks`, over the wire's copy of the board.
     pub(crate) fn operator_asks(&self) -> Vec<OperatorAsk> {
         use letibot_sessionlog::event::{TodoNeed, TodoStatus};
@@ -140,7 +140,7 @@ impl App {
         {
             self.stash_front_card();
         }
-        // **The operator's own line is held, never the card's answer** (R90.3).
+        // The operator's own line is held, never the card's answer.
         self.hold_typed_line();
         let kept = self.away.iter().position(|a| {
             a.decision.req_id == req_id
@@ -186,7 +186,7 @@ impl App {
         self.redraw = true;
     }
 
-    /// **A question card's answer, as the action that carries it** — to the ROW for a card
+    /// A question card's answer, as the action that carries it - to the ROW for a card
     /// [`App::open_operator_ask`] opened (and the card comes down: nothing on the daemon will
     /// settle it), to the open decision for every other question.
     pub(crate) fn settle_question(
@@ -217,10 +217,8 @@ impl App {
         Action::AnswerQuestion { req_id, answer }
     }
 
-    /// After a todo answer, the next question or the word that there is none: the card moves on to
-    /// the next waiting row in this session and closes when none remain, saying which happened, so
-    /// moving on never reads as the answer being ignored. Another card on screen is left alone: the
-    /// next row waits for alt-a rather than jumping in front.
+    /// After a todo answer, the card moves on to the next waiting row in this session and closes when none remain, saying which
+    /// happened. Another card on screen is left alone: the next row waits for alt-a.
     ///
     /// ```text
     /// answered — 2 more waiting on you
@@ -394,7 +392,7 @@ impl App {
         self.redraw = true;
     }
 
-    /// **The driver sent it**, under this `client_request_id` — what a refusal will name.
+    /// The driver sent it, under this `client_request_id` - what a refusal will name.
     pub fn answer_sent(&mut self, req_id: &str, request: String) {
         if let Some(a) = self
             .answering
@@ -405,7 +403,7 @@ impl App {
         }
     }
 
-    /// **The daemon refused an answer this head sent** — its card goes back in front, the
+    /// The daemon refused an answer this head sent - its card goes back in front, the
     /// marked row as it was. `false` when `request` was not an answer of ours. A refusal that
     /// says the decision is no longer open puts nothing back: it was settled elsewhere.
     pub(crate) fn answer_refused(&mut self, request: &str, reason: &str) -> bool {
@@ -440,13 +438,13 @@ impl App {
             self.sel_for = front.clone();
             self.sel = 0;
             self.redraw = true;
-            // **A decision coming up closes the quit card** (R90.6): the decision is drawn ahead
+            // A decision coming up closes the quit card: the decision is drawn ahead
             // of it and takes its keys, so a `1` meant as "detach" would answer the decision.
             if !front.is_empty() && self.quit_card {
                 self.quit_card = false;
                 self.say("a decision came up — the quit card closed; ctrl-c twice asks again");
             }
-            // **A decision coming up takes the keyboard back from the editor pane** (R90.7):
+            // A decision coming up takes the keyboard back from the editor pane:
             // rano took every key while it was focused, so `1` or Enter meant for the card
             // edited the file.
             if !front.is_empty()
@@ -457,7 +455,7 @@ impl App {
                 p.dirty = true;
                 self.say("a decision came up — the keyboard is back on the card; ctrl-] returns to the editor");
             }
-            // **A draft card in front keeps the keys, and says what waits behind it** (R90.16).
+            // A draft card in front keeps the keys, and says what waits behind it.
             if !front.is_empty() && (self.todo_draft.is_some() || self.key_ask.is_some()) {
                 self.say("a decision is waiting behind this card — enter or esc it, then answer");
             }
@@ -489,7 +487,7 @@ impl App {
         }
     }
 
-    /// Take the composer's words aside into [`App::held_line`] and empty it (R90.3).
+    /// Take the composer's words aside into [`App::held_line`] and empty it.
     pub(crate) fn hold_line(&mut self) {
         if self.editor.text().is_empty() {
             return;
@@ -502,7 +500,7 @@ impl App {
         self.clear_composer();
     }
 
-    /// Empty the composer, every line of it — ctrl-c on a non-empty composer is the editor's own
+    /// Empty the composer, every line of it - ctrl-c on a non-empty composer is the editor's own
     /// "clear what I typed", and an undo away; Home + kill-to-end would clear one line of several.
     pub(crate) fn clear_composer(&mut self) {
         if !self.editor.text().is_empty() {
@@ -514,8 +512,8 @@ impl App {
     /// one key, and oldest is read as the order the two can be compared in: a model's question first, since it has a
     /// clock, then a todo row's card, then the first row waiting.
     pub(crate) fn bring_back_question(&mut self) {
-        // **The prompt card put away comes back first** (R90.5): it is the operator's own
-        // command blocked on a line, and alt-a was no way back to it at all — only `!send`.
+        // The prompt card put away comes back first: it is the operator's own
+        // command blocked on a line, and alt-a was no way back to it at all - only `!send`.
         if self.prompt.is_some() && self.prompt_away {
             self.prompt_away = false;
             self.prompt_buf.clear();
@@ -526,7 +524,7 @@ impl App {
             && d.kind == "question"
             && !d.req_id.starts_with(TODO_ASK)
         {
-            // About THIS card, and what alt-a will do once it is out of the way (R90.26) — the
+            // About THIS card, and what alt-a will do once it is out of the way - the
             // operator pressing alt-a wanted the other question.
             self.say(
                 "a question is the open card — answer it, or esc puts it away; then alt-a opens \
@@ -549,7 +547,7 @@ impl App {
             if !self.open.is_empty() {
                 self.stash_front_card();
             }
-            // **The operator's own line is held, never the card's answer** (R90.3).
+            // The operator's own line is held, never the card's answer.
             self.hold_typed_line();
             let Some(i) = self
                 .away
@@ -607,21 +605,11 @@ impl App {
     /// /todo postpone paste the token     the same, naming a row the MODEL wrote
     /// ```
     ///
-    /// A number counts the person's rows only, since the model's rows are not theirs to edit. A
-    /// non-numeric argument names any row by its own words, because the pane numbers only one half
-    /// and `todo_write` refuses to postpone: without it a row the model wrote had no name this verb
-    /// could use. A parent's row is refused, because a parent owns its children's states.
-    ///
-    /// Neither verb removes a row: `done` and `rm` are records of work finished and work decided
-    /// against, the row keeps its words and its place, and `/todo resume N` lifts either. The model
-    /// may move a row's status and may not remove one.
-    /// The person's own rows, drawn from the moment they are sent: their half of what
-    /// `pending_prompts` does for their words.
-    ///
-    /// The write publishes at once, but the command reaches the worker behind whatever is running and
-    /// is injected at the next step boundary, so until `TodosUpdated` arrives the pane drew only
-    /// what the daemon had published: nothing, for a whole running turn. The head applies the list
-    /// it is about to send and the daemon's answer replaces it, in the daemon's own order.
+    /// A number counts the person's rows only. A non-numeric argument names any row by its words, since the pane numbers one half and
+    /// `todo_write` refuses to postpone. A parent's row is refused, as a parent owns its children's states. Neither verb removes a row:
+    /// `done` and `rm` keep the words and place, and `/todo resume N` lifts either. The model may move a status, not remove a row.
+    /// The person's own rows are drawn from the moment they are sent, as `pending_prompts` does for their words: the command reaches the
+    /// worker behind the running turn, so until `TodosUpdated` arrives the pane would show nothing. The daemon's answer replaces it.
     pub(crate) fn echo_operator_todos(&mut self, mine: Vec<letibot_sessionlog::event::TodoEntry>) {
         self.todos
             .retain(|t| t.by != letibot_sessionlog::event::TodoBy::Operator);
@@ -668,7 +656,7 @@ impl App {
         let body = match std::fs::read_to_string(&path) {
             Ok(b) => b,
             Err(e) => {
-                // Not marked — see the docstring: the file may still be written.
+                // Not marked - see the docstring: the file may still be written.
                 self.say(&format!(
                     "todo_template is on but {} is not there: {e}",
                     path.display()
@@ -713,7 +701,7 @@ impl App {
                 },
                 by: letibot_sessionlog::event::TodoBy::Operator,
                 when: None,
-                // **A template's items are rows, not a graph**: the file is a checklist and has
+                // A template's items are rows, not a graph: the file is a checklist and has
                 // nowhere to say what waits on what, so a seeded row waits on nothing.
                 needs: Vec::new(),
             });
@@ -725,7 +713,7 @@ impl App {
             items: mine,
             moved: Vec::new(),
         });
-        // **The count, and then every item that was too long to be a title, by name** — one notice,
+        // The count, and then every item that was too long to be a title, by name - one notice,
         // because `say` replaces what it last said: two calls would leave only the refusals on the
         // screen and the count unread. The seed's own rule is *"refusals are notes, not silences"*.
         let mut said = format!(
@@ -786,7 +774,7 @@ impl App {
         mine + repo
     }
 
-    /// The stop the cursor is on, read through the one enumeration and clamped — `None` on a
+    /// The stop the cursor is on, read through the one enumeration and clamped - `None` on a
     /// board with nothing on it.
     fn selected_todo_stop(&self) -> Option<TodoStop> {
         let stops = self.todos_stops();
@@ -807,12 +795,12 @@ impl App {
             None => self.todos_sel.min(stops.len().saturating_sub(1)),
         };
         self.sync_repo_from_stop(&stops);
-        // **The window follows on the next DRAW**, which is the only place that knows which pane
+        // The window follows on the next DRAW, which is the only place that knows which pane
         // row the cursor landed on ([`App::todos_stop_rows`]). A scroll computed here would read
         // the record the last frame wrote, and that record describes the list as it was.
         self.todos_follow = true;
         self.redraw = true;
-        // **Remembered across restarts, like every other switch on `/config`** — a switch that
+        // **Remembered across restarts, like every other switch on `/config`** - a switch that
         // forgets is a switch the reader keeps re-making, and the operator asked for this one
         // about a board whose done rows are the noise.
         let saved = self.save_prefs(RetiredWrite::Union);
@@ -865,7 +853,7 @@ impl App {
         self.todos_stop_rows.get(at).copied().unwrap_or(0)
     }
 
-    /// **The repo cursor follows the stop cursor**, for the repo's own keys — the unfold and the
+    /// The repo cursor follows the stop cursor, for the repo's own keys - the unfold and the
     /// body it shows read `repo_sel`, and a second cursor that did not follow would be the two
     /// enumerations this whole change removed.
     pub(crate) fn sync_repo_from_stop(&mut self, stops: &[TodoStop]) {
@@ -935,8 +923,8 @@ impl App {
                 Some(slug) => format!("{h} · {slug}"),
                 None => h.clone(),
             },
-            // **A child by its name when it has one** — `…14688401 · fix-login`, the handle first
-            // as a job's is (`j97 · pg-timing`) — and by its role when it has none, as before.
+            // A child by its name when it has one - `…14688401 · fix-login`, the handle first
+            // as a job's is (`j97 · pg-timing`) - and by its role when it has none, as before.
             WaitOn::Child(id) => {
                 let short = letibot_sessionlog::registry::short_id(id);
                 let row = self.subagents.iter().find(|s| s.session_id == *id);
@@ -959,9 +947,9 @@ impl App {
         }
     }
 
-    /// **A job's slug, as the head knows it**: the daemon's job table first, then a completion
+    /// A job's slug, as the head knows it: the daemon's job table first, then a completion
     /// notice on the conversation for a job the table no longer lists. `None` for a job nobody
-    /// named and for one the head has never heard of — nothing is invented from the command.
+    /// named and for one the head has never heard of - nothing is invented from the command.
     pub(crate) fn job_slug(&self, handle: &str) -> Option<String> {
         match self.jobs.iter().find(|j| j.id == handle) {
             Some(j) => Some(j.slug.clone()).filter(|s| !s.is_empty()),
@@ -972,7 +960,7 @@ impl App {
         }
     }
 
-    /// **The newest completion notice on the conversation that names `handle`** — its index in
+    /// **The newest completion notice on the conversation that names `handle`** - its index in
     /// `items`, which is what the notice popup opens, and the job as the notice reported it.
     pub(crate) fn notice_job(
         &self,
@@ -1025,18 +1013,18 @@ impl App {
         }
     }
 
-    /// **A click on link `k` of the last frame**: the cursor goes to the row the link is on —
-    /// so the pane and the bar say which row was acted on — and its wait opens.
+    /// **A click on link `k` of the last frame**: the cursor goes to the row the link is on  -
+    /// so the pane and the bar say which row was acted on - and its wait opens.
     pub(crate) fn open_wait_link(&mut self, k: usize) -> Option<Action> {
         let link = self.todos_wait_links.get(k)?.clone();
-        // The stops are the add control, then every session row the pane DREW, in its order —
+        // The stops are the add control, then every session row the pane DREW, in its order  -
         // which is what `WaitLink::todo` counts.
         self.todos_sel = 1 + link.todo;
         self.open_wait(&link.target)
     }
 
-    /// **What the row under the todos cursor waits on**, if it is a session row that waits on a
-    /// job or a child — `w`'s question, and the bar's.
+    /// What the row under the todos cursor waits on, if it is a session row that waits on a
+    /// job or a child - `w`'s question, and the bar's.
     pub(crate) fn selected_wait(&self) -> Option<WaitOn> {
         use letibot_sessionlog::event::TodoBy;
         let stops = self.todos_stops();
@@ -1070,7 +1058,7 @@ pub(crate) fn title_refusal(text: &str) -> Option<String> {
     })
 }
 
-/// **One row of the todos pane the cursor may land on** — see [`App::todos_stops`].
+/// One row of the todos pane the cursor may land on - see [`App::todos_stops`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TodoStop {
     /// The `[+] add todo item` control, at the head of the list.
@@ -1081,7 +1069,7 @@ pub(crate) enum TodoStop {
     /// One of the model's rows, by its words, and the rows the operator's report was about: they are stops now
     /// because Enter READS a row and a stop is where a key acts.
     Theirs(String),
-    /// A row of the workspace's `TODO.md`, by index into `repo_todos` — the file's own order IS
+    /// A row of the workspace's `TODO.md`, by index into `repo_todos` - the file's own order IS
     /// its identity, because the pane re-reads the file.
     Repo(usize),
 }
@@ -1092,8 +1080,8 @@ pub(crate) enum TodoStop {
 pub(crate) enum BoardLine {
     /// A board row, by its index in [`App::todos`].
     Row(usize),
-    /// **The group line**, and how many done rows it stands for. It is drawn after the rows still
-    /// owed and before the done ones — or, with the group folded, as all that is left of them.
+    /// The group line, and how many done rows it stands for. It is drawn after the rows still
+    /// owed and before the done ones - or, with the group folded, as all that is left of them.
     DoneGroup { done: usize },
 }
 
@@ -1115,7 +1103,7 @@ pub(crate) fn board_drawn(
         .filter(|i| todos[*i].status == TodoStatus::Completed)
         .collect();
     if done.is_empty() {
-        // **No done rows, no group line** — a line saying `done (0)` would be furniture about
+        // No done rows, no group line - a line saying `done (0)` would be furniture about
         // nothing, and the board with nothing finished is the ordinary board.
         return out;
     }
@@ -1130,7 +1118,7 @@ pub(crate) fn board_drawn(
 /// section's items belong to the heading over them, one step less far than the session's own list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RepoLine {
-    /// A `##` heading — the file's outline, drawn where the file has it, and never a stop.
+    /// A `##` heading - the file's outline, drawn where the file has it, and never a stop.
     Heading(usize),
     /// One of the section's items, by its index in [`App::repo_todos`].
     Item(usize),
@@ -1183,9 +1171,9 @@ pub(crate) fn repo_drawn(rows: &[TodoRow], folded: bool) -> Vec<RepoLine> {
 pub(crate) struct TodoDraft {
     pub(crate) title: String,
     pub(crate) detail: String,
-    /// **The handle this row waits on, or empty for a row that waits on nothing.** A bare handle:
+    /// The handle this row waits on, or empty for a row that waits on nothing. A bare handle:
     /// the *condition* is what the row holds, and the card does not collect a kind because there is
-    /// one kind — see `TodoCondition`.
+    /// one kind - see `TodoCondition`.
     pub(crate) when: String,
     pub(crate) focus: TodoField,
 }
@@ -1207,7 +1195,7 @@ impl TodoDraft {
         }
     }
 
-    /// **What one field holds**, with the composer's live text standing in for the focused one.
+    /// What one field holds, with the composer's live text standing in for the focused one.
     pub(crate) fn shown(&self, live: &str, which: TodoField) -> String {
         if self.focus == which {
             return live.to_string();
@@ -1219,7 +1207,7 @@ impl TodoDraft {
         }
     }
 
-    /// **Commit the composer into the field it belongs to** — every key that leaves a field does
+    /// Commit the composer into the field it belongs to - every key that leaves a field does
     /// this first, so a Tab cannot lose what was just typed.
     pub(crate) fn take(&mut self, live: &str) {
         let into = match self.focus {
@@ -1230,7 +1218,7 @@ impl TodoDraft {
         *into = live.to_string();
     }
 
-    /// The field Tab goes to next, wrapping — a cycle, so there is no field a reader cannot reach.
+    /// The field Tab goes to next, wrapping - a cycle, so there is no field a reader cannot reach.
     pub(crate) fn next(&self) -> TodoField {
         match self.focus {
             TodoField::Title => TodoField::Detail,

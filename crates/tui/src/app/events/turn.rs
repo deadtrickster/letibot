@@ -151,7 +151,7 @@ impl App {
                 if let Some(t) = self.turn.as_mut() {
                     t.progress = Some(progress);
                 }
-                // Shown on the status line, not in the transcript — which is what a
+                // Shown on the status line, not in the transcript - which is what a
                 // progress frame is for. It counts as rendered because it does
                 // change the screen.
                 Disposition::Rendered
@@ -163,7 +163,7 @@ impl App {
                 if t.turn_id != turn_id {
                     return Disposition::Filtered;
                 }
-                // The counter this event used to move is no longer drawn. It still counts as
+                // The counter this event moves is not drawn. It still counts as
                 // `Rendered` - the spinner beside the clock moves on it, which is the row's whole
                 // business now - and as liveness for the stuck line, the same way a delta does.
                 let _ = tokens;

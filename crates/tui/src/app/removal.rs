@@ -88,7 +88,7 @@ impl App {
         self.removed = kept;
     }
 
-    /// The act itself, on a session index — the half a test can drive without a cursor.
+    /// The act itself, on a session index - the half a test can drive without a cursor.
     pub(crate) fn remove_row(&mut self, i: usize) {
         let id = self.sessions[i].session_id.clone();
         // The chain to where this head is standing is not removable, link by link: the row you are in
@@ -114,7 +114,7 @@ impl App {
             self.redraw = true;
             return;
         }
-        // **The second press**, on the same row, inside the arm's window.
+        // The second press, on the same row, inside the arm's window.
         if let Some((armed, at)) = self.removal_armed.clone()
             && armed == id
             && self.now_ms <= at.saturating_add(ARM_MS)
@@ -130,7 +130,7 @@ impl App {
         self.redraw = true;
     }
 
-    /// **`ctrl-z`** — the last removal, back. One at a time, in the order they were removed, and
+    /// `ctrl-z` - the last removal, back. One at a time, in the order they were removed, and
     /// each press says how many are still hidden.
     pub(crate) fn restore_removed(&mut self) {
         let Some(id) = self.removed.pop() else {
@@ -149,7 +149,7 @@ impl App {
     pub(crate) fn forget_named(&mut self, typed: &str) {
         let typed = typed.trim();
         let i = if typed.is_empty() {
-            // **No argument is the row under the cursor**, when the list is on the screen — the
+            // No argument is the row under the cursor, when the list is on the screen - the
             // same reading a key would have taken, without the key.
             match self.picker_row().and_then(|r| r.session) {
                 Some(i) => i,
@@ -232,7 +232,7 @@ impl App {
                  hanging from it"
             ),
         };
-        // **The door that exists, named** — and what it will say when it is tried.
+        // The door that exists, named - and what it will say when it is tried.
         let door = if rows > 0 {
             format!(
                 "`letibot --delete {id}` refuses it for the same reason: transcript_item carries a \
@@ -251,16 +251,16 @@ impl App {
         self.redraw = true;
     }
 
-    /// **The sentence before the second press** — what the row is, what goes with it, and what
+    /// The sentence before the second press - what the row is, what goes with it, and what
     /// stays.
     fn removal_ask(&self, i: usize, id: &str) -> String {
         let s = &self.sessions[i];
         let name = if s.title.is_empty() {
             id.to_string()
         } else {
-            // **A title is somebody's**, and this sentence is drawn on the status row, which does
+            // A title is somebody's, and this sentence is drawn on the status row, which does
             // not strip anything: an escape in a title would be measured one way and drawn
-            // another — the rule the layer's `clean` and `row_name` keep for the same text.
+            // another - the rule the layer's `clean` and `row_name` keep for the same text.
             s.title
                 .chars()
                 .map(|c| if c.is_control() { ' ' } else { c })
@@ -287,7 +287,7 @@ impl App {
         )
     }
 
-    /// What a removal or a restore says afterwards — one sentence for both, because a person who
+    /// What a removal or a restore says afterwards - one sentence for both, because a person who
     /// has just pressed one of the two wants the same fact: what is hidden now.
     fn removed_words(&self, id: &str) -> String {
         let n = self.removed.len();

@@ -12,7 +12,7 @@ impl App {
                 command,
                 opened,
             } => {
-                // **Every head learns the pane exists**; only the head holding a pane that is
+                // Every head learns the pane exists; only the head holding a pane that is
                 // waiting for its number adopts it. A head drawing another pane, or none, is
                 // told a fact about the session and nothing more.
                 self.term_fact = self.term_fact.with(pane, &command);
@@ -21,7 +21,7 @@ impl App {
                     self.redraw = true;
                     return Disposition::Control;
                 }
-                // **The number, and the keys that were waiting for it** — see
+                // The number, and the keys that were waiting for it - see
                 // [`App::pane_input`]. In order, and before anything typed after this frame.
                 if let Some(p) = self.term.as_mut() {
                     p.pane = Some(pane);
@@ -45,7 +45,7 @@ impl App {
                 if let Some(p) = self.term.as_mut() {
                     p.line = format!("!term {command}");
                 }
-                // **And the fact the head draws when it is not drawing the pane** was set above,
+                // And the fact the head draws when it is not drawing the pane was set above,
                 // from the same frame, so a head that detaches a moment later already knows what
                 // to say.
                 self.say(&format!(
@@ -55,8 +55,8 @@ impl App {
                 self.redraw = true;
                 Disposition::Control
             }
-            // **What this session's pane is running, or nothing** — the answer to a read, and
-            // the fact a head draws **instead of a row** when it is not drawing the pane (see
+            // What this session's pane is running, or nothing - the answer to a read, and
+            // the fact a head draws instead of a row when it is not drawing the pane (see
             // [`App::pane_behind`] and [`PaneFact`]).
             ServerFrame::TermStatus { panes } => {
                 self.term_fact = if panes.is_empty() {

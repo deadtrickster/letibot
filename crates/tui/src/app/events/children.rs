@@ -1,11 +1,11 @@
-//! **Events about work this session started**: a subagent's state, a background job settling
+//! Events about work this session started: a subagent's state, a background job settling
 //! or writing output.
 
 use super::*;
 use letibot_sessionlog::event::SessionEvent;
 
 impl App {
-    /// **Work this session started**: a subagent's state, a job settling or writing output. One family of
+    /// Work this session started: a subagent's state, a job settling or writing output. One family of
     /// [`App::event`]'s arms, moved here verbatim; `event` hands it only these variants.
     pub(crate) fn on_child_event(&mut self, e: SessionEvent, ts: u64) -> Disposition {
         match e {
@@ -139,7 +139,7 @@ impl App {
                     };
                     self.job_tail_landed(&job, tail);
                 }
-                // **The notice's own ask is answered here and goes no further** — unless the
+                // The notice's own ask is answered here and goes no further - unless the
                 // jobs pane is waiting on the same job, whose window this then is.
                 if asked && !pane_reading {
                     return Disposition::Rendered;
@@ -165,7 +165,7 @@ impl App {
                     v.loading = false;
                     v.polling = false;
                     v.error = None;
-                    // A window lands at its **tail**: a fresh page, or a re-read of
+                    // A window lands at its tail: a fresh page, or a re-read of
                     // a running job, should show what it just wrote. `back` is left
                     // alone, so ← still walks the pages the reader came through.
                     v.scroll = 0;

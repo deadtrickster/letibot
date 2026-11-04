@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// **The window title is the session's name and the folder**, follows a rename, falls
+/// The window title is the session's name and the folder, follows a rename, falls
 /// back to the short id for an untitled session, and carries no control character from
 /// a hostile title - the terminal would execute it.
 #[test]
@@ -98,7 +98,7 @@ fn the_header_carries_the_workspace_branch_and_nothing_when_there_is_none() {
     // Beside the path and not instead of it: the path is still on the row.
     assert!(header.contains("letibot"), "{header}");
 
-    // **Absent draws nothing at all**, which is the whole rule: no marks, no placeholder.
+    // Absent draws nothing at all, which is the whole rule: no marks, no placeholder.
     let mut b = app();
     b.session_id = "s".into();
     b.wiring.workspace = "/home/dead/Projects/letibot".into();
@@ -171,7 +171,7 @@ fn the_quit_card_can_stop_the_daemon_and_can_be_taken_back() {
         "the second row"
     );
 
-    // By number, without moving the cursor: the digit marks the row (R90.6), and the answer
+    // By number, without moving the cursor: the digit marks the row, and the answer
     // is the Enter after it - a digit that quit on its own stopped the daemon on the first
     // character of a line somebody was typing.
     let mut b = app();
@@ -181,7 +181,7 @@ fn the_quit_card_can_stop_the_daemon_and_can_be_taken_back() {
     assert_eq!(b.key(Key::Char('2')), None, "the digit marks");
     assert_eq!(b.key(Key::Enter), Some(Action::StopDaemon));
 
-    // **Esc takes it back.** A card opened by a habit keystroke has to have
+    // Esc takes it back. A card opened by a habit keystroke has to have
     // an answer that is not an exit.
     let mut c = app();
     c.clock(1_000);
@@ -350,7 +350,7 @@ fn esc_leaves_the_setting_alone() {
 // FIRST and aims the click at the columns that frame recorded, because the target is where the
 // draw put it - a click against a test's own arithmetic would pass while the operator hit the border.
 
-/// **A click on the subagents label opens the subagents pane** - `ctrl-g`'s act under the
+/// A click on the subagents label opens the subagents pane - `ctrl-g`'s act under the
 /// pointer, aimed at the label the frame drew and not at a column the test computed.
 #[test]
 fn a_click_on_the_subagents_label_opens_the_subagents_pane() {
@@ -448,7 +448,7 @@ fn a_click_on_the_jobs_label_opens_the_jobs_pane_and_asks_for_its_table() {
     );
 }
 
-/// **A click one column outside a label opens nothing.** The labels are targets because
+/// A click one column outside a label opens nothing. The labels are targets because
 /// the frame drew them there; the edge around them is furniture, and a click on it is a
 /// click nobody claimed - it must not reach a pane by rounding, luck or the gutter.
 #[test]

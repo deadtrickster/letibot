@@ -1,4 +1,4 @@
-//! **Where the reader is**: the history buffer of drawn rows, the anchor a held view keeps,
+//! Where the reader is: the history buffer of drawn rows, the anchor a held view keeps,
 //! following the bottom, and filling backwards when the reader scrolls past what was drawn.
 
 use super::*;
@@ -32,7 +32,7 @@ impl App {
             self.hist_marks.clear();
             self.hist_ceiling = None;
             self.walk_ahead = usize::MAX;
-            // **The anchor's map goes with the lines it describes.** A stale span would
+            // The anchor's map goes with the lines it describes. A stale span would
             // place the viewport inside a frame that no longer exists.
             self.spans.clear();
             self.note_cards.clear();
@@ -161,10 +161,9 @@ impl App {
         None
     }
 
-    /// Render the tail of a conversation rather than all of it: the frame shows the end of a session
-    /// and walking from row 0 to draw the bottom forty lexes every row above them. It walks backward
-    /// from the floor with the same renderer and the same targets taken by field. `want` is how many
-    /// lines the reader needs ABOVE them, returns the count of rows drawn.
+    /// Render the tail of a conversation rather than all of it: walking from row 0 to draw the bottom forty lexes
+    /// every row above. It walks backward from the floor with the same renderer. `want` is how many lines the reader
+    /// needs ABOVE them; returns the count of rows drawn.
     pub(crate) fn fill_backward(&mut self, want: usize) -> usize {
         self.fill_backward_until(want, None)
     }
@@ -222,7 +221,7 @@ impl App {
                 Some(TurnState::Running) | None
             ),
         );
-        // **The run `ctrl-t` opens**, once, for the same reason the forward walk computes it
+        // The run `ctrl-t` opens, once, for the same reason the forward walk computes it
         // once: the seam names the chord only where it acts.
         let newest_run = newest_unseen_run(&self.items, self.visibility, &self.bound_prompts, live);
         // `carry`: the walk does not stop in the middle of a run, because a run's marker is drawn at its first
@@ -273,13 +272,13 @@ impl App {
                 },
                 None => cfg.clone(),
             };
-            // **The marker is drawn whether the run is open or not** - see the forward walk's
+            // The marker is drawn whether the run is open or not - see the forward walk's
             // note: an open run's marker is the header of the rows it lifted, and its clauses are
             // the toggle that closes it again. The two walks keep the same three states.
             let unseen = unseen_run_at(&self.items, self.visibility, &self.bound_prompts, live, k);
             carry = unseen.is_some_and(|(start, _)| start < k);
             let joinable = unseen.is_some_and(|(start, _)| run_continues_prose(&self.items, start));
-            // **A row of an OPEN run draws itself under that header**, and a row the click's kind
+            // A row of an OPEN run draws itself under that header, and a row the click's kind
             // skips draws nothing. A CLOSED run's rows are not lexed at all.
             let absorbed_here = crate::app::one_event::is_absorbed(
                 &self.absorbed,
@@ -433,12 +432,12 @@ impl App {
                     }
                 }
                 let pack = prev == Some(RowClass::Activity) && *class == RowClass::Activity;
-                // **A marker that stands alone keeps the air prose gets** - which is what the
+                // A marker that stands alone keeps the air prose gets - which is what the
                 // operator asked for after their own message. Only a JOINED marker loses it.
                 if !block.is_empty() && !pack && (marker.is_none() || !*joinable) {
                     block.push(String::new());
                 }
-                // **The span, before the lines go in.** `block` is in forward row order
+                // The span, before the lines go in. `block` is in forward row order
                 // here, so `built.iter().rev()` is the order the reader reads them in.
                 fresh.push(Span {
                     row: *row,
@@ -546,7 +545,7 @@ impl App {
         )
     }
 
-    /// **A ctrl-v window is open** - `payload_sel` names a result, not a run (see
+    /// A ctrl-v window is open - `payload_sel` names a result, not a run (see
     /// [`App::run_is_open`]). What the scroll keys ask before they page a window.
     pub(crate) fn payload_window_open(&self) -> bool {
         self.payload_sel.is_some() && !self.run_is_open()
@@ -732,15 +731,14 @@ impl App {
         self.items_base + (self.items.len() - self.items_lead)
     }
 
-    /// **The head holds a window, not the buffer.** A session that runs for hours appends rows for
-    /// ever, and a body this head keeps is text: once the window is over `held_limit` the rows the
-    /// reader is not looking at go, and the window is rendered again from what is left. The lines go
-    /// with them, which is why this is cheap: a re-render costs one window and saves the history.
+    /// The head holds a window, not the buffer: once it is over `held_limit` the rows the reader is not looking at
+    /// go, and the window is rendered again from what is left. The lines go with them, so a re-render costs one window
+    /// and saves the history.
     pub(crate) fn trim_held(&mut self, room: usize) {
         if transcript_bytes(&self.items) <= self.held_limit {
             return;
         }
-        // **The rows below a parked reader go first**: they are not what the reader is looking at,
+        // The rows below a parked reader go first: they are not what the reader is looking at,
         // so letting them go is what keeps the held row on screen and the window under its bound.
         self.trim_held_below(room);
         let over = transcript_bytes(&self.items).saturating_sub(self.held_limit);
@@ -757,7 +755,7 @@ impl App {
         if capped > 0 {
             self.drop_rows_above(capped, room);
         }
-        // **And the bound still wins.** A reader parked on the oldest row this head keeps left
+        // And the bound still wins. A reader parked on the oldest row this head keeps left
         // nothing above them to free, so the trim takes their row too and `drop_rows_above`
         // re-points at the oldest survivor rather than holding the whole session for the head's life.
         if wanted > capped && transcript_bytes(&self.items) > self.held_limit {
@@ -775,11 +773,9 @@ impl App {
         n
     }
 
-    /// **And the other end of the same window.** A reader parked above the tail is not reading what
-    /// arrives below them, and over the limit with nothing left above the held row to free is the
-    /// only moment those rows are what there is to let go. They go with a margin rather than the
-    /// byte that tipped it over: this re-renders the window, so once per arriving row is a screen
-    /// each.
+    /// And the other end of the same window. A reader parked above the tail is not reading what arrives below, so
+    /// over the limit with nothing left above the held row, those rows go. They go with a margin, since each
+    /// re-render of the window costs a screen.
     fn trim_held_below(&mut self, room: usize) {
         let left = transcript_bytes(&self.items);
         let Some(held) = self.anchor.as_ref().map(|h| h.ordinal) else {
@@ -867,7 +863,7 @@ impl App {
                 *place = Placed::Before;
             }
         }
-        // **A row that left takes its call facts with it**, the rule the front of the window
+        // A row that left takes its call facts with it, the rule the front of the window
         // follows: the maps the renderer reads are keyed by row, and nothing else bounds them.
         self.prune_to_the_rows();
         self.invalidate_history_from(0);
@@ -876,11 +872,9 @@ impl App {
         self.fill_backward_until(room + TAIL_SLACK, stop);
     }
 
-    /// **The rendered history is a window too.** A reader who scrolls through a long session draws
-    /// every row they pass, and nothing else lets those lines go: over `hist_limit` the rows at
-    /// whichever end is farther from the reader go, and the walk draws them again when the reader
-    /// comes back. Nothing is asked of the daemon - the row is still in `items` - and the bound is
-    /// bytes, because a rendered line is what the head's memory is.
+    /// The rendered history is a window too: over `hist_limit` the rows at whichever end is farther from the reader
+    /// go, and the walk draws them again on return. Nothing is asked of the daemon - the row is still in `items` -
+    /// and the bound is bytes, because a rendered line is what the head's memory is.
     pub(crate) fn trim_history(&mut self, room: usize) {
         // An ordinary session walks from row 0 and is bounded by `walk_limit`, and a head that still
         // holds a rewind table has one indexed by absolute row that a cut would leave pointing at
@@ -899,7 +893,7 @@ impl App {
         // bound smaller than that is a bound the head cannot keep.
         let above = line.saturating_sub(room + TAIL_SLACK);
         let below = line + room + 2 * TAIL_SLACK;
-        // **The end farther from the reader pays first**, since it is the one nobody is reading.
+        // The end farther from the reader pays first, since it is the one nobody is reading.
         let ends = if self.hist_lines.len().saturating_sub(line + room) >= line {
             [(true, below), (false, above)]
         } else {
@@ -996,10 +990,9 @@ impl App {
         freed
     }
 
-    /// **The window may need the rows below it.** A reader who has come down to the end of what this
-    /// head drew gets the next screen of it rendered on this frame, and the walk stops again at its
-    /// end: a screen's work, not the session between the reader and the tail. The ceiling stays where
-    /// it is until that walk has run, so a key handler asking *are there rows below* is answered.
+    /// The window may need the rows below it: a reader who has come down to the end of what this head drew gets the
+    /// next screen rendered on this frame, and the walk stops again at its end. The ceiling stays until that walk
+    /// has run, so a key handler asking *are there rows below* is answered.
     pub(crate) fn release_below(&mut self, room: usize) {
         if self.hist_ceiling.is_none() || self.anchor.is_none() {
             return;
@@ -1010,7 +1003,7 @@ impl App {
         self.walk_ahead = room + TAIL_SLACK;
     }
 
-    /// **Back to the end of the session.** A head that follows the tail must show its newest row, and
+    /// Back to the end of the session. A head that follows the tail must show its newest row, and
     /// a window that stopped short of it would draw a row from however long ago as the newest. One
     /// window's work, once, and only for a reader who came back down to the tail.
     pub(crate) fn reanchor_at_tail(&mut self, room: usize) {
@@ -1062,7 +1055,7 @@ impl App {
     /// that run or not at all, and a page that does not join is read in the direction it names.
     pub(crate) fn apply_rows(&mut self, from: usize, rows: Vec<SnapshotItem>) {
         let end = self.end_ordinal();
-        // **A page below the window** is the tail the reader is coming back down to: it joins the
+        // A page below the window is the tail the reader is coming back down to: it joins the
         // rows where they end, and what is above it is unchanged, so no index moves.
         if from == end {
             if rows.is_empty() {
@@ -1077,11 +1070,11 @@ impl App {
             self.items_below = self.items_below.saturating_sub(n);
             return;
         }
-        // **A page above**: the ask's answer joins the window at its front, or nowhere.
+        // A page above: the ask's answer joins the window at its front, or nowhere.
         if !rows.is_empty() && from.saturating_add(rows.len()) == self.items_base {
             let n = rows.len();
             let lead = self.items_lead;
-            // **The page lands where the base begins**, which is not the front of the list when a
+            // The page lands where the base begins, which is not the front of the list when a
             // resume republished the transcripts a compaction put behind it: those rows are above
             // the base, and a page of the base belongs under them.
             self.items.splice(lead..lead, rows);
@@ -1120,10 +1113,9 @@ impl App {
             }
             return;
         }
-        // **The page was empty or short of the window, so what is above cannot be reached.** Empty
-        // means nothing is above; short means a row in it could not be read, and every later page
-        // would be short the same way. Splicing it in leaves a hole, so it is dropped and said.
-        // A page that starts past the window is the tail's, though, and says nothing about above.
+        // The page was empty or short, so what is above cannot be reached: empty means nothing is above, short means a
+        // row could not be read and every later page would be short too. Splicing leaves a hole, so it is dropped
+        // and said. A page that starts past the window is the tail's and says nothing about above.
         if from >= end {
             // The count below was wrong or a row of the tail cannot be read: asking again would
             // fetch the same hole for ever, so the count goes and the live tail resumes from here.
@@ -1148,7 +1140,7 @@ impl App {
     /// nowhere else. Reaching the bottom returns the reader to following, which is an act they took, while
     /// arriving content never does.
     pub(crate) fn hold(&mut self, delta: isize) {
-        // **The row being held must be drawable before the hold can move off it** - or the
+        // The row being held must be drawable before the hold can move off it - or the
         // step is spent on a span table an arriving row just wiped, which is the pin this
         // answers. See [`App::render_held`].
         self.render_held(self.view_room.max(1));
@@ -1162,17 +1154,17 @@ impl App {
             now.saturating_add(delta as usize)
         };
         let bottom = self.body_len.saturating_sub(self.view_room.max(1));
-        // **The bottom of the window is not the bottom of the session.** With rows below it this head
+        // The bottom of the window is not the bottom of the session. With rows below it this head
         // has not drawn, reaching the last drawn line is a page and not a return to following.
         if want >= bottom && delta > 0 && self.hist_ceiling.is_none() {
             self.anchor = None;
             self.scroll = 0;
-            // **No `redraw` here either** - this is the flag's second home on the scroll path.
+            // No `redraw` here either - this is the flag's second home on the scroll path.
             // See the note at the foot of this function: a moved viewport is a diff, not an
             // erase.
             return;
         }
-        // **The top of the transcript is as far as this goes**, and holding there is not
+        // The top of the transcript is as far as this goes, and holding there is not
         // following: a reader at the very top of a long session is reading the beginning,
         // and content arriving below must not drag them down to it.
         let want = want.min(bottom.max(1));
@@ -1223,18 +1215,17 @@ impl App {
             self.wheel_run = 0;
         }
         self.wheel_last_ms = self.now_ms;
-        // **The one fact that separates the walk from the run**: did rows arrive since
-        // the last notch down? A still transcript is walked whatever the distance; a
-        // living one is the case the walk was outrun by. The session's count and not this
-        // head's window, which stops growing the moment the window is what rows land in.
+        // The one fact that separates the walk from the run: did rows arrive since the last notch down? A still
+        // transcript is walked whatever the distance. The session's count is used, not this head's window, which
+        // stops growing once the window is what rows land in.
         let stream = self.rows_in_session() != self.wheel_items;
         self.wheel_items = self.rows_in_session();
         self.wheel_run = self.wheel_run.saturating_add(1);
         if !stream {
             return 3;
         }
-        // **3, 6, 12, 24 … capped at 192** - bigger than any glass, so the cap is about
-        // sanity rather than reach - **and never past the bottom**: the step that lands
+        // 3, 6, 12, 24 … capped at 192 - bigger than any glass, so the cap is about
+        // sanity rather than reach - and never past the bottom: the step that lands
         // on the tail is the step that follows it, and `hold` treats it as arrival.
         (3usize << (self.wheel_run - 1).min(6)).min(dist.max(3))
     }
@@ -1309,7 +1300,7 @@ impl App {
                 into: held.into,
             });
             self.carry = None;
-            // **No `redraw`.** A moved viewport is a diff rather than an erase - the same
+            // No `redraw`. A moved viewport is a diff rather than an erase - the same
             // rule the scroll keys keep - and this is the head moving a reader who did not
             // move: the frame that follows writes only the rows that changed.
             return;
@@ -1324,7 +1315,7 @@ impl App {
         if self.carry.as_ref().is_some_and(|c| c.arriving) {
             return;
         }
-        // **Not carried.** The tail is the only place left that is true, and the reader is
+        // Not carried. The tail is the only place left that is true, and the reader is
         // told: a move made in silence is the defect this whole path exists to refuse.
         self.anchor = None;
         let said = match self.carry.take().and_then(|c| c.words) {
