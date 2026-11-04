@@ -409,3 +409,28 @@ fn a_restart_without_a_store_starts_chat_over_and_changes_the_instance() {
     assert_ne!(instance_of(&a.client), id);
     second.stop();
 }
+
+#[test]
+fn a_linked_client_redials_a_restarted_coordinator_and_hears_what_follows() {
+    let dir = Scratch::new();
+    let first = stored(&dir);
+    let a = seat(&first, "s-a1", A, Seat::Session);
+    let before = instance_of(&a.client);
+    first.stop();
+    std::thread::sleep(Duration::from_millis(50));
+    let second = stored(&dir);
+    // No request from `a`: the redial alone brings the connection back.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !(a.client.connected() && instance_of(&a.client) != before) {
+        assert!(std::time::Instant::now() < deadline, "never redialled");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let b = seat(&second, "s-a2", A, Seat::Session);
+    said(b.say("r1", "", "@s-a1 after the restart"));
+    let (m, named) = a.next();
+    assert_eq!(m.text, "@s-a1 after the restart");
+    assert!(named);
+    // And a request on the redialled connection works.
+    said(a.say("r2", "", "back"));
+    second.stop();
+}

@@ -15,6 +15,9 @@ use crate::wire::{ROOM_PROTOCOL_VERSION, Request, Response};
 
 /// How long one round trip may take before the client calls the connection dead. Generous: the
 /// coordinator is a local process whose longest act is a `Mutex` on an in-memory map.
+/// The redial thread's first wait and its ceiling while the room is away.
+const REDIAL_MIN: std::time::Duration = std::time::Duration::from_millis(250);
+const REDIAL_MAX: std::time::Duration = std::time::Duration::from_secs(5);
 pub const REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The client could not talk to the room. Always a sentence, because the tool that shows it to a model
@@ -71,6 +74,8 @@ pub type Wake = Arc<dyn Fn(&Event) + Send + Sync>;
 
 struct Live {
     writer: UnixStream,
+    /// Which connection this is, so a reader that outlives its connection cannot close a newer one.
+    generation: u64,
 }
 
 struct Shared {
@@ -84,6 +89,7 @@ struct Shared {
     /// Called for every chat message pushed to this connection. Runs on the reader thread.
     chat: Mutex<Option<ChatHook>>,
     live: Mutex<Option<Live>>,
+    generation: std::sync::atomic::AtomicU64,
     /// One round trip at a time: the reply channel below is a single slot, and two calls in flight
     /// on one connection would have no way to say which reply is whose.
     call: Mutex<()>,
@@ -161,6 +167,7 @@ impl Client {
                 seat,
                 chat: Mutex::new(None),
                 live: Mutex::new(None),
+                generation: std::sync::atomic::AtomicU64::new(0),
                 call: Mutex::new(()),
                 waiting: Mutex::new(None),
                 welcome: Mutex::new(Welcome::default()),
@@ -168,7 +175,37 @@ impl Client {
             }),
         };
         client.open()?;
+        client.spawn_redial();
         Ok(client)
+    }
+
+    /// Reopen a dropped connection in the background, backing off while the room is away, so pushed
+    /// chat and events resume after a coordinator restart without waiting for the next request. The
+    /// thread holds a `Weak` and ends with the client.
+    fn spawn_redial(&self) {
+        let weak = Arc::downgrade(&self.inner);
+        let spawned = std::thread::Builder::new()
+            .name(format!("room-redial-{}", self.inner.speaker.session))
+            .spawn(move || {
+                let mut delay = REDIAL_MIN;
+                loop {
+                    std::thread::sleep(delay);
+                    let Some(me) = weak.upgrade().map(Client::from_shared) else {
+                        return;
+                    };
+                    let _one = me.inner.call.lock().expect("the call lock");
+                    if me.connected() {
+                        delay = REDIAL_MIN;
+                    } else if me.open().is_ok() {
+                        delay = REDIAL_MIN;
+                    } else {
+                        delay = (delay * 2).min(REDIAL_MAX);
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            eprintln!("room: the redial thread did not start: {e}");
+        }
     }
 
     /// Hear pushed chat. Replaces any earlier hook.
@@ -219,7 +256,13 @@ impl Client {
         }
         let (tx, rx): (Sender<Response>, Receiver<Response>) = mpsc::channel();
         *self.inner.waiting.lock().expect("the waiting lock") = Some(tx);
-        let written = self.write(request);
+        let mut written = self.write(request);
+        if written.is_err() {
+            // The connection died under us: open a fresh one and send once more. The wire's replay
+            // window makes a repeated frame safe.
+            self.drop_connection("a write failed");
+            written = self.open().and_then(|()| self.write(request));
+        }
         let reply = match written {
             Ok(()) => rx.recv_timeout(REPLY_TIMEOUT).map_err(|_| {
                 ClientError(format!(
@@ -358,6 +401,11 @@ impl Client {
         // that as a closed connection - a client that disconnects itself twice a minute.
         let _ = writer.set_read_timeout(None);
         let _ = writer.set_write_timeout(None);
+        let generation = self
+            .inner
+            .generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
         let weak = Arc::downgrade(&self.inner);
         let reader_thread = std::thread::Builder::new()
             .name(format!("room-read-{}", self.inner.speaker.session))
@@ -384,7 +432,7 @@ impl Client {
                                 continue;
                             }
                             if let Some(me) = weak.upgrade().map(Client::from_shared) {
-                                me.drop_connection(&e.to_string());
+                                me.drop_generation(generation, &e.to_string());
                             }
                             break;
                         }
@@ -404,7 +452,7 @@ impl Client {
                             }
                         }
                         Some(Response::Bye { why }) => {
-                            me.drop_connection(&why);
+                            me.drop_generation(generation, &why);
                             break;
                         }
                         Some(other) => {
@@ -414,7 +462,7 @@ impl Client {
                             }
                         }
                         None => {
-                            me.drop_connection("the room closed the connection");
+                            me.drop_generation(generation, "the room closed the connection");
                             break;
                         }
                     }
@@ -422,7 +470,7 @@ impl Client {
             })
             .map_err(|e| ClientError(e.to_string()))?;
         *self.inner.why.lock().expect("the why lock") = None;
-        *self.inner.live.lock().expect("the live lock") = Some(Live { writer });
+        *self.inner.live.lock().expect("the live lock") = Some(Live { writer, generation });
         // The reader's handle is dropped on purpose: the thread ends when the socket does, and a
         // join here would be a turn's end waiting for a connection the caller has given up on.
         let _ = reader_thread;
@@ -434,6 +482,14 @@ impl Client {
         match live.as_mut() {
             Some(l) => write_frame(&mut l.writer, request),
             None => Err(ClientError("the room connection is not open".to_string())),
+        }
+    }
+
+    fn drop_generation(&self, generation: u64, why: &str) {
+        let mut live = self.inner.live.lock().expect("the live lock");
+        if live.as_ref().is_some_and(|l| l.generation == generation) {
+            live.take();
+            *self.inner.why.lock().expect("the why lock") = Some(why.to_string());
         }
     }
 
