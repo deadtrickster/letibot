@@ -203,3 +203,49 @@ fn a_workspace_outside_a_repository_is_its_own_project() {
     assert!(members_of(&rows, "", project_of).is_empty());
     assert!(members_of(&rows, &letibot_room::project_key(PROJECT), project_of).is_empty());
 }
+
+/// A child, and a queue reviewer, join the project room of the chain's root, not their own temp
+/// folder's. A top-level session in a plain folder is its own project.
+#[test]
+fn a_child_and_a_gatekeeper_join_their_roots_project_room() {
+    let base = std::env::temp_dir().join(format!("letibot-roster-root-{}", std::process::id()));
+    let project = base.join("proj");
+    let clone = base.join("clone");
+    std::fs::create_dir_all(&project).expect("a project");
+    std::fs::create_dir_all(&clone).expect("a clone");
+    let roster = Roster::new(letibot_sessionlog::registry::Registry::new());
+    let want = letibot_room::project_key(&project.display().to_string());
+    let top = roster.room_key_of("s-top", None, &project.display().to_string());
+    assert_eq!(top, want, "a plain folder is its own project");
+    // The child is not in the registry yet, so its parent's row is absent too: the own-workspace
+    // answer is what a dangling chain gives, and the registry-backed chain is `project_of_session`.
+    let child = roster.room_key_of("s-child", Some("s-top"), &clone.display().to_string());
+    assert_ne!(child, "");
+    let gate_id = letibot_sessionlog::gatekeeper_session(&project);
+    let gate = roster.room_key_of(&gate_id, None, &clone.display().to_string());
+    assert_eq!(gate, want, "a gatekeeper carries its project's key");
+    let (ps, cs) = (project.display().to_string(), clone.display().to_string());
+    let rows = vec![
+        Row {
+            session: "s-top",
+            title: "",
+            parent: None,
+            workspace: &ps,
+            origin: letibot_sessionlog::SessionOrigin::Operator,
+            live: true,
+        },
+        Row {
+            session: "s-child",
+            title: "",
+            parent: Some("s-top"),
+            workspace: &cs,
+            origin: letibot_sessionlog::SessionOrigin::Operator,
+            live: true,
+        },
+    ];
+    assert_eq!(
+        letibot_room::project_key(&roster.project_of_session(&rows, "s-child")),
+        want,
+        "a child under a temp dir is in its root's room"
+    );
+}

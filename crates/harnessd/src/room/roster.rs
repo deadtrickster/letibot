@@ -84,6 +84,51 @@ impl Roster {
     }
 }
 
+impl Roster {
+    /// The room key a session joins: a queue reviewer's is the key its id carries, any other
+    /// session's is its chain root's project (the `App::placements` rule), so a child or a clone
+    /// under a temp dir is in its parent's room. `parent` and `workspace` stand in for a session
+    /// the registry does not hold yet. Empty is the host room.
+    pub fn room_key_of(&self, id: &str, parent: Option<&str>, workspace: &str) -> String {
+        if letibot_sessionlog::is_gatekeeper_session(id)
+            && let Some(key) = id
+                .rsplit('-')
+                .next()
+                .filter(|k| letibot_room::is_project_key(k))
+        {
+            return key.to_string();
+        }
+        let briefs = self.registry.list();
+        let mut rows: Vec<Row<'_>> = briefs
+            .iter()
+            .map(|b| Row {
+                session: &b.session_id,
+                title: &b.title,
+                parent: b.parent_session_id.as_deref(),
+                workspace: &b.wiring.workspace,
+                origin: b.origin,
+                live: b.live,
+            })
+            .collect();
+        if !rows.iter().any(|r| r.session == id) {
+            rows.push(Row {
+                session: id,
+                title: "",
+                parent,
+                workspace,
+                origin: letibot_sessionlog::SessionOrigin::Operator,
+                live: true,
+            });
+        }
+        let root = self.project_of_session(&rows, id);
+        if root.is_empty() {
+            String::new()
+        } else {
+            letibot_room::project_key(&root)
+        }
+    }
+}
+
 impl RosterSource for Roster {
     fn members(&self, project: &str) -> Vec<Member> {
         let briefs = self.registry.list();
