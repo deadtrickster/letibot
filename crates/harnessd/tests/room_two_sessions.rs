@@ -622,9 +622,12 @@ fn two_daemons_one_host_and_the_answer_arrives_with_nobody_asking() {
     );
 
     // ---- 4. the room's own state, read by a client that is neither session ----------------
-    let observer = Client::connect(
+    // In the sessions' project room: the queues it reads are that room's.
+    let project = letibot_room::project_key(&dir.path().join("project").display().to_string());
+    let observer = Client::connect_named(
         &socket,
         Speaker::top_level("s-two-observer"),
+        letibot_room::room_name(&coord.server().name(), &project),
         Arc::new(|_: &letibot_room::Event| {}),
     )
     .expect("a third client reads the room");
