@@ -305,7 +305,7 @@ impl Tool for DigestTool {
                 cut_short_at = Some(n - 1);
                 break;
             }
-            // §8.5 liveness: a fold is minutes of work with nothing on the screen,
+            // Liveness: a fold is minutes of work with nothing on the screen,
             // and the operator's rule from the oracle wait is that a pause nobody
             // announces reads as a hang.
             ctx.progress(format!(

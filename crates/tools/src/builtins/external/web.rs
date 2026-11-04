@@ -24,7 +24,7 @@ pub struct SearchQuery {
 }
 
 /// One result. `url` is not optional: a hit nobody can go and check is the
-/// footnote-less half of §8.2's failure, and this tool will not report one.
+/// footnote-less half of the failure, and this tool will not report one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchHit {
     pub title: String,
@@ -36,7 +36,7 @@ pub struct SearchHit {
 pub struct SearchResults {
     pub hits: Vec<SearchHit>,
     /// How many the provider had before the tool's cap. The denominator
-    /// (§8.1 clause 2): `showing 5` and `showing 5 of 43` are different facts.
+    /// `showing 5` and `showing 5 of 43` are different facts.
     pub considered: usize,
     /// Who answered. Named in the result, so an answer's provenance does not
     /// depend on remembering how the session was started.
@@ -140,7 +140,7 @@ impl Tool for WebSearch {
                 },
                 "required": ["query"]
             }),
-            // The declaration §11.3's policy table keys on. A tool that
+            // The declaration the policy table keys on. A tool that
             // under-declares is a hole, and this one leaves the box.
             Access::Network,
         )
@@ -227,7 +227,7 @@ impl Tool for WebSearch {
 fn render_results(call_id: &str, q: &SearchQuery, r: SearchResults) -> Invocation {
     let mut notes = Vec::new();
     if let Some(rewritten) = &r.rewritten_query {
-        // §9.4, the same sentence `retrieval` prints for the same reason.
+        // The same sentence `retrieval` prints for the same reason.
         notes.push(format!(
             "{} searched for `{rewritten}` rather than `{}`; judge the results against \
              what you asked, not against what it searched",
@@ -271,7 +271,7 @@ fn render_results(call_id: &str, q: &SearchQuery, r: SearchResults) -> Invocatio
         notes.push(n);
     }
 
-    // The count never travels without its denominator (§8.1 clause 2).
+    // The count never travels without its denominator.
     let mut body = format!(
         "searched {scope} via {}\nshowing {shown} of {} result(s)\n",
         r.provider,

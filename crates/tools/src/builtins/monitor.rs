@@ -166,7 +166,7 @@ impl Tool for Monitor {
         // --- declare -------------------------------------------------------
 
         // The ttl is settled AFTER the watch, because a plugin condition's cap comes out of
-        // the answer that arms it (§4.4's `max_ttl_s`): a watch for a review that takes days is
+        // the answer that arms it (the `max_ttl_s`): a watch for a review that takes days is
         // capped by the plugin's own word, inside the tree's own week.
         let asked: Vec<&str> = [
             "job", "scope", "path", "port", "timer_ms", "command", "pid", "process", "github",

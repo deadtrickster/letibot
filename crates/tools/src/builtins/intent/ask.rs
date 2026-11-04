@@ -901,7 +901,7 @@ mod tests {
         // an error or a body to build on.
         assert_eq!(Envelope::classify(&out), Some("NO_RESULT"), "{out}");
         assert!(!r.is_grounded());
-        // And a caller whose only call abstained cannot report `Ok` (§8.2).
+        // And a caller whose only call abstained cannot report `Ok`.
         assert!(matches!(
             propagate(&[r.outcome]),
             Propagation::Must(ToolOutcome::Abstained { .. })
@@ -1100,7 +1100,7 @@ mod tests {
 
     #[test]
     fn a_caller_whose_only_call_was_an_unanswered_ask_cannot_report_ok() {
-        // §8.2's propagation, which is the reason the outcome class matters: this
+        // The propagation, which is the reason the outcome class matters: this
         // is what stops a subagent turning "nobody answered" into a result.
         let r = ask(Arc::new(Headless), Q);
         assert!(matches!(

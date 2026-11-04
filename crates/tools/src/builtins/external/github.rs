@@ -134,7 +134,7 @@ pub struct ForgeResponse {
     pub text: String,
     /// Items returned by a listing op. `Some(0)` is an abstention, not an `Ok`.
     pub count: Option<usize>,
-    /// Items available before any cap - the denominator (§8.1 clause 2).
+    /// Items available before any cap - the denominator.
     pub total: Option<usize>,
     /// What was created or changed, when something was.
     pub url: Option<String>,

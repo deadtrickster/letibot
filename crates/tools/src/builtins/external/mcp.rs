@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn a_server_over_the_remaining_budget_is_refused_with_its_tool_list() {
-        // §8.4, verbatim: refused with its tool list, not silently truncated.
+        // Verbatim: refused with its tool list, not silently truncated.
         let mut reg = Registry::new();
         let r = mount(&mut reg, catalog("big", &["a", "b", "c"]), 2);
         assert_eq!(reg.len(), 0, "nothing may be mounted from a refused server");

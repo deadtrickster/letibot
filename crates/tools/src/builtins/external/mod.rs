@@ -383,7 +383,7 @@ pub mod scripted {
         }
 
         /// A provider that folded the `site` narrowing into the query text, which
-        /// §9.4 says has to be visible.
+        /// has to be visible.
         pub fn rewriting() -> Arc<dyn SearchProvider> {
             Arc::new(Search {
                 hits: vec![SearchHit {

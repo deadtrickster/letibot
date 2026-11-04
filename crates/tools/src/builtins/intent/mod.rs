@@ -192,7 +192,7 @@ mod tests {
                 .access
         };
         // Session state, not the operator's tree, and not `Read` - which is the
-        // hole `docs/tool-survey.md` §1.4 found in grok-build.
+        // hole `docs/tool-survey.md` found in grok-build.
         assert_eq!(by("todo"), Access::Session);
         assert_eq!(by("goal"), Access::Session);
         assert_eq!(by("enter_plan_mode"), Access::Session);
