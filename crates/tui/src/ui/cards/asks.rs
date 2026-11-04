@@ -48,14 +48,28 @@ impl App {
         row_strings(&card.lines(w), self.cfg.palette())
     }
 
-    /// The password card: what is asking, for which command, and the two keys.
+    /// The password card: what is asking, for which command, and its keys. rano's own hint
+    /// row names Esc as the refuser, so the key sentence is this head's: Esc puts the card
+    /// away and sends nothing, and ctrl-c is the refusal.
     pub(crate) fn secret_lines(&self, ask: &SecretAsk, w: usize) -> Vec<String> {
         let card = asks::SecretAsk {
             prompt: ask.prompt.clone(),
             command: ask.command.clone(),
             remaining_ms: ask.deadline.saturating_sub(self.now_ms),
         };
-        row_strings(&card.lines(w), self.cfg.palette())
+        let mut lines = card.lines(w);
+        for l in lines.iter_mut() {
+            let plain = l.plain();
+            if let Some(rest) = plain.trim_start().strip_prefix("enter sends it") {
+                let said = format!("  enter sends it{rest}");
+                *l = rano::agent::pane::faint(rano::agent::text::trim_to(&said, w));
+            }
+        }
+        lines.push(rano::agent::pane::faint(rano::agent::text::trim_to(
+            "  ctrl-c refuses · esc puts it away — alt-a brings it back",
+            w,
+        )));
+        row_strings(&lines, self.cfg.palette())
     }
 }
 

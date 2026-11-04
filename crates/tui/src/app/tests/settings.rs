@@ -630,16 +630,23 @@ fn a_confirmation_another_head_asked_for_is_the_same_card_answered_by_its_id() {
     );
     assert!(a.mode_confirm.is_none() && a.mode_asked.is_none());
 
-    // A `no` is an answer too, and it is sent: a person declining is a fact the daemon has to
-    // record, or the request stays open.
+    // A `no` is an answer too, and it is sent: a person declining is a fact the daemon has
+    // to record, or the request stays open. Esc is not that key - it puts the card away and
+    // sends nothing, and `n` is the refusal.
     a.apply(ServerFrame::ModeConfirm {
         session_id: "s-1".into(),
         req_id: "h2:req-2".into(),
         name: "allow-all".into(),
         asked_by: "mcp".into(),
     });
+    a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
+    assert_eq!(a.key(Key::Esc), None, "esc sent a refusal");
+    assert!(a.mode_confirm.is_none() && a.mode_away.is_some());
+    a.key(Key::AltA);
+    assert!(a.mode_confirm.is_some(), "alt-a did not bring the card back");
+    a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
     assert_eq!(
-        a.key(Key::Esc),
+        a.key(Key::Char('n')),
         Some(Action::ModeConsent {
             req_id: "h2:req-2".into(),
             yes: false

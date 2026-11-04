@@ -337,7 +337,8 @@ fn a_card_that_owns_the_keyboard_has_its_own_bar() {
     let mut a = app();
     a.mode_confirm = Some("allow-all".into());
     let bar = a.hint_bar(200);
-    assert!(bar.contains("any other key cancels"), "{bar}");
+    assert!(bar.contains("esc puts it away"), "{bar}");
+    assert!(bar.contains("n refuses"), "{bar}");
     assert!(!bar.contains("ctrl-t"), "{bar}");
     let mut b = app();
     ask(
@@ -352,7 +353,69 @@ fn a_card_that_owns_the_keyboard_has_its_own_bar() {
     );
     let bar = b.hint_bar(200);
     assert!(bar.contains("type the password"), "{bar}");
+    assert!(bar.contains("ctrl-c refuses"), "{bar}");
     assert!(!bar.contains("ctrl-s"), "{bar}");
+}
+
+/// Esc puts a card away and sends nothing, on every card: the refusal is an explicit key's
+/// (n on the allow-all card, ctrl-c on the password field), and the card says which. A card
+/// put away is not gone - the daemon's request keeps waiting, and alt-a brings it back.
+#[test]
+fn esc_puts_a_card_away_and_the_explicit_key_refuses() {
+    let mut a = app();
+    a.apply(mode_settings("writes allowed", &["writes allowed", "allow-all"]));
+    a.session_id = "s-1".into();
+    a.apply(ServerFrame::ModeConfirm {
+        session_id: "s-1".into(),
+        req_id: "h2:req-1".into(),
+        name: "allow-all".into(),
+        asked_by: "mcp".into(),
+    });
+    assert_eq!(a.key(Key::Esc), None, "esc sent something");
+    assert!(a.mode_confirm.is_none(), "the card is still up");
+    assert_eq!(
+        a.mode_away.as_ref().map(|m| m.req_id.as_str()),
+        Some("h2:req-1"),
+        "the request was not kept for alt-a"
+    );
+    // And the card comes back armed, and settles when answered.
+    a.key(Key::AltA);
+    assert!(a.mode_confirm.is_some(), "alt-a did not bring the card back");
+    a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
+    assert_eq!(
+        a.key(Key::Char('n')),
+        Some(Action::ModeConsent {
+            req_id: "h2:req-1".into(),
+            yes: false
+        })
+    );
+
+    // The password card: esc puts it away with nothing sent, ctrl-c is the refusal, and
+    // alt-a is the way back to a sudo that keeps waiting.
+    let mut b = app();
+    ask(
+        &mut b,
+        1,
+        SessionEvent::SecretRequested {
+            req_id: "secret-s".into(),
+            prompt: "[sudo] password for dead: ".into(),
+            command: "sudo ls".into(),
+            deadline: 1_000_000,
+        },
+    );
+    assert_eq!(b.key(Key::Esc), None, "esc refused the ask");
+    assert!(b.secret.is_some() && b.secret_away, "the ask was closed");
+    let away = b.screen(100, 20).join("\n");
+    assert!(!away.contains("sudo wants a password"), "{away}");
+    b.key(Key::AltA);
+    assert!(!b.secret_away, "alt-a did not bring the card back");
+    assert_eq!(
+        b.key(Key::CtrlC),
+        Some(Action::Secret {
+            req_id: "secret-s".into(),
+            secret: None,
+        })
+    );
 }
 
 // ──────────────────── the panes' bars ────────────────────

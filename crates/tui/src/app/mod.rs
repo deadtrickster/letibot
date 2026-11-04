@@ -423,6 +423,9 @@ pub struct App {
     /// shell command, and drawn unmasked because what it carries is a program's stdin.
     pub(crate) prompt: Option<PromptAsk>,
     pub(crate) prompt_buf: String,
+    /// The password card put away by Esc: the ask stays open at the daemon and the run waits,
+    /// the card is not drawn and owns no key, and alt-a brings it back.
+    pub(crate) secret_away: bool,
     /// The card is put away, and the request is not: the daemon keeps it open and the run waits,
     /// so a line typed at the composer meanwhile must not become a prompt for the model. The
     /// request's presence and the card's visibility are two facts ([`App::submit`] reads the first).
@@ -1234,6 +1237,7 @@ impl App {
             picture_refs: Vec::new(),
             prompt: None,
             prompt_buf: String::new(),
+            secret_away: false,
             prompt_away: false,
             key_ask: None,
             key_buf: String::new(),

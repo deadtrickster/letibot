@@ -85,7 +85,8 @@ fn the_key_ask_is_the_secret_card_worded_for_a_key() {
             secret: Some("sk-abc".into()),
         })
     );
-    // A second ask, refused: noted as the operator's refusal of a key.
+    // A second ask: Esc puts the card away and sends nothing, ctrl-c is the refusal, and
+    // alt-a is the way back - noted as the operator's refusal of a key either way.
     a.apply(ServerFrame::Event(env(
         2,
         SessionEvent::SecretRequested {
@@ -95,8 +96,11 @@ fn the_key_ask_is_the_secret_card_worded_for_a_key() {
             deadline: 1_000_000,
         },
     )));
+    assert_eq!(a.key(Key::Esc), None, "esc refused the ask");
+    assert!(a.secret_away, "esc closed the ask");
+    a.key(Key::AltA);
     assert_eq!(
-        a.key(Key::Esc),
+        a.key(Key::CtrlC),
         Some(Action::Secret {
             req_id: "secret-s-2".into(),
             secret: None,
@@ -149,15 +153,19 @@ fn the_password_card_is_a_card_and_says_it_once() {
     // way out, and the countdown is the only thing on the card that moves.
     for w in [44usize, 60, 80, 200] {
         let rows = a.secret_lines(a.secret.as_ref().expect("the ask"), w);
-        let last = rows.last().expect("a hint row");
-        assert!(line_width(last) <= w, "w={w}: {last:?}");
+        let keys = rows.last().expect("a hint row");
+        assert!(line_width(keys) <= w, "w={w}: {keys:?}");
         assert!(
-            last.contains("enter sends it") && last.contains("esc refuses"),
-            "w={w}: the keys were cut: {last:?}"
+            keys.contains("ctrl-c refuses") && keys.contains("esc puts it away"),
+            "w={w}: the keys were cut: {keys:?}"
         );
+        let countdown = rows
+            .iter()
+            .find(|l| l.contains("enter sends it"))
+            .expect("the enter row");
         assert!(
-            last.contains("left"),
-            "w={w}: the countdown was cut: {last:?}"
+            countdown.contains("left"),
+            "w={w}: the countdown was cut: {countdown:?}"
         );
     }
 }
@@ -218,7 +226,7 @@ fn a_password_field_owns_the_keys_shows_dots_and_never_reaches_the_composer() {
         },
     )));
     assert_eq!(
-        a.key(Key::Esc),
+        a.key(Key::CtrlC),
         Some(Action::Secret {
             req_id: "secret-s-2".into(),
             secret: None,

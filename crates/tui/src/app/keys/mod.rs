@@ -7,6 +7,9 @@ use letibot_ui::editor::Reaction;
 
 pub(crate) mod bindings;
 mod cards;
+// The tests advance the clock past the arming window by the constant itself, so the two
+// cannot drift; a plain re-export would warn unused in the lib target, where no test is built.
+#[cfg(test)]
 pub(crate) use cards::MODE_ARM_MS;
 mod chords;
 mod input;

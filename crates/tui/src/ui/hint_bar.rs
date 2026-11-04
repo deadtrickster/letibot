@@ -74,11 +74,11 @@ impl App {
         use crate::ui::cards::decision::PUT_AWAY_HINT;
         let (tail, composer) = match self.card_up()? {
             Card::ModeConfirm => (
-                "y or enter confirms allow-all · any other key cancels".to_string(),
+                "y or enter confirms · n refuses · esc puts it away".to_string(),
                 false,
             ),
             Card::Secret => (
-                "type the password · enter gives it · esc refuses".to_string(),
+                "type the password · enter gives it · ctrl-c refuses · esc puts it away".to_string(),
                 false,
             ),
             Card::TermAsk => (

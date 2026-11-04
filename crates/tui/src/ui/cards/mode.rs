@@ -11,7 +11,7 @@ impl App {
             let what = "allow-all: privilege escalation, deletes outside the project and \
                         first contact with a new host all stop asking. On this box that is \
                         this box. It lasts for this session only, and a daemon restart drops \
-                        it.  [y] or [enter] confirm   [esc] or any other key cancels";
+                        it.  [y] or [enter] confirm   [n] refuses   [esc] puts it away";
             match &self.mode_asked {
                 Some(asked) => format!("`{}` asked this session for {what}", asked.by),
                 None => what.to_string(),

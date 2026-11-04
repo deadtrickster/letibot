@@ -168,6 +168,13 @@ impl App {
         } else {
             self.prompt.as_ref()
         };
+        // A password card Esc put away is not drawn, exactly as a prompt card is not: the ask
+        // stays open at the daemon, and the slot falls to whatever waits behind it.
+        let shown_secret = if self.secret_away {
+            None
+        } else {
+            self.secret.as_ref()
+        };
         // Which rows of the card are which value's, set only when the card in the slot IS
         // the setting card - see `mode_hits` below.
         let mut pick_spans: Option<Vec<std::ops::Range<usize>>> = None;
@@ -175,7 +182,7 @@ impl App {
         // so the record names the card on the screen and not one that is merely open.
         let mut card_target: Option<Target> = None;
         let (dec, dec_pinned): (Vec<String>, Vec<String>) =
-            match (&self.secret, shown_prompt, self.open.first()) {
+            match (shown_secret, shown_prompt, self.open.first()) {
                 (Some(ask), _, _) => (self.secret_lines(ask, w), Vec::new()),
                 // The confirmation that ends a pane rides the same slot and comes second, ahead of the prompt
                 // card: a `!term close` can only be typed while no prompt card is up, so this arm is about which

@@ -535,6 +535,23 @@ impl App {
             self.redraw = true;
             return;
         }
+        // Then the password card Esc put away: sudo keeps waiting, and this is the only
+        // way back to it. Behind a card that is up it waits its turn, as questions do.
+        if self.secret.is_some() && self.secret_away && self.card_up().is_none() {
+            self.secret_away = false;
+            self.redraw = true;
+            return;
+        }
+        // And then an allow-all another head asked for: the request is still open at the
+        // daemon, and the card comes back armed, exactly as it first arrived.
+        if let Some(asked) = self.mode_away.clone()
+            && self.card_up().is_none()
+        {
+            self.mode_away = None;
+            let name = asked.name.clone();
+            self.open_mode_card(name, Some(asked));
+            return;
+        }
         if let Some(d) = self.open.first()
             && d.kind == "question"
             && !d.req_id.starts_with(TODO_ASK)

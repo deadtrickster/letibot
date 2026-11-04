@@ -38,6 +38,28 @@ impl App {
                     return ControlFlow::Break(None);
                 }
             }
+            // The card's first moments and the composer guard above hold the answer keys
+            // back; every other key a person might be typing steps the card aside rather than
+            // answering it, because a key aimed at the composer must settle nothing.
+            if matches!(k, Key::Esc)
+                || !matches!(k, Key::Char('y') | Key::Char('Y') | Key::Enter | Key::Char('n') | Key::Char('N'))
+            {
+                let asked = self.mode_asked.take();
+                self.mode_confirm = None;
+                self.redraw = true;
+                if let Some(asked) = asked {
+                    // Put away, not refused: the daemon's request stays open and alt-a brings
+                    // the card back, so a stray key sends nothing on the asker's behalf.
+                    self.mode_away = Some(asked);
+                    self.say(
+                        "allow-all put away — the request keeps waiting · alt-a brings the card back",
+                    );
+                } else {
+                    self.say("allow-all cancelled — the mode did not change");
+                }
+                self.bring_next_mode_card();
+                return ControlFlow::Break(None);
+            }
             let name = self.mode_confirm.take().unwrap();
             // Which card this was decides which frame goes out: the operator's own `/mode allow-all`
             // is a point THEY asked for and goes as `Mode { consented }`, while a card another head
@@ -170,10 +192,13 @@ impl App {
     }
 
     /// A password field owns the keyboard: while `sudo` is waiting, characters and pastes go into
-    /// the buffer, Enter sends it and Esc or Ctrl+C refuses. Nothing reaches the composer, the
-    /// ladder or the scrollback, so a password cannot land in a prompt.
+    /// the buffer, Enter sends it and Ctrl+C refuses. Esc puts the card away and sends nothing,
+    /// as it does on every card. Nothing reaches the composer, the ladder or the scrollback, so
+    /// a password cannot land in a prompt.
     pub(crate) fn key_secret(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
-        if let Some(ask) = &self.secret {
+        if let Some(ask) = &self.secret
+            && !self.secret_away
+        {
             let req_id = ask.req_id.clone();
             match k {
                 Key::Char(c) => self.secret_buf.push(*c),
@@ -191,7 +216,19 @@ impl App {
                         secret: Some(secret),
                     }));
                 }
-                Key::Esc | Key::CtrlC => {
+                Key::Esc => {
+                    // Put away, not closed: the daemon keeps waiting for the password, and
+                    // alt-a brings the card back. The refusal is ctrl-c's - a key that types
+                    // nothing into the field - so no keystroke aimed elsewhere sends it.
+                    self.secret_buf.clear();
+                    self.secret_away = true;
+                    self.redraw = true;
+                    self.say(
+                        "the password card is put away — sudo keeps waiting · alt-a brings it back",
+                    );
+                    return ControlFlow::Break(None);
+                }
+                Key::CtrlC => {
                     self.secret_buf.clear();
                     self.secret = None;
                     self.redraw = true;

@@ -11,7 +11,7 @@ impl App {
     fn modal_up(&self) -> bool {
         self.mode_confirm.is_some()
             || self.todo_draft.is_some()
-            || self.secret.is_some()
+            || (self.secret.is_some() && !self.secret_away)
             || self.term_ask.is_some()
             || (self.prompt.is_some() && !self.prompt_away)
             || self.key_ask.is_some()

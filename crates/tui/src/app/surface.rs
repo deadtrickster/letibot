@@ -185,7 +185,7 @@ impl App {
     pub(crate) fn card_up(&self) -> Option<Card> {
         if self.mode_confirm.is_some() {
             Some(Card::ModeConfirm)
-        } else if self.secret.is_some() {
+        } else if self.secret.is_some() && !self.secret_away {
             Some(Card::Secret)
         } else if self.term_ask.is_some() {
             Some(Card::TermAsk)
