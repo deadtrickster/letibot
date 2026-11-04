@@ -1378,8 +1378,40 @@ impl ProcessHost for HostProcesses {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        let plan_env: Vec<(String, String)> = seat_env
+        // The wide seat is this user's own session, so what every command of it carries (the daemon's
+        // socket, the sudo shim, a worktree's build cache) has to cross a boundary that clears the
+        // environment. A tight view is another disk and gets only the seat's pairs.
+        #[cfg(target_os = "linux")]
+        let carried: Vec<(String, String)> = if confined.boundary().is_some_and(|b| b.view.wide) {
+            let prefix = self
+                .path_prefix
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let path = match prefix {
+                Some(p) => format!("{p}:{}", self.pinned_path),
+                None => self.pinned_path.clone(),
+            };
+            std::iter::once(("PATH".to_string(), path))
+                .chain(
+                    self.standing_env
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .iter()
+                        .filter(|(k, _)| {
+                            !matches!(k.as_str(), "BASH_ENV" | "ENV" | "SHELLOPTS" | "BASHOPTS")
+                        })
+                        .cloned(),
+                )
+                .collect()
+        } else {
+            Vec::new()
+        };
+        #[cfg(not(target_os = "linux"))]
+        let carried: Vec<(String, String)> = Vec::new();
+        let plan_env: Vec<(String, String)> = carried
             .iter()
+            .chain(seat_env.iter())
             .chain(secret_env.0.iter())
             .chain(req.env.iter())
             .cloned()
