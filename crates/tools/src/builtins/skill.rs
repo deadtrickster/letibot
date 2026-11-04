@@ -234,6 +234,10 @@ pub trait SkillShelf: Send + Sync {
     fn load(&self, key: &str) -> Result<Skill, String>;
 }
 
+/// Said wherever the shelf is missing, so a model does not read "no shelf" as "no skills".
+const DISK_DIRS: &str = "Skills on disk still load, at session open, from the project's \
+    .letibot/skills and .claude/skills, ~/.config/letibot/skills and ~/.claude/skills.";
+
 /// The loaded skills, shared with the tool. The disk half is immutable after
 /// construction; the shelf is installed once, by the daemon, when it has one.
 #[derive(Default)]
@@ -402,8 +406,8 @@ impl SkillRegistry {
         }
         let Some(shelf) = self.shelf() else {
             return Err(format!(
-                "no skill named `{key}` on disk, and no shelf is attached (the daemon holds \
-                 no seat, so the fabric's skills are not reachable from here). On disk: {}",
+                "no skill named `{key}` on disk, and no shelf is attached (no fabric seat on \
+                 this daemon). {DISK_DIRS} On disk: {}",
                 self.names_or_none()
             ));
         };
@@ -444,10 +448,9 @@ impl SkillRegistry {
             }
         }
         match self.shelf() {
-            None => out.push_str(
-                "no shelf: the daemon holds no seat, so the fabric's skills are not \
-                 reachable from here.\n",
-            ),
+            None => out.push_str(&format!(
+                "no shelf is attached (no fabric seat on this daemon). {DISK_DIRS}\n"
+            )),
             Some(shelf) => match shelf.list() {
                 Ok(entries) if entries.is_empty() => {
                     out.push_str(&format!("the shelf ({}) is empty.\n", shelf.describe()));
