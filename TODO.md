@@ -698,6 +698,23 @@ Tested end to end in `crates/harnessd/src/harness/tests/recall.rs`. §10 of the 
 
 ---
 
+## R122 - Tool output that is a diff is drawn plain - **OPEN, filed 2026-11-04, the operator's ask, after the release**
+
+A command's stdout is not a terminal, so git turns colour off: `git show --stat`, `git diff` and
+`git log -p` reach the operator with no green `+` and red `-`. Forcing colour (`color.ui=always`)
+is wrong, because the escape codes reach the model too, cost tokens and garble what it reads.
+
+The head colours instead, and the model keeps the plain text. rano paints a tool row's body that
+reads as a diff or a diffstat: `+` lines added, `-` lines removed, `@@` hunk headers and
+`diff --git`/`---`/`+++` file headers, and the `++++----` bars of a `--stat` line. letibot only
+tells rano the body is command output; rano decides it is a diff (rano draws, see the rano blend).
+
+**Done when**: a `git show --stat` and a `git diff` row in a letibot head are coloured like a
+terminal's git; the transcript and the model's view hold no escape codes; a test pins that a line
+which merely starts with `-` in non-diff output (a `ls -l`, a flag list) is not painted.
+
+---
+
 ## R121 - What a command boundary holds is hardcoded and invisible
 
 Status: OPEN, filed 2026-11-04 by the operator, parked until after the release. left: all of it.
