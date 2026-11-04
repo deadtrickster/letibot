@@ -2368,7 +2368,7 @@ mod tests {
             let s = stack(&t);
             let r = s.call("on_tool_call", &json!({}));
             let (by, why) = r.refused.clone().unwrap_or_else(|| panic!("{tag}: {r:?}"));
-            assert_eq!(by, "p1", "{tag}");
+            assert_eq!(by, "s1", "{tag}");
             assert!(!why.is_empty(), "{tag}");
             assert_eq!(
                 r.answer, None,
