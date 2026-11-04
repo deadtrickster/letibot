@@ -372,11 +372,12 @@ impl Fleet {
         // versions in its own tree, and a command that ran without that tree's `mise.toml`
         // would see the wrong `cargo`.
         let ssh = ssh.with_dir(dir.clone());
-        Ok(Arc::new(remote::RemoteProcesses::new(
-            ssh,
-            name.to_string(),
-            dir,
-        )))
+        Ok(Arc::new(
+            remote::RemoteProcesses::new(ssh, name.to_string(), dir.clone())
+                // Beside the work directory and not in it: a branch's commands run in `dir`, and
+                // a pid file they can rewrite is a kill aimed at a process nobody here started.
+                .with_ledger(format!("{root}/.letibot-jobs/{}", self.work)),
+        ))
     }
 
     /// The directory a leg's command runs in, on the host that runs it.

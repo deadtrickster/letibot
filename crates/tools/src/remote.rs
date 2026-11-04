@@ -2932,6 +2932,10 @@ pub struct SshBackend {
     root: String,
     /// `<root>/<repo>/<short id>`: the checkout the session works in.
     worktree: String,
+    /// `<root>/.letibot-jobs/<short id>`: where this session's pid, exit-status and run-group files
+    /// live. Outside the checkout on purpose, because it is the one directory a command of this
+    /// session is not given: a pid file a command can write is a kill aimed at a stranger.
+    ledger: String,
     /// `remote/<short id>`, the branch the remote commits to.
     branch: String,
     /// `remote/<host>/<short id>`, what that branch becomes in the local repository.
@@ -3068,6 +3072,7 @@ impl SshBackend {
         let root = resolved_root(&ssh, &spec.host.root, true).map_err(place)?;
         let mirror = format!("{root}/{repo_name}.git");
         let worktree = format!("{root}/{repo_name}/{short}");
+        let ledger = format!("{root}/.letibot-jobs/{short}");
 
         // `mise exec -C` needs a directory that EXISTS, and the checkout below does not exist until
         // `git worktree add` has run, so the wrapper is pointed at the root until then. mise refuses a
@@ -3205,9 +3210,9 @@ impl SshBackend {
         // can only be named once the checkout has been made.
         ssh = ssh.with_dir(worktree.clone());
 
-        // The session's own job directory is not part of the tree: `.letibot-remote/` holds a
-        // background job's launcher, output, pid and exit file, so it appears as soon as the session
-        // runs anything in the background. The checkout's exclude file says so.
+        // A job's files are outside the tree now, and a checkout placed before they were has a
+        // `.letibot-remote/` in it: the exclude entry keeps that out of `git status`, which is
+        // what a close reads to say whether anything was left uncommitted.
         ssh.must(
             "excluding the session's own job directory",
             &format!(
@@ -3340,6 +3345,10 @@ impl SshBackend {
             // pays the round trip the session's own commands already paid for.
             Some(Arc::new(
                 RemoteProcesses::new(ssh.clone(), host.clone(), worktree.clone())
+                    // Outside the checkout, and outside the session's own home on that machine:
+                    // a pid or exit status a command of this session could write is a kill and a
+                    // settlement this daemon would believe.
+                    .with_ledger(ledger.clone())
                     .confined(confine.clone(), confined_env.clone()),
             ))
         } else {
@@ -3368,6 +3377,7 @@ impl SshBackend {
             host,
             root,
             worktree,
+            ledger,
             branch,
             back_branch,
             local_repo,
@@ -4242,8 +4252,8 @@ impl ExecBackend for SshBackend {
         // directory there, so a command that has to be abandoned can be ended there. The name
         // carries this process's id and a counter, so two runs cannot overwrite each other's.
         let pgid = format!(
-            "{}/.letibot-remote/run-{}-{}.pgid",
-            self.worktree,
+            "{}/run-{}-{}.pgid",
+            self.ledger,
             std::process::id(),
             RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
@@ -4533,14 +4543,17 @@ walk() {
 }
 "#;
 
-/// The process host of a remote session: its jobs live in files on that machine, under
-/// `<worktree>/.letibot-remote/jobs/` - a launcher, a pid, the merged output, and an exit status
-/// whose existence is the settlement. A foreground `bash` call is started the same way.
+/// The process host of a remote session: its jobs are files on that machine - a launcher, a pid,
+/// the merged output, and an exit status whose existence is the settlement. The directory they
+/// live in is [`RemoteProcesses::with_ledger`]'s, and it must be outside every tree a command of
+/// this session can write: a pid file a command can overwrite is a kill aimed at a process the
+/// daemon did not start.
 pub struct RemoteProcesses {
     ssh: Ssh,
     host: String,
-    /// `<worktree>/.letibot-remote/jobs`, absolute on the remote.
-    jobs_dir: String,
+    /// Where a job's launcher, pid, output and exit status live on the remote, absolute. `None`
+    /// until a caller says, and nothing is started without it.
+    jobs_dir: Option<String>,
     worktree: String,
     jobs: Mutex<Vec<Arc<RemoteJob>>>,
     reaps: Mutex<Vec<Reaping>>,
@@ -4610,13 +4623,20 @@ impl std::fmt::Debug for RemoteProcesses {
     }
 }
 
+/// Whose process a pid file names. Three answers, because silence is not evidence of somebody
+/// else's process and neither is a host that did not answer evidence of the job's.
+enum PidProof {
+    Ours,
+    NotOurs(String),
+    Unanswered(String),
+}
+
 impl RemoteProcesses {
     pub fn new(ssh: Ssh, host: String, worktree: String) -> RemoteProcesses {
-        let jobs_dir = format!("{worktree}/.letibot-remote/jobs");
         RemoteProcesses {
             ssh,
             host,
-            jobs_dir,
+            jobs_dir: None,
             worktree,
             jobs: Mutex::new(Vec::new()),
             reaps: Mutex::new(Vec::new()),
@@ -4625,6 +4645,20 @@ impl RemoteProcesses {
             confine: None,
             confined_env: Vec::new(),
         }
+    }
+
+    /// The directory a job's files go in, absolute on the remote. The caller owns the decision
+    /// because it is the one that knows the placement's root, and the root is the only place
+    /// outside the checkout that a confined command's view does not reach.
+    pub fn with_ledger(mut self, dir: impl Into<String>) -> RemoteProcesses {
+        self.jobs_dir = Some(dir.into());
+        self
+    }
+
+    /// Where a job's files are, for a caller that has to look at them: a test's fixtures, and the
+    /// session's own record of what it started.
+    pub fn ledger_dir(&self) -> Option<&str> {
+        self.jobs_dir.as_deref()
     }
 
     /// Put every job of this session inside the session's own boundary, and give it the same
@@ -4708,7 +4742,13 @@ impl RemoteProcesses {
         if let Ok(p) = alive.trim().parse::<u32>()
             && p != 0
         {
-            *job.pid.lock().unwrap_or_else(|e| e.into_inner()) = p;
+            // A pid that CHANGES under a running job is either pid reuse or a rewritten file, and
+            // the pid is what a kill is aimed with: the old one is kept unless the new one can be
+            // shown to be this job's launcher.
+            let known = job.pid();
+            if known == 0 || known == p || matches!(self.whose_pid(job, p), PidProof::Ours) {
+                *job.pid.lock().unwrap_or_else(|e| e.into_inner()) = p;
+            }
         }
         let code = code.trim();
         if !code.is_empty() {
@@ -4785,7 +4825,11 @@ impl RemoteProcesses {
             name: name.to_string(),
             // Not a cgroup, and spelled so it cannot be mistaken for one. Nothing on this machine owns
             // these processes; the remote's own session does.
-            path: PathBuf::from(format!("ssh://{}/{}", self.host, self.jobs_dir)),
+            path: PathBuf::from(format!(
+                "ssh://{}/{}",
+                self.host,
+                self.jobs_dir.as_deref().unwrap_or("no ledger")
+            )),
         }
     }
 
@@ -4811,7 +4855,16 @@ impl RemoteProcesses {
         let n = id.0.trim_start_matches('j').to_string();
         let scope = self.scope_id(ScopeKind::Turn, &format!("job-{id}"));
         let owner = self.scope_of(req.scope, req.scope_name.as_deref());
-        let jobs = self.jobs_dir.clone();
+        // Nothing is started without somewhere to keep its pid, status and output: the ledger is
+        // what makes a job's ending a fact this daemon can read, and a job with none could never
+        // be waited on or ended.
+        let Some(jobs) = self.jobs_dir.clone() else {
+            return Err(ExecError::Spawn(format!(
+                "this session's jobs on {} have no directory: a job's pid, output and exit status \
+                 are files there, so nothing was started",
+                self.host
+            )));
+        };
         let out = format!("{jobs}/{n}.out");
         let pid_path = format!("{jobs}/{n}.pid");
         let exit = format!("{jobs}/{n}.exit");
@@ -4950,7 +5003,7 @@ impl RemoteProcesses {
             return Err(ExecError::Spawn(format!(
                 "the command did not start on {}: {} was not written within 2 s. {}",
                 self.host,
-                pid_path_message(&self.jobs_dir, &n),
+                pid_path_message(&jobs, &n),
                 said.trim()
             )));
         }
@@ -4959,6 +5012,25 @@ impl RemoteProcesses {
             .unwrap_or_else(|e| e.into_inner())
             .push(job);
         Ok(id)
+    }
+
+    /// Whose process `pid` is, asked of the host before it is signalled. The launcher's own script
+    /// path is the proof, because nothing else on that machine runs it: a pid file is a claim.
+    fn whose_pid(&self, job: &RemoteJob, pid: u32) -> PidProof {
+        let Some(dir) = self.jobs_dir.as_deref() else {
+            return PidProof::Unanswered("this session's jobs have no directory here".into());
+        };
+        let launcher = format!("{dir}/{}.sh", job.id.0.trim_start_matches('j'));
+        match self.ssh.sh_step(
+            &format!("asking what pid {pid} is running"),
+            &format!("ps -p {pid} -o args= 2>/dev/null || true"),
+        ) {
+            Ok((said, _, _)) if said.contains(&launcher) => PidProof::Ours,
+            Ok((said, _, _)) => PidProof::NotOurs(said.trim().to_string()),
+            // Silence is not evidence: the host may hold this job's launcher or somebody else's,
+            // and a signal sent on a guess is the harm the check exists to prevent.
+            Err(e) => PidProof::Unanswered(format!("{e}")),
+        }
     }
 
     /// End one job by killing its process group on the remote, and record what was there before and
@@ -5003,6 +5075,38 @@ impl RemoteProcesses {
         // A group kill only when the pid really leads a group. `kill -TERM -<pid>` on a pid that
         // is not a group leader signals this shell's group, which could take out something the
         // operator cares about. `ps -o pgid=` answers it on the remote before the signal.
+        // The pid is a number read off a file, so before it is signalled it has to be proved the
+        // job's own, or a forged pid file aims a group kill at somebody else's process.
+        match self.whose_pid(job, pid) {
+            PidProof::Ours => {}
+            PidProof::NotOurs(what) => {
+                reaping.mechanism = "nothing to kill";
+                reaping.note = Some(format!(
+                    "pid {pid} is not this job's launcher, so nothing was signalled: the pid file \
+                     names a process this session did not start (it is running `{what}`)"
+                ));
+                job.settle(JobState::Killed {
+                    by: format!(
+                        "{by}: the pid on the remote was not this job's, so nothing was signalled"
+                    ),
+                });
+                return Ok(reaping);
+            }
+            PidProof::Unanswered(why) => {
+                reaping.mechanism = "nothing to kill";
+                reaping.note = Some(format!(
+                    "whether pid {pid} is this job's launcher is UNKNOWN, so nothing was \
+                     signalled: {why}"
+                ));
+                job.settle(JobState::Killed {
+                    by: format!(
+                        "{by}: the host did not answer, so nothing was signalled and what is \
+                         running there is UNKNOWN"
+                    ),
+                });
+                return Ok(reaping);
+            }
+        }
         let pgid = self
             .ssh
             .sh_step(
@@ -5105,7 +5209,11 @@ impl ProcessHost for RemoteProcesses {
              sleep. {} There is no cgroup on this machine — the remote's own process tree owns \
              it, and job_kill signals that group over ssh, which is why the sandbox does not take \
              a session of its own.",
-            self.host, self.jobs_dir, boundary
+            self.host,
+            self.jobs_dir
+                .as_deref()
+                .unwrap_or("no directory of its own"),
+            boundary
         )
     }
 
@@ -6029,6 +6137,7 @@ user     = "root"
             let ssh =
                 Ssh::connect(host, Some(self.ssh.clone()), paths).expect("the connection opens");
             RemoteProcesses::new(ssh, "fake".into(), self.jobs.clone())
+                .with_ledger(format!("{}/jobs", self.jobs))
         }
     }
 
@@ -6053,6 +6162,40 @@ user     = "root"
         // the time the next question is asked.
         std::fs::write(&rig.gone, b"").expect("the pid is gone");
         host.job(&job).expect("the job")
+    }
+
+    /// A pid file is a claim, and a kill is aimed with it: the process behind the number has to be
+    /// the launcher this job wrote, or a forged file sends `kill -TERM -<pid>` to a stranger. The
+    /// fake here answers every start with `started` and every poll with pid 4242, which runs no
+    /// launcher at all.
+    #[test]
+    fn a_pid_that_is_not_the_jobs_launcher_is_not_signalled() {
+        let rig = PollRig::new("forged", "").written();
+        let host = rig.host("forged-pid");
+        let id = host
+            .spawn(&SpawnRequest {
+                command: "true".into(),
+                slug: None,
+                cwd: String::new(),
+                scope: ScopeKind::Session,
+                scope_name: None,
+                background: true,
+                env: Vec::new(),
+                tty: false,
+                memory: None,
+            })
+            .expect("the job starts");
+        let reaping = host
+            .kill_job_as(&id, "the test asking")
+            .expect("a kill is recorded even when it is refused");
+        let note = reaping.note.clone().unwrap_or_default();
+        assert_eq!(reaping.mechanism, "nothing to kill", "{reaping:?}");
+        assert!(note.contains("not this job's launcher"), "{note}");
+        assert!(
+            !rig.calls().iter().any(|c| c.contains("kill -TERM")),
+            "nothing may be signalled when the pid is unproven: {:?}",
+            rig.calls()
+        );
     }
 
     /// A poll that comes back "no status and the pid gone" reads the status file once more. The

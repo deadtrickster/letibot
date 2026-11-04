@@ -85,9 +85,8 @@ fn every_host_runs_and_answers_a_row() {
     // And the work really happened on the "remote": the fake's home, not this tree.
     assert!(
         rig.remote_root()
+            .join(".letibot-jobs")
             .join("fanout-ok")
-            .join(".letibot-remote")
-            .join("jobs")
             .is_dir(),
         "the job directory is in the remote root, not here"
     );
@@ -197,9 +196,8 @@ fn the_deadline_stops_a_slow_host_and_its_row_says_stopped() {
     // live process is the claim-versus-fact failure this feature is against.
     let jobs = rig
         .remote_root()
-        .join("fanout-deadline")
-        .join(".letibot-remote")
-        .join("jobs");
+        .join(".letibot-jobs")
+        .join("fanout-deadline");
     let mut checked = 0;
     for e in std::fs::read_dir(&jobs)
         .expect("the job directory")
@@ -499,11 +497,7 @@ fn job_kill_stops_every_branch_and_every_record_says_stopped() {
     // The pids before the kill, so the assertion afterwards is about the processes and not the
     // rows: a row that says `stopped` over a live branch is the claim-versus-fact failure this
     // feature is against.
-    let jobs = rig
-        .remote_root()
-        .join("fanout-kill")
-        .join(".letibot-remote")
-        .join("jobs");
+    let jobs = rig.remote_root().join(".letibot-jobs").join("fanout-kill");
     let pids: Vec<u32> = std::fs::read_dir(&jobs)
         .expect("the job directory")
         .flatten()

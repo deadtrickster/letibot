@@ -32,11 +32,22 @@ fn here(rig: &Rig) -> Option<Arc<dyn ProcessHost>> {
     let hosts = Hosts::load_from(rig.hosts_file());
     let host = hosts.get("fake1")?.clone();
     let ssh = Ssh::connect(host, Some(rig.ssh_program()), rig.paths()).ok()?;
-    Some(Arc::new(RemoteProcesses::new(
-        ssh,
-        "local".to_string(),
-        rig.remote_root().join("local").display().to_string(),
-    )))
+    Some(Arc::new(
+        RemoteProcesses::new(ssh, "local".to_string(), {
+            // The run's own directory on the fake remote: a job starts in it, and a session's
+            // worktree is the placement's to make.
+            let dir = rig.remote_root().join("local");
+            std::fs::create_dir_all(&dir).expect("the run's directory on that machine");
+            dir.display().to_string()
+        })
+        .with_ledger(
+            rig.remote_root()
+                .join(".letibot-jobs")
+                .join("local")
+                .display()
+                .to_string(),
+        ),
+    ))
 }
 
 fn rows(payload: &str) -> Vec<&str> {

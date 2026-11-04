@@ -120,7 +120,10 @@ impl Rig {
         git(&repo, &["commit", "-q", "-m", "the first commit"]);
 
         let worktree = home.join("letibot-remote").join("the-repo").join(SHORT);
-        let jobs = worktree.join(".letibot-remote").join("jobs");
+        let jobs = home
+            .join("letibot-remote")
+            .join(".letibot-jobs")
+            .join(SHORT);
         let host = Host {
             name: "fake".into(),
             hostname: "fake.invalid".into(),
@@ -179,7 +182,13 @@ impl Rig {
     fn place(&mut self) -> SshBackend {
         let b = SshBackend::place(&self.spec()).expect("the placement is arranged");
         self.worktree = PathBuf::from(b.worktree_path());
-        self.jobs = self.worktree.join(".letibot-remote").join("jobs");
+        self.jobs = self
+            .worktree
+            .parent()
+            .and_then(|root| root.parent())
+            .expect("the placement's root")
+            .join(".letibot-jobs")
+            .join(SHORT);
         b
     }
 }
@@ -507,6 +516,67 @@ fn a_background_job_outlives_its_ssh_and_is_read_and_killed() {
     // A scope end kills what is in it, and the record says nothing survived.
     let ended = host.end_scope(&scope).expect("a scope end is recorded");
     assert!(ended.observed.is_empty(), "the job was already ended");
+}
+
+/// A pid file is a claim, and `job_kill` aims with it. A command that could rewrite it aimed the
+/// daemon's group kill at any process on that machine, so the pid is learned once, and a file that
+/// changes under a running job is not believed.
+#[test]
+fn a_rewritten_pid_file_does_not_move_the_kill() {
+    let mut rig = Rig::new("pidforge");
+    let b = rig.place();
+    let host = b.processes_arc().expect("this backend starts processes");
+    let id = host
+        .spawn(&SpawnRequest {
+            command: "sleep 120".into(),
+            slug: None,
+            cwd: String::new(),
+            scope: ScopeKind::Session,
+            scope_name: None,
+            background: true,
+            env: Vec::new(),
+            tty: false,
+            memory: None,
+        })
+        .expect("the job starts");
+    let real = host.job(&id).expect("known").pid;
+    assert!(real > 1, "the job has a pid");
+
+    // A stranger this test owns, in a session of its own so a group kill cannot take the test
+    // with it.
+    let mut decoy = std::process::Command::new("setsid")
+        .args(["sleep", "120"])
+        .spawn()
+        .expect("a decoy process");
+    let decoy_pid = decoy.id();
+
+    let n = id.0.trim_start_matches('j').to_string();
+    std::fs::write(rig.jobs.join(format!("{n}.pid")), decoy_pid.to_string())
+        .expect("the pid file, rewritten as a command on the remote would");
+
+    // A refresh reads the file again, and must not believe it.
+    let _ = host.output(&id, 0, 64);
+    assert_eq!(
+        host.job(&id).expect("known").pid,
+        real,
+        "a pid file that changed under a running job is not evidence of anything"
+    );
+
+    let reaping = host
+        .kill_job_as(&id, "the test asking")
+        .expect("the kill is recorded");
+    assert!(
+        alive(decoy_pid),
+        "the group kill reached a process this session never started: {reaping:?}"
+    );
+    assert!(
+        !alive(real),
+        "and the job it was started for is gone: {reaping:?}"
+    );
+    let _ = std::process::Command::new("kill")
+        .args(["-KILL", &format!("-{decoy_pid}")])
+        .output();
+    let _ = decoy.wait();
 }
 
 /// A job that exits settles from its exit file, and the status is the command's own.
@@ -1749,7 +1819,12 @@ fn a_jobs_polling_does_not_fill_the_record_ring() {
 
 /// Is there a run-group file left in the checkout? The cancel deletes the one it used.
 fn pidfile_is_stale(b: &letibot_tools::remote::SshBackend) -> bool {
-    let dir = Path::new(b.worktree_path()).join(".letibot-remote");
+    let dir = Path::new(b.worktree_path())
+        .parent()
+        .and_then(|root| root.parent())
+        .expect("the placement's root")
+        .join(".letibot-jobs")
+        .join(SHORT);
     std::fs::read_dir(&dir)
         .map(|d| {
             d.flatten()

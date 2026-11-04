@@ -17,6 +17,8 @@ struct Rig {
     dir: PathBuf,
     /// Where the checkout lands on the "remote".
     worktree: PathBuf,
+    /// Where its job files go: beside the checkout, not in it.
+    jobs: PathBuf,
     repo: PathBuf,
     ssh: PathBuf,
     /// What the fake `firecode` was asked, one line per call.
@@ -101,9 +103,14 @@ impl Rig {
         git(&repo, &["commit", "-q", "-m", "the first commit"]);
 
         let worktree = home.join("letibot-remote").join("the-repo").join(SHORT);
+        let jobs = home
+            .join("letibot-remote")
+            .join(".letibot-jobs")
+            .join(SHORT);
         Rig {
             dir,
             worktree,
+            jobs,
             repo,
             ssh,
             asked,
@@ -461,11 +468,7 @@ fn a_background_job_starts_in_a_guest_whose_client_forwards_no_stdin() {
     );
 
     let n = id.0.trim_start_matches('j').to_string();
-    let out_file = rig
-        .worktree
-        .join(".letibot-remote")
-        .join("jobs")
-        .join(format!("{n}.out"));
+    let out_file = rig.jobs.join(format!("{n}.out"));
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut written = String::new();
     while Instant::now() < deadline {

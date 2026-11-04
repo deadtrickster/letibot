@@ -377,8 +377,8 @@ fn a_far_side_that_cannot_decode_never_touches_the_target() {
             env: Vec::new(),
         })
         .expect("the checkout lists");
-    // `.letibot-remote/` is the session's own job directory and is not debris; this write's temp
-    // file is `kept.txt.letibot-<pid>-<n>`.
+    // A job's files are outside the checkout entirely; this write's temp file is
+    // `kept.txt.letibot-<pid>-<n>`.
     let listing = String::from_utf8_lossy(&listed.stdout).into_owned();
     let leftovers: Vec<&str> = listing
         .lines()

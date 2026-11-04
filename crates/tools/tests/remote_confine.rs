@@ -116,7 +116,10 @@ impl Rig {
         git(&repo, &["commit", "-q", "-m", "the first commit"]);
 
         let worktree = home.join("letibot-remote").join("the-repo").join(SHORT);
-        let jobs = worktree.join(".letibot-remote").join("jobs");
+        let jobs = home
+            .join("letibot-remote")
+            .join(".letibot-jobs")
+            .join(SHORT);
         let host = Host {
             name,
             hostname,
@@ -162,7 +165,13 @@ impl Rig {
         let b = SshBackend::place(&self.spec(egress))
             .unwrap_or_else(|e| panic!("the placement is arranged: {e}"));
         self.worktree = PathBuf::from(b.worktree_path());
-        self.jobs = self.worktree.join(".letibot-remote").join("jobs");
+        self.jobs = self
+            .worktree
+            .parent()
+            .and_then(|root| root.parent())
+            .expect("the placement's root")
+            .join(".letibot-jobs")
+            .join(SHORT);
         b
     }
 

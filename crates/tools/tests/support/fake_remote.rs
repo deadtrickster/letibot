@@ -175,16 +175,16 @@ impl Drop for Rig {
     }
 }
 
-/// Every `<root>/<work>/.letibot-remote/jobs` under a fake remote root.
+/// Every `<root>/.letibot-jobs/<work>` under a fake remote root: where a placement keeps a
+/// job's pid, exit status and output, outside the checkout a command is given.
 fn jobs_dirs(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(root) else {
+    let Ok(entries) = std::fs::read_dir(root.join(".letibot-jobs")) else {
         return out;
     };
     for e in entries.flatten() {
-        let jobs = e.path().join(".letibot-remote").join("jobs");
-        if jobs.is_dir() {
-            out.push(jobs);
+        if e.path().is_dir() {
+            out.push(e.path());
         }
     }
     out
