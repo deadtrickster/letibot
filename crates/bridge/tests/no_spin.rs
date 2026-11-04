@@ -1,11 +1,6 @@
-//! **A daemon with nothing to say must not burn a core** - the measurement, not the argument.
-//!
-//! MEASURED 2026-10-26: daemons whose sessions had been ended with `leticode_stop` sat at a full
-//! core each, per stopped session, because `Sessions::dispatch` handed the `Interrupt` back to
-//! "the thread that owns the session" - which, on that very thread, is itself.
-//! The daemon here is in this process, so the CPU it burns is `getrusage(RUSAGE_SELF)`'s own
-//! `utime + stime`. One test per binary, because a second would burn the CPU it accounts for,
-//! and every window opens on a CONDITION - the process has gone quiet - not on a clock.
+//! A daemon with nothing to say must not burn a core. Stopped sessions once spun because
+//! `Sessions::dispatch` handed the `Interrupt` to the thread that owns the session, itself.
+//! CPU is `getrusage(RUSAGE_SELF)`; one test per binary, windows open on a condition, not a clock.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -28,12 +23,12 @@ const ANSWER: &str = "answer-marker: done";
 /// milliseconds, and the assertion is what happened, not how fast.
 const PATIENCE: Duration = Duration::from_secs(60);
 
-/// **How long each phase is measured over.** Long enough that a full core shows up as seconds
+/// How long each phase is measured over. Long enough that a full core shows up as seconds
 /// rather than as a rounding error - and not the whole of this file's wall clock: seven windows are
 /// 21 s of sleeping, each opened by a settle of at least [`cpu::SPAN`], so 28 s is the floor.
 const WINDOW: Duration = Duration::from_secs(3);
 
-/// **What counts as idle.** A spinning session thread spends about WINDOW of CPU; a waiting
+/// What counts as idle. A spinning session thread spends about WINDOW of CPU; a waiting
 /// daemon spends a few milliseconds, its accept loop polling every 20 ms. A tenth of the window
 /// is the line between *asleep* and *working*, and it is far from both.
 fn idle_budget() -> Duration {
@@ -77,7 +72,7 @@ impl Drop for TempDir {
 // The CPU clock
 // ---------------------------------------------------------------------------
 
-/// **How much CPU this process burns while nothing is asked of it**, once it has stopped being
+/// How much CPU this process burns while nothing is asked of it, once it has stopped being
 /// busy - [`WINDOW`] of wall clock, with the rate asserted against [`idle_budget`]. Two numbers
 /// are reported: how long it took to go quiet (the box's) and what it then spent (the daemon's).
 fn assert_idle(what: &str) -> Duration {
@@ -222,7 +217,7 @@ impl World {
     fn start() -> World {
         let dir = TempDir::new("e2e");
         let root = dir.path();
-        // **Nothing of the operator's may reach this session**: a key in their `providers.toml`
+        // Nothing of the operator's may reach this session: a key in their `providers.toml`
         // would decide what answers, a mode row in their store the approval point, and the
         // models catalogue in their `~/.cache` what a turn COSTS. All three are pointed at scratch.
         std::fs::create_dir_all(root.join("config/letibot")).expect("config dir");
@@ -300,7 +295,7 @@ impl World {
         // daemon by connecting, and a socket that appears a moment later would be a race
         // between the test's first `start` and its own fixture.
         let daemon = Daemon::serve(registry.clone(), &socket).expect("the socket binds");
-        // **Where this daemon's tools run, as harnessd writes it at its own start** - the
+        // Where this daemon's tools run, as harnessd writes it at its own start - the
         // fixture's job because the fixture is the daemon: without the record, a `leticode_start`
         // asking for this box refuses to join a daemon it cannot place (`daemon::ensure`).
         letibot_sessionlog::placement::write(&socket, "host").expect("the placement record");
@@ -321,7 +316,7 @@ impl World {
         }
     }
 
-    /// **One session the field's way**: `leticode_start` with a brief, and the turn it runs
+    /// One session the field's way: `leticode_start` with a brief, and the turn it runs
     /// waited for by its answer - so the session a phase stops has really turned.
     fn a_session(&self, bridge: &Bridge, worktree: &str) -> String {
         let started = bridge
@@ -391,12 +386,12 @@ impl Drop for World {
 // The run
 // ---------------------------------------------------------------------------
 
-/// **Four shapes the field produced, and the CPU each of them burns.** One test rather than four,
+/// Four shapes the field produced, and the CPU each of them burns. One test rather than four,
 /// because the measurement is the whole process's and two of these running beside each other
 /// would be measuring one another.
 #[test]
 fn a_daemon_with_nothing_to_do_does_not_burn_a_core() {
-    // **The daemon this test measures runs commands**, so a delegated cgroup v2 subtree (on macOS,
+    // The daemon this test measures runs commands, so a delegated cgroup v2 subtree (on macOS,
     // its process groups) is the apparatus it needs. Absent apparatus is not a failed assertion
     // (AGENTS.md), so it is announced and skipped; the merge gate has it.
     let Some(_) = letibot_tokencore::apparatus::present(
@@ -422,12 +417,12 @@ fn a_daemon_with_nothing_to_do_does_not_burn_a_core() {
     let worktree = world.worktree.display().to_string();
 
     // --- 1. a daemon nobody has attached to --------------------------------
-    // **The first session, and the review queue's, are both courts already**, so this phase would
+    // The first session, and the review queue's, are both courts already, so this phase would
     // catch a spin with no head in it. `quiet after` below is the box's number, not the daemon's.
     let cold = assert_idle("a fresh daemon with no head");
 
     // --- 2. a session stopped after a turn ---------------------------------
-    // **The field's shape exactly**: `leticode_start`, a turn, `leticode_stop`.
+    // The field's shape exactly: `leticode_start`, a turn, `leticode_stop`.
     let first = world.a_session(&bridge, &worktree);
     bridge.stop(&first).expect("the bridge stops the session");
     // The head's detach reaches the daemon on its own connection's thread, and ending a session
@@ -450,7 +445,7 @@ fn a_daemon_with_nothing_to_do_does_not_burn_a_core() {
     let twice = assert_idle("a second stop of the same session");
 
     // --- 5. a stop of a session that never ran a turn ----------------------
-    // **The review queue's session**: the daemon opens it on its first idle pass and it stays
+    // The review queue's session: the daemon opens it on its first idle pass and it stays
     // idle until a row arrives, which on this workspace is never.
     let held = bridge
         .attach(&worktree, "gatekeeper", false)
@@ -466,7 +461,7 @@ fn a_daemon_with_nothing_to_do_does_not_burn_a_core() {
     // settle's duration, and the count is the array's length rather than a number kept by hand.
     let daemon_wide = assert_idle("the daemon once every head is gone");
 
-    // **The numbers, in one line, for whoever reads the gate's log**: every window's spend, all of
+    // The numbers, in one line, for whoever reads the gate's log: every window's spend, all of
     // them under a budget that is a tenth of the window. A spin reads a whole `WINDOW` here.
     let spends = [
         cold,

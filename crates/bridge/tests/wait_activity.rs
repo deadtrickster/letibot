@@ -1,11 +1,6 @@
-//! **A `wait` holds on the session's own job, and it trusts the daemon's answer about a parked one**
-//! over a real socket and a real `Registry`, with no daemon and no apparatus.
-//!
-//! A session whose turn ended with a job still running must not answer *the turn ended*, because
-//! the job's settlement wakes the model and starts a turn of its own; before the fix the wait sat
-//! out the start grace and polled for a quiet that was not coming, answering an hour's deadline with
-//! `Timeout`. And the daemon says `quiet` about the job the model PARKED (`wake: "later"`), which a
-//! wait that second-guessed would hold every package that leaves a server running.
+//! A `wait` holds on the session's own job and trusts the daemon's answer about a parked one,
+//! over a real socket and `Registry`. A turn that ended with a job running must not answer
+//! `the turn ended`; the daemon's `quiet` for a `wake: "later"` job must not be second-guessed.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,7 +18,7 @@ use letibot_sessionlog::testing;
 use letibot_transcript::{Backgrounding, ToolOutcome, TranscriptItem};
 
 /// Longer than the start grace by a margin: the point of the first half is that this wait is still
-/// blocked after the grace, which is what the old code used to answer inside.
+/// blocked after the grace, which a naive wait would answer inside.
 const PAST_THE_GRACE: Duration = Duration::from_millis(START_GRACE.as_millis() as u64 + 1500);
 
 /// A directory that removes itself.
@@ -123,7 +118,7 @@ fn a_wait_holds_on_a_running_job_and_trusts_the_daemons_quiet() {
     hub.publish(testing::turn_started("t1"));
     said(&hub, "the turn that started the job");
     hub.publish(testing::turn_finished("t1"));
-    // **And the daemon's own answer: this session holds a job.** Nothing else is going to be
+    // And the daemon's own answer: this session holds a job. Nothing else is going to be
     // published for the length of the grace below, which is the window the wait must sit out.
     hub.publish(SessionEvent::ActivityChanged {
         activity: Activity::of(vec![Waiting::Job("j7".into())]),

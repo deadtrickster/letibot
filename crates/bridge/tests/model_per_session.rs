@@ -1,13 +1,6 @@
-//! Each session's model is its own, over the wire, once.
-//!
-//! The daemon's `--provider` is only the DEFAULT, so a session created for a caller that named a
-//! model has to carry that name itself - otherwise it answers on whatever the daemon's first
-//! session chose. So: a join with another model runs that session's turns on it, the choice is
-//! written to the session's own row and survives a restart, and a model this box cannot serve is
-//! refused before the brief.
-//!
-//! The daemon here runs on `glm` on purpose: it is what makes a session that inherits the daemon's
-//! provider distinguishable from one that named its own.
+//! Each session's model is its own, over the wire. The daemon's `--provider` is only the
+//! default: a join naming another model runs on it, persists in the session's row, and an
+//! unservable model is refused before the brief. The daemon runs on `glm` to tell them apart.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

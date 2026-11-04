@@ -1,13 +1,6 @@
-//! A `wait` holds on the session's own background job, and not on the one the model parked.
-//!
-//! A session idle with a job open used to make `letibot-mcp wait` exit `0` at once, though the
-//! job's settlement was going to wake the model and start a turn of its own: the orchestrator read
-//! *done* and the package had a turn left in it. The other half is what keeps that usable - a dev
-//! server left running is `bash {background: true, wake: "later"}`, the model saying it does not
-//! need waking for it, and a `wait` must not sit out its deadline for one.
-//!
-//! The daemon here is a real one in this process: a real `bash`, a real watcher thread, a real
-//! settlement on the session's bell, and the wake the daemon takes from it.
+//! A `wait` holds on the session's own background job, not on one the model parked
+//! (`wake: "later"`). An idle session with a job open must not exit `0`, since the settlement
+//! wakes the model. The daemon is real and in-process.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

@@ -1,11 +1,6 @@
-//! **R102: a daemon the BRIDGE started is one `letibot --daemons` can see.**
-//!
-//! MEASURED 2026-10-27: about forty `harnessd` processes were running, every one started by a
-//! `letibot-mcp` bridge, and `letibot --daemons` answered *no daemons recorded* - the launcher
-//! writes `<rundir>/<key>.json` beside the socket and four of its verbs read it; the bridge wrote
-//! none. Why the record and not a listing of sockets: the socket names a hash and nothing else.
-//! What this drives: the bridge's real start path (`daemon::ensure`) against a fake `harnessd`,
-//! and then `scripts/letibot --daemons`. One test, because the environment is process-wide.
+//! A daemon the bridge started is one `letibot --daemons` can see. The launcher writes
+//! `<rundir>/<key>.json` beside the socket and the bridge must too, since the socket names only a
+//! hash. Drives `daemon::ensure` against a fake `harnessd`, then `scripts/letibot --daemons`.
 
 use std::path::{Path, PathBuf};
 
@@ -26,7 +21,7 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-/// **A `harnessd` that binds the socket it is given and then sleeps** - the whole of what
+/// A `harnessd` that binds the socket it is given and then sleeps - the whole of what
 /// `daemon::ensure` asks of a daemon (*is anything accepting?*). `python3`, because a real daemon
 /// wants a GGUF, a store and a model; the first branch is the probe `write_stub` runs.
 fn fake_daemon(path: &Path) {
@@ -83,7 +78,7 @@ fn a_daemon_the_bridge_started_is_listed_by_the_launcher() {
     fake_daemon(&harnessd);
 
     // SAFETY (Rust 2024's `unsafe` on `set_var`): this binary holds one test and no thread that
-    // reads the environment has started. Every one of these is a path in the fixture — `$HOME`
+    // reads the environment has started. Every one of these is a path in the fixture - `$HOME`
     // included, so nothing here can reach the operator's own store, log or runtime directory.
     unsafe {
         std::env::set_var("HOME", &home);
@@ -98,7 +93,7 @@ fn a_daemon_the_bridge_started_is_listed_by_the_launcher() {
         .expect("the bridge starts the fake daemon");
     assert!(d.started, "this call started it: {d:?}");
 
-    // **The record, beside the socket, under the launcher's own name.**
+    // The record, beside the socket, under the launcher's own name.
     let record = d.socket.with_extension("json");
     assert_eq!(
         record.file_name().and_then(|n| n.to_str()),
@@ -122,7 +117,7 @@ fn a_daemon_the_bridge_started_is_listed_by_the_launcher() {
         v["socket"].as_str(),
         Some(d.socket.display().to_string().as_str())
     );
-    // **A NUMBER, not a string**: the shell's `json_str` cannot see a number and `json_num`
+    // A NUMBER, not a string: the shell's `json_str` cannot see a number and `json_num`
     // cannot see a string, and `pid` is read through `json_field` for exactly that reason.
     assert!(
         v["pid"].is_u64() && v["pid"].as_u64().unwrap() > 0,
@@ -137,7 +132,7 @@ fn a_daemon_the_bridge_started_is_listed_by_the_launcher() {
         "an RFC3339 stamp: {text}"
     );
 
-    // **And the operator's own listing sees it**, which is the defect: the reader is
+    // And the operator's own listing sees it, which is the defect: the reader is
     // `scripts/letibot --daemons` itself, not a copy of it.
     let script = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../scripts/letibot")

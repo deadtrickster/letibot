@@ -8,7 +8,7 @@
 //!
 //! Three verbs and no flags beyond the waits' own. The first is the server Claude Code
 //! registers and keeps for the life of the conversation; the second is the background
-//! command whose **exit** is the notification (`docs/claude-code-bridge.md`), because
+//! command whose exit is the notification (`docs/claude-code-bridge.md`), because
 //! Claude Code wakes its model when a background command finishes and has no other door.
 //!
 //! The wait exits:
@@ -21,7 +21,7 @@
 //! | 30 | the timeout passed | nothing (the reason is on stderr) |
 //! | 40 | the provider is in trouble | the event, as JSON |
 //!
-//! **stdout is the MCP wire when serving**, and nothing may be printed to it there. The
+//! stdout is the MCP wire when serving, and nothing may be printed to it there. The
 //! wait's stdout is its own and holds nothing but the payload above.
 
 use std::time::{Duration, Instant};

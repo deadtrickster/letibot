@@ -1,21 +1,6 @@
-//! `leticode_transcript` against a real daemon - a turn's rows, a cursor, and the cap.
-//!
-//! A pane that follows a package's session read-only and tailed needs the rows themselves, not
-//! the progress ring's one-line summaries, and reading the session store directly is ruled out.
-//! So `leticode_transcript` asks the daemon for the rows a head would be handed.
-//!
-//! Three facts, and each is a way the tool could quietly lie: a turn's rows come back in order
-//! with their content; `since` returns only newer rows; and long text is complete up to the cap,
-//! with `cut: true` and the cap in the answer. A watched session answers the same read.
-//!
-//! The rows are the daemon's - a fixture handing back a `Snapshot` it built itself would be
-//! asserting what this file wrote - so the daemon is harnessd's own `Daemon::serve` over a real
-//! `Registry` and a real `Sessions::open_first`. What is replaced is the MODEL, by a loopback HTTP
-//! server answering the OpenAI frames the provider parses; the session opens on the byte
-//! vocabulary, so no GGUF is involved.
-//!
-//! One test, because the environment is process-wide: `$LETIBOT_SOCKET`, `$LETIBOT_STORE` and the
-//! config directories are what the bridge and the daemon read, and no argument stands in for them.
+//! `leticode_transcript` against a real daemon: rows in order with content, `since` returning
+//! only newer rows, long text complete up to the cap with `cut: true`. Only the model is a
+//! loopback server. One test, because `$LETIBOT_SOCKET` and `$LETIBOT_STORE` are process-wide.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

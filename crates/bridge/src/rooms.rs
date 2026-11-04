@@ -1,13 +1,6 @@
-//! Claude Code in the rooms: the bridge as the external seat `claude-code` on the host coordinator.
-//!
-//! The bridge may not depend on the room crate (`room_bell_turn` pins that a bridge head hears no
-//! bell), so this module speaks the coordinator's chat wire itself: one JSON object per line, the
-//! frames of `docs/room.md` § *The contract*. The numbers it must agree on are `PROTOCOL` and the
-//! host key, and both are pinned by tests.
-//!
-//! Identity is the connection's: `hello` says seat `external` and speaker `claude-code`, and no
-//! tool argument reaches `author`, `kind` or `seat`, so Claude Code cannot post as the operator or
-//! as a session.
+//! Claude Code in the rooms: the bridge as the external seat `claude-code`. It may not depend on
+//! the room crate, so it speaks the chat wire itself (`docs/room.md`). No tool argument reaches
+//! `author`, `kind` or `seat`, so it cannot post as the operator or a session.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;

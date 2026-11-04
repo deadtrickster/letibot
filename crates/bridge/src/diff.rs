@@ -1,11 +1,6 @@
-//! **What the worktree's branch has done**, for the reviewer who is about to read it.
-//!
-//! `leticode_diff` answers the branch, the commits it put on top of its base, and the shape of
-//! what changed. The base is the branch's upstream when it has one and `main`/`master`
-//! otherwise, and the comparison is always against the **merge base** - `git diff main` shows
-//! the base's own new commits as this branch's work undone, which a review must not be given.
-//! **The full diff is asked for, never sent**: a branch of twenty files is a few hundred
-//! kilobytes, and a bridge that returned it by default would put it in context on every check.
+//! What the worktree's branch has done, for the reviewer. `leticode_diff` answers the branch,
+//! its commits, and the shape of the change, always against the merge base with upstream or
+//! `main`/`master`. The full diff is asked for, never sent by default.
 
 use std::path::Path;
 use std::process::Command;

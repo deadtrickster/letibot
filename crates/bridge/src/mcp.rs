@@ -1,11 +1,6 @@
-//! **MCP over stdio**: JSON-RPC 2.0, one message per line, and nothing else on stdout.
-//!
-//! No MCP library: the protocol here is three methods and one notification, the framing is a
-//! newline, and a library would add a dependency, an executor and a decoder for it.
-//! Two rules are easy to get wrong and are tested: **a line that does not parse is an answer,
-//! not the end of the server** (a client gets `-32700` and the next line is served as usual),
-//! and **a notification gets no reply**. And **stdout is the wire**: every diagnostic goes to
-//! stderr, because one stray `print!` lands in the middle of a JSON line.
+//! MCP over stdio: JSON-RPC 2.0, one message per line, nothing else on stdout. No MCP library.
+//! A line that does not parse is an answer (`-32700`), not the end of the server; a notification
+//! gets no reply. Diagnostics go to stderr, as a stray `print!` would corrupt a JSON line.
 
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,11 +17,8 @@ use crate::tools::Bridge;
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// Serve one client, reading requests from `input` and writing answers to `output`. Returns when
-/// the input ends. Errors on the writer are returned rather than swallowed: a client that closed
-/// stdout is gone, and reading its requests would be work nobody receives.
-///
-/// The output is shared with the room stream's writer thread, so a pushed notification and an
-/// answer are never interleaved inside one line.
+/// the input ends. Writer errors are returned: a client that closed stdout is gone. The output is
+/// shared with the room stream's writer thread, so lines never interleave.
 pub fn serve<R: BufRead, W: Write + Send>(
     mut input: R,
     output: W,
@@ -159,10 +151,9 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
     Some(json!({ "jsonrpc": "2.0", "id": id, "result": result.unwrap_or(Value::Null) }))
 }
 
-/// `tools/call`: run the verb and wrap what it said. Two kinds of failure, on purpose: **a
-/// caller's mistake** - an unknown tool, a missing name - is a JSON-RPC error (`-32602`, the code
-/// MCP names for it), while **a tool that ran and failed** is `isError: true`, because an error
-/// object would look like a broken server.
+/// `tools/call`: run the verb and wrap what it said. A caller's mistake (unknown tool, missing
+/// name) is a JSON-RPC error `-32602`; a tool that ran and failed is `isError: true`, since an
+/// error object would look like a broken server.
 fn call_tool(bridge: &Bridge, params: &Value) -> Result<Value, (i64, String)> {
     let Some(name) = params.get("name").and_then(Value::as_str) else {
         return Err((-32602, "tools/call needs a `name`".into()));
@@ -221,7 +212,7 @@ mod tests {
             .collect()
     }
 
-    /// **`initialize` answers the revision, the capability and the name** — the three
+    /// `initialize` answers the revision, the capability and the name - the three
     /// fields a client reads before it sends anything else.
     #[test]
     fn initialize_answers_the_revision_and_names_the_server() {
@@ -241,8 +232,8 @@ mod tests {
         assert_eq!(r["result"]["serverInfo"]["name"], "letibot-mcp");
     }
 
-    /// **Twenty tools, each with a schema** — the design's table, and the shape MCP requires.
-    /// Ten from B1–B6, B8's `leticode_transcript` and `leticode_mode`, `leticode_model`,
+    /// Twenty tools, each with a schema - the design's table, and the shape MCP requires.
+    /// Ten core verbs, `leticode_transcript`, `leticode_mode`, `leticode_model`,
     /// `leticode_collect` for a session stopped before its branch came home, and the six room tools.
     #[test]
     fn tools_list_lists_the_twenty_tools_with_schemas() {
@@ -254,7 +245,7 @@ mod tests {
             assert!(t["description"].is_string(), "{t}");
             assert_eq!(t["inputSchema"]["type"], "object", "{t}");
         }
-        // The one B2 added is published with its cursor's own schema, not a bare object.
+        // `leticode_events` is published with its cursor's own schema, not a bare object.
         let events = tools
             .iter()
             .find(|t| t["name"] == "leticode_events")
@@ -264,7 +255,7 @@ mod tests {
             "integer"
         );
         assert_eq!(&events["inputSchema"]["required"], &json!(["session"]));
-        // B6's attach publishes the default that makes it a watcher, so a client that omits
+        // `leticode_attach` publishes the default that makes it a watcher, so a client that omits
         // `watch_only` has been told what it gets.
         let attach = tools
             .iter()
@@ -278,7 +269,7 @@ mod tests {
             attach["inputSchema"]["properties"]["watch_only"]["type"],
             "boolean"
         );
-        // B8's transcript publishes its cursor and its cap, so a client can see that `since` is
+        // `leticode_transcript` publishes its cursor and its cap, so a client can see that `since` is
         // the number the last answer handed back rather than a seq or a row id.
         let transcript = tools
             .iter()
@@ -332,7 +323,7 @@ mod tests {
         );
     }
 
-    /// **A line that does not parse is a parse error and the server keeps going** — the
+    /// A line that does not parse is a parse error and the server keeps going - the
     /// next request on the next line is answered normally. This is the difference between a
     /// client that sees one bad message and a client whose server died.
     #[test]
@@ -362,10 +353,9 @@ mod tests {
         .to_string()
     }
 
-    /// **A `tools/call` naming a tool this build does not have is `-32602`**, with the list in the
-    /// message: the arguments were well-formed and the verb is not there, which is the caller's
-    /// mistake and not a tool that ran and failed. A client given `isError: true` reads *the tool
-    /// failed* and retries, which is the one direction that spends a round.
+    /// A `tools/call` naming a tool this build lacks is `-32602` with the list in the message: the
+    /// caller's mistake, not a failed tool. `isError: true` would read as *the tool failed* and
+    /// spend a retry round.
     #[test]
     fn an_unknown_tool_is_an_invalid_params_error_with_the_list() {
         let req = call_request(3, "leticode_nope", json!({}));
@@ -413,8 +403,7 @@ mod tests {
         assert!(text.contains("s-nope"), "{text}");
     }
 
-    /// `leticode_list` on a bridge holding nothing is `isError: false` with an empty list —
-    /// a listing is a question, and "none" is an answer.
+    /// `leticode_list` on a bridge holding nothing is `isError: false` with an empty list -     /// a listing is a question, and "none" is an answer.
     #[test]
     fn a_listing_of_nothing_is_not_an_error() {
         let req = call_request(5, "leticode_list", json!({}));

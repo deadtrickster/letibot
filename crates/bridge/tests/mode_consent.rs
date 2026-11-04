@@ -1,11 +1,6 @@
-//! **`leticode_mode` against a real daemon** - the point that needs nobody, and the one that needs
-//! a person.
-//!
-//! `allow-all` on a box with no structural boundary is a person's answer about their own machine,
-//! and the bridge is a program: B8's tool does not SET that point, it asks the daemon, which puts
-//! the card in front of the session's OTHER heads. **The bridge has no frame that consents.**
-//! Every *did it change* is read back from the daemon through a second, watching head, because a
-//! tool that reported what it had done would be asserting its own work. One test per binary.
+//! `leticode_mode` against a real daemon. `allow-all` without a boundary is a person's answer,
+//! so the tool asks the daemon, which puts the card before the session's other heads. Changes
+//! are read back through a second, watching head. One test per binary.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
@@ -64,7 +59,7 @@ struct World {
 }
 
 impl World {
-    /// **A daemon with no model and no fake provider**, deliberately: every fact this file is
+    /// A daemon with no model and no fake provider, deliberately: every fact this file is
     /// about is the gate's, and a session whose turns go nowhere still has a point. `bridge.start`
     /// sends a brief, so the first turn fails with *this session has no model*.
     fn start() -> World {
@@ -108,11 +103,11 @@ impl World {
 
         let mut cfg = Config::for_this_box(&worktree);
         cfg.dialect = Dialect::Qwen;
-        // **`leticode` is the unconfined seat**, which is the whole premise: an unconfined
+        // `leticode` is the unconfined seat, which is the whole premise: an unconfined
         // session is one where `allow-all` requires a confinement it has not got, so the point
         // stands on a person's answer or not at all.
         cfg.seat = Seat::Leticode;
-        // **No exec backend**: a delegated cgroup is apparatus this box may not have, and
+        // No exec backend: a delegated cgroup is apparatus this box may not have, and
         // nothing in this file runs a command. The writable backend is enough for a turn that
         // only talks and for a session that only needs a point.
         cfg.allow_bash = false;
@@ -123,7 +118,7 @@ impl World {
         cfg.web_search = None;
         cfg.permission = Vec::new();
         cfg.http_retries = 0;
-        // **A window the prompt fits inside.** The byte vocabulary counts every byte of the system
+        // A window the prompt fits inside. The byte vocabulary counts every byte of the system
         // prompt and the tool schemas as a token, so message zero is ~54k by that measure; a 32k
         // window made the harness try to compact before every turn, which is a failure per turn.
         cfg.context_window = Some(200_000);
@@ -175,7 +170,7 @@ impl Drop for World {
 // A head that behaves like a person's terminal
 // ---------------------------------------------------------------------------
 
-/// **A person at the session**: a real head on the real socket, watching the frames the daemon
+/// A person at the session: a real head on the real socket, watching the frames the daemon
 /// sends it and answering the one this file is about. Not a mock - this is the *tui* kind, with
 /// `can_decide: true`, which is what makes the daemon willing to put the card in front of it.
 struct Person {
@@ -200,7 +195,7 @@ impl Person {
         }
     }
 
-    /// **Wait for the confirmation card and answer it**, on this thread. Returns the request's id
+    /// Wait for the confirmation card and answer it, on this thread. Returns the request's id
     /// and the point it was about. Everything else the daemon sends is skipped: the head is
     /// attached to a live session, so a reader that took an event for the answer would be wrong.
     fn answer_the_card(&self, yes: bool, within: Duration) -> (String, String) {
@@ -225,7 +220,7 @@ impl Person {
     }
 }
 
-/// **What the daemon says this session's point is**, read through a watching head.
+/// What the daemon says this session's point is, read through a watching head.
 /// `can_decide: false` on purpose: a probe that could decide would BE the human head this file
 /// is about.
 fn mode_of(socket: &Path, session: &str) -> String {
@@ -252,7 +247,7 @@ fn mode_of(socket: &Path, session: &str) -> String {
             "the daemon never answered `Settings` with a `mode` row"
         );
         match frames.recv_timeout(left) {
-            // **Retried, because a session is REGISTERED before it is open.** The settings are
+            // Retried, because a session is REGISTERED before it is open. The settings are
             // published when the worker opens the harness, so a probe that asked in the window
             // before that gets an honest empty list; asking again is what a person's pane does.
             Ok(Inbound::Frame(ServerFrame::Settings { rows, .. })) => {
@@ -269,7 +264,7 @@ fn mode_of(socket: &Path, session: &str) -> String {
     mode
 }
 
-/// **The mode once it has settled on `want`, or the last reading when the patience runs out.**
+/// The mode once it has settled on `want`, or the last reading when the patience runs out.
 /// A `Mode` frame is queued like a prompt, so the first `Settings` a probe gets can still carry
 /// the point the session opened at. Asking again cannot hide a wrong move: it never becomes `want`.
 fn mode_reaches(socket: &Path, session: &str, want: &str) -> String {
@@ -338,8 +333,8 @@ fn a_mode_that_needs_nobody_applies_and_allow_all_waits_for_a_person() {
     // --- a person at a head says yes, and the point moves ---------------------
     let watched = start("mode-marker: a person is at this one");
     // The ask BLOCKS until the answer settles it, so the person answers from its own thread -
-    // which is the only shape the daemon allows. **It waits for the person to be ATTACHED, not for
-    // a clock**: a daemon with no head that may decide refuses, so the spawn is a race a busy box wins.
+    // which is the only shape the daemon allows. It waits for the person to be ATTACHED, not for
+    // a clock: a daemon with no head that may decide refuses, so the spawn is a race a busy box wins.
     let socket = world.socket.clone();
     let (attached, is_attached) = mpsc::channel();
     let answering = {
@@ -420,7 +415,7 @@ fn a_mode_that_needs_nobody_applies_and_allow_all_waits_for_a_person() {
         "a person's no leaves the session where it was: {no}"
     );
 
-    // **The bridge never consents**, and this is the shape of that promise: the tool has no
+    // The bridge never consents, and this is the shape of that promise: the tool has no
     // argument for consent, so the whole vocabulary is the point's name.
     let schema = tools::list()["tools"]
         .as_array()

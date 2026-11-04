@@ -1,17 +1,12 @@
-//! **A session's transcript ROWS, as a head is served them** - the answer to `leticode_transcript`.
-//!
-//! Not the store, on the operator's ruling: `sessions.db` is one file every daemon shares, so a
-//! reader there sees sessions it was never told about, and the shape of a row is the STORE's.
-//! So this renders what the daemon already serves a head: a `Snapshot`'s items, asked for with
-//! `ClientFrame::Peek { shape: Rows }`. A row is either its item, or `content: null` - a row
-//! announced and not reconciled, which is not an empty message. Every string is cut at [`CAP`]
-//! **characters, not bytes**, and every answer states the cap, so a caller can tell a cut payload.
+//! A session's transcript rows, as a head is served them - the answer to `leticode_transcript`.
+//! Not the store, which every daemon shares: this renders a `Snapshot`'s items via
+//! `ClientFrame::Peek { shape: Rows }`. `content: null` is an unreconciled row. Strings are cut at [`CAP`].
 
 use letibot_sessionlog::view::{Snapshot, SnapshotItem};
 use letibot_transcript::{ToolOutcome, TranscriptItem, UserPart};
 use serde_json::{Value, json};
 
-/// **How many characters of one string a row may carry.** See the module note: characters,
+/// How many characters of one string a row may carry. See the module note: characters,
 /// stated in every answer, and generous because a reader is not a context window.
 pub const CAP: usize = 8_000;
 
@@ -24,7 +19,7 @@ pub const LIMIT: usize = 100;
 pub fn row(i: u64, item: &SnapshotItem, reasoning: bool) -> Option<Value> {
     let mut out = match item.item.as_ref() {
         Some(carried) => carried_row(carried, reasoning)?,
-        // **A row whose content the daemon has not reconciled.** `kind` is the store's own word
+        // A row whose content the daemon has not reconciled. `kind` is the store's own word
         // for it, which is all anybody knows about it.
         None => json!({ "kind": item.kind.clone(), "content": null }),
     };
@@ -46,7 +41,7 @@ fn carried_row(item: &TranscriptItem, reasoning: bool) -> Option<Value> {
             "cut": cut(text).1,
         }),
         TranscriptItem::User { parts, speaker } => {
-            // **The text, then what is not text.** A picture's `data_ref` is a data URI of the
+            // The text, then what is not text. A picture's `data_ref` is a data URI of the
             // whole file, and a reader that asked for the conversation did not ask for that;
             // the media type and the fact that it is there is the reading a pane can use.
             let text = parts
@@ -83,7 +78,7 @@ fn carried_row(item: &TranscriptItem, reasoning: bool) -> Option<Value> {
             }
             row
         }
-        // **A delivery, as its own kind on the wire**: a bridge reader that draws the operator's
+        // A delivery, as its own kind on the wire: a bridge reader that draws the operator's
         // words differently from the session's must not have to infer which this is.
         TranscriptItem::Notice { kind, text } => json!({
             "kind": "notice",
@@ -93,7 +88,7 @@ fn carried_row(item: &TranscriptItem, reasoning: bool) -> Option<Value> {
             "text": cut(text).0,
             "cut": cut(text).1,
         }),
-        // **The model's own thinking, and only when asked for.** It is the one part of a
+        // The model's own thinking, and only when asked for. It is the one part of a
         // transcript nothing downstream reads (the compaction tail's own note), and a caller
         // following a package wants the work rather than 25 000 tokens of `+ 0 + 0`.
         TranscriptItem::Reasoning {
@@ -174,15 +169,14 @@ fn carried_row(item: &TranscriptItem, reasoning: bool) -> Option<Value> {
                 }
                 _ => {}
             }
-            // **Who ran it, when it was not the model** — a call the operator ran from their own
+            // Who ran it, when it was not the model - a call the operator ran from their own
             // console is a different fact about a row whose subject is who acted.
             if let Some(letibot_transcript::CallOrigin::Operator { who }) = origin {
                 row["ran_by"] = json!(who);
             }
             row
         }
-        // A delimiter that renders to nothing. It is on the wire as a row, so it is one here —
-        // `kind` and its label — rather than a gap in the numbering.
+        // A delimiter that renders to nothing. It is on the wire as a row, so it is one here -         // `kind` and its label - rather than a gap in the numbering.
         TranscriptItem::SegmentMark {
             segment_id,
             label,
@@ -198,7 +192,7 @@ fn carried_row(item: &TranscriptItem, reasoning: bool) -> Option<Value> {
     })
 }
 
-/// **One page of a session's rows**, with the cursor that reads on from it. `since` is the
+/// One page of a session's rows, with the cursor that reads on from it. `since` is the
 /// `next` of the previous answer, and the arithmetic is against `items_dropped`, because a
 /// snapshot is the TAIL: a cursor counting window positions would re-read or skip when it moved.
 pub fn page(snap: &Snapshot, since: u64, limit: usize, reasoning: bool) -> Value {
@@ -230,7 +224,7 @@ pub fn page(snap: &Snapshot, since: u64, limit: usize, reasoning: bool) -> Value
     out
 }
 
-/// **The word a tool's ending is filed under**, shared with `leticode_events` so the two
+/// The word a tool's ending is filed under, shared with `leticode_events` so the two
 /// answers cannot name one call's ending differently. A `denied` call that reported `failed`
 /// would be a gate's decision recorded as the tool's fault.
 pub fn outcome_word(outcome: &ToolOutcome) -> &'static str {
@@ -287,7 +281,7 @@ mod tests {
         }
     }
 
-    /// **A long payload comes back whole up to the cap, says so, and says what the cap was.**
+    /// A long payload comes back whole up to the cap, says so, and says what the cap was.
     #[test]
     fn a_long_payload_is_cut_at_the_stated_cap() {
         let long = "x".repeat(CAP + 500);
@@ -337,8 +331,8 @@ mod tests {
         assert_eq!(answer["rows"][0]["cut"], json!(false));
     }
 
-    /// **The cursor counts rows in the SESSION, not positions in the window.** A snapshot is a
-    /// tail, so the same row is at a different index in two of them — and a cursor that counted
+    /// The cursor counts rows in the SESSION, not positions in the window. A snapshot is a
+    /// tail, so the same row is at a different index in two of them - and a cursor that counted
     /// window positions would re-read or skip every time the window moved.
     #[test]
     fn the_cursor_is_a_session_row_and_the_window_moving_does_not_move_it() {
@@ -382,7 +376,7 @@ mod tests {
         );
     }
 
-    /// **Reasoning is left out unless it was asked for** — and when it is, it is a row of its
+    /// Reasoning is left out unless it was asked for - and when it is, it is a row of its
     /// own rather than a field on the answer, because the interleaving is what the model's own
     /// cache depends on and a reader deserves the same order.
     #[test]
@@ -409,7 +403,7 @@ mod tests {
     }
 
     /// A row the daemon announced and never reconciled is a row with no content, not a row with
-    /// an empty message — the two are different statements and only one of them is true.
+    /// an empty message - the two are different statements and only one of them is true.
     #[test]
     fn a_row_with_no_content_says_so_rather_than_looking_empty() {
         let s = snap(0, vec![item(0, "assistant", None)]);

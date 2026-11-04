@@ -1,11 +1,6 @@
-//! **The CPU clock a test uses to measure a CHILD rather than the box.**
-//!
-//! A sampled percentage (`ps`, `top`, a delta of the whole machine) measures the machine: on a box
-//! running six other daemons it says the box is busy, which nobody doubted. What a test of *this*
-//! daemon needs is the CPU the daemon spent - its own `utime + stime`, which `/proc/<pid>/stat`
-//! fields 14 and 15 and `getrusage(RUSAGE_SELF)` both are. Neither includes a child's CPU.
-//! And the WINDOW decides what the number means: a daemon's opening is a fixed ~260 ms of CPU spent
-//! over 0.6 s quiet and 4.7 s loaded, so a window that opens when the process has *gone quiet* wins.
+//! The CPU clock a test uses to measure a child rather than the box. A sampled percentage
+//! measures the machine; this reads the daemon's own `utime + stime` (`/proc/<pid>/stat` fields
+//! 14 and 15, `getrusage(RUSAGE_SELF)`). The window opens when the process has gone quiet.
 #![allow(dead_code)]
 
 use std::time::{Duration, Instant};
@@ -21,7 +16,7 @@ pub fn this_process() -> Duration {
     secs(ru.ru_utime) + secs(ru.ru_stime)
 }
 
-/// **Any process's own `utime + stime`, read off `/proc/<pid>/stat`** - the one a test uses to
+/// Any process's own `utime + stime`, read off `/proc/<pid>/stat` - the one a test uses to
 /// prove a *neighbour* was really burning. `None` where there is no `/proc` (macOS) or the pid is
 /// gone, so a caller can say the reading is not available rather than failing on it.
 pub fn of_pid(pid: u32) -> Option<Duration> {
@@ -43,19 +38,19 @@ pub fn procs_reading() -> Option<Duration> {
     of_pid(std::process::id())
 }
 
-/// **The stretch a settle adds up** - one second, added up as a TOTAL rather than as a run of
+/// The stretch a settle adds up - one second, added up as a TOTAL rather than as a run of
 /// shorter slices: a bursty tail puts a few quarter-second slices under 5 ms each, so *two quiet
 /// slices in a row* was satisfied while the work went on. Every settle costs at least this long.
 pub const SPAN: Duration = Duration::from_secs(1);
 
-/// **The settle's line: 1% of a core** - [`SPAN`] / 100, i.e. 10 ms of CPU in a second. Low enough
+/// The settle's line: 1% of a core - [`SPAN`] / 100, i.e. 10 ms of CPU in a second. Low enough
 /// that the rate it admits cannot breach the window's budget (at 10%, a slow opening sat just under
 /// the settle and just over the window: 144 ms against 300), high enough that waiting is far under it.
 pub fn settle_budget() -> Duration {
     SPAN / 100
 }
 
-/// **Wait until this process has nothing left to do, and say how long that took.** The condition is
+/// Wait until this process has nothing left to do, and say how long that took. The condition is
 /// read off the child's own accounting, so a quiet box and a box running ninety other processes
 /// settle at the same point. The ceiling is [`CEILING`], and only a real hang trips it.
 pub const CEILING: Duration = Duration::from_secs(120);
@@ -64,7 +59,7 @@ pub fn wait_until_idle(what: &str) -> Duration {
     wait_until_idle_within(what, CEILING)
 }
 
-/// The same settle with the ceiling handed in, so a test can prove **the ceiling fires** without
+/// The same settle with the ceiling handed in, so a test can prove the ceiling fires without
 /// spending [`CEILING`] on it - the failure path is the one that has to work, because a daemon that
 /// spins never settles and this is the assertion that has to say so.
 pub fn wait_until_idle_within(what: &str, ceiling: Duration) -> Duration {
@@ -85,7 +80,7 @@ pub fn wait_until_idle_within(what: &str, ceiling: Duration) -> Duration {
     }
 }
 
-/// **How much CPU this process spends over `span`** - the one reading every window here is built
+/// How much CPU this process spends over `span` - the one reading every window here is built
 /// from.
 pub fn over(span: Duration) -> Duration {
     let before = this_process();

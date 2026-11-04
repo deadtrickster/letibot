@@ -1,9 +1,6 @@
-//! **`leticode_stop` ends the session here**, which is what lets its placement settle. Detaching
-//! alone left the daemon holding the harness - and the branch on the host - for as long as the
-//! daemon lived, so a package's commits came back only if the operator stopped the whole daemon.
-//!
-//! The daemon's half is the registry: a stop that closed the session leaves no entry behind and
-//! rings the worker to let the harness go. That ring is the act every placement hangs from.
+//! `leticode_stop` ends the session here, which lets its placement settle. Detaching alone
+//! leaves the daemon holding the harness. The daemon's half is the registry: a stop that closed
+//! the session leaves no entry and rings the worker to let the harness go.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

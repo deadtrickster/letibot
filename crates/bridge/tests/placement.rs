@@ -1,11 +1,6 @@
-//! **`leticode_start { host }` on a box whose host is not there** - the two refusals, end to end.
-//!
-//! Both ways placing a package's TOOLS on another machine goes wrong are refusals rather than
-//! failures, because either one silently running the work somewhere nobody asked for is the
-//! defect this file exists against: a host name `hosts.toml` does not declare is refused before
-//! anything is started, and a daemon already up for the folder but placed elsewhere is refused
-//! before it is joined. **Nothing here reaches a host, and nothing starts a daemon**: `$LETIBOT_BIN`
-//! points at an empty directory, so a start would fail. One test, as the environment is process-wide.
+//! `leticode_start { host }` with a host that is not there: the two refusals, end to end. An
+//! undeclared host name is refused before anything starts, and a daemon already up but placed
+//! elsewhere is refused before it is joined. `$LETIBOT_BIN` points at an empty directory. One test.
 
 use std::path::{Path, PathBuf};
 
@@ -46,7 +41,7 @@ fn a_package_is_placed_on_a_host_only_when_the_host_and_the_daemon_agree() {
     let root = scratch.path();
     let worktree = root.join("worktree");
     std::fs::create_dir_all(&worktree).expect("the worktree");
-    // **No `harnessd` anywhere**: this file's assertions include *nothing was started*, and a
+    // No `harnessd` anywhere: this file's assertions include *nothing was started*, and a
     // binary the bridge could reach would make that a hope rather than a check.
     let no_bin = root.join("no-bin");
     std::fs::create_dir_all(&no_bin).expect("an empty bin directory");

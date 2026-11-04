@@ -1,17 +1,6 @@
-//! **The bridge's half of a provider trouble, and the two verbs automation needs**: the typed event
-//! as `leticode_events` and `leticode_status` show it, `wait` waking on it, and `leticode_model`
-//! moving a session that joined a daemon another session started.
-//!
-//! The daemon side - a real 429 with and without `Retry-After`, a quota, a timeout and a stall, each
-//! measured against a scripted provider - is `crates/harnessd/tests/provider_trouble.rs`. What is
-//! measured HERE is what a program driving the bridge sees, so the event is published on the session's
-//! own hub: a real socket, a real head, a real fold.
-//!
-//! # One test, four subjects, and why
-//!
-//! `XDG_CONFIG_HOME` is process-global and libtest runs a binary's tests in parallel, so the scratch
-//! config dir is pointed at once by the single test that owns this process, and the four subjects run
-//! in sequence inside it.
+//! The bridge's half of a provider trouble: the typed event in `leticode_events` and
+//! `leticode_status`, `wait` waking on it, and `leticode_model` moving a joined session.
+//! One test, because `XDG_CONFIG_HOME` is process-global. Daemon side: `crates/harnessd/tests/provider_trouble.rs`.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -267,8 +256,8 @@ impl World {
         self.registry.get(&self.session).expect("the session's hub")
     }
 
-    /// The bridge's handle on the daemon's own session - the one another party started, which is
-    /// exactly R106's case.
+    /// The bridge's handle on the daemon's own session - the one another party started, which is the
+    /// joined-daemon case.
     fn held(&self) -> Bridge {
         let bridge = Bridge::new();
         bridge
@@ -306,7 +295,7 @@ fn a_provider_trouble_wakes_the_bridge_and_the_model_verb_moves_the_session() {
     let bridge = world.held();
     let hub = world.hub();
 
-    // A. **The typed event as `leticode_events` shows it**, and as `leticode_status` answers it: the
+    // A. The typed event as `leticode_events` shows it, and as `leticode_status` answers it: the
     // kind, the reset instant the provider gave, and the model the round was on.
     let reset = letibot_sessionlog::event::now_ms() + 90_000;
     hub.publish(SessionEvent::ProviderTrouble {
@@ -340,7 +329,7 @@ fn a_provider_trouble_wakes_the_bridge_and_the_model_verb_moves_the_session() {
     assert_eq!(entry["reset_ms"], reset, "{entry}");
     assert_eq!(entry["name"], START, "{entry}");
 
-    // B. **`letibot-mcp wait` returns on it**, with the event on stdout, so an orchestrator wakes on a
+    // B. `letibot-mcp wait` returns on it, with the event on stdout, so an orchestrator wakes on a
     // stuck provider and not only on an ask or a failure.
     let worktree = world.worktree.display().to_string();
     let session = world.session.clone();
@@ -351,7 +340,7 @@ fn a_provider_trouble_wakes_the_bridge_and_the_model_verb_moves_the_session() {
             Instant::now() + Duration::from_secs(60),
         )
     });
-    // **After the wait has attached**, or the event would be folded into its snapshot and never
+    // After the wait has attached, or the event would be folded into its snapshot and never
     // wake it - which is the rule: a wait is answered by what it saw.
     std::thread::sleep(Duration::from_millis(400));
     hub.publish(SessionEvent::ProviderTrouble {
@@ -370,7 +359,7 @@ fn a_provider_trouble_wakes_the_bridge_and_the_model_verb_moves_the_session() {
     let payload: serde_json::Value = serde_json::from_str(&said).expect("the event, as JSON");
     assert_eq!(payload["kind"], "quota", "{said}");
 
-    // C. **`leticode_model` moves a RUNNING session** that joined a daemon another session started:
+    // C. `leticode_model` moves a RUNNING session that joined a daemon another session started:
     // the first turn goes to the model the daemon chose, the verb moves it, and the next turn's
     // request names the new one.
     bridge
@@ -416,7 +405,7 @@ fn a_provider_trouble_wakes_the_bridge_and_the_model_verb_moves_the_session() {
             .is_ok_and(|s| s["model"] == MOVED)
     });
 
-    // D. **A watched session refuses the verb.** The head that holds the session is somebody else's,
+    // D. A watched session refuses the verb. The head that holds the session is somebody else's,
     // and a bridge that moved it would be deciding for them; the refusal names the flag that would.
     let watcher = Bridge::new();
     watcher

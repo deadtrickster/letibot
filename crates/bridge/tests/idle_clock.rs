@@ -1,11 +1,6 @@
-//! **The idle clock, proved**: it reads one child's CPU and nobody else's, and it waits for the
-//! work to be over instead of for a clock.
-//!
-//! This file exists because the instrument it tests decided a red on the merge gate and nobody
-//! could tell what the number meant. Four facts, in one test and in this order: the `/proc` and
-//! `getrusage` readings are one number; a neighbour's CPU does not move this process's reading;
-//! the settle waits for a burn to end; and a process that never goes quiet is reported as one.
-//! `no_spin.rs` is where the same number is measured on a quiet box and on a busy one.
+//! The idle clock: it reads one child's CPU and nobody else's, and waits for the work to end,
+//! not for a clock. A neighbour's CPU does not move it, and a never-quiet process is reported.
+//! `no_spin.rs` measures the same number on a quiet and a busy box.
 
 use std::io::Write;
 use std::process::{Child, Command, Stdio};
@@ -42,7 +37,7 @@ impl Drop for Burner {
     }
 }
 
-/// **Wait until a pid's own reading has advanced by `at_least`** - so a claim about a burner is
+/// Wait until a pid's own reading has advanced by `at_least` - so a claim about a burner is
 /// measured on the burner. Three answers: `Some(true)` it burned, `Some(false)` the reading moved
 /// too little, and `None` on a box with no `/proc/<pid>/stat` - macOS - judged at the call site.
 fn has_burned(pid: u32, at_least: Duration, within: Duration) -> Option<bool> {
@@ -83,9 +78,9 @@ fn the_idle_clock_reads_one_child_and_waits_for_the_work_to_be_over() {
 
     // --- 2. a neighbour's CPU is not this process's CPU --------------------
     let burner = Burner::start();
-    // **The burner's own reading, where this box can take it.** `cpu::of_pid` answers `None` where
-    // there is no `/proc` - macOS - and `unwrap_or_default()` used to turn that into a burner that
-    // read 0 for ever, so a Darwin run failed with *the burner never got going*.
+    // The burner's own reading, where this box can take it. `cpu::of_pid` answers `None` where
+    // there is no `/proc` - macOS - so `unwrap_or_default()` would make a burner that
+    // reads 0 for ever and fail with *the burner never got going*.
     match has_burned(
         burner.pid(),
         Duration::from_millis(300),
@@ -157,7 +152,7 @@ fn the_idle_clock_reads_one_child_and_waits_for_the_work_to_be_over() {
     );
 
     // --- 4. a process that never goes quiet is reported as one ------------
-    // **The failure path, which is the half that has to work.** A settle that waited for a spinning
+    // The failure path, which is the half that has to work. A settle that waited for a spinning
     // process would wait for ever, so the ceiling is what turns the spin into a red.
     let until = Instant::now() + Duration::from_secs(3);
     let burning = std::thread::spawn(move || {

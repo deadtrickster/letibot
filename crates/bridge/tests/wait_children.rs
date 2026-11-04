@@ -1,15 +1,6 @@
-//! A `wait` holds on a session's own RUNNING CHILD, not only on its background jobs.
-//!
-//! R107 made a running job hold a `wait` (`wait_jobs.rs`, `wait_activity.rs`); a subagent was
-//! left out. A session that starts a child with `task`, ends its turn saying it is holding its
-//! report until the child answers, is in exactly the state a job leaves it in: the child's
-//! settlement reaches its model, and the turn that says it is the session acting again. A wait
-//! that answered *the turn ended* there told an orchestrator a package was done with a turn
-//! left in it, and the work came back as a message nobody was waiting for (three sightings on
-//! 2026-11-02, on a build that already had R107).
-//!
-//! The daemon here is a real one in this process: a real `task` call, a real child session, a
-//! real watcher thread on the parent's slot, and the wake the daemon takes from the settlement.
+//! A `wait` holds on a session's own running child, not only on its background jobs. A session
+//! that ends its turn holding its report until a `task` child answers will act again, so a wait
+//! answering `the turn ended` is wrong. The daemon is real and in-process.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -27,10 +18,9 @@ use serde_json::{Value, json};
 const BRIEF: &str = "brief-marker: start the audit";
 const STARTED_ANSWER: &str = "started-answer-marker: holding the report until the audit answers";
 const WOKEN_ANSWER: &str = "woken-answer-marker: the audit answered";
-/// The subtask the parent's `task` call hands the child. The second line is the MARKER, and it is
-/// on the second line on purpose: only the child is handed the prompt, and `task`'s own result
-/// quotes its FIRST line back into the parent's transcript - so the marker is in the child's
-/// request and nowhere in the parent's.
+/// The subtask the parent's `task` call hands the child. The marker is on the second line
+/// on purpose: `task`'s result quotes the first line into the parent, so the marker is only in
+/// the child's request.
 const SUBTASK: &str =
     "read the code and report what is wrong\nchild-marker: this is the audit child";
 const CHILD_MARKER: &str = "child-marker: this is the audit child";
@@ -110,7 +100,7 @@ impl Fake {
                     let _ = write_props(stream);
                     return;
                 }
-                // **Whose request this is, and the brief is what tells them apart**: the marker
+                // Whose request this is, and the brief is what tells them apart: the marker
                 // alone does not, because the parent's own `task` CALL is replayed in every request
                 // after it, arguments and all - so the parent carries the child's words too.
                 let is_child = body.contains(CHILD_MARKER) && !body.contains(BRIEF);
@@ -306,10 +296,8 @@ impl World {
         // backend this box may not have; the child re-seats to `coder` and inherits this session's
         // whole-host standing from its own row, which is what keeps the spawn from asking for one.
         cfg.seat = Seat::Leticode;
-        // No `bash` anywhere in this test, and that is not tidiness: a whole-host backend that can
-        // start a PROCESS needs a process-lifetime mechanism (`/sys/fs/cgroup` on Linux), which a
-        // test box may not have - and the child's own seat is `coder`, whose turn here says words.
-        // A backend that only reads and writes is one this test can open anywhere.
+        // No `bash` here: a whole-host backend that can start a process needs a process-lifetime
+        // mechanism (`/sys/fs/cgroup`), which a test box may lack, and the child's seat is `coder`.
         cfg.allow_bash = false;
         // The byte vocabulary: a session whose turns go to a provider needs no GGUF.
         cfg.vocab_gguf = None;
@@ -423,7 +411,7 @@ fn a_wait_holds_on_a_running_child_and_returns_after_the_turn_it_wakes() {
     // The brief's turn started the child and ended: that answer, and no more, is what a `wait` must
     // not be satisfied with. The driver polls for it rather than sleeping a guessed window.
     let idle = settled_with(&bridge, &session, STARTED_ANSWER);
-    // **And the daemon must say so**: a running child is what this session is waiting on, in the
+    // And the daemon must say so: a running child is what this session is waiting on, in the
     // words a head draws. A build that reads `quiet` here answers the wait inside its grace, and
     // this assertion is the one that says which half broke.
     let waiting: Vec<String> = idle["waiting_on"]
@@ -456,10 +444,9 @@ fn a_wait_holds_on_a_running_child_and_returns_after_the_turn_it_wakes() {
         "it did not hold on the running child at all (took {took:?}): {said}"
     );
 
-    // ---- the second half: the ORDER production takes it in -----------------------------------
-    // Everything above waited for the turn to settle first. An orchestrator does not: it writes the
-    // line and runs `wait` at once, so the wait attaches while the turn it is about is still
-    // running - and a wait that answers inside its start grace is exactly the sighting.
+    // The second half: the order production takes. An orchestrator writes the line and runs
+    // `wait` at once, so the wait attaches while the turn is running, and must not answer inside
+    // its start grace.
     bridge
         .send(&session, SECOND_BRIEF)
         .expect("a second line into the session");

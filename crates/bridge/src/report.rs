@@ -1,11 +1,6 @@
-//! **The brief's closing report, parsed into fields.**
-//!
-//! `docs/claude-code-bridge.md` asks for the report in a fixed markdown shape, and
-//! `leticode_status` parses it so the review starts from data. Two recognised sections is the
-//! threshold: one heading is something a long answer may carry for its own reasons.
-//! Sections are matched by KEYWORD, not position, because briefs move between "## What I built"
-//! and "## What was built" - and `could not` must be tried before `test`, or "## What I could
-//! not test" files as results.
+//! The brief's closing report, parsed into fields (`docs/claude-code-bridge.md`). Two recognised
+//! sections is the threshold. Sections match by keyword, not position, and `could not` is tried
+//! before `test`, or "## What I could not test" files as results.
 
 use serde_json::{Value, json};
 
@@ -87,15 +82,15 @@ fn section_of(heading: &str) -> Option<Section> {
     }
 }
 
-/// **Parse the brief's report out of a message**, or `None` when the message is not one. Every
+/// Parse the brief's report out of a message, or `None` when the message is not one. Every
 /// heading is a section boundary, whatever its level: a parser that only believed in `##` would
 /// silently fold three sections into the fourth.
 pub fn parse(message: &str) -> Option<Report> {
     let mut found: Vec<(Section, String)> = Vec::new();
     let mut current: Option<(Section, Vec<&str>)> = None;
-    // **A fenced block is body, never structure.** A report that quotes a shell script
+    // A fenced block is body, never structure. A report that quotes a shell script
     // has `# a comment` lines in it, and one of those read as a heading would file half a
-    // section under another heading — the text is still there, under the wrong name.
+    // section under another heading - the text is still there, under the wrong name.
     let mut fenced = false;
     for line in message.lines() {
         let trimmed = line.trim_start();
@@ -142,7 +137,7 @@ pub fn parse(message: &str) -> Option<Report> {
             },
         }
     }
-    // **The shas come from the commits section when there is one**, and from the report as a
+    // The shas come from the commits section when there is one, and from the report as a
     // whole when there is not: a model that instead wrote *"commit `4621097e`"* inside its build
     // section has still told a reviewer the one thing that field is for.
     let scan = match &named {
@@ -177,8 +172,8 @@ fn join_into(field: &mut String, body: String) {
     field.push_str(&body);
 }
 
-/// **The commit shas a report names**, in order, without duplicates. A token has to be a whole
-/// word of 7 to 40 hex characters with **at least one digit in it**, which is what keeps English
+/// The commit shas a report names, in order, without duplicates. A token has to be a whole
+/// word of 7 to 40 hex characters with at least one digit in it, which is what keeps English
 /// out: `deadbeef`, `facade`, `acceded` are hex-only words, and a `cafe`-shaped word is prose.
 fn short_shas(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -204,7 +199,7 @@ fn short_shas(text: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// **A report as this tree's briefs ask for it**, headings and all — the shape a
+    /// A report as this tree's briefs ask for it, headings and all - the shape a
     /// reviewer's `leticode_status` call has to turn into four fields and a sha.
     const REAL_SHAPED: &str = "\
 ## What I built
@@ -230,7 +225,7 @@ None: `docs/plugins-slice1.md` was not touched.
 Commit `4621097e`.
 ";
 
-    /// **The same report in other words**, at another heading level — which is what a
+    /// The same report in other words, at another heading level - which is what a
     /// brief that says *"headings like …"* has to tolerate.
     const OTHER_WORDING: &str = "\
 # Package B2 report
@@ -291,7 +286,7 @@ Commits: 7a1c0de and 4621097E, plus 7a1c0de again.
     fn a_message_with_no_report_parses_to_nothing() {
         assert_eq!(parse("I built the thing. All the tests pass."), None);
         assert_eq!(parse(""), None);
-        // **One heading is not a report** — an ordinary answer about a test run has one.
+        // One heading is not a report - an ordinary answer about a test run has one.
         assert_eq!(
             parse("## Test results\n\nEvery test passed, nothing to report."),
             None
