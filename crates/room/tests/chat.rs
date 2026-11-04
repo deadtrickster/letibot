@@ -778,7 +778,8 @@ fn a_folder_mention_wakes_every_bridge_of_the_folder_and_an_exact_single_stays_s
         "the qualified collapsed form is the handle"
     );
     assert!(solo.next().1);
-    assert!(!sibling.next().1);
+    let (heard, named) = sibling.next();
+    assert!(!named, "the sibling is not named by {heard:?}");
 }
 
 #[test]
