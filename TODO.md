@@ -39,6 +39,43 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
+# INDEX
+
+One row per open entry. `left` is what is really left, checked against the tree. Entries marked "in flight on a branch" are being changed right now and their text is not rewritten here.
+
+| id | title | group | left |
+|---|---|---|---|
+| R93 | What the model is told: tics, leaked numbers, contradictions, schema mismatches | Code work | item 3 (B1), item 7 (the F findings the named ones do not cover), item 8 (a fabric memory body no tool reads, and the fabric block's time changing per open) |
+| R74 | What the 2026-10-11 landings left open | Code work | item 20 (the rest of the report sink's sites, 18 of them routed), item 39 (a live gate on lubuntu1/2), item 40 (the inline blocks over 800 lines) |
+| R95 | A variable an earlier command assigned is unread in the next one | Code work | an `export` in one `bash` call still does not reach the next: the model's command is a one-shot spawn and `SessionEnv::observe` has no production caller; the stateful shell needs the deny-list of section 4j.5 |
+| R104 | A cmd-chord reaches the head as its plain letter (rano drops the super bit) | Code work | rano's `legacy_bytes` still turns a `CSI ... u` into the legacy spelling, so cmd-C still types a `c` into a `!term` pane - a decision, not a line |
+| R55 | A round's end and a turn's end are the same event on the wire | Code work | `Hub::turn_in_flight` (`crates/sessionlog/src/hub.rs:1632`) still reads the round, not `ends_turn`; a round with no calls followed by a nudge still says `true`; unclear: leticl's `:turn-finished` arm reading `ends_turn` is in another repo, check there |
+| T15 | Replace section 10's compaction design with structural eviction | Code work | a standalone `prune` |
+| R105 | The work order after the 2026-11-01 review | Code work | step 4's four live facts on lab2x1, step 6's comment rule (486 blocks over three lines by `scripts/comment-blocks.py count`), step 8's two decisions (JS engine source, JS-side contract), step 9 (the backlog entries in this file) |
+| R114 | Embeddings as the second similarity tier, for every similarity caller | Code work | item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase case scored against the worst measured negative, the per-round cost on lab2x1 |
+| R118 | A GitHub reviewer seat: `letibot attach github` reviews every PR and answers as @letibot | Code work | the seat in the daemon so the pane has a feed, a mirror per repository, the review panel, R116's verdict, R114's similarity offers |
+| R116 | Claude Code as a merge-queue reviewer through headless `claude -p` | Code work | all of it - no `claude -p`, `--json-schema` or `structured_output` use exists under `crates/` |
+| R117 | The leticode MCP bridge pushes package and queue events into Claude Code as a channel | Code work | all of it - no `claude/channel` capability exists under `crates/`; Claude Code side is a research preview |
+| T16 | W9's open questions | Code work | item 7 (call ids are positional per turn); unclear: item 6 asked lubuntu3 whether RAGFlow signals "no coverage" in a field, no answer is recorded |
+| T10 | Contract gaps found by W6 | Code work | item 4 - `render_incremental` takes the whole history (`crates/turn/src/renderer.rs:24`), no resumable state token |
+| R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
+| R100 | A remote session in a firecode VM: `--host` and `--vm` as one placement | Needs the operator | the live proof on lab2x1: a real `firecode` copy carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, the copy-out's cost |
+| R59 | The context wall's denominator moves a third between firings | Needs the operator | the operator's ruling on smoothing the ratio (the tree keeps it per round, as recommended) |
+| WEATHER | Which side owns WEATHER: one classification both heads answer | Needs the operator | the operator's ruling on `model_endpoint_retry`; unclear: `6b52aae6` now draws a retried model call as one row that moves and settles, check whether that closes the ruling |
+| R13 | Cloud GLM, DeepSeek and Grok as turn backends | Needs the operator | a live run behind a real provider key (none on lab2x1); the providers' prompt caches are only asserted (`PrefixGuarantee::Asserted`, `crates/backend/src/lib.rs:230`) |
+| R98 | macOS has no boundary for a command, so tests there must ask | Needs the operator | the live card check on a Mac: a default local session at `writes-allowed` runs `cargo test --offline` with no card and no `boundary_absent` |
+| R66 | A harnessd reached 113 GB | Needs the operator | the LOCAL-model route (needs a local server and a GGUF on this box), and the incident's own 113 GB |
+| R65 | The model chooses each tool call's memory cap | Needs the operator | the cross-session ledger, a proposal the operator has not decided |
+| N5 | The agent should know the view is hermetic, and propose the grant it needs | Needs the operator | which asks must be refused rather than prompted: `grant_view` raises an ordinary card for `~/.ssh`, with no never-write precheck |
+| T25 | Everything waiting on the operator | Needs the operator | the operator's answers to D14, D15, D17, D20 to D24 and D26; unclear: D13, D16, D18, D25, D27, D28 carry no status line, check each against the tree |
+| T17 | harnessd: M1 exit criterion not met as written | Needs the operator | the 30-turn re-measurement in D11's metric (one run against a local :8080 server), M0's opencode baseline, C7's server half and C8's `length`, C2 run as part of the exit |
+| T19 | Rewrite or not, on the KV representation | Needs the operator | row 3 (one checkpoint at `TokenLedger::prefix_len()`); the measurement that says whether it pays needs the :8080 server restarted |
+| T18 | The prompt cache costs ~120 KiB/token on recurrent models | Needs the operator | nothing in this tree: the cost is the server's (`--cache-ram`, `-c`, per-sequence accumulator cap, eviction and warm/cold figures, `--cache-reuse` on dense models) |
+| T3 | Report the minja scoping bug upstream | Needs the operator | the operator files it; the writeup is `docs/chat-templates.md` section 2 and no upstream link or issue number is recorded |
+| T6 | Workstreams not started, from `docs/workstreams.md` | Needs the operator | install `pytest` (W1/W2 are blocked on it); this entry's list is stale and needs rewriting from `docs/workstreams.md` |
+| R120 | One seat and a working automode, instead of roles | Parked | everything, until a model passes the etalon oracle corpus |
+| R84a | Worktrees and landing trees beside the checkout (`wt/`, `landing/`) | Parked | three behaviour changes the operator has not ruled on, then rebasing the parked branch |
+
 ---
 
 # Code work
