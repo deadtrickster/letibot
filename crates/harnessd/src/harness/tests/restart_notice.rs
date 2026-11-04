@@ -498,7 +498,8 @@ fn a_recently_active_session_owing_nothing_gets_a_wake_turn() {
     let mut h = reopened(&dir, id);
     let text = h.restore_after_restart().expect("a restart is said");
     assert!(text.contains("The daemon restarted (down "), "{text}");
-    assert!(text.contains("continue now"), "{text}");
+    assert!(text.contains("do that one thing now"), "{text}");
+    assert!(text.contains("a restart is not an answer"), "{text}");
     assert!(text.contains("end this turn with no reply"), "{text}");
     assert_eq!(h.restart_notices, vec![text], "{:?}", h.restart_notices);
     assert!(restart_rows(&h).is_empty(), "{:?}", h.items());
@@ -538,7 +539,7 @@ fn a_session_idle_beyond_the_window_gets_only_the_row() {
         return;
     };
     let text = h.restore_after_restart().expect("a restart is said");
-    assert!(!text.contains("continue now"), "{text}");
+    assert!(!text.contains("do that one thing now"), "{text}");
     assert!(h.restart_notices.is_empty(), "{:?}", h.restart_notices);
     assert_eq!(restart_rows(&h), vec![text], "{:?}", h.items());
 }

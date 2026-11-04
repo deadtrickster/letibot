@@ -541,8 +541,10 @@ pub fn nothing_running_but(stop: &Stopped, back_ms: u64, owed: &Owed) -> String 
 }
 
 /// What a woken model is told to do about the restart it may have been waiting on.
-const WAKE_TAIL: &str = " If you told the operator you would continue after a restart, \
-    continue now. If nothing was waiting on it, end this turn with no reply.";
+const WAKE_TAIL: &str = " If you told the operator you would do something once they restarted, \
+    do that one thing now and report it. If you were waiting for the operator's answer, keep waiting: \
+    a restart is not an answer, so do not decide for them or act on an open question. If nothing \
+    was waiting on it, end this turn with no reply.";
 
 /// What a model says when it has put work off until the operator restarts something. A last
 /// message that reads like one of these is waiting on this restart, whatever its age.
