@@ -1,4 +1,4 @@
-//! A restart leaves a note: when the room began again, and why. The room keeps no store, so a
+//! A restart leaves a note: when the room began again, and why. The room's items are memory only (chat has a store), so a
 //! note on the socket's own directory is the only place a person can read what happened.
 
 use std::io;

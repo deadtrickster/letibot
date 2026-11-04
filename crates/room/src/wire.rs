@@ -12,7 +12,7 @@ use crate::room::{
 /// The room's protocol version, and the room's alone - see the module header. The number moves at
 /// RELEASE POINTS: a frame added mid-series rides the next number with whatever else lands before it,
 /// because the room has no users outside this tree to be compatible with.
-pub const ROOM_PROTOCOL_VERSION: u16 = 6;
+pub const ROOM_PROTOCOL_VERSION: u16 = 7;
 
 /// The sentence a protocol mismatch is refused with, or `None` when the two agree. One function because
 /// two doors refuse it - a [`crate::Server`]'s and [`crate::Room::answer_traced`]'s - and two sentences
@@ -216,6 +216,10 @@ pub enum Response {
         /// gap was. `0` when nothing was missed.
         #[serde(default)]
         missed_since_ms: u64,
+        /// Which coordinator start answered. A client that sees it change knows the room restarted and
+        /// drops marks it kept against the old one. `0` from a `Room` driven without a server.
+        #[serde(default)]
+        instance: u64,
     },
     Refused {
         /// The frame's id, when it had one.
@@ -427,6 +431,7 @@ impl Room {
                     // socket, and this dispatch has no socket.
                     missed: 0,
                     missed_since_ms: 0,
+                    instance: 0,
                 })
             }
             Request::Post { id, tag, body } => {

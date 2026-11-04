@@ -62,7 +62,7 @@ struct Inner {
     /// of them, per session, taken (and cleared) by that session's next `Hello`. The room keeps no
     /// log, so this is how a session learns it was away rather than reading a plain `Welcome`.
     missed: Mutex<BTreeMap<String, Missed>>,
-    /// The chat log, its rings and every principal's inbox cursor. Memory only, like the queue.
+    /// The chat log, its rings and every principal's inbox cursor. Kept in a store when [`Server::with_chat_store`] was called, memory only otherwise.
     chat: Mutex<Chat>,
     /// Names of externals that have connected, so a message to one that is away is not refused.
     externals: Mutex<BTreeSet<String>>,
@@ -179,6 +179,13 @@ impl Server {
                 self.inner.path.display()
             )),
         }
+    }
+
+    /// Keep chat in `path`: load what it holds and append from now on. Call before the first
+    /// connection, so no message is made against the empty chat it replaces.
+    pub fn with_chat_store(&self, path: &Path) -> &Self {
+        *self.inner.chat.lock().expect("the chat lock") = Chat::open(path);
+        self
     }
 
     /// Name the session that hears every event - the tie-breaker.
@@ -339,6 +346,7 @@ impl Server {
                         identity: self.identity_at(crate::DEFAULT_PROJECT, now),
                         missed: 0,
                         missed_since_ms: 0,
+                        instance: self.inner.started_ms,
                     },
                     events: Vec::new(),
                 };
@@ -401,8 +409,10 @@ impl Server {
                 identity,
                 missed,
                 missed_since_ms,
+                instance,
                 ..
             } => {
+                *instance = self.inner.started_ms;
                 *identity = self.identity_at(&room, now);
                 // The gap this session just came back from, taken as the `Hello` is answered:
                 // the frame that says *you are connected* is the only one that can say *and here
@@ -1604,14 +1614,14 @@ mod tests {
     /// spells the number rather than the constant, so a wire change that misses a pin is a quiet lie
     /// about what two binaries share.
     #[test]
-    fn the_room_speaks_protocol_six() {
-        assert_eq!(ROOM_PROTOCOL_VERSION, 6);
+    fn the_room_speaks_protocol_seven() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 7);
         // And the refusal names which side is older, in both directions.
-        let old = crate::wire::protocol_refusal(5).expect("5 is not 6");
+        let old = crate::wire::protocol_refusal(6).expect("6 is not 7");
         assert!(old.contains("the client is the older"), "{old}");
-        let new = crate::wire::protocol_refusal(7).expect("7 is not 6");
+        let new = crate::wire::protocol_refusal(8).expect("8 is not 7");
         assert!(new.contains("this room is the older"), "{new}");
-        assert_eq!(crate::wire::protocol_refusal(6), None);
+        assert_eq!(crate::wire::protocol_refusal(7), None);
     }
 
     /// The pane's read: the room's half from the room, the server's three from the server. What is

@@ -138,6 +138,9 @@ impl Coordinator {
             let _ = lease.release();
             format!("binding the room's socket at {}: {e}", socket.display())
         })?;
+        if let Some(chat) = super::chat_path() {
+            server.with_chat_store(&chat);
+        }
         server.with_arbiter(session).with_lease(lease.clone());
         eprintln!("harnessd: {}", server.identity());
 

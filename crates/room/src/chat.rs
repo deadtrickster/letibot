@@ -2,6 +2,8 @@
 //! State machine and vocabulary only: no clock, no socket. The server hands in `now` and decides who is pushed to.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +17,9 @@ pub const DM_ROOM: &str = "dm";
 pub const OPERATOR: &str = "operator";
 /// Messages kept per room (and for all direct messages together). The oldest is dropped first.
 pub const RING: usize = 500;
+/// Text bytes kept per room (and for all direct messages together); the oldest rows go first. The
+/// store is replayed into memory at start, so this bounds disk and the coordinator's heap.
+pub const ROOM_BYTES: usize = 256 * 1024;
 /// The longest message text, in bytes. Longer is refused, never cut.
 pub const MAX_TEXT: usize = 4_000;
 /// The most rows one read returns.
@@ -222,6 +227,22 @@ pub struct History {
     pub trimmed: bool,
 }
 
+/// One line of the chat store. The file is append-only and rewritten whole when it outgrows the live
+/// state, so replaying it from the top rebuilds the rings, the dedup window and the cursors.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Record {
+    Msg { request: String, message: Message },
+    Cursor { name: String, seq: u64 },
+    Dropped { room: String, seq: u64 },
+}
+
+/// The file chat is kept in, and the size it had at the last write.
+struct Store {
+    path: PathBuf,
+    bytes: u64,
+}
+
 #[derive(Default)]
 pub struct Chat {
     next: u64,
@@ -229,11 +250,154 @@ pub struct Chat {
     dropped_to: BTreeMap<String, u64>,
     cursors: BTreeMap<String, u64>,
     said: VecDeque<((String, String), u64)>,
+    store: Option<Store>,
+}
+
+fn ring_bytes(ring: &VecDeque<Message>) -> usize {
+    ring.iter().map(|m| m.text.len()).sum()
 }
 
 impl Chat {
     pub fn new() -> Chat {
         Chat::default()
+    }
+
+    /// A chat kept in `path`: what the file holds is loaded, and every change after is appended. An
+    /// unreadable line is skipped and said; a missing file is an empty chat.
+    pub fn open(path: &Path) -> Chat {
+        let mut c = Chat::new();
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        for (n, line) in text.lines().enumerate() {
+            match serde_json::from_str::<Record>(line) {
+                Ok(Record::Msg { request, message }) => c.restore(request, message),
+                Ok(Record::Cursor { name, seq }) => {
+                    let cur = c.cursors.entry(name).or_insert(0);
+                    *cur = (*cur).max(seq);
+                }
+                Ok(Record::Dropped { room, seq }) => {
+                    let d = c.dropped_to.entry(room).or_insert(0);
+                    *d = (*d).max(seq);
+                }
+                Err(e) => eprintln!(
+                    "room: chat store {} line {} is not a record ({e}); skipped",
+                    path.display(),
+                    n + 1
+                ),
+            }
+        }
+        c.store = Some(Store {
+            path: path.to_path_buf(),
+            bytes: text.len() as u64,
+        });
+        c
+    }
+
+    fn restore(&mut self, request: String, m: Message) {
+        self.next = self.next.max(m.seq);
+        self.said.push_back(((m.author.clone(), request), m.seq));
+        while self.said.len() > REPLAY {
+            self.said.pop_front();
+        }
+        let room = m.room.clone();
+        let ring = self.rings.entry(room.clone()).or_default();
+        ring.push_back(m);
+        self.trim(&room);
+    }
+
+    fn trim(&mut self, room: &str) {
+        let Some(ring) = self.rings.get_mut(room) else {
+            return;
+        };
+        let mut bytes = ring_bytes(ring);
+        while ring.len() > RING || (bytes > ROOM_BYTES && ring.len() > 1) {
+            if let Some(old) = ring.pop_front() {
+                bytes -= old.text.len();
+                let d = self.dropped_to.entry(room.to_string()).or_insert(0);
+                *d = (*d).max(old.seq);
+            }
+        }
+    }
+
+    fn write(&mut self, records: &[Record]) {
+        let Some(store) = self.store.as_mut() else {
+            return;
+        };
+        let mut buf = String::new();
+        for r in records {
+            if let Ok(line) = serde_json::to_string(r) {
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+        }
+        let wrote = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&store.path)
+            .and_then(|mut f| f.write_all(buf.as_bytes()));
+        match wrote {
+            Ok(()) => store.bytes += buf.len() as u64,
+            Err(e) => eprintln!(
+                "room: chat store {} not written ({e}); chat continues in memory only",
+                store.path.display()
+            ),
+        }
+        self.compact();
+    }
+
+    /// Rewrite the store from live state once it holds twice what is live, so dropped rows and
+    /// superseded cursors do not grow the file without bound.
+    fn compact(&mut self) {
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let live: usize = self.rings.values().map(ring_bytes).sum();
+        if store.bytes < (2 * live as u64).max(64 * 1024) {
+            return;
+        }
+        let request_of: BTreeMap<u64, &str> = self
+            .said
+            .iter()
+            .map(|((_, r), seq)| (*seq, r.as_str()))
+            .collect();
+        let mut records: Vec<Record> = Vec::new();
+        for (room, seq) in &self.dropped_to {
+            records.push(Record::Dropped {
+                room: room.clone(),
+                seq: *seq,
+            });
+        }
+        let mut msgs: Vec<&Message> = self.rings.values().flatten().collect();
+        msgs.sort_by_key(|m| m.seq);
+        for m in msgs {
+            records.push(Record::Msg {
+                request: request_of.get(&m.seq).copied().unwrap_or("").to_string(),
+                message: m.clone(),
+            });
+        }
+        for (name, seq) in &self.cursors {
+            records.push(Record::Cursor {
+                name: name.clone(),
+                seq: *seq,
+            });
+        }
+        let mut buf = String::new();
+        for r in &records {
+            if let Ok(line) = serde_json::to_string(r) {
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+        }
+        let path = store.path.clone();
+        let tmp = path.with_extension("tmp");
+        let done = std::fs::write(&tmp, buf.as_bytes()).and_then(|()| std::fs::rename(&tmp, &path));
+        match done {
+            Ok(()) => {
+                if let Some(s) = self.store.as_mut() {
+                    s.bytes = buf.len() as u64;
+                }
+            }
+            Err(e) => eprintln!("room: chat store {} not compacted ({e})", path.display()),
+        }
     }
 
     /// The newest `seq` in the whole log.
@@ -298,17 +462,19 @@ impl Chat {
             refs,
             text: text.to_string(),
         };
-        let ring = self.rings.entry(room.to_string()).or_default();
-        ring.push_back(m.clone());
-        while ring.len() > RING {
-            if let Some(old) = ring.pop_front() {
-                self.dropped_to.insert(room.to_string(), old.seq);
-            }
-        }
+        self.rings
+            .entry(room.to_string())
+            .or_default()
+            .push_back(m.clone());
+        self.trim(room);
         self.said.push_back((key, m.seq));
         while self.said.len() > REPLAY {
             self.said.pop_front();
         }
+        self.write(&[Record::Msg {
+            request: request.to_string(),
+            message: m.clone(),
+        }]);
         Ok(m)
     }
 
@@ -359,7 +525,13 @@ impl Chat {
     /// Start `name`'s inbox at the head of the log if it has none: a reader hears what happens next.
     pub fn arm(&mut self, name: &str) {
         let head = self.next;
-        self.cursors.entry(name.to_string()).or_insert(head);
+        if !self.cursors.contains_key(name) {
+            self.cursors.insert(name.to_string(), head);
+            self.write(&[Record::Cursor {
+                name: name.to_string(),
+                seq: head,
+            }]);
+        }
     }
 
     pub fn cursor(&self, name: &str) -> u64 {
@@ -369,9 +541,17 @@ impl Chat {
     /// Move `name`'s cursor forward. It never moves back and never past the head.
     pub fn ack(&mut self, name: &str, seq: u64) -> u64 {
         let head = self.next;
+        let before = self.cursors.get(name).copied();
         let c = self.cursors.entry(name.to_string()).or_insert(head);
         *c = (*c).max(seq.min(head));
-        *c
+        let now = *c;
+        if before != Some(now) {
+            self.write(&[Record::Cursor {
+                name: name.to_string(),
+                seq: now,
+            }]);
+        }
+        now
     }
 
     /// What `name` missed: visible messages after its cursor that pass `attention`, oldest first, up
@@ -655,5 +835,75 @@ mod tests {
         assert_eq!(c.cursor("s-new"), 1);
         let (rows, _) = c.inbox("s-new", Attention::All, 50, |_| true);
         assert!(rows.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod store_tests {
+    use super::*;
+
+    fn path(tag: &str) -> PathBuf {
+        let p =
+            std::env::temp_dir().join(format!("letibot-chat-store-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    fn say(c: &mut Chat, id: &str, room: &str, text: &str) -> Message {
+        c.append(
+            1,
+            id,
+            room,
+            "s-a",
+            Seat::Session,
+            None,
+            None,
+            Vec::new(),
+            text,
+        )
+        .expect("a message")
+    }
+
+    #[test]
+    fn the_oldest_rows_go_first_past_the_byte_cap() {
+        let p = path("cap");
+        let mut c = Chat::open(&p);
+        let big = "x".repeat(MAX_TEXT);
+        let n = ROOM_BYTES / MAX_TEXT + 10;
+        for i in 0..n {
+            say(&mut c, &i.to_string(), HOST_ROOM, &big);
+        }
+        let h = c.read(HOST_ROOM, 0, Some(MAX_READ), None, |_| true);
+        assert!(h.rows.iter().map(|m| m.text.len()).sum::<usize>() <= ROOM_BYTES);
+        assert!(h.trimmed);
+        let again = Chat::open(&p);
+        assert_eq!(again.head(), n as u64);
+        assert_eq!(again.last_in(HOST_ROOM), n as u64);
+        assert!(again.read(HOST_ROOM, 0, None, None, |_| true).trimmed);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn the_store_is_rewritten_when_it_outgrows_what_is_live() {
+        let p = path("compact");
+        let mut c = Chat::open(&p);
+        say(&mut c, "1", HOST_ROOM, "kept");
+        c.arm("r");
+        for i in 0..4000 {
+            c.ack("r", i.min(1));
+        }
+        for i in 0..4000u64 {
+            c.cursors.insert("r".into(), i);
+            c.write(&[Record::Cursor {
+                name: "r".into(),
+                seq: i,
+            }]);
+        }
+        let size = std::fs::metadata(&p).expect("the store").len();
+        assert!(size < 128 * 1024, "compacted: {size}");
+        let again = Chat::open(&p);
+        assert_eq!(again.head(), 1);
+        assert_eq!(again.cursor("r"), 3999);
+        let _ = std::fs::remove_file(&p);
     }
 }

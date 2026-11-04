@@ -328,3 +328,84 @@ fn a_daemon_reports_facts_and_nobody_else_may() {
         Refused::ReservedName { .. }
     ));
 }
+
+fn stored(s: &Scratch) -> Server {
+    let server = coordinator(s);
+    server.with_chat_store(&s.0.join("room.chat"));
+    server
+}
+
+fn instance_of(c: &Client) -> u64 {
+    c.welcome().instance
+}
+
+#[test]
+fn chat_history_seq_cursor_and_dedup_survive_a_coordinator_restart() {
+    let dir = Scratch::new();
+    let first = stored(&dir);
+    let a = seat(&first, "s-a1", A, Seat::Session);
+    let cc = seat(&first, "claude-code", "", Seat::External);
+    let before = instance_of(&a.client);
+    assert_ne!(before, 0);
+    let one = said(a.say("r1", "", "before the restart"));
+    let two = said(a.say("r2", "", "second"));
+    // cc reads its inbox and acks the first only.
+    cc.call(Request::Ack { seq: one.seq });
+    first.stop();
+    drop((a, cc));
+    std::thread::sleep(Duration::from_millis(20));
+
+    let second = stored(&dir);
+    let a = seat(&second, "s-a1", A, Seat::Session);
+    let cc = seat(&second, "claude-code", "", Seat::External);
+    assert_ne!(
+        instance_of(&a.client),
+        before,
+        "a restart changes the instance"
+    );
+    match a.call(Request::Read {
+        room: String::new(),
+        since: 0,
+        last: None,
+        thread: None,
+    }) {
+        Response::History(h) => assert_eq!(
+            h.rows.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(),
+            vec!["before the restart", "second"]
+        ),
+        other => panic!("{other:?}"),
+    }
+    // A repeated request id is still one message, and seq continues.
+    assert_eq!(said(a.say("r2", "", "second")).seq, two.seq);
+    let three = said(a.say("r3", "", "after"));
+    assert_eq!(three.seq, two.seq + 1);
+    match cc.call(Request::Inbox {
+        attention: Attention::All,
+        limit: Some(10),
+    }) {
+        Response::Inbox { rows, .. } => assert_eq!(
+            rows.iter().map(|m| m.seq).collect::<Vec<_>>(),
+            vec![two.seq, three.seq],
+            "the cursor was kept"
+        ),
+        other => panic!("{other:?}"),
+    }
+    second.stop();
+}
+
+#[test]
+fn a_restart_without_a_store_starts_chat_over_and_changes_the_instance() {
+    let dir = Scratch::new();
+    let first = coordinator(&dir);
+    let a = seat(&first, "s-a1", A, Seat::Session);
+    let id = instance_of(&a.client);
+    said(a.say("r1", "", "gone"));
+    first.stop();
+    drop(a);
+    std::thread::sleep(Duration::from_millis(20));
+    let second = coordinator(&dir);
+    let a = seat(&second, "s-a1", A, Seat::Session);
+    assert_eq!(second.chat_head(), 0);
+    assert_ne!(instance_of(&a.client), id);
+    second.stop();
+}

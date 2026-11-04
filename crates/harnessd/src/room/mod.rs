@@ -37,6 +37,12 @@ pub fn lease_path() -> Option<PathBuf> {
     Some(letibot_room::lease_path(&dir, &letibot_room::host_key()))
 }
 
+/// The chat store beside the socket: one append-only file per host, so a coordinator restart keeps
+/// history, sequence numbers and inbox cursors.
+pub fn chat_path() -> Option<PathBuf> {
+    socket_path().map(|p| p.with_extension("chat"))
+}
+
 /// The coordinator's own session id - `s-room-<host key>`, derived and never invented, so
 /// `letibot --session host` always reaches the one agent that arbitrates this machine.
 pub fn session_id() -> String {

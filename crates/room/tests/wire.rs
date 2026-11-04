@@ -102,6 +102,7 @@ fn every_frame_round_trips_through_json() {
             // and the round trip is what this vector is for: the field is on the wire either way.
             missed: 2,
             missed_since_ms: 1_500,
+            instance: 1_762_000_000_000,
         },
         Response::Posted {
             id: "r1".to_string(),

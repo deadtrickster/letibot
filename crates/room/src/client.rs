@@ -45,6 +45,8 @@ pub struct Welcome {
     /// told *you missed four* re-reads the state, which cannot be wrong.
     pub missed: u64,
     pub missed_since_ms: u64,
+    /// Which coordinator start this is. A change between two connections is a restart.
+    pub instance: u64,
 }
 
 impl Default for Welcome {
@@ -56,6 +58,7 @@ impl Default for Welcome {
             identity: String::new(),
             missed: 0,
             missed_since_ms: 0,
+            instance: 0,
         }
     }
 }
@@ -320,6 +323,7 @@ impl Client {
                 identity,
                 missed,
                 missed_since_ms,
+                instance,
                 ..
             } => {
                 *self.inner.welcome.lock().expect("the welcome lock") = Welcome {
@@ -329,6 +333,7 @@ impl Client {
                     identity,
                     missed,
                     missed_since_ms,
+                    instance,
                 };
             }
             Response::Refused { why, .. } => {
