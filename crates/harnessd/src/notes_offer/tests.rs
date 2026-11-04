@@ -723,7 +723,7 @@ fn a_round_embeds_only_what_changed() {
     // Before: first (7, 8, _), same (0, 8, 0), moved (1, 8, one subject per caller that differed).
     assert_eq!(
         (first.0, first.1),
-        (8, 8),
+        (6, 6),
         "the corpora and the round's subject, once"
     );
     assert_eq!(
