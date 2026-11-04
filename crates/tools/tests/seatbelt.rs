@@ -595,6 +595,51 @@ fn gh_is_not_logged_in_in_a_tight_seat() {
     assert_ne!(rc, 0);
 }
 
+/// The keychain is one mach service, and gh keeps its token in it: a child denied that service
+/// cannot ask for the token its parent pushes with, whatever it spells. The two seats are measured
+/// on the same call, so what the difference proves is the profile and not the machine.
+#[test]
+fn a_tight_seat_cannot_ask_the_keychain_its_parent_uses() {
+    let security = ["/usr/bin/security"]
+        .into_iter()
+        .find(|p| Path::new(p).is_file());
+    let Some(security) = letibot_tokencore::apparatus::applies(
+        "the `security` tool, which is how a keychain item is asked for",
+        security.is_some(),
+    )
+    .map(|_| security.unwrap_or("/usr/bin/security")) else {
+        return;
+    };
+    // An item that is not there: the wide seat's answer is the keychain's own "not found", and the
+    // tight seat's is a refusal before the keychain is reached. Nothing of the operator's is read.
+    let ask = format!("{security} find-generic-password -s letibot-boundary-probe -w 2>&1");
+
+    let f = Fixture::new("keychain");
+    let tight = Seatbelt::probe_as(f.view(), Egress::Denied, vec![f.denied()], real_home())
+        .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+    let (tight_rc, tight_out) = run_in(&tight, &f.project(), &ask);
+    assert_ne!(tight_rc, 0, "a child asked the keychain: {tight_out}");
+    let refused = ["not permitted", "denied", "Sandbox", "sandbox"]
+        .iter()
+        .any(|w| tight_out.contains(w));
+    assert!(
+        refused,
+        "a child's refusal has to be the boundary's, not the keychain's own answer about a \
+         missing item: {tight_out}"
+    );
+
+    // And the top-level seat does reach it, so the refusal above is the profile and not a machine
+    // with no keychain at all.
+    let (wide_seat, op) = wide(&f);
+    let (wide_rc, wide_out) = run_in(&wide_seat, &f.project(), &ask);
+    assert!(
+        wide_rc != tight_rc && !wide_out.contains("not permitted"),
+        "the top-level seat asks the keychain, so the two answers differ: tight {tight_rc} \
+         {tight_out}; wide {wide_rc} {wide_out} (home {})",
+        op.display()
+    );
+}
+
 #[test]
 fn a_child_commits_in_a_worktree_with_the_operators_identity_and_has_no_credentials() {
     let f = Fixture::new("child");

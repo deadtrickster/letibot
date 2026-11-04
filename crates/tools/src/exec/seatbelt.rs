@@ -39,7 +39,8 @@ pub const SYSTEM_ROOTS: &[&str] = &[
 
 /// The mach services a shell, `git`, `cargo`/`rustc`, `python3` and `make` need: a program
 /// wanting one not here fails naming it, and the fix is one line. `com.apple.SecurityServer`
-/// is the keychain service, never the keychain files, which [`DENY_UNDER_HOME`] denies.
+/// is the keychain service, and it is the top-level seat's alone: `gh` keeps its token in the
+/// keychain, and a child that could ask would have the token its parent is given and it is not.
 pub const MACH_SERVICES: &[&str] = &[
     "com.apple.system.logger",
     "com.apple.system.notification_center",
@@ -48,6 +49,16 @@ pub const MACH_SERVICES: &[&str] = &[
     "com.apple.system.libinfo",
     "com.apple.distributed_notifications@Uv3",
 ];
+
+/// What a child's profile allows of [`MACH_SERVICES`]: everything a toolchain needs and not the
+/// keychain, so `security find-generic-password -s gh:github.com -w` has nothing to ask.
+pub fn mach_services(wide: bool) -> Vec<&'static str> {
+    MACH_SERVICES
+        .iter()
+        .copied()
+        .filter(|s| wide || *s != "com.apple.SecurityServer")
+        .collect()
+}
 
 /// What is put back inside the view read-only out of the operator's own home, since the
 /// session's `$HOME` holds no toolchain. Read-only, because rewriting `~/.cargo/bin` would be
@@ -256,7 +267,7 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
     // `same-sandbox`, not `self`: a test runner stops the child it started, and both are inside.
     s.push_str("(allow signal (target same-sandbox))\n");
     s.push_str("(allow mach-lookup\n");
-    for m in MACH_SERVICES {
+    for m in mach_services(l.wide) {
         s.push_str(&format!("  (global-name \"{m}\")\n"));
     }
     s.push_str(")\n");
@@ -1121,7 +1132,6 @@ mod tests {
   (global-name \"com.apple.system.logger\")
   (global-name \"com.apple.system.notification_center\")
   (global-name \"com.apple.cfprefsd.agent\")
-  (global-name \"com.apple.SecurityServer\")
   (global-name \"com.apple.system.libinfo\")
   (global-name \"com.apple.distributed_notifications@Uv3\")
 )
@@ -1195,6 +1205,29 @@ mod tests {
         let after = &p[deny..];
         assert!(
             !after[..after.find(")\n").map(|i| i + 2).unwrap_or(after.len())].contains("(allow")
+        );
+    }
+
+    /// The keychain is a mach service, and `gh` keeps its token in it: the top-level seat is given
+    /// a token and may ask, a child has neither and is not allowed the service at all.
+    #[test]
+    fn the_keychain_service_is_the_top_level_seats_alone() {
+        let view = ViewSpec::project_only("/Users/x/proj");
+        let tight = render_profile(&view, &Egress::Denied, &layout());
+        assert!(
+            !tight.contains("com.apple.SecurityServer"),
+            "a child's profile may not reach the keychain:\n{tight}"
+        );
+        assert!(
+            tight.contains("com.apple.cfprefsd.agent"),
+            "and everything a toolchain needs is still allowed: {tight}"
+        );
+        let mut wide = layout();
+        wide.wide = true;
+        let wide = render_profile(&view, &Egress::Denied, &wide);
+        assert!(
+            wide.contains("com.apple.SecurityServer"),
+            "the top-level seat asks the keychain for the token it pushes with:\n{wide}"
         );
     }
 
