@@ -45,7 +45,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
 struct Fixture {
     root: PathBuf,
     common: PathBuf,
-    worktree: PathBuf,
     host: HostProcesses,
 }
 
@@ -103,7 +102,6 @@ impl Fixture {
         Some(Fixture {
             root,
             common: common.canonicalize().unwrap_or(common),
-            worktree,
             host,
         })
     }
@@ -195,14 +193,15 @@ fn a_child_cannot_move_the_branch_the_repository_has_out() {
         return;
     };
     let before = git(&f.root.join("repo"), &["rev-parse", "main"]);
-    let (out, rc) = f.run(&format!(
+    // Each write is its own verdict: the script's exit status is its last command's.
+    let (out, _) = f.run(&format!(
         "git commit -q --allow-empty -m child; \
-         echo moved > {c}/refs/heads/main 2>&1; \
-         git update-ref refs/heads/main HEAD 2>&1; echo DONE",
+         echo moved > {c}/refs/heads/main 2>&1 && echo WROTE; \
+         git update-ref refs/heads/main HEAD 2>&1 && echo UPDATED; true",
         c = f.common.display()
     ));
-    assert_ne!(rc, 0, "something above must have failed: {out}");
-    assert!(!out.contains("DONE"), "the child ran to the end: {out}");
+    assert!(!out.contains("WROTE"), "the child wrote the ref: {out}");
+    assert!(!out.contains("UPDATED"), "the child updated the ref: {out}");
     let after = git(&f.root.join("repo"), &["rev-parse", "main"]);
     assert_eq!(
         before, after,
