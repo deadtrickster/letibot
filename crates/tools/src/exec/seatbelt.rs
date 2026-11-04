@@ -40,6 +40,8 @@ pub const SYSTEM_ROOTS: &[&str] = &[
 /// The mach services a shell, `git`, `cargo`/`rustc`, `python3` and `make` need: a program
 /// wanting one not here fails naming it, and the fix is one line. `com.apple.SecurityServer` is the
 /// keychain service, and it is the top-level seat's alone: `gh` keeps its token in the keychain.
+/// `trustd` and `trustd.agent` evaluate certificate trust (Go and Security.framework TLS); they
+/// answer yes or no about a chain and hold no secret, so both seats have them.
 pub const MACH_SERVICES: &[&str] = &[
     "com.apple.system.logger",
     "com.apple.system.notification_center",
@@ -47,6 +49,8 @@ pub const MACH_SERVICES: &[&str] = &[
     "com.apple.SecurityServer",
     "com.apple.system.libinfo",
     "com.apple.distributed_notifications@Uv3",
+    "com.apple.trustd",
+    "com.apple.trustd.agent",
 ];
 
 /// What a child's profile allows of [`MACH_SERVICES`]: everything a toolchain needs and not the
@@ -1130,6 +1134,8 @@ mod tests {
   (global-name \"com.apple.cfprefsd.agent\")
   (global-name \"com.apple.system.libinfo\")
   (global-name \"com.apple.distributed_notifications@Uv3\")
+  (global-name \"com.apple.trustd\")
+  (global-name \"com.apple.trustd.agent\")
 )
 
 ; --- read: the system roots, the toolchain, the session's own directories ---
@@ -1225,6 +1231,19 @@ mod tests {
             wide.contains("com.apple.SecurityServer"),
             "the top-level seat asks the keychain for the token it pushes with:\n{wide}"
         );
+    }
+
+    #[test]
+    fn certificate_trust_evaluation_is_allowed_in_both_seats() {
+        let view = ViewSpec::project_only("/Users/x/proj");
+        let mut wide = layout();
+        wide.wide = true;
+        for l in [layout(), wide] {
+            let p = render_profile(&view, &Egress::Denied, &l);
+            for m in ["com.apple.trustd", "com.apple.trustd.agent"] {
+                assert!(p.contains(&format!("(global-name \"{m}\")")), "{m}: {p}");
+            }
+        }
     }
 
     #[test]

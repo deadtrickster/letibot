@@ -715,3 +715,69 @@ fn a_child_commits_in_a_worktree_with_the_operators_identity_and_has_no_credenti
     assert_ne!(rc, 0, "a child got a credential: {out}");
     assert!(!out.contains("password="), "{out}");
 }
+
+/// Security.framework trust evaluation needs `trustd`, which the profile now allows in both seats
+/// (Go's `x509: OSStatus -26276` was this). `security verify-cert` runs SecTrust on a system root,
+/// and the keychain item lookup stays refused in the tight seat.
+#[test]
+fn certificate_trust_evaluates_in_both_seats_and_the_tight_seat_still_has_no_keychain() {
+    let security = ["/usr/bin/security"]
+        .into_iter()
+        .find(|p| Path::new(p).is_file());
+    let Some(security) = letibot_tokencore::apparatus::applies(
+        "the `security` tool, which runs a SecTrust evaluation",
+        security.is_some(),
+    )
+    .map(|_| security.unwrap_or("/usr/bin/security")) else {
+        return;
+    };
+    let f = Fixture::new("trust");
+    let cert = f.root.join("root.pem");
+    // A bundled public root, exported out of the system store outside any seat.
+    let out = std::process::Command::new(security)
+        .args([
+            "find-certificate",
+            "-a",
+            "-c",
+            "ISRG Root X1",
+            "-p",
+            "/System/Library/Keychains/SystemRootCertificates.keychain",
+        ])
+        .output()
+        .expect("security runs outside a seat");
+    let Some(_) = letibot_tokencore::apparatus::applies(
+        "a bundled public root named ISRG Root X1",
+        out.status.success() && !out.stdout.is_empty(),
+    ) else {
+        return;
+    };
+    std::fs::write(&cert, &out.stdout).expect("the exported root");
+    let verify = format!(
+        "{security} verify-cert -c '{}' -p basic 2>&1; echo rc=$?",
+        cert.display()
+    );
+
+    let tight = Seatbelt::probe_as(f.view(), Egress::Denied, vec![f.denied()], real_home())
+        .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+    let (_, t_out) = run_in(&tight, &f.project(), &verify);
+    assert!(
+        t_out.contains("successful") && t_out.contains("rc=0"),
+        "trust evaluation in the tight seat: {t_out}"
+    );
+    let (wide_seat, _op) = wide(&f);
+    let (_, w_out) = run_in(&wide_seat, &f.project(), &verify);
+    assert!(
+        w_out.contains("successful") && w_out.contains("rc=0"),
+        "trust evaluation in the wide seat: {w_out}"
+    );
+
+    let ask = format!("{security} find-generic-password -s letibot-boundary-probe -w 2>&1");
+    let (rc, out) = run_in(&tight, &f.project(), &ask);
+    assert_ne!(rc, 0, "the tight seat reached the keychain: {out}");
+    assert!(
+        ["not permitted", "denied", "Sandbox", "sandbox"]
+            .iter()
+            .any(|w| out.contains(w)),
+        "the refusal has to be the boundary's: {out}"
+    );
+}
