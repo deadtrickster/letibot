@@ -48,6 +48,7 @@ pub mod activity;
 pub mod client;
 pub mod cursor;
 pub mod event;
+pub mod fleet;
 pub mod hub;
 pub mod log;
 pub mod metrics_tap;
@@ -93,6 +94,7 @@ pub use hub::{
     SessionStatus,
 };
 pub use log::{LogBounds, SessionLog};
+pub use fleet::{FleetReader, FleetRow, FleetState};
 pub use origin::{GroupRow, MCP_IDENTITY, SessionGroup, SessionOrigin, group_of};
 pub use protocol::{
     Ack, Attachment, AttachmentKind, Caps, ClientFrame, HEAD_RUN_KIND_PATH, HEAD_RUN_KIND_TEXT,

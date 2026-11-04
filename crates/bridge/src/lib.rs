@@ -19,6 +19,7 @@
 
 pub mod daemon;
 pub mod diff;
+pub mod fleet;
 pub mod head;
 pub mod mcp;
 pub mod report;

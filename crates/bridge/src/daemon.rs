@@ -118,7 +118,7 @@ pub fn workspace_of(worktree: &Path) -> Result<PathBuf, String> {
 
 /// The socket a key names under a rundir - one spelling, so `resolve` and the test that
 /// pins the rule cannot drift.
-fn socket_in(rundir: &Path, key: &str) -> PathBuf {
+pub(crate) fn socket_in(rundir: &Path, key: &str) -> PathBuf {
     rundir.join(format!("{key}.sock"))
 }
 
