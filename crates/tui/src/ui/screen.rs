@@ -886,7 +886,7 @@ impl App {
                 let (echo, lines) = self.slash_out.clone().unwrap_or_default();
                 let p = self.cfg.palette();
                 // Not sanitised, and the regression is why: the rows in `slash_out` are this head's own composed
-                // lines, already painted, so the §3.1 guard stripped the head's own colour and left an escape's
+                // lines, already painted, so the sanitising guard stripped the head's own colour and left an escape's
                 // body on the screen as text.
                 let mut rows = vec![
                     row(&rano::agent::text::one(echo, Role::Strong), p),

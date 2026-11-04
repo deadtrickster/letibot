@@ -527,7 +527,7 @@ fn up_recalls_the_sessions_earlier_prompts_after_a_restart() {
 
 #[test]
 fn the_body_a_frame_builds_does_not_grow_with_the_session() {
-    // §13.3, at the renderer rather than at the lexer. The old shape cloned the
+    // At the renderer rather than at the lexer. The old shape cloned the
     // whole history into every frame; this asserts the frame is the window.
     let mut a = app();
     for i in 0..400u64 {

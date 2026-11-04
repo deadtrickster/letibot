@@ -112,7 +112,7 @@ pub(crate) fn reasoning_row_lines(
     let text: &str = &text;
     // A settled row: `Thought`, with no duration. The head can compute one
     // for a *live* turn from the delta timestamps, and a transcript row
-    // carries no timestamps at all - see `crates/ui/DESIGN.md` §4.4.
+    // carries no timestamps at all - see `crates/ui/DESIGN.md`
     let mut out = step_in(
         vec![thinking_header(cfg, text, think.is_open(), false, None)],
         ind,

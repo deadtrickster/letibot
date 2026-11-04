@@ -476,7 +476,7 @@ impl BlockCache {
     }
 
     /// Parses performed over this cache's life, summed over every live code block - the
-    /// §13.3 instrument one layer down from `IncrementalMarkdown::bytes_lexed`. A frame
+    /// Instrument one layer down from `IncrementalMarkdown::bytes_lexed`. A frame
     /// that draws a settled fence must not add to this.
     pub fn parses(&self) -> u64 {
         self.view.parses()

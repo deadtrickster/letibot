@@ -1919,7 +1919,7 @@ fn a_second_card_does_not_inherit_the_first_ones_scroll() {
     assert!(a.dec_scroll > 0, "the premise: the window moved");
 
     // Answer the first one, because an open set is a queue and `open[0]` is the
-    // card on the screen (§1.4: oldest first) - a second `DecisionRequested` while the
+    // card on the screen (oldest first) - a second `DecisionRequested` while the
     // first is unanswered is a second card behind it, not a replacement.
     a.apply(ServerFrame::Event(env(
         2,
@@ -3472,10 +3472,10 @@ fn a_selections_hold_ends_with_the_next_key() {
 // The doc is stale in six places - … Rewriting it to what the code does:
 //   » Wrote rano/docs/pdf.md · ok · 7ms · 147 lines
 // [1 tool call, 19 thinking lines]
-// Different thread, and a useful one - §20.8 has been waiting on a real *-json.log:
+// Different thread, and a useful one - waiting on a real *-json.log:
 //   also maybe we have docker on this host now? …                  10:20:10
 // [1 tool call, 18 thinking lines]
-// Different thread, and a useful one - §20.8 has been waiting on a real *-json.log: [1 tool call, 36 thinking lines]
+// Different thread, and a useful one - waiting on a real *-json.log: [1 tool call, 36 thinking lines]
 // ```
 //
 // The counts are drawn AFTER the reply in the pane, so the copy carrying `[1 tool call, 36 thinking lines]` is the LIVE one and

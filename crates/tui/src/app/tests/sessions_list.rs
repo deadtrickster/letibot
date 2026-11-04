@@ -1,7 +1,7 @@
 //! The session list's drawing, pinned - the picture the picker drew before the
 //! list became a built-in plugin, and the assertions the port must keep true.
 //!
-//! `docs/plugins-plan.md` §7 step 10 moves the decisions this fixture exercises (groups, what a row says, `WAITING ON YOU`, folds)
+//! `docs/plugins-plan.md` moves the decisions this fixture exercises (groups, what a row says, `WAITING ON YOU`, folds)
 //! into `plugins/builtin/sessions`. The drawing is pinned FIRST: two committed pictures of one daemon (as the picker opens,
 //! and with every fold opened), held against the plugin path by `the_heads_list_and_the_plugins_list_draw_the_same_rows`.
 //!

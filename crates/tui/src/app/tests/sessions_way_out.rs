@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// A module that fails every call - a layer that traps, or runs out of fuel: from the stack's side
-/// of the seam the two are one thing (`docs/plugins-plan.md` §1, principle 4).
+/// of the seam the two are one thing (`docs/plugins-plan.md`).
 struct Trap;
 
 impl Module for Trap {

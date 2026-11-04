@@ -336,7 +336,7 @@ pub(crate) enum Placed {
 /// Something that happened between two transcript rows.
 #[derive(Debug, Clone)]
 pub(crate) enum Note {
-    /// §18's post-flight assertions and §8.5's guards land here, and a guard
+    /// The post-flight assertions and the guards land here, and a guard
     /// nobody notices is a guard nobody wrote.
     Warned(Warned),
     /// A refusal nobody made: the harness itself could not read the call, so there is nothing for the person to

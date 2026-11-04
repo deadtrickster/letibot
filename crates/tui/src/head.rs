@@ -2,7 +2,7 @@
 //! a substitute speaks for. The launcher hands it a socket, an identity and at most a session to resume or a title,
 //! and everything else it learns from the daemon.
 
-//! The TUI head (§13.4, row one).
+//! The TUI head.
 //!
 //! ```text
 //!   letibot-tui                        attach to $XDG_RUNTIME_DIR/harnessd.sock
@@ -13,7 +13,7 @@
 //!   letibot-tui --no-tty               render one frame to stdout and exit
 //! ```
 //!
-//! `--replay` and `--demo` need no daemon, model or socket, so the whole of §13.3 is buildable against a recorded log.
+//! `--replay` and `--demo` need no daemon, model or socket, so the whole head is buildable against a recorded log.
 
 use std::io::BufRead;
 use std::time::{Duration, Instant};
@@ -100,7 +100,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--since" => a.since = next()?.parse().map_err(|e| format!("--since: {e}"))?,
             "--replay" => a.replay = Some(next()?),
             "--identity" => a.identity = next()?,
-            // §13.3: the buffer size is configurable rather than hardcoded.
+            // The buffer size is configurable rather than hardcoded.
             "--body-lines" => {
                 a.budget.body_lines = next()?.parse().map_err(|e| format!("--body-lines: {e}"))?
             }

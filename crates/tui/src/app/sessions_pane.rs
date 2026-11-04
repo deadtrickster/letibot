@@ -84,12 +84,12 @@ pub(crate) struct Host {
     /// several times within it (the bar, the click map, the keys), so this is the difference
     /// between a pane that costs microseconds and one that costs a compile.
     cache: Mutex<Cached>,
-    /// What each hook's layer answered with last time, handed back to it (§1, principle 5: state
+    /// What each hook's layer answered with last time, handed back to it (state
     /// belongs to the host). Keyed by hook, so the queue pane's answer and the session list's
     /// cannot overwrite each other.
     state: Mutex<std::collections::BTreeMap<String, Value>>,
     /// The last failure a layer met, until somebody is told. Fail down LOUDLY
-    /// (`docs/plugins-plan.md` §1, principle 4): the list the person sees may be the built-in's or
+    /// (`docs/plugins-plan.md`): the list the person sees may be the built-in's or
     /// the head's own, and either way the reason their layer is not drawing it is news.
     problem: Mutex<Option<String>>,
     /// The folder this host was built for; a head that moves to another one gets another stack.
@@ -350,7 +350,7 @@ impl Host {
         }
         let value = serde_json::to_value(input).unwrap_or(Value::Null);
         let resolved = self.stack.call(hook, &value);
-        // Fail down, loudly (§1, principle 4): a layer that traps is skipped by the stack and
+        // Fail down, loudly: a layer that traps is skipped by the stack and
         // the one below answers; the sentence is kept for the person whose layer it was.
         let why = resolved.failures.first().map(|f| f.to_string());
         let view = resolved
@@ -1086,7 +1086,7 @@ mod tests {
     use super::*;
 
     /// The built-in layer answers through rano's engine, in this process - the head's half of
-    /// `docs/plugins-plan.md` §7 step 10: the same module the daemon carries, loaded by the same
+    /// `docs/plugins-plan.md`: the same module the daemon carries, loaded by the same
     /// engine, asked by the head that draws it.
     #[test]
     fn the_builtin_sessions_layer_loads_and_answers_in_the_head() {

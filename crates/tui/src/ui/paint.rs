@@ -1,5 +1,5 @@
-//! Small helpers the rows share: the first sentence of a reason, a fold's word. The painting they
-//! once did here is `crate::ui::rows` and rano's.
+//! Small helpers the rows share: the first sentence of a reason, a fold's word. Painting is
+//! `crate::ui::rows` and rano's.
 
 use crate::app::*;
 

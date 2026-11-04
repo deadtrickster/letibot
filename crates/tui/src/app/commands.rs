@@ -1051,7 +1051,7 @@ impl App {
     }
 
     /// What a `command_` layer is handed beside the line - the `feeds` object of
-    /// `docs/plugins-plan.md` §4.9's Feeds section, in the head's own reading of it.
+    /// `docs/plugins-plan.md` Feeds section, in the head's own reading of it.
     ///
     /// A feed is a fact the head ALREADY HOLDS and shows; handing it over adjudicates and grants nothing, so it is a field on the
     /// input. Each shape is written by hand, not `serde_json::to_value` of the head's struct, so a new field is not silently contract:
@@ -1286,7 +1286,7 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
         "open or close the standing-notes pane: every note the harness reads into the prompt, \
          with the form the budget gave each one — verbatim, or an index over it",
     ),
-    // §6's verbs and §7's ruling that the table is the union: five of these had a chord and no word, so they were
+    // The verbs and the ruling that the table is the union: five of these had a chord and no word, so they were
     // unreachable from a pipe and `/help` had no name for them, and two were implemented and simply not listed.
     ("todos", "open or close the todos pane (ctrl-t)"),
     (

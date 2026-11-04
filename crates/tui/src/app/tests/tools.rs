@@ -431,7 +431,7 @@ fn a_spilled_result_reads_as_the_harness_working_not_as_damage() {
 
 #[test]
 fn a_running_tool_call_says_what_it_is_running_on() {
-    // §4.1, fixed. The whole difference between a tool list that is useful and
+    // The whole difference between a tool list that is useful and
     // one that is decorative.
     let mut a = app();
     a.apply(ServerFrame::Event(env_at(

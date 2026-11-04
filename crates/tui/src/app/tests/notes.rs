@@ -1466,7 +1466,7 @@ fn an_unreadable_frame_is_said_counted_and_survived() {
         vec![brief("s", "one", false)],
         Hub::new("s").snapshot(),
     ));
-    // The bucket exists before anything lands in it. §13.2b: an absent field
+    // The bucket exists before anything lands in it. An absent field
     // and a zero field must not look the same, and a head that does not count
     // these at all is what an older head was.
     a.command("status");
@@ -1790,7 +1790,7 @@ fn a_notice_does_not_outlive_its_welcome_or_hide_the_input() {
     );
 }
 
-/// A notice expires in TIME, on this head's clock - §11.3; the second
+/// A notice expires in TIME, on this head's clock; the second
 /// symptom is the mirror of leticl's `a-notice-expires-and-an-alarm-does-not`.
 #[test]
 fn a_notice_expires_in_time_and_not_in_frames() {
@@ -1874,7 +1874,7 @@ fn a_fleeting_notice_goes_after_its_time_and_a_failure_does_not() {
     assert!(screen.contains("is in the merge"), "{screen}");
     assert!(screen.contains("the store would not open"), "{screen}");
 
-    // Frames do not age it (§11.3).
+    // Frames do not age it.
     for _ in 0..200 {
         a.screen(100, 24);
     }
@@ -1999,7 +1999,7 @@ fn one_warning_delivered_twice_is_noted_once() {
 
 #[test]
 fn a_failed_turn_stops_the_spinner_instead_of_being_a_warning_and_a_hang() {
-    // §4.5. Observed live before this event existed: the engine published a
+    // The engine published a
     // `Warning` and no terminal event, `TurnState` stayed `Running`, and the
     // head span at a dead session for as long as anyone left it open.
     let mut a = app();

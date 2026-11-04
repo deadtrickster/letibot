@@ -2093,7 +2093,7 @@ fn a_bang_rows_output_is_collapsed_with_an_honest_count_and_opens_one_row() {
 fn no_control_byte_from_a_bang_rows_output_reaches_the_frame() {
     let mut a = app();
     a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-    // The store's own vocabulary of hostile bytes (`HOSTILE`, in the §3.1 suite):
+    // The store's own vocabulary of hostile bytes (`HOSTILE`, in the sanitiser suite):
     // SGR, a mode string, an OSC title, C1 controls, DEL.
     let hostile = " A\u{1b}[31mred\u{1b}[0m \u{1b}[8m(hidden) \u{1b}[2J \u{1b}[?1002h \u{1b}[?1006h \u{1b}[?1049h \u{1b}[?2004h \u{1b}[?2026h \u{1b}]0;pwned\u{7} \u{9b}31m \u{9c} \u{7f} end";
     bang_rows(
@@ -3560,7 +3560,7 @@ fn the_rung_is_written_down_and_comes_back_on_the_next_head() {
     );
 
     // And a rung the file names that this build does not know is REPORTED, not obeyed.
-    // §13.2b's rule for a setting: silently starting at the default would make a typo and
+    // The rule for a setting: silently starting at the default would make a typo and
     // a deliberate `normal` the same screen.
     std::fs::write(&path, "verbosity = \"chatty\"\n").unwrap();
     let mut third = app();

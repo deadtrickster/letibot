@@ -258,7 +258,7 @@ pub(crate) fn split_child_label(label: &str) -> (Option<&str>, &str) {
 }
 
 pub(crate) fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
-    // The renderer sanitises its own input (§3.1), so a caller cannot forget: rano's
+    // The renderer sanitises its own input, so a caller cannot forget: rano's
     // block cleans the text before it is wrapped. The operator's own keystrokes cannot carry a
     // control byte - the decoder hands back `Key::Char` - but a *paste* can.
     let folded = fold_operator(text);

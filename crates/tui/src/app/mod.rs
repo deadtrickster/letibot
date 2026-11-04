@@ -296,7 +296,7 @@ pub struct App {
     /// The last turn's `timings`, kept past the end of the turn so the header can show the
     /// decode rate while nothing is running.
     pub(crate) last_timings: Option<Timings>,
-    /// §18.1-I1's verdict on the last turn's ending, as the daemon sent it. Without it zero reuse
+    /// The verdict on the last turn's ending, as the daemon sent it. Without it zero reuse
     /// is one number for a slot that did not hold the history and for a prompt that diverged;
     /// `None` is a daemon older than the field, which measured nothing a head can read.
     pub(crate) prefix_check: Option<letibot_sessionlog::event::PrefixCheck>,

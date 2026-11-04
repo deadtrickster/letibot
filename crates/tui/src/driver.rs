@@ -8,7 +8,7 @@
 //!   3. ack `batch.last_seq()` with (rendered, filtered)
 //! ```
 //!
-//! Step 3 comes after step 2, always (§13.2b: *"a crash then costs a duplicate, never a silence"*). The seq acked is the last one
+//! Step 3 comes after step 2, always (*"a crash then costs a duplicate, never a silence"*). The seq acked is the last one
 //! read in step 1, not the last drawn: a head at `Terse` renders almost nothing and must still advance.
 //!
 //! # The socket is not the session
@@ -685,7 +685,7 @@ impl Link {
                         )?;
                         app.answer_sent(&req_id, request);
                     }
-                    // The frame this head had no way to send (§1.7). `Answer`
+                    // The frame this head had no way to send. `Answer`
                     // above grants a permission; this answers a question, and the
                     // client method has existed since protocol 5 with no caller.
                     Action::AnswerQuestion { req_id, answer } => {

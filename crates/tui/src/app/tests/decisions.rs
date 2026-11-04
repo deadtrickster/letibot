@@ -10,7 +10,7 @@ fn the_card_states_why_it_is_asking_in_the_speakers_own_words() {
     use letibot_sessionlog::event::OptionKind;
     let a = app();
 
-    // Nothing to say, so nothing said: §13.2b in both directions - a `because:`
+    // Nothing to say, so nothing said, in both directions - a `because:`
     // row with an empty string is a row of nothing, and the card is not entitled
     // to it.
     let bare = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
@@ -1162,9 +1162,9 @@ fn the_gate_card_says_how_long_there_is_and_what_silence_does() {
         "a countdown below zero is a rendering fault: {expired}"
     );
 
-    // No deadline, nothing drawn. `null` is §11.5's *wait forever* - a policy,
+    // No deadline, nothing drawn. `null` is the *wait forever* - a policy,
     // not missing information - so there is no silence for a clause to describe and
-    // no countdown to draw. §13.2b, answered the other way round from `unreadable 0`.
+    // no countdown to draw. Answered the other way round from `unreadable 0`.
     let a = app();
     let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
     d.deadline = None;
@@ -1313,7 +1313,7 @@ fn a_deadline_arriving_in_a_snapshot_reads_the_same_as_one_arriving_live() {
     let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
     d.deadline = Some(NOW + 300_000);
 
-    // The live arm's renderer, which §1.6's test covers at length.
+    // The live arm's renderer, which the test covers at length.
     let mut live = app();
     live.clock(NOW);
     let from_live = live.decision_lines(&d, 200).join("\n");

@@ -414,7 +414,7 @@ fn the_head_hands_the_layer_the_board_and_the_session_and_the_repo_outline() {
 }
 
 /// A layer that traps is said, and the layer below answers - fail down, loudly
-/// (`docs/plugins-plan.md` §1, principle 4). The broken layer costs the person a sentence and
+/// (`docs/plugins-plan.md`). The broken layer costs the person a sentence and
 /// nothing else: the built-in `todo` below it reads the line, and the row is added.
 #[test]
 fn a_layer_that_traps_is_said_and_the_builtin_below_answers() {

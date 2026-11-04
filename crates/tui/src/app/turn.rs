@@ -7,12 +7,12 @@ use letibot_sessionlog::activity::Waiting;
 use letibot_sessionlog::view::{CallState, SettledDecision, TurnState};
 use rano::markdown::IncrementalMarkdown;
 
-/// line. See `crates/ui/DESIGN.md` §2.3.
+/// line. See `crates/ui/DESIGN.md`
 #[derive(Debug, Clone)]
 pub(crate) struct CallRow {
     pub(crate) call_id: String,
     pub(crate) name: String,
-    /// The §4.1 display target: the path, pattern or command line the call is about. Empty when the
+    /// The display target: the path, pattern or command line the call is about. Empty when the
     /// event carried none (an older log, or a call first seen as `ToolStarted`), and the card then
     /// renders the verb alone rather than a guess.
     pub(crate) target: String,

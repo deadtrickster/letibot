@@ -22,7 +22,7 @@ pub(crate) fn display_outcome(o: &letibot_transcript::ToolOutcome) -> Outcome {
     use letibot_transcript::ToolOutcome as O;
     match o {
         O::Ok => Outcome::Ok,
-        // §8.2: abstention is not a flavour of success, and `card::Outcome`
+        // Abstention is not a flavour of success, and `card::Outcome`
         // keeps the distinction for exactly that reason.
         O::Abstained { reason } => Outcome::Abstained(reason.clone()),
         O::Failed { reason } => Outcome::Failed(reason.clone()),
@@ -272,7 +272,7 @@ pub(crate) fn call_card(
             }
         }
     };
-    // §4.1: `ToolCallProposed` carries a bounded display target beside the digest - the
+    // `ToolCallProposed` carries a bounded display target beside the digest - the
     // path, the pattern, the command line - so a call that is still running says `Running
     // "cargo test --workspace"` rather than `Running bash`. Empty is rendered as nothing.
     let name = drawn_as(&c.name, edit);

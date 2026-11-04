@@ -679,7 +679,7 @@ fn the_session_header_degrades_by_deletion_and_never_wraps() {
     }
 }
 
-/// §18.2's question, answered on the head's own status: the ending says which check judged the
+/// The question, answered on the head's own status: the ending says which check judged the
 /// turn, so zero reuse is read as a slot or a divergence rather than guessed at, and the dialect
 /// that rendered the prompt is named beside it.
 #[test]

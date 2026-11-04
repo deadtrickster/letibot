@@ -232,7 +232,7 @@ impl App {
     ///    resync 0 · s-1789023464202470853 h3 ─╯
     /// ```
     ///
-    /// Each was added because something was measured going wrong, which does not argue for keeping them resident. §13.2b's rule is that
+    /// Each was added because something was measured going wrong, which does not argue for keeping them resident. The rule is that
     /// *an absent field and a zero field must not look the same when the field is the disclosure* is about when the field is read:
     /// `/status` reads it, says `dropped 0` explicitly and says what the counter means. What stays here is a counter that has moved,
     /// in [`Role::Attention`], not the border's grey: a second colour inside a border reads as damage and this is damage. The
@@ -425,7 +425,7 @@ impl App {
              conversation is not different because of it.",
         );
 
-        // What the last turn's ending measured. §18.2's trap is that zero reuse is one number for
+        // What the last turn's ending measured. The trap is that zero reuse is one number for
         // a slot that did not hold the history and for a prompt of ours that diverged; the check is
         // the daemon's verdict on which, and the dialect names the template it was judged under.
         row(
@@ -553,7 +553,7 @@ impl App {
         row_strings(&pane.lines(w), self.cfg.palette())
     }
 
-    /// The last ending's §18.1-I1 verdict as one value, in the words a reader acts on: `held` with
+    /// The last ending's prefix verdict as one value, in the words a reader acts on: `held` with
     /// its shortfall, `DIVERGED` with the engine's sentence, `not run` with the backend's reason.
     pub(crate) fn prefix_check_line(&self) -> String {
         use letibot_sessionlog::event::PrefixCheck as P;

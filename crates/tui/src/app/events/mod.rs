@@ -430,7 +430,7 @@ impl App {
                 ..TurnPane::default()
             };
             // The snapshot carries the accumulated text once. Everything after
-            // this is an increment. That is §13.3's wire half, arriving.
+            // this is an increment. That is the wire half, arriving.
             pane.text.push(&t.text);
             pane.reasoning.push(&t.reasoning);
             // A head joining mid-call gets the markup too, so the raw chord shows the same thing. `writing_call`

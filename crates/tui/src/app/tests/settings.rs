@@ -423,7 +423,7 @@ fn a_stray_key_cancels_the_allow_all_confirmation() {
 
 /// The pointer answers nothing on the allow-all card: a wheel step or a click is not a
 /// keystroke aimed at the composer, so neither cancels - scrolling up to reread what
-/// allow-all means once said `allow-all cancelled`. `y` still confirms after them.
+/// allow-all means must not say `allow-all cancelled`. `y` still confirms after them.
 #[test]
 fn the_wheel_and_a_click_leave_the_allow_all_card_standing() {
     let mut a = App::new(plain_cfg(120));

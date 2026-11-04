@@ -316,7 +316,7 @@ impl App {
                 }));
                 Disposition::Rendered
             }
-            // §6's plan is a document; the transcript is not where it goes.
+            // The plan is a document; the transcript is not where it goes.
             SessionEvent::Explain { .. } => Disposition::Filtered,
             // Always rendered, at every verbosity: a denial the operator cannot see
             // manufactures the workaround, so it goes into the transcript beside the call it
