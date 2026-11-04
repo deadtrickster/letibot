@@ -1,11 +1,6 @@
 //! Token ids in, spans out.
-//!
-//! Boundaries are decided by token id, never by scanning text: a control token is one vocab
-//! entry, so `control_role` answers for exactly the ids that are boundaries, and text that
-//! merely spells `</think>` is several ids and cannot be one. Runs of ordinary tokens are
-//! decoded as runs, because on a BPE vocabulary detokenizing a sequence and concatenating
-//! per-token pieces are different operations. The decoder is an argument, so the type says
-//! what parsing needs; the match below is on roles, which the compiler checks.
+//! Boundaries are decided by token id, never by scanning text, so text that spells `</think>` is not a boundary.
+//! Ordinary token runs are decoded as runs, since per-token concatenation differs from sequence detokenizing on BPE.
 
 use letibot_dialect::{ControlRole, ControlToken, ParsedSpan, Parser, TokenDecoder};
 use serde_json::{Map, Value};

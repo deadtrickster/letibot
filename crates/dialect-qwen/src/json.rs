@@ -1,11 +1,6 @@
-//! JSON text that is byte-identical to what the shipped template produces.
-//!
-//! Deliberately not shared with `dialect-glm`'s `json.rs`: the two templates call `tojson` on
-//! different things - GLM unwraps `{"type":"function","function":{…}}` and re-emits three fixed
-//! keys, while Qwen writes `{{- tool | tojson }}` on the object whole, `type` wrapper included.
-//! What is shared is the formatter: Hugging Face's `tojson` is
-//! `json.dumps(..., separators=(", ", ": "), ensure_ascii=False)` while `serde_json`'s compact
-//! writer uses `,`/`:` with no spaces, so a naive `to_string` diverges on every tool schema.
+//! JSON text byte-identical to the shipped template's `tojson`.
+//! Not shared with `dialect-glm`: GLM re-emits three fixed keys, Qwen tojsons the whole tool object.
+//! Hugging Face uses `(", ", ": ")` separators where `serde_json` is compact, so `to_string` diverges.
 
 use serde_json::Value;
 use serde_json::ser::Formatter;

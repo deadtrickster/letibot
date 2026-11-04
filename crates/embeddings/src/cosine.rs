@@ -1,8 +1,5 @@
-//! Cosine, and the corpus as a list of vectors: brute force, on purpose.
-//!
-//! A hundred notes and a few hundred skills at 256-1024 dimensions is a few MB and a
-//! few hundred thousand multiplies - a vector store would be a dependency and a second
-//! source of truth for a corpus that fits in one array.
+//! Cosine, and the corpus as a list of vectors: brute force on purpose.
+//! The corpus fits in one array, so a vector store would be a dependency and a second source of truth.
 
 /// How alike two vectors are, `0.0`..`1.0`, and `0.0` when they cannot be compared: two
 /// lengths that differ are two models' answers, and a score across them is not a score.

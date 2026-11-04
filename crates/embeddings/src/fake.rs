@@ -1,8 +1,5 @@
-//! What the tests of this crate need to measure a fetch without the network: a scratch
-//! directory, the tiny BERT's three files, and a loopback server that serves them.
-//!
-//! The client under test is the real one. Only the socket is local, so nothing here reaches
-//! out of the box and no test needs a filled-in pin.
+//! Test support for fetch tests without the network: a scratch directory, the tiny BERT's three
+//! files, and a loopback server that serves them. The client under test is the real one.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};

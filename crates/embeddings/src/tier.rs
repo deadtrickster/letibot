@@ -1,9 +1,6 @@
 //! The tier as a caller sees it: one question in, one cosine out.
-//!
-//! A caller hands over its documents once, when they change, and then asks about one
-//! text a round. Everything between - which engine, whether the vector is on disk, what
-//! the corpus's vectors are - is this module's, so a caller's whole second tier is one
-//! optional `&Tier` and one floor.
+//! A caller hands over its documents once, then asks about one text a round. Engine, disk and
+//! corpus vectors are this module's, so a caller's second tier is one optional `&Tier` and one floor.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
@@ -70,12 +67,8 @@ impl Engine {
 /// notes is ten round trips rather than three hundred.
 const BATCH: usize = 32;
 
-/// **A tier whose meaning is a table.** Each group is one dimension and each word in the
-/// group sets it, so two texts that share a group and no word score as one - which is what a
-/// caller's test needs to say *a paraphrase clears this floor*, with no model and no file.
-///
-/// Built by [`crate::testing::planted`] and by nothing else; it is here rather than behind a
-/// feature so the arm that answers it is compiled wherever the enum is.
+/// A tier whose meaning is a table: each group is one dimension and each word in it sets it.
+/// Built by [`crate::testing::planted`] only; not feature-gated so the arm compiles wherever the enum does.
 pub struct Planted {
     groups: Vec<Vec<String>>,
 }
@@ -166,7 +159,7 @@ pub struct Filled {
     pub cached: usize,
 }
 
-/// **The one embedder a box has.** The engine and the cache, and nothing about what is
+/// The one embedder a box has. The engine and the cache, and nothing about what is
 /// being scored: the corpus's vectors belong to the caller that holds them, so four callers
 /// on one box load one model between them and pay for a text once.
 pub struct Embedder {
@@ -265,15 +258,13 @@ impl Embedder {
         self.lock().engine.kind()
     }
 
-    /// **The first failure, once.** Every caller falls back to the lexical score whenever the
-    /// embedder cannot answer, so a caller that said every failure would say it every round; a
-    /// caller that said nothing would hide a wrong URL for a whole session. This is the
-    /// sentence, handed out exactly once, and whichever caller asks first says it.
+    /// The first failure, once. Callers fall back to the lexical score on any failure, so saying
+    /// every one is noise and saying none hides a wrong URL. Whichever caller asks first says it.
     pub fn take_fault(&self) -> Option<String> {
         self.fault.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
-    /// **What the box said before it fetched the built-in model**, handed out once: the
+    /// What the box said before it fetched the built-in model, handed out once: the
     /// download happens once, so the sentence that says so is not repeated.
     pub fn take_announcement(&self) -> Option<String> {
         self.announcement
@@ -289,10 +280,8 @@ impl Embedder {
         Ok(vector)
     }
 
-    /// Every document's vector, keyed as the caller gave them, and how much of that the box
-    /// had already paid for. Only a text the cache has never seen costs an embedding, and the
-    /// misses go out `BATCH` at a time: an endpoint's `input` is an array, and a 300-note corpus
-    /// is ten requests rather than three hundred.
+    /// Every document's vector, keyed as the caller gave them, and how much the cache already held.
+    /// Only unseen text is embedded, `BATCH` at a time, since an endpoint's `input` is an array.
     pub fn vectors(
         &self,
         documents: impl IntoIterator<Item = (String, String)>,
@@ -435,18 +424,15 @@ impl Tier {
         self.embedder.kind()
     }
 
-    /// **The first failure, once**, from the box's embedder - which every caller shares, so it
+    /// The first failure, once, from the box's embedder - which every caller shares, so it
     /// is said once for the box and not once for each of them.
     pub fn take_fault(&self) -> Option<String> {
         self.embedder.take_fault()
     }
 
-    /// Embed every document that has changed and put its vector in memory. Only a text the
-    /// cache has never seen costs an embedding, so a restart pays for the corpus once.
-    ///
-    /// A fill that cannot answer empties the tier rather than leaving the last corpus's vectors
-    /// behind: a stale vector would score a text that has since been edited, and the contract a
-    /// caller relies on is that a failure is the words alone.
+    /// Embed every changed document and put its vector in memory. Only unseen text costs an embedding.
+    /// A fill that cannot answer empties the tier: stale vectors would score edited text, and a
+    /// failure must mean the words alone.
     pub fn fill(
         &self,
         documents: impl IntoIterator<Item = (String, String)>,
@@ -627,7 +613,7 @@ mod tests {
         (url, seen)
     }
 
-    /// **A fill asks the endpoint once per batch, not once per note.** `Remote::ask` carries an
+    /// A fill asks the endpoint once per batch, not once per note. `Remote::ask` carries an
     /// `input` array and the tier sent it one element at a time, so a 300-note corpus was 300 round
     /// trips with the box's one embedder held for all of them.
     #[test]
@@ -672,7 +658,7 @@ mod tests {
         );
     }
 
-    /// **A box that must not reach the network is not fetched for.** With the download off and
+    /// A box that must not reach the network is not fetched for. With the download off and
     /// no model on disk, what it gets is the old refusal, naming the directory to fill.
     #[test]
     fn a_download_that_is_turned_off_keeps_the_old_refusal() {
@@ -705,7 +691,7 @@ mod tests {
         assert_eq!(embedder.take_announcement(), None, "nothing was fetched");
     }
 
-    /// **The fetch a box makes on first use, through the tier.** The model comes back whole,
+    /// The fetch a box makes on first use, through the tier. The model comes back whole,
     /// the sentence about it is handed out once, and scoring uses the model, not nothing.
     #[test]
     fn a_fetched_model_scores_and_says_what_it_fetched_once() {
@@ -734,7 +720,7 @@ mod tests {
         assert_eq!(vector.len(), fixture::HIDDEN);
     }
 
-    /// **A fetch that fails leaves the tier off, with the reason and the URL.** It never stands
+    /// A fetch that fails leaves the tier off, with the reason and the URL. It never stands
     /// in for a score - the caller falls back to its own words - which is why the one sentence
     /// has to say what went wrong and where it looked.
     #[test]
@@ -833,7 +819,7 @@ mod tests {
         assert_eq!(tier.take_fault(), None);
     }
 
-    /// **One embedder, two callers.** Two tiers over one embedder share the vectors it makes -
+    /// One embedder, two callers. Two tiers over one embedder share the vectors it makes -
     /// a text either of them asks for is embedded once - and share the corpus's absence: a
     /// document is in the index of the caller that filled it and in no other.
     #[test]

@@ -1,14 +1,6 @@
-//! A tiny BERT, built by the test: three files, no download, no binary in the tree.
-//!
-//! The weights are chosen so the model's answer is readable rather than arbitrary: each
-//! word is its own direction, the encoder's projections are identities and its MLP is
-//! zero, so a sentence's vector is a function of the words it is made of. That is what
-//! makes "a paraphrase scores above an unrelated line" a fact of the fixture and not a
-//! lucky draw.
-//!
-//! The file shapes are the real ones - `config.json`, `tokenizer.json`, a
-//! `model.safetensors` with `bert.`-prefixed keys - so the internal path a user's own
-//! checkpoint takes is the path this exercises.
+//! A tiny BERT built by the test: three files, no download, no binary in the tree.
+//! Each word is its own direction, projections are identities and the MLP is zero, so a sentence's
+//! vector is a function of its words. File shapes match real checkpoints, so the internal path is exercised.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -228,12 +220,8 @@ fn safetensors_bytes(tensors: &[(String, Vec<usize>, Vec<f32>)]) -> Result<Vec<u
     Ok(out)
 }
 
-/// **A tier with no model at all**: the words in one group mean the same thing, so two texts
-/// that share a group and not a word score as one. What a caller's test needs to say a
-/// paraphrase clears its own floor, which no word-bag model can show.
-///
-/// The cache is a real one, in `data_dir`, because a caller that asks twice must be answered
-/// from it exactly as it would be on a box.
+/// A tier with no model: words in one group mean the same thing, so two texts sharing a group and
+/// no word score as one. The cache is a real one in `data_dir`.
 pub fn planted(data_dir: &Path, groups: &[&[&str]]) -> crate::Tier {
     let cache = crate::Cache::open_in(data_dir).expect("the fixture's cache");
     crate::Tier::with(crate::Engine::Planted(crate::Planted::new(groups)), cache)

@@ -12,7 +12,7 @@
 //! The `<|im_end|>` belongs to whichever result has no result after it, so a caller that rendered
 //! one item at a time would write a whole turn per result. [`QwenRenderer::render_incremental_by_item`]
 //! renders the batch and says where each item ends, which is what lets `Session::append_items` keep
-//! one ledger row per item under a prompt that carries one turn per run (T20.5).
+//! one ledger row per item under a prompt that carries one turn per run.
 
 use letibot_dialect::{RenderSpan, StablePrefix};
 use letibot_transcript::{ToolCall, ToolOutcome, TranscriptItem, UserPart};
@@ -130,11 +130,8 @@ impl QwenRenderer {
     }
 
     /// [`Self::render_incremental`], and the span each item ends at.
-    ///
-    /// The template puts a run of consecutive tool results in ONE user turn and only the last of
-    /// the run owns the `<|im_end|>`, so "is another result coming" is a question a single item
-    /// cannot answer - and rendering one at a time wrote a whole user turn per result (T20.5).
-    /// One row per item is the LEDGER's rule; one turn per run is the PROMPT's.
+    /// A run of tool results is one user turn and only the last owns `<|im_end|>`, which a single
+    /// item cannot know. One row per item is the ledger's rule; one turn per run is the prompt's.
     pub fn render_incremental_by_item(
         &self,
         history: &[TranscriptItem],
@@ -215,10 +212,9 @@ struct State {
     /// A tool call has already been written in this message, so the next one is not
     /// `loop.first`.
     called: bool,
-    /// A USER message was opened to hold a run of tool results and its `<|im_end|>` is not yet
-    /// written. The template writes ONE user turn per run of consecutive results, so the closing
-    /// token belongs to whichever result has no result after it - the one fact a single item cannot
-    /// supply, and the reason [`QwenRenderer::render_incremental_by_item`] exists.
+    /// A user message opened to hold a run of tool results whose `<|im_end|>` is not yet written.
+    /// The closing token belongs to the result with none after it, which is why
+    /// [`QwenRenderer::render_incremental_by_item`] exists.
     tool_turn_open: bool,
 }
 
@@ -769,7 +765,7 @@ mod tests {
     }
 
     /// A `Reasoning` item and the `Assistant` item that follows it are ONE message: the template
-    /// writes one `<|im_start|>assistant`, one block of thinking, then the visible text. T20.8 -
+    /// writes one `<|im_start|>assistant`, one block of thinking, then the visible text. -
     /// the `/apply-template` oracle caught a second message being opened here and no unit test did.
     #[test]
     fn a_reasoning_and_the_assistant_after_it_are_one_message() {
@@ -815,10 +811,8 @@ mod tests {
 
     #[test]
     fn the_batch_render_equals_the_whole_render_at_every_prefix() {
-        // §18.1-I3b, over a conversation that exercises every item kind this
-        // renderer has a branch for. The comparison is against the BATCH render, not one item at a
-        // time: the last item of a run of tool results owns the turn's closing token, so item-by-item
-        // replay is no longer - and never was, in the template - the same prompt (T20.5).
+        // Compared against the batch render, not item by item: the last tool result of a run owns
+        // the turn's closing token, so item-by-item replay is not the same prompt.
         let items = [
             user("Compare a and b."),
             TranscriptItem::Reasoning {

@@ -1,8 +1,6 @@
-//! The built-in model, pinned: a commit on Hugging Face, three files, and a hash for each.
-//!
-//! `mode = "internal"` with no `model` is this checkpoint, and none of it is compiled in. The
-//! pin is a commit rather than a branch and a hash rather than a length, so the bytes a box
-//! fetches can be checked against the bytes somebody reviewed, and any other answer is refused.
+//! The built-in model, pinned: a Hugging Face commit, three files, and a hash for each.
+//! `mode = "internal"` with no `model` uses this checkpoint; nothing is compiled in.
+//! Commit and hash pins let a box check fetched bytes against reviewed bytes and refuse any other.
 
 use std::path::{Path, PathBuf};
 
@@ -35,7 +33,7 @@ pub struct Source {
     pub bytes: Option<u64>,
 }
 
-/// **The three files, and the trust in them.** `sha256` is what the bytes must hash to, and
+/// The three files, and the trust in them. `sha256` is what the bytes must hash to, and
 /// `bytes` is how much the one sentence before a fetch promises is coming.
 const SHIPPED: [(&str, &str, u64); 3] = [
     (
@@ -70,7 +68,7 @@ impl Pin {
         Pin::over(&PinOverride::default())
     }
 
-    /// **The pin a `[embeddings]` section asks for**: the shipped table with the repository, the
+    /// The pin a `[embeddings]` section asks for: the shipped table with the repository, the
     /// commit and the hashes the section wrote over it. The parser refused a half, so this is
     /// either the shipped pin or a whole other one.
     pub fn of(settings: &Settings) -> Pin {
@@ -134,7 +132,7 @@ impl Pin {
         format!("{}/{}/{}", self.base, self.revision, file)
     }
 
-    /// **Is the pin a real one?** A commit hash and a SHA-256 are fixed lengths, so a string of
+    /// Is the pin a real one? A commit hash and a SHA-256 are fixed lengths, so a string of
     /// the wrong length, one that is not hexadecimal, or the all-zero filler a table is written
     /// with before its values are known is a pin no fetch may run under.
     pub fn is_filled(&self) -> bool {
@@ -217,7 +215,7 @@ impl std::fmt::Display for DownloadError {
 
 impl std::error::Error for DownloadError {}
 
-/// **Make the pinned model present in the data directory, fetching it if it is not.** Called
+/// Make the pinned model present in the data directory, fetching it if it is not. Called
 /// where the embedder is opened, which is daemon start, so a fetch never runs inside a turn.
 /// `say` is handed one sentence and only when a fetch is about to happen.
 pub fn ensure(
@@ -408,7 +406,7 @@ mod tests {
 
     use letibot_http::retry::Policy;
 
-    /// **The pin is the whole trust story.** A box that fetched whatever a branch held would
+    /// The pin is the whole trust story. A box that fetched whatever a branch held would
     /// embed with bytes nobody reviewed, so the shipped table is a full commit and a full
     /// sha-256 per file, and none of the four is the all-zero filler.
     #[test]
@@ -456,7 +454,7 @@ mod tests {
         );
     }
 
-    /// **A pin a section wrote is a pin of its own.** Every URL, the directory the files land in
+    /// A pin a section wrote is a pin of its own. Every URL, the directory the files land in
     /// and the hash each file must have follow the section, and the shipped table is what a
     /// section that wrote none of it gets.
     #[test]
@@ -503,7 +501,7 @@ mod tests {
         assert_eq!(shipped.sources(), Pin::shipped().sources());
     }
 
-    /// **A changed pin fetches its own files.** The directory is keyed by the revision, so a box
+    /// A changed pin fetches its own files. The directory is keyed by the revision, so a box
     /// that moved the pin never serves another revision's bytes under the new commit's name.
     #[test]
     fn a_changed_pin_fetches_its_own_files_and_not_another_revisions() {
@@ -532,7 +530,7 @@ mod tests {
         );
     }
 
-    /// **The first use fetches the three files and the second start does not.** The bytes
+    /// The first use fetches the three files and the second start does not. The bytes
     /// served are a checkpoint this build opens, so the assertion is not that files appeared
     /// but that the model underneath them works.
     #[test]

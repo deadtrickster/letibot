@@ -1,11 +1,6 @@
-//! Qwen3.8 (Flash-Next and 27B): the spec, a renderer, and a parser.
-//!
-//! The two models ship a byte-identical `tokenizer.chat_template`, so they are one dialect and
-//! [`template_sha`] proves it. The renderer is hand-written because the template-driven one is not
-//! wired for this model yet; the parser outlives it, since a template says how a turn is written
-//! and nothing about reading one back. A mid-history system message is a hard error here, so
-//! `SystemUpdateMode::Envelope` is the only thing that renders, reasoning is replayed by default,
-//! and a tool call is XML rather than JSON, which no ChatML fixture can drive.
+//! Qwen3.8 (Flash-Next and 27B): the spec, a renderer and a parser.
+//! Both models ship a byte-identical `tokenizer.chat_template` ([`template_sha`]). A mid-history
+//! system message is a hard error, so only `SystemUpdateMode::Envelope` renders. A tool call is XML.
 
 pub mod cli;
 use std::sync::OnceLock;
@@ -155,7 +150,7 @@ pub enum ReasoningEffort {
     /// The template's own default when `reasoning_effort` is unset.
     #[default]
     Xhigh,
-    /// The one value that emits **no** instruction sentence at all.
+    /// The one value that emits no instruction sentence at all.
     Medium,
     Low,
 }

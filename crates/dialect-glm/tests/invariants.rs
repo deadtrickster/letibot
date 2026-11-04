@@ -1,8 +1,5 @@
-//! The two round-trip invariants, plus the ones GLM's own shape adds.
-//!
-//! Both are property tests over an exhaustively enumerated transcript space rather than a
-//! handful of examples, because the renderer is a pure function and there is therefore no
-//! excuse for sampling it.
+//! The two round-trip invariants plus GLM's own.
+//! Property tests over an exhaustively enumerated transcript space, since the renderer is a pure function.
 
 use letibot_dialect::{ParsedSpan, Parser, RenderSpan, StablePrefix, spans_to_string};
 use letibot_dialect_glm::{

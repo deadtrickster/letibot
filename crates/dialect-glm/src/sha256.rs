@@ -1,11 +1,6 @@
-//! SHA-256, ~70 lines, so `template_sha()` can be *computed* from the embedded
-//! jinja instead of hand-copied next to it.
-//!
-//! That distinction is the whole point of the field. A hand-copied constant is a
-//! claim about a file; a computed one is a fact about the file the crate actually
-//! ships, so editing the template without re-validating the dialect cannot go
-//! unnoticed. Pulling in a hash crate for this would be the tidier answer if the
-//! workspace already had one; it does not, and this is not the place to start.
+//! SHA-256, so `template_sha()` is computed from the embedded jinja instead of hand-copied.
+//! A computed hash is a fact about the shipped file, so editing the template without re-validating
+//! cannot go unnoticed. The workspace has no hash crate.
 
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,

@@ -1,11 +1,6 @@
 //! The second renderer: hand-written, kept as a differential against the template.
-//!
-//! The shipped template run through minijinja is the production renderer; this one exists
-//! because two independent implementations that agree are stronger evidence than one that
-//! passes its own tests, and the fidelity corpus is measured through it. It renders one
-//! thing only: the training format as CPython Jinja2 produces it. It does not reproduce
-//! llama.cpp's cross-iteration `{% set %}` leak, because the Jinja2 reading is what the
-//! model was trained against.
+//! Two independent implementations that agree are stronger evidence than one passing its own tests.
+//! It renders the CPython Jinja2 reading, not llama.cpp's cross-iteration `{% set %}` leak.
 
 use crate::ReasoningEffort;
 use crate::json::arg_value_text;

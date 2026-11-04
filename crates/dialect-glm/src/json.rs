@@ -1,11 +1,6 @@
-//! JSON text that is byte-identical to what the shipped GLM template produces.
-//!
-//! GLM's jinja calls `{{ v | tojson(ensure_ascii=False) }}` for the tool schema block
-//! and for a tool call's non-string argument values, so the separators are prompt
-//! bytes rather than a formatting preference. Hugging Face's `tojson` is
-//! `json.dumps(..., separators=(", ", ": "), ensure_ascii=False)` and llama.cpp's
-//! jinja matches it, while `serde_json`'s compact writer uses `,`/`:` - hence this
-//! formatter.
+//! JSON text byte-identical to the shipped GLM template's `tojson(ensure_ascii=False)`.
+//! The separators are prompt bytes: Hugging Face uses `(", ", ": ")` where `serde_json`'s compact
+//! writer uses `,`/`:`, hence this formatter.
 
 use serde_json::Value;
 use serde_json::ser::Formatter;

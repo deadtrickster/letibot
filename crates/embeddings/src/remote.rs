@@ -1,9 +1,6 @@
 //! A URL mode: an OpenAI-compatible `POST <url>/embeddings`, one round trip per text.
-//!
-//! The endpoint is the operator's explicit setting, because a URL sends every note and
-//! every skill's text to whoever answers it. Nothing is retried here: a failure falls
-//! back to the lexical score, and the caller says so once a session rather than once a
-//! round.
+//! The URL is the operator's explicit setting because it receives every note and skill text.
+//! No retry: a failure falls back to the lexical score and the caller says so once a session.
 
 use letibot_http::{Endpoint, HttpError, Request};
 

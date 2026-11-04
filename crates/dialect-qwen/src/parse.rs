@@ -1,11 +1,6 @@
-//! Token ids in, `ParsedSpan`s out: the half of a dialect a template cannot give us.
-//!
-//! A template says how a turn is written and there is no inverse, so this stays code even after
-//! the template-driven renderer lands. Every structural boundary Qwen uses is a single vocab
-//! entry, so the walk is over ids and asks the decoder for a role; text that merely spells
-//! `</think>` is several ids and can never be mistaken for the boundary. The tool call's body
-//! is not: `<function=` and `<parameter=` are ordinary text, so it goes to [`parse_call_body`],
-//! which keeps what it cannot read verbatim - a truncated argument must not read as an empty one.
+//! Token ids in, `ParsedSpan`s out: the half of a dialect a template cannot give.
+//! The walk is over ids, so text spelling `</think>` is never a boundary. A tool call body goes to
+//! [`parse_call_body`], which keeps what it cannot read verbatim.
 
 use letibot_dialect::{ControlRole, ParsedSpan, Parser, TokenDecoder};
 use serde_json::{Map, Value};

@@ -1,11 +1,6 @@
-//! What a per-model dialect is: rendering is data, parsing is code. `RenderSpan` is
-//! text-plus-control-token, not token ids, which keeps dialect work off the critical path:
-//! a renderer emitting `[Text | Control]` is a pure function that needs no tokenizer, no
-//! vocab and no GPU.
-//!
-//! The larger reason is correctness: a user message containing the literal text
-//! `<|assistant|>` must never become the assistant control token. Splitting `Text` from
-//! `Control` makes that structurally impossible rather than something a test has to catch.
+//! What a per-model dialect is: rendering is data, parsing is code.
+//! `RenderSpan` is text plus control token, so a renderer needs no tokenizer or GPU, and a user
+//! message containing `<|assistant|>` cannot become the control token.
 
 use std::borrow::Cow;
 use std::ops::Range;
@@ -26,7 +21,7 @@ pub struct StablePrefix {
 /// on control-token literals.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RenderSpan {
-    /// Literal text. **Tokenized with special-token parsing disabled**, so nothing
+    /// Literal text. Tokenized with special-token parsing disabled, so nothing
     /// inside it can become a control token however it is spelled.
     Text(String),
     /// A control token, resolved to an exact id by the token core.
@@ -52,7 +47,7 @@ impl ControlToken {
         }
     }
 
-    /// A control token whose literal was discovered at runtime — read out of a GGUF's
+    /// A control token whose literal was discovered at runtime - read out of a GGUF's
     /// token table, or out of a config file.
     pub fn owned(role: ControlRole, literal: impl Into<String>) -> Self {
         ControlToken {
@@ -69,7 +64,7 @@ impl ControlToken {
 pub enum ControlRole {
     BeginOfText,
     /// GLM's `<sop>`: the start-of-prompt token that follows `[gMASK]`. One vocab
-    /// entry, no turn semantics, and it is not a `BeginOfText` — both are emitted.
+    /// entry, no turn semantics, and it is not a `BeginOfText` - both are emitted.
     SequenceStart,
     TurnStartSystem,
     TurnStartUser,
@@ -82,7 +77,7 @@ pub enum ControlRole {
     ToolCallClose,
     ToolResultOpen,
     ToolResultClose,
-    /// `<arg_key>` — GLM writes tool-call arguments as a flat sequence of
+    /// `<arg_key>` - GLM writes tool-call arguments as a flat sequence of
     /// key/value pairs rather than as JSON, and each delimiter is one vocab entry.
     ArgKeyOpen,
     ArgKeyClose,
@@ -232,7 +227,7 @@ pub enum Guard {
     /// Stop when an n-gram of `window` tokens repeats `times` times.
     RepetitionNgram { window: u32, times: u32 },
     /// Reasoning ran past `tokens` without producing a content or tool-call span.
-    /// Not a cap on thinking — a signal that the turn is not progressing. Long
+    /// Not a cap on thinking - a signal that the turn is not progressing. Long
     /// thinking is fine; silent non-termination is not.
     ReasoningStall { tokens: u32 },
 }
@@ -331,7 +326,7 @@ mod tests {
     const TOKENS: &[ControlToken] = &[
         ControlToken::borrowed(ControlRole::TurnStartUser, "<|user|>"),
         ControlToken::borrowed(ControlRole::TurnStartAssistant, "<|assistant|>"),
-        // One role, three literals: the case that used to be resolved by "whichever
+        // One role, three literals: the case resolved by "whichever
         // comes first in the table".
         ControlToken::borrowed(ControlRole::TurnEnd, "<|im_end|>"),
         ControlToken::borrowed(ControlRole::TurnEnd, "<|endoftext|>"),

@@ -423,7 +423,7 @@ const KNOWN: [&str; 6] = [
 mod tests {
     use super::*;
 
-    /// **The default is off.** A file that never wrote the key has not asked for a second
+    /// The default is off. A file that never wrote the key has not asked for a second
     /// tier, and an absent table is one way of saying so.
     #[test]
     fn an_absent_section_is_off() {
@@ -498,7 +498,7 @@ mod tests {
         assert_eq!(err, ConfigError::ModelUnderOff);
     }
 
-    /// **The download is on unless a box turns it off.** A box that may not reach the network
+    /// The download is on unless a box turns it off. A box that may not reach the network
     /// says so in the same table as the mode, and then the built-in model is a refusal and
     /// never a fetch.
     #[test]
@@ -566,7 +566,7 @@ mod tests {
         )
     }
 
-    /// **A section may pin its own.** The shipped table is what a section that says nothing
+    /// A section may pin its own. The shipped table is what a section that says nothing
     /// gets, and each key it does write is kept as it wrote it.
     #[test]
     fn a_section_can_pin_its_own_revision_and_hashes() {
@@ -597,7 +597,7 @@ mod tests {
         );
     }
 
-    /// **A revision with the old hashes can never verify.** A fetch would have to refuse the
+    /// A revision with the old hashes can never verify. A fetch would have to refuse the
     /// bytes it was told to trust, so the half is refused where it is written, in both
     /// directions.
     #[test]

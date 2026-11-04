@@ -1,12 +1,6 @@
-//! The vectors on disk: a cache, keyed by content, in a file of its own.
-//!
-//! `<data dir>/embeddings.db` and not `sessions.db`, so a cache never carries a store
-//! schema version and deleting the file loses nothing but time. The key is
-//! `(model, sha256 of the text)`, which needs no invalidation: an edited note is a new
-//! key, and a change of mode or of model is a new model name in the same table.
-//!
-//! Rows unused for thirty days are dropped at open. A corpus of hundreds of documents
-//! is a few MB, so the collection is a sweep at open rather than a thread.
+//! The vectors on disk: a cache keyed by `(model, sha256 of text)` in `<data dir>/embeddings.db`.
+//! Separate from `sessions.db` so it carries no schema version and deleting it loses only time.
+//! Rows unused for thirty days are dropped at open.
 
 use std::path::{Path, PathBuf};
 
@@ -394,10 +388,8 @@ mod tests {
         assert_eq!((v, hit, calls), (vec![0.5, 0.5], Hit::Cached, 1));
     }
 
-    /// **A blob that is not a whole number of `f32`s costs one embedding, not the round's score.**
-    /// The row is dropped and the answer is *not cached*, so the caller embeds the text again; a
-    /// refusal here sent an embeddable document to the lexical tier and told the operator the box
-    /// was corrupt.
+    /// A blob that is not a whole number of `f32`s costs one embedding, not the round's score.
+    /// The row is dropped and the answer is not cached, so the caller embeds the text again.
     #[test]
     fn a_corrupt_blob_is_dropped_and_the_text_embedded_again() {
         let dir = Dir::new("corrupt");

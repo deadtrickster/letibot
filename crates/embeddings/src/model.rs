@@ -1,13 +1,6 @@
 //! The user's own checkpoint, run in this process by candle.
-//!
-//! `model = "<dir>"` is a directory with `config.json`, `tokenizer.json` and
-//! `model.safetensors`, and `mode = "internal"` with no `model` is the built-in one in
-//! the data directory. Both go through the same code, because they are the same thing:
-//! a BERT-family encoder and a tokenizer beside it.
-//!
-//! An architecture this build does not run, and a directory that is missing a file, are
-//! refused at open by name - a config that only fails at the first round is a config
-//! that fails while somebody is working.
+//! `model = "<dir>"` holds `config.json`, `tokenizer.json` and `model.safetensors`; the built-in model takes the same path.
+//! An unsupported architecture or a missing file is refused at open by name.
 
 use std::path::{Path, PathBuf};
 
