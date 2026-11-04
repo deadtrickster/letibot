@@ -33,6 +33,10 @@ pub const MIN_TERM: usize = 3;
 /// so more text is only more bytes to tokenize, hash and send to an endpoint. Words still score the whole.
 pub const EMBED_CHARS: usize = 1_500;
 
+/// A note this lexically alike is decided by its words: meaning could only reorder the winners, so
+/// the embedder is not asked. Below it nothing is skipped, because a paraphrase scores zero in words.
+pub const DECIDED_BY_WORDS: f64 = 0.6;
+
 /// The first [`EMBED_CHARS`] of a text, cut on a character boundary.
 pub fn bounded(text: &str) -> &str {
     let cut = (0..=EMBED_CHARS.min(text.len()))
@@ -209,11 +213,22 @@ impl Corpus {
     /// in-memory index, so a round costs one embedding and never one per note.
     fn scored_with(&self, text: &str, tier: Option<&Tier>) -> Vec<(&Path, f64)> {
         let q = self.weigh(text);
-        let query = tier.and_then(|t| t.round().or_else(|| t.query(bounded(text), now_ms()).ok()));
+        let lexical: Vec<f64> = self
+            .notes
+            .iter()
+            .map(|n| similarity(&q, &n.weights))
+            .collect();
+        // Words first: a note already decided by them, or a text with no terms to score, does not
+        // wake the embedder.
+        let decided = q.is_empty() || lexical.iter().any(|l| *l >= DECIDED_BY_WORDS);
+        let query = tier.filter(|_| !decided).and_then(|t| match t.round() {
+            Some(round) => t.query(&round, now_ms()).ok(),
+            None => t.query(bounded(text), now_ms()).ok(),
+        });
         self.notes
             .iter()
-            .map(|n| {
-                let lexical = similarity(&q, &n.weights);
+            .zip(lexical)
+            .map(|(n, lexical)| {
                 let semantic = match (&query, tier) {
                     (Some(query), Some(tier)) => tier.cosine(&n.path.to_string_lossy(), query),
                     _ => None,

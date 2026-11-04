@@ -163,7 +163,20 @@ pub struct Embedder {
     /// The last [`QUERY_MEMO`] query vectors by text hash, so a text asked twice in a few rounds
     /// is neither embedded nor read from disk again.
     memo: Mutex<std::collections::VecDeque<(String, Vec<f32>)>>,
+    /// The words and vector of the last query the engine embedded, for [`NEAR`].
+    last: Mutex<Option<(std::collections::HashSet<String>, Vec<f32>)>>,
+    /// When the engine last embedded a query, for [`QUERY_BUDGET`].
+    spent_at: Mutex<std::collections::VecDeque<std::time::Instant>>,
 }
+
+/// A query this similar (Jaccard over words) to the last embedded one reuses its vector. Only for
+/// texts of at least [`NEAR_WORDS`] words: one word moves a short text's meaning.
+pub const NEAR: f64 = 0.9;
+pub const NEAR_WORDS: usize = 12;
+
+/// Queries the engine may embed in a minute. Past it callers score on words and the fault says so.
+/// Corpus fills are not counted: they are paid once per change.
+pub const QUERY_BUDGET: usize = 30;
 
 /// How many query vectors the embedder keeps in memory.
 const QUERY_MEMO: usize = 32;
@@ -310,6 +323,8 @@ impl Embedder {
             lookups: AtomicU64::new(0),
             bytes: AtomicU64::new(0),
             memo: Mutex::new(std::collections::VecDeque::new()),
+            last: Mutex::new(None),
+            spent_at: Mutex::new(std::collections::VecDeque::new()),
         })
     }
 
@@ -434,6 +449,17 @@ impl Embedder {
             Ok(None) => {}
             Err(e) => return Err(self.fail(EmbedOrCacheError::Cache(e))),
         }
+        let words = word_set(text);
+        if words.len() >= NEAR_WORDS {
+            let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((seen, v)) = last.as_ref()
+                && seen.len() >= NEAR_WORDS
+                && jaccard(seen, &words) >= NEAR
+            {
+                return Ok((v.clone(), Hit::Cached));
+            }
+        }
+        self.spend_query_budget()?;
         self.embedded.fetch_add(1, Ordering::Relaxed);
         self.bytes.fetch_add(text.len() as u64, Ordering::Relaxed);
         let vector = self
@@ -445,7 +471,29 @@ impl Embedder {
             .put(&name, text, &vector, now_ms)
             .map_err(|e| self.fail(EmbedOrCacheError::Cache(e)))?;
         self.remember(hash, &vector);
+        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((words, vector.clone()));
         Ok((vector, Hit::Embedded))
+    }
+
+    /// One query embed against the minute's budget, or the refusal that names it.
+    fn spend_query_budget(&self) -> Result<(), TierError> {
+        let now = std::time::Instant::now();
+        let mut at = self.spent_at.lock().unwrap_or_else(|e| e.into_inner());
+        while at
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= std::time::Duration::from_secs(60))
+        {
+            at.pop_front();
+        }
+        if at.len() >= QUERY_BUDGET {
+            drop(at);
+            return Err(self.fail(EmbedOrCacheError::Embed(format!(
+                "the embedding budget of {QUERY_BUDGET} queries per minute is spent; \
+                 scoring on words alone until it refills"
+            ))));
+        }
+        at.push_back(now);
+        Ok(())
     }
 
     fn remembered(&self, hash: &str) -> Option<Vec<f32>> {
@@ -491,9 +539,10 @@ pub struct Tier {
     /// Hash of the documents the index was built from: the same documents again are the same
     /// vectors, so a fill that matches it touches neither the cache nor the engine.
     filled: Mutex<Option<String>>,
-    /// The round's one subject vector, set by the loop that owns the round. When present every
-    /// score through this tier reads it instead of embedding its own text.
-    round: RwLock<Option<Vec<f32>>>,
+    /// The round's one subject text, set by the loop that owns the round. When present every
+    /// score through this tier embeds it instead of its own text, and the embedder's memo makes
+    /// that one embedding for all callers.
+    round: RwLock<Option<String>>,
 }
 
 impl std::fmt::Debug for Tier {
@@ -579,13 +628,13 @@ impl Tier {
         }
     }
 
-    /// Share one subject vector for the round, or clear it with `None`.
-    pub fn set_round(&self, vector: Option<Vec<f32>>) {
-        *self.round.write().unwrap_or_else(|e| e.into_inner()) = vector;
+    /// Share one subject text for the round, or clear it with `None`.
+    pub fn set_round(&self, text: Option<String>) {
+        *self.round.write().unwrap_or_else(|e| e.into_inner()) = text;
     }
 
-    /// The round's shared subject vector, if the loop set one.
-    pub fn round(&self) -> Option<Vec<f32>> {
+    /// The round's shared subject text, if the loop set one.
+    pub fn round(&self) -> Option<String> {
         self.round.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
@@ -621,6 +670,19 @@ impl Tier {
     fn write(&self) -> std::sync::RwLockWriteGuard<'_, Index> {
         self.index.write().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+fn word_set(text: &str) -> std::collections::HashSet<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase())
+        .collect()
+}
+
+fn jaccard(a: &std::collections::HashSet<String>, b: &std::collections::HashSet<String>) -> f64 {
+    let both = a.intersection(b).count() as f64;
+    let any = a.union(b).count() as f64;
+    if any == 0.0 { 0.0 } else { both / any }
 }
 
 /// A hash of keys and texts in order, with lengths so no two lists spell the same bytes.
@@ -1040,12 +1102,41 @@ mod tests {
         let changed = tier.fill(edited, now()).unwrap();
         assert_eq!((changed.embedded, changed.cached), (1, 2));
         let before = tier.embedder().spent();
-        let first = tier.query("alpha beta", now()).unwrap();
-        let second = tier.query("alpha beta", now()).unwrap();
+        let first = tier.query("kappa nu", now()).unwrap();
+        let second = tier.query("kappa nu", now()).unwrap();
         let after = tier.embedder().spent();
         assert_eq!(first, second);
         assert_eq!(after.embedded - before.embedded, 1);
         assert_eq!(after.lookups - before.lookups, 1, "the repeat is memory");
+    }
+
+    /// Past the minute's budget a query is refused in words that name the number, and the fault
+    /// is there once for the caller that says it.
+    #[test]
+    fn queries_past_the_budget_are_refused_naming_it() {
+        let (_m, _d, tier) = tier("budget");
+        for i in 0..QUERY_BUDGET {
+            tier.query(&format!("alpha {i}"), now())
+                .expect("within budget");
+        }
+        let refused = tier
+            .query("alpha beta over", now())
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("30 queries per minute"), "{refused}");
+        assert!(tier.take_fault().is_some());
+    }
+
+    /// A long text that moves by one word reuses the last vector.
+    #[test]
+    fn a_nearly_unchanged_subject_reuses_the_last_vector() {
+        let (_m, _d, tier) = tier("near");
+        let base = "alpha beta gamma delta kappa lambda mu nu one two three four five six";
+        let first = tier.query(base, now()).unwrap();
+        let before = tier.embedder().spent();
+        let second = tier.query(&format!("{base} seven"), now()).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(tier.embedder().spent(), before, "no embed, no lookup");
     }
 
     /// The ranking a caller uses: the paraphrase of a note comes first and the unrelated

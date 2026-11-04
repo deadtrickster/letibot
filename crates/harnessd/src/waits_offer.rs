@@ -95,10 +95,10 @@ impl Offers {
         self
     }
 
-    /// Score this round against the vector the loop embedded once for every offer.
-    pub fn share_round(&self, vector: Option<Vec<f32>>) {
+    /// Score this round against the one subject the loop names for every offer.
+    pub fn share_round(&self, text: Option<String>) {
         if let Some(tier) = &self.tier {
-            tier.set_round(vector);
+            tier.set_round(text);
         }
     }
 

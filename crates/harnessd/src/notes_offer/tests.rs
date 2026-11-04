@@ -698,12 +698,7 @@ fn a_round_embeds_only_what_changed() {
         let before = embedder.spent();
         let brief = crate::waits_offer::draft(items);
         let text = format!("{brief}\n{}", subject(items));
-        let shared = embedder
-            .vector(
-                letibot_tools::similarity::bounded(&text),
-                letibot_metrics::now_ms() as i64,
-            )
-            .ok();
+        let shared = Some(letibot_tools::similarity::bounded(&text).to_string());
         notes.share_round(shared.clone());
         waits.share_round(shared.clone());
         done.share_round(shared);
@@ -744,4 +739,34 @@ fn a_round_embeds_only_what_changed() {
         moved.2 <= letibot_tools::similarity::EMBED_CHARS as u64,
         "{moved:?}"
     );
+}
+
+/// A session doing bulk edits at fifteen rounds a minute: the subject is the same prompt and a tool
+/// result that differs by a file name. The embedder is asked once, not fifteen times.
+#[test]
+fn bulk_edits_with_a_barely_moving_subject_embed_once() {
+    use std::sync::Arc;
+
+    let f = Fixture::new("bulk-edits");
+    corpus(&f);
+    let (_m, _d, embedder) = crate::embeddings::fixture::model("bulk-edits");
+    let mut notes =
+        Offers::new().with_tier(Some(letibot_embeddings::Tier::over(Arc::clone(&embedder))));
+    // Fills the corpus once, so the rounds below spend only on subjects.
+    let body = format!("{UNRELATED} and then the edit landed in every file of the module");
+    let mut subjects = Vec::new();
+    let mut spent = Vec::new();
+    for n in 0..15 {
+        let mut items = prompt(&body);
+        items.push(result(&format!("edited src/module_{n}.rs ok")));
+        let text = subject(&items);
+        subjects.push(text.clone());
+        notes.share_round(Some(text));
+        let before = embedder.spent();
+        notes.compose(&f.reader(), &f.global, &f.box_dirs, "", &items);
+        spent.push(embedder.spent().embedded - before.embedded);
+    }
+    let queries: u64 = spent.iter().skip(1).sum::<u64>() + spent[0].saturating_sub(3);
+    eprintln!("embeds per round (first includes the corpus): {spent:?}");
+    assert!(queries <= 1, "{spent:?}");
 }
