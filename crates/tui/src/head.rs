@@ -13,9 +13,7 @@
 //!   letibot-tui --no-tty               render one frame to stdout and exit
 //! ```
 //!
-//! `--replay` and `--demo` are the reason this head is a leaf strand: they need no
-//! daemon, no model and no socket, so the whole of §13.3 is buildable and
-//! demonstrable against a recorded log.
+//! `--replay` and `--demo` need no daemon, model or socket, so the whole of §13.3 is buildable against a recorded log.
 
 use std::io::BufRead;
 use std::time::{Duration, Instant};
@@ -57,8 +55,8 @@ struct Args {
     theme_template: bool,
     /// How long `--interrupt-all` waits for the turns to end.
     wait: u64,
-    /// **What the interrupt is recorded as** (`--reason`): the command that sent it, so a plain
-    /// `letibot --stop` is not written into the transcript as a forced one (TODO R92.21).
+    /// What the interrupt is recorded as (`--reason`): the command that sent it, so a plain
+    /// `letibot --stop` is not written into the transcript as a forced one.
     reason: String,
     /// Answer "is there a daemon here, and does it speak this build's protocol" and
     /// exit. No screen, no snapshot, no frame - see [`probe`].
@@ -613,7 +611,7 @@ pub fn interrupt_turns(
     }
 }
 
-/// **How the force path sends a signal**: `kill(pid, sig)`. A parameter rather than a
+/// How the force path sends a signal: `kill(pid, sig)`. A parameter rather than a
 /// call so a test can stand in a process that survives everything - the one case the
 /// head's last sentence is for - without needing a process the kernel cannot kill.
 pub type Signaller = std::sync::Arc<dyn Fn(i32, i32) -> std::io::Result<()> + Send + Sync>;
@@ -629,7 +627,7 @@ pub fn kill_signaller() -> Signaller {
     })
 }
 
-/// **The daemon the force path may signal**: the one this head attached to and nothing else.
+/// The daemon the force path may signal: the one this head attached to and nothing else.
 #[derive(Debug, Clone)]
 pub struct ForceTarget {
     /// The daemon's socket, for the interrupt half.
@@ -695,7 +693,7 @@ pub fn force_stop(t: &ForceTarget, signal: &Signaller) -> crate::app::ForceOutco
         said.push(format!("it went without a signal (pid {pid})"));
         return finish(said, true);
     }
-    // **Never this process.** A head whose daemon runs in its own process (a test's
+    // Never this process. A head whose daemon runs in its own process (a test's
     // in-process server is the only such case) must not be the one it kills.
     if pid == std::process::id() as i32 {
         said.push(format!("no signal sent: pid {pid} is this head itself"));
@@ -710,7 +708,7 @@ pub fn force_stop(t: &ForceTarget, signal: &Signaller) -> crate::app::ForceOutco
         (libc::SIGKILL, "SIGKILL", FORCE_KILL_WAIT),
     ];
     for (sig, name, grace) in steps {
-        // **Still the same process?** Read immediately before the signal, so the window in
+        // Still the same process? Read immediately before the signal, so the window in
         // which the pid could be handed on is a syscall wide.
         if process_started(pid) != t.started || t.started.is_none() {
             said.push(format!(
@@ -865,7 +863,7 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<String, Box<dyn std::error::Er
             got
         }
     };
-    // **A first frame this build cannot read is a skew, and it is named.**
+    // A first frame this build cannot read is a skew, and it is named.
     let hello = match hello {
         Some(Inbound::Frame(f)) => f,
         Some(Inbound::Unreadable(u)) => return Err(u.said().into()),
@@ -876,7 +874,7 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<String, Box<dyn std::error::Er
         return Err(ClientError::Refused(reason.clone()).into());
     }
     link.seated_by(&hello);
-    // **Which process that is** (R30), read off the socket this head just connected to.
+    // Which process that is, read off the socket this head just connected to.
     app.set_daemon_pid(link.daemon_pid());
 
     app.apply(hello);
@@ -969,7 +967,7 @@ mod exit_tests {
         );
     }
 
-    /// **A head that never seated a session prints nothing at all.** An empty line is still a
+    /// A head that never seated a session prints nothing at all. An empty line is still a
     /// line: a script reading stdout would take it for an id, and the operator would see a blank
     /// where the answer should be - which is how a refusal comes to look like a bug in the exit.
     #[test]
@@ -1024,8 +1022,8 @@ mod probe_tests {
         }
     }
 
-    /// A turn that does not end in time is said as one, under the command that asked: the list used to be asked with
-    /// the deadline already past, so this answered *timed out waiting for the session list*.
+    /// A turn that does not end in time is said as one, under the command that asked: the deadline
+    /// must not already be past, or this answers *timed out waiting for the session list*.
     #[test]
     fn a_turn_still_running_at_the_deadline_is_counted_and_the_reason_is_the_callers() {
         let (hub, h) = start("running");
@@ -1197,7 +1195,7 @@ mod models_tests {
     }
 }
 
-/// **The terminal's modes for this head: every motion reported**, not only the buttons' - what
+/// The terminal's modes for this head: every motion reported, not only the buttons' - what
 /// the pointer is over is drawn (`app::pointer`), and that needs motion with no button held.
 fn any_motion() -> rano::term::Options {
     rano::term::Options {
@@ -1217,7 +1215,7 @@ fn outside_the_frame(term: &Terminal, app: &mut App) {
     if let Some(text) = app.take_clipboard() {
         term.copy(&text);
     }
-    // **The hand over what a click would act on**, the default off it (OSC 22). A terminal that
+    // The hand over what a click would act on, the default off it (OSC 22). A terminal that
     // does not speak it ignores it; the underline says the same thing everywhere.
     if let Some(hand) = app.take_pointer() {
         term.write_raw(if hand {
@@ -1231,7 +1229,7 @@ fn outside_the_frame(term: &Terminal, app: &mut App) {
     }
 }
 
-/// **One read of the terminal, as this head's keys**: whatever `Terminal::events` returns  -
+/// One read of the terminal, as this head's keys: whatever `Terminal::events` returns  -
 /// at most ~100 ms of quiet, the `VMIN=0 VTIME=1` read the loops above are paced by - mapped
 /// through [`crate::app::key_of`]. The bytes that read consumed are `Terminal::raw_input`.
 fn read_keys(term: &Terminal) -> Vec<crate::app::Key> {
@@ -1244,7 +1242,7 @@ fn read_keys(term: &Terminal) -> Vec<crate::app::Key> {
 /// One read of the terminal with the editor pane's share taken out, then rano's work between events: what comes
 /// back is this head's keys and the raw bytes a `!term` pane reads. The live loop and `--replay` both read here.
 fn read_routed(term: &Terminal, app: &mut App) -> (Vec<crate::app::Key>, Vec<u8>) {
-    // **Keys a click typed come first**, and stand for this read: a click on `esc closes` is the
+    // Keys a click typed come first, and stand for this read: a click on `esc closes` is the
     // Esc key, by the route a keypress takes (see `app::keyhints`), and the terminal is read
     // again on the next pass.
     let injected = app.take_injected();

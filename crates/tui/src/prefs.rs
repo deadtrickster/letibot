@@ -283,7 +283,7 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
                 ),
                 other => p.git_format = Some(other.to_string()),
             },
-            // R10. An empty value is a real value - "nothing is retired" - and not
+            // An empty value is a real value - "nothing is retired" - and not
             // a key this build does not know, so it is not reported as one.
             "retired" => {
                 p.retired = v
@@ -506,7 +506,7 @@ mod tests {
             raw_calls: true,
             // The rung, which is the setting that has to outlive a restart.
             verbosity: "conversation".into(),
-            // R10's half of the round trip, in one key: the comma is the separator
+            // The round trip, in one key: the comma is the separator
             // and the key contains none, which is what makes this one line.
             retired: vec!["w|gate-timeout|1789000000000|5f2c9a0b1d3e4f67".into()],
             ..Default::default()

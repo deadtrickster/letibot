@@ -1,7 +1,6 @@
 //! The loop: frames in, screen out, ack after the screen is out.
 //!
-//! Small, because the order of three operations is the whole of it and burying
-//! that order in a binary would make it unreviewable:
+//! Small, because the order of three operations is the whole of it:
 //!
 //! ```text
 //!   1. drain every frame that has arrived, classifying each
@@ -9,19 +8,14 @@
 //!   3. ack `batch.last_seq()` with (rendered, filtered)
 //! ```
 //!
-//! Step 3 comes after step 2, always. §13.2b: *"a crash then costs a duplicate,
-//! never a silence"*. And the seq acked is the last one **read** in step 1, not the
-//! last one drawn - a head at `Terse` renders almost nothing and must still
-//! advance, or it rereads its own output forever.
+//! Step 3 comes after step 2, always (§13.2b: *"a crash then costs a duplicate, never a silence"*). The seq acked is the last one
+//! read in step 1, not the last drawn: a head at `Terse` renders almost nothing and must still advance.
 //!
 //! # The socket is not the session
 //!
-//! A daemon goes away for ordinary reasons - it is restarted, `--stop` lands, the box
-//! has a moment - and a head whose loop treats that as the end of the program takes
-//! the operator's view of a conversation that is still on disk with it. So the
-//! connection lives in [`Link`], which owns the socket, the channel the frames arrive
-//! on and the thread reading it, and whose failure mode is to **mark the link down**
-//! rather than to return an error:
+//! A daemon goes away for ordinary reasons (restart, `--stop`), and a head that treats that as the end of the program loses the
+//! operator's view of a conversation still on disk. So [`Link`] owns the socket, the channel and the reader thread, and marks the
+//! link down rather than returning an error:
 //!
 //! ```text
 //!   a write fails        -> Link::tick tells the head; the head draws the line
@@ -29,10 +23,8 @@
 //!   Link::reconnect      -> a new socket, ATTACH with the seq we had
 //! ```
 //!
-//! The `since_seq` is the whole of the recovery: the daemon answers a resume with the
-//! gap as events, or with a `Resync` when the gap is larger than it still holds. So
-//! getting the socket back *is* getting the conversation back, out of the protocol
-//! that was already there.
+//! The `since_seq` is the whole of the recovery: the daemon answers a resume with the gap as events, or a `Resync` when the gap is
+//! larger than it still holds.
 
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -70,11 +62,11 @@ pub struct Link {
     /// The socket this connection is on, kept so a head that asked the daemon to stop can see the file go: the
     /// daemon unlinks it after it has joined its accept loop.
     socket_path: std::path::PathBuf,
-    /// **The process at the other end of this socket**, from `SO_PEERCRED` - the daemon
+    /// The process at the other end of this socket, from `SO_PEERCRED` - the daemon
     /// itself, not a number read out of a file that may be stale or belong to an older
     /// daemon with the same workspace. `None` when the kernel would not say.
     daemon_pid: Option<i32>,
-    /// **The force path, while it runs** - `head::force_stop` on its own thread, its answer
+    /// The force path, while it runs - `head::force_stop` on its own thread, its answer
     /// arriving here. `Some` from the moment the head takes the force path until the answer
     /// has been handed to the app.
     force: Option<Receiver<ForceOutcome>>,
@@ -127,11 +119,11 @@ fn peer_pid(s: &UnixStream) -> Option<i32> {
 /// daemon that had stopped properly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Parentage {
-    /// **A direct child of this head.** The head owes it a wait, and until that wait happens
+    /// A direct child of this head. The head owes it a wait, and until that wait happens
     /// the child is a zombie that `/proc` still lists. A `waitpid` is the only test that
     /// answers correctly here.
     Ours,
-    /// **Somebody else's process.** Its own parent or init reaps it, so a dead one is gone
+    /// Somebody else's process. Its own parent or init reaps it, so a dead one is gone
     /// from `/proc` and the wrapper's test is the right one - which is what an attached head
     /// that did not spawn the daemon is looking at.
     NotOurs,
@@ -151,7 +143,7 @@ fn parentage(pid: i32) -> Parentage {
 }
 
 /// `PROC_PIDTBSDINFO` - macOS's `/proc/<pid>/stat` - as `(ppid, status)`, or the errno:
-/// `ESRCH` for a pid that is gone **or a zombie**, `EPERM` for another user's process.
+/// `ESRCH` for a pid that is gone or a zombie, `EPERM` for another user's process.
 #[cfg(target_os = "macos")]
 fn bsdinfo(pid: i32) -> Result<(u32, u32), i32> {
     let mut bi: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
@@ -334,7 +326,7 @@ impl Link {
         socket_path: std::path::PathBuf,
     ) -> Link {
         let (tx, rx) = std::sync::mpsc::channel();
-        // **Read once, at connect.** `SO_PEERCRED` answers for the socket, so it cannot
+        // Read once, at connect. `SO_PEERCRED` answers for the socket, so it cannot
         // go stale while the connection is up, and a reconnect is a new connection to
         // whatever daemon is there now - see `Link::reconnect`.
         let daemon_pid = peer_pid(client.socket());
@@ -353,14 +345,14 @@ impl Link {
         }
     }
 
-    /// **Stand in how the force path signals.** For a test that needs a daemon which
+    /// Stand in how the force path signals. For a test that needs a daemon which
     /// survives SIGTERM and SIGKILL - the one case the head's last farewell is for - and
     /// cannot have one from the kernel. Kept across [`Link::reconnect`].
     pub fn set_signaller(&mut self, signaller: Signaller) {
         self.signaller = signaller;
     }
 
-    /// **Take the force path** - once - on its own thread, against the pid the HEAD holds.
+    /// Take the force path - once - on its own thread, against the pid the HEAD holds.
     fn start_force(&mut self, pid: Option<i32>) {
         if self.force.is_some() {
             return;
@@ -435,7 +427,7 @@ impl Link {
             self.kind.clone(),
             self.identity.clone(),
         );
-        // **The force path is the head's, not the connection's**: a stop in flight keeps its
+        // The force path is the head's, not the connection's: a stop in flight keeps its
         // thread, its answer and the identity it checks across a new socket.
         let signaller = self.signaller.clone();
         let force = self.force.take();
@@ -489,7 +481,7 @@ impl Link {
         // measurement never runs where the frame is drawn. Two seconds between readings keeps the rate low.
         app.refresh_git();
         app.refresh_github_refs();
-        // **And the model check a held message waits on** (`app::reach`) - collected here for the
+        // And the model check a held message waits on (`app::reach`) - collected here for the
         // same reason: a probe is a network round trip, and the loop never waits on one.
         app.poll_reach();
 
@@ -605,7 +597,7 @@ impl Link {
                 }
                 continue;
             }
-            // **Nothing leaves a head whose link is down**, and it says so once rather
+            // Nothing leaves a head whose link is down, and it says so once rather
             // than failing once per action. Every write below would fail the same way,
             // and a batch of them would bury the one sentence that matters.
             if app.detached() {
@@ -643,7 +635,7 @@ impl Link {
                 break;
             }
             // The whole match is one `Result` so that the *only* thing a failed write
-            // does is tell the head. Each arm used to end in `?`, which propagated out
+            // does is tell the head. Each arm ends in `?` otherwise, which would propagate out
             // of this loop and out of `main`.
             let sent = (|| -> Result<(), ClientError> {
                 match a {
@@ -693,7 +685,7 @@ impl Link {
                         )?;
                         app.answer_sent(&req_id, request);
                     }
-                    // **The frame this head had no way to send** (§1.7). `Answer`
+                    // The frame this head had no way to send (§1.7). `Answer`
                     // above grants a permission; this answers a question, and the
                     // client method has existed since protocol 5 with no caller.
                     Action::AnswerQuestion { req_id, answer } => {
@@ -729,7 +721,7 @@ impl Link {
                     Action::ListSkills => {
                         self.client.list_skills()?;
                     }
-                    // **The operator hands the session a skill.** Stale-tolerant like a prompt:
+                    // The operator hands the session a skill. Stale-tolerant like a prompt:
                     // somebody who asked while the screen moved still meant it.
                     Action::LoadSkill { name, then } => {
                         self.client.load_skill(app.seq, &name, &then)?;
@@ -760,13 +752,13 @@ impl Link {
                     Action::PaneOpen { pane, w, h } => {
                         self.client.pane_open(&pane, w, h)?;
                     }
-                    // **The pane left the screen**: the daemon takes it off its refresh clock,
+                    // The pane left the screen: the daemon takes it off its refresh clock,
                     // so a closed dashboard stops reading files every `every_s`. Silent in
                     // answer - the head that closed it is the one that said so.
                     Action::PaneClose { pane } => {
                         self.client.pane_close(&pane)?;
                     }
-                    // **A stop's action, back to the pane that drew it** - the same shape the
+                    // A stop's action, back to the pane that drew it - the same shape the
                     // open has: a read the daemon answers with a new view on the log, not a
                     // command queued behind a turn.
                     Action::PaneAction { pane, item, action } => {
@@ -838,7 +830,7 @@ impl Link {
                     Action::OperatorShell { line } => {
                         self.client.operator_shell(app.seq, &line)?;
                     }
-                    // **Taken above, before the link-down and read-only arms** - a URL is not
+                    // Taken above, before the link-down and read-only arms - a URL is not
                     // the daemon's and the write that carries it never happens. Listed here
                     // because this match is exhaustive over `Action`.
                     Action::OpenUrl(_) => {}
@@ -848,7 +840,7 @@ impl Link {
                     Action::TermOpen { line } => {
                         self.client.term_open(&line, size.0, size.1)?;
                     }
-                    // **The keys, verbatim.** No `client_request_id` and nothing to wait for:
+                    // The keys, verbatim. No `client_request_id` and nothing to wait for:
                     // a keystroke has no answer, and the pane's next `TermOutput` is the
                     // program's reply to whatever it did with it.
                     Action::TermInput { pane, bytes } => {
@@ -906,7 +898,7 @@ impl Link {
                         // `SO_PEERCRED`, and the head is what `/status` reads. A second copy here is how the two
                         // come to disagree about which process the person is sent to `ps` for.
                         let pid = app.daemon_pid();
-                        // **Which process that pid is, read now** while it is certainly the
+                        // Which process that pid is, read now while it is certainly the
                         // daemon: the force path re-reads it before every signal and sends
                         // nothing to a pid that has since been handed to something else.
                         self.stop_started = pid.and_then(process_started);
@@ -915,7 +907,7 @@ impl Link {
                         // gone because the daemon is going - so it is recorded as *not
                         // sent* and the wait runs anyway. What it changes is the sentence.
                         app.stop_began(&who, sent.is_ok(), pid, now_ms());
-                        // **And this head does not detach.** The connection is what the
+                        // And this head does not detach. The connection is what the
                         // wait is reading: `detach()` closes the reader, and the daemon's
                         // socket closing is one of the facts being watched for.
                     }
@@ -936,7 +928,7 @@ impl Link {
         {
             let _ = reap_own_child(p);
         }
-        // **Last, every tick, and after the drawing.** R30. Nothing here sends anything:
+        // Last, every tick, and after the drawing. Nothing here sends anything:
         // it reads the four things that answer the question the operator asked.
         self.watch_stop(app);
     }
@@ -1017,7 +1009,7 @@ impl Link {
             );
             self.start_force(pid);
         }
-        // **The deadline crossing is a frame too.** The waiting line stops being drawn the
+        // The deadline crossing is a frame too. The waiting line stops being drawn the
         // moment the question is answered, and without this the head would sit on the last
         // frame it drew for up to a tick with a sentence saying it was still waiting.
         if next_gone || now >= deadline {
@@ -1083,7 +1075,7 @@ mod tests {
         assert_eq!(stat_ppid("42 (x) S not-a-number 1"), None);
     }
 
-    /// **`starttime` is field 22, read from the last `)`** - the number the force path checks
+    /// `starttime` is field 22, read from the last `)` - the number the force path checks
     /// a pid against before it signals, so a pid handed on to another process is not signalled.
     #[test]
     fn the_start_time_is_field_22_and_names_one_process() {
@@ -1121,7 +1113,7 @@ mod tests {
         // available: there is no event for "it has exited but not been reaped", which is
         // exactly the state under test.
         std::thread::sleep(std::time::Duration::from_millis(200));
-        // **It is a zombie, and `/proc` says so** - the observation the old test read as
+        // It is a zombie, and `/proc` says so - the observation the old test read as
         // `alive`. Asserted directly, so this test fails loudly rather than silently turning
         // into a test of something else if the timing below ever changes.
         #[cfg(not(target_os = "macos"))]
@@ -1140,7 +1132,7 @@ mod tests {
             unsafe { libc::kill(pid, 0) } == 0 && bsdinfo(pid) == Err(libc::ESRCH),
             "the child exited but is not a zombie — this test is not testing what it says"
         );
-        // **And the answer is GONE**, which the old `fs::metadata` could not give: the
+        // And the answer is GONE, which the old `fs::metadata` could not give: the
         // directory is there for a zombie.
         assert_eq!(
             process_gone(pid),
@@ -1153,7 +1145,7 @@ mod tests {
         let _ = child.wait();
     }
 
-    /// **A live child is still there** - the negative, without which the test above would pass
+    /// A live child is still there - the negative, without which the test above would pass
     /// on a function that answered `gone` to everything.
     #[test]
     fn a_running_child_is_not_gone() {
@@ -1169,7 +1161,7 @@ mod tests {
             Some(false),
             "a running child read as gone"
         );
-        // **And asking did not kill it** - `WNOHANG` returns without waiting, and a version
+        // And asking did not kill it - `WNOHANG` returns without waiting, and a version
         // that blocked here would hang the turn for five seconds while looking healthy.
         assert_eq!(process_gone(pid), Some(false));
         let _ = child.kill();
@@ -1186,7 +1178,7 @@ mod tests {
     /// broken by routeing the child case through `waitpid`.
     #[test]
     fn a_pid_that_is_not_this_processs_child_is_answered_from_proc() {
-        // **PID 1 is nobody's child**, so this takes the `/proc` path - and it is running, so
+        // PID 1 is nobody's child, so this takes the `/proc` path - and it is running, so
         // the answer is *not gone*.
         assert_eq!(parentage(1), Parentage::NotOurs);
         assert_eq!(process_gone(1), Some(false), "init read as gone");

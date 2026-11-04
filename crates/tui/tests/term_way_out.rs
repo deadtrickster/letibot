@@ -160,7 +160,7 @@ fn settle_until(link: &mut Link, a: &mut App, what: &str, mut ready: impl FnMut(
     }
 }
 
-/// **Everything the daemon read, up to the frame `ready` names** - so *this reached the daemon*
+/// Everything the daemon read, up to the frame `ready` names - so *this reached the daemon*
 /// waits for the frame instead of for a pause. Returns what it collected, so a failure prints the
 /// frames rather than an empty list.
 fn frames_until(
@@ -200,7 +200,7 @@ fn frames_until_and_after(
     out
 }
 
-/// **What the daemon read while the head wrote nothing** - see [`ABSENCE_WINDOW`].
+/// What the daemon read while the head wrote nothing - see [`ABSENCE_WINDOW`].
 fn arrived_meanwhile(frames: &Receiver<ClientFrame>) -> Vec<ClientFrame> {
     let deadline = Instant::now() + ABSENCE_WINDOW;
     let mut out: Vec<ClientFrame> = Vec::new();
@@ -283,7 +283,7 @@ fn ctrl_backslash_detaches_through_the_drivers_loop() {
         !a.pane_open()
     });
 
-    // **The absence, and it is the one claim here that needs a window**: a detach writes nothing,
+    // The absence, and it is the one claim here that needs a window: a detach writes nothing,
     // so there is no frame to wait for - see [`ABSENCE_WINDOW`].
     let meanwhile = arrived_meanwhile(&frames);
     assert!(
@@ -560,7 +560,7 @@ fn the_deliberate_close_asks_first_and_only_the_yes_leaves_the_head() {
     settle_until(&mut link, &mut a, "the card", |a| {
         a.screen(100, 30).iter().any(|r| r.contains("end the pane"))
     });
-    // **A verb that asks writes nothing**, so the absence is the only claim here and a window is
+    // A verb that asks writes nothing, so the absence is the only claim here and a window is
     // its only instrument - see [`ABSENCE_WINDOW`].
     let asked = arrived_meanwhile(&frames);
     assert!(
@@ -630,7 +630,7 @@ fn the_deliberate_close_asks_first_and_only_the_yes_leaves_the_head() {
             .any(|r| r.contains("!term nano") && r.contains("you closed the terminal")),
         "the ending is a row, with the daemon's own sentence: {frame:?}"
     );
-    // **The dim register**: the operator chose this ending, so it is housekeeping rather
+    // The dim register: the operator chose this ending, so it is housekeeping rather
     // than the answer to something they just typed.
     assert!(
         frame
@@ -640,7 +640,7 @@ fn the_deliberate_close_asks_first_and_only_the_yes_leaves_the_head() {
     );
 }
 
-/// **And the way-out byte is still not a key.** The control for the three above: with no
+/// And the way-out byte is still not a key. The control for the three above: with no
 /// pane and no pane opening, the same byte is nothing at all - it is not typed, it does not
 /// submit, and it does not leave the composer.
 #[test]

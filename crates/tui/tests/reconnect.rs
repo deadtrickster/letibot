@@ -178,7 +178,7 @@ fn scripted_daemon(path: PathBuf) -> std::sync::mpsc::Receiver<Attach> {
                 },
             )))
             .unwrap();
-            // **And the daemon goes away**: the socket closes with no frame of any kind.
+            // And the daemon goes away: the socket closes with no frame of any kind.
         }
 
         // ---- connection two: the head's retry, answered as a resume.
@@ -233,9 +233,9 @@ fn a_head_survives_its_daemon_and_resumes_from_the_seq_it_had() {
     let before = frame(&mut a);
     assert!(before.contains("remember this row"), "{before}");
 
-    // **The daemon goes away.** Nothing is sent, the socket is simply closed, and the
-    // head has to notice from its reader thread ending - which is the case that used to
-    // be undetectable at rest, because an idle head writes nothing at all.
+    // The daemon goes away. Nothing is sent, the socket is simply closed, and the
+    // head has to notice from its reader thread ending - which is the case that would
+    // otherwise be undetectable at rest, because an idle head writes nothing at all.
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline && !a.detached() {
         step(&mut link, &mut a);
@@ -247,7 +247,7 @@ fn a_head_survives_its_daemon_and_resumes_from_the_seq_it_had() {
     );
     assert!(!a.should_quit(), "a closed socket is not a reason to leave");
 
-    // **The screen it had is still the screen it has.** The conversation is not cleared,
+    // The screen it had is still the screen it has. The conversation is not cleared,
     // and the one thing added is a line saying why nothing is moving.
     let after = frame(&mut a);
     assert!(
@@ -278,8 +278,8 @@ fn a_head_survives_its_daemon_and_resumes_from_the_seq_it_had() {
         "the words are still the operator's, in the field they typed them into"
     );
 
-    // It keeps trying, at its own pace, and **it is still here** after several rounds of
-    // that. This is the loop that used to be the end of the process.
+    // It keeps trying, at its own pace, and it is still here after several rounds of
+    // that. This is the loop that ends the process.
     for _ in 0..6 {
         assert!(!a.should_quit(), "the head left while its daemon was down");
         pump_once(&mut link, &mut a, &path);
@@ -287,7 +287,7 @@ fn a_head_survives_its_daemon_and_resumes_from_the_seq_it_had() {
     }
     assert!(a.detached(), "nobody has come back yet");
 
-    // **The daemon comes back on the same path**, and the head gets it back.
+    // The daemon comes back on the same path, and the head gets it back.
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline && a.detached() {
         pump_once(&mut link, &mut a, &path);
@@ -295,7 +295,7 @@ fn a_head_survives_its_daemon_and_resumes_from_the_seq_it_had() {
     }
     settle(&mut link, &mut a);
 
-    // **The requirement, as a number on the wire.** The retry is an `ATTACH` carrying the
+    // The requirement, as a number on the wire. The retry is an `ATTACH` carrying the
     // seq this head had read - not 0, which would take a fresh snapshot and start the
     // transcript over.
     let second = attaches
@@ -314,7 +314,7 @@ fn a_head_survives_its_daemon_and_resumes_from_the_seq_it_had() {
         recovered.contains("this is what you missed"),
         "the gap was not filled from the seq the head had: {recovered}"
     );
-    // **Carried over, not started again.** The second connection's `Hello` carries no
+    // Carried over, not started again. The second connection's `Hello` carries no
     // snapshot and its stream has no such row: a resync replaces `items` wholesale, and
     // this is the row it would have thrown away.
     assert!(
@@ -338,7 +338,7 @@ fn a_head_survives_its_daemon_and_resumes_from_the_seq_it_had() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// **Getting back is not the same as staying**, and the head says which it is: a retry
+/// Getting back is not the same as staying, and the head says which it is: a retry
 /// that cannot connect keeps the line up, counts the attempt, and does not come back
 /// pretending to be attached.
 #[test]
@@ -346,7 +346,7 @@ fn a_retry_that_cannot_connect_says_so_and_keeps_trying() {
     let path = socket_path("still-absent");
     let mut a = app();
     a.clock(1_000);
-    // **No peer at all**, and the drop it is in is the state under test: a head whose
+    // No peer at all, and the drop it is in is the state under test: a head whose
     // daemon is not coming back.
     a.link_down("the daemon closed the connection");
     assert!(a.detached());
@@ -412,7 +412,7 @@ fn a_reconnecting_head_lands_on_the_session_it_is_in_not_the_daemons_current_one
     let path = socket_path("names-its-session");
     let server = serve_registry(registry.clone(), &path).expect("the socket binds");
 
-    // **The head the operator is looking at**, started in a folder whose daemon was already
+    // The head the operator is looking at, started in a folder whose daemon was already
     // up: `leticode` sends no session id, so it is seated on the daemon's current session.
     let mut a = app();
     let mut link = Link::open(&path, "", 0, "tui", "reconnect-test").expect("attach");
@@ -423,7 +423,7 @@ fn a_reconnecting_head_lands_on_the_session_it_is_in_not_the_daemons_current_one
         "a bare attach lands on the current session"
     );
 
-    // **And the other terminal**: `leticode --session s-rust`, which is a bare attach, a
+    // And the other terminal: `leticode --session s-rust`, which is a bare attach, a
     // resume, and a switch to what the daemon named.
     let (mut other, hello, reader) =
         HeadClient::attach(&path, "", 0, "tui", "dead", Caps::default()).expect("the second head");
@@ -451,7 +451,7 @@ fn a_reconnecting_head_lands_on_the_session_it_is_in_not_the_daemons_current_one
         "a switch moves the session a bare attach lands on — which is what the defect rode"
     );
 
-    // **The first head's socket comes back.** `reconnect` is what the binary calls when the
+    // The first head's socket comes back. `reconnect` is what the binary calls when the
     // link has dropped; the old connection is hung up here, which is the same thing from the
     // daemon's side.
     link.reconnect(&path, a.seq).expect("the retry");

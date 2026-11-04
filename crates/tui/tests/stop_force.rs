@@ -28,7 +28,7 @@ const PATIENCE: Duration = Duration::from_secs(60);
 // The fixture daemon - this executable, run again
 // ---------------------------------------------------------------------------
 
-/// **The daemon process.** A no-op in an ordinary test run; the daemon when this executable is
+/// The daemon process. A no-op in an ordinary test run; the daemon when this executable is
 /// started by [`spawn_daemon`] with the fixture's environment. It never returns in that case:
 /// it exits, or it is killed.
 #[test]
@@ -83,7 +83,7 @@ fn wait_closed(registry: &Registry) {
     }
 }
 
-/// **An older build, as far as a head can tell**: every `Hello` names [`OLDER`], and a `Stop`
+/// An older build, as far as a head can tell: every `Hello` names [`OLDER`], and a `Stop`
 /// is never delivered. Everything else passes through to the real server untouched.
 fn relay(outer: &Path, inner: PathBuf) {
     let listener = UnixListener::bind(outer).expect("bind the relay");
@@ -256,7 +256,7 @@ fn choose_stop(link: &mut Link, a: &mut App) {
     link.tick(
         a,
         (100, 30),
-        // **The digit MARKS the row; Enter answers it** (R90.6): a digit is a move now, and the
+        // The digit MARKS the row; Enter answers it: a digit is a move now, and the
         // answer is one deliberate Enter.
         &[Key::CtrlC, Key::CtrlC, Key::Char('2'), Key::Enter],
         &[],
@@ -304,7 +304,7 @@ fn is_gone(pid: i32) -> bool {
     }
 }
 
-/// **(a) An ordinary stop on a same-version daemon is not escalated.** The real server takes
+/// (a) An ordinary stop on a same-version daemon is not escalated. The real server takes
 /// the stop, the process exits, and the head leaves with nothing forced and nothing to say.
 #[test]
 fn an_orderly_stop_is_not_forced() {
@@ -373,7 +373,7 @@ fn a_daemon_that_does_not_go_is_forced_after_the_deadline() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **(c) An older daemon is forced directly, with the line saying why.** No stop frame (the
+/// (c) An older daemon is forced directly, with the line saying why. No stop frame (the
 /// relay would have swallowed it, as a build that cannot read it does), no fifteen-second
 /// wait, and the process ends on SIGTERM after the interrupt half has asked it about its turns.
 #[test]

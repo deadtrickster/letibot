@@ -29,7 +29,7 @@ fn socket_path(tag: &str) -> PathBuf {
     p
 }
 
-/// **A daemon that says hello and records what it is sent**, answering a `TermOpen` with a
+/// A daemon that says hello and records what it is sent, answering a `TermOpen` with a
 /// screen so a pane has something to draw.
 fn recording_daemon(path: PathBuf) -> Receiver<ClientFrame> {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -114,7 +114,7 @@ fn press(x: usize, y: usize) -> String {
     format!("\x1b[<0;{};{}M", x + 1, y + 1)
 }
 
-/// **Two chords in one read are two acts, in order, and the second pane is the one in front.**
+/// Two chords in one read are two acts, in order, and the second pane is the one in front.
 /// `ctrl-q` then `ctrl-t` arriving as one read asks the daemon for both lists, and the frame the
 /// tick draws is the todos pane - the pane the keys now reach - with the jobs pane behind it.
 #[test]

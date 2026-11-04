@@ -64,7 +64,7 @@ fn until<T>(
     panic!("timed out waiting for {what}; screen was:\n{}", screen(a));
 }
 
-/// **What the store would answer, without a store.** The row a `ResumeSession` reads to
+/// What the store would answer, without a store. The row a `ResumeSession` reads to
 /// decide the session is resumable at all, and the title and wiring that come in with it.
 struct Disk(Mutex<Vec<StoredBrief>>);
 
@@ -98,7 +98,7 @@ fn brief(session_id: &str, title: &str, items: u32) -> StoredBrief {
         nags_paused: None,
         waits_on_operator: 0,
         slug: String::new(),
-        // **The operator's own**, which is what every fixture in this file is: a grouping
+        // The operator's own, which is what every fixture in this file is: a grouping
         // fixture that is not about the groups says nothing about them.
         origin: letibot_sessionlog::SessionOrigin::Operator,
     }
@@ -186,7 +186,7 @@ fn a_session_whose_rows_are_still_being_restored_says_so_rather_than_looking_emp
     link.detach();
 }
 
-/// **A session the store says has nothing** keeps the ordinary banner: the new line is a fact
+/// A session the store says has nothing keeps the ordinary banner: the new line is a fact
 /// about a disagreement between two sources, not a second way to greet an empty session.
 #[test]
 fn a_session_with_no_stored_rows_still_draws_the_ordinary_banner() {
@@ -212,7 +212,7 @@ fn a_session_with_no_stored_rows_still_draws_the_ordinary_banner() {
     link.detach();
 }
 
-/// **The restore was published before the head switched** - the row set is in the hub's
+/// The restore was published before the head switched - the row set is in the hub's
 /// view, so the switch's `Hello` carries it as a snapshot.
 #[test]
 fn rows_restored_before_the_switch_arrive_in_the_snapshot() {

@@ -1,48 +1,22 @@
-//! **A head that asks the daemon to stop does not exit until it knows.** R30.
+//! A head that asks the daemon to stop does not exit until it knows.
 //!
-//! The operator, 2026-09-23, having chosen *exit AND stop the daemon*: *"i tried to exit
-//! letibot and chose to stop the daemon too. well it didnt."* Measured from outside: the
-//! head gone, and `harnessd` (pid 2346661) still at `PPID 1`, idle, its socket bound. The
-//! old code was two discarded results and a return —
+//! The head gone, `harnessd` still at `PPID 1`, idle, its socket bound: the old code was two discarded results and a return -
 //!
 //! ```rust
 //! let _ = self.client.stop(app.seq, &who);
 //! let _ = self.client.detach();
 //! ```
 //!
-//! — so whether the frame reached the socket was a race against the head's own shutdown,
-//! and **a request is not an outcome**.
+//! - so whether the frame reached the socket was a race against the head's own shutdown,
+//! and a request is not an outcome.
 //!
-//! # What this file asserts, in the requirement's own three parts
+//! The frame is flushed and acknowledged (the peer hands the test the `stop` it read and answers `Accepted { note: "stopping" }`), or the
+//! socket closes. A deadline, and the head says what it is waiting for. If the deadline passes, the farewell names the pid and the verb, as text.
 //!
-//! 1. **The frame is flushed and acknowledged, or the socket closes.** The peer here speaks
-//!    protocol frames and hands the test the `stop` it read — so "the request went out" is a
-//!    wire fact and not an inference — and it answers with the daemon's own
-//!    `Accepted { note: "stopping" }`, which is what `App::apply` records as `acked`.
-//! 2. **A deadline, and the head says what it is waiting for.** The frame is asked for while
-//!    the daemon is still there, and the screen is read for the sentence.
-//! 3. **If the deadline passes, the farewell names the pid and the verb.** Asserted as text,
-//!    because that is the whole delivery: the operator has to read it.
-//!
-//! # Why the "daemon" is a real process and not a pid in a variable
-//!
-//! The head's strongest observation is `/proc/<pid>`, and a test that faked it would test
-//! nothing. So the daemon's pid here is **a real child process** this file spawns: while it
-//! is alive the head must wait, and the moment it is gone the head must leave. That is the
-//! requirement's `or until it can say that it has not`, end to end, with a real death in it.
-//!
-//! The peer on the socket is scripted rather than a `ServerHandle` for the reason
-//! `reconnect.rs` gives in its own header, plus one more: this test has to *withhold* the
-//! daemon's answer and hold a socket open over a process that is not there, and a real
-//! server cannot be made to do either.
-//!
-//! **And because a scripted peer is a CLAIM about the daemon, one test here stands a real
-//! `ServerHandle` up beside it** —
-//! [`the_peer_sends_the_frames_a_real_daemon_sends_on_a_stop`] asks both the same question
-//! and requires the same frames back. The claim was wrong once, in the mode that models
-//! *what a real daemon does*: it closed silently with a comment asserting the daemon sends
-//! no `Bye`, so the farewell this head prints on nearly every orderly stop had never been
-//! exercised against the frame it actually gets.
+//! The head's strongest observation is `/proc/<pid>`, so the daemon's pid here is a real child process this file spawns: the head waits while it
+//! is alive and leaves the moment it is gone. The peer on the socket is scripted, for the reason `reconnect.rs` gives plus one more: this
+//! test must withhold the daemon's answer. Because a scripted peer is a CLAIM about the daemon, [`the_peer_sends_the_frames_a_real_daemon_sends_on_a_stop`]
+//! asks a real `ServerHandle` the same question and requires the same frames.
 
 use std::io::Write;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -199,7 +173,7 @@ impl Peer {
                 }
                 if is_stop {
                     if on_stop == OnStop::Silent {
-                        // **The daemon that never answers.** The socket stays open and
+                        // The daemon that never answers. The socket stays open and
                         // nothing comes back, which is the case the ack exists to
                         // distinguish from a delivered request.
                         continue;
@@ -211,7 +185,7 @@ impl Peer {
                             note: letibot_sessionlog::NOTE_STOPPING.into(),
                         })
                         .expect("accepted");
-                    // **And, on the third mode, the goodbye a real daemon sends.** Written
+                    // And, on the third mode, the goodbye a real daemon sends. Written
                     // before the close, in the order the real one writes it: the ack, then
                     // the `Bye`, then the socket goes.
                     if on_stop == OnStop::AcceptedThenBye {
@@ -221,8 +195,8 @@ impl Peer {
                             })
                             .expect("bye");
                     }
-                    // Then it goes. `Accepted` closes silently — the writer is dropped and
-                    // the head's pump sees EOF — which is the case the state machine is
+                    // Then it goes. `Accepted` closes silently - the writer is dropped and
+                    // the head's pump sees EOF - which is the case the state machine is
                     // read through.
                     let _ = writer.get_mut().shutdown(std::net::Shutdown::Both);
                     return;
@@ -253,7 +227,7 @@ fn spawn_a_process_that_stays() -> Child {
 }
 
 /// Ask the head to stop the daemon, exactly as the quit card does: two `ctrl-c`s and the
-/// second row's digit, which is a key path through `App` rather than a constructed action —
+/// second row's digit, which is a key path through `App` rather than a constructed action  -
 /// so a change to the card's binding breaks this test rather than passing it.
 fn choose_stop(link: &mut Link, a: &mut App) {
     let mut sink = |_lines: &[String], _cursor| {};
@@ -263,7 +237,7 @@ fn choose_stop(link: &mut Link, a: &mut App) {
         &[
             letibot_tui::app::Key::CtrlC,
             letibot_tui::app::Key::CtrlC,
-            // **The digit MARKS the row; Enter answers it** (R90.6, one rule for every numbered
+            // The digit MARKS the row; Enter answers it (one rule for every numbered
             // card): a `2` typed as a line's first character stopped the daemon with every job
             // in it, so a digit is a move now and the answer is one deliberate Enter.
             letibot_tui::app::Key::Char('2'),
@@ -274,8 +248,8 @@ fn choose_stop(link: &mut Link, a: &mut App) {
     );
 }
 
-/// **The requirement, in one test.** The head is told to stop, the frame reaches the
-/// socket, the daemon acknowledges — and the head **stays** until the process it named is
+/// The requirement, in one test. The head is told to stop, the frame reaches the
+/// socket, the daemon acknowledges - and the head stays until the process it named is
 /// actually gone, then leaves, with nothing to report.
 #[test]
 fn the_head_waits_for_the_daemon_and_leaves_when_it_is_gone() {
@@ -292,13 +266,13 @@ fn the_head_waits_for_the_daemon_and_leaves_when_it_is_gone() {
 
     choose_stop(&mut link, &mut a);
 
-    // **1. The frame went out, and the head was told it was read.** Both are facts about
+    // 1. The frame went out, and the head was told it was read. Both are facts about
     // the wire: the peer hands back what it parsed, and the note is the daemon's own.
     let stop = format!(
         "{:?}",
         wait_for("the stop frame", || {
             // **`Settings`, not `Stop`.** The `Hello` arm queues a settings read, so the
-            // first frame on the wire is not the one under test — and filtering here rather
+            // first frame on the wire is not the one under test - and filtering here rather
             // than in the peer keeps the peer a plain reporter of what it parsed.
             peer.next()
                 .filter(|f| matches!(f, ClientFrame::Stop { .. }))
@@ -310,9 +284,9 @@ fn the_head_waits_for_the_daemon_and_leaves_when_it_is_gone() {
         a.stopping().is_some_and(|s| s.acked).then_some(())
     });
 
-    // **2. And the head is STILL HERE, with the pid alive.** This is the requirement: it
+    // 2. And the head is STILL HERE, with the pid alive. This is the requirement: it
     // does not exit until the daemon has gone or it can say it has not. `quit` is already
-    // set — the operator answered the card — and `should_quit` holds it back.
+    // set - the operator answered the card - and `should_quit` holds it back.
     assert!(
         !a.should_quit(),
         "the head must not leave while the daemon's process is alive"
@@ -327,8 +301,8 @@ fn the_head_waits_for_the_daemon_and_leaves_when_it_is_gone() {
         "and it says how far the daemon has got: {screen}"
     );
 
-    // **3. The daemon goes, and the head leaves.** A real process death, observed through
-    // `/proc` — the same test `~/bin/letibot` makes, and for the same reason.
+    // 3. The daemon goes, and the head leaves. A real process death, observed through
+    // `/proc` - the same test `~/bin/letibot` makes, and for the same reason.
     child.kill().expect("kill");
     let _ = child.wait();
     wait_ticking(
@@ -377,7 +351,7 @@ fn a_daemon_that_does_not_go_is_named_with_its_pid_and_the_verb() {
         "{:?}",
         wait_for("the stop frame", || {
             // **`Settings`, not `Stop`.** The `Hello` arm queues a settings read, so the
-            // first frame on the wire is not the one under test — and filtering here rather
+            // first frame on the wire is not the one under test - and filtering here rather
             // than in the peer keeps the peer a plain reporter of what it parsed.
             peer.next()
                 .filter(|f| matches!(f, ClientFrame::Stop { .. }))
@@ -389,7 +363,7 @@ fn a_daemon_that_does_not_go_is_named_with_its_pid_and_the_verb() {
         "sent, and no acknowledgement — which is a different sentence from a refusal"
     );
 
-    // **The head says what it is waiting for while it waits.** Read mid-flight so the
+    // The head says what it is waiting for while it waits. Read mid-flight so the
     // sentence is the one that was on the screen, not the one after the deadline.
     let screen = frame(&mut a);
     assert!(screen.contains("stopping the daemon"), "{screen}");
@@ -456,9 +430,9 @@ fn a_daemon_that_does_not_go_is_named_with_its_pid_and_the_verb() {
     let _ = std::fs::remove_file(&peer.path);
 }
 
-/// **A stop that worked says nothing.** The negative half, and the one that keeps the
+/// A stop that worked says nothing. The negative half, and the one that keeps the
 /// farewell worth reading: a head that printed three lines after every successful stop
-/// would be R19's note-band complaint in a different medium.
+/// would be the note-band complaint in a different medium.
 #[test]
 fn a_successful_stop_says_nothing_on_the_way_out() {
     let path = socket_path("quiet");
@@ -485,20 +459,11 @@ fn a_successful_stop_says_nothing_on_the_way_out() {
     let _ = std::fs::remove_file(&peer.path);
 }
 
-/// **The daemon's own goodbye is not the daemon being gone, and treating it as one is how
-/// the head came to report a stop that had not happened.**
+/// The daemon's own goodbye is not the daemon being gone. A real daemon shutting down answers `Delivery::Closed` with
+/// `Bye { reason: "daemon shutting down" }`, the last frame of an orderly stop.
 ///
-/// A real daemon shutting down does not close the socket silently: the seat's pump answers
-/// `Delivery::Closed` with `Bye { reason: "daemon shutting down" }`, and that is the last
-/// frame an orderly stop produces.
-///
-/// # The first correction, and what it over-corrected into
-///
-/// This test used to assert the opposite of what it asserts now, and its reasoning was half
-/// right. The half that was right: the goodbye is written **before the process exits**, so
-/// `Stopping::gone` — *observed gone, by reaping or by `/proc`* — cannot be true at the
-/// instant it arrives. Read together with a farewell that required `gone`, that produced
-/// this, in the operator's scrollback for days, on nearly every orderly stop:
+/// The goodbye is written before the process exits, so `Stopping::gone` (observed gone, by reaping or `/proc`) cannot be true when it
+/// arrives. A farewell that required `gone` produced, on nearly every orderly stop:
 ///
 /// ```text
 /// letibot: the daemon was asked to stop and had not gone 0s later.
@@ -507,42 +472,21 @@ fn a_successful_stop_says_nothing_on_the_way_out() {
 /// letibot: the daemon ended this head — daemon shutting down
 /// ```
 ///
-/// Two contradicting sentences four lines apart, and the advice is worse than the
-/// contradiction: `--force` *aborts in-flight turns over the protocol*, and it was being
-/// recommended against a daemon that had just left politely.
-///
-/// The half that was wrong is the conclusion. *A fact that cannot yet be observed* is not
-/// *a fact that will not be*, and the answer to that is to keep waiting for the one
-/// observation the head actually has — not to stop looking and call the frame the answer.
-/// That is what this file asserted, and it is what produced the operator's **second**
-/// report: *"it reports the server exited within a second — while `harnessd` is in fact
-/// hung and has to be killed with `--force`."*
-///
-/// # Why the frame is not the answer, measured
-///
-/// `registry.close()` runs on the daemon's **connection thread**, the instant the `Stop` is
-/// taken. The **worker** running the operator's command is a different thread, is inside
-/// that command, and has not ended. On a live daemon, 2026-10-06 — when the run still held
-/// the worker: the `Bye` arrives **519 µs**
-/// after the stop goes out, the daemon's process is still in `/proc` at that moment, and it
-/// stays there for as long as the run does.
-///
-/// # What is asserted now, and the half that must not regress
-///
-/// The goodbye is still named by `farewell` (the reason outlives the screen), and the head
-/// **does not leave on it** — it waits for the process. When the deadline passes with the
-/// process still there, the sentence is the honest one: the daemon heard the request and
-/// began shutting down, and it is still there. That is *not* the old contradicting pair,
-/// because it is composed once, when the question is settled.
-///
-/// And the half the old test existed to defend is defended by the test below it: a stop
-/// whose process really goes says **nothing at all**, goodbye or no goodbye.
+/// Two contradicting sentences four lines apart, and `--force` (which aborts in-flight turns) was recommended against a daemon that had
+/// just left politely. The conclusion drawn from that was wrong too: *a fact that cannot yet be observed* is not *a fact that will not be*,
+/// so the head keeps waiting for the one observation it has instead of calling the frame the answer.
+/// `registry.close()` runs on the connection thread the instant the `Stop` is taken, while the worker running the operator's command is
+/// still inside it: the `Bye` arrives 519 µs after the stop and the process stays in `/proc` as long as the run does. The goodbye is still
+/// named by `farewell`, and the head does not leave on it - it waits for the process.
+/// When the deadline passes with the process still there, the sentence is the honest one: the daemon heard the request and began
+/// shutting down, and it is still there. It is composed once, when the question is settled. A stop whose process really goes says
+/// nothing at all, goodbye or no goodbye.
 #[test]
 fn the_daemons_goodbye_is_not_the_daemon_being_gone() {
     let path = socket_path("goodbye");
     let peer = Peer::start_with(path.clone(), OnStop::AcceptedThenBye);
     // The peer runs in this test's own process, so the pid the head reads from
-    // `SO_PEERCRED` is this process's — which never exits. That is the shape being
+    // `SO_PEERCRED` is this process's - which never exits. That is the shape being
     // measured: a daemon that answered and did not go.
     let mut link = Link::open(&path, SESSION, 0, "tui", "test").expect("attach");
     let mut a = app();
@@ -726,7 +670,7 @@ fn stop_frames(path: &std::path::Path) -> Vec<String> {
     seen
 }
 
-/// **A frame of a stop, named** — `None` for everything a stop is not made of: the `Hello`,
+/// A frame of a stop, named - `None` for everything a stop is not made of: the `Hello`,
 /// a snapshot, the `daemon_stopping` event, a turn still finishing and reporting itself.
 fn stop_frame(f: &ServerFrame) -> Option<String> {
     match f {
