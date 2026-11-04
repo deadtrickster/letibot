@@ -91,7 +91,7 @@ fn rows(a: &App) -> Vec<String> {
 
 /// The project lines, as the tree draws them, with the two recency groups opened so every project
 /// is on the list.
-fn projects(a: &App) -> Vec<String> {
+fn projects(a: &mut App) -> Vec<String> {
     a.set_row_fold("groups/recent", true);
     a.set_row_fold("groups/older", true);
     let out = a
@@ -119,7 +119,7 @@ fn row_of(a: &App, id: &str) -> usize {
 fn a_project_line_per_workspace_root() {
     let mut a = a_daemon_with_two_projects();
     assert_eq!(
-        projects(&a),
+        projects(&mut a),
         vec!["letibot (6)", "rano (1)"],
         "one line per project, and the count is every session it holds"
     );
@@ -206,9 +206,9 @@ fn a_task_starts_child_names_the_worktree_it_runs_in() {
 /// worktree is drawn under the project that owns it.
 #[test]
 fn a_worktree_groups_under_the_project_that_owns_it() {
-    let a = a_daemon_with_two_projects();
+    let mut a = a_daemon_with_two_projects();
     assert_eq!(
-        projects(&a),
+        projects(&mut a),
         vec!["letibot (6)", "rano (1)"],
         "no `agent-read-it` line: a worktree is not a project"
     );
@@ -297,9 +297,9 @@ fn the_gatekeeper_and_the_reviewers_are_under_the_projects_system_branch() {
     // The reviewer's workspace would have made a project of its own - a `/tmp` review clone  -
     // and it is not one: the chain it hangs from says where it belongs.
     assert!(
-        !projects(&a).iter().any(|p| p.contains("review-")),
+        !projects(&mut a).iter().any(|p| p.contains("review-")),
         "{:?}",
-        projects(&a)
+        projects(&mut a)
     );
     // And nothing of the system branch is a child of the operator's conversation.
     assert!(
@@ -520,7 +520,7 @@ fn the_bar_follows_the_cursor_onto_a_nodes_line() {
 fn every_project_line_is_drawn_and_the_others_are_shut() {
     let mut a = a_daemon_with_two_projects();
     assert_eq!(
-        projects(&a),
+        projects(&mut a),
         vec!["letibot (6)", "rano (1)"],
         "every project is a line, and the count is what it holds"
     );
@@ -621,7 +621,7 @@ fn two_projects_with_one_name_say_where_they_are() {
     ));
     a.push_surface(Surface::Picker);
     assert_eq!(
-        projects(&a),
+        projects(&mut a),
         vec!["~/Projects/one/letibot (1)", "~/Projects/two/letibot (1)"],
         "two rows a reader can tell apart"
     );
