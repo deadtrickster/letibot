@@ -883,9 +883,13 @@ fn consenting_to_allow_all_admits_a_shell_command_unasked() {
         .set_mode_consented(letibot_tools::mode::Mode::ALLOW_ALL, true)
         .expect("consent moves the session");
     eprintln!("  set_mode_consented -> {said}");
-    assert!(
+    // A Linux seat that shells is boxed by the wide seat, so the move needs no confirmation to
+    // stand on and says only the point; a box with no boundary says it stands on the confirmation.
+    let boxed = cfg!(target_os = "linux");
+    assert_eq!(
         said.contains("this box") || said.contains("confirmation"),
-        "the move must say it stands on the confirmation: {said}"
+        !boxed,
+        "the move says it stands on the confirmation exactly when nothing confines it: {said}"
     );
 }
 
