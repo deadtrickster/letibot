@@ -1280,6 +1280,39 @@ fn a_wedged_master_fails_a_big_write_at_its_deadline_and_the_next_call_is_fresh(
     let _ = std::fs::remove_file(&master_pid);
 }
 
+/// One placement's wedged call times out and the master is ended, but never under another
+/// placement's live call: every placement to a host shares the daemon's one master.
+#[test]
+fn a_timed_out_call_does_not_end_the_master_under_another_placements_live_call() {
+    let bound = Duration::from_secs(2);
+    let fake = Fake::new(
+        "shared-master",
+        "case \"$last\" in\n\
+           *wedgeme*) sleep 30;;\n\
+           *slowok*) sleep 1.5;;\n\
+         esac\n\
+         exec bash -lc \"$last\"",
+    );
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let a = SshBackend::place(&spec_for(&fake, &repo, &paths, bound)).expect("placed");
+    let mut spec = spec_for(&fake, &repo, &paths, bound);
+    spec.name = "s-02beef00".into();
+    let b = SshBackend::place(&spec).expect("the second placement");
+    b.write("slowok.txt", b"still here\n").expect("a file");
+
+    std::thread::scope(|s| {
+        let wedged = s.spawn(|| a.read("wedgeme.txt"));
+        std::thread::sleep(Duration::from_secs(1));
+        // Starts before the first call times out (2 s) and ends after it.
+        let live = b.read("slowok.txt");
+        assert_eq!(
+            live.expect("the other placement's call was not killed with the master"),
+            b"still here\n"
+        );
+        assert!(wedged.join().expect("thread").is_err());
+    });
+}
+
 /// A job's output and a job's kill are bounded too, and a kill that could not read back says
 /// the process's fate is unknown rather than counting it as removed.
 #[test]

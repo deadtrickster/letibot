@@ -2020,6 +2020,7 @@ impl Ssh {
     ) -> Result<Call, BackendError> {
         let command = self.remote_command(script);
         let _slot = rpc::enter(&self.host.name, within).map_err(BackendError::Io)?;
+        let user = MasterUse::enter(&self.control);
         let began = Instant::now();
         // The one place a call is written down, and [`Reported`] is the whole of the policy: a
         // heartbeat is only news when it fails.
@@ -2056,7 +2057,7 @@ impl Ssh {
                 // The master may be the thing that stopped answering, and a socket that is still there
                 // would make the next call wait on it too.
                 note(rpc::Outcome::TimedOut);
-                self.tear_down_master();
+                self.tear_down_master(&user);
                 Ok(Call::TimedOut(within))
             }
             rpc::Ended::Answered(out) => {
@@ -2104,6 +2105,7 @@ impl Ssh {
         within: Duration,
     ) -> Option<Result<Call, BackendError>> {
         let _slot = rpc::enter(&self.host.name, within).ok()?;
+        let user = MasterUse::enter(&self.control);
         let began = Instant::now();
         match rpc::run_bounded(&self.program, &self.argv(command), within) {
             rpc::Ended::Unstartable(_) => {
@@ -2125,7 +2127,7 @@ impl Ssh {
                     began.elapsed(),
                     rpc::Outcome::TimedOut,
                 );
-                self.tear_down_master();
+                self.tear_down_master(&user);
                 Some(Ok(Call::TimedOut(within)))
             }
             rpc::Ended::Answered(out) => {
@@ -2327,17 +2329,10 @@ impl Ssh {
         let _ = std::fs::remove_file(&self.control);
     }
 
-    /// End a master that stopped answering and remove its socket, so the next call dials a fresh
-    /// connection. Signalled by the socket path it was started with, which is unique to this daemon
-    /// and host: `-O exit` would wait out another bound on a master that cannot hear it.
-    fn tear_down_master(&self) {
-        let pattern = format!(
-            "ControlPath={}( |$)",
-            regex_escape(&self.control.display().to_string())
-        );
-        let args: Vec<String> = vec!["-KILL".into(), "-f".into(), "--".into(), pattern];
-        let _ = run_bounded(Path::new("pkill"), &args, MASTER_BOUND);
-        self.drop_socket();
+    /// Note that the master timed out a call. It is ended once the last call using it has finished,
+    /// never under another session's live call: every placement to one host shares this socket.
+    fn tear_down_master(&self, user: &MasterUse) {
+        user.suspect();
     }
 
     /// The one ssh this process does not start: `git fetch` builds it from `core.sshCommand` and
@@ -2616,6 +2611,57 @@ impl std::fmt::Debug for Ssh {
             .field("dest", &self.destination())
             .field("program", &self.program)
             .finish()
+    }
+}
+
+/// Calls in flight per control socket, and whether a timeout made its master suspect.
+static MASTERS: std::sync::LazyLock<Mutex<BTreeMap<PathBuf, (usize, bool)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+/// One call's use of a shared master. The last one out ends a suspect master.
+struct MasterUse {
+    control: PathBuf,
+}
+
+impl MasterUse {
+    fn enter(control: &Path) -> MasterUse {
+        let mut m = MASTERS.lock().unwrap_or_else(|e| e.into_inner());
+        m.entry(control.to_path_buf()).or_default().0 += 1;
+        MasterUse {
+            control: control.to_path_buf(),
+        }
+    }
+
+    fn suspect(&self) {
+        let mut m = MASTERS.lock().unwrap_or_else(|e| e.into_inner());
+        m.entry(self.control.clone()).or_default().1 = true;
+    }
+}
+
+impl Drop for MasterUse {
+    fn drop(&mut self) {
+        // The lock is held across the kill, so a call cannot join the master being ended.
+        let mut m = MASTERS.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = m.get_mut(&self.control) else {
+            return;
+        };
+        entry.0 = entry.0.saturating_sub(1);
+        if entry.0 > 0 {
+            return;
+        }
+        let suspect = entry.1;
+        m.remove(&self.control);
+        if suspect {
+            // Signalled by the socket path it was started with, unique to this daemon and host:
+            // `-O exit` would wait out another bound on a master that cannot hear it.
+            let pattern = format!(
+                "ControlPath={}( |$)",
+                regex_escape(&self.control.display().to_string())
+            );
+            let args: Vec<String> = vec!["-KILL".into(), "-f".into(), "--".into(), pattern];
+            let _ = run_bounded(Path::new("pkill"), &args, MASTER_BOUND);
+            let _ = std::fs::remove_file(&self.control);
+        }
     }
 }
 
