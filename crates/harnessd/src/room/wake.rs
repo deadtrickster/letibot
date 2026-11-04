@@ -111,9 +111,14 @@ pub fn waiting(session: &str) -> usize {
     q.map.get(session).map(|v| v.lines.len()).unwrap_or(0)
 }
 
+/// What a session is told about messages that are not its own to answer.
+pub const ETIQUETTE: &str = "Answer what is addressed to you or to everyone. A message to \
+     someone else is context: do not answer it unless it asks you, and never answer for another \
+     member.";
+
 /// The sentence a chat message that names a session becomes. Bounded: a long message is cut for
 /// the turn's notice, and `room read` has the whole.
-pub fn chat_sentence(m: &letibot_room::Message) -> String {
+pub fn chat_sentence(m: &letibot_room::Message, me: &str) -> String {
     // A digest is already bounded by the room, and says what it left out.
     if m.kind == letibot_room::Seat::System && m.author == letibot_room::chat::DIGEST_AUTHOR {
         return format!("[room] {}", m.text);
@@ -127,7 +132,11 @@ pub fn chat_sentence(m: &letibot_room::Message) -> String {
         line.truncate(end);
         line.push_str(" ...");
     }
-    format!("[chat] {line} - answer with `room say` (room `host` or `project`, optional `to`).")
+    format!(
+        "[chat] {line} [{}] - answer with `room say` (room `host` or `project`, optional `to`). \
+         {ETIQUETTE}",
+        m.addressee_for(me)
+    )
 }
 
 /// The sentence one room event becomes, in the words a model reads. `None` for an event a
@@ -216,6 +225,33 @@ pub fn missed_line(count: u64, since_ms: u64, now: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn said(to: Option<&str>, text: &str) -> letibot_room::Message {
+        letibot_room::Message {
+            seq: 15,
+            ts: 0,
+            room: "host".into(),
+            author: "operator".into(),
+            kind: letibot_room::Seat::Operator,
+            to: to.map(str::to_string),
+            thread: None,
+            refs: Vec::new(),
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn a_message_for_someone_else_says_not_you_and_the_etiquette() {
+        let other = chat_sentence(&said(Some("s-b"), "status?"), "s-a");
+        assert!(other.contains("[to s-b (not you)]"), "{other}");
+        assert!(other.contains(ETIQUETTE), "{other}");
+        let mention = chat_sentence(&said(None, "@cc@letibot see this"), "s-a");
+        assert!(mention.contains("not you"), "{mention}");
+        let mine = chat_sentence(&said(Some("s-a"), "status?"), "s-a");
+        assert!(mine.contains("[to you]"), "{mine}");
+        let all = chat_sentence(&said(None, "status?"), "s-a");
+        assert!(all.contains("[to everyone]"), "{all}");
+    }
 
     #[test]
     fn a_sentence_per_event_and_a_beat_has_none() {

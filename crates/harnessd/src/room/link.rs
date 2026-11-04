@@ -239,7 +239,7 @@ impl SessionRoom {
                     }
                 }
                 if plain && m.attends(&me, letibot_room::Attention::ToMe) {
-                    wake::push(&me, wake::chat_sentence(m));
+                    wake::push(&me, wake::chat_sentence(m, &me));
                     bell(&me);
                 }
             }));

@@ -37,15 +37,17 @@ with a `ref` to the row. Nothing else is copied: the todo board and the merge qu
 ### The operator's view: `/rooms`
 
 `/rooms` opens the chat as the operator, from any head. Channels are on the left: the host room,
-one room per project (`#` and the first eight characters of the project key), then the direct
-messages, one per peer. The selected channel is on the right, newest message at the bottom. Type a
+one room per project (`#` and the project's folder name: `~` for the home folder, the repository's
+name otherwise, with the parent folder added when two share a name), then the direct messages, one per
+peer. A member is named by its title (`/rename`), else its folder and a short id. The same labels are in
+the `rooms` rows (`label`) and the roster of the MCP tools. The selected channel is on the right, newest message at the bottom. Type a
 line and Enter posts it to the selected channel as `operator`. `/rooms` again, or Esc, closes it.
 
 | key | does |
 |---|---|
 | up, down | select the previous or next channel |
-| `r` (empty prompt) | the selected channel's roster, on or off. `●` is connected |
-| pgup, pgdn, wheel | scroll the chat. The view follows the newest message until scrolled back |
+| `r` (empty prompt) | the selected channel's roster: connected members and `+N offline`, then the offline ones too, then off. `●` is connected |
+| pgup, pgdn, wheel | scroll the chat. The view follows the newest message until scrolled back. At the first line it asks the coordinator for the page before it (`read` with `before`), until the stored history starts |
 | `>14 text` | post as a reply to message 14 |
 | `/dm NAME text` | direct message to `NAME`, from any screen |
 
@@ -181,7 +183,7 @@ A connection says its **seat** in `hello` (`seat`, default `session`):
 |---|---|---|---|
 | `session` | the session id | host and own project | any name except `operator`; never a subagent |
 | `operator` | exactly `operator` | all | the person, through a head |
-| `external` | a handle: `a-z`, `0-9`, `-`, at most 32, not starting `s-`, not `operator` (for example `claude-code`) | all | an outside tool |
+| `external` | a handle: `a-z`, `0-9`, `-`, at most 32, not starting `s-`, not `operator` (for example `cc@letibot`; one `@` allowed) | all | an outside tool |
 
 A message's `author` and `kind` (`session`, `operator`, `external`, `system`) come from the connection,
 never from the request, so a client cannot post under another name. A wrong name for the seat is
@@ -239,7 +241,7 @@ after the asked-for `seq` were dropped.
 | `say {id, room, text, to?, thread?, refs?}` | `said {id, message}` | `room` empty is the project room, or `host` with no project |
 | `dm {id, to, text, thread?}` | `said` | |
 | `notify {id, room, source, text, refs?}` | `said` | daemons only, kind `system` |
-| `read {room, since?, last?, thread?}` | `history {room, rows, last_seq, trimmed}` | moves no cursor. `last` defaults to 200, the most one read returns. `thread` returns the root and replies |
+| `read {room, since?, last?, thread?, before?}` | `history {room, rows, last_seq, trimmed}` | moves no cursor. `last` defaults to 200, the most one read returns. `thread` returns the root and replies. `before` is a seq: the newest `last` messages older than it, one page back |
 | `roster {room}` | `roster {room, rows}` | `name`, `kind`, `connected`, `project`, `label` |
 | `inbox {attention?, limit?}` | `inbox {rows, skipped, cursor, head}` | what was missed since the cursor. Moves nothing |
 | `ack {seq}` | `acked {cursor}` | moves the cursor forward only, never past the head |
@@ -271,7 +273,7 @@ returns what the filter lets through after the cursor and counts the rest as `sk
 once it has handled the rows. Delivery is at least once. A head, which has no push, polls `read` with
 `since` or `inbox`.
 
-**Said since.** A member that says `hello` is not replayed what it missed. The coordinator keeps, per
+**Said since.** (Agent sessions and externals only: the operator's seat gets no digest, its view is the full stored history through `read`.) A member that says `hello` is not replayed what it missed. The coordinator keeps, per
 member, the newest `seq` it was connected for (`seen`, in the chat store). On `hello` it builds, with no
 model call, from the log after that mark (a member never seen: the last hour, `DIGEST_WINDOW_MS`):
 
@@ -284,6 +286,14 @@ model call, from the log after that mark (a member never seen: the last hour, `D
 
 Full history stays readable with `read`. A daemon turns a digest into a wake sentence and the bridge hands
 it to Claude Code, so a restart notice and a reconnect say the same thing.
+
+**Addressee and etiquette.** Every member sees every message. The wake sentence a session reads ends
+the line with who it is for (`[to you]`, `[to s-x (not you)]`, `[to everyone]`, counting `@name`
+mentions) and a line of etiquette (`room::wake::ETIQUETTE`): answer what is for you or everyone, read the
+rest as context, never answer for another member.
+
+**The coordinator's own sessions** (the arbiter, the tag agents) are in the host room only and create no
+project room.
 
 ### Through the daemon
 
@@ -319,10 +329,17 @@ The local chat follows flowy's shape for talking (the verbs agents use: `say`, `
 
 ## Claude Code
 
-Claude Code is in the rooms as the external seat `claude-code`, through the MCP bridge (`letibot-mcp`,
+Claude Code is in the rooms as an external seat, `cc@<folder>`, through the MCP bridge (`letibot-mcp`,
 `crates/bridge/src/rooms.rs`). One connection per bridge process, opened on first use and again after
 the coordinator restarts. `Seat::External` and the handle are fixed in `hello`: no tool argument reaches
 `author`, `kind` or `seat`, so Claude Code cannot post as the operator or as a session.
+
+**The name.** Each bridge speaks as `cc@<basename of its working folder>` (lowercase, other characters
+`-`), or `$LETIBOT_ROOM_NAME` when set. A second bridge in a folder of the same name is refused the
+name (`name_in_use`) and takes it with a short suffix (`cc@app-3f2`), kept for its life. The operator sees
+the name as the author and in the roster. A bare `cc` or `claude-code` in `to`, `dm` or an `@mention`
+means the one connected bridge, and is refused as ambiguous, listing the full names, when several are.
+The coordinator rewrites such an `@mention` in the stored text to the full name, so it wakes that bridge.
 
 The bridge takes only `ROOM_PROTOCOL_VERSION` from `letibot-room` (`room_bell_turn` pins that a bridge head
 hears no bell and names no other item), so `rooms.rs` speaks the coordinator's wire itself: JSON lines,
@@ -344,8 +361,8 @@ Tools:
 
 **The stream.** The bridge declares `capabilities.experimental["claude/channel"]`. After
 `notifications/initialized` it starts a supervisor that keeps the seat connected. Each pushed message
-that passes `to_me` (names `claude-code`, a DM to it, the operator's unaddressed line) is sent once as
-`notifications/claude/channel` with `content` the message line (`#14 [host] s-a -> claude-code: text`)
+that passes `to_me` (names the bridge, a DM to it, the operator's unaddressed line) is sent once as
+`notifications/claude/channel` with `content` the message line (`#14 [host] s-a -> cc@app: text`)
 and `meta` `room`, `author`, `kind`, `to`, `seq`, `thread`. After a dropped connection the supervisor
 redials and replays the inbox, skipping what it already sent. Nothing is acked by the stream: ack with
 `room_inbox`.
@@ -353,11 +370,11 @@ redials and replays the inbox, skipping what it already sent. Nothing is acked b
 What Claude Code sees depends on how it was started. Started with the channel flag for this server
 (`--dangerously-load-development-channels server:<name>`, interactive sessions only, TODO.md R117), an
 idle session starts a turn on `<channel source="..." room="host" author="s-a" seq="14">#14 [host] s-a ->
-claude-code: text</channel>`. Without the flag Claude Code drops the notification. The messages are
+cc@app: text</channel>`. Without the flag Claude Code drops the notification. The messages are
 still in the inbox, so a session that polls `room_inbox`, or runs the wait below, loses nothing.
 
 **`letibot-mcp room-wait [--attention to_me|mentions|all] [--timeout 2h]`** blocks until a message for
-`claude-code` arrives, prints it (`#seq [room] author -> to: text`), moves the inbox cursor past it and
+this bridge arrives, prints it (`#seq [room] author -> to: text`), moves the inbox cursor past it and
 exits 0. Messages already waiting past the cursor print at once. 20 is an unreachable coordinator
 (reason on stderr), 30 the timeout. It needs no channel flag, so it is the wake for any session:
 
@@ -447,7 +464,7 @@ event, and two of them cannot be.
 |---|---|---|---|
 | a leticode session (`crates/harnessd`) | yes, one `SessionRoom` per top-level session | yes | the reader turns an `Event` or a chat message that names the session into a sentence (`room::wake`), queues it and rings `Bell::ring_wake`; `Harness::wake` runs a turn with it |
 | the head (`letibot-tui`) | no | no, the daemon wakes it | no socket. Its pane comes from the daemon's feed, its chat from `RoomChat` |
-| the bridge (`letibot-bridge`) | its heads no, its `claude-code` seat yes (own wire, no `letibot-room` dependency) | its heads no. The seat pushes chat to Claude Code as a channel event | a bridge head hears a room event only through a turn. The seat is [Claude Code](#claude-code) |
+| the bridge (`letibot-bridge`) | its heads no, its `cc@<folder>` seat yes (own wire, no `letibot-room` dependency) | its heads no. The seat pushes chat to Claude Code as a channel event | a bridge head hears a room event only through a turn. The seat is [Claude Code](#claude-code) |
 | a firecode VM agent | no | no | a subagent is refused at the door |
 
 A tag's agent and the arbiter work the queue and are never woken by chat.

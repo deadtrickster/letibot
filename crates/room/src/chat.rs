@@ -177,6 +177,24 @@ impl Message {
         )
     }
 
+    /// Who the message is for, as `who` reads it: `to you`, `to s-x (not you)` or `to everyone`.
+    /// An `@name` in the text addresses like `to`.
+    pub fn addressee_for(&self, who: &str) -> String {
+        let mut named: Vec<String> = self.to.iter().cloned().collect();
+        for m in mentions(&self.text) {
+            if !named.contains(&m) {
+                named.push(m);
+            }
+        }
+        if named.is_empty() {
+            "to everyone".to_string()
+        } else if named.iter().any(|n| n == who) {
+            "to you".to_string()
+        } else {
+            format!("to {} (not you)", named.join(", "))
+        }
+    }
+
     /// Does this message name `who`: addressed to them, or `@who` in the text?
     pub fn names(&self, who: &str) -> bool {
         self.to.as_deref() == Some(who) || mentions(&self.text).iter().any(|m| m == who)
