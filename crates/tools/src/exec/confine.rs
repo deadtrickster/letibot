@@ -2318,7 +2318,9 @@ fn pieces_of(
         // The machine itself, at its own paths and writable as this user: that is the wide seat, and
         // the masks below (after the grants) are the only thing it hides. The system roots and the
         // project are inside this bind, so binding them again would only be two mounts of one tree.
-        arg(&mut a, "--bind");
+        // `--dev-bind`: a plain bind leaves every mount under `/` nodev, and `/dev/null` is then
+        // unopenable, which also breaks the file masks bound from it.
+        arg(&mut a, "--dev-bind");
         arg(&mut a, "/");
         arg(&mut a, "/");
         // Still this command's own `/proc`, because the PID namespace above is: the host's would
@@ -2907,7 +2909,7 @@ mod tests {
             Session::Detached,
         );
         let joined = argv.join(" ");
-        assert!(joined.contains("--bind / /"), "{joined}");
+        assert!(joined.contains("--dev-bind / /"), "{joined}");
         // Still this command's own `/proc`, because the PID namespace above it is.
         assert!(joined.contains("--proc /proc"), "{joined}");
         let ssh = home.join(".ssh").display().to_string();
