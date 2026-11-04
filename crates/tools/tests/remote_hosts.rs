@@ -1023,6 +1023,18 @@ fn host_named(name: &str) -> Host {
     }
 }
 
+/// Places, asking again when the placement's own short bound lapsed. These specs keep a bound of
+/// seconds because a later step measures it, and a loaded box can spend that on the placement.
+fn place_patiently(spec: &SshSpec) -> Result<SshBackend, BackendError> {
+    let mut tries = 0;
+    loop {
+        match SshBackend::place(spec) {
+            Err(e) if tries < 4 && e.to_string().contains("got no answer") => tries += 1,
+            other => return other,
+        }
+    }
+}
+
 fn spec_for(fake: &Fake, repo: &Path, paths: &Paths, bound: Duration) -> SshSpec {
     // The two facts `Ssh::connect` refuses a connection without, for the name this fixture is: the
     // identity file a name nobody has placed with does not have yet, and the host key of a machine
@@ -1066,7 +1078,7 @@ fn a_full_gate_on_one_machine_does_not_stop_a_placement_on_another() {
 
     let fake = Fake::new("placing", "exec bash -lc \"$last\"");
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(2)))
+    let b = place_patiently(&spec_for(&fake, &repo, &paths, Duration::from_secs(2)))
         .expect("this machine's gate is its own, so the placement is not queued behind another's");
     // And it works, not merely opens: a placement that got a slot has a checkout behind it.
     assert_eq!(b.read("README").expect("it reads"), b"the first commit\n");
@@ -1091,7 +1103,7 @@ fn every_step_that_is_not_a_command_stops_at_its_bound() {
         ),
     );
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, bound)).expect("placed");
+    let b = place_patiently(&spec_for(&fake, &repo, &paths, bound)).expect("placed");
 
     // Standing in for a host that has gone quiet mid-session.
     std::fs::write(&silent, b"stop answering").expect("the marker");
@@ -1201,7 +1213,7 @@ fn a_wedged_master_fails_a_big_write_at_its_deadline_and_the_next_call_is_fresh(
         ),
     );
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, bound)).expect("placed");
+    let b = place_patiently(&spec_for(&fake, &repo, &paths, bound)).expect("placed");
     let began = Instant::now();
     let told: std::sync::Arc<std::sync::Mutex<Vec<(String, String, Duration)>>> =
         Default::default();
@@ -1282,7 +1294,7 @@ fn a_jobs_output_and_kill_stop_at_their_bound() {
         ),
     );
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, bound)).expect("placed");
+    let b = place_patiently(&spec_for(&fake, &repo, &paths, bound)).expect("placed");
     let host = b.processes_arc().expect("this backend starts processes");
     let id = host
         .spawn(&SpawnRequest {
@@ -1353,7 +1365,7 @@ fn a_command_that_loses_its_connection_is_reported_unknown_and_never_re_sent() {
     );
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
     let b =
-        SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(5))).expect("placed");
+        place_patiently(&spec_for(&fake, &repo, &paths, Duration::from_secs(5))).expect("placed");
 
     let refused = b
         .run(&Command {
@@ -1393,7 +1405,7 @@ fn a_read_that_loses_its_connection_is_asked_once_more() {
     let _ = std::fs::remove_file(fake.path("count-read"));
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
     let b =
-        SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(5))).expect("placed");
+        place_patiently(&spec_for(&fake, &repo, &paths, Duration::from_secs(5))).expect("placed");
 
     let bytes = b
         .read("README")
@@ -1421,7 +1433,7 @@ fn a_write_that_drops_mid_way_lands_its_bytes_exactly_once() {
     let _ = std::fs::remove_file(fake.path("count-write"));
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
     let b =
-        SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(5))).expect("placed");
+        place_patiently(&spec_for(&fake, &repo, &paths, Duration::from_secs(5))).expect("placed");
 
     // Two chunks' worth, so a duplicated chunk would be visible as extra bytes.
     let bytes: Vec<u8> = (0..(60 * 1024)).map(|i| (i % 251) as u8).collect();
@@ -1440,7 +1452,7 @@ fn a_stale_control_master_is_checked_and_dropped() {
     let fake = Fake::new("stale", "exec bash -lc \"$last\"");
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
     let b =
-        SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(5))).expect("placed");
+        place_patiently(&spec_for(&fake, &repo, &paths, Duration::from_secs(5))).expect("placed");
 
     let stale = letibot_tools::remote::control_path(&fake.name, std::process::id());
     if let Some(dir) = stale.parent() {
