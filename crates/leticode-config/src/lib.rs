@@ -119,9 +119,9 @@
 //! ```
 //!
 //! `[default]` is read into `cfg.provider` only when `cfg.provider.is_none()`
-//! (`cli.rs`), and `--model` - which the launcher passes on EVERY start, because
-//! `--model` is the alias whose vocabulary the daemon submits token ids against
-//! - leaves `cfg.provider` at `None`. So a file-level `[default]` outranked a
+//! (`cli.rs`), and `--model` leaves `cfg.provider` at `None`. The launcher passes `--model`
+//! on EVERY start, because it is the alias whose vocabulary the daemon submits token ids
+//! against. So a file-level `[default]` outranked a
 //! command-line model, and `letibot --glm` answered on deepseek: the flag won
 //! in one direction (`--provider deepseek` beats `[default]`) and lost in the
 //! other (`--model glm-5.3-flash` does not). That asymmetry is what this level
@@ -163,10 +163,9 @@
 //!
 //! `--model` alone is not the flag level, and that is a deliberate reading of
 //! this tree's own vocabulary rather than a convenience. `scripts/letibot`
-//! labels the two facts apart in its own banner - `model` is the LOCAL alias,
-//! the vocab the daemon binds, and `answers` is what actually answers the turns
-//! - and it passes `--model` on every start, including a start where the
-//! operator typed nothing about a model at all. So treating `--model` as "the
+//! labels the two facts apart in its own banner: `model` is the LOCAL alias, the vocab
+//! the daemon binds, and `answers` is what actually answers the turns. It passes
+//! `--model` on every start, including a start where the operator typed nothing about a model at all. So treating `--model` as "the
 //! operator chose who answers" would make the project file and this file
 //! unreachable for every launcher-started daemon, which is the defect this level
 //! exists to fix rather than to reproduce. `--provider` is the flag that says who
