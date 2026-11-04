@@ -13,6 +13,15 @@ pub(super) fn reply(a: &mut App, reply: Value) {
     });
 }
 
+/// The daemon's answer to one named request, as a head tells its own send's answer from a
+/// poll's.
+pub(super) fn reply_as(a: &mut App, id: &str, reply: Value) {
+    a.apply(ServerFrame::RoomChat {
+        client_request_id: id.into(),
+        reply,
+    });
+}
+
 pub(super) fn msg(seq: u64, room: &str, author: &str, kind: &str, text: &str) -> Value {
     json!({"seq": seq, "ts": 1_793_735_794_000u64 + seq * 60_000, "room": room, "author": author,
            "kind": kind, "text": text})
@@ -39,7 +48,7 @@ pub(super) fn ops(a: &mut App) -> Vec<Value> {
     a.take_actions()
         .into_iter()
         .filter_map(|x| match x {
-            Action::RoomChat { op } => Some(op),
+            Action::RoomChat { op, .. } => Some(op),
             _ => None,
         })
         .collect()
@@ -69,7 +78,8 @@ fn opening_asks_for_the_rooms_and_the_host_room() {
     assert_eq!(
         first,
         Some(Action::RoomChat {
-            op: json!({"type": "rooms"})
+            op: json!({"type": "rooms"}),
+            id: None,
         })
     );
     let rest = ops(&mut a);
@@ -138,7 +148,7 @@ fn a_line_posts_to_the_selected_channel_as_a_say() {
     let mut a = opened(1_000);
     a.set_composer("build is green");
     let sent = a.key(Key::Enter);
-    let Some(Action::RoomChat { op }) = sent else {
+    let Some(Action::RoomChat { op, .. }) = sent else {
         panic!("not a chat request: {sent:?}");
     };
     assert_eq!(op["type"], "say");
@@ -158,7 +168,7 @@ fn a_line_in_a_project_room_goes_to_that_room() {
     a.key(Key::Down);
     a.take_actions();
     a.set_composer("who has the disk?");
-    let Some(Action::RoomChat { op }) = a.key(Key::Enter) else {
+    let Some(Action::RoomChat { op, .. }) = a.key(Key::Enter) else {
         panic!("no chat request");
     };
     assert_eq!(op["room"], PROJECT);
@@ -186,7 +196,7 @@ fn a_room_arriving_ahead_of_the_selection_does_not_move_it() {
         rooms_reply(&[("host", 2, 0, 0), (other, 1, 0, 0), (PROJECT, 2, 0, 0)]),
     );
     a.set_composer("still here?");
-    let Some(Action::RoomChat { op }) = a.key(Key::Enter) else {
+    let Some(Action::RoomChat { op, .. }) = a.key(Key::Enter) else {
         panic!("no chat request");
     };
     assert_eq!(op["room"], PROJECT, "the selection moved with the index");
@@ -245,7 +255,7 @@ fn a_channel_that_disappears_selects_nothing_and_says_so() {
 fn greater_than_and_a_number_answers_that_message() {
     let mut a = opened(1_000);
     a.set_composer(">14 agreed");
-    let Some(Action::RoomChat { op }) = a.key(Key::Enter) else {
+    let Some(Action::RoomChat { op, .. }) = a.key(Key::Enter) else {
         panic!("no chat request");
     };
     assert_eq!(op["thread"], 14);
@@ -258,7 +268,7 @@ fn greater_than_and_a_number_answers_that_message() {
         Some(true)
     );
     a.set_composer(">x not a reply");
-    let Some(Action::RoomChat { op }) = a.key(Key::Enter) else {
+    let Some(Action::RoomChat { op, .. }) = a.key(Key::Enter) else {
         panic!("no chat request");
     };
     assert_eq!(op["thread"], Value::Null);
@@ -284,7 +294,7 @@ fn a_line_in_a_dm_channel_is_a_dm_to_that_peer() {
     a.key(Key::Down);
     a.take_actions();
     a.set_composer("heard");
-    let Some(Action::RoomChat { op }) = a.key(Key::Enter) else {
+    let Some(Action::RoomChat { op, .. }) = a.key(Key::Enter) else {
         panic!("no chat request");
     };
     assert_eq!(op["type"], "dm");
@@ -297,7 +307,7 @@ fn slash_dm_sends_and_selects_the_peer() {
     let mut a = app();
     a.clock(1_000);
     let sent = a.command("dm @s-z please look");
-    let Some(Action::RoomChat { op }) = sent else {
+    let Some(Action::RoomChat { op, .. }) = sent else {
         panic!("no chat request: {sent:?}");
     };
     assert_eq!(op["type"], "dm");
@@ -424,6 +434,117 @@ fn a_refusal_and_a_daemon_error_are_kept_for_the_view() {
     );
     reply(&mut a, rooms_reply(&[("host", 1, 0, 0)]));
     assert_eq!(a.rooms.error, None);
+}
+
+/// The send helper: one line posted to the host room, its request id handed back so a test can
+/// answer it as the daemon would.
+fn say(a: &mut App, text: &str) -> String {
+    a.set_composer(text);
+    match a.key(Key::Enter) {
+        Some(Action::RoomChat { id: Some(id), .. }) => id,
+        other => panic!("`{text}` did not send: {other:?}"),
+    }
+}
+
+/// A failed send keeps its line and its reason in the channel it was aimed at, across the
+/// polls that used to wipe the error within one interval.
+#[test]
+fn a_failed_send_keeps_its_line_and_reason_through_a_poll() {
+    let mut a = opened(1_000);
+    let id = say(&mut a, "who has the disk?");
+    reply_as(
+        &mut a,
+        &id,
+        json!({"type": "refused", "id": id, "why": "unknown_addressee"}),
+    );
+    // The poll that follows used to clear the error and leave the composer empty: the words
+    // and the reason both went.
+    reply(&mut a, rooms_reply(&[("host", 1, 0, 0)]));
+    reply(&mut a, history("host", vec![]));
+    let all = screen(&mut a, 80).join("\n");
+    assert!(all.contains("✗ who has the disk?"), "{all}");
+    assert!(all.contains("refused: unknown_addressee"), "{all}");
+    assert!(all.contains("enter resends"), "{all}");
+    assert_eq!(a.rooms.sends.len(), 1, "the record was dropped by a poll");
+}
+
+/// A send that never reached the coordinator is told from a poll's trouble by the request id,
+/// and lands on its own line.
+#[test]
+fn a_transport_error_lands_on_the_send_it_names() {
+    let mut a = opened(1_000);
+    let id = say(&mut a, "status?");
+    reply_as(
+        &mut a,
+        &id,
+        json!({"error": "the host coordinator is not reachable"}),
+    );
+    let all = screen(&mut a, 80).join("\n");
+    assert!(all.contains("✗ status?"), "{all}");
+    assert!(all.contains("not sent:"), "{all}");
+    // A poll's own trouble is nobody's send: it stays on the footer.
+    reply(
+        &mut a,
+        json!({"error": "the host coordinator is not reachable"}),
+    );
+    assert!(a.rooms.error.is_some(), "a poll's error went to a send");
+    assert_eq!(a.rooms.sends.len(), 1);
+}
+
+/// Only the send that landed goes. Another send's failure survives its neighbour's success,
+/// and Enter resends the failed line while `d` dismisses it.
+#[test]
+fn a_landed_send_clears_only_itself_and_the_keys_deal_with_the_rest() {
+    let mut a = opened(1_000);
+    let first = say(&mut a, "first words");
+    let second = say(&mut a, "second words");
+    reply_as(
+        &mut a,
+        &second,
+        json!({"type": "said", "id": second, "message": msg(9, "host", "operator", "operator", "second words")}),
+    );
+    let ids: Vec<&str> = a.rooms.sends.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, vec![first.as_str()], "a send that landed stayed");
+    reply_as(
+        &mut a,
+        &first,
+        json!({"type": "refused", "id": first, "why": "unknown_thread"}),
+    );
+
+    // Enter on the empty composer resends the failed line under a new id.
+    a.set_composer("");
+    let Some(Action::RoomChat { op, .. }) = a.key(Key::Enter) else {
+        panic!("Enter did not resend the failed line");
+    };
+    assert_eq!(op["text"], "first words");
+    assert!(
+        a.rooms.sends.iter().all(|s| s.error.is_none()),
+        "the superseded record stayed"
+    );
+
+    // It fails again, and `d` dismisses it: read, understood, not sent again.
+    let again = a.rooms.sends[0].id.clone();
+    reply_as(
+        &mut a,
+        &again,
+        json!({"type": "refused", "id": again, "why": "unknown_thread"}),
+    );
+    a.set_composer("");
+    a.key(Key::Char('d'));
+    assert!(a.rooms.sends.is_empty(), "the failed line stayed after `d`");
+    let all = screen(&mut a, 80).join("\n");
+    assert!(!all.contains("✗ first words"), "{all}");
+}
+
+/// A `d` typed as part of a message is a letter, exactly as `r` is: the key is the composer's
+/// while anything is in it.
+#[test]
+fn a_typed_d_is_a_letter_not_the_dismiss_key() {
+    let mut a = opened(1_000);
+    a.set_composer("a");
+    a.key(Key::Char('d'));
+    assert_eq!(a.editor.text(), "ad");
+    assert!(a.rooms.sends.is_empty());
 }
 
 #[test]

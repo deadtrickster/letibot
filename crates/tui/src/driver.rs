@@ -708,8 +708,8 @@ impl Link {
                     Action::ListJobs => {
                         self.client.list_jobs()?;
                     }
-                    Action::RoomChat { op } => {
-                        self.client.room_chat(op)?;
+                    Action::RoomChat { op, id } => {
+                        self.client.room_chat(id, op)?;
                     }
                     // The standing-notes pane's bootstrap read. The jobs pane's shape: a read
                     // whose answer arrives as a `StandingNotes` frame on the pump, and the

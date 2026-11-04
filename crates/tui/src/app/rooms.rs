@@ -75,6 +75,18 @@ pub(crate) enum Chan {
     Dm(String),
 }
 
+/// A line this head sent and is still answerable for, under the request id it went out with.
+/// The composer is already empty when it leaves, so until it lands this record is the only
+/// copy of the words - and once it fails, the only place the reason is kept.
+#[derive(Debug, Clone)]
+pub(crate) struct Send {
+    pub id: String,
+    pub chan: Chan,
+    pub thread: Option<u64>,
+    pub text: String,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct RoomsView {
     pub rows: Vec<RoomRow>,
@@ -103,6 +115,10 @@ pub(crate) struct RoomsView {
     pub prev_max: usize,
     /// Any answer has arrived since the view opened.
     pub heard: bool,
+    /// Lines this head sent, oldest first, until each lands or is dealt with. Bounded by the
+    /// operator's own pace: a record goes when its answer arrives, when it is resent, or when
+    /// it is dismissed - never because a poll came back.
+    pub sends: Vec<Send>,
 }
 
 impl RoomsView {
@@ -178,6 +194,31 @@ impl RoomsView {
                 .filter(|m| m.author != OPERATOR && m.seq > seen)
                 .count() as u64,
         }
+    }
+
+    /// A send of ours failed: keep the line and put the reason on it. `false` when no send of
+    /// this id is waiting, so the caller can treat the reply as its own trouble instead.
+    fn send_failed(&mut self, id: &str, why: String) -> bool {
+        let Some(s) = self.sends.iter_mut().find(|s| s.id == id) else {
+            return false;
+        };
+        if s.error.is_none() {
+            s.error = Some(why);
+        }
+        true
+    }
+
+    /// The send landed: the poll brings the message, so the record's work is done.
+    fn send_landed(&mut self, id: &str) {
+        self.sends.retain(|s| s.id != id);
+    }
+
+    /// The newest failed send of `c`, if any: the one Enter resends and `d` dismisses.
+    pub(crate) fn failed_of(&self, c: &Chan) -> Option<&Send> {
+        self.sends
+            .iter()
+            .rev()
+            .find(|s| s.chan == *c && s.error.is_some())
     }
 
     fn merge(&mut self, room: &str, rows: Vec<Msg>) {
@@ -285,8 +326,12 @@ impl App {
         self.rooms.next_poll_ms = self.now_ms.saturating_add(POLL_MS);
         let mut ops = self.rooms.poll_ops().into_iter();
         let first = ops.next()?;
-        self.queued.extend(ops.map(|op| Action::RoomChat { op }));
-        Some(Action::RoomChat { op: first })
+        self.queued
+            .extend(ops.map(|op| Action::RoomChat { op, id: None }));
+        Some(Action::RoomChat {
+            op: first,
+            id: None,
+        })
     }
 
     /// Ask again when the interval is up. Only a view on the stack asks.
@@ -297,13 +342,19 @@ impl App {
         self.rooms.next_poll_ms = self.now_ms.saturating_add(POLL_MS);
         let ops = self.rooms.poll_ops();
         self.queued
-            .extend(ops.into_iter().map(|op| Action::RoomChat { op }));
+            .extend(ops.into_iter().map(|op| Action::RoomChat { op, id: None }));
     }
 
-    /// The daemon's answer to a chat request.
-    pub(crate) fn on_room_chat(&mut self, reply: Value) {
+    /// The daemon's answer to a chat request. `id` is the request the answer belongs to: a
+    /// send's answer is told from a poll's by it, and no poll may clear a send's record.
+    pub(crate) fn on_room_chat(&mut self, id: &str, reply: Value) {
         self.redraw = true;
         if let Some(e) = reply.get("error").and_then(Value::as_str) {
+            // A send that never reached the coordinator keeps its line with the reason on it;
+            // the footer is for the poll's own trouble, which no send owns.
+            if self.rooms.send_failed(id, format!("not sent: {e}")) {
+                return;
+            }
             self.rooms.error = Some(e.to_string());
             return;
         }
@@ -345,12 +396,18 @@ impl App {
                 }
             }
             "said" => {
-                self.rooms.error = None;
+                // Only this send's record goes. The footer error is not cleared here: it may be
+                // another send's, and the poll this fires will answer for itself.
+                let said = reply.get("id").and_then(Value::as_str).unwrap_or("");
+                self.rooms.send_landed(said);
                 self.rooms.next_poll_ms = 0;
             }
             "refused" => {
                 let why = reply.get("why").and_then(Value::as_str).unwrap_or("?");
-                self.rooms.error = Some(format!("refused: {why}"));
+                let refused = reply.get("id").and_then(Value::as_str).unwrap_or("");
+                if !self.rooms.send_failed(refused, format!("refused: {why}")) {
+                    self.rooms.error = Some(format!("refused: {why}"));
+                }
             }
             _ => {}
         }
@@ -364,6 +421,7 @@ impl App {
         if let Some(seq) = self.rooms.shown() {
             self.queued.push(Action::RoomChat {
                 op: json!({"type": "ack", "seq": seq}),
+                id: None,
             });
         }
     }
@@ -402,6 +460,13 @@ impl App {
         };
         self.rooms.said += 1;
         let id = format!("op-{}-{}", self.now_ms, self.rooms.said);
+        self.rooms.sends.push(Send {
+            id: id.clone(),
+            chan: chan.clone(),
+            thread,
+            text: body.to_string(),
+            error: None,
+        });
         let op = match chan {
             Chan::Room(room) => {
                 json!({"type": "say", "id": id, "room": room, "text": body, "thread": thread})
@@ -413,7 +478,42 @@ impl App {
         self.rooms.next_poll_ms = 0;
         self.scroll_rooms_to_tail();
         self.redraw = true;
-        Some(Action::RoomChat { op })
+        Some(Action::RoomChat { op, id: Some(id) })
+    }
+
+    /// Enter on an empty composer with a failed line in the selected channel: send it again
+    /// under a new id. The old record is superseded by its own resend, so it goes. A key of
+    /// the view rather than the composer's empty line - the editor answers Enter on nothing
+    /// typed with `Idle`, and the binding stands behind the decision ladder either way.
+    pub(crate) fn rooms_resend_send(&mut self) -> ControlFlow<Option<Action>> {
+        let act = self
+            .rooms
+            .selected()
+            .and_then(|chan| self.rooms.failed_of(&chan).cloned())
+            .and_then(|failed| {
+                let text = match failed.thread {
+                    Some(t) => format!(">{t} {}", failed.text),
+                    None => failed.text,
+                };
+                self.rooms.sends.retain(|s| s.id != failed.id);
+                self.rooms_say(&text)
+            });
+        if act.is_some() {
+            self.redraw = true;
+        }
+        ControlFlow::Break(act)
+    }
+
+    /// `d` on an empty composer: drop the newest failed line of the selected channel. The
+    /// operator has read the reason and chosen not to send it again.
+    pub(crate) fn rooms_dismiss_send(&mut self) -> ControlFlow<Option<Action>> {
+        if let Some(chan) = self.rooms.selected()
+            && let Some(failed) = self.rooms.failed_of(&chan).map(|s| s.id.clone())
+        {
+            self.rooms.sends.retain(|s| s.id != failed);
+            self.redraw = true;
+        }
+        ControlFlow::Break(None)
     }
 
     /// `/dm NAME TEXT`: a direct message from anywhere, with the view opened on it.

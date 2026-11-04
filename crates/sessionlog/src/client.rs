@@ -338,9 +338,10 @@ impl HeadClient {
     }
 
     /// Send one chat request as the operator. The answer arrives as `ServerFrame::RoomChat`
-    /// carrying the same id.
-    pub fn room_chat(&mut self, op: serde_json::Value) -> Result<String, ClientError> {
-        let client_request_id = self.next_id();
+    /// carrying the same id. A caller that must recognise its own answer passes the id it
+    /// minted; `None` mints one here.
+    pub fn room_chat(&mut self, id: Option<String>, op: serde_json::Value) -> Result<String, ClientError> {
+        let client_request_id = id.unwrap_or_else(|| self.next_id());
         self.writer.write(&ClientFrame::RoomChat {
             client_request_id: client_request_id.clone(),
             op,

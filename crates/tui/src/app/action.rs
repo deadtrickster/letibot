@@ -147,9 +147,12 @@ pub enum Action {
     /// because a listing of bodies is not a listing.
     ListSkills,
     /// One chat request as the operator, a room `Request` as JSON. The answer comes back as
-    /// `ServerFrame::RoomChat` and is routed to the `/rooms` view.
+    /// `ServerFrame::RoomChat` and is routed to the `/rooms` view. `id` is the request id a
+    /// send was minted under, so its answer can be told from a poll's: a send that failed is
+    /// kept until the operator deals with it, and no other answer may clear it.
     RoomChat {
         op: serde_json::Value,
+        id: Option<String>,
     },
     /// Hand this session one skill's body - the pane's `s`, and `/skills NAME rest`. The
     /// daemon loads it, writes the operator's message and runs the turn; `then` is what followed

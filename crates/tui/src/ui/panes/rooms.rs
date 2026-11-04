@@ -1,7 +1,7 @@
 //! The `/rooms` view: the channel list on the left, the selected channel on the right. Text only,
 //! cut to the width it is given, so it reads the same at 80 columns and at 120.
 
-use crate::app::rooms::{Chan, ChatRef, Member, Msg, OPERATOR, RoomsView, mentions_operator};
+use crate::app::rooms::{Chan, ChatRef, Member, Msg, OPERATOR, RoomsView, Send, mentions_operator};
 use crate::app::*;
 use crate::ui::render::{row_strings, trim_to, visible_width, wrap};
 use crate::ui::transcript::blocks::clock_time;
@@ -72,6 +72,35 @@ fn refs_text(refs: &[ChatRef]) -> String {
     refs.iter()
         .map(|r| format!(" [{} {}]", clean_line(&r.kind), clean_line(&r.id)))
         .collect()
+}
+
+/// A send of ours that has not landed: `…` while it is out, `✗` and the reason once it failed.
+/// Drawn at the tail of its own channel, where the message would have been - it stays until
+/// the operator resends it or dismisses it, whatever the polls bring back.
+fn send_lines(sends: &[Send], c: &Chan, rw: usize) -> Vec<Line> {
+    let mut out = Vec::new();
+    let cols = rw.saturating_sub(2).max(8);
+    for s in sends.iter().filter(|s| s.chan == *c) {
+        match &s.error {
+            None => {
+                for row in wrap(&format!("… {}", clean_line(&s.text)), cols) {
+                    out.push(pane::faint(format!("  {row}")));
+                }
+            }
+            Some(why) => {
+                for row in wrap(&format!("✗ {}", clean_line(&s.text)), cols) {
+                    out.push(Line::new(vec![Span::role(
+                        format!("  {row}"),
+                        Role::Failure,
+                    )]));
+                }
+                for row in wrap(&format!("{why} · enter resends, d dismisses"), cols) {
+                    out.push(pane::faint(format!("  {row}")));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// A todo or queue line: quiet, one row, with the row it points at.
@@ -199,7 +228,20 @@ impl RoomsView {
                 return Line::new(vec![Span::role(trim_to(&clean_line(e), rw), Role::Failure)]);
             }
             (None, false) => "asking the coordinator...".to_string(),
-            (None, true) => format!("posting as {OPERATOR} · >N text replies to #N"),
+            (None, true) => {
+                // With a failed line in the channel the keys are the whole point: the reason
+                // sits on the line, and what can be done about it is the footer's job.
+                if self
+                    .selected()
+                    .is_some_and(|c| self.failed_of(&c).is_some())
+                {
+                    format!(
+                        "posting as {OPERATOR} · enter resends the failed line · d dismisses it"
+                    )
+                } else {
+                    format!("posting as {OPERATOR} · >N text replies to #N")
+                }
+            }
         };
         pane::faint(trim_to(&text, rw))
     }
@@ -249,18 +291,21 @@ impl App {
             return roster_lines(&c, self.rooms.roster.get(key), rw);
         }
         let msgs = self.rooms.messages(&c);
-        if msgs.is_empty() {
+        let with_time = rw >= 64;
+        let mut out: Vec<Line> = msgs
+            .into_iter()
+            .flat_map(|m| message_lines(m, rw, with_time))
+            .collect();
+        out.extend(send_lines(&self.rooms.sends, &c, rw));
+        if out.is_empty() {
             let said = if self.rooms.heard {
                 "  nothing here yet"
             } else {
                 "  asking the coordinator..."
             };
-            return vec![pane::faint(said)];
+            out.push(pane::faint(said));
         }
-        let with_time = rw >= 64;
-        msgs.into_iter()
-            .flat_map(|m| message_lines(m, rw, with_time))
-            .collect()
+        out
     }
 
     pub(crate) fn rooms_lines(&mut self, w: usize, room: usize) -> Vec<String> {

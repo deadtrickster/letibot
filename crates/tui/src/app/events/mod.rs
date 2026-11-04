@@ -66,9 +66,13 @@ impl App {
             frame @ (ServerFrame::ModeConfirm { .. } | ServerFrame::ModeSettled { .. }) => {
                 self.on_mode_card(frame)
             }
-            // The operator's chat reply, for the `/rooms` view.
-            ServerFrame::RoomChat { reply, .. } => {
-                self.on_room_chat(reply);
+            // The operator's chat reply, for the `/rooms` view. The request id rides along: a
+            // send's answer is told from a poll's by it, and only its own answer may clear it.
+            ServerFrame::RoomChat {
+                client_request_id,
+                reply,
+            } => {
+                self.on_room_chat(&client_request_id, reply);
                 Disposition::Control
             }
             frame @ ServerFrame::Event { .. } => self.on_event_frame(frame),

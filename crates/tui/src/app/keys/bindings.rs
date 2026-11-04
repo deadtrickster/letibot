@@ -130,6 +130,12 @@ pub(crate) enum Act {
     Remove,
     /// The rooms view's `r`: the selected channel's roster, on or off.
     Roster,
+    /// The rooms view's `d`: drop the newest failed line of the selected channel, once its
+    /// reason has been read.
+    DismissSend,
+    /// The rooms view's Enter on an empty composer: send the channel's failed line again, under
+    /// a new id.
+    ResendSend,
     /// The session list's `ctrl-z`: put the last removed row back - [`App::restore_removed`],
     /// the undo a removal has to have if it is to be the sense worth building.
     Undo,
@@ -383,8 +389,9 @@ const JOB_OUT: &[Binding] = &[
     PAGE,
     WHEEL,
 ];
-// The channel list takes the arrows and everything typed is the message: no Enter binding, so the
-// composer's Enter posts. Page keys and the wheel scroll the chat.
+// The channel list takes the arrows and everything typed is the message: no Enter binding
+// while anything is typed, so the composer's Enter posts - and on an empty composer Enter
+// resends the channel's failed line. Page keys and the wheel scroll the chat.
 const ROOMS: &[Binding] = &[
     b(UPDOWN, Always, Act::Cursor, Text("switches channel")),
     b(
@@ -392,6 +399,18 @@ const ROOMS: &[Binding] = &[
         Empty,
         Act::Roster,
         Text("shows who is in the channel"),
+    ),
+    b(
+        &[On::Char('d')],
+        Empty,
+        Act::DismissSend,
+        Text("dismisses the failed line"),
+    ),
+    b(
+        &[On::Enter],
+        Empty,
+        Act::ResendSend,
+        Text("resends the failed line"),
     ),
     PAGE,
     WHEEL,

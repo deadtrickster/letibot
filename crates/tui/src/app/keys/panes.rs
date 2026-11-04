@@ -95,6 +95,8 @@ impl App {
             }
             Act::Cursor => self.cursor_act(s, up),
             Act::Roster => self.rooms_toggle_roster(),
+            Act::DismissSend => self.rooms_dismiss_send(),
+            Act::ResendSend => self.rooms_resend_send(),
             Act::Open => self.open_act(s),
             Act::Alt => self.todos_alt(),
             // `w` opens what the selected row waits on - the keyboard's half of the click on its
