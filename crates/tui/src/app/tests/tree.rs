@@ -62,7 +62,12 @@ fn a_daemon_with_two_projects() -> App {
                 "s-sub-1",
                 &format!("{WORKTREE}/crates"),
             ),
-            in_tree("s-rano", "the rano rewrite", RANO),
+            // Moved just now, so it sits in `other projects`.
+            {
+                let mut b = in_tree("s-rano", "the rano rewrite", RANO);
+                b.moved_ms = letibot_sessionlog::registry::now_ms();
+                b
+            },
             gatekeeper,
             reviewer,
             keeper,
@@ -84,13 +89,20 @@ fn rows(a: &App) -> Vec<String> {
         .collect()
 }
 
-/// The project lines, as the tree draws them - the top level and nothing else.
+/// The project lines, as the tree draws them, with the two recency groups opened so every project
+/// is on the list.
 fn projects(a: &App) -> Vec<String> {
-    a.session_rows()
+    a.set_row_fold("groups/recent", true);
+    a.set_row_fold("groups/older", true);
+    let out = a
+        .session_rows()
         .iter()
-        .filter(|r| r.idx.is_none() && r.depth == 0)
+        .filter(|r| matches!(r.node, crate::app::session::Node::Project { .. }))
         .map(|r| r.node.title())
-        .collect()
+        .collect();
+    a.set_row_fold("groups/recent", false);
+    a.set_row_fold("groups/older", false);
+    out
 }
 
 /// The row of a session by its id, or a panic naming what was drawn instead.
@@ -244,7 +256,7 @@ fn the_gatekeeper_and_the_reviewers_are_under_the_projects_system_branch() {
             "[letibot (6)]",
             "the habr article",
             "[system (3)]",
-            "[rano (1)]",
+            "[other projects (1)]",
         ],
         "the tree, folded: the two project lines, the `system` branch's own line, and the one \
          session of the project this head is standing in"
@@ -347,7 +359,7 @@ fn the_fold_works_at_every_level() {
     assert_eq!(a.key(Key::Left), None);
     assert_eq!(
         rows(&a),
-        vec!["[letibot (6)]", "[rano (1)]"],
+        vec!["[letibot (6)]", "[other projects (1)]"],
         "a closed project draws its line and nothing else"
     );
     assert_eq!(
@@ -518,11 +530,12 @@ fn every_project_line_is_drawn_and_the_others_are_shut() {
             "[letibot (6)]",
             "the habr article",
             "[system (3)]",
-            "[rano (1)]"
+            "[other projects (1)]"
         ],
-        "the project the head is in draws its rows; the other is a line"
+        "the project the head is in draws its rows; the others are a folded group"
     );
     // And it opens on its own, by the person's key, and draws only its own rows.
+    a.set_row_fold("groups/recent", true);
     a.set_row_fold(RANO, true);
     assert!(
         rows(&a).contains(&"the rano rewrite".to_string()),

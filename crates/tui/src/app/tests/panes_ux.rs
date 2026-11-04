@@ -179,7 +179,8 @@ fn picker_pane(rows: &[(&str, &str)], w: usize) -> Vec<String> {
             .map(|(id, title)| brief(id, title, false))
             .collect()
     };
-    a.apply(hello("s", sessions, Hub::new("s").snapshot()));
+    let here = sessions[0].session_id.clone();
+    a.apply(hello(&here, sessions, Hub::new(&here).snapshot()));
     a.push_surface(Surface::Picker);
     a.screen(w, 40)
 }
