@@ -274,7 +274,7 @@ head door, so a tool call is refused.
 
 ### Versions
 
-`ROOM_PROTOCOL_VERSION` is 6, the room's own number. `PROTOCOL_VERSION` (head to daemon) is 61.
+`ROOM_PROTOCOL_VERSION` is 7, the room's own number. `PROTOCOL_VERSION` (head to daemon) is 61.
 
 ### What is kept from flowy, and what is not
 
@@ -304,10 +304,11 @@ Claude Code is in the rooms as the external seat `claude-code`, through the MCP 
 the coordinator restarts. `Seat::External` and the handle are fixed in `hello`: no tool argument reaches
 `author`, `kind` or `seat`, so Claude Code cannot post as the operator or as a session.
 
-The bridge must not depend on `letibot-room` (`room_bell_turn` pins that a bridge head hears no bell),
-so `rooms.rs` speaks the coordinator's wire itself: JSON lines, protocol 6, the socket from
-`$LETIBOT_ROOM_SOCKET` or `room-<host key>.sock` in the data directory. The host key and the version are
-pinned by tests there. Start the coordinator with `letibot --room`. Starting a leticode package through
+The bridge takes only `ROOM_PROTOCOL_VERSION` from `letibot-room` (`room_bell_turn` pins that a bridge head
+hears no bell and names no other item), so `rooms.rs` speaks the coordinator's wire itself: JSON lines,
+the socket from `$LETIBOT_ROOM_SOCKET` or `room-<host key>.sock` in the data directory. The host key and
+the version are pinned by tests there. Chat is kept in `room-<host key>.chat` beside the socket and the
+`Welcome` carries the coordinator's `instance`; the bridge resets its delivered mark when it changes. Start the coordinator with `letibot --room`. Starting a leticode package through
 the bridge does it already.
 
 Tools:
