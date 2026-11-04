@@ -116,7 +116,8 @@ impl Fixture {
             .spawn(&SpawnRequest {
                 command: command.to_string(),
                 slug: None,
-                cwd: self.worktree.display().to_string(),
+                // Relative to the host's root, which is the worktree.
+                cwd: ".".into(),
                 scope: ScopeKind::Turn,
                 scope_name: None,
                 background: false,
