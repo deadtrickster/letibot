@@ -40,6 +40,9 @@ pub struct Bridge {
     rooms: crate::rooms::RoomLink,
     /// Push the room's messages to the client as channel notifications (set by `letibot-mcp`).
     stream_rooms: bool,
+    /// The store and folder session names are read from, instead of this process's own. Set by
+    /// a test; a running bridge asks `daemon::resolve` for the folder it was started in.
+    names_from: Option<(std::path::PathBuf, std::path::PathBuf)>,
 }
 
 impl Bridge {
@@ -53,6 +56,56 @@ impl Bridge {
             rooms: crate::rooms::RoomLink::at(socket),
             ..Bridge::default()
         }
+    }
+
+    /// A bridge that resolves session names in `folder` from `store`.
+    pub fn with_names(
+        mut self,
+        store: impl Into<std::path::PathBuf>,
+        folder: impl Into<std::path::PathBuf>,
+    ) -> Bridge {
+        self.names_from = Some((store.into(), folder.into()));
+        self
+    }
+
+    /// The session a tool's `session` argument means: an id as given, else the conversation of
+    /// that name (title or slug) in the bridge's folder, the folders of the sessions it holds and
+    /// `folder` when the call names one. A name that fits several is refused with them listed.
+    pub fn resolve_session(&self, raw: &str, folder: Option<&str>) -> Result<String, String> {
+        let raw = raw.trim();
+        if self.held(raw).is_some() {
+            return Ok(raw.to_string());
+        }
+        let (store, mut folders) = match &self.names_from {
+            Some((store, folder)) => (store.clone(), vec![folder.clone()]),
+            None => {
+                let mut folders = Vec::new();
+                let here = std::env::current_dir().map_err(|e| e.to_string())?;
+                let d = daemon::resolve(&here)?;
+                folders.push(d.workspace);
+                let held: Vec<std::path::PathBuf> = self
+                    .heads
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .values()
+                    .map(|h| h.worktree.clone())
+                    .collect();
+                for w in held {
+                    if let Ok(w) = daemon::workspace_of(&w) {
+                        folders.push(w);
+                    }
+                }
+                (d.store, folders)
+            }
+        };
+        if let Some(f) = folder.map(str::trim).filter(|f| !f.is_empty())
+            && let Ok(w) = daemon::workspace_of(Path::new(f))
+        {
+            folders.push(w);
+        }
+        folders.sort();
+        folders.dedup();
+        crate::names::resolve(&store, &folders, raw)
     }
 
     /// Deliver the room's `to_me` messages to the MCP client once it has initialized.
@@ -740,7 +793,7 @@ pub fn list() -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "session": { "type": "string", "description": "The id `leticode_start` answered." },
+                    "session": { "type": "string", "description": "The id `leticode_start` answered, or the session's name (the `/rename` title or its slug) in this folder." },
                     "text": { "type": "string", "description": "What to say to the session." }
                 },
                 "required": ["session", "text"]
@@ -764,7 +817,7 @@ pub fn list() -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "session": { "type": "string", "description": "The session id." }
+                    "session": { "type": "string", "description": "The session id, or its name (the `/rename` title or its slug) in this folder." }
                 },
                 "required": ["session"]
             }),
@@ -783,7 +836,7 @@ pub fn list() -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "session": { "type": "string", "description": "The session id." },
+                    "session": { "type": "string", "description": "The session id, or its name (the `/rename` title or its slug) in this folder." },
                     "since": { "type": "integer", "minimum": 0, "description": "The `next` cursor of the last answer. Omitted: everything the ring still holds." },
                     "limit": { "type": "integer", "minimum": 1, "description": "How many entries to answer with. Default 50; the ring holds 500." }
                 },
@@ -799,7 +852,7 @@ pub fn list() -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "session": { "type": "string", "description": "The session id." }
+                    "session": { "type": "string", "description": "The session id, or its name (the `/rename` title or its slug) in this folder." }
                 },
                 "required": ["session"]
             }),
@@ -814,7 +867,7 @@ pub fn list() -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "session": { "type": "string", "description": "The session id." },
+                    "session": { "type": "string", "description": "The session id, or its name (the `/rename` title or its slug) in this folder." },
                     "ask": { "type": "string", "description": "The ask id from `leticode_asks` (its `ask` field)." },
                     "option": { "type": "string", "description": "For a permission: one option id it offered (`allow_once`, `allow_session`, `allow_always`, `reject_once`, `reject_always` — the ask says which). For a question: a choice's text or number, `free:<words>`, or `abstain`." },
                     "note": { "type": "string", "description": "What the model is told: for a `deny_and_tell` option, or a qualification of a question's chosen option." }
@@ -850,7 +903,7 @@ pub fn list() -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "session": { "type": "string", "description": "The session id." },
+                    "session": { "type": "string", "description": "The session id, or its name (the `/rename` title or its slug) in this folder." },
                     "since": { "type": "integer", "minimum": 0, "description": "The `next` cursor of the last answer — how many rows you have already read. Omitted: from the oldest row the daemon still holds (which says `dropped` for the ones it does not)." },
                     "limit": { "type": "integer", "minimum": 1, "description": "How many rows to answer with. Default 100, at most 1000." },
                     "reasoning": { "type": "boolean", "description": "Include the model's own reasoning blocks as rows. Default false: they are the one part of a transcript nothing downstream reads." }
@@ -871,7 +924,7 @@ pub fn list() -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "session": { "type": "string", "description": "The session id." },
+                    "session": { "type": "string", "description": "The session id, or its name (the `/rename` title or its slug) in this folder." },
                     "mode": { "type": "string", "description": "The approval point: `writes-allowed`, `read-only`, `allow-all`, … The daemon's own set decides which; a name it does not know is refused by name." }
                 },
                 "required": ["session", "mode"]
@@ -889,7 +942,7 @@ pub fn list() -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "session": { "type": "string", "description": "The session id." },
+                    "session": { "type": "string", "description": "The session id, or its name (the `/rename` title or its slug) in this folder." },
                     "model": { "type": "string", "description": "What should answer from now on: a provider name (`deepseek`, `glm`, `grok`), `provider/model`, or `local` for this box's own server. A name this box cannot serve is refused by name and nothing changes." }
                 },
                 "required": ["session", "model"]
@@ -905,7 +958,7 @@ pub fn list() -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "session": { "type": "string", "description": "The session id." }
+                    "session": { "type": "string", "description": "The session id, or its name (the `/rename` title or its slug) in this folder." }
                 },
                 "required": ["session"]
             }),
@@ -1034,38 +1087,38 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
         }
         "leticode_attach" => {
             let worktree = arg_str(args, "worktree")?;
-            let session = arg_str(args, "session")?;
+            let session = bridge.resolve_session(&arg_str(args, "session")?, Some(&worktree))?;
             let watch_only = arg_bool(args, "watch_only", true)?;
             bridge.attach(&worktree, &session, watch_only)
         }
-        "leticode_send" => bridge.send(&arg_str(args, "session")?, &arg_str(args, "text")?),
-        "leticode_status" => bridge.status(&arg_str(args, "session")?),
+        "leticode_send" => bridge.send(&session_arg(bridge, args)?, &arg_str(args, "text")?),
+        "leticode_status" => bridge.status(&session_arg(bridge, args)?),
         "leticode_events" => {
-            let session = arg_str(args, "session")?;
+            let session = session_arg(bridge, args)?;
             let since = arg_count(args, "since")?;
             let limit = arg_count(args, "limit")?;
             bridge.events(&session, since, limit)
         }
         "leticode_transcript" => {
-            let session = arg_str(args, "session")?;
+            let session = session_arg(bridge, args)?;
             let since = arg_count(args, "since")?;
             let limit = arg_count(args, "limit")?;
             let reasoning = arg_bool(args, "reasoning", false)?;
             bridge.transcript(&session, since, limit, reasoning)
         }
         "leticode_mode" => {
-            let session = arg_str(args, "session")?;
+            let session = session_arg(bridge, args)?;
             let mode = arg_str(args, "mode")?;
             bridge.set_mode(&session, &mode)
         }
         "leticode_model" => {
-            let session = arg_str(args, "session")?;
+            let session = session_arg(bridge, args)?;
             let model = arg_str(args, "model")?;
             bridge.set_model(&session, &model)
         }
-        "leticode_asks" => bridge.asks(&arg_str(args, "session")?),
+        "leticode_asks" => bridge.asks(&session_arg(bridge, args)?),
         "leticode_answer" => {
-            let session = arg_str(args, "session")?;
+            let session = session_arg(bridge, args)?;
             let ask = arg_str(args, "ask")?;
             let option = arg_str(args, "option")?;
             let note = arg_opt_str(args, "note")?;
@@ -1073,13 +1126,13 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
         }
         "leticode_diff" => {
             let full = arg_bool(args, "full", false)?;
-            bridge.diff(&arg_str(args, "session")?, full)
+            bridge.diff(&session_arg(bridge, args)?, full)
         }
-        "leticode_stop" => bridge.stop(&arg_str(args, "session")?),
+        "leticode_stop" => bridge.stop(&session_arg(bridge, args)?),
         "leticode_collect" => {
-            let session = arg_str(args, "session")?;
             let host = arg_str(args, "host")?;
             let folder = arg_opt_str(args, "folder")?;
+            let session = bridge.resolve_session(&arg_str(args, "session")?, folder.as_deref())?;
             let vm = arg_bool(args, "vm", false)?;
             bridge.collect(&session, &host, folder.as_deref(), vm)
         }
@@ -1092,6 +1145,11 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
             names().join(", ")
         )),
     }
+}
+
+/// The `session` argument of a call, a name resolved to its id.
+fn session_arg(bridge: &Bridge, args: &Value) -> Result<String, String> {
+    bridge.resolve_session(&arg_str(args, "session")?, None)
 }
 
 /// How long the `wait` verb will wait when the caller named no `--timeout`.

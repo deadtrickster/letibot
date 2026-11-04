@@ -404,6 +404,112 @@ mod tests {
         assert!(text.contains("s-nope"), "{text}");
     }
 
+    /// Every tool that takes a `session` takes the session's name too: the refusal for a session
+    /// this bridge does not hold names the resolved id, so the name reached the lookup as the id.
+    #[test]
+    fn a_session_name_is_resolved_before_the_lookup() {
+        use letibot_tokencore::store::{SessionRecord, Store};
+        let dir = std::env::temp_dir().join(format!("mcp-names-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("sessions.db");
+        {
+            let s = Store::open(&db).unwrap();
+            for (id, ws, title) in [
+                ("s-100", "/w/here", "Stroppy Conformity"),
+                ("s-200", "/w/other", "elsewhere"),
+            ] {
+                s.put_session(&SessionRecord {
+                    id: id.into(),
+                    title: Some(title.into()),
+                    model_id: "m".into(),
+                    dialect_sha: "d".into(),
+                    workspace_root: ws.into(),
+                    owner: "op".into(),
+                    approvers: vec![],
+                    role: None,
+                    parent_session_id: None,
+                })
+                .unwrap();
+            }
+        }
+        let bridge = Bridge::new().with_names(&db, "/w/here");
+        let ask = |tool: &str, name: &str| -> String {
+            let args = match tool {
+                "leticode_send" => json!({ "session": name, "text": "hi" }),
+                "leticode_mode" => json!({ "session": name, "mode": "plan" }),
+                "leticode_model" => json!({ "session": name, "model": "glm" }),
+                _ => json!({ "session": name }),
+            };
+            let answers = {
+                let input = call_request(1, tool, args) + "\n";
+                let mut out: Vec<u8> = Vec::new();
+                serve(Cursor::new(input.into_bytes()), &mut out, &bridge).expect("serve");
+                String::from_utf8(out).unwrap()
+            };
+            let r: Value = serde_json::from_str(answers.lines().next().unwrap()).unwrap();
+            assert_eq!(r["result"]["isError"], true, "{r}");
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        for tool in [
+            "leticode_status",
+            "leticode_send",
+            "leticode_transcript",
+            "leticode_model",
+            "leticode_stop",
+        ] {
+            let said = ask(tool, "stroppy-conformity");
+            assert!(said.contains("`s-100`"), "{tool}: {said}");
+        }
+        let said = ask("leticode_status", "elsewhere");
+        assert!(
+            said.contains("`elsewhere`"),
+            "another folder's name is not resolved: {said}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `leticode_attach` and `leticode_collect` name a folder, and a name is resolved there too.
+    #[test]
+    fn a_name_is_resolved_in_the_folder_a_call_names() {
+        use letibot_tokencore::store::{SessionRecord, Store};
+        let dir = std::env::temp_dir().join(format!("mcp-names-folder-{}", std::process::id()));
+        let proj = dir.join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let proj = std::fs::canonicalize(&proj).unwrap();
+        let db = dir.join("sessions.db");
+        {
+            let s = Store::open(&db).unwrap();
+            s.put_session(&SessionRecord {
+                id: "s-300".into(),
+                title: Some("fix-parser".into()),
+                model_id: "m".into(),
+                dialect_sha: "d".into(),
+                workspace_root: proj.display().to_string(),
+                owner: "op".into(),
+                approvers: vec![],
+                role: None,
+                parent_session_id: None,
+            })
+            .unwrap();
+        }
+        let bridge = Bridge::new().with_names(&db, "/w/elsewhere");
+        assert_eq!(
+            bridge.resolve_session("fix-parser", None).unwrap(),
+            "fix-parser",
+            "not in the bridge's own folder"
+        );
+        assert_eq!(
+            bridge
+                .resolve_session("fix-parser", Some(&proj.display().to_string()))
+                .unwrap(),
+            "s-300"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `leticode_list` on a bridge holding nothing is `isError: false` with an empty list -     /// a listing is a question, and "none" is an answer.
     #[test]
     fn a_listing_of_nothing_is_not_an_error() {
