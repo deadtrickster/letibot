@@ -1,11 +1,6 @@
-//! Carrying a conversation the other way: out of this head and into Claude Code.
-//!
-//! [`write_handover`] writes a NEW transcript (a fresh session id, a file of ours) that
-//! `claude --resume <path>` opens, plus a Markdown copy beside it - the JSONL line format is
-//! internal to Claude Code, so plain text is the fallback a release cannot break. [`append_note`]
-//! puts one line on a file another program owns, so it backs the file up first, refuses when it
-//! cannot or while a `claude` process is live, and has a [`revert`]. `version` is `letibot-<ours>`,
-//! never a Claude Code release this file never met, and a `thinking` block is skipped and counted.
+//! Carrying a conversation out of this head and into Claude Code.
+//! [`write_handover`] writes a new transcript for `claude --resume <path>` plus a Markdown copy. [`append_note`]
+//! edits a file another program owns: it backs up first, refuses while `claude` is live, and has a [`revert`].
 
 use std::fmt;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -19,7 +14,7 @@ use crate::{ImportError, Result};
 /// What every line of a handover carries, and where it came from.
 #[derive(Debug, Clone)]
 pub struct Meta {
-    /// **A fresh uuid for a handover**, and the transcript's own id for an append.
+    /// A fresh uuid for a handover, and the transcript's own id for an append.
     pub session_id: String,
     pub cwd: String,
     pub git_branch: Option<String>,
@@ -48,7 +43,7 @@ pub struct Written {
     pub skipped: Skipped,
 }
 
-/// **The rows that are not in the handover, and why.** A handover that silently dropped a
+/// The rows that are not in the handover, and why. A handover that silently dropped a
 /// third of a conversation would be a transcript that reads as complete and is not.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Skipped {
@@ -408,7 +403,7 @@ fn one_line(s: &str, cap: usize) -> String {
 /// What an append did.
 #[derive(Debug, Clone)]
 pub struct Appended {
-    /// **The backup taken before the write**, so the file's state before this line is on
+    /// The backup taken before the write, so the file's state before this line is on
     /// disk under a name nobody will overwrite.
     pub backup: PathBuf,
     /// The line, exactly as it went in (with its newline).
@@ -417,7 +412,7 @@ pub struct Appended {
     pub bytes: u64,
 }
 
-/// **Who is running Claude Code right now.** A seam, because a test cannot start one and
+/// Who is running Claude Code right now. A seam, because a test cannot start one and
 /// a real check cannot be a stub: the append refuses to write into a transcript a live
 /// process is writing, and that refusal has to be provable in both directions.
 pub trait Live {
@@ -642,7 +637,7 @@ pub fn backup(path: &Path, now_ms: u64) -> Result<PathBuf> {
             .set_accessed(modified);
         let _ = f.set_times(times);
     }
-    // **Proven, not assumed.**
+    // Proven, not assumed.
     let a = std::fs::read(path).map_err(|e| ImportError::Io {
         path: path.to_path_buf(),
         err: e.to_string(),

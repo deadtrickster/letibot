@@ -159,7 +159,7 @@ pub struct Symbol {
     /// looking for a free function that does not exist.
     pub container: Option<String>,
     /// The declaration as written, collapsed to one line and cut at the body.
-    /// `pub fn insert(&mut self, c: char) -> bool` — enough to call it without a
+    /// `pub fn insert(&mut self, c: char) -> bool` - enough to call it without a
     /// second `read`.
     pub signature: String,
     /// 1-based, inclusive.
@@ -228,7 +228,7 @@ struct Def {
     /// means inherit whatever the enclosing definition put on the stack.
     container: Option<String>,
     /// What this contributes to its CHILDREN's container. `None` means children
-    /// keep the container they already had — a free function does not want its
+    /// keep the container they already had - a free function does not want its
     /// name prefixed onto anything.
     scope: Option<String>,
     /// Whether definitions nested inside are worth listing.

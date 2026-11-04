@@ -1,11 +1,6 @@
-//! **`letibot stats` and `letibot fb`** - the metrics file from a shell (TODO R81 phase 1,
-//! `docs/metrics.md` §3.2 and §2.5).
-//!
-//! `stats` opens `metrics.db` read-only and prints one of §3's answers; it never writes and
-//! never starts a daemon. `fb` is the shell's door for an operator's mark - for leticl until its
-//! own frame lands, for a phone over ssh, for a session whose head is closed - and writes the
-//! same `operator.feedback` row the daemon's connection thread writes, straight into the file:
-//! no daemon is needed, and none is asked.
+//! `letibot stats` and `letibot fb` - the metrics file from a shell.
+//! `stats` opens `metrics.db` read-only, never writes and never starts a daemon. `fb` writes the same
+//! `operator.feedback` row the daemon's connection thread writes, straight into the file.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -107,7 +102,7 @@ fn say(r: Result<(), String>, help: &str) -> ExitCode {
     }
 }
 
-/// **A mistake is two lines**, and the second is where that verb is explained. Both verbs printed
+/// A mistake is two lines, and the second is where that verb is explained. Both verbs printed
 /// their whole usage after one wrong word, so a typo was answered with a wall to read.
 fn mistake(problem: &str, verb: &str) -> String {
     format!("{problem}\n         run `letibot {verb} --help` for what it takes and one example")

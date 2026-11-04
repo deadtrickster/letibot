@@ -1,14 +1,11 @@
-//! The reader's tests, on a fixture transcript written by hand.
-//!
-//! The fixture is a file, not a mock, because rule 4's promise - the bytes and the mtime are the
-//! same after a read as before it - can only be measured on a real file. Every line of it is a
-//! shape taken from a real transcript on this box, including the ones this build does not read.
+//! The reader's tests, on a hand-written fixture transcript.
+//! A file and not a mock, because the promise that bytes and mtime are unchanged by a read needs a real file.
 
 use super::*;
 use letibot_transcript::SegmentEdge;
 
 /// A throwaway transcript directory: `<tmp>/letibot-claude-<tag>-<pid>/<project>/<id>.jsonl`.
-/// A **directory** and not one file, because the listing walks projects and the id is
+/// A directory and not one file, because the listing walks projects and the id is
 /// found by name - both are part of what is being tested.
 fn fixture(tag: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
@@ -73,7 +70,7 @@ fn kinds(rows: &[Row]) -> Vec<&'static str> {
         .collect()
 }
 
-/// **The mapping, in order, with the provenance and the times.**
+/// The mapping, in order, with the provenance and the times.
 #[test]
 fn every_shape_maps_in_order_with_its_own_time_and_its_speaker() {
     let (dir, _path) = written("map");
@@ -162,7 +159,7 @@ fn every_shape_maps_in_order_with_its_own_time_and_its_speaker() {
     assert_eq!(*speaker, Speaker::Operator);
     assert_eq!(parts.len(), 1);
 
-    // **The sidechain produced no rows and said so once.** Both its lines are skipped,
+    // The sidechain produced no rows and said so once. Both its lines are skipped,
     // and the sentence names the branch.
     assert_eq!(report.sidechains, 1);
     assert_eq!(report.sidechain_lines, 2);
@@ -209,7 +206,7 @@ fn every_shape_maps_in_order_with_its_own_time_and_its_speaker() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **Rule 4, measured on the file**: the bytes and the mtime are the same after a read as
+/// Rule 4, measured on the file: the bytes and the mtime are the same after a read as
 /// before it. A read that wrote anything - a WAL, a lock, a normalisation - would move one.
 #[test]
 fn reading_leaves_the_transcript_exactly_as_it_was() {
@@ -242,7 +239,7 @@ fn reading_leaves_the_transcript_exactly_as_it_was() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The listing a person needs to find the uuid without opening the JSONL.**
+/// The listing a person needs to find the uuid without opening the JSONL.
 #[test]
 fn the_listing_names_the_id_the_mtime_the_size_the_model_and_the_first_ask() {
     let (dir, _path) = written("list");
@@ -279,7 +276,7 @@ fn the_listing_names_the_id_the_mtime_the_size_the_model_and_the_first_ask() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A missing directory and a missing id are two different sentences** - the pair the
+/// A missing directory and a missing id are two different sentences - the pair the
 /// operator asked to be told apart for opencode, and the same rule here.
 #[test]
 fn a_missing_directory_and_a_missing_id_are_different_sentences() {
@@ -315,7 +312,7 @@ fn a_missing_directory_and_a_missing_id_are_different_sentences() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **An empty id is not a session**, and asking for one must not walk every project
+/// An empty id is not a session, and asking for one must not walk every project
 /// looking for `/.jsonl`.
 #[test]
 fn an_empty_id_is_refused_rather_than_matched() {
@@ -328,7 +325,7 @@ fn an_empty_id_is_refused_rather_than_matched() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A tool result whose call this build never saw** - a transcript that begins after a
+/// A tool result whose call this build never saw - a transcript that begins after a
 /// compaction, or a branch whose call is in another file. Counted, and named `tool`, so
 /// the card says something rather than nothing.
 #[test]
@@ -361,7 +358,7 @@ fn an_unpaired_result_is_counted_and_named() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The frames a `user` line arrives in**, and who each one belongs to: the operator's
+/// The frames a `user` line arrives in, and who each one belongs to: the operator's
 /// own shell act and paste are theirs, a job's settlement and a subagent's hand-back are
 /// another agent's, and Claude Code's plumbing is nobody's.
 #[test]
@@ -429,7 +426,7 @@ fn a_frame_is_carried_with_its_author_and_plumbing_is_said_not_drawn() {
     ));
 }
 
-/// **The speaker is read off the source's own declaration**, not guessed from the text  -
+/// The speaker is read off the source's own declaration, not guessed from the text  -
 /// the counts in `declared_speaker`'s doc are from this box's transcripts.
 #[test]
 fn the_speaker_is_the_sources_declaration() {
@@ -458,7 +455,7 @@ fn the_speaker_is_the_sources_declaration() {
     assert_eq!(of("{}"), Speaker::Operator);
 }
 
-/// **The ISO-8601 parse**, which is rule 3's only clock: a time it cannot read is `None`,
+/// The ISO-8601 parse, which is rule 3's only clock: a time it cannot read is `None`,
 /// never a guess.
 #[test]
 fn timestamps_parse_to_the_millisecond_and_never_to_a_guess() {
@@ -505,7 +502,7 @@ fn timestamps_parse_to_the_millisecond_and_never_to_a_guess() {
     );
 }
 
-/// **A transcript being written right now** ends in a half line, and that is said rather
+/// A transcript being written right now ends in a half line, and that is said rather
 /// than reported as a parse failure of the format.
 #[test]
 fn a_half_written_last_line_is_named_as_that() {
@@ -537,7 +534,7 @@ fn a_half_written_last_line_is_named_as_that() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A subagent transcript beside the session is counted and not walked** - the `Task`
+/// A subagent transcript beside the session is counted and not walked - the `Task`
 /// call and its report are already rows in the parent, and the child's working
 /// conversation is its own session (see the module doc's `isSidechain` section).
 #[test]
@@ -656,7 +653,7 @@ fn a_compaction_boundary_is_a_mark_that_renders_nothing() {
 fn a_fresh_cc_session_imports_and_a_resumed_one_does_not() {
     let id = "e90320f4-b550-4aa0-aa11-1c2673df88e8";
     assert_eq!(import_target(false, &format!("cc-{id}")), Some(id));
-    // **The resume is the rule**: the same id, resumed, imports nothing.
+    // The resume is the rule: the same id, resumed, imports nothing.
     assert_eq!(import_target(true, &format!("cc-{id}")), None);
     // Other namespaces are other packages' business.
     assert_eq!(import_target(false, &format!("oc-{id}")), None);

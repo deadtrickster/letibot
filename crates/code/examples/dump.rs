@@ -1,10 +1,5 @@
 //! Print the named-node skeleton of a sample file per language, with field names.
-//!
-//! This is how every node kind and field name in `classify` was chosen, and it is worth re-running
-//! after a grammar bump: a kind string that is subtly wrong does not fail, it silently drops that
-//! definition from every outline. It walks rano's `Node`, the same plain data `classify` sees, so
-//! what it prints is exactly what the outline reads.
-//!
+//! Re-run after a grammar bump: a wrong kind string silently drops definitions from outlines.
 //!     cargo run -p letibot-code --example dump
 
 use rano::syntax::{Lang, Node, Stream};

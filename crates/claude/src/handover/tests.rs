@@ -1,8 +1,5 @@
-//! The writer's tests: the conservative subset, the round trip back through the reader, and the
-//! append path's three refusals and its way back.
-//!
-//! Every assertion about a backup compares bytes, never a size: a short write, a full disk and a
-//! page of zeroes all have the right size, and only one of them is a backup.
+//! The writer's tests: the conservative subset, the round trip through the reader, and the append
+//! path's refusals and its way back. Backup assertions compare bytes, never sizes.
 
 use super::*;
 use crate::{Event, Source};
@@ -85,7 +82,7 @@ fn meta() -> Meta {
     Meta::fresh(Path::new("/home/dead/Projects/x"), Some("main".into()))
 }
 
-/// **The conservative subset, field by field** - and the rows it refuses to fake.
+/// The conservative subset, field by field - and the rows it refuses to fake.
 #[test]
 fn a_handover_writes_the_subset_the_documentation_documents() {
     let dir = tmp("write");
@@ -162,7 +159,7 @@ fn a_handover_writes_the_subset_the_documentation_documents() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The round trip**: what the writer writes, the reader reads back as the same
+/// The round trip: what the writer writes, the reader reads back as the same
 /// conversation. Two crates' halves of one format, checked against each other rather than
 /// each against its own idea of it.
 #[test]
@@ -245,7 +242,7 @@ fn what_the_writer_writes_the_reader_reads_back() {
     let _ = w;
 }
 
-/// **The Markdown half**, which is the one a Claude release cannot break: who spoke, a
+/// The Markdown half, which is the one a Claude release cannot break: who spoke, a
 /// tool call on one line, and a result collapsed to its first line and a count.
 #[test]
 fn the_markdown_says_who_spoke_and_collapses_a_call_to_one_line() {
@@ -306,7 +303,7 @@ fn transcript(tag: &str) -> (PathBuf, PathBuf) {
     (dir, path)
 }
 
-/// **One line, and a backup that holds the exact original bytes.**
+/// One line, and a backup that holds the exact original bytes.
 #[test]
 fn a_note_appends_one_line_and_the_backup_is_the_original_byte_for_byte() {
     let (dir, path) = transcript("append");
@@ -356,7 +353,7 @@ fn a_note_appends_one_line_and_the_backup_is_the_original_byte_for_byte() {
     assert_eq!(line["isMeta"], true, "the note is not the operator's words");
     assert_eq!(got.bytes as usize, last.len() + 1, "one complete line");
 
-    // **A second append makes a second backup, and never overwrites the first.** The
+    // A second append makes a second backup, and never overwrites the first. The
     // pristine original is always the oldest one.
     let second = append_note(&path, "and again", now + 1000, &NoOneLive).unwrap();
     assert_ne!(second.backup, got.backup);
@@ -374,7 +371,7 @@ fn a_note_appends_one_line_and_the_backup_is_the_original_byte_for_byte() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **No live Claude, no append** - and the refusal comes before the backup, so a refused
+/// No live Claude, no append - and the refusal comes before the backup, so a refused
 /// append leaves no debris either.
 #[test]
 fn an_append_refuses_while_a_claude_is_live_for_the_project_and_writes_nothing() {
@@ -422,7 +419,7 @@ fn an_append_refuses_while_a_claude_is_live_for_the_project_and_writes_nothing()
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **No backup, no write** - a directory that cannot be written to refuses the append and
+/// No backup, no write - a directory that cannot be written to refuses the append and
 /// leaves the transcript exactly as it was.
 #[test]
 fn a_backup_that_cannot_be_made_refuses_the_append() {
@@ -442,7 +439,7 @@ fn a_backup_that_cannot_be_made_refuses_the_append() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The way back**: `revert` restores the file byte for byte from a named backup, and
+/// The way back: `revert` restores the file byte for byte from a named backup, and
 /// leaves the backup where it is so the revert can be reverted.
 #[test]
 fn a_revert_puts_the_transcript_back_byte_for_byte() {
@@ -474,7 +471,7 @@ fn a_revert_puts_the_transcript_back_byte_for_byte() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A transcript somebody was killed in the middle of writing** is not appended to: the
+/// A transcript somebody was killed in the middle of writing is not appended to: the
 /// note would land inside a broken record.
 #[test]
 fn a_half_written_last_line_is_refused_rather_than_appended_to() {

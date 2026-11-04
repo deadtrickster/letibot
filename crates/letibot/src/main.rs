@@ -18,30 +18,25 @@
 //!
 //! # Why argv[0] and not only subcommands
 //!
-//! **`sudo` is handed a program path and invokes it with no arguments** - the prompt
+//! `sudo` is handed a program path and invokes it with no arguments - the prompt
 //! is `argv[1]`, so `letibot askpass` cannot work there; there is nowhere to put the
 //! word `askpass`. `crates/harnessd/src/sudo.rs` writes `SUDO_ASKPASS=…` pointing at a
-//! file and looks for that file beside the daemon **by name**. So a role has to be
+//! file and looks for that file beside the daemon by name. So a role has to be
 //! reachable from the name the file is installed under, which is what a symlink gives
 //! it. The same is true of anything exec'd rather than typed: it knows a path, not a
 //! CLI. Subcommands exist for the roles a PERSON starts; both, not either.
 //!
 //! # Why one binary
 //!
-//! MEASURED before the merge: `harnessd` 33.2 MB, `letibot-tui` 22.7 MB,
-//! `letibot-askpass` 2.5 MB - the three the installer ships, **58.4 MB**, and all
-//! three link `sessionlog`, `transcript`, `tools` and `provider`. One binary links
-//! each of those once, so `askpass` stops costing a whole Rust runtime to ask for a
-//! password. It is also one download, one checksum, one version.
+//! The installed binaries all link `sessionlog`, `transcript`, `tools` and `provider`.
+//! One binary links each once, so `askpass` does not cost a whole Rust runtime, and it is
+//! one download, one checksum, one version.
 //!
 //! # The name table is a REGISTRY, and a duplicate is refused at BUILD time
 //!
-//! This is a dispatch table - exactly the shape that can hold a name twice, and this
-//! tree has found two of those recently (`symbolic-ref` in two match arms,
-//! `SetOperatorTodos` twice in a frame list). **Rust does not refuse a duplicate
-//! `match` arm**: MEASURED, a repeated string arm is `warning: unreachable pattern`,
-//! the build SUCCEEDS, and the first arm wins by SOURCE ORDER. With the clippy step
-//! advisory, nothing would catch it.
+//! A dispatch table can hold a name twice. Rust does not refuse a duplicate `match` arm:
+//! it warns `unreachable pattern`, the build succeeds, and the first arm wins by source
+//! order. With the clippy step advisory, nothing would catch it.
 //!
 //! So there is one table, and the two `const` assertions below make a duplicate a
 //! COMPILE ERROR with the offence in the message. Deliberately stronger than a test,
@@ -65,7 +60,7 @@ pub mod migrate;
 mod roles;
 mod stats;
 
-/// What this invocation is being asked to be. **No catch-all variant**: an unknown name is an
+/// What this invocation is being asked to be. No catch-all variant: an unknown name is an
 /// error rather than a guess, because the guess would be "be the daemon" for a typo, and that is
 /// a long-running process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,7 +98,7 @@ pub enum Kind {
     Word,
 }
 
-/// **THE TABLE.** One entry per name: what it means, and how it is reached. Exactly one
+/// THE TABLE. One entry per name: what it means, and how it is reached. Exactly one
 /// [`Kind::Program`] entry per role - the name `install.sh` symlinks and the name messages
 /// print. Both of those are asserted below.
 pub const REGISTRY: &[(&str, Role, Kind)] = &[
@@ -200,7 +195,7 @@ const fn every_role_has_one_program_name(reg: &[(&str, Role, Kind)]) -> bool {
     true
 }
 
-/// **The build refuses a duplicate or an unreachable name.** See the module docs: a
+/// The build refuses a duplicate or an unreachable name. See the module docs: a
 /// repeated `match` arm is only a warning, and the first one silently wins.
 const REGISTRY_IS_DISJOINT: () = assert!(
     is_disjoint(REGISTRY),
@@ -265,7 +260,7 @@ fn main() -> ExitCode {
     let arg0 = argv.next().unwrap_or_default();
     let rest: Vec<std::ffi::OsString> = argv.collect();
 
-    // **The name we were invoked by wins.** A symlink called `letibot-askpass` is
+    // The name we were invoked by wins. A symlink called `letibot-askpass` is
     // `sudo` talking, and its first argument is the prompt - reading it as a
     // subcommand would eat the prompt and then refuse an unknown role.
     if let Some(role) = Path::new(&arg0).file_name().and_then(Role::from_argv0) {
@@ -278,7 +273,7 @@ fn main() -> ExitCode {
         Some(word) => match Role::from_subcommand(word) {
             Some(role) => roles::run(role, &rest[1..]),
             None => {
-                // **Verbs over the metrics file** (TODO R81), not roles: nothing invokes them by
+                // Verbs over the metrics file , not roles: nothing invokes them by
                 // a program name, so they have no symlink and no row in the table.
                 let tail = || -> Vec<String> {
                     rest[1..]
@@ -291,7 +286,7 @@ fn main() -> ExitCode {
                 } else if word == "fb" {
                     stats::run_fb(&tail())
                 } else if word == "migrate" || word == "--migrate" {
-                    // **The spelling the operator and the brief use**, so the launcher can pass
+                    // The spelling the operator and the brief use, so the launcher can pass
                     // its own line through unchanged: `letibot --migrate SESSION --to NAME`.
                     migrate::run(&tail())
                 } else if word == "attach" {
@@ -305,7 +300,7 @@ fn main() -> ExitCode {
                     println!("letibot {}", env!("CARGO_PKG_VERSION"));
                     ExitCode::SUCCESS
                 } else if migrate::is_far_verb(word) {
-                    // **The far side of a move runs THIS binary's own sub-verbs**: a host's
+                    // The far side of a move runs THIS binary's own sub-verbs: a host's
                     // `letibot --export-session …` is this same executable at the same commit, so
                     // the verb is recognised here and passed on with its flags.
                     let mut line = vec![word.to_string()];
@@ -322,8 +317,8 @@ fn main() -> ExitCode {
     }
 }
 
-/// **One line per command, and every line's description at one column.** Written as a raw
-/// string because the `\` continuation this used to use dropped the indent from every wrapped
+/// One line per command, and every line's description at one column. Written as a raw
+/// string because the `\` continuation dropped the indent from every wrapped
 /// line, and a usage whose columns wander is one nobody finishes reading.
 fn print_usage() {
     println!(
@@ -405,7 +400,7 @@ mod tests {
         }
     }
 
-    /// **`letibot` is the dispatcher and never a role.** Resolving it by substring is
+    /// `letibot` is the dispatcher and never a role. Resolving it by substring is
     /// how a second daemon gets started, so this is asserted rather than assumed.
     #[test]
     fn the_dispatchers_own_name_is_not_a_role_in_either_table() {

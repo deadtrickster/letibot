@@ -3,8 +3,8 @@
 //! # Why this file exists now, and did not need to before
 //!
 //! While `letibot` was only a dispatcher over `sessionlog` and two renderer crates,
-//! it linked no llama and needed no runpath - and it was checked. **Wiring `Role::M1`
-//! changed that**: `m1::run` lives in `letibot-harnessd`, so this binary now links
+//! it linked no llama and needed no runpath - and it was checked. Wiring `Role::M1`
+//! changed that: `m1::run` lives in `letibot-harnessd`, so this binary now links
 //! `letibot-harnessd`, which links `letibot-tokencore`, which links `libllama`. The
 //! first run of the wired role said so plainly:
 //!
@@ -34,7 +34,7 @@
 //! # The rpath does not travel with a library
 //!
 //! `rustc-link-arg` applies to the targets of the package whose build script emitted
-//! it and to **nothing downstream** - `crates/harnessd/build.rs` says so at length
+//! it and to nothing downstream - `crates/harnessd/build.rs` says so at length
 //! because it cost an hour once. So every package whose binaries end up linking
 //! llama needs its own copy of this file: `harnessd`, now `letibot`, and
 //! `crates/tui` (which needed one for a reason that only appears on aarch64).

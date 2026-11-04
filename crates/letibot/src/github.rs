@@ -1,9 +1,6 @@
 //! `letibot attach github <org|owner/repo>`: the reviewer seat, started from a terminal.
-//!
-//! The seat itself is `letibot_github`'s, and it is a poll: what is open in the scope, what changed,
-//! which row is owed a review, which comment mentioned it. The worker is the other half: a review
-//! is a brief run in that pull request's own letibot session, and what it answers is the draft a
-//! person decides about.
+//! The seat is `letibot_github`'s poll. The worker runs a review as a brief in that pull request's
+//! own session, and its answer is the draft a person decides about.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -26,12 +23,12 @@ const POLL_MS: u64 = 60_000;
 const THE_VERB: &str =
     "         `letibot attach github <org|owner/repo>` — an org, or one repository";
 
-/// **A mistake is two lines**: what is missing, and the command that carries it.
+/// A mistake is two lines: what is missing, and the command that carries it.
 fn needs(what: &str) -> String {
     format!("attach needs {what}\n{THE_VERB}")
 }
 
-/// **The scope this invocation names.** `attach github <scope>` and nothing else: a second source
+/// The scope this invocation names. `attach github <scope>` and nothing else: a second source
 /// is a second seat with its own identity, and a missing scope would poll whatever the default is.
 pub fn scope_from(args: &[String]) -> Result<&str, String> {
     let Some(source) = args.first() else {
@@ -48,7 +45,7 @@ pub fn scope_from(args: &[String]) -> Result<&str, String> {
     }
 }
 
-/// **What the seat does, what it needs, and one example.** Without it `--help` was read as the
+/// What the seat does, what it needs, and one example. Without it `--help` was read as the
 /// scope and the seat polled a repository named `--help`.
 const USAGE: &str = "\
 letibot attach github <org|owner/repo>
@@ -69,7 +66,7 @@ fn wants_help(args: &[String]) -> bool {
     args.iter().any(|a| a == "--help" || a == "-h")
 }
 
-/// **Both levels of `leticode.toml`, merged.** `plan` is given this and not the user's file alone:
+/// Both levels of `leticode.toml`, merged. `plan` is given this and not the user's file alone:
 /// a repository whose own file says `post = false` must be able to stop a seat the user file
 /// started, and a project file that will not parse may be the one carrying that `false`.
 fn merged(
@@ -83,7 +80,7 @@ fn merged(
     Ok(user.overridden_by(&project))
 }
 
-/// **What the seat will do and what it is allowed to send**, worked out before anything is polled:
+/// What the seat will do and what it is allowed to send, worked out before anything is polled:
 /// the scope as typed, and the config with the token file resolved and its mode checked.
 pub fn plan(
     scope: &str,
@@ -137,7 +134,7 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    // **The sessions come before the banner**: a seat that announced `polling every 60s` and then
+    // The sessions come before the banner: a seat that announced `polling every 60s` and then
     // said it had nowhere to review in would have promised work it cannot do.
     let sessions = match DaemonSessions::at(&cwd) {
         Ok(sessions) => sessions,
@@ -168,7 +165,7 @@ pub fn run(args: &[String]) -> ExitCode {
     }
 }
 
-/// **Nothing runs a pull request's code, and the session it runs in is the daemon's.** The seat asks
+/// Nothing runs a pull request's code, and the session it runs in is the daemon's. The seat asks
 /// this for a review and an answer; where the session comes from is the daemon's own business.
 pub struct DaemonSessions {
     /// This folder's daemon: the sessions are its own, so the operator attaches to them as they do
@@ -197,7 +194,7 @@ impl DaemonSessions {
         Ok(DaemonSessions { daemon, trees })
     }
 
-    /// **One tree per pull request, at its head.** The head is fetched from `origin` as GitHub's
+    /// One tree per pull request, at its head. The head is fetched from `origin` as GitHub's
     /// `refs/pull/<n>/head`, which is the same ref for a fork's pull request, and the tree is a
     /// detached worktree of the checkout the seat was started in.
     fn tree_for(&self, pull: &Pull) -> Result<PathBuf, String> {
@@ -283,7 +280,7 @@ impl Sessions for DaemonSessions {
 /// One review may take this long before its row is owed again.
 const REVIEW_PATIENCE: Duration = Duration::from_secs(20 * 60);
 
-/// **The `owner/name` a remote URL names**, or `None` for a host this seat does not review. The
+/// The `owner/name` a remote URL names, or `None` for a host this seat does not review. The
 /// three spellings are one repository, and a checkout that cannot say is a tree the seat refuses.
 fn slug_of_url(url: &str) -> Option<String> {
     let url = url.trim();
@@ -372,7 +369,7 @@ mod tests {
         }
     }
 
-    /// **The three spellings of one GitHub remote are one repository.** This is the one comparison
+    /// The three spellings of one GitHub remote are one repository. This is the one comparison
     /// that decides whether this checkout can produce a pull request's tree at all.
     #[test]
     fn a_remote_url_names_its_github_repository() {
@@ -414,7 +411,7 @@ mod tests {
         );
     }
 
-    /// **A pull request of another repository is refused by name.** The trees are worktrees of the
+    /// A pull request of another repository is refused by name. The trees are worktrees of the
     /// checkout the seat was started in, so a stranger's repository has none.
     #[test]
     fn a_pull_request_of_another_repository_is_refused_by_name() {
@@ -447,7 +444,7 @@ mod tests {
         assert!(why.contains("gitlab") && why.contains("github"), "{why}");
     }
 
-    /// **The plan is the scope and the config together**, and both refusals happen before anything
+    /// The plan is the scope and the config together, and both refusals happen before anything
     /// is polled: a scope that is not one, and posting without the token that makes it possible.
     #[test]
     fn the_plan_refuses_a_bad_scope_and_a_missing_token() {
@@ -466,10 +463,9 @@ mod tests {
         assert!(why.contains("token_path"), "{why}");
     }
 
-    /// **A project file may stop the seat, so this verb reads it.** A repository whose own file
-    /// says `post = false` - a client's pull requests, say - must not be posted to because the
-    /// user file said `post = true`; and a project file that will not parse is a refusal, because
-    /// it may be the one carrying that `false`.
+    /// A project file may stop the seat, so this verb reads it: a repository whose own file says
+    /// `post = false` must not be posted to because the user file says `true`. A project file that
+    /// will not parse is a refusal, since it may carry that `false`.
     #[test]
     fn a_projects_file_stops_the_seat_and_its_syntax_is_not_ignored() {
         let dir =

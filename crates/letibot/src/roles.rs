@@ -1,11 +1,6 @@
-//! One function per role, and an honest answer for the ones that are not here yet.
-//!
-//! This binary is the *dispatcher*: each role's body lives in its own crate's library and is
-//! called from here, so `letibot-askpass PROMPT` and `letibot askpass PROMPT` reach one
-//! implementation. `Askpass` came first because `sudo` reaches it by path.
-//!
-//! The launcher is NOT a role yet - `scripts/letibot` is what ships as `letibot`, so a
-//! multicall launcher would have no caller. Its decisions are ported; the execution is not.
+//! One function per role, and an honest answer for those not here yet.
+//! This binary is the dispatcher: each role's body lives in its own crate and is called from here.
+//! The launcher is not a role: `scripts/letibot` ships as `letibot`.
 
 use std::process::ExitCode;
 
@@ -17,7 +12,7 @@ use crate::Role;
 pub fn run(role: Role, args: &[std::ffi::OsString]) -> ExitCode {
     match role {
         Role::Askpass => askpass(args),
-        // **Wired, and it is the last one.** `letibot_harnessd::cli::run` is that binary's body,
+        // Wired, and it is the last one. `letibot_harnessd::cli::run` is that binary's body,
         // and this arm mirrors ITS `main` exactly, including the `harnessd: {e}` prefix a person
         // reading a failed start has always seen.
         Role::Daemon => match letibot_harnessd::cli::run(&args_to_strings(args)) {
@@ -35,7 +30,7 @@ pub fn run(role: Role, args: &[std::ffi::OsString]) -> ExitCode {
         // exits 2 from inside it rather than returning, which is named in the module
         // docs there and is why this arm cannot report a code for every path.
         Role::M1 => exit_code(letibot_harnessd::m1::run(&args_to_strings(args))),
-        // **Wired.** The renderer's body lives in its crate's library, so this role and the
+        // Wired. The renderer's body lives in its crate's library, so this role and the
         // `letibot-render` binary are ONE implementation: the fidelity gate execs it by PATH and
         // compares the BYTES. `args` passes through unchanged, as the gate typed them.
         Role::Render => exit_code(letibot_dialect_glm::cli::run(&args_to_strings(args))),
@@ -78,7 +73,7 @@ pub fn launcher() -> ExitCode {
     ExitCode::from(2)
 }
 
-/// **The role `sudo` runs.** Attach to the session's daemon, ask the person, print the secret on
+/// The role `sudo` runs. Attach to the session's daemon, ask the person, print the secret on
 /// stdout. It takes the prompt as `args[0]` and `sudo` passes it as `argv[1]`, which is the whole
 /// argument for argv[0] dispatch. Exit codes are load-bearing: every refusal is 1 and says why.
 fn askpass(args: &[std::ffi::OsString]) -> ExitCode {
@@ -142,7 +137,7 @@ fn askpass_in(args: &[std::ffi::OsString], socket: &str, session: &str, command:
                 return ExitCode::SUCCESS;
             }
             Ok(ServerFrame::Secret { secret: None, why }) => {
-                // The daemon says which failure this was — see the sibling helper in
+                // The daemon says which failure this was - see the sibling helper in
                 // `harnessd/src/bin/letibot-askpass.rs`; an older daemon sends no reason and
                 // the old sentence is what is left to say.
                 match why {
@@ -173,7 +168,7 @@ mod tests {
     use super::*;
     use crate::Role as R;
 
-    /// **The mapping is the interface, and this is the test that says so.** Each name is what
+    /// The mapping is the interface, and this is the test that says so. Each name is what
     /// `install.sh` symlinks and what something else invokes by path; `letibot` itself must NOT
     /// map to a role, because treating it as the daemon starts a second daemon.
     #[test]
@@ -226,13 +221,13 @@ mod tests {
         assert_eq!(Role::from_subcommand(""), None);
     }
 
-    /// **`sudo`'s calling convention, which is why argv[0] exists.** `SUDO_ASKPASS` is a path and
+    /// `sudo`'s calling convention, which is why argv[0] exists. `SUDO_ASKPASS` is a path and
     /// sudo passes the prompt as `argv[1]`, so the role takes it from the first argument and reads
     /// no subcommand out of it. Outside a session the honest answer is a refusal, not a hang.
     #[test]
     fn askpass_outside_a_session_refuses_rather_than_waiting() {
         // Both empty, which is what an unset `LETIBOT_SOCKET`/`LETIBOT_SESSION` reads as:
-        // with either set the role tries to reach a daemon. Handed in, not unset — see
+        // with either set the role tries to reach a daemon. Handed in, not unset - see
         // `askpass_in`.
         let code = askpass_in(
             &[std::ffi::OsString::from("[sudo] password for dead: ")],

@@ -1,4 +1,4 @@
-//! **Which daemon belongs to which folder** — the launcher's root, in Rust.
+//! Which daemon belongs to which folder - the launcher's root, in Rust.
 //!
 //! # Why this is a module and not the shell function it replaces
 //!
@@ -6,12 +6,11 @@
 //! behaviours and the seat flags all sit on ONE thing: a workspace hashes to a socket
 //! and a record file beside it, and every question about "this folder's daemon" is
 //! answered from those two paths. That is the piece with an exact interoperability
-//! contract — the shell and the Rust must derive the SAME socket for the same folder, or
+//! contract - the shell and the Rust must derive the SAME socket for the same folder, or
 //! the ported launcher would talk to a daemon the shell one never started.
 //!
 //! So it is ported first and asserted against the shell's own output rather than
-//! against a reimplementation's opinion. MEASURED, on this box, and these are the test
-//! values below:
+//! against a reimplementation's opinion. These are the test values below:
 //!
 //! ```text
 //! printf '%s' "$ws" | sha256sum | cut -c1-12
@@ -36,13 +35,13 @@
 //!
 //! And the EXECUTION: spawning a daemon, waiting for its socket, writing the record
 //! beside it, exec'ing a head. `roles::launcher` carries the argument for why that
-//! waits — the short version is that the multicall is not what ships as `letibot`, so
+//! waits - the short version is that the multicall is not what ships as `letibot`, so
 //! it would have no caller and no way to be verified.
 //!
 //! The daemon's PID *is* here now, and not by `ss`: `inode_of`/`daemon_pid` read
 //! `/proc/net/unix` and then find the holder by scanning `/proc/<pid>/fd` for
 //! `socket:[inode]`. Measured against `ss` on every live daemon, and the answer agrees
-//! — the reason for the read is that `ss` may simply be absent, which is a fact about
+//! - the reason for the read is that `ss` may simply be absent, which is a fact about
 //! a box rather than about speed. (It is not faster: 10.27 ms against 11.24 ms.)
 
 use std::path::{Path, PathBuf};
@@ -86,7 +85,7 @@ pub fn uid() -> u32 {
     unsafe { libc::getuid() }
 }
 
-/// **The key a workspace hashes to: the first twelve hex characters of its SHA-256.**
+/// The key a workspace hashes to: the first twelve hex characters of its SHA-256.
 /// The bytes are the path with NOTHING appended - the shell writes `printf '%s'`, and a
 /// newline would give a different key for every folder. Twelve hex is the shell's cut.
 pub fn key(workspace: &Path) -> String {
@@ -128,7 +127,7 @@ pub fn locate(workspace: &Path) -> Where {
     locate_in(&rundir(), workspace)
 }
 
-/// **What a record under the rundir is a record OF.**
+/// What a record under the rundir is a record OF.
 /// Three writers share the directory; only a folder's daemon is named by a workspace's key,
 /// so re-deriving another kind's socket from its workspace names a path nothing binds.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -137,7 +136,7 @@ pub enum Kind {
     /// beside it, so `locate_in` derives both from the workspace alone.
     #[default]
     Daemon,
-    /// The box's room — one `harnessd --room` per box, started by the launcher when no
+    /// The box's room - one `harnessd --room` per box, started by the launcher when no
     /// coordinator is serving. Its `workspace` is a directory of its own under the data
     /// directory: true, and not a folder anybody works in.
     Room,
@@ -146,21 +145,21 @@ pub enum Kind {
 }
 
 /// What the record beside a socket says a daemon is.
-/// Every field is optional-shaped on purpose: a **stale or partially-written record must
-/// not stop a `--status`** - a file that says less is not an error.
+/// Every field is optional-shaped on purpose: a stale or partially-written record must
+/// not stop a `--status` - a file that says less is not an error.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Record {
-    /// Which of the launcher's writers put this here — see [`Kind`].
+    /// Which of the launcher's writers put this here - see [`Kind`].
     pub kind: Kind,
     pub workspace: String,
     pub socket: String,
-    /// The pid the launcher started. **Not trusted for liveness**: the pid LISTENING on
+    /// The pid the launcher started. Not trusted for liveness: the pid LISTENING on
     /// the socket is the daemon whatever this says, and this is the fallback for a box
     /// that cannot answer.
     pub pid: Option<u32>,
     pub role: String,
     pub model: String,
-    /// What actually answers the turns — `deepseek/deepseek-flash` on a session whose
+    /// What actually answers the turns - `deepseek/deepseek-flash` on a session whose
     /// local vocab is `qwen-3.8-27b`. The shell prints THIS when the record has one,
     /// because the model field is the vocab the daemon binds and the two differ.
     pub answers: String,
@@ -195,7 +194,7 @@ pub fn read_record(path: &Path) -> Option<Record> {
     })
 }
 
-/// **Which kind of record this is, from what the writers already put in it.**
+/// Which kind of record this is, from what the writers already put in it.
 /// There is no `kind` field, deliberately: these are the marks `scripts/letibot` writes and
 /// reads back, so deriving them here keeps the port and the shell agreeing on one spelling.
 fn kind_of(v: &serde_json::Value) -> Kind {
@@ -217,7 +216,7 @@ fn kind_of(v: &serde_json::Value) -> Kind {
 mod tests {
     use super::*;
 
-    /// **The contract, against values the SHELL produced on this box.**
+    /// The contract, against values the SHELL produced on this box.
     /// Each is the filename of a real record whose `workspace` names the path on the left;
     /// a failure here means the port and the shell disagree about which daemon a folder has.
     #[test]
@@ -237,7 +236,7 @@ mod tests {
         }
     }
 
-    /// **No trailing newline.** The shell writes `printf '%s'`, and a `println!`-shaped
+    /// No trailing newline. The shell writes `printf '%s'`, and a `println!`-shaped
     /// hash would give a different key for every folder while looking correct.
     #[test]
     fn the_key_hashes_the_path_with_nothing_appended() {
@@ -262,7 +261,7 @@ mod tests {
     }
 
     /// The socket and record sit beside each other, named by the key, under the rundir
-    /// given — so a test never addresses the machine's live daemons.
+    /// given - so a test never addresses the machine's live daemons.
     #[test]
     fn the_paths_are_the_rundir_plus_the_key() {
         let w = locate_in(
@@ -317,8 +316,8 @@ mod tests {
 
 // --- is it listening, and which process is it ------------------------------------
 
-/// **Is this socket being listened on right now?** Read from `/proc/net/unix` rather than
-/// `ss`, which **may not be installed**; `/proc` carries no pid column, so the inode's
+/// Is this socket being listened on right now? Read from `/proc/net/unix` rather than
+/// `ss`, which may not be installed; `/proc` carries no pid column, so the inode's
 /// holder is found by scanning `/proc/<pid>/fd`. Not a speed change: they measure alike.
 #[cfg(not(target_os = "macos"))]
 pub fn is_listening(socket: &Path) -> bool {
@@ -333,7 +332,7 @@ pub fn is_listening(socket: &Path) -> bool {
     listener_pid(socket).is_some()
 }
 
-/// **The pid that called `listen()` on this socket**, from `LOCAL_PEERPID` on a fresh
+/// The pid that called `listen()` on this socket, from `LOCAL_PEERPID` on a fresh
 /// connection - never a child that merely inherited the descriptor. A daemon can outlive
 /// its socket file, so with nothing to connect to the question goes to `lsof`.
 #[cfg(target_os = "macos")]
@@ -405,7 +404,7 @@ fn bsdinfo(pid: u32) -> Option<(u32, u32)> {
     (got == size).then_some((bi.pbi_ppid, bi.pbi_status))
 }
 
-/// **Is this process actually running?** - and a zombie is not: `/proc/<pid>` exists for a
+/// Is this process actually running? - and a zombie is not: `/proc/<pid>` exists for a
 /// process that has died and not been reaped, so the state field is read and `Z` and `X`
 /// count as gone. A library cannot rely on `setsid` making init reap the daemon.
 #[cfg(target_os = "macos")]
@@ -418,7 +417,7 @@ pub fn is_running(pid: u32) -> bool {
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return false;
     };
-    // `pid (comm) state …` — and `comm` can contain spaces and parentheses, so the state
+    // `pid (comm) state …` - and `comm` can contain spaces and parentheses, so the state
     // is read from AFTER the last ')', which is the kernel's own advice.
     let Some(rest) = stat.rsplit_once(')').map(|(_, r)| r) else {
         return false;
@@ -430,7 +429,7 @@ pub fn is_running(pid: u32) -> bool {
     }
 }
 
-/// The socket inode from `/proc/net/unix`, or `None` when it is not listed — which is
+/// The socket inode from `/proc/net/unix`, or `None` when it is not listed - which is
 /// what "nothing is listening on this path" means.
 #[cfg(not(target_os = "macos"))]
 fn inode_of(socket: &Path) -> Option<String> {
@@ -439,7 +438,7 @@ fn inode_of(socket: &Path) -> Option<String> {
     for line in table.split(|b| *b == b'\n') {
         let text = String::from_utf8_lossy(line);
         let mut fields = text.split_whitespace();
-        // `Num RefCount Protocol Flags Type St Inode [Path]` — the path is absent for an
+        // `Num RefCount Protocol Flags Type St Inode [Path]` - the path is absent for an
         // abstract socket, which is why this cannot assume eight fields.
         let (mut inode, mut path) = (None, None);
         for (i, f) in fields.by_ref().enumerate() {
@@ -457,7 +456,7 @@ fn inode_of(socket: &Path) -> Option<String> {
     None
 }
 
-/// **The pid LISTENING on this socket** - the daemon, whatever the record says; the record
+/// The pid LISTENING on this socket - the daemon, whatever the record says; the record
 /// is believed only while its process exists. A child can inherit the descriptor, so among
 /// the holders this prefers one whose `argv[0]` names `harnessd`.
 pub fn daemon_pid(where_: &Where) -> Option<u32> {
@@ -530,7 +529,7 @@ fn argv_bytes(pid: u32) -> Option<Vec<u8>> {
 }
 
 /// The same from `sysctl(KERN_PROCARGS2)` on macOS: `argc`, the executable path and its
-/// padding, then the arguments — which is where this starts.
+/// padding, then the arguments - which is where this starts.
 #[cfg(target_os = "macos")]
 fn argv_bytes(pid: u32) -> Option<Vec<u8>> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
@@ -551,7 +550,7 @@ fn argv_bytes(pid: u32) -> Option<Vec<u8>> {
     Some(after_path[start..].to_vec())
 }
 
-/// **A socket file that something is listening on** - the shell's `live`. Both questions
+/// A socket file that something is listening on - the shell's `live`. Both questions
 /// are asked because they fail differently: a stale socket file outlives a crashed daemon,
 /// so *"is there a daemon there"* is a conversation, not a stat.
 pub fn live(where_: &Where) -> bool {
@@ -566,7 +565,7 @@ pub fn live(where_: &Where) -> bool {
 mod liveness_tests {
     use super::*;
 
-    /// **A path with nothing on it is not listening**, and neither is a plain file —
+    /// A path with nothing on it is not listening, and neither is a plain file -
     /// the case a stale record leaves behind.
     #[test]
     fn a_path_with_no_socket_is_not_listening() {
@@ -596,7 +595,7 @@ mod liveness_tests {
         // No record at all.
         assert_eq!(daemon_pid(&w), None);
 
-        // A record whose pid is gone — `u32::MAX` is never a live pid, and the pid
+        // A record whose pid is gone - `u32::MAX` is never a live pid, and the pid
         // space is not going to reach it.
         std::fs::write(
             &w.record,
@@ -620,7 +619,7 @@ mod liveness_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **This process is not `harnessd`**, and the check says so — the guard that keeps
+    /// This process is not `harnessd`, and the check says so - the guard that keeps
     /// a `--stop` from killing whatever inherited the socket rather than the daemon.
     #[test]
     fn the_harnessd_check_is_not_a_substring_match() {
@@ -634,7 +633,7 @@ mod liveness_tests {
         );
     }
 
-    /// **The Rust agrees with the box's own socket table about a daemon that is listening.**
+    /// The Rust agrees with the box's own socket table about a daemon that is listening.
     /// The daemon is one this test starts, so nothing of the box is in the answer; the tool is
     /// `ss` on Linux and `netstat -anv` on macOS, which does not fall back to `lsof` as we do.
     #[test]
@@ -642,7 +641,7 @@ mod liveness_tests {
         use letibot_tokencore::apparatus;
         use std::process::Command;
 
-        // **A runtime directory, a socket and a record — the three things a launcher leaves** —
+        // A runtime directory, a socket and a record - the three things a launcher leaves -
         // bound BEFORE the table is read, because the table is a snapshot and this listening socket
         // has to be in it. The name is short because the socket path must fit in `sun_path`.
         let dir = std::env::temp_dir().join(format!("letibot-{}", std::process::id()));
@@ -752,7 +751,7 @@ mod liveness_tests {
             })
     }
 
-    /// **The listing is a snapshot, so only the live direction is asserted.** A daemon that
+    /// The listing is a snapshot, so only the live direction is asserted. A daemon that
     /// dies between the `netstat` and the connect counts as stale, so asserting the other
     /// direction would fail on a busy box.
     #[test]
@@ -782,9 +781,9 @@ Address          Type   Recv-Q Send-Q            Inode             Conn         
 
 // --- the three read-only verbs ----------------------------------------------------
 
-/// **One line about this folder's daemon.** `answers` is what answers the turns and `model`
+/// One line about this folder's daemon. `answers` is what answers the turns and `model`
 /// is the local vocab it binds ids against, so announcing the second reads as a claim about
-/// the model; `answers` wins, and an older record is labelled **`vocab`**, which is true.
+/// the model; `answers` wins, and an older record is labelled `vocab`, which is true.
 pub fn daemon_line(workspace: &Path, rec: &Record, pid: Option<u32>) -> String {
     let mut out = format!("harnessd for {}", workspace.display());
     if let Some(p) = pid {
@@ -818,7 +817,7 @@ pub fn daemon_line(workspace: &Path, rec: &Record, pid: Option<u32>) -> String {
 pub enum State {
     /// Something is listening on its socket.
     Up,
-    /// The record exists and nothing answers its socket — a daemon that has gone, and
+    /// The record exists and nothing answers its socket - a daemon that has gone, and
     /// whose record has not been cleaned up.
     Stale,
 }
@@ -840,7 +839,7 @@ pub fn daemons_lines(entries: &[(Record, State)]) -> Vec<String> {
                 },
                 State::Stale => "STALE (nothing listens on its socket)".to_string(),
             };
-            // **The room is one of these daemons and none of these folders**, so the line
+            // The room is one of these daemons and none of these folders, so the line
             // names it for what it is. A forward keeps its landed workspace: that IS a folder.
             let who = match rec.kind {
                 Kind::Room => "the box's room",
@@ -851,8 +850,8 @@ pub fn daemons_lines(entries: &[(Record, State)]) -> Vec<String> {
         .collect()
 }
 
-/// What a `--status` invocation has to say, as lines. **Something that answered the socket
-/// and refused is not silence**: printing "no daemon" for it is how a live daemon gets a
+/// What a `--status` invocation has to say, as lines. Something that answered the socket
+/// and refused is not silence: printing "no daemon" for it is how a live daemon gets a
 /// second one started on top of it. The local server is a separate fact, probed by the caller.
 pub fn status_lines(
     workspace: &Path,
@@ -924,7 +923,7 @@ mod verb_tests {
         }
     }
 
-    /// **`answers` wins, because it is what answers.** This is the operator's *"so -
+    /// `answers` wins, because it is what answers. This is the operator's *"so -
     /// qwen again"*: a session whose turns go to deepseek announced as qwen, from a line
     /// that is true about the tokenizer and read as a claim about the model.
     #[test]
@@ -945,7 +944,7 @@ mod verb_tests {
         );
     }
 
-    /// A record from before `answers` existed is labelled `vocab` — true, and not a claim
+    /// A record from before `answers` existed is labelled `vocab` - true, and not a claim
     /// about what answers.
     #[test]
     fn a_record_without_answers_is_labelled_vocab() {
@@ -960,7 +959,7 @@ mod verb_tests {
         assert!(bare.contains("vocab unknown"), "{bare}");
     }
 
-    /// `--daemons` reports STALE rather than hiding it — the record of a daemon that died
+    /// `--daemons` reports STALE rather than hiding it - the record of a daemon that died
     /// without cleaning up.
     #[test]
     fn the_daemons_list_distinguishes_up_from_stale() {
@@ -1012,7 +1011,7 @@ mod verb_tests {
         );
     }
 
-    /// **A refusal is not silence.** The middle case of `--status`, and the one that stops
+    /// A refusal is not silence. The middle case of `--status`, and the one that stops
     /// a second daemon being started over a live one.
     #[test]
     fn status_separates_a_refusal_from_nothing_being_there() {
@@ -1070,7 +1069,7 @@ mod verb_tests {
 pub enum Stopped {
     /// The process was signalled and is gone.
     Gone,
-    /// Signalled, and still there when the grace elapsed. **Not an error**: the shell
+    /// Signalled, and still there when the grace elapsed. Not an error: the shell
     /// prints this and keeps the record, because a daemon that survives SIGTERM is a
     /// fact the operator needs rather than a failure to retry.
     StillThere,
@@ -1078,8 +1077,8 @@ pub enum Stopped {
     NoSuchProcess,
 }
 
-/// How long to wait for a signalled daemon, in tenths of a second. **"stopped" is said after
-/// the process is gone, not after the signal is sent** - a daemon wedged on a `llama-server`
+/// How long to wait for a signalled daemon, in tenths of a second. "stopped" is said after
+/// the process is gone, not after the signal is sent - a daemon wedged on a `llama-server`
 /// that had gone away swallowed SIGTERM, and the record was deleted over an orphan.
 pub const STOP_TENTHS: u32 = 10;
 
@@ -1126,7 +1125,7 @@ pub fn force_kill(pid: u32) -> Stopped {
 mod stop_tests {
     use super::*;
 
-    /// **Tested against a child this test starts, never a live daemon** - a stop test that
+    /// Tested against a child this test starts, never a live daemon - a stop test that
     /// reached one would kill the operator's session.
     #[test]
     fn stop_reaches_a_process_and_waits_for_it_to_go() {
@@ -1143,7 +1142,7 @@ mod stop_tests {
         assert_eq!(stop(pid), Stopped::NoSuchProcess);
     }
 
-    /// A pid that is not there is `NoSuchProcess` rather than an error — the common case
+    /// A pid that is not there is `NoSuchProcess` rather than an error - the common case
     /// for a record whose daemon has already gone.
     #[test]
     fn stopping_something_that_is_not_there_says_so() {
@@ -1151,7 +1150,7 @@ mod stop_tests {
         assert_eq!(force_kill(u32::MAX), Stopped::NoSuchProcess);
     }
 
-    /// **`force_kill` reaches a process that ignores SIGTERM.** The child traps it and exits
+    /// `force_kill` reaches a process that ignores SIGTERM. The child traps it and exits
     /// on nothing, so only SIGKILL ends it; spawned by this test, so still no live daemon.
     #[test]
     fn force_kill_ends_a_process_that_ignores_sigterm() {
@@ -1177,8 +1176,8 @@ mod stop_tests {
 
 // --- the seat, as the launcher's own flags describe it ---------------------------
 
-/// **What the operator asked this session to be** - the launcher's flags, parsed. A "seat"
-/// is the role, mode, grants and provider, and **it is fixed when the daemon STARTS**, so an
+/// What the operator asked this session to be - the launcher's flags, parsed. A "seat"
+/// is the role, mode, grants and provider, and it is fixed when the daemon STARTS, so an
 /// attach can only warn. The defaults and the wording are `scripts/letibot`'s own.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Seat {
@@ -1189,14 +1188,14 @@ pub struct Seat {
     pub adj: String,
     /// `--mode`, whose six names the shell lists in its own refusal.
     pub mode: String,
-    /// `--bash` / `--no-bash`. **On by default**, for every seat that can carry a shell —
+    /// `--bash` / `--no-bash`. On by default, for every seat that can carry a shell -
     /// the operator's *"i dont think having coder that cant do tests is a…"* is why, and
     /// `--no-bash` is the opt-out.
     pub bash: bool,
     pub supervise: bool,
     pub oracle: String,
     pub oracle_budget: String,
-    /// `--provider`, and whether it was set — an explicit provider means the launcher
+    /// `--provider`, and whether it was set - an explicit provider means the launcher
     /// does not know the model, which is a different state from the config's default.
     pub provider: Option<String>,
     pub web_search: String,
@@ -1204,7 +1203,7 @@ pub struct Seat {
     /// The dialect the daemon renders for. The presets set it; there is no `--dialect`
     /// flag of the launcher's own.
     pub dialect: String,
-    /// The vocab the daemon binds token ids against, which every preset also names — it
+    /// The vocab the daemon binds token ids against, which every preset also names - it
     /// is the model's own GGUF and cannot be derived from the dialect.
     pub vocab: String,
     pub model: String,
@@ -1230,8 +1229,8 @@ pub const MODES: &[&str] = &[
     "allow-all",
 ];
 
-/// Parse the launcher's seat flags from `args`, or refuse by name. **A flag that needs a
-/// value and has none is a refusal, not a default.** Unknown arguments are NOT refused: the
+/// Parse the launcher's seat flags from `args`, or refuse by name. A flag that needs a
+/// value and has none is a refusal, not a default. Unknown arguments are NOT refused: the
 /// launcher also takes verbs and a bare prompt, and deciding which is which is the caller's.
 pub fn parse_seat(args: &[String]) -> Result<(Seat, Vec<String>), String> {
     let mut seat = Seat {
@@ -1309,7 +1308,7 @@ pub fn parse_seat(args: &[String]) -> Result<(Seat, Vec<String>), String> {
                 seat.extra.push(need("--vm-arg ARG")?);
                 i += 2;
             }
-            // **The session's tools run on another machine** (`docs/remote-hosts.md`),
+            // The session's tools run on another machine (`docs/remote-hosts.md`),
             // forwarded verbatim: the daemon refuses a name the operator never declared, so
             // this parse does not have to know what a host is.
             "--host" => {
@@ -1341,7 +1340,7 @@ pub fn parse_seat(args: &[String]) -> Result<(Seat, Vec<String>), String> {
                 i += 1;
             }
             "--effort" => {
-                // **Forwarded, not stored.** The shell puts it in `EXTRA_ARGS`, because
+                // Forwarded, not stored. The shell puts it in `EXTRA_ARGS`, because
                 // the daemon owns what an effort level means.
                 let v = need("--effort LEVEL   (low, high, max)")?;
                 seat.extra.push("--effort".into());
@@ -1357,7 +1356,7 @@ pub fn parse_seat(args: &[String]) -> Result<(Seat, Vec<String>), String> {
                 seat.model = need("--model NAME")?;
                 i += 2;
             }
-            // **The three presets, and each names a dialect, a model AND a vocab**: the vocab
+            // The three presets, and each names a dialect, a model AND a vocab: the vocab
             // cannot be derived from the dialect, because it is the model's own GGUF.
             "--glm" => {
                 seat.dialect = "glm".into();
@@ -1400,7 +1399,7 @@ mod seat_tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
-    /// **The shell's defaults**, read off its own initialisers: role `coder`, shell ON. A
+    /// The shell's defaults, read off its own initialisers: role `coder`, shell ON. A
     /// coder that cannot run a test is not one, and `--no-bash` is the opt-out.
     #[test]
     fn the_defaults_are_the_shells() {
@@ -1410,7 +1409,7 @@ mod seat_tests {
         assert!(rest.is_empty());
     }
 
-    /// `--read-only` is role `orchestrator` AND clears the adjustments — both halves,
+    /// `--read-only` is role `orchestrator` AND clears the adjustments - both halves,
     /// because the shell does both in one arm.
     #[test]
     fn read_only_is_a_role_and_clears_the_adjustments() {
@@ -1423,7 +1422,7 @@ mod seat_tests {
         assert!(!seat2.bash, "--read-only must not turn the shell back on");
     }
 
-    /// **A mode outside the six is refused, and the refusal lists them.** The shell's
+    /// A mode outside the six is refused, and the refusal lists them. The shell's
     /// message names all six, which is the difference between a refusal and a puzzle.
     #[test]
     fn a_mode_outside_the_accepted_set_is_refused_by_name() {
@@ -1448,8 +1447,8 @@ mod seat_tests {
         }
     }
 
-    /// **The passthrough is verbatim, and that is the contract with the daemon.** The
-    /// shell forwards these with no interpretation — *"harnessd owns the meaning"* — so
+    /// The passthrough is verbatim, and that is the contract with the daemon. The
+    /// shell forwards these with no interpretation - *"harnessd owns the meaning"* - so
     /// the order and the values must arrive as typed.
     #[test]
     fn the_forwarded_flags_are_passed_through_verbatim() {
@@ -1480,7 +1479,7 @@ mod seat_tests {
         );
     }
 
-    /// **The three presets, pinned to the shell's own values.** `--glm` does not just mean
+    /// The three presets, pinned to the shell's own values. `--glm` does not just mean
     /// "dialect glm": it names a model and the model's own vocab GGUF, which no dialect can
     /// derive.
     #[test]
@@ -1531,7 +1530,7 @@ mod seat_tests {
         assert_eq!(seat.extra, v(&["--effort", "low"]));
     }
 
-    /// **Anything it does not recognise comes back, rather than being refused.** The
+    /// Anything it does not recognise comes back, rather than being refused. The
     /// launcher also takes verbs and a bare one-shot prompt, and deciding which of those
     /// an argument is belongs to the caller.
     #[test]
@@ -1544,7 +1543,7 @@ mod seat_tests {
 // --- targeting another folder's daemon --------------------------------------------
 
 /// Every `*.json` record under `rundir`, in the order the shell's glob yields them.
-/// **This order is the contract `--ls` numbering rests on**: a glob sorts and `read_dir`
+/// This order is the contract `--ls` numbering rests on: a glob sorts and `read_dir`
 /// does not promise to. Files only, so a directory named `something.json` shifts no number.
 pub fn records_in(rundir: &Path) -> Vec<PathBuf> {
     let Ok(rd) = std::fs::read_dir(rundir) else {
@@ -1563,7 +1562,7 @@ pub fn records_in(rundir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// **Which daemon a `--stop`/`--attach` argument names.**
+/// Which daemon a `--stop`/`--attach` argument names.
 ///
 /// Three forms, exactly as the shell takes them: nothing or `.` (this folder), an
 /// all-digit handle from `--ls`, or a directory. Returns the [`Where`] the rest of the
@@ -1571,8 +1570,8 @@ pub fn records_in(rundir: &Path) -> Vec<PathBuf> {
 ///
 /// # One divergence from the shell, deliberate and named
 ///
-/// **`letibot --attach 0` REFUSES here; the shell accepted it and acted on this folder.**
-/// Measured 2026-10-01 before writing this — with no daemons recorded at all:
+/// `letibot --attach 0` REFUSES here; the shell accepted it and acted on this folder.
+/// With no daemons recorded at all, the shell printed:
 ///
 /// ```text
 /// scripts/letibot --attach 5   -> "there is no daemon 5 — `letibot --ls` numbers them"
@@ -1582,7 +1581,7 @@ pub fn records_in(rundir: &Path) -> Vec<PathBuf> {
 ///
 /// The shell's guard is `[ "$n" -ge "$want" ]`, where `n` counts records it walked. For
 /// `want=0` the counter never equals it, the walk ends with `n` at the record count (or 0
-/// with none), and `0 -ge 0` passes — so a handle the list never prints silently means
+/// with none), and `0 -ge 0` passes - so a handle the list never prints silently means
 /// "the folder I am standing in". `--ls` numbers from 1. A handle that is not on the list
 /// must refuse by name rather than quietly resolve to something the operator did not ask
 /// for, which is the same rule the rest of this tree follows about flags that do not land.
@@ -1591,7 +1590,7 @@ pub fn records_in(rundir: &Path) -> Vec<PathBuf> {
 ///
 /// A record that cannot be read or parsed refuses rather than contributing an empty
 /// workspace. The shell sets `WORKSPACE=""` and hashes it, and the empty path is the one
-/// key every folder on the box would share — see this module's docs on the guard that
+/// key every folder on the box would share - see this module's docs on the guard that
 /// exists because of it. Refusing by name is the honest answer to a record that says
 /// nothing.
 pub fn retarget(rundir: &Path, here: &Path, want: &str) -> Result<Where, String> {
@@ -1622,7 +1621,7 @@ pub fn retarget(rundir: &Path, here: &Path, want: &str) -> Result<Where, String>
                 ));
             }
             let mut where_ = locate_in(rundir, Path::new(&rec.workspace));
-            // **The record's own socket, when it names one**: the room and a forward listen
+            // The record's own socket, when it names one: the room and a forward listen
             // where their record says, and re-deriving from the workspace names a socket
             // nothing binds. For a folder's daemon the two agree by construction.
             if !rec.socket.is_empty() {
@@ -1661,8 +1660,8 @@ pub const VALUE_FLAGS: &[&str] = &[
     "--oracle-budget-ms",
 ];
 
-/// Every flag the launcher accepts, verbatim from the shell's own list. **The verbs are in
-/// here too**, because this answers "is this an unknown flag", not "does the option loop
+/// Every flag the launcher accepts, verbatim from the shell's own list. The verbs are in
+/// here too, because this answers "is this an unknown flag", not "does the option loop
 /// consume it" - a verb is left behind for the dispatch.
 pub const KNOWN_FLAGS: &[&str] = &[
     "--help",
@@ -1756,11 +1755,11 @@ pub fn takes_value(a: &str) -> bool {
     VALUE_FLAGS.contains(&a)
 }
 
-/// **Decide what an invocation asks for, refusing by name what cannot be answered.** The
+/// Decide what an invocation asks for, refusing by name what cannot be answered. The
 /// seat flags are consumed by the same pass that finds the verb, so the `Seat` comes back
 /// beside the `Action`: `letibot --bash --stop` is a stop that ignores the `--bash`.
 pub fn decide(args: &[String]) -> Result<(Seat, Action), String> {
-    // Pass 1: `--help` anywhere before the prompt. **No value-skipping here**, which is the
+    // Pass 1: `--help` anywhere before the prompt. No value-skipping here, which is the
     // shell's behaviour: `letibot --vm-arg --help` prints the flag list rather than passing
     // `--help` to firecode. Changing that would be a behaviour change dressed as a cleanup.
     for a in args {
@@ -1818,7 +1817,7 @@ pub fn decide(args: &[String]) -> Result<(Seat, Action), String> {
             id: rest.get(1).cloned().unwrap_or_default(),
         },
         "--ls" | "--list-all" => Action::ListAll,
-        // **`attach github <scope>` is a verb, not the `--attach` flag**, and the two words after
+        // `attach github <scope>` is a verb, not the `--attach` flag, and the two words after
         // it are checked here so the shell's arm and this model refuse the same mistakes.
         "attach" => {
             let source = rest.get(1).map(String::as_str).unwrap_or_default();
@@ -1905,9 +1904,7 @@ mod dispatch_tests {
         );
     }
 
-    /// **The incident this pass exists for**, measured 2026-09-13: a typo in a flag name
-    /// used to be answered by the model as a one-shot prompt, because `--help` matched no
-    /// flag and the unknown flag was not refused.
+    /// A typo in a flag name must not be answered by the model as a one-shot prompt.
     #[test]
     fn an_unknown_flag_is_refused_by_name_rather_than_run_as_a_prompt() {
         let e = decide(&v(&["--hlep"])).unwrap_err();
@@ -1949,7 +1946,7 @@ mod dispatch_tests {
         assert_eq!(act(&["-c"]), Action::Continue);
     }
 
-    /// **`attach github <scope>` is a verb and not a prompt.** A word the launcher does not know is
+    /// `attach github <scope>` is a verb and not a prompt. A word the launcher does not know is
     /// sent to the model as a prompt, which is a billed turn for a typo's mistake.
     #[test]
     fn attach_github_takes_a_source_and_a_scope() {
@@ -2098,7 +2095,7 @@ mod target_tests {
         dir
     }
 
-    /// Nothing, or `.`, is this folder — and it goes through the same key derivation as
+    /// Nothing, or `.`, is this folder - and it goes through the same key derivation as
     /// everything else, so the socket is the one the shell would use.
     #[test]
     fn no_target_and_dot_both_mean_this_folder() {
@@ -2112,8 +2109,8 @@ mod target_tests {
         }
     }
 
-    /// **The numbering contract, and it is the one that has to match `--ls`.** Number N is
-    /// the Nth record in the shell's glob order, which is the sorted filename order — so
+    /// The numbering contract, and it is the one that has to match `--ls`. Number N is
+    /// the Nth record in the shell's glob order, which is the sorted filename order - so
     /// this pins the ORDER, not just that some record came back.
     #[test]
     fn a_number_picks_the_nth_record_in_sorted_order() {
@@ -2133,7 +2130,7 @@ mod target_tests {
         );
     }
 
-    /// Out of range refuses, with the shell's own sentence — measured by running
+    /// Out of range refuses, with the shell's own sentence - measured by running
     /// `scripts/letibot --attach 5` against an empty runtime dir.
     #[test]
     fn a_number_past_the_end_refuses_with_the_shells_sentence() {
@@ -2146,7 +2143,7 @@ mod target_tests {
         assert_eq!(e, "there is no daemon 5 — `letibot --ls` numbers them");
     }
 
-    /// **The divergence, pinned so it cannot drift back.** `0` is a handle `--ls` never
+    /// The divergence, pinned so it cannot drift back. `0` is a handle `--ls` never
     /// prints; the shell silently acted on this folder for it, and this refuses instead.
     #[test]
     fn zero_refuses_rather_than_silently_meaning_this_folder() {
@@ -2161,7 +2158,7 @@ mod target_tests {
         assert!(retarget(&dir, here, "1").is_ok());
     }
 
-    /// A directory resolves the way the shell's `cd … && pwd -P` does — through symlinks,
+    /// A directory resolves the way the shell's `cd … && pwd -P` does - through symlinks,
     /// to an absolute path.
     #[test]
     fn a_directory_is_resolved_through_symlinks() {
@@ -2195,7 +2192,7 @@ mod target_tests {
         assert_eq!(e, "no such directory: /no/such/place");
     }
 
-    /// A record that says nothing refuses rather than hashing the empty path — the one
+    /// A record that says nothing refuses rather than hashing the empty path - the one
     /// key every folder on the box would share.
     #[test]
     fn an_empty_record_refuses_rather_than_hashing_the_empty_path() {
@@ -2217,8 +2214,8 @@ mod target_tests {
         assert!(e.contains("says nothing usable"), "{e}");
     }
 
-    /// **A rundir holding every kind the launcher writes, and the number addresses each as
-    /// itself.** **Only a folder's daemon is named by a workspace's key**, so a numbering
+    /// A rundir holding every kind the launcher writes, and the number addresses each as
+    /// itself. Only a folder's daemon is named by a workspace's key, so a numbering
     /// that re-derived every socket would hand `--stop N` a path nothing listens on.
     #[test]
     fn a_rundir_with_every_kind_numbers_each_as_itself() {
@@ -2269,7 +2266,7 @@ mod target_tests {
         names.dedup();
         assert_eq!(names.len(), 3, "no duplicate record names");
 
-        // **The number addresses the record it printed**: the workspace inside it, the socket
+        // The number addresses the record it printed: the workspace inside it, the socket
         // that record names, and the record file itself.
         for (i, path) in records.iter().enumerate() {
             let rec = read_record(path).expect("every fixture record parses");
@@ -2298,7 +2295,7 @@ mod target_tests {
         }
 
         // Each kind is recognised as itself, and each number reaches where that daemon
-        // actually listens — the room's socket is not under the rundir at all.
+        // actually listens - the room's socket is not under the rundir at all.
         let at = |name: &str| {
             records
                 .iter()
@@ -2344,7 +2341,7 @@ mod target_tests {
         );
     }
 
-    /// **A folder's daemon is the one kind whose filename is its workspace's key** — the mark
+    /// A folder's daemon is the one kind whose filename is its workspace's key - the mark
     /// the old version of the live test asserted of every file in the directory.
     #[test]
     fn only_a_folders_daemon_is_named_by_its_workspace_key() {
@@ -2380,7 +2377,7 @@ mod target_tests {
         );
     }
 
-    /// **A frozen copy of this box's records**, for a test that must not race the box: the
+    /// A frozen copy of this box's records, for a test that must not race the box: the
     /// runtime directory is shared, so a record landing mid-scan shifts every number after it.
     /// A copy that does not parse is re-read once; a record torn ON DISK stays torn.
     fn frozen_copy(dir: &Path, records: &[PathBuf]) -> PathBuf {
@@ -2411,7 +2408,7 @@ mod target_tests {
         to
     }
 
-    /// **Against the box's real records: the number must pick what `--ls` prints there**, from
+    /// Against the box's real records: the number must pick what `--ls` prints there, from
     /// a FROZEN copy because the directory is shared. The filename-is-the-key claim holds for a
     /// folder's daemon only; what the number must reach is the daemon the record names.
     #[test]
@@ -2442,8 +2439,8 @@ mod target_tests {
         names.dedup();
         assert_eq!(names.len(), records.len(), "no duplicate record names");
 
-        // Every in-range number resolves to the record it printed — the workspace inside it,
-        // the socket that record names, and the file itself — so the number and the file agree
+        // Every in-range number resolves to the record it printed - the workspace inside it,
+        // the socket that record names, and the file itself - so the number and the file agree
         // and the number reaches where that daemon listens.
         let mut folders = 0;
         let mut others = 0;
@@ -2465,7 +2462,7 @@ mod target_tests {
             // forward's by its session, so this holds of one kind and is asserted of that one.
             if rec.kind == Kind::Daemon {
                 folders += 1;
-                // **A room coordinator's record is not a workspace's**: its name is the
+                // A room coordinator's record is not a workspace's: its name is the
                 // host-derived room key and its `role` says so, which is a fact about the
                 // record rather than a guess.
                 if rec.role == "room" {

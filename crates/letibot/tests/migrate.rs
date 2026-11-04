@@ -1,11 +1,6 @@
-//! **`letibot --migrate`, end to end, with a fake ssh and two fake remotes.**
-//!
-//! What this proves is the orchestration and every byte that crosses: the ssh argv, the git
-//! bundle both ways, the store export and import - run by the FAR SIDE's own binary, which here
-//! is this build's behind a shim - the marker on both ends, and the record a head reads.
-//!
-//! NOT proved, because it needs a real machine: a real `ssh -L` carrying a live daemon's socket,
-//! a real `cargo build --release` on a host, and a head attached through the forward.
+//! `letibot --migrate` end to end, with a fake ssh and two fake remotes.
+//! Proves orchestration and every byte that crosses. Not proved: a real `ssh -L`, a real remote
+//! build, a head attached through the forward.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -68,7 +63,7 @@ impl Fixture {
         f.make_fake_source();
         f.make_checkout();
         f.make_remotes();
-        // **Resolved LAST, because a Mac's `/var` is a symlink to `/private/var`** and the host's
+        // Resolved LAST, because a Mac's `/var` is a symlink to `/private/var` and the host's
         // side answers `pwd -P`: two spellings of one directory would fail every comparison.
         // After this, `seed_store` writes the resolved checkout, which is what the move reads.
         for dir in [&mut f.home, &mut f.checkout, &mut f.remotes] {
@@ -79,7 +74,7 @@ impl Fixture {
     }
 
     fn write_hosts(&self) {
-        // **`mise = false`, because these hosts are fakes on this box**: the default would find
+        // `mise = false`, because these hosts are fakes on this box: the default would find
         // the real `mise` behind the fake ssh and wrap every command in `mise exec`.
         std::fs::write(
             &self.hosts,
@@ -89,7 +84,7 @@ impl Fixture {
              root = \"~/letibot-remote\"\nmise = false\n",
         )
         .unwrap();
-        // **The two facts a connection is refused without**, both letibot's own: a dedicated key
+        // The two facts a connection is refused without, both letibot's own: a dedicated key
         // per host and the host key accepted in letibot's known-hosts file.
         let paths = letibot_tools::remote::Paths::in_home(&self.home);
         std::fs::create_dir_all(paths.keys()).unwrap();
@@ -103,13 +98,13 @@ impl Fixture {
         std::fs::write(paths.known_hosts(), known).unwrap();
     }
 
-    /// **The fake ssh**: skip ssh's own options, then run the command against the home the target
+    /// The fake ssh: skip ssh's own options, then run the command against the home the target
     /// names. A forward (`-N`) is recorded and exits - there is nothing to forward to here.
     fn write_fake_ssh(&self) {
         self.write_fake_ssh_with("");
     }
 
-    /// The same fake, with a prelude - how a test makes a host misbehave. `prelude` runs **before**
+    /// The same fake, with a prelude - how a test makes a host misbehave. `prelude` runs before
     /// the command is dispatched, so a `sleep 300` there is a host that has stopped answering and an
     /// `exit 255` is one whose connection went away.
     fn write_fake_ssh_with(&self, prelude: &str) {
@@ -153,7 +148,7 @@ impl Fixture {
         git(&self.src, &["commit", "-q", "-m", "a tree to build"]);
     }
 
-    /// **The session's checkout**: one commit, one uncommitted file - the file is what proves the
+    /// The session's checkout: one commit, one uncommitted file - the file is what proves the
     /// move LISTS what it does not carry.
     fn make_checkout(&self) {
         std::fs::create_dir_all(&self.checkout).unwrap();
@@ -234,7 +229,7 @@ impl Fixture {
             .unwrap();
     }
 
-    /// **The two hosts**: a home each, and the `cargo` a move would find there. The fake cargo
+    /// The two hosts: a home each, and the `cargo` a move would find there. The fake cargo
     /// writes a `letibot` that IS this build - so the far side's export/import/mark are real code -
     /// and a `harnessd` that records its argv and exits, because no test starts a daemon.
     fn make_remotes(&self) {
@@ -242,7 +237,7 @@ impl Fixture {
             let home = self.remotes.join(name);
             std::fs::create_dir_all(home.join("bin")).unwrap();
             std::fs::create_dir_all(home.join(".config/letibot")).unwrap();
-            // **The host has its own keys** - a move refuses without them, and that refusal has
+            // The host has its own keys - a move refuses without them, and that refusal has
             // its own case below.
             std::fs::write(
                 home.join(".config/letibot/providers.toml"),
@@ -293,7 +288,7 @@ impl Fixture {
         ]
     }
 
-    /// **The runtime dir has to be SHORT**: a unix socket path is bounded by `SUN_LEN` (104 here),
+    /// The runtime dir has to be SHORT: a unix socket path is bounded by `SUN_LEN` (104 here),
     /// and `/var/folders/…` plus `letibot/migrated-<36 chars>.sock` is past it. The bind then
     /// fails with `path must be shorter than SUN_LEN`, which reads like a launcher bug.
     fn short_run(name: &str) -> PathBuf {
@@ -403,7 +398,7 @@ fn said(out: &Output) -> String {
 // The tests
 // ---------------------------------------------------------------------------------------------
 
-/// **Laptop → host.** The rows, the tree, the daemon's argv, the forward and both markers.
+/// Laptop → host. The rows, the tree, the daemon's argv, the forward and both markers.
 #[test]
 fn a_move_to_a_host_carries_the_rows_the_tree_and_the_socket() {
     let f = Fixture::new("to-host");
@@ -488,7 +483,7 @@ fn a_move_to_a_host_carries_the_rows_the_tree_and_the_socket() {
     assert!(log.contains("ControlMaster=auto"), "{log}");
 }
 
-/// **Host → laptop.** The branch comes back as `remote/<host>/<short>`, the rows are caught up,
+/// Host → laptop. The branch comes back as `remote/<host>/<short>`, the rows are caught up,
 /// and the record goes: nothing forwards to a session that lives here.
 #[test]
 fn a_move_back_fetches_the_branch_and_clears_the_marker() {
@@ -526,7 +521,7 @@ fn a_move_back_fetches_the_branch_and_clears_the_marker() {
     assert_eq!(store.session(SESSION).unwrap().unwrap().items, 3);
 }
 
-/// **Host → host, relayed through this box.** The source is wherever the marker says, and the
+/// Host → host, relayed through this box. The source is wherever the marker says, and the
 /// laptop's own row follows the hop.
 #[test]
 fn a_hidden_hop_moves_the_session_on_and_the_row_here_says_where() {
@@ -568,8 +563,8 @@ fn a_hidden_hop_moves_the_session_on_and_the_row_here_says_where() {
     );
 }
 
-/// **A host that is not in the table is refused by name, and the names it does have are the next
-/// step.** One line, before any ssh is made and before anything moves, so a typo in `--to` cannot
+/// A host that is not in the table is refused by name, and the names it does have are the next
+/// step. One line, before any ssh is made and before anything moves, so a typo in `--to` cannot
 /// leave a half-moved session behind.
 #[test]
 fn a_host_that_is_not_declared_is_refused_by_name_and_lists_the_ones_that_are() {
@@ -596,7 +591,7 @@ fn a_host_that_is_not_declared_is_refused_by_name_and_lists_the_ones_that_are() 
     );
 }
 
-/// **Quiesce refuses rather than waiting out a session stopped on a card.** The card is the one
+/// Quiesce refuses rather than waiting out a session stopped on a card. The card is the one
 /// state a person has to clear, and a verb that waited for them would look like a hang.
 #[test]
 fn a_session_stopped_on_a_card_is_refused_and_nothing_moves() {
@@ -641,7 +636,7 @@ fn a_session_stopped_on_a_card_is_refused_and_nothing_moves() {
     server.shutdown();
 }
 
-/// **A host with no provider keys is refused before a byte moves**, and `--copy-keys` is the way
+/// A host with no provider keys is refused before a byte moves, and `--copy-keys` is the way
 /// to give it some - copied, mode 600, never printed.
 #[test]
 fn a_host_without_provider_keys_is_refused_unless_the_keys_are_copied() {
@@ -677,7 +672,7 @@ fn a_host_without_provider_keys_is_refused_unless_the_keys_are_copied() {
     assert_eq!(mode, 0o600, "the keys land mode 600, not 644");
 }
 
-/// **A step that gets no answer is killed at its bound** - rule 1, measured on the second caller of
+/// A step that gets no answer is killed at its bound - rule 1, measured on the second caller of
 /// an ssh call. The fake ssh sleeps for ever, so the whole run is one `STEP_BOUND`. The breaker is
 /// NOT measured here: every invocation is its own process, and the breaker is per process.
 #[test]

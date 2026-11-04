@@ -1,5 +1,5 @@
-//! Layer 2 of `docs/boundary-and-adjudication.md` §4: **normalise a shell command
-//! through the grammar, and name what the grammar cannot resolve.**
+//! Layer 2 of `docs/boundary-and-adjudication.md` §4: normalise a shell command
+//! through the grammar, and name what the grammar cannot resolve.
 //!
 //! # The vulnerability class this exists for
 //!
@@ -9,9 +9,9 @@
 //! past one level are unhandled"* - and calls itself a diagnosis rather than the
 //! mechanism.
 //!
-//! This is not a local worry. **GuardFall** (Adversa AI, 2026-06-30) named it as a
+//! This is not a local worry. GuardFall (Adversa AI) named it as a
 //! structural class and measured it against eleven popular open-source coding
-//! agents: **ten of eleven** were bypassable, because the agent inspects raw
+//! agents: ten of eleven were bypassable, because the agent inspects raw
 //! command text while the shell performs quote removal, expansion and argument
 //! construction *after* that inspection. The one that held up reads the command the
 //! way bash will before deciding, and keeps a hard refuse-list underneath. That is
@@ -19,13 +19,13 @@
 //!
 //! # The rule that makes it honest, and it is the whole point
 //!
-//! A grammar buys a real decomposition and it buys a real **limit**. `eval "$X"`,
+//! A grammar buys a real decomposition and it buys a real limit. `eval "$X"`,
 //! `$CMD --now`, `cat $FILE` and `<(...)` are not commands whose meaning is
-//! *hidden*; they are commands whose meaning **does not exist yet**. So:
+//! *hidden*; they are commands whose meaning does not exist yet. So:
 //!
 //! > A construct the grammar cannot resolve is reported as
 //! > [`Unresolved`] - naming the construct, what decision it denies, and its
-//! > position - and is **never** classified as safe.
+//! > position - and is never classified as safe.
 //!
 //! [`Normalised::is_resolved`] is the single predicate a gate reads, and
 //! `letibot_tools::adjudicate` maps `false` to `NotRun`: *nobody could decide*.
@@ -34,13 +34,13 @@
 //! it could not parse would be the empty-haystack bug with a parse tree attached.
 //!
 //! What that costs is stated rather than hidden: `cat $FILE` is refused, and the
-//! refusal carries the fix (`docs/tool-design-brief.md` §3, *errors carry the fix*)
+//! refusal carries the fix
 //! - resolve the variable and pass the literal path. The alternative is deciding
 //! about a target nobody can name, which is the theatre.
 //!
 //! # What it deliberately does NOT do
 //!
-//! It does not out-parse the shell, and it holds **no table of programs**. Which
+//! It does not out-parse the shell, and it holds no table of programs. Which
 //! token sits in the command-name position is grammar; what that token *means*  -
 //! that `sudo` wraps the next word, that `cat` surfaces its input, that `scp` leaves
 //! the box - is a table about this host's software, and a table is policy. Policy
@@ -382,11 +382,11 @@ pub enum Context {
     Conditional,
     /// Inside `[ … ]` or `[[ … ]]`.
     Test,
-    /// Inside `$(…)` or a backquote. **The stage runs.**
+    /// Inside `$(…)` or a backquote. The stage runs.
     CommandSubstitution,
     /// Inside `<(…)` or `>(…)`. The stage runs.
     ProcessSubstitution,
-    /// The body of a function definition. The stage does **not** run unless the
+    /// The body of a function definition. The stage does not run unless the
     /// function is called.
     FunctionBody(String),
     /// `… &`
@@ -481,7 +481,7 @@ impl Stage {
         self.program.literal().map(|p| !p.contains('/'))
     }
 
-    /// Files this stage writes **through a redirection**, which is the half that is
+    /// Files this stage writes through a redirection, which is the half that is
     /// visible without a table of programs.
     pub fn redirect_writes(&self) -> Vec<&Word> {
         self.redirects
@@ -535,14 +535,14 @@ pub struct Normalised {
     pub stages: Vec<Stage>,
     /// Assignments that are statements of their own rather than a stage's prefix.
     pub assignments: Vec<Assignment>,
-    /// **Read this before reading anything else.** Empty means the grammar resolved
+    /// Read this before reading anything else. Empty means the grammar resolved
     /// the whole command.
     pub unresolved: Vec<Unresolved>,
     /// The parse contained an `ERROR` or `MISSING` node. Also recorded as an [`Unresolved`] with
     /// [`Construct::ParseError`], so a caller reading only one of the two still fails closed: one
     /// mechanism for a safety property ships broken the first time somebody refactors it.
     pub partial: bool,
-    /// Bytes examined. The denominator (`docs/tool-design-brief.md` §2.2): "0
+    /// Bytes examined. The denominator: "0
     /// stages" over 0 bytes and "0 stages" over 4 KiB are different facts, and an
     /// empty command must not read as a clean one.
     pub bytes: usize,
@@ -1860,7 +1860,7 @@ fn resolve<'t>(node: &'t Node, source: &str, binds: &[(String, String)]) -> Reso
             // Quoted: globbing does not apply.
             Resolved::Literal(lit)
         }
-        // **A loop variable this walk bound** (`for f in a b; do …`). The value is not a
+        // A loop variable this walk bound (`for f in a b; do …`). The value is not a
         // hole: it is the word the list spelled for this pass.
         "simple_expansion" | "expansion" => match bound(node, source, binds) {
             Some(v) => Resolved::Literal(v),
@@ -1879,8 +1879,8 @@ fn resolve<'t>(node: &'t Node, source: &str, binds: &[(String, String)]) -> Reso
         "concatenation" => {
             let mut lit = String::new();
             // The same text with every QUOTED character blanked, so the brace check below
-            // keeps the one fact the merged literal loses: **a brace inside quotes is not a
-            // brace expansion**.
+            // keeps the one fact the merged literal loses: a brace inside quotes is not a
+            // brace expansion.
             let mut bare = String::new();
             let mut glob = false;
             for c in kids(node) {
@@ -2057,10 +2057,9 @@ fn has_brace_expansion(s: &str) -> bool {
 /// which costs a question rather than an answer.
 const MOST_WORDS: usize = 32;
 
-/// A brace expansion, expanded into the words bash produces, or `None` when the text does not
-/// decide it - unlike `$( ... )`, a brace list is not a runtime fact. Refused: a brace inside
-/// quotes, an alternative holding an expansion or whitespace, too many words, one that makes no
-/// word at all.
+/// A brace expansion, expanded into bash's words, or `None` when the text does not decide it.
+/// Refused: a brace inside quotes, an alternative holding an expansion or whitespace, too many
+/// words, or an empty result.
 fn brace_words(node: &Node, source: &str) -> Option<Vec<Word>> {
     let (text, quoted) = brace_source(node, source)?;
     // No brace, no brace expansion: a word with none is read by [`resolve`], which knows a
@@ -2083,7 +2082,7 @@ fn brace_words(node: &Node, source: &str) -> Option<Vec<Word>> {
     }
     let mut out = Vec::new();
     for w in expand_braces(&text)? {
-        // **An empty alternative makes no word**: measured, `echo {a,,b}` is two arguments,
+        // An empty alternative makes no word: measured, `echo {a,,b}` is two arguments,
         // `echo {a,}` one, and `echo {,}` none at all.
         if w.is_empty() {
             continue;
@@ -2103,10 +2102,9 @@ fn brace_words(node: &Node, source: &str) -> Option<Vec<Word>> {
     if out.is_empty() { None } else { Some(out) }
 }
 
-/// The text a word holds once quotes are removed, when the shell decides it, and which of its
-/// characters came from a quoted part - or `None` when it does not: a quoted part is literal, so
-/// a brace INSIDE one is not an expansion. Anything the shell would act on - an expansion, a
-/// backslash, a substitution - leaves the word where it was.
+/// The text a word holds once quotes are removed, and which characters came from a quoted part,
+/// or `None` when the shell does not decide it. A brace inside a quoted part is literal; any
+/// expansion, backslash or substitution leaves the word undecided.
 fn brace_source(node: &Node, source: &str) -> Option<(String, Vec<bool>)> {
     match node.kind.as_str() {
         "raw_string" => {
@@ -2305,7 +2303,7 @@ fn brace_range(inner: &str) -> Brace {
     let (Ok(a), Ok(b)) = (lo.parse::<i64>(), hi.parse::<i64>()) else {
         return char_range(lo, hi, step);
     };
-    // **The padding is bash's, and it counts the sign.** Measured: `{-01..3}` is `-01 000 001
+    // The padding is bash's, and it counts the sign. Measured: `{-01..3}` is `-01 000 001
     // 002 003` - the width is the wider endpoint INCLUDING its minus sign - while `{8..10}`
     // is `8 9 10` and `{001..3}` is `001 002 003`.
     let width = lo.len().max(hi.len());
@@ -2608,7 +2606,7 @@ mod tests {
         assert!(!n("for i in {a,*}; do echo $i; done").is_resolved());
     }
 
-    /// **A list the command does not spell is not unrolled**, and each of these is a real
+    /// A list the command does not spell is not unrolled, and each of these is a real
     /// `for` from the same corpus.
     #[test]
     fn a_for_whose_list_is_not_in_the_text_stays_one_unread_pass() {
@@ -2629,8 +2627,8 @@ mod tests {
         assert_eq!(x.binaries(), vec!["grep"]);
     }
 
-    /// **A transform of the loop variable is not the variable** - the same rule the
-    /// intent layer keeps for `${#X}` (measured 2026-10-26: the grammar reports the name
+    /// A transform of the loop variable is not the variable - the same rule the
+    /// intent layer keeps for `${#X}` (the grammar reports the name
     /// `f` for all of `$f`, `${f}`, `${#f}` and `${!f}`).
     #[test]
     fn a_transform_of_a_loop_variable_is_not_the_variable() {
@@ -2646,7 +2644,7 @@ mod tests {
         assert!(n("for f in /w/a; do echo ${f}; done").is_resolved());
     }
 
-    /// **A binding lives for one body.** `$f` after the `done` is the empty string, which
+    /// A binding lives for one body. `$f` after the `done` is the empty string, which
     /// this module does not know and must not claim.
     #[test]
     fn a_loop_binding_does_not_leak_past_its_body() {
@@ -3164,7 +3162,7 @@ mod tests {
         assert_eq!(argv("echo {a..e}"), ["a", "b", "c", "d", "e"]);
         // Prefix and suffix land on every word.
         assert_eq!(argv("echo f{1,2}.rs"), ["f1.rs", "f2.rs"]);
-        // **Leftmost outermost, rightmost fastest.**
+        // Leftmost outermost, rightmost fastest.
         assert_eq!(
             argv("echo x{1,2}{3,4}"),
             ["x13", "x14", "x23", "x24"],
@@ -3189,7 +3187,7 @@ mod tests {
         );
         // A step's SIGN is dropped and its magnitude kept: measured, both of these ascend.
         assert_eq!(argv("echo {1..3..-1}"), ["1", "2", "3"]);
-        // **The empty alternative makes no word**, and a comma pair can still be one word.
+        // The empty alternative makes no word, and a comma pair can still be one word.
         assert_eq!(argv("echo {a,}"), ["a"]);
         assert_eq!(argv("echo {a,,b}"), ["a", "b"]);
         assert_eq!(argv("echo a{,}b"), ["ab", "ab"]);
@@ -3200,7 +3198,7 @@ mod tests {
         assert_eq!(shape(&n("rm -f f{1,2}.rs")), "rm -f <args>");
     }
 
-    /// **The braces bash leaves alone stay one literal word** - and each of these is a word
+    /// The braces bash leaves alone stay one literal word - and each of these is a word
     /// that really occurs (a `find -exec` terminator, a `{}` in a commit message).
     #[test]
     fn a_brace_the_shell_leaves_alone_stays_one_literal_word() {
@@ -3267,7 +3265,7 @@ mod tests {
     fn a_compound_in_the_argument_position_is_walked_and_named() {
         let x = n("time (timeout 900 cargo test -p x 2>&1 | tail -3); echo done");
         assert!(!x.is_resolved(), "a compound argument was read as a word");
-        // The commands inside RUN, so they are stages - that is the half this used to lose.
+        // The commands inside RUN, so they are stages.
         for p in ["timeout", "tail", "echo"] {
             assert!(
                 x.binaries().contains(&p),
@@ -3285,7 +3283,7 @@ mod tests {
         );
     }
 
-    /// **A brace expansion the text does not decide stays unread** - the direction that
+    /// A brace expansion the text does not decide stays unread - the direction that
     /// costs a question rather than giving a wrong answer.
     #[test]
     fn a_brace_no_longer_readable_than_it_is_stays_unread() {
@@ -3569,8 +3567,8 @@ mod redirect_ownership {
 
 #[cfg(test)]
 mod unresolved_reporting {
-    //! **A refusal nobody reads is a refusal that did not say why.** The
-    //! operator, 2026-09-17, on a `not_run` body: *"the explanation lines are
+    //! A refusal nobody reads is a refusal that did not say why. The
+    //! operator, on a `not_run` body: *"the explanation lines are
     //! repeated over and over, also 66 lines???"*
     use super::*;
 

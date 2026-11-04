@@ -1,11 +1,6 @@
 //! Reading an opencode conversation into this head's rows.
-//!
-//! It opens opencode's SQLite database, walks one session's tree and turns each part into
-//! a `TranscriptItem` this head already draws. It renders nothing, publishes nothing and
-//! knows nothing about the daemon, which is what makes the rules testable in isolation:
-//! an imported row says it is imported and whose it was, the ledger never claims the
-//! spend, time is taken from the row rather than invented, opencode's database is opened
-//! read-only and never written, and an unknown tag becomes a counted scrap, not a drop.
+//! Opens opencode's SQLite database read-only and turns parts into `TranscriptItem`s. Rows say they are
+//! imported, the ledger never claims the spend, and an unknown tag becomes a counted scrap.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -17,7 +12,7 @@ use rusqlite::{Connection, OpenFlags};
 /// Everything that can stop a read.
 #[derive(Debug)]
 pub enum ImportError {
-    /// **The database is not there, or is not a database.** Reported as *this* and
+    /// The database is not there, or is not a database. Reported as *this* and
     /// not "no such session", because the two are different facts and the operator
     /// asked for them to be told apart.
     NoDatabase { path: PathBuf, err: String },
@@ -90,7 +85,7 @@ pub struct SessionMeta {
 }
 
 impl SessionMeta {
-    /// **Rule 1, in one line.** What every imported row is, and whose it was, so a
+    /// Rule 1, in one line. What every imported row is, and whose it was, so a
     /// reader who cannot tell whose sentence it is can weigh it - the same defect
     /// §1.5 names for a card that does not label a borrowed sentence.
     pub fn origin(&self) -> String {
@@ -107,7 +102,7 @@ impl SessionMeta {
 }
 
 /// A whole session tree: the root and its sub-sessions, with the count the progress
-/// line needs known **before the first row** (the `WITH RECURSIVE … count(*)`).
+/// line needs known before the first row (the `WITH RECURSIVE … count(*)`).
 #[derive(Debug, Clone)]
 pub struct Tree {
     pub root: SessionMeta,
@@ -132,7 +127,7 @@ pub struct Row {
     pub item: TranscriptItem,
 }
 
-/// **A part that is real but is not a transcript row** - an unknown tag, a `patch`,
+/// A part that is real but is not a transcript row - an unknown tag, a `patch`,
 /// a `compaction`. Counted and said, never dropped.
 #[derive(Debug, Clone)]
 pub struct Scrap {
@@ -147,7 +142,7 @@ pub struct Scrap {
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)] // taken once and dropped, so a boxed row buys nothing
 pub enum Event {
-    /// **The importer's own counter** - parts read, against the count from
+    /// The importer's own counter - parts read, against the count from
     /// `count(*)`. Not derived from what has not arrived: *an indicator must be the
     /// fact, not a rendering of the fact.*
     Progress {
@@ -177,7 +172,7 @@ pub struct Report {
     pub scraps: u64,
     /// Parts per tag, as seen.
     pub by_tag: BTreeMap<String, u64>,
-    /// **Tags this build does not know**, counted individually. Non-empty is a fact
+    /// Tags this build does not know, counted individually. Non-empty is a fact
     /// to report, not a silence.
     pub unknown_tags: BTreeMap<String, u64>,
     /// `patch` parts seen, and how many files they named in total.
@@ -350,7 +345,7 @@ impl Source {
         Ok(report)
     }
 
-    /// **Just the session's `directory`**, so the imported session's tools are confined
+    /// Just the session's `directory`, so the imported session's tools are confined
     /// to the tree the conversation was had in rather than the daemon's start directory.
     /// One query, read before the backend is built because the root is baked into it.
     pub fn directory(&self, id: &str) -> Result<String> {
@@ -530,7 +525,7 @@ fn interpret(
             let row = match role_of(_msg_data).as_deref() {
                 Some("user") => TranscriptItem::User {
                     // An imported conversation's `user` role is the person's. Nothing this
-                    // importer reads is the harness's own voice, so R42's other value has no
+                    // importer reads is the harness's own voice, so the other value has no
                     // site here - and saying so is cheaper than a reader wondering.
                     speaker: letibot_transcript::Speaker::Operator,
                     parts: vec![UserPart::Text { text }],
@@ -562,7 +557,7 @@ fn interpret(
             );
         }
         "tool" => {
-            // **Two rows: the call, then the result.** The head labels a tool card
+            // Two rows: the call, then the result. The head labels a tool card
             // from the nearest preceding `Assistant { tool_calls }`; a lone result
             // would show the outcome with no command. See the module docs.
             let name = str_field(&v, "tool");
@@ -707,7 +702,7 @@ fn interpret(
             }
         }
         other => {
-            // **Counted and said, never dropped.** R3's rule, inside the transcript.
+            // Counted and said, never dropped. R3's rule, inside the transcript.
             *report.unknown_tags.entry(other.to_string()).or_default() += 1;
             report.scraps += 1;
             sink(Event::Scrap(Scrap {
@@ -788,7 +783,7 @@ pub fn default_db_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// A throwaway opencode database, populated by the test. A **file** and not
+    /// A throwaway opencode database, populated by the test. A file and not
     /// `:memory:`, because the point is to open it read-only afterwards and an
     /// in-memory database has no second opener.
     fn fixture(tag: &str) -> PathBuf {
@@ -946,8 +941,8 @@ mod tests {
         path
     }
 
-    /// **The database not being there is a different fact from the session being
-    /// absent**, and the operator asked for the two to be told apart.
+    /// The database not being there is a different fact from the session being
+    /// absent, and the operator asked for the two to be told apart.
     #[test]
     fn a_missing_database_is_named_as_that_and_not_as_a_missing_session() {
         let path = std::env::temp_dir().join("letibot-opencode-definitely-absent.db");
@@ -964,7 +959,7 @@ mod tests {
         assert!(said.contains("no opencode database"), "{said}");
     }
 
-    /// **The tree, and the count, before the first row** - the recursive query the
+    /// The tree, and the count, before the first row - the recursive query the
     /// progress line's denominator comes from, across the whole tree.
     #[test]
     fn the_tree_count_is_the_whole_trees_and_a_stranger_id_is_no_such_session() {
@@ -992,7 +987,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// **The mapping, part by part** - and the progress counter is the importer's
+    /// The mapping, part by part - and the progress counter is the importer's
     /// own, counting parts read, not rows still missing a body.
     #[test]
     fn every_tag_maps_and_the_progress_counts_parts_read() {
@@ -1019,7 +1014,7 @@ mod tests {
             })
             .unwrap();
 
-        // **Progress is the fact, and it ends at the denominator.** Seven parts,
+        // Progress is the fact, and it ends at the denominator. Seven parts,
         // seven ticks, total known from the start.
         assert_eq!(progress.first(), Some(&(1, 7)), "{progress:?}");
         assert_eq!(progress.last(), Some(&(7, 7)), "{progress:?}");
@@ -1081,7 +1076,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// **A patch never renders an empty diff.** It is a hash and a file list; the
+    /// A patch never renders an empty diff. It is a hash and a file list; the
     /// content is in an object store this crate does not open, so the row is a count.
     #[test]
     fn a_patch_is_a_count_and_never_an_empty_diff() {
@@ -1136,7 +1131,7 @@ mod tests {
             );
             return;
         };
-        // The measured session from the notes.
+        // A session id from a real opencode database.
         let root = "ses_f68f5fd80ffe3lS06lxORVNfS9";
         let tree = match src.tree(root) {
             Ok(t) => t,

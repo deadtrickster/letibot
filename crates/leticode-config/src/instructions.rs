@@ -1,11 +1,6 @@
-//! The seat's instruction files: the markdown a leticode reads because it says how
-//! to work in this project.
-//!
-//! A project's instructions may be written under the name this seat gives them or
-//! under the canonical name every other tool reads, and the SEAT is what knows both:
-//! the runtime stays a framework, so the two names are spelled here and nowhere in
-//! `letibot-harnessd`, which asks this crate for paths and reads them. Neither file
-//! present is an answer, not a fault: an empty list, nothing created.
+//! The seat's instruction files: the markdown a leticode reads about how to work in this project.
+//! A project may use the seat's name or the canonical name; the seat knows both, so the runtime
+//! (`letibot-harnessd`) asks this crate for paths. Neither present is an empty list, not a fault.
 
 use std::path::{Path, PathBuf};
 
@@ -143,7 +138,7 @@ mod tests {
         path
     }
 
-    /// **A box with no instruction file of its own.** Every test that is not about
+    /// A box with no instruction file of its own. Every test that is not about
     /// the box scope points here, so the box the test RUNS on cannot answer for
     /// it - the difference between a rule and a fact about this machine.
     fn no_box() -> BoxDirs {
@@ -161,7 +156,7 @@ mod tests {
         assert_eq!(instructions(&ws, &no_box()), vec![own]);
     }
 
-    /// **A project written for another tool still reaches this seat** - the
+    /// A project written for another tool still reaches this seat - the
     /// canonical name is the fallback, not a second-class citizen.
     #[test]
     fn a_workspace_with_only_the_canonical_name_uses_that() {
@@ -180,7 +175,7 @@ mod tests {
         assert_eq!(instructions(&ws, &no_box()), vec![own]);
     }
 
-    /// **A nearer file wins over a further one, in EITHER name** - the walk stops
+    /// A nearer file wins over a further one, in EITHER name - the walk stops
     /// at the first directory that answers, so a project's `CLAUDE.md` is not
     /// outranked by a parent's `leticode.md`.
     #[test]
@@ -212,7 +207,7 @@ mod tests {
         assert_eq!(instructions(&near2, &no_box()), vec![near2_file]);
     }
 
-    /// **Neither name anywhere is no files and no error** - the normal answer for
+    /// Neither name anywhere is no files and no error - the normal answer for
     /// a project that wrote neither, which is most of them.
     #[test]
     fn neither_name_is_no_file_and_no_error() {
@@ -239,7 +234,7 @@ mod tests {
         assert_eq!(instructions(&ws, &box_dirs), vec![own]);
     }
 
-    /// **The box's canonical file is the fallback** - `~/.claude/CLAUDE.md`, the
+    /// The box's canonical file is the fallback - `~/.claude/CLAUDE.md`, the
     /// one other tools write, which on the operator's box is a link to the same
     /// file as the config dir's.
     #[test]
@@ -272,7 +267,7 @@ mod tests {
         assert!(instructions(&ws, &box_dirs).is_empty());
     }
 
-    /// **An empty box dir is nothing, not the working directory**  -
+    /// An empty box dir is nothing, not the working directory  -
     /// `BoxDirs::default()` means "this box has none", and a join onto an empty
     /// path is RELATIVE.
     #[test]
@@ -288,7 +283,7 @@ mod tests {
         );
     }
 
-    /// **The workspace's file comes first**, because it is the more specific
+    /// The workspace's file comes first, because it is the more specific
     /// statement, and both are handed over when both exist.
     #[test]
     fn the_workspace_comes_before_the_box() {
@@ -309,7 +304,7 @@ mod tests {
         assert_eq!(instructions(&box_dirs.config, &box_dirs), vec![own]);
     }
 
-    /// **The names this crate owns are the two the seat answers to**, asserted
+    /// The names this crate owns are the two the seat answers to, asserted
     /// through the API rather than by reading a file: a rename here is a rename
     /// everywhere, and the runtime holds no copy to forget.
     #[test]

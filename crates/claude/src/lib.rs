@@ -1,11 +1,6 @@
-//! Reading a Claude Code conversation into this head's rows: one JSONL line at a time, with
-//! `letibot --session cc-<uuid>`, rendering nothing and publishing nothing. It reads the
-//! transcript and nothing else - no credentials, no subagent directories, no writes - so these
-//! rules are testable in isolation. An imported row says whose it was through [`SessionMeta`],
-//! because no [`TranscriptItem`] carries an origin. Claude Code's spend is reported from its
-//! LAST `cost-state` line, never summed and never folded into this session's budget. Time is
-//! taken off each line and never invented. An unknown type or an `isSidechain` branch is one
-//! [`Scrap`] per kind plus a count, never a silent drop.
+//! Reading a Claude Code conversation into this head's rows, one JSONL line at a time. Read-only.
+//! Rows name their origin through [`SessionMeta`]. Spend comes from the last `cost-state` line and
+//! never enters this session's budget. Unknown types and `isSidechain` branches become a counted [`Scrap`].
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -17,7 +12,7 @@ use letibot_transcript::{
 };
 use serde_json::Value;
 
-/// **The return trip**: writing a transcript `claude --resume` opens, and the one-line
+/// The return trip: writing a transcript `claude --resume` opens, and the one-line
 /// append with a backup and a way back. See the module's own doc for which fields are the
 /// original's format and which are ours.
 pub mod handover;
@@ -25,7 +20,7 @@ pub mod handover;
 /// Everything that can stop a read.
 #[derive(Debug)]
 pub enum ImportError {
-    /// **The transcript directory is not there, or is not a directory.** Reported as
+    /// The transcript directory is not there, or is not a directory. Reported as
     /// *this* and not as "no such session", because the two are different facts - the
     /// same pair `letibot-opencode` tells apart, for the same reason.
     NoDirectory { path: PathBuf, err: String },
@@ -99,7 +94,7 @@ pub struct SessionMeta {
     pub version: Option<String>,
     /// Claude Code's generated title (`ai-title`), when it wrote one.
     pub title: Option<String>,
-    /// **The first thing the operator said** - the line a picker row shows.
+    /// The first thing the operator said - the line a picker row shows.
     pub first: String,
     pub bytes: u64,
     /// The file's own mtime, in ms since the epoch. Taken from the filesystem, never
@@ -108,7 +103,7 @@ pub struct SessionMeta {
 }
 
 impl SessionMeta {
-    /// **Rule 1, in one line.** What every imported row is, and whose it was, so a reader
+    /// Rule 1, in one line. What every imported row is, and whose it was, so a reader
     /// who cannot tell whose sentence it is can weigh it.
     pub fn origin(&self) -> String {
         let model = self.model.as_deref().unwrap_or("another model");
@@ -205,7 +200,7 @@ pub struct Row {
     pub item: TranscriptItem,
 }
 
-/// **A line that is real but is not a transcript row** - an unknown type, a picture, a
+/// A line that is real but is not a transcript row - an unknown type, a picture, a
 /// redacted thought, a sidechain branch's first line. Counted and said, never dropped.
 #[derive(Debug, Clone)]
 pub struct Scrap {
@@ -253,7 +248,7 @@ pub struct Report {
     pub scraps: u64,
     /// Every line type seen, as seen. The census `/status` can print whole.
     pub by_type: BTreeMap<String, u64>,
-    /// **Line types this build does not read**, counted individually. Non-empty is a fact
+    /// Line types this build does not read, counted individually. Non-empty is a fact
     /// to report, not a silence.
     pub unknown_types: BTreeMap<String, u64>,
     /// `attachment` lines by their own `type` - Claude Code's context, counted by kind.
@@ -350,7 +345,7 @@ pub struct Source {
 }
 
 impl Source {
-    /// **Open the directory**, and prove it is one now rather than on the first read: a
+    /// Open the directory, and prove it is one now rather than on the first read: a
     /// path that is a file, or is gone, is [`ImportError::NoDirectory`] here instead of a
     /// confusing emptiness later.
     pub fn open(dir: &Path) -> Result<Self> {
@@ -425,7 +420,7 @@ impl Source {
         Ok(self.tree(id)?.root.cwd.unwrap_or_default())
     }
 
-    /// **Read the transcript, line by line, in the order it was written.** One callback
+    /// Read the transcript, line by line, in the order it was written. One callback
     /// per event, so the caller can publish as it goes and keep the screen live - a
     /// function that returned a `Vec` would have read 116 MB before drawing anything.
     pub fn read(&self, id: &str, sink: &mut dyn FnMut(Event)) -> Result<Report> {
@@ -706,7 +701,7 @@ struct Frame<'a> {
     end: usize,
 }
 
-/// **A frame, when the text is exactly one element.** The closing tag may carry attributes
+/// A frame, when the text is exactly one element. The closing tag may carry attributes
 /// of its own - `<pasted_content id="17da">…</pasted_content id="17da">` is the real
 /// spelling - so the close is matched by name and whatever follows the `>` must be blank.
 fn frame(text: &str) -> Option<Frame<'_>> {
@@ -890,7 +885,7 @@ fn interpret(
         .unwrap_or(0);
     let uuid = str_field(&v, "uuid");
 
-    // **The sidechain rule, said at the point of the skip.** One sentence per branch, at
+    // The sidechain rule, said at the point of the skip. One sentence per branch, at
     // the branch's first line - not one per line, which for a subagent's transcript would
     // be thousands of notices about the same skip.
     let side = v
@@ -1389,7 +1384,7 @@ fn system_line(
         .and_then(Value::as_str)
         .unwrap_or("<no subtype>");
     match subtype {
-        // **The model's own recap, said to an operator who stepped away.** It is a sentence
+        // The model's own recap, said to an operator who stepped away. It is a sentence
         // that was on the screen, in the model's voice, and it is carried as such.
         "away_summary" => {
             let text = v
@@ -1416,7 +1411,7 @@ fn system_line(
                 sink,
             );
         }
-        // **A boundary, not a sentence.** The conversation either side of a compaction is
+        // A boundary, not a sentence. The conversation either side of a compaction is
         // two transcripts of one conversation, and this is the seam between them: a
         // `SegmentMark` renders nothing and says where it happened.
         "compact_boundary" => {
