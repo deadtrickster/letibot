@@ -1237,7 +1237,10 @@ fn a_wedged_master_fails_a_big_write_at_its_deadline_and_the_next_call_is_fresh(
     assert!(!told.is_empty(), "the session was told the call was slow");
     let (code, detail, at) = &told[0];
     assert_eq!(code, letibot_tools::remote::SLOW_CODE);
-    assert!(detail.contains("writing") && detail.contains("read the file again"), "{detail}");
+    assert!(
+        detail.contains("writing") && detail.contains("read the file again"),
+        "{detail}"
+    );
     assert!(
         *at - (began_write.duration_since(began)) < bound,
         "the warning came before the deadline: {at:?}"

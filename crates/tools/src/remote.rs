@@ -2333,7 +2333,10 @@ impl Ssh {
     fn tear_down_master(&self) {
         let exited = self.master("exit").is_some_and(|o| o.status.success());
         if !exited {
-            let pattern = format!("ControlPath={}( |$)", regex_escape(&self.control.display().to_string()));
+            let pattern = format!(
+                "ControlPath={}( |$)",
+                regex_escape(&self.control.display().to_string())
+            );
             let args: Vec<String> = vec!["-KILL".into(), "-f".into(), "--".into(), pattern];
             let _ = run_bounded(Path::new("pkill"), &args, MASTER_BOUND);
         }

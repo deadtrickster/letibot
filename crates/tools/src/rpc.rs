@@ -526,7 +526,10 @@ fn run_with_input(
                 break None;
             }
             Ok(None) => {
-                if let Some(s) = slow.as_ref().filter(|s| !warned && began.elapsed() >= s.after) {
+                if let Some(s) = slow
+                    .as_ref()
+                    .filter(|s| !warned && began.elapsed() >= s.after)
+                {
                     warned = true;
                     (s.notify)();
                 }
