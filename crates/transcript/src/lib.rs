@@ -1,26 +1,23 @@
-//! The conversation record: what the harness stores, and what a dialect renders.
-//!
-//! This crate is deliberately tiny and has no dependency on a vocab, a model, an FFI
-//! or a running server. Both the dialect crate (which renders) and the token core
-//! (which tokenizes and persists) depend on it, and they must be buildable
-//! independently of each other.
+//! The conversation record: what the harness stores and what a dialect renders.
+//! Deliberately tiny, with no dependency on a vocab, model, FFI or server, so the dialect and token
+//! core crates stay independently buildable.
 
 use serde::{Deserialize, Serialize};
 
-/// **Text a head did not author, made safe for a terminal** (§3.1) - here because both
+/// Text a head did not author, made safe for a terminal - here because both
 /// sides of the log/wire boundary need it and neither can see the other.
 pub mod media;
 pub mod sanitize;
-/// **Fixtures that are real images** - public for the reason `letibot_sessionlog::testing` is: the
+/// Fixtures that are real images - public for the reason `letibot_sessionlog::testing` is: the
 /// crates that need a picture in a test are not this one. See the module for what it replaced.
 pub mod testing;
 
-/// **What a fence that cites code looks like** - the daemon reads the lines and the head fills
+/// What a fence that cites code looks like - the daemon reads the lines and the head fills
 /// the fence, so the two spellings of that fence (an empty block, and the one-liner) and the
 /// rule for a block that is never closed live here, once. Same reason as `media` above.
 pub mod citation;
 
-/// **Cutting text to a bound**, once: a payload, a queue row, a card and a status line all cut,
+/// Cutting text to a bound, once: a payload, a queue row, a card and a status line all cut,
 /// and a second copy of the arithmetic is a second place a character can be split.
 pub mod text;
 
@@ -42,11 +39,11 @@ pub enum CallOrigin {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Speaker {
-    /// **The person at the keyboard.** Every row written before this field existed reads as
+    /// The person at the keyboard. Every row written before this field existed reads as
     /// this, which is what a head already drew for them.
     #[default]
     Operator,
-    /// **This session appended it** - a job completion, a salvage notice, a steering line,
+    /// This session appended it - a job completion, a salvage notice, a steering line,
     /// the intent check. Never an authorisation, and never to be drawn as the operator's
     /// words.
     Agent,
@@ -131,10 +128,8 @@ pub enum TranscriptItem {
         #[serde(default)]
         media: Option<media::Media>,
     },
-    /// **A delivery, not words.** Something the session learned while nobody was typing - a
-    /// monitor's firing, folded and bounded - carried as a kind of its own. A `User` row cannot
-    /// say this: its `speaker` defaults to the operator, so a row written without one reads as
-    /// their words, and a firing is not an instruction anybody gave.
+    /// A delivery, not words: something learned while nobody was typing (a monitor's firing),
+    /// as its own kind. A `User` row defaults `speaker` to the operator and would read as their instruction.
     Notice {
         /// What sort of news, so a head draws it and a reader counts it.
         kind: NoticeKind,
@@ -222,7 +217,7 @@ pub struct ToolEditExcerpt {
     pub before_start: usize,
     /// 1-based line of the new file that `after` starts at.
     pub after_start: usize,
-    /// Line counts of each **whole** file, so "… N unchanged lines" is a
+    /// Line counts of each whole file, so "… N unchanged lines" is a
     /// fact rather than a guess.
     pub before_lines: usize,
     pub after_lines: usize,
@@ -281,7 +276,7 @@ pub struct ToolCall {
 pub enum Backgrounding {
     /// The model asked for it: `background: true`.
     Asked,
-    /// **The runtime promoted it**, because it outlived the foreground threshold.
+    /// The runtime promoted it, because it outlived the foreground threshold.
     /// Reactive on elapsed time, never predicted from the command text.
     Promoted,
     /// A person promoted it mid-flight from a head, and this is who.
@@ -324,7 +319,7 @@ pub enum ToolOutcome {
     NotRun {
         why: String,
     },
-    /// **Still running.** Not finished, not failed, not abandoned.
+    /// Still running. Not finished, not failed, not abandoned.
     Backgrounded {
         /// The job id, spelled as the recovery verbs take it.
         handle: String,
@@ -578,7 +573,7 @@ mod tests {
         let TranscriptItem::User { speaker, .. } = item else {
             panic!("a user row");
         };
-        // **The word is the authorisation trail's own** - `agent` - so the row and the record
+        // The word is the authorisation trail's own - `agent` - so the row and the record
         // the oracle reads cannot spell the same speaker two ways.
         assert_eq!(speaker, Speaker::Agent);
         assert_eq!(speaker.as_str(), "agent");

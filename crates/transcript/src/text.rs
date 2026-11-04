@@ -1,9 +1,6 @@
-//! Cutting text to a bound, once - a tool payload, a queue row, a card and a status line all
-//! cut text, and a second copy of the arithmetic is a second place a multibyte character can
-//! be split. Every function here walks boundaries, so no cut lands inside a character.
-//!
-//! It is in this crate for the reason [`crate::sanitize`] is: the cutting is needed on both
-//! sides of a boundary that cannot see across itself, and this is the crate both already see.
+//! Cutting text to a bound, once: payloads, queue rows, cards and status lines all cut text.
+//! Every function walks character boundaries, so no cut splits a multibyte character.
+//! Here for the reason [`crate::sanitize`] is.
 
 /// The longest prefix of `s` of at most `max` characters.
 pub fn chars_head(s: &str, max: usize) -> &str {
@@ -13,7 +10,7 @@ pub fn chars_head(s: &str, max: usize) -> &str {
     }
 }
 
-/// The longest prefix of `s` that is at most `max` **bytes** and ends on a character boundary.
+/// The longest prefix of `s` that is at most `max` bytes and ends on a character boundary.
 pub fn bytes_head(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;
@@ -34,7 +31,7 @@ pub fn clip_chars(s: &str, max: usize) -> String {
     }
 }
 
-/// The first `width` characters **including** the ellipsis: the shape a field that must line up
+/// The first `width` characters including the ellipsis: the shape a field that must line up
 /// with its neighbours takes, where the marker is spent from the width rather than added to it.
 pub fn clip_chars_within(s: &str, width: usize) -> String {
     if s.char_indices().nth(width).is_none() {
@@ -43,7 +40,7 @@ pub fn clip_chars_within(s: &str, width: usize) -> String {
     format!("{}…", chars_head(s, width.saturating_sub(1)))
 }
 
-/// At most `max` **bytes**, then `…`. The cap is the payload's, and the marker is not counted in
+/// At most `max` bytes, then `…`. The cap is the payload's, and the marker is not counted in
 /// it, so a caller whose cap is a hard one wants [`bytes_head`] and its own arithmetic.
 pub fn clip_bytes(s: &str, max: usize) -> String {
     if s.len() <= max {

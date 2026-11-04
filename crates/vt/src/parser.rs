@@ -1,9 +1,6 @@
 //! The byte state machine: whatever a `read` handed us, applied to a screen.
-//!
-//! A pty hands output over in whatever sizes it felt like, so a parser per chunk would print `[3`
-//! as text -- a screen showing its own escape bytes. The parser keeps what it has seen: a partial
-//! sequence, parameter list, character or string. The tests feed the same bytes one call and at
-//! every split point and assert the same events.
+//! A pty chunks arbitrarily, so the parser keeps partial sequences, parameters, characters and strings.
+//! Tests feed the same bytes in one call and at every split point and assert the same events.
 
 /// The most parameters a sequence can carry. A longer list is not a parse error: the extra
 /// parameters are dropped and the ones before them still apply.
@@ -14,7 +11,7 @@ pub const MAX_PARAMS: usize = 16;
 pub struct Csi {
     /// The private marker, one of `< = > ?`, if the program wrote one.
     pub private: Option<u8>,
-    /// The intermediate byte — the space of `CSI 2 SP q` is the one that occurs in practice.
+    /// The intermediate byte - the space of `CSI 2 SP q` is the one that occurs in practice.
     pub intermediate: Option<u8>,
     /// The final byte, `0x40`–`0x7e`. What the sequence *is*.
     pub final_byte: u8,
@@ -38,7 +35,7 @@ impl Csi {
         self.params().get(i).copied()
     }
 
-    /// Parameter `i` as a count, with an absent or zero parameter read as `1` — the rule ECMA-48
+    /// Parameter `i` as a count, with an absent or zero parameter read as `1` - the rule ECMA-48
     /// gives for every cursor movement and every insert/delete count.
     pub fn n(&self, i: usize) -> usize {
         match self.param(i) {
@@ -62,7 +59,7 @@ impl Csi {
 /// Something the byte stream asked the screen to do.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Event {
-    /// A printable character, decoded and — under a designated graphics charset — translated.
+    /// A printable character, decoded and - under a designated graphics charset - translated.
     Print(char),
     /// A `C0` control to execute.
     Control(u8),
@@ -79,7 +76,7 @@ enum State {
     Ground,
     /// `ESC` seen; the next byte says which family.
     Esc,
-    /// `ESC` and a byte in `0x20..=0x2f` — the designator of a charset. One more byte follows.
+    /// `ESC` and a byte in `0x20..=0x2f` - the designator of a charset. One more byte follows.
     Designator(u8),
     /// `CSI` seen; parameters, intermediates and the final byte follow.
     Csi,
@@ -138,9 +135,9 @@ impl Parser {
                     self.utf8(b, &mut f);
                     continue;
                 }
-                // **A byte that cannot continue it ends it.** The pending bytes can never complete
+                // A byte that cannot continue it ends it. The pending bytes can never complete
                 // now, and holding them would let a byte from much later finish a character the
-                // program never sent — a wrong glyph rather than a replacement one.
+                // program never sent - a wrong glyph rather than a replacement one.
                 f(Event::Print('\u{fffd}'));
                 self.utf8_len = 0;
             }
@@ -178,8 +175,8 @@ impl Parser {
                 };
                 f(Event::Print(c));
             }
-            // **The C1 controls are controls, not text.** The tree's sanitiser already reads them
-            // that way, and `0x9b` is the 8-bit spelling of `CSI` — a real program writes it, and
+            // The C1 controls are controls, not text. The tree's sanitiser already reads them
+            // that way, and `0x9b` is the 8-bit spelling of `CSI` - a real program writes it, and
             // rendering it as `U+FFFD` would be this crate printing junk where a terminal acts.
             0x80..=0x9f => match b {
                 0x9b => self.start_csi(),
@@ -242,7 +239,7 @@ impl Parser {
         match b {
             // A new escape: the sequence under way is abandoned, as a terminal does.
             0x1b => self.state = State::Esc,
-            // **A C0 control inside a sequence executes and the sequence continues.** ECMA-48
+            // A C0 control inside a sequence executes and the sequence continues. ECMA-48
             // says so, and `ESC [ 3 \n H` is then a `CUP` with a line feed in the middle rather
             // than a lost sequence.
             0x00..=0x1f => f(Event::Control(b)),
@@ -275,7 +272,7 @@ impl Parser {
                 }
             }
             0x40..=0x7e => {
-                // **Only a parameter that was written is a parameter.** `CSI H` has none and
+                // Only a parameter that was written is a parameter. `CSI H` has none and
                 // `CSI 0 H` has one zero, and the difference is what makes `CSI J` (erase below)
                 // different from `CSI 1 J` (erase above) and `CSI m` a reset.
                 if self.cur.is_some() {
@@ -293,7 +290,7 @@ impl Parser {
             }
             0x7f => {}
             // A byte that cannot appear in a sequence: the sequence is abandoned. Dropping it
-            // rather than printing it is the rule of the whole module — half a sequence is never
+            // rather than printing it is the rule of the whole module - half a sequence is never
             // text.
             0x80..=0xff => self.state = State::Ground,
         }
@@ -487,7 +484,7 @@ mod tests {
         }
     }
 
-    /// **A character split across two feeds is one character**, including the four-byte case and
+    /// A character split across two feeds is one character, including the four-byte case and
     /// the case where the split lands on a continuation byte.
     #[test]
     fn a_character_split_across_two_feeds_is_one_character() {
@@ -509,8 +506,8 @@ mod tests {
         );
     }
 
-    /// **A character that can never complete becomes one replacement character**, rather than
-    /// being held until some later byte finishes it — which would be a glyph the program never
+    /// A character that can never complete becomes one replacement character, rather than
+    /// being held until some later byte finishes it - which would be a glyph the program never
     /// sent, and worse than a visible `�`.
     #[test]
     fn an_incomplete_character_is_abandoned_when_a_byte_that_cannot_continue_it_arrives() {
@@ -530,7 +527,7 @@ mod tests {
         assert_eq!(printed(b"a\xc3\xc3\xa9b"), "a\u{fffd}\u{e9}b");
     }
 
-    /// **A long parameter list, split inside it.** The parameters survive, and the ones past the
+    /// A long parameter list, split inside it. The parameters survive, and the ones past the
     /// cap are dropped rather than read as something else.
     #[test]
     fn a_long_parameter_list_survives_being_split() {
@@ -552,7 +549,7 @@ mod tests {
         assert_eq!(csi(b"\x1b[99999999H").param(0), Some(0xffff));
     }
 
-    /// **An absent parameter and a zero one are different**, which is why they are kept apart all
+    /// An absent parameter and a zero one are different, which is why they are kept apart all
     /// the way through: `ESC [ H` is row 1 by default and `ESC [ 0 H` is row 1 because zero means
     /// default, but `ESC [ J` erases below while `ESC [ 1 J` erases above.
     #[test]
@@ -574,7 +571,7 @@ mod tests {
         );
     }
 
-    /// **The markers around the parameters are kept**, because `?1049h` and `1049h` are two
+    /// The markers around the parameters are kept, because `?1049h` and `1049h` are two
     /// different things and `CSI 2 SP q` is not `CSI 2 q`.
     #[test]
     fn the_private_marker_and_the_intermediate_are_part_of_the_sequence() {
@@ -595,7 +592,7 @@ mod tests {
         assert_eq!(csi(b"\x1b[38:5:167m").params(), &[38u16, 5, 167][..]);
     }
 
-    /// **A malformed or unknown sequence produces no text.** Every one of these is a byte pattern
+    /// A malformed or unknown sequence produces no text. Every one of these is a byte pattern
     /// a real program or a hostile payload can produce, and none of them may reach a cell as
     /// printable characters.
     #[test]
@@ -642,7 +639,7 @@ mod tests {
         assert_eq!(printed(b"\x1b)0lqqk"), "lqqk");
     }
 
-    /// **The controls a screen acts on arrive as controls**, and a C0 inside a sequence does not
+    /// The controls a screen acts on arrive as controls, and a C0 inside a sequence does not
     /// take the sequence with it.
     #[test]
     fn controls_arrive_as_controls_and_survive_a_sequence() {
@@ -661,8 +658,8 @@ mod tests {
         assert_eq!(got[1], Event::Csi(csi(b"\x1b[3H")));
     }
 
-    /// **The 8-bit `CSI` is a `CSI`**, because a program writes it and because the tree's own
-    /// sanitiser already reads it that way — rendering it as a replacement character would be
+    /// The 8-bit `CSI` is a `CSI`, because a program writes it and because the tree's own
+    /// sanitiser already reads it that way - rendering it as a replacement character would be
     /// this crate printing junk where a terminal acts.
     #[test]
     fn the_eight_bit_c1_forms_are_the_same_sequences() {

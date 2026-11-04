@@ -1,11 +1,6 @@
 //! Colour a foreign program asked for, drawn in this head's own roles.
-//!
-//! Without this the head's sanitiser would DELETE the colour `ls` writes, so the run that made
-//! `ls --color=auto` print at all would be worse than the defect.
-//!
-//! The parameter walk is `letibot_vt::attr`'s, because a screen is a second reader of the same
-//! parameters; what stays here is the head's half - which role a pen is drawn as. No sequence is
-//! ever passed through, and colour does not cross a line because a leak would tint the gutter.
+//! Without it the sanitiser would delete the colour `ls --color=auto` writes.
+//! The parameter walk is `letibot_vt::attr`'s. No sequence passes through and colour never crosses a line.
 
 use crate::painter::Painter;
 use letibot_vt::Screen;
@@ -43,7 +38,7 @@ pub fn painted(p: Painter, line: &str) -> String {
             last = None;
         }
         let role = role(pen);
-        // **Only a change is painted.** `ls` writes `ESC[0m` before every name and a reset
+        // Only a change is painted. `ls` writes `ESC[0m` before every name and a reset
         // after it, and a head that emitted a span per sequence would put four sequences on
         // a line that needs two - and would close a span that was never opened.
         match (open, role) {
@@ -63,7 +58,7 @@ pub fn painted(p: Painter, line: &str) -> String {
         }
         last = role;
     }
-    // **A line that ends coloured is closed here.** A pty's state would run on into the
+    // A line that ends coloured is closed here. A pty's state would run on into the
     // next row's gutter; a row list's must not.
     if open {
         out.push_str(&p.close());
@@ -226,7 +221,7 @@ fn painted_rows<'a>(
             // A plain run is *no* span rather than a span with nothing in it, so the bookkeeping
             // below never opens one it would have to close.
             let want = if l.is_plain() { None } else { Some(l) };
-            // **Only a change is painted**, the same rule `painted` follows: a screen's runs are
+            // Only a change is painted, the same rule `painted` follows: a screen's runs are
             // grouped here, from what the cells hold, and a sequence per cell would be a sequence
             // per column.
             if want != open {
@@ -338,7 +333,7 @@ mod tests {
         )
     }
 
-    /// **`grep --color`'s own sequence**, which is the other half of the operator's report:
+    /// `grep --color`'s own sequence, which is the other half of the operator's report:
     /// a match is `01;31` and comes out red, and the text around it is untouched.
     #[test]
     fn a_grep_match_keeps_its_red_and_the_text_around_it_its_own_colour() {
@@ -458,7 +453,7 @@ mod tests {
         );
     }
 
-    /// **A line with nothing to interpret is handed back untouched**, which is what keeps
+    /// A line with nothing to interpret is handed back untouched, which is what keeps
     /// this affordable on the per-payload-line path.
     #[test]
     fn an_ordinary_line_is_returned_as_it_stands() {
@@ -531,7 +526,7 @@ mod tests {
         assert_eq!(lines(&screen, Palette::Colour), vec!["\x1b[44mabc\x1b[0m"]);
     }
 
-    /// **Reverse still works**, and it is why this screen was chosen over the one that was retired:
+    /// Reverse still works, and it is why this screen was chosen over the one that was retired:
     /// `mc`'s selected row and `less`'s status bar are `SGR 7`, and a cell that held an
     /// `Option<Role>` could not carry it at all.
     #[test]
@@ -607,7 +602,7 @@ mod tests {
         assert_eq!(lines(&screen, Palette::Colour).len(), screen.size().0);
     }
 
-    /// **A cell is painted as the role a payload line would get for the same colour.** One table,
+    /// A cell is painted as the role a payload line would get for the same colour. One table,
     /// two readers: `mc`'s `1;34` and `ls`'s `01;34` come out as the same `Role::Subheading`, and
     /// under `Palette::None` a screen is text and nothing else, exactly as a payload line is.
     #[test]
@@ -623,7 +618,7 @@ mod tests {
         assert_eq!(lines(&screen, Palette::None), vec!["src ok", ""]);
     }
 
-    /// **A wide glyph is one glyph, and its tail is not a column.** The tail cell carries the same
+    /// A wide glyph is one glyph, and its tail is not a column. The tail cell carries the same
     /// pen and is skipped, so a coloured CJK filename is one run of two columns rather than two runs
     /// of one - and the glyph is not overwritten by its own second half.
     #[test]

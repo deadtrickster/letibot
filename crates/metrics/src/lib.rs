@@ -1,11 +1,6 @@
-//! Metrics and operator feedback: the event row, and the one way to send one.
-//!
-//! Every decision here was made from a hand query, a log grep or one anecdote, and each
-//! should have been a `SELECT`. So the daemon writes one append-only row per observation
-//! into a sibling file, `metrics.db`, never the store that eleven daemons already share.
-//!
-//! The one rule: `emit` never blocks and never touches SQL - a bounded channel, and a
-//! full one drops the event and counts it. Nothing is installed until `store::start`.
+//! Metrics and operator feedback: the event row and the one way to send one.
+//! One append-only row per observation goes into `metrics.db`, never the shared store.
+//! `emit` never blocks or touches SQL: a bounded channel, and a full one drops and counts.
 
 use std::cell::RefCell;
 use std::sync::OnceLock;
@@ -19,7 +14,7 @@ pub mod stats;
 #[cfg(feature = "store")]
 pub mod store;
 
-/// **Every kind this tree writes** - `docs/metrics.md` §2.3's vocabulary, dotted.
+/// Every kind this tree writes - `docs/metrics.md` §2.3's vocabulary, dotted.
 pub mod kind {
     /// A turn began. Written with the turn's end (see the harness's `instruments`), stamped
     /// with the moment it began. `name` = the door; n1/n2/n3 = fill tokens, window, rounds.
@@ -31,11 +26,11 @@ pub mod kind {
     pub const ROUND: &str = "round";
     /// One tool call. `name` = tool; n = inline bytes / full bytes / memory peak KiB.
     pub const TOOL_CALL: &str = "tool.call";
-    /// A job's or a child's end reaching the model (R79). `name` = what; `outcome` = how.
+    /// A job's or a child's end reaching the model. `name` = what; `outcome` = how.
     pub const DELIVERY: &str = "delivery";
     /// A between-turns wake. `name` = the first cause; `outcome` = `ran` / `empty`.
     pub const WAKE: &str = "wake";
-    /// A plan check sent (R77). `attrs.row` names the row; the follow-up says if it was touched.
+    /// A plan check sent. `attrs.row` names the row; the follow-up says if it was touched.
     pub const NAG: &str = "nag";
     /// Whether the turn after a nag touched the row it named - a second, small row, keyed by
     /// the nag's turn, because the answer is only known a turn later.
@@ -44,13 +39,13 @@ pub mod kind {
     pub const COMPACTION: &str = "compaction";
     /// A turn stopped at the context wall. n = resident / window / rounds.
     pub const WALL: &str = "wall";
-    /// R71's "my context is full", judged. n = resident / window / score×1000.
+    /// The "my context is full", judged. n = resident / window / score×1000.
     pub const CONTEXT_CLAIM: &str = "context.claim";
-    /// A command's wait on the worker (c12d044). n1 = queued ms, n2 = queue depth.
+    /// A command's wait on the worker. n1 = queued ms, n2 = queue depth.
     pub const WORKER_CMD: &str = "worker.cmd";
     /// An idle pass on the worker that took more than 250 ms.
     pub const WORKER_PASS: &str = "worker.pass";
-    /// The daemon's memory (R66). n = rss MiB / heap live MiB / heap peak MiB.
+    /// The daemon's memory. n = rss MiB / heap live MiB / heap peak MiB.
     pub const MEM_SAMPLE: &str = "mem.sample";
     /// A hub warning, by code. `outcome` = its class.
     pub const WARNING: &str = "warning";
@@ -64,7 +59,7 @@ pub mod kind {
     pub const DECISION_ANSWER: &str = "decision.answer";
     /// A queue entry moved (pointer; `queue_transition` in the store stays the record).
     pub const QUEUE_MOVE: &str = "queue.move";
-    /// **The operator's mark** (§2.5). `name` = `good` / `bad` / `note`.
+    /// The operator's mark. `name` = `good` / `bad` / `note`.
     pub const FEEDBACK: &str = "operator.feedback";
     /// The writer's own health: events dropped on a full channel since the last report.
     pub const DROPPED: &str = "metrics.dropped";
@@ -87,7 +82,7 @@ pub fn now_ms() -> u64 {
 /// `None`, and the writer fills it from the tree `session_parent` taught it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Event {
-    /// **The moment of the observation**, not of the write - a batch lands up to a second later.
+    /// The moment of the observation, not of the write - a batch lands up to a second later.
     pub ts_ms: u64,
     pub dur_ms: Option<u64>,
     pub session_id: Option<String>,
@@ -98,9 +93,9 @@ pub struct Event {
     pub kind: &'static str,
     pub name: Option<String>,
     pub outcome: Option<String>,
-    /// The kind's three headline numbers (§2.2) - `SUM`-able without parsing JSON.
+    /// The kind's three headline numbers - `SUM`-able without parsing JSON.
     pub n: [Option<i64>; 3],
-    /// The rest of the kind's fields. Small, and **no content** unless the kind is named in
+    /// The rest of the kind's fields. Small, and no content unless the kind is named in
     /// `[metrics] snippets` (then `snippet` survives the writer; otherwise it is stripped).
     pub attrs: Vec<(&'static str, Value)>,
 }
@@ -240,7 +235,7 @@ impl Emitter {
         )
     }
 
-    /// `try_send`, and a count when it did not go. **Never blocks.**
+    /// `try_send`, and a count when it did not go. Never blocks.
     pub fn send(&self, m: Msg) -> bool {
         match self.tx.try_send(m) {
             Ok(()) => true,
@@ -273,7 +268,7 @@ thread_local! {
     static CAPTURE: RefCell<Option<Vec<Event>>> = const { RefCell::new(None) };
 }
 
-/// **Install the process's emitter.** Once: a second call is refused (`false`), because two
+/// Install the process's emitter. Once: a second call is refused (`false`), because two
 /// writers would be two files' worth of one daemon. [`store::start`] is the caller.
 pub fn install(e: Emitter) -> bool {
     GLOBAL.set(e).is_ok()
@@ -285,7 +280,7 @@ pub fn enabled() -> bool {
     GLOBAL.get().is_some() || CAPTURE.with(|c| c.borrow().is_some())
 }
 
-/// **Send one event. Never blocks, never fails, never writes.** See the module header.
+/// Send one event. Never blocks, never fails, never writes. See the module header.
 pub fn emit(e: Event) {
     let e = CAPTURE.with(|c| match c.borrow_mut().as_mut() {
         Some(v) => {
@@ -299,7 +294,7 @@ pub fn emit(e: Event) {
     }
 }
 
-/// **Tell the writer whose child a session is**, so its rows get the tree's root. Called once
+/// Tell the writer whose child a session is, so its rows get the tree's root. Called once
 /// per session, where the registry records the parent.
 pub fn session_parent(session: &str, parent: Option<&str>) {
     if let Some(g) = GLOBAL.get() {
@@ -321,7 +316,7 @@ pub fn flush(timeout: std::time::Duration) -> bool {
     GLOBAL.get().is_some_and(|g| g.flush(timeout))
 }
 
-/// **Run `f` and return what it emitted on this thread** - the instruments' tests. Nested
+/// Run `f` and return what it emitted on this thread - the instruments' tests. Nested
 /// captures are not supported; the inner one would steal the outer's events.
 pub fn capture<R>(f: impl FnOnce() -> R) -> (R, Vec<Event>) {
     CAPTURE.with(|c| *c.borrow_mut() = Some(Vec::new()));
@@ -330,7 +325,7 @@ pub fn capture<R>(f: impl FnOnce() -> R) -> (R, Vec<Event>) {
     (r, got)
 }
 
-/// **The `#words` in an operator's note** - §2.5's tags, free vocabulary, counted as written.
+/// The `#words` in an operator's note - §2.5's tags, free vocabulary, counted as written.
 /// Lower-cased, trailing punctuation dropped, a bare `#` ignored.
 pub fn tags(note: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -353,7 +348,7 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    /// **The emitter never blocks** - the c12d044 rule, asserted on a channel nobody drains:
+    /// The emitter never blocks - the never-block rule, asserted on a channel nobody drains:
     /// past its capacity every send returns at once, and each one it could not take is counted.
     #[test]
     fn a_full_channel_drops_and_counts_and_never_blocks() {

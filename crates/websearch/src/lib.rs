@@ -1,4 +1,4 @@
-//! **Brave Search behind `web_search`.**
+//! Brave Search behind `web_search`.
 //!
 //! `letibot-tools` ships `web_search` as a tool that refuses: the schema is fixed
 //! (it is prompt bytes in the stable prefix, so the argument names had to be right
@@ -19,7 +19,7 @@
 //!   [brave] key = "…" in providers.toml  #   3. ~/.config/letibot/providers.toml
 //! ```
 //!
-//! A missing key **refuses at attach**, naming all three, rather than three
+//! A missing key refuses at attach, naming all three, rather than three
 //! seconds into the first search as a 401 that names none of them - the same rule
 //! `letibot-provider` follows for a model key, and for the same reason.
 //!
@@ -28,7 +28,7 @@
 //! It does not fetch pages: `web_fetch` is a different seam with a different
 //! backend, and a search provider that quietly also fetched would be a second
 //! egress path nobody declared. It does not cache: a cached search result that
-//! looks live is §8.2's failure wearing a timestamp. And it never invents a hit  -
+//! looks live is a stale result wearing a timestamp. And it never invents a hit -
 //! Brave's `web.results` is the only thing read, so a query that matched nothing
 //! comes back as nothing rather than as the "did you mean" Brave also returns.
 
@@ -230,7 +230,7 @@ impl SearchProvider for Brave {
             .read_json()
             .map_err(|e| SearchError::Transport(format!("Brave's answer did not parse: {e}")))?;
 
-        // **Only `web.results`.** Brave also returns `query.altered`, discussions,
+        // Only `web.results`. Brave also returns `query.altered`, discussions,
         // FAQ and infobox blocks; folding those in would report as a search hit a
         // thing that was never a search hit.
         let results = body

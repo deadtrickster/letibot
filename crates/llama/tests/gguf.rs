@@ -553,7 +553,7 @@ mod tests {
 
     #[test]
     fn detokenizing_our_spans_reproduces_the_rendered_string() {
-        // The "ours" half of the /apply-template fidelity diff (§7.2, I3). W3
+        // The "ours" half of the /apply-template fidelity diff. W3
         // compares this string against the server's; here we only prove the
         // tokenizer is not the thing that would make them differ.
         let Some(v) = vocab() else { return };

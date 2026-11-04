@@ -48,7 +48,7 @@ pub struct Attr {
 }
 
 impl Attr {
-    /// Whether this is the terminal's own pen with no attributes — what a blank cell has.
+    /// Whether this is the terminal's own pen with no attributes - what a blank cell has.
     pub fn is_default(self) -> bool {
         self == Attr::default()
     }
@@ -118,7 +118,7 @@ pub fn apply_sgr(params: &[u16], pen: &mut Attr) -> bool {
 mod tests {
     use super::*;
 
-    /// **The table, at the level it is written**: a slot, its hue, and the intensity the
+    /// The table, at the level it is written: a slot, its hue, and the intensity the
     /// hue does not carry.
     #[test]
     fn the_sixteen_slots_are_eight_hues_at_two_intensities() {
@@ -136,7 +136,7 @@ mod tests {
         assert_eq!(pen.hue(), Some(Hue::Red));
     }
 
-    /// **What the parameters set, one family at a time** — the walk's own contract, asserted
+    /// What the parameters set, one family at a time - the walk's own contract, asserted
     /// here rather than only through the role table above it.
     #[test]
     fn a_parameter_list_sets_exactly_what_it_names() {
@@ -178,7 +178,7 @@ mod tests {
         assert!(!apply_sgr(&[31], &mut pen), "a colour is not a reset");
     }
 
-    /// **A parameter this walk does not know does not take the rest of the sequence with it.**
+    /// A parameter this walk does not know does not take the rest of the sequence with it.
     /// `4;31` is the case: no field here can hold an underline, and the red is the part the
     /// reader can still be told about.
     #[test]
@@ -207,7 +207,7 @@ mod tests {
             Attr::default(),
             "the cube's index 1 is neither a bold nor a colour this palette can name"
         );
-        // The truecolour form, whose four extra parameters are not codes either — the `0`
+        // The truecolour form, whose four extra parameters are not codes either - the `0`
         // among them is not a reset and the `2` is not a dim.
         apply_sgr(&[38, 2, 255, 0, 0], &mut pen);
         assert_eq!(pen, Attr::default());
@@ -236,7 +236,7 @@ mod tests {
         apply_sgr(&[104], &mut pen);
         assert_eq!(pen.bg, Some(12));
         assert_eq!(pen.bg_hue(), Some(Hue::Blue));
-        // `49` clears the background and leaves the foreground beside it alone — the two slots have
+        // `49` clears the background and leaves the foreground beside it alone - the two slots have
         // their own reset codes and neither is the other's.
         apply_sgr(&[31, 49], &mut pen);
         assert_eq!(pen.bg, None);
@@ -246,7 +246,7 @@ mod tests {
         assert_eq!(pen, Attr::default());
     }
 
-    /// **A 256-colour or truecolour background is consumed whole and paints nothing**, which is the
+    /// A 256-colour or truecolour background is consumed whole and paints nothing, which is the
     /// same rule as the foreground's and for the same reason one slot over: `48;5;1`'s `1` is the
     /// cube's index and also the code for bold, and `48;2;255;0;0`'s zero is not a reset.
     #[test]
@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(pen.fg, None, "and `48` is not `38`");
     }
 
-    /// **A background does not disturb reverse, and reverse does not disturb a background.** They
+    /// A background does not disturb reverse, and reverse does not disturb a background. They
     /// are the two things a screen needs that a payload row does not, and `mc`'s selected row is
     /// both at once: a reverse run inside a blue panel.
     #[test]

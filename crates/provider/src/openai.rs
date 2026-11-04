@@ -13,10 +13,8 @@ use serde_json::{Value, json};
 use crate::keys::Credentials;
 use crate::presets::Preset;
 
-/// How long a provider may take to answer AT ALL - its response headers, not its body - before the
-/// read gives up, and the same budget for the whole stream. Ten minutes is above every legitimate
-/// answer this box has seen and short enough that a provider that never comes back is a failure
-/// rather than a hang.
+/// How long a provider may take to send response headers before the read gives up, and the same
+/// budget for the whole stream. A provider that never comes back is a failure, not a hang.
 pub const DEFAULT_ANSWER_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// One provider, one model, one key.
@@ -72,7 +70,7 @@ impl OpenAiProvider {
             // A 4xx/5xx is an answer to read, not an error to unwrap.
             .http_status_as_error(false)
             .timeout_connect(Some(Duration::from_secs(20)))
-            // **The response headers, on their own clock.** This is where a model API that never comes
+            // The response headers, on their own clock. This is where a model API that never comes
             // back is caught: `timeout_recv_body` starts only once the headers have arrived, so a
             // provider that sends nothing at all would otherwise be waited on until the socket died.
             .timeout_recv_response(Some(answer))
@@ -84,7 +82,7 @@ impl OpenAiProvider {
         ureq::Agent::new_with_config(config)
     }
 
-    /// **How long this provider may take to answer at all**, over the default of
+    /// How long this provider may take to answer at all, over the default of
     /// [`DEFAULT_ANSWER_TIMEOUT`]. A caller that must react to a model API timeout sets its own
     /// patience here rather than waiting ten minutes for a deadline nobody chose.
     pub fn with_response_timeout(mut self, answer: Duration) -> Self {
@@ -92,7 +90,7 @@ impl OpenAiProvider {
         self
     }
 
-    /// **The catalogue this provider reads**, instead of the box's, so a test's answer is about
+    /// The catalogue this provider reads, instead of the box's, so a test's answer is about
     /// this code and not about which files the machine running it happens to have.
     pub fn with_catalogue(
         mut self,
@@ -102,7 +100,7 @@ impl OpenAiProvider {
         self
     }
 
-    /// **Install the way this provider tells a person something** — see [`Notes`].
+    /// Install the way this provider tells a person something - see [`Notes`].
     pub fn with_notes(mut self, notes: Notes) -> Self {
         self.notes = Some(notes);
         self
@@ -206,7 +204,7 @@ fn shape(body: &Value, bytes: usize) -> String {
     out
 }
 
-/// **Whether an interrupted send is asked again.** One retry covers the daemon's own Ctrl-C, and
+/// Whether an interrupted send is asked again. One retry covers the daemon's own Ctrl-C, and
 /// a loop that never gives up re-posts the whole history once per interruption: billed, and none
 /// of those streams is ever read, because the first answer ends the loop.
 fn ask_again(err: &ureq::Error, retried: &mut u32) -> bool {
@@ -708,7 +706,7 @@ impl Accumulator {
 mod tests {
     use super::*;
 
-    /// **One interruption is asked again and the second is not.** A loop with no counter sends the
+    /// One interruption is asked again and the second is not. A loop with no counter sends the
     /// whole prompt again for every signal that lands, so a held Ctrl-C bills N completions whose
     /// streams nobody reads. The rule is the whole of the bound, so the rule is what is asserted.
     #[test]
@@ -914,7 +912,7 @@ mod tests {
             prices: Default::default(),
             url: None,
         };
-        // The name we ASK for — a retired alias, priced by the operator's old table.
+        // The name we ASK for - a retired alias, priced by the operator's old table.
         creds.prices.insert(
             "deepseek-chat".into(),
             crate::presets::Prices {
@@ -952,8 +950,8 @@ mod tests {
             "the turn was priced from the model we asked for, not the one that served it"
         );
 
-        // **And the control: with no `model` field at all, the request name is all
-        // there is to price by** — so this must not have become "always unpriced".
+        // And the control: with no `model` field at all, the request name is all
+        // there is to price by - so this must not have become "always unpriced".
         let mut b = Accumulator::default();
         b.absorb(&json!({"choices": [],
                          "usage": {"prompt_tokens": 1000, "completion_tokens": 100,

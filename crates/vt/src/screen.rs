@@ -1,8 +1,6 @@
 //! The grid, the cursor, the modes, and the sequences that act on them.
-//!
-//! A terminal's display half: bytes in, rows of cells out, with a scrollback ring on the main screen
-//! only. Mouse reporting is recorded and never performed, no sequence is ever answered, and there
-//! is no line reflow -- a row is a row.
+//! Bytes in, rows of cells out, with scrollback on the main screen only. Mouse reporting is recorded
+//! and never performed, no sequence is answered, and there is no reflow.
 
 use crate::attr::{Attr, apply_sgr};
 use crate::parser::{Csi, Event, Parser};
@@ -74,7 +72,7 @@ pub enum MouseTracking {
     Motion,
 }
 
-/// **The program's mouse request, as a head needs it**: what to report, and how to encode it.
+/// The program's mouse request, as a head needs it: what to report, and how to encode it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct MouseMode {
     pub tracking: MouseTracking,
@@ -141,12 +139,12 @@ pub struct Screen {
     decsc: Option<(Pos, Attr)>,
     parser: Parser,
     /// A sequence asked for the parser's own state to be dropped (`RIS`, `DECSTR`), which cannot
-    /// happen from inside the walk — see [`Screen::feed`].
+    /// happen from inside the walk - see [`Screen::feed`].
     parser_reset: bool,
-    /// **The rows the main screen scrolled off its top**, oldest first, each trimmed of its
+    /// The rows the main screen scrolled off its top, oldest first, each trimmed of its
     /// trailing default blanks. See the module header's *The scrollback*.
     history: std::collections::VecDeque<Vec<Cell>>,
-    /// Every row that ever entered [`Screen::history`], counted — so a reader holding a place in
+    /// Every row that ever entered [`Screen::history`], counted - so a reader holding a place in
     /// the scrollback can tell how far it moved even once the ring is full and its length stops
     /// changing. See [`Screen::scrolled`].
     scrolled: u64,
@@ -183,7 +181,7 @@ impl Screen {
     /// Apply bytes. Whatever split they arrive in, the screen is the same.
     pub fn feed(&mut self, bytes: &[u8]) {
         // The parser is taken out for the duration so the closure can hold `&mut self`. It is a
-        // plain value type — an array and a few counters — so this is a move and not a cost.
+        // plain value type - an array and a few counters - so this is a move and not a cost.
         let mut parser = std::mem::take(&mut self.parser);
         parser.advance(bytes, |ev| self.apply(ev));
         self.parser = parser;
@@ -285,14 +283,14 @@ impl Screen {
         self.app_cursor
     }
 
-    /// **How many rows have ever been pushed into the scrollback** — a counter that keeps moving
+    /// How many rows have ever been pushed into the scrollback - a counter that keeps moving
     /// after the ring is full, which is what a head holding the operator's place needs: the
     /// length stops changing at [`HISTORY_ROWS`] and the rows under the view do not.
     pub fn scrolled(&self) -> u64 {
         self.scrolled
     }
 
-    /// **How many rows of scrollback there are** — the most [`Screen::view`] can go back.
+    /// How many rows of scrollback there are - the most [`Screen::view`] can go back.
     pub fn history_len(&self) -> usize {
         self.history.len()
     }
@@ -381,7 +379,7 @@ impl Screen {
         }
         match f {
             b'm' if c.intermediate.is_none() => {
-                // **`CSI m` with no parameters is `CSI 0 m`** — a reset — which is ECMA-48's rule
+                // `CSI m` with no parameters is `CSI 0 m` - a reset - which is ECMA-48's rule
                 // and the rule the tree's sanitiser already reads into the parameter list.
                 let params = c.params();
                 if params.is_empty() {
@@ -424,7 +422,7 @@ impl Screen {
             b's' => self.decsc = Some((self.face.cursor, self.face.pen)),
             b'u' => self.restore_cursor(),
             // DECSTR, which a program sends to put the terminal back to defaults without clearing
-            // the screen: the pen, the margins, the modes — and not the cells.
+            // the screen: the pen, the margins, the modes - and not the cells.
             b'p' if c.intermediate == Some(b'!') => self.soft_reset(),
             _ => {}
         }
@@ -445,7 +443,7 @@ impl Screen {
                 // The alternate screen: 1049 is what xterm's terminfo sends and 47 what an older
                 // one sends. A pane with its own buffer preserves nothing on the way out.
                 47 | 1047 | 1049 => self.switch_screen(set),
-                // **The mouse, recorded.** Resetting any of the tracking levels turns tracking
+                // The mouse, recorded. Resetting any of the tracking levels turns tracking
                 // off, which is xterm's rule: they are one setting with three spellings, not
                 // three switches.
                 9 | 1000 => self.track(MouseTracking::Press, set),
@@ -517,7 +515,7 @@ impl Screen {
     fn restore_cursor(&mut self) {
         if let Some((pos, pen)) = self.decsc {
             // Clamped, because a cursor saved before a resize can name a cell the screen no longer
-            // has — and an unclamped restore would put every later write out of bounds.
+            // has - and an unclamped restore would put every later write out of bounds.
             self.face.cursor = Pos {
                 row: pos.row.min(self.rows - 1),
                 col: pos.col.min(self.cols - 1),
@@ -690,8 +688,8 @@ impl Screen {
         self.face.pending_wrap = false;
     }
 
-    /// `CUU`. The cursor stops at the top margin **when it is inside the region**, and can reach
-    /// row 0 when it is above it — which is what a terminal does and what a program that parks the
+    /// `CUU`. The cursor stops at the top margin when it is inside the region, and can reach
+    /// row 0 when it is above it - which is what a terminal does and what a program that parks the
     /// cursor outside its region relies on.
     fn move_up(&mut self, n: usize) {
         let limit = if self.face.cursor.row >= self.face.top {
@@ -767,7 +765,7 @@ impl Screen {
         }
     }
 
-    /// `ECH`: blank `n` cells from the cursor, and **do not move the cursor and do not shift**.
+    /// `ECH`: blank `n` cells from the cursor, and do not move the cursor and do not shift.
     fn erase_chars(&mut self, n: usize) {
         let (r, c) = (self.face.cursor.row, self.face.cursor.col);
         self.blank_range(r, c, c.saturating_add(n).saturating_sub(1));
@@ -835,8 +833,8 @@ impl Screen {
         }
     }
 
-    /// `IL`: blank lines at the cursor, pushing what is below down — **within the region, and only
-    /// when the cursor is inside it**, which is what ECMA-48 says and what stops a program's
+    /// `IL`: blank lines at the cursor, pushing what is below down - within the region, and only
+    /// when the cursor is inside it, which is what ECMA-48 says and what stops a program's
     /// insert-line from touching a status line below its region.
     fn insert_lines(&mut self, n: usize) {
         let row = self.face.cursor.row;
@@ -982,7 +980,7 @@ mod tests {
         assert_eq!(want[1], "  AB");
         assert_eq!(want[3], "CD");
 
-        // The same bytes, split at every point, must produce the same screen — including inside
+        // The same bytes, split at every point, must produce the same screen - including inside
         // the address, inside a parameter list and inside an SGR.
         let whole = b"\x1b[2;3HAB\x1b[4;1H\x1b[1;33mCD\x1b[0m";
         for i in 0..whole.len() {
@@ -1060,7 +1058,7 @@ mod tests {
         s.feed(format!("\x1b(0l{bar}k\x1b(B\r\n").as_bytes());
         s.feed(format!("\x1b(0x\x1b(B{:<22}\x1b(0x\x1b(B\r\n", " left panel").as_bytes());
         s.feed(format!("\x1b(0m{bar}j\x1b(B").as_bytes());
-        // The path bar, addressed onto the last line — which is what "the address bar replacing
+        // The path bar, addressed onto the last line - which is what "the address bar replacing
         // the last line" means: the alternate screen's last row is gone, and the main screen
         // behind it still has its own.
         s.feed(b"\x1b[8;1H/home/dead/Projects\x1b[K");
@@ -1093,8 +1091,8 @@ mod tests {
         assert_well_formed(&s);
     }
 
-    /// **An unknown or malformed sequence is ignored.** It never panics, and it never appears as
-    /// text — which is the property that matters, because a screen showing the bytes of its own
+    /// An unknown or malformed sequence is ignored. It never panics, and it never appears as
+    /// text - which is the property that matters, because a screen showing the bytes of its own
     /// escape sequences is the defect this whole crate exists to prevent.
     #[test]
     fn an_unknown_or_malformed_sequence_is_ignored() {
@@ -1120,7 +1118,7 @@ mod tests {
         }
         assert_eq!(s.line(1), "ok", "the text around the sequences is kept");
         // A lone ESC at the end of the stream, and a designator with no byte after it, are both
-        // held rather than printed — and a screen fed only those is blank.
+        // held rather than printed - and a screen fed only those is blank.
         let mut s = screen(2, 10);
         s.feed(b"\x1b");
         s.feed(b"\x1b(");
@@ -1151,7 +1149,7 @@ mod tests {
         assert_eq!(s.line(1), "日");
         assert_well_formed(&s);
 
-        // **Writing over one half clears the other.** A lead without its tail is half a glyph, and
+        // Writing over one half clears the other. A lead without its tail is half a glyph, and
         // the whole point of the pair rule is that it cannot exist.
         let mut s = screen(2, 6);
         s.feed("日本".as_bytes());
@@ -1186,8 +1184,8 @@ mod tests {
         assert_well_formed(&s);
     }
 
-    /// **The deferred wrap.** The cursor sits in the last column after the character that filled
-    /// it, and the *next* character is what wraps — so a program that writes the last column and
+    /// The deferred wrap. The cursor sits in the last column after the character that filled
+    /// it, and the *next* character is what wraps - so a program that writes the last column and
     /// then addresses the cursor elsewhere gets no extra line.
     #[test]
     fn the_wrap_at_the_right_margin_is_deferred() {
@@ -1216,7 +1214,7 @@ mod tests {
         assert_eq!(lines(&s), vec!["efgh", "i"], "the screen scrolled by one");
 
         // With autowrap off, the last column is overwritten in place and the cursor never leaves
-        // it — which is what a program that has turned autowrap off is asking for.
+        // it - which is what a program that has turned autowrap off is asking for.
         let mut s = screen(2, 4);
         s.feed(b"\x1b[?7labcdef");
         assert_eq!(lines(&s), vec!["abcf", ""]);
@@ -1264,7 +1262,7 @@ mod tests {
         assert_well_formed(&s);
     }
 
-    /// **Erase, insert and delete, with the cursor exactly where ECMA-48 says it stays.**
+    /// Erase, insert and delete, with the cursor exactly where ECMA-48 says it stays.
     #[test]
     fn erasing_and_the_line_edits_leave_the_cursor_alone() {
         let mut s = screen(4, 8);
@@ -1309,7 +1307,7 @@ mod tests {
         assert_well_formed(&s);
     }
 
-    /// **The pen is the program's, and a cell keeps the pen it was written with** — including
+    /// The pen is the program's, and a cell keeps the pen it was written with - including
     /// across a scroll, which is what makes a frame that scrolls keep its colours.
     #[test]
     fn a_cell_keeps_the_attributes_it_was_written_with() {
@@ -1353,7 +1351,7 @@ mod tests {
         assert_eq!(first[0].attr.bg, Some(4), "the panel's background");
         assert_eq!(first[0].attr.bg_hue(), Some(crate::attr::Hue::Blue));
         assert_eq!(first[0].attr.fg, Some(7));
-        // **The panel's edge is a space with a pen on it, and it is not blank** — which is what the
+        // The panel's edge is a space with a pen on it, and it is not blank - which is what the
         // frame's row trim reads. A screen that could not tell this from an unwritten cell would
         // draw the panel one cell short of its own border.
         assert_eq!(first[5].ch, ' ');
@@ -1374,7 +1372,7 @@ mod tests {
         assert_well_formed(&s);
     }
 
-    /// **`RIS` and `DECSTR` are different things**, and the difference is the cells.
+    /// `RIS` and `DECSTR` are different things, and the difference is the cells.
     #[test]
     fn a_full_reset_clears_the_screen_and_a_soft_reset_only_puts_the_modes_back() {
         let mut s = screen(3, 6);
@@ -1388,7 +1386,7 @@ mod tests {
         );
         assert!(s.cursor_visible());
         assert_eq!(s.pen(), Attr::default(), "and reset the pen");
-        // **And autowrap is on again**, which is the half of a soft reset that is invisible until a
+        // And autowrap is on again, which is the half of a soft reset that is invisible until a
         // program writes to the last column: `b` fills column 6 and `c` wraps to the next row,
         // where with autowrap still off it would have overwritten `b` in place.
         s.feed(b"\x1b[1;5Habc");
@@ -1406,7 +1404,7 @@ mod tests {
         assert_well_formed(&s);
     }
 
-    /// **`ESC 7`/`ESC 8` put the cursor and the pen back**, which is what a program uses to return
+    /// `ESC 7`/`ESC 8` put the cursor and the pen back, which is what a program uses to return
     /// to where it was drawing.
     #[test]
     fn a_saved_cursor_comes_back_with_its_pen() {
@@ -1421,7 +1419,7 @@ mod tests {
         let mut s = screen(2, 4);
         s.feed(b"\x1b[2;3H\x1b[s\x1b[1;1H\x1b[u");
         assert_eq!(s.cursor(), (1, 2));
-        // `ESC s` is not a sequence — it is an `ESC` whose final byte nothing knows — and it must
+        // `ESC s` is not a sequence - it is an `ESC` whose final byte nothing knows - and it must
         // not save anything, which is the rule for every sequence this crate does not implement.
         let mut s = screen(2, 4);
         s.feed(b"\x1b[2;3H\x1bs\x1b[1;1H\x1bu");
@@ -1435,7 +1433,7 @@ mod tests {
         );
     }
 
-    /// **The cursor's visibility is the program's to set and the main screen's to keep**, and a
+    /// The cursor's visibility is the program's to set and the main screen's to keep, and a
     /// program that hides it and dies must not leave the transcript's cursor hidden.
     #[test]
     fn cursor_visibility_survives_the_alternate_screen() {
@@ -1455,7 +1453,7 @@ mod tests {
         );
     }
 
-    /// **Origin mode, which is the mode a program uses to keep its cursor inside its region.**
+    /// Origin mode, which is the mode a program uses to keep its cursor inside its region.
     #[test]
     fn origin_mode_addresses_the_cursor_inside_the_region() {
         let mut s = screen(6, 8);
@@ -1543,7 +1541,7 @@ mod tests {
         assert_well_formed(&s);
     }
 
-    /// **A screen's shape is its own, and a degenerate one does not panic.** A head whose window
+    /// A screen's shape is its own, and a degenerate one does not panic. A head whose window
     /// size came back as zero must get a screen, not a crash.
     #[test]
     fn a_degenerate_screen_is_clamped_rather_than_panicking() {
@@ -1598,7 +1596,7 @@ mod tests {
         assert_eq!(s.view(99)[0].len(), "line 1".len());
     }
 
-    /// **What does not enter the scrollback**, by xterm's rules: the alternate screen's own
+    /// What does not enter the scrollback, by xterm's rules: the alternate screen's own
     /// scrolling, a region that does not start at the top, and `DL` at the top row. And what
     /// empties it: `ED 3` and `RIS`.
     #[test]
@@ -1640,8 +1638,8 @@ mod tests {
         assert_eq!(s.history_len(), 0, "`RIS` is everything");
     }
 
-    /// **A history row wider than the screen is cut at its edge**, and a wide glyph the cut would
-    /// halve goes whole — the grid's own invariant, kept for what is read back.
+    /// A history row wider than the screen is cut at its edge, and a wide glyph the cut would
+    /// halve goes whole - the grid's own invariant, kept for what is read back.
     #[test]
     fn a_history_row_is_cut_to_the_screen_it_is_read_back_into() {
         let mut s = screen(2, 6);
@@ -1652,7 +1650,7 @@ mod tests {
         assert_eq!(row.iter().map(|c| c.ch).collect::<String>(), "abcd");
     }
 
-    /// **R74 item 22's other half: the program's mouse request is recorded**, so the head can
+    /// The program's mouse request is recorded, so the head can
     /// tell a click that is the program's from one that is its own. It used to be consumed and
     /// dropped (`12 | 1000..=1006 | …`), which left the head nothing to ask.
     #[test]
@@ -1673,7 +1671,7 @@ mod tests {
         s.feed(b"\x1b[?1003h\x1b[?1h");
         assert_eq!(s.mouse().tracking, MouseTracking::Motion);
         assert!(s.app_cursor_keys());
-        // It survives the alternate screen — a mode is the terminal's, not a face's.
+        // It survives the alternate screen - a mode is the terminal's, not a face's.
         s.feed(b"\x1b[?1049h");
         assert_eq!(s.mouse().tracking, MouseTracking::Motion);
         s.feed(b"\x1bc");

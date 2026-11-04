@@ -1,8 +1,6 @@
 //! Where a key comes from: `--api-key`, the provider's environment variable,
-//! `~/.config/letibot/providers.toml`, then opencode's own store (its `type: api`
-//! entries only, never OAuth). There is no fallback to another provider's key, and a
-//! missing key is a refusal that names all three places, because "unauthorized" from the
-//! provider three seconds later names none of them. The file also carries the price table.
+//! `~/.config/letibot/providers.toml`, then opencode's store (`type: api` only).
+//! No fallback to another provider's key. A missing key is a refusal naming all three places.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

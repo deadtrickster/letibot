@@ -1,11 +1,6 @@
-//! `letibot stats` - the read side: the questions as queries, each answering a table.
-//!
-//! Opens `metrics.db` read-only, loads the views as `TEMP`, and never writes and never
-//! starts a daemon. The verbs run from the day's summary through turns, worker waits,
-//! deliveries, tool reliability, per-model latency, the marks and one session's timeline.
-//!
-//! Percentiles are computed here rather than in SQL: sorting the column once is the same
-//! work as `PERCENT_RANK` over a window, with one less clause to get wrong.
+//! `letibot stats` - the read side: questions as queries, each answering a table.
+//! Opens `metrics.db` read-only, loads views as `TEMP`, never writes and never starts a daemon.
+//! Percentiles are computed here, not in SQL: one less clause to get wrong.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -135,7 +130,7 @@ fn cell(v: ValueRef<'_>) -> String {
     }
 }
 
-/// **Any query, as a table** - `letibot stats sql`, and every verb below that is one query.
+/// Any query, as a table - `letibot stats sql`, and every verb below that is one query.
 pub fn query(
     c: &Connection,
     title: &str,
@@ -169,7 +164,7 @@ fn pct(sorted: &[i64], p: f64) -> i64 {
     sorted[i.min(sorted.len() - 1)]
 }
 
-/// **The day at a glance**: turns, rounds, tool calls and errors, cost, the worker's p95 wait,
+/// The day at a glance: turns, rounds, tool calls and errors, cost, the worker's p95 wait,
 /// deliveries mid-turn, wakes, marks, and the writer's own drops.
 pub fn summary(c: &Connection, since: i64) -> Result<Table, String> {
     let one = |sql: &str| -> Result<String, String> {
@@ -260,7 +255,7 @@ pub fn summary(c: &Connection, since: i64) -> Result<Table, String> {
     Ok(t)
 }
 
-/// **Q3 - the worker's queue wait per command verb, per build** (c12d044).
+/// Q3 - the worker's queue wait per command verb, per build.
 pub fn waits(c: &Connection, since: i64) -> Result<Table, String> {
     let mut st = c
         .prepare(
@@ -315,7 +310,7 @@ pub fn waits(c: &Connection, since: i64) -> Result<Table, String> {
     Ok(t)
 }
 
-/// **Q1 and Q2 - what arrives, how, and mid-turn or not; and the wakes by cause** (R79).
+/// Q1 and Q2 - what arrives, how, and mid-turn or not; and the wakes by cause.
 pub fn deliveries(c: &Connection, since: i64) -> Result<Vec<Table>, String> {
     Ok(vec![
         query(
@@ -344,7 +339,7 @@ pub fn deliveries(c: &Connection, since: i64) -> Result<Vec<Table>, String> {
     ])
 }
 
-/// **Q8 - tool reliability**: error rate, duration, memory peak against cap.
+/// Q8 - tool reliability: error rate, duration, memory peak against cap.
 pub fn tools(c: &Connection, since: i64) -> Result<Table, String> {
     query(
         c,
@@ -358,7 +353,7 @@ pub fn tools(c: &Connection, since: i64) -> Result<Table, String> {
     )
 }
 
-/// **Q7 - latency and throughput per model**: time to first token, tok/s, cache hit.
+/// Q7 - latency and throughput per model: time to first token, tok/s, cache hit.
 pub fn models(c: &Connection, since: i64) -> Result<Table, String> {
     let mut st = c
         .prepare(
@@ -454,7 +449,7 @@ pub fn models(c: &Connection, since: i64) -> Result<Table, String> {
     Ok(t)
 }
 
-/// **The turns, newest first**, with the marks against each.
+/// The turns, newest first, with the marks against each.
 pub fn turns(
     c: &Connection,
     since: i64,
@@ -477,7 +472,7 @@ pub fn turns(
     )
 }
 
-/// **Q15 - every mark with its turn's numbers beside it.**
+/// Q15 - every mark with its turn's numbers beside it.
 pub fn feedback(
     c: &Connection,
     since: i64,
@@ -500,7 +495,7 @@ pub fn feedback(
     )
 }
 
-/// **One session as a timeline**: a line per turn, deliveries, wakes, nags, compactions and
+/// One session as a timeline: a line per turn, deliveries, wakes, nags, compactions and
 /// marks in time order.
 pub fn session(c: &Connection, session: &str) -> Result<Table, String> {
     query(

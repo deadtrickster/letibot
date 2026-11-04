@@ -1,11 +1,6 @@
-//! The composer: multi-line editing, history, paste, undo, and interrupt.
-//!
-//! It owns text, cursor, undo, history and the paste ledger, and it produces lines. It reads no
-//! file descriptor and no clock: time arrives as a parameter, because the double-tap interrupt
-//! rules are timing rules and a timing rule that samples the clock internally cannot be tested.
-//!
-//! Adapted from grok-build (xAI, Apache-2.0) and opencode (MIT, via the Kilo Code fork); the
-//! credits are in `NOTICE`. Neither is copied line for line: these are the rules, as data.
+//! The composer: multi-line editing, history, paste, undo and interrupt.
+//! Time arrives as a parameter so the double-tap interrupt rules are testable.
+//! Adapted from grok-build (xAI, Apache-2.0) and opencode (MIT, via Kilo Code); credits in `NOTICE`.
 
 use crate::painter::Sgr;
 use rano::style::{Palette, Role};
@@ -28,7 +23,7 @@ pub enum Key {
     /// A bracketed paste, arriving whole rather than as N `Char`s.
     Paste(String),
     Enter,
-    /// Newline without submitting — Shift+Enter, or Alt+Enter where the terminal
+    /// Newline without submitting - Shift+Enter, or Alt+Enter where the terminal
     /// cannot report the first.
     SoftEnter,
     Backspace,
@@ -210,7 +205,7 @@ impl Editor {
         self.text.is_empty()
     }
 
-    /// Load prior history, oldest first. The caller owns persistence — this
+    /// Load prior history, oldest first. The caller owns persistence - this
     /// crate opens no files.
     pub fn with_history(mut self, entries: Vec<String>) -> Editor {
         self.history = entries;
@@ -222,7 +217,7 @@ impl Editor {
         &self.history
     }
 
-    /// **Replace the history**, oldest first — for a head that derives it from somewhere
+    /// Replace the history, oldest first - for a head that derives it from somewhere
     /// else (the session's own prompts). Ignored while a recall is in progress, because
     /// the walk's position is an index into the list it started on.
     pub fn set_history(&mut self, entries: Vec<String>) {
@@ -479,7 +474,7 @@ impl Editor {
         self.history_at = next;
         self.text = match next {
             Some(i) => self.history[self.history.len() - 1 - i].clone(),
-            // **Their own line, not an empty buffer.** `take`n rather than read, so the
+            // Their own line, not an empty buffer. `take`n rather than read, so the
             // next walk starts from a clean slate.
             None => self.draft.take().unwrap_or_default(),
         };
@@ -733,8 +728,8 @@ impl Editor {
             } else {
                 " ".repeat(width::width(prompt))
             };
-            // The newline that ended this row belongs to the row's *range* — the
-            // ranges have to tile — but never to the row's *text*: a terminal
+            // The newline that ended this row belongs to the row's *range* - the
+            // ranges have to tile - but never to the row's *text*: a terminal
             // acts on a `\n` in a line it is given.
             let body = self.text[r.clone()].trim_end_matches(['\n', '\r']);
             // A placeholder is inverted so it reads as one object rather than as
@@ -817,8 +812,8 @@ mod tests {
         assert!(matches!(e.key(Key::Up, 0), Reaction::Idle));
         assert_eq!(e.text(), "half a thought and more");
 
-        // **A second walk keeps its own draft.** A fresh line, because the first
-        // draft was `take`n when its walk ended — this is not the old text reappearing.
+        // A second walk keeps its own draft. A fresh line, because the first
+        // draft was `take`n when its walk ended - this is not the old text reappearing.
         let mut e2 = ed().with_history(vec!["first".into(), "second".into()]);
         type_str(&mut e2, "another thought");
         assert!(matches!(e2.key(Key::Up, 0), Reaction::Changed));
@@ -845,7 +840,7 @@ mod tests {
             .map(|i| format!("  at frame {i}\n"))
             .collect::<String>();
         e.key(Key::Paste(trace.clone()), 0);
-        // **Forty lines, not forty-one** (§6): the pasted text ends in a newline and
+        // Forty lines, not forty-one: the pasted text ends in a newline and
         // the old count added one to the newline total, so every whole file dragged
         // out of an editor over-reported by a line.
         assert!(e.text().contains("[Pasted #1 ~40 lines]"), "{}", e.text());
@@ -880,8 +875,8 @@ mod tests {
         e.key(Key::Paste(no_eol), 0);
         assert!(e.text().contains("~300 lines"), "{}", e.text());
 
-        // **And the threshold is on lines.** Four is four and stays put; five is five
-        // and collapses — the boundary moved by one with the count, which is the same
+        // And the threshold is on lines. Four is four and stays put; five is five
+        // and collapses - the boundary moved by one with the count, which is the same
         // off-by-one seen from the other side.
         let mut e = ed();
         e.key(Key::Paste("a\nb\nc\nd\n".into()), 0);

@@ -1,9 +1,6 @@
-//! Raw declarations. Nothing in here is public outside the crate.
-//!
-//! Only `letibot_vocab_load` and `letibot_llama_init` go through the C shim,
-//! because only they touch `llama_model_params` by value. Every other symbol
-//! below takes plain pointers and integers, so declaring it here cannot
-//! disagree with the header the way a transcribed struct can.
+//! Raw declarations; nothing here is public outside the crate.
+//! Only `letibot_vocab_load` and `letibot_llama_init` go through the C shim, because they take
+//! `llama_model_params` by value. The rest take plain pointers and integers.
 
 use std::ffi::{c_char, c_int, c_void};
 

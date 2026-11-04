@@ -1,11 +1,6 @@
-//! The seam between the turn engine and whatever actually runs the model.
-//!
-//! A metered provider API is a later milestone, but the seam is reserved now:
-//! retrofitting it means touching the turn engine, compaction and every metric.
-//!
-//! A backend declares what it cannot guarantee so tests skip loudly rather than
-//! pass vacuously. The crate depends on `letibot-transcript` alone: a provider
-//! backend must not link the rendering stack it will never use.
+//! The seam between the turn engine and whatever runs the model.
+//! A backend declares what it cannot guarantee so tests skip loudly.
+//! Depends on `letibot-transcript` alone, so a provider backend does not link the rendering stack.
 
 use letibot_transcript::TranscriptItem;
 
@@ -38,7 +33,7 @@ pub enum CacheReporting {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Meter {
-    /// Tokens cost wall clock. Local, and our own cloud compute — the operator's
+    /// Tokens cost wall clock. Local, and our own cloud compute - the operator's
     /// point is that renting the hardware makes these the same case, because you
     /// pay for time either way.
     WallClock,
@@ -54,10 +49,10 @@ pub enum PrefixGuarantee {
     /// Violation is unrepresentable. Assert the region property directly.
     Structural,
     /// We send messages; the provider renders. We can only check afterwards that
-    /// its cache behaved as though the prefix was stable — a weaker, statistical
+    /// its cache behaved as though the prefix was stable - a weaker, statistical
     /// claim about the past.
     Asserted,
-    /// Nothing to check. A suite reaching this must **skip and say so**.
+    /// Nothing to check. A suite reaching this must skip and say so.
     None,
 }
 
@@ -71,7 +66,7 @@ pub struct TurnCost {
     pub cached_tokens: u64,
     pub generated_tokens: u64,
     pub wall_ms: u64,
-    /// Only meaningful when `meter == Metered`. `None` under `WallClock` — not
+    /// Only meaningful when `meter == Metered`. `None` under `WallClock` - not
     /// zero, because zero is a number somebody will sum.
     pub micros_usd: Option<u64>,
 }
@@ -105,7 +100,7 @@ pub trait Backend {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Delta {
     Text(String),
-    /// `reasoning_content` (DeepSeek, GLM, Grok) — the thinking, kept apart from
+    /// `reasoning_content` (DeepSeek, GLM, Grok) - the thinking, kept apart from
     /// the answer by the API rather than by a parser.
     Reasoning(String),
     /// A fragment of a tool call. The first fragment for an `index` carries the
@@ -145,7 +140,7 @@ pub struct Completion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamFlow {
     Continue,
-    /// Close the connection now — an urgent steering message, a guard.
+    /// Close the connection now - an urgent steering message, a guard.
     Stop,
 }
 
@@ -188,7 +183,7 @@ impl std::error::Error for BackendError {}
 pub trait MessagesBackend: Send + Sync {
     fn caps(&self) -> BackendCaps;
 
-    /// `deepseek`, `glm`, `grok` — the preset's name.
+    /// `deepseek`, `glm`, `grok` - the preset's name.
     fn name(&self) -> &str;
 
     /// The model id sent on the wire.
@@ -210,7 +205,7 @@ pub trait MessagesBackend: Send + Sync {
 }
 
 impl BackendCaps {
-    /// The shape of a llama.cpp server we run ourselves — local or rented, the
+    /// The shape of a llama.cpp server we run ourselves - local or rented, the
     /// operator's distinction being that rented compute is still billed by time.
     pub const OWN_SERVER: BackendCaps = BackendCaps {
         renders_locally: true,

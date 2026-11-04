@@ -1,11 +1,6 @@
-//! Compiles the C shim (see `csrc/shim.c` for why one exists) and links the
-//! fork's `libllama`.
-//!
-//! Where the checkout and its library are is `build-support.rs`, included rather than
-//! copied, because five crates need the same answer. This is the only one of the five
-//! that ASSERTS: it is the only crate that links the library, so a box with no llama.cpp
-//! must fail here, with the list of paths tried, rather than link a binary that cannot
-//! start.
+//! Compiles the C shim (see `csrc/shim.c`) and links the fork's `libllama`.
+//! Paths come from `build-support.rs`, included because five crates need it. This crate alone
+//! asserts: it links the library, so a box without llama.cpp must fail here listing the paths tried.
 
 include!("build-support.rs");
 

@@ -80,7 +80,7 @@ fn provider(url: &str) -> OpenAiProvider {
         prices: Default::default(),
         url: Some(url.into()),
     };
-    // **A box with no catalogue.** `OpenAiProvider::new` prices a model by the catalogue it finds
+    // A box with no catalogue. `OpenAiProvider::new` prices a model by the catalogue it finds
     // on the machine, so a fake whose turn is asserted to be UNPRICED only says that on a box
     // without one.
     OpenAiProvider::new(
@@ -210,7 +210,7 @@ fn a_refusal_carries_the_providers_own_message() {
     match err {
         BackendError::Refused { status, body, .. } => {
             assert_eq!(status, 401);
-            // **No `code` in this body, so nothing is appended.** `type` is not a code: it says
+            // No `code` in this body, so nothing is appended. `type` is not a code: it says
             // what KIND of refusal this is, and the retry policy asks whether the account can
             // pay, which no `type` answers.
             assert_eq!(body, "Authentication Fails");
@@ -336,7 +336,7 @@ fn a_refusal_of_the_picture_is_learned_and_the_request_retried_with_placeholders
             seen[1].1
         );
     }
-    // **The mark, and the notice said once.** The mark is what makes every later request
+    // The mark, and the notice said once. The mark is what makes every later request
     // skip the refusal.
     assert!(
         letibot_provider::messages::known_text_only("glm", MODEL),
@@ -357,11 +357,10 @@ fn a_refusal_of_the_picture_is_learned_and_the_request_retried_with_placeholders
     assert!(!seen[2].1.contains("image_url"), "{}", seen[2].1);
 }
 
-/// **A provider that refuses THE BYTES is learned against the picture, not against the model.**
+/// A provider that refuses THE BYTES is learned against the picture, not against the model.
 ///
-/// MEASURED 2026-10-30, the incident this exists for: a session died and no restart could revive
-/// it, because a `read` of a 33-byte PNG header was stored as a picture and every turn sent it
-/// again  -
+/// A session died and no restart could revive it: a `read` of a 33-byte PNG header was stored
+/// as a picture and every turn sent it again. The provider said:
 ///
 /// ```text
 /// http 400: .messages[1861].image[0]: You have uploaded an unsupported image. Please make sure
@@ -396,7 +395,7 @@ fn a_provider_that_refuses_the_bytes_is_learned_against_the_picture_and_the_requ
     let p = OpenAiProvider::new(&letibot_provider::presets::GLM, Some(MODEL), creds).with_notes(
         Arc::new(move |said: String| sink.lock().unwrap().push(said)),
     );
-    // **These bytes are this test's own.** The mark is process-wide and keyed by the picture, so
+    // These bytes are this test's own. The mark is process-wide and keyed by the picture, so
     // a size another test uses would make the order the two run in matter.
     let reference = picture_ref(3, 3);
     let items = vec![TranscriptItem::User {
@@ -450,7 +449,7 @@ fn a_provider_that_refuses_the_bytes_is_learned_against_the_picture_and_the_requ
             seen[1].1
         );
     }
-    // **The mark is against the picture** - and the model keeps its eyes, because the model was
+    // The mark is against the picture - and the model keeps its eyes, because the model was
     // never the problem.
     assert!(
         letibot_provider::messages::known_bad_picture(&reference).is_some(),
@@ -468,7 +467,7 @@ fn a_provider_that_refuses_the_bytes_is_learned_against_the_picture_and_the_requ
         assert!(said[0].contains("unsupported image"), "{}", said[0]);
     }
 
-    // **And the next turn does not earn it again**: one connection, the picture already withheld.
+    // And the next turn does not earn it again: one connection, the picture already withheld.
     p.complete(&req, &mut |_| StreamFlow::Continue)
         .expect("the marked picture is withheld first time");
     let seen = f.seen.lock().unwrap();
@@ -660,7 +659,7 @@ fn bare_request(p: &OpenAiProvider) -> Result<(), BackendError> {
     p.complete(&req, &mut |_| StreamFlow::Continue).map(|_| ())
 }
 
-/// **The provider's own answer to *when may I come back* reaches the caller**: a 429 carrying
+/// The provider's own answer to *when may I come back* reaches the caller: a 429 carrying
 /// `Retry-After` is a rate limit an automation can sleep out, and one without it is a wait nobody
 /// can size.
 #[test]
@@ -689,7 +688,7 @@ fn a_refusal_carries_the_retry_after_it_was_sent() {
     }
 }
 
-/// **A provider that accepts the request and never answers ends at the deadline it was given**, not
+/// A provider that accepts the request and never answers ends at the deadline it was given, not
 /// at the client's default of ten minutes: a caller that must react to a model API timeout cannot
 /// wait longer than its own patience.
 #[test]

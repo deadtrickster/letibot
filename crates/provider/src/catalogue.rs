@@ -1,10 +1,6 @@
-//! The model catalogue: limits and prices read from a file, never remembered, because
-//! a window invented here would decide when a conversation is summarised.
-//!
-//! Four sources, the first that parses wins: `LETIBOT_MODELS_JSON`, this harness's own
-//! cache, opencode's cache, then the vendored snapshot that is the floor. opencode is
-//! read as a courtesy and never depended on, since a box without it planned against
-//! nothing at all.
+//! The model catalogue: limits and prices read from a file, never remembered.
+//! Sources, first that parses wins: `LETIBOT_MODELS_JSON`, this harness's cache, opencode's cache,
+//! the vendored snapshot floor. opencode is read as a courtesy, never depended on.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

@@ -1,13 +1,12 @@
 //! How many cells a character takes: zero, one or two.
-//!
-//! The ranges are `crates/ui`'s own, unchanged, and its tests assert the two agree. The emoji planes
-//! are not here: a grid has no cluster model, so a ZWJ family would draw as six separate people.
+//! The ranges are `crates/ui`'s, unchanged, and its tests assert agreement. Emoji planes are absent:
+//! a grid has no cluster model.
 
 /// Columns one character claims in the grid: zero, one or two.
 pub fn char_width(c: char) -> usize {
     let u = c as u32;
-    // C0/C1 and DEL. A grid should never be measuring these — the parser executes or drops
-    // them before a character ever reaches a cell — but if one arrives it is not a column.
+    // C0/C1 and DEL. A grid should never be measuring these - the parser executes or drops
+    // them before a character ever reaches a cell - but if one arrives it is not a column.
     if u < 0x20 || (0x7f..0xa0).contains(&u) {
         return 0;
     }
@@ -71,7 +70,7 @@ fn is_wide(u: u32) -> bool {
 mod tests {
     use super::*;
 
-    /// **The characters a full-screen program actually puts on a screen**, one per range family,
+    /// The characters a full-screen program actually puts on a screen, one per range family,
     /// with the column each claims.
     #[test]
     fn a_cell_is_measured_in_columns_and_not_in_characters() {
@@ -96,7 +95,7 @@ mod tests {
         }
     }
 
-    /// **An emoji is one cell here and two in the terminal, and that is the stated cost** —
+    /// An emoji is one cell here and two in the terminal, and that is the stated cost -
     /// asserted rather than left as a claim in a comment, because it is the one place this
     /// module knowingly disagrees with the reader's terminal and with `crates/ui`.
     #[test]

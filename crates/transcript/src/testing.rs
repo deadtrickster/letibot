@@ -1,11 +1,6 @@
-//! Fixtures that are real images - because a fixture that only looked like one hid a bug that
-//! cost a session: a PNG signature, an `IHDR` and nothing else was called an image, stored as
-//! one, and sent to a provider that refused the whole request on every turn, for ever.
-//!
-//! So [`png`] is a real RGBA picture and [`png_header_only`] is those 33 bytes kept on
-//! purpose, so a test can assert that they are refused.
-//!
-//! Public rather than `#[cfg(test)]` because the crates that need a picture are not this one.
+//! Fixtures that are real images: a signature-plus-`IHDR` stub was stored as an image and made a
+//! provider refuse every turn. [`png`] is a real RGBA picture; [`png_header_only`] is the 33-byte
+//! stub, kept to assert it is refused. Public because other crates need a picture.
 
 /// A real PNG, `w`x`h`, opaque black RGBA. Built rather than embedded so a caller can ask for
 /// the dimensions it needs; the `IDAT` is stored (uncompressed) deflate blocks, so the bytes
@@ -71,7 +66,7 @@ pub fn jpeg(w: u16, h: u16) -> Vec<u8> {
     out
 }
 
-/// **A structurally complete GIF** - `GIF89a`, a logical screen descriptor, a two-entry colour
+/// A structurally complete GIF - `GIF89a`, a logical screen descriptor, a two-entry colour
 /// table, one image descriptor with a data sub-block, and the trailer.
 pub fn gif(w: u16, h: u16) -> Vec<u8> {
     let mut out = b"GIF89a".to_vec();
@@ -91,7 +86,7 @@ pub fn gif(w: u16, h: u16) -> Vec<u8> {
     out
 }
 
-/// **A structurally complete WEBP** - a `RIFF`/`WEBP` container with one `VP8L` chunk.
+/// A structurally complete WEBP - a `RIFF`/`WEBP` container with one `VP8L` chunk.
 pub fn webp(w: u32, h: u32) -> Vec<u8> {
     let mut vp8l = vec![0x2f]; // the VP8L signature byte
     vp8l.extend_from_slice(&((w - 1) | ((h - 1) << 14)).to_le_bytes());
@@ -107,7 +102,7 @@ pub fn webp(w: u32, h: u32) -> Vec<u8> {
     out
 }
 
-/// **One image as the `data:` reference a row carries** - the shape both a `Media` and a
+/// One image as the `data:` reference a row carries - the shape both a `Media` and a
 /// `UserPart::Image` hold, so a fixture does not spell the prefix a second time.
 pub fn data_ref(mime: &str, bytes: &[u8]) -> String {
     format!("data:{mime};base64,{}", crate::media::encode_base64(bytes))
@@ -128,7 +123,7 @@ fn jpeg_segment(out: &mut Vec<u8>, marker: u8, payload: &[u8]) {
     out.extend_from_slice(payload);
 }
 
-/// **A zlib stream of stored blocks** - a real deflate stream, and one whose bytes are the input,
+/// A zlib stream of stored blocks - a real deflate stream, and one whose bytes are the input,
 /// so the fixture needs no compressor. A stored block carries at most 65535 bytes.
 fn zlib_stored(data: &[u8]) -> Vec<u8> {
     let mut out = vec![0x78, 0x01]; // CMF/FLG: deflate, 32 KiB window, no dictionary
@@ -177,7 +172,7 @@ mod tests {
     use super::*;
     use crate::media::complete_image;
 
-    /// **Every fixture passes the predicate it exists for**, and the incident's bytes do not.
+    /// Every fixture passes the predicate it exists for, and the incident's bytes do not.
     #[test]
     fn the_fixtures_are_complete_and_the_header_only_png_is_not() {
         assert!(complete_image("image/png", &png(2, 2)));
@@ -190,7 +185,7 @@ mod tests {
         );
     }
 
-    /// **The CRCs are computed, not zero** - the whole difference between the fixture this module
+    /// The CRCs are computed, not zero - the whole difference between the fixture this module
     /// replaces and a picture: an encoder writes them and a decoder checks them.
     #[test]
     fn the_png_is_a_picture_and_not_a_header() {

@@ -1,11 +1,6 @@
-//! `web_fetch` behind `curl`, rendered for the model, not for a browser.
-//!
-//! `letibot-tools` ships `web_fetch` as a tool that refuses, and `Fetcher` is the seam an
-//! implementation attaches through. This crate is one, over a `curl` subprocess, so a hang is
-//! a dead child rather than a dead turn.
-//!
-//! The policy curl does not have lives here: DNS must resolve to a public address and the
-//! connection is pinned to the one checked, redirects stay same-origin, and the body is capped.
+//! `web_fetch` behind `curl`, rendered for the model, not a browser.
+//! Implements the `Fetcher` seam over a `curl` subprocess, so a hang kills a child, not a turn.
+//! Policy: DNS must resolve public and the connection is pinned to it, redirects stay same-origin, the body is capped.
 
 use std::io::Read;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -79,7 +74,7 @@ fn gh_args(url: &UrlParts) -> Option<(Vec<String>, &'static str)> {
             vec!["pr".into(), "view".into(), n.to_string(), "-R".into(), repo],
             "pull request",
         )),
-        // No `gh commit view` exists; the API's JSON is the commit — message,
+        // No `gh commit view` exists; the API's JSON is the commit - message,
         // parents, and every hunk as a `patch` field the model reads as text.
         ("commit", _) if !segs[3].is_empty() => Some((
             vec!["api".into(), format!("repos/{repo}/commits/{}", segs[3])],
@@ -164,7 +159,7 @@ fn github_raw(url: &UrlParts) -> Option<Vec<String>> {
     if segs.len() < 2 {
         return None; // github.com's own pages — the feed, the login, the search
     }
-    // **A site page is not a repo**, even when it wears two segments:
+    // A site page is not a repo, even when it wears two segments:
     // `settings/profile` must not become a readme lookup on a "settings" owner
     // that does not exist.
     if GITHUB_SITE_SEGMENTS.contains(&segs[0]) {
@@ -185,7 +180,7 @@ fn github_raw(url: &UrlParts) -> Option<Vec<String>> {
         _ if (segs[2] == "blob" || segs[2] == "raw") && segs.len() >= 5 => {
             Some(vec![raw(segs[3..].join("/"))])
         }
-        // A tree, an issue, a PR, a release, a wiki — a page, not a file.
+        // A tree, an issue, a PR, a release, a wiki - a page, not a file.
         _ => None,
     }
 }
@@ -232,7 +227,7 @@ pub struct CurlFetcher {
     /// again.
     version: String,
     /// The private-address refusal. Off only for tests, which talk to a
-    /// stand-in on loopback — the one host the policy exists to refuse.
+    /// stand-in on loopback - the one host the policy exists to refuse.
     check_hosts: bool,
     /// The body cap. `MAX_BODY` in production; small in tests, so truncation
     /// can be reached without shipping a large page through the stand-in.
@@ -328,7 +323,7 @@ impl Fetcher for CurlFetcher {
             }
         }
         // The README case carries two candidates; only a 404 tries the next, and
-        // the 404 that survives names the FIRST — a repo with no readme in either
+        // the 404 that survives names the FIRST - a repo with no readme in either
         // spelling answers with the spelling everybody uses, not the fallback.
         let mut first_404 = None;
         for candidate in &candidates {
@@ -365,7 +360,7 @@ impl Fetcher for CurlFetcher {
 }
 
 impl CurlFetcher {
-    /// One address through the hop loop — pin, fetch, redirect policy, render.
+    /// One address through the hop loop - pin, fetch, redirect policy, render.
     /// Everything in the trait impl above is the decision about WHICH address;
     /// this is everything that happens once it is decided.
     fn fetch_one(&self, url: &UrlParts, format: PageFormat) -> Result<FetchedPage, FetchError> {
@@ -425,7 +420,7 @@ impl CurlFetcher {
 struct Hop {
     status: u16,
     content_type: String,
-    /// Where these bytes came from — curl's `url_effective`, which for a
+    /// Where these bytes came from - curl's `url_effective`, which for a
     /// single unfollowed hop is the address that was asked for.
     url: String,
     location: Option<String>,
@@ -452,7 +447,7 @@ fn run_curl(url: &UrlParts, pin: Option<IpAddr>, cap: usize) -> Result<Hop, Fetc
         .arg("--user-agent")
         .arg(USER_AGENT)
         // Headers to a file, the body to stdout, and the metadata line after
-        // the body on stdout — so the page's bytes never touch the disk, and
+        // the body on stdout - so the page's bytes never touch the disk, and
         // the split between body and metadata has one unambiguous owner.
         .arg("--dump-header")
         .arg(&header_file)
@@ -577,7 +572,7 @@ fn run_curl(url: &UrlParts, pin: Option<IpAddr>, cap: usize) -> Result<Hop, Fetc
     })
 }
 
-/// The parts of a header dump this crate acts on. The **last** status line
+/// The parts of a header dump this crate acts on. The last status line
 /// wins, because a proxy's `100 Continue` arrives before the real one.
 fn parse_headers(text: &str) -> (Option<u16>, Option<String>, Option<String>) {
     let mut status = None;
@@ -989,8 +984,8 @@ mod tests {
                 "https://raw.githubusercontent.com/o/r/main/a/b.md".into()
             ])
         );
-        // The repo root: its README, on HEAD — raw's own spelling of the default
-        // branch, so the master/main guess is not ours — with the lowercase
+        // The repo root: its README, on HEAD - raw's own spelling of the default
+        // branch, so the master/main guess is not ours - with the lowercase
         // spelling as a 404-only fallback, because raw is case-sensitive.
         assert_eq!(
             raws("https://github.com/romkatv/gitstatus"),
@@ -1005,8 +1000,8 @@ mod tests {
             raws("https://github.com/o/r")
         );
 
-        // **Pages stay pages.** A tree is a directory listing, an issue is a
-        // conversation, a wiki and a release have no raw spelling — and a rewrite
+        // Pages stay pages. A tree is a directory listing, an issue is a
+        // conversation, a wiki and a release have no raw spelling - and a rewrite
         // that guessed one would fetch something the caller did not name.
         for page in [
             "https://github.com/o/r/tree/master/src",
@@ -1075,7 +1070,7 @@ mod tests {
             assert_eq!(kind, "pull request");
         }
 
-        // A commit: the API's JSON — message, parents, and every hunk as a
+        // A commit: the API's JSON - message, parents, and every hunk as a
         // `patch` field. No `gh commit view` exists to render it prettier.
         let (a, kind) = argv("https://github.com/o/r/commit/abc123").unwrap();
         assert_eq!(a, vec!["api", "repos/o/r/commits/abc123"]);

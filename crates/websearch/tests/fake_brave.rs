@@ -1,8 +1,5 @@
-//! The whole chain against a stand-in Brave: what goes out on the wire, what comes back as
-//! `SearchResults`, and what each failure says.
-//!
-//! A fake rather than the real API because a test that needs a paid key and a network is a
-//! test nobody runs, and the subject here is our request and our parsing, not Brave.
+//! The whole chain against a stand-in Brave: the wire request, the `SearchResults`, and each failure's message.
+//! A fake because a paid key and a network make a test nobody runs; the subject is our request and parsing.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;

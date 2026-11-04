@@ -236,7 +236,7 @@ impl<'a> Withheld<'a> {
         Withheld { trying: pairs }
     }
 
-    /// Why this picture is not sent for a reason this request knows about — `None` when it goes.
+    /// Why this picture is not sent for a reason this request knows about - `None` when it goes.
     fn why(&self, data_ref: &str) -> Option<String> {
         let key = picture_key(data_ref);
         if let Some((_, why)) = self.trying.iter().find(|(k, _)| *k == key) {
@@ -246,7 +246,7 @@ impl<'a> Withheld<'a> {
     }
 }
 
-/// **Why a picture is withheld, when the reason is the bytes themselves** — the sentence a
+/// Why a picture is withheld, when the reason is the bytes themselves - the sentence a
 /// placeholder carries for a file that sniffs as an image and holds none.
 pub const NOT_A_PICTURE: &str = "these bytes are not a complete image";
 
@@ -305,7 +305,7 @@ pub fn text_only_refusal(body: &str) -> bool {
     if b.contains("image_url") || b.contains("image url") {
         return true;
     }
-    // A content TYPE complaint that also names text — Zhipu's spelling, the
+    // A content TYPE complaint that also names text - Zhipu's spelling, the
     // space-separated English of the same sentence, and the serde wording.
     let content_type = b.contains("content.type")
         || b.contains("content type")
@@ -415,7 +415,7 @@ pub fn convert_with_tail(
             TranscriptItem::System { text, .. } => {
                 out.push(json!({"role": "system", "content": text}));
             }
-            // **A delivery reaches the model where a notice has always reached it** - as a user
+            // A delivery reaches the model where a notice has always reached it - as a user
             // turn whose words are the harness's own, said as such in the text. A dialect that
             // cannot take a mid-history system message would refuse the other shape.
             TranscriptItem::Notice { text, .. } => {
@@ -807,7 +807,7 @@ mod tests {
             "and the transcript is carried unchanged ahead of it"
         );
 
-        // And an empty tail adds nothing at all — which is what an offer nobody
+        // And an empty tail adds nothing at all - which is what an offer nobody
         // composed, or an offer the round did not take, sends.
         assert_eq!(convert("be terse", &items, true).len(), 2);
     }
@@ -955,8 +955,8 @@ mod tests {
     #[test]
     fn a_tool_result_with_an_image_puts_the_image_on_the_wire() {
         let uri = picture_ref();
-        // **The row that proposed it**, because `pair_tool_calls` drops an orphan tool result by
-        // design — the fixture needs the shape the wire actually has.
+        // The row that proposed it, because `pair_tool_calls` drops an orphan tool result by
+        // design - the fixture needs the shape the wire actually has.
         let proposed = TranscriptItem::Assistant {
             text: String::new(),
             tool_calls: vec![letibot_transcript::ToolCall {
@@ -1007,8 +1007,8 @@ mod tests {
     /// plain tool result coming out as an array would re-prefill every cached turn.
     #[test]
     fn a_tool_result_without_an_image_sends_no_attachment_and_keeps_its_string() {
-        // **The row that proposed it**, because `pair_tool_calls` drops an orphan tool result by
-        // design — the fixture needs the shape the wire actually has.
+        // The row that proposed it, because `pair_tool_calls` drops an orphan tool result by
+        // design - the fixture needs the shape the wire actually has.
         let proposed = TranscriptItem::Assistant {
             text: String::new(),
             tool_calls: vec![letibot_transcript::ToolCall {
@@ -1139,7 +1139,7 @@ mod tests {
     #[test]
     fn only_a_content_type_refusal_on_a_request_with_a_picture_is_this_refusal() {
         for said in [
-            // MEASURED, 2026-10-25, `glm-5.3` on the coding plan.
+            // Wordings seen from `glm-5.3` on the coding plan, then others.
             "messages.content.type is invalid, allowed values: ['text']",
             "Invalid 'messages[1].content[2].type': 'image_url' is not supported",
             "unknown variant `image_url`, expected `text`",
@@ -1205,7 +1205,7 @@ mod tests {
             .iter()
             .find(|x| x["role"] == "user")
             .expect("the user message");
-        // **A plain string, not an array of one part.** An array where a string was is a
+        // A plain string, not an array of one part. An array where a string was is a
         // re-prefill of every cached turn in the conversation.
         let content = user["content"]
             .as_str()
@@ -1445,7 +1445,7 @@ mod tests {
         );
         for said in [
             // A model that takes text only says a different thing, and `complete` asks that
-            // predicate FIRST — so the overlap on the word `image_url` resolves the right way.
+            // predicate FIRST - so the overlap on the word `image_url` resolves the right way.
             "messages.content.type is invalid, allowed values: ['text']",
             "Authentication Fails",
             "maximum context length is 1048576 tokens",
@@ -1477,7 +1477,7 @@ mod pairing_tests {
     use super::*;
     use letibot_transcript::{ToolCall, TranscriptItem, UserPart};
 
-    /// [`super::convert`] for a model that SEES — see the sibling module's helper.
+    /// [`super::convert`] for a model that SEES - see the sibling module's helper.
     fn convert(system: &str, items: &[TranscriptItem], echo_reasoning: bool) -> Vec<Value> {
         super::convert(
             system,
@@ -1618,7 +1618,7 @@ mod pairing_tests {
             }],
         };
 
-        // **As the session writes it.** The result answers the call, and the two rows about
+        // As the session writes it. The result answers the call, and the two rows about
         // the person follow it.
         let m = convert(
             "sys",
@@ -1656,9 +1656,9 @@ mod pairing_tests {
             "the person's own words must reach the model as a turn of theirs: {m:?}"
         );
 
-        // **And the control: the order the `!` line uses is wrong HERE.** The same three rows
+        // And the control: the order the `!` line uses is wrong HERE. The same three rows
         // with the person's half first is what this test exists to keep out of the transcript,
-        // and it is a real defect rather than a stylistic one — the call reads as unanswered.
+        // and it is a real defect rather than a stylistic one - the call reads as unanswered.
         let wrong = convert(
             "sys",
             &[
@@ -1856,8 +1856,8 @@ mod pairing_tests {
         );
     }
 
-    /// A split reasoning row is one thought in two items, so it travels joined — and
-    /// **nothing is dropped**, which is the whole requirement.
+    /// A split reasoning row is one thought in two items, so it travels joined - and
+    /// nothing is dropped, which is the whole requirement.
     #[test]
     fn a_truncated_reasoning_row_and_its_continuation_travel_together() {
         let items = vec![
@@ -1886,7 +1886,7 @@ mod pairing_tests {
         );
     }
 
-    /// An assistant with no reasoning before it gets no field — the field means
+    /// An assistant with no reasoning before it gets no field - the field means
     /// "this turn reasoned", not "the request has tools".
     #[test]
     fn an_assistant_that_did_not_reason_carries_no_field() {

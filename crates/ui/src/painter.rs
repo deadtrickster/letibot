@@ -1,11 +1,6 @@
-//! A palette bound to the block it is painting inside.
-//!
-//! The role table itself is rano's; what rano does not have is string painting that closes a
-//! span back to its ENCLOSING block rather than to the terminal default.
-//!
-//! [`Sgr`] is rano's table read once: `Palette::open` spells a sequence and hands back a new
-//! `String` on every call, and a frame paints its chrome on every tick, so the head's hot path
-//! would allocate per frame. Every sequence is computed once and kept - the bytes are rano's.
+//! A palette bound to the block it is painting inside, closing spans back to the enclosing block.
+//! The role table is rano's. [`Sgr`] computes its sequences once, since `Palette::open` allocates
+//! per call and frames paint every tick.
 
 use std::sync::OnceLock;
 
@@ -46,7 +41,7 @@ fn role_index(r: Role) -> usize {
     r as usize
 }
 
-/// **rano's role table, as `&'static str`**: [`Palette::open`] and [`Palette::paint`] without
+/// rano's role table, as `&'static str`: [`Palette::open`] and [`Palette::paint`] without
 /// the allocation per call. See the module header.
 pub trait Sgr: Copy {
     /// The opening sequence for a role, as [`Palette::open`] spells it.
@@ -61,7 +56,7 @@ impl Sgr for Palette {
     }
 
     /// As [`Palette::paint`]: closed with a reset, and a no-op for [`Palette::None`] and
-    /// [`Role::Plain`], so neither costs bytes. It does not sanitise `s` — see
+    /// [`Role::Plain`], so neither costs bytes. It does not sanitise `s` - see
     /// [`Palette::paint`] for why that is a correction rather than an omission.
     fn painted(self, r: Role, s: &str) -> String {
         let o = self.sgr(r);
@@ -130,7 +125,7 @@ impl Painter {
         }
     }
 
-    /// **Reverse video**, as a sequence: empty under [`Palette::None`]. One spelling with
+    /// Reverse video, as a sequence: empty under [`Palette::None`]. One spelling with
     /// [`Role::UserBlock`], because a terminal has one way to say reverse.
     pub fn reverse(self) -> &'static str {
         &table().reverse[palette_index(self.palette)]
@@ -149,7 +144,7 @@ impl Painter {
         }
     }
 
-    /// Wrap `s` in the role, closing back to the **block**, not to the terminal.
+    /// Wrap `s` in the role, closing back to the block, not to the terminal.
     pub fn painted(self, r: Role, s: &str) -> String {
         let o = self.sgr(r);
         if o.is_empty() {
@@ -212,7 +207,7 @@ mod tests {
         assert!(!fixed.ends_with("\x1b[0m"), "{fixed:?}");
     }
 
-    /// **The kept table is rano's, byte for byte**, for every palette and role — and
+    /// The kept table is rano's, byte for byte, for every palette and role - and
     /// [`Role::ALL`] is in declaration order, which is what lets a discriminant index it.
     #[test]
     fn the_kept_sequences_are_ranos() {

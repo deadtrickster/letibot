@@ -1,11 +1,6 @@
-//! Text a head did not author, made safe for a terminal. A head writes content verbatim, so
-//! any control byte in it is an instruction to the operator's terminal: an OSC title renames
-//! their window, a CSI mode string turns the mouse wheel off for the session.
-//!
-//! It lives here because both sides of a boundary need it and cannot see across themselves -
-//! `letibot-sessionlog` composes a display target, `letibot-ui` composes rows - and a second
-//! copy of a sequence parser is a duplicate that drifts. Call it where FOREIGN text enters,
-//! never on a string that may hold the head's own painted escapes.
+//! Text a head did not author, made safe for a terminal: control bytes in verbatim content are
+//! instructions to the operator's terminal. Here because `letibot-sessionlog` and `letibot-ui` both need it.
+//! Call where foreign text enters, never on a string holding the head's own escapes.
 
 use std::borrow::Cow;
 use std::iter::Peekable;
@@ -16,7 +11,7 @@ use std::str::Chars;
 /// takes the `Text` pieces; one parser, two readers, because the skipping rules are subtle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Piece {
-    /// Text a reader sees. A control byte that was **not** part of a sequence has
+    /// Text a reader sees. A control byte that was not part of a sequence has
     /// already become a space here, by [`without_control`]'s own rule and for its reason:
     /// dropping it would silently reflow the line.
     Text(String),
@@ -171,7 +166,7 @@ fn skip_osc(it: &mut Peekable<Chars<'_>>) {
 mod tests {
     use super::*;
 
-    /// **The defect that was measured on the operator's screen**: an escape's body must
+    /// An escape's body must
     /// not survive as printable text. Every family is from the store's own vocabulary.
     #[test]
     fn an_escape_sequence_goes_whole_and_never_leaves_its_body_behind() {
@@ -185,7 +180,7 @@ mod tests {
         ] {
             assert!(safe.contains(kept), "{kept} was lost: {safe:?}");
         }
-        // …and **not one byte of any sequence is**, which is the whole assertion. A
+        // …and not one byte of any sequence is, which is the whole assertion. A
         // leftover `[31m` is the exact shape of the regression.
         for gone in [
             "\u{1b}", "[31m", "[0m", "[8m", "[2J", "[?1002h", "[?1006h", "[?1049h", "[?2004h",
@@ -215,14 +210,14 @@ mod tests {
         );
     }
 
-    /// A control byte that is **not** part of a sequence still becomes a space, because
+    /// A control byte that is not part of a sequence still becomes a space, because
     /// dropping it would silently reflow the line.
     #[test]
     fn a_lone_control_byte_becomes_a_space_rather_than_nothing() {
         assert_eq!(without_control("a\tb"), "a b");
         assert_eq!(without_control("a\rb"), "a b");
         assert_eq!(without_control("a\u{7f}b"), "a b");
-        // A **bare C1 CSI** is the same instruction without its `ESC`, so it takes its
+        // A bare C1 CSI is the same instruction without its `ESC`, so it takes its
         // sequence with it: `\u{9b}31m` is `ESC[31m`.
         assert_eq!(without_control("a\u{9b}31mb"), "ab");
     }
@@ -268,7 +263,7 @@ mod tests {
         assert_eq!(without_control(line), text);
     }
 
-    /// **The pair that is the whole point**: the document form keeps its lines, and the
+    /// The pair that is the whole point: the document form keeps its lines, and the
     /// single-line form flattens - which is why the two are two functions.
     #[test]
     fn the_document_form_keeps_the_lines_and_loses_the_controls() {

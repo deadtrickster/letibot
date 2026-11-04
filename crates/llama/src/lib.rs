@@ -1,11 +1,6 @@
-//! The GGUF vocabulary: llama.cpp's tokenizer, as a
-//! [`letibot_tokencore::VocabBackend`].
-//!
-//! [`load`] reads the vocabulary out of a GGUF with `vocab_only = true`, so it holds a few
-//! megabytes of token table and no weights, and for a split model the other shards are
-//! never opened. The result is an ordinary [`Vocab`]; the rules a vocabulary keeps (one id
-//! per control literal, no specials from text, bytes-then-decode) live there, once, for
-//! every backend. This is the only crate that links llama.cpp.
+//! The GGUF vocabulary: llama.cpp's tokenizer as a [`letibot_tokencore::VocabBackend`].
+//! [`load`] reads with `vocab_only = true`: token table, no weights, no other shards.
+//! The only crate that links llama.cpp.
 
 pub mod apparatus;
 mod ffi;

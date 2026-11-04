@@ -1,11 +1,6 @@
-//! Bytes a tool read that are not text, kept as bytes - the second structured channel on
-//! `letibot_tools::runtime::Invocation`, beside `letibot_tools::edit::FileEdit`. Unlike
-//! `FileEdit`, which is display-only, this one exists to be SENT.
-//!
-//! `read` gains no verb, no gate question and no permission: it is asked for a path, and
-//! only what comes back differs. The bytes live on the ROW, not in an event, because the row
-//! is the durable artifact a prompt is rebuilt from: an image that reached the model once
-//! and not on the next round would look like a model that forgot.
+//! Bytes a tool read that are not text, kept as bytes: the structured channel on
+//! `letibot_tools::runtime::Invocation` that is sent, beside display-only `letibot_tools::edit::FileEdit`.
+//! The bytes live on the row, the durable source of a rebuilt prompt.
 
 use serde::{Deserialize, Serialize};
 
@@ -94,15 +89,15 @@ pub const SUPPORTED_IMAGE_MIMES: [&str; 4] = ["image/png", "image/jpeg", "image/
 pub struct Media {
     /// `image/png`. Sniffed from the bytes; see [`sniff_mime`].
     pub mime: String,
-    /// The file's own size in bytes, NOT the size of [`Media::data_ref`] — base64 is 4/3 of it and
+    /// The file's own size in bytes, NOT the size of [`Media::data_ref`] - base64 is 4/3 of it and
     /// the difference is an encoding detail rather than a fact about the picture.
     pub bytes: usize,
-    /// Pixels, when the header carries them. **`None` is not `0`** — a format whose header this
-    /// module does not parse has an unknown size, and R54 §5 makes the same argument for the row:
+    /// Pixels, when the header carries them. `None` is not `0` - a format whose header this
+    /// module does not parse has an unknown size, and the same argument holds for the row:
     /// *absent is not 0x0*.
     pub width: Option<u32>,
     pub height: Option<u32>,
-    /// `data:image/png;base64,…` — the form the model server takes, verbatim.
+    /// `data:image/png;base64,…` - the form the model server takes, verbatim.
     pub data_ref: String,
     /// Whether a model was actually given these bytes. A dropped attachment and an ignored
     /// one look identical on a transcript that does not say which, and only one of them is
@@ -164,7 +159,7 @@ impl Media {
 /// a claim and a magic number is not. `None` means not an image this tree will hand a model,
 /// which includes a PDF: there is no PDF path to put one on.
 pub fn sniff_mime(path: &str, bytes: &[u8]) -> Option<&'static str> {
-    // **Magic first.** Every one of these is a fixed prefix, and none is ambiguous with another.
+    // Magic first. Every one of these is a fixed prefix, and none is ambiguous with another.
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Some("image/png");
     }
@@ -174,11 +169,11 @@ pub fn sniff_mime(path: &str, bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
         return Some("image/gif");
     }
-    // RIFF….WEBP — the four bytes after `RIFF` are a little-endian length, so the tag is at 8.
+    // RIFF….WEBP - the four bytes after `RIFF` are a little-endian length, so the tag is at 8.
     if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
         return Some("image/webp");
     }
-    // **Then the name**, which is where opencode puts it too: a file whose *extension* says image and
+    // Then the name, which is where opencode puts it too: a file whose *extension* says image and
     // whose header this function does not know is still worth trying, because the far end is the
     // authority on what it can read and a refusal from it names the file.
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
@@ -304,8 +299,8 @@ fn dimensions(mime: &str, bytes: &[u8]) -> (Option<u32>, Option<u32>) {
 
 fn jpeg_size(bytes: &[u8]) -> (Option<u32>, Option<u32>) {
     let mut i = 2usize; // past SOI
-    // **`i + 4 <= len` to read a marker and its length**, and `i + 9 <= len` to read a frame
-    // header's last byte at `i + 8` — the off-by-one that a fixture ending exactly at the width
+    // `i + 4 <= len` to read a marker and its length, and `i + 9 <= len` to read a frame
+    // header's last byte at `i + 8` - the off-by-one that a fixture ending exactly at the width
     // caught, which is the whole reason the test builds one.
     while i + 4 <= bytes.len() {
         if bytes[i] != 0xff {
@@ -382,7 +377,7 @@ pub fn mark_delivered(items: &mut [crate::TranscriptItem]) {
 mod tests {
     use super::*;
 
-    /// A **real** PNG, `w`×`h` — the shared fixture, so this crate's tests cannot drift back into
+    /// A real PNG, `w`×`h` - the shared fixture, so this crate's tests cannot drift back into
     /// a header that is not a picture. See [`crate::testing`] for why that matters.
     fn png(w: u32, h: u32) -> Vec<u8> {
         crate::testing::png(w, h)
@@ -394,7 +389,7 @@ mod tests {
         // something else is the case this order exists for, and opencode's is the same order.
         let png = png(7, 9);
         assert_eq!(sniff_mime("picture.png", &png), Some("image/png"));
-        // **Named wrongly, sniffed rightly** — the file is a PNG whatever it is called.
+        // Named wrongly, sniffed rightly - the file is a PNG whatever it is called.
         assert_eq!(sniff_mime("picture.dat", &png), Some("image/png"));
         assert_eq!(sniff_mime("no-extension", &png), Some("image/png"));
 
@@ -407,8 +402,8 @@ mod tests {
         assert_eq!(sniff_mime("Makefile", unknown), None);
     }
 
-    /// **A user row's image part carries a reference, and the size still comes out of the
-    /// header** — with the base64 decoded no further than the IHDR needs.
+    /// A user row's image part carries a reference, and the size still comes out of the
+    /// header - with the base64 decoded no further than the IHDR needs.
     #[test]
     fn a_data_ref_states_its_size_without_decoding_the_picture() {
         use super::{decode_base64, encode_base64, size_of_data_ref};
@@ -506,7 +501,7 @@ mod tests {
             Some(4096),
             "and above it the server RESIZES, so it stays 4096"
         );
-        // Absent rather than zero — see the method's own note.
+        // Absent rather than zero - see the method's own note.
         let no_size = Media {
             mime: "image/gif".into(),
             bytes: 0,
@@ -553,7 +548,7 @@ mod tests {
             media.as_ref().is_some_and(|m| m.delivered),
             "the picture rode a request and the row does not say so"
         );
-        // And a row with no media is untouched — the walk does not invent one.
+        // And a row with no media is untouched - the walk does not invent one.
         let crate::TranscriptItem::ToolResult { media, .. } = &items[1] else {
             panic!("the fixture is a tool result")
         };
@@ -562,7 +557,7 @@ mod tests {
 
     #[test]
     fn an_unparsed_header_says_unknown_rather_than_zero() {
-        // R54 §5's rule, applied one layer down: *absent is not 0x0*. A GIF's size is not parsed
+        // Same rule, one layer down: *absent is not 0x0*. A GIF's size is not parsed
         // here, and a zero would read as a picture with no pixels.
         let m = Media::of("a.gif", &crate::testing::gif(2, 2)).expect("a gif");
         assert_eq!((m.width, m.height), (None, None));
@@ -590,7 +585,7 @@ mod tests {
         assert!(Media::of("a.png", b"\x89PNG\r\n\x1a\n").is_none());
     }
 
-    /// **A picture cut off mid-chunk is not a picture either** — the walk refuses a chunk whose
+    /// A picture cut off mid-chunk is not a picture either - the walk refuses a chunk whose
     /// length runs past the end, which is the truncated case a `IDAT`-and-`IEND` check alone would
     /// miss when the truncation is what removed them.
     #[test]
@@ -610,7 +605,7 @@ mod tests {
         }
     }
 
-    /// **The four formats, complete and not** — one table, so a format added to
+    /// The four formats, complete and not - one table, so a format added to
     /// [`SUPPORTED_IMAGE_MIMES`] without a completeness rule is a test that fails rather than a
     /// picture a provider refuses.
     #[test]

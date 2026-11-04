@@ -1,16 +1,11 @@
-//! Whether a vocabulary is on this machine AND this build can load it.
-//!
-//! [`letibot_tokencore::apparatus`] answers the first question and on its own it is the
-//! wrong one: a GGUF can exist and be unloadable, a split shard whose siblings are
-//! missing or an architecture this llama.cpp does not know, and a test that skipped on
-//! `is_file` alone failed inside [`crate::load`] rather than saying the apparatus was absent.
-//!
-//! So presence here means the load succeeded once, cached by path, length and mtime.
+//! Whether a vocabulary is on this machine and this build can load it.
+//! [`letibot_tokencore::apparatus`] answers presence only, and a GGUF can exist unloadable.
+//! Presence here means a load succeeded once, cached by path, length and mtime.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// **One measurement**: the file it was taken on (path, byte length, modification time) and whether
+/// One measurement: the file it was taken on (path, byte length, modification time) and whether
 /// this build could load it. Only the answer is kept, never the model: a few megabytes of token
 /// table per entry would be a leak with a cache in front of it.
 type Measured = (PathBuf, u64, u128);
@@ -37,7 +32,7 @@ pub fn present_file(path: &Path) -> Option<()> {
     )
 }
 
-/// **The load, once per version of the file** - and the loader's own words the first time it
+/// The load, once per version of the file - and the loader's own words the first time it
 /// fails, so a reader learns which half was missing rather than only that something was.
 fn loadable(path: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(path) else {
