@@ -79,6 +79,10 @@ fn a_nick_changes_the_handle_survives_a_reconnect_and_is_refused_when_taken() {
     assert_eq!(roster(&server, &asker), vec!["cc@conformity".to_string()]);
 
     drop(link);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !roster(&server, &asker).is_empty() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     let again = RoomLink::at(server.path());
     again.ensure().expect("a new connection");
     assert_eq!(rooms::handle(), "cc@stroppy-io:conformity");
