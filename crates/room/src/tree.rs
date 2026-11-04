@@ -220,6 +220,11 @@ pub struct Member {
     /// What the tree writes on the row: the session's title, shortened by the daemon if it is long. A
     /// member is recognised by this and addressed by `session`.
     pub label: String,
+    /// The slug of the session's name, empty when it has none (or the slug would clash with an id
+    /// or a reserved name). It is the name the room shows and takes for this member; `session`
+    /// stays the identity.
+    #[serde(default)]
+    pub handle: String,
     pub group: Group,
     /// The parent it hangs from, for the rows that hang from one.
     pub parent: Option<String>,
