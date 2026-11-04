@@ -241,8 +241,7 @@ fn git_dirs(project: &Path) -> Option<GitDirs> {
 
 /// What inside a granted git dir stays read-only, and of what kind when it is not there. A child
 /// commits, so it writes objects and its own branch; every other ref, the hooks and config the
-/// operator's git runs later, and the files that decide which repository a checkout reads are
-/// not its to write. The entries are read off the disk, so the set is this repository's.
+/// operator's git runs later, and the files that decide what a checkout reads are not its to write.
 pub fn git_dir_protected(project: &Path) -> Vec<Protection> {
     let Some(dirs) = git_dirs(project) else {
         return Vec::new();

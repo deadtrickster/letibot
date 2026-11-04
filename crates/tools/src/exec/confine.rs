@@ -526,10 +526,9 @@ pub struct ViewSpec {
     pub protected: Vec<Protection>,
 }
 
-/// A path a confined command must not write, and what to bind there when it does not exist.
-/// bwrap can only mount over a path that is there, so an absent `hooks/` was a directory the
-/// command could create and fill; the kind is carried because an empty file where a directory
-/// belongs is a different hole from an open one.
+/// A path a confined command must not write, and what to bind there when it does not exist. bwrap
+/// can only mount over a path that is there, so an absent `hooks/` was one the command could make and
+/// fill; the kind is carried, because the wrong placeholder is a different hole.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Protection {
     pub path: PathBuf,
@@ -2239,10 +2238,9 @@ fn pieces_of(
         if view.classify(&p.path) != Presence::Inside {
             continue;
         }
-        // A path that is there is bound over itself. One that is not is given an empty read-only
-        // placeholder of its own kind, or the command creates it inside the grant and fills it.
-        // The parent must be there: bwrap would otherwise make the parent directories in the
-        // operator's real tree, and a path nobody can reach needs no placeholder.
+        // A path that is there is bound over itself; one that is not gets an empty read-only
+        // placeholder of its own kind. The parent must be there, or bwrap makes the parents in the
+        // operator's real tree and a path nobody can reach needs no placeholder.
         let parent_there = p.path.parent().is_some_and(|d| d.exists());
         match (p.path.exists(), p.kind) {
             (true, _) => {

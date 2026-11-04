@@ -1251,11 +1251,9 @@ fn grant_program(baseline: &crate::intent::Baseline) -> String {
         .unwrap_or_else(|| NO_PROGRAM.to_string())
 }
 
-/// The refuse-list, evaluated before any adjudicator and overridable by none of them: a
-/// `deny` row is checked before an adjudicator is consulted, so no listener can bypass it.
-/// `.git/` is ours, not the clause's: rewriting a ref is not something a tool can undo. The
-/// stores themselves are [`crate::secrets::STORES`], which the read-side list and the macOS
-/// seat's fence read too, so no copy of them can drift.
+/// The refuse-list, evaluated before any adjudicator and overridable by none of them. The stores are
+/// [`crate::secrets::STORES`], which the read-side list and the macOS seat's fence read too, so no copy
+/// of them can drift; the repository's own directory is ours, because rewriting a ref cannot be undone.
 pub fn never_write() -> Vec<&'static str> {
     let mut out = crate::secrets::stores();
     out.push(".git");
@@ -2628,12 +2626,9 @@ impl Gate for AdjudicatedGate {
             return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
         }
 
-        // 1. The `never` rows, overridable by none. A call that WRITES is judged by its
-        // spelling, because what the list is about is what a write leaves behind; a call that can
-        // only read is not, or `read {"path": ".git/HEAD"}` and `cat ./.git/config` are refused
-        // in every mode. Two questions, one rule: `never_hit` asks it of the SPELLING and
-        // [`ssh_resolution_hit`] of the PATH - what the argument names after every symlink, for a
-        // file that may not exist yet.
+        // 1. The `never` rows, overridable by none. Only a call that can WRITE is judged by its
+        // spelling, or a read of the repository's own HEAD is refused in every mode.
+        // `never_hit` asks it of the spelling and [`ssh_resolution_hit`] of the resolved path.
         let refused = matches!(access, Access::Write | Access::Exec)
             .then(|| never_hit(call.args))
             .flatten()

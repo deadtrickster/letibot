@@ -1092,10 +1092,8 @@ pub const SESSION_MARK: &str = "LETIBOT_SESSION";
 const END_SESSION_BOUND: Duration = Duration::from_secs(25);
 
 /// The sweep [`Ssh::end_session_processes`] runs on the far side. A script, not `pkill`: pids are TERMed,
-/// waited for, then KILLed, so the answer is what is left. The id arrives as `$1` and the ledger as
-/// `$2`; the mark matches as a whole field (`-1` is a prefix of `-12`). Linux greps
-/// `/proc/<pid>/environ`, a Mac uses `ps eww`, and the ledger's own pid files name the groups a
-/// command that cleared its environment left.
+/// waited for, then KILLed, so the answer is what is left. The id arrives as `$1`, the ledger as `$2`,
+/// and the mark matches as a whole field, so `-1` is not a prefix of `-12`.
 const SESSION_SWEEP: &str = r#"
 mark="LETIBOT_SESSION=$1"
 # Read here, not inside a function: a shell function's `$1` is its own argument, so the ledger
@@ -4583,11 +4581,9 @@ walk() {
 }
 "#;
 
-/// The process host of a remote session: its jobs are files on that machine - a launcher, a pid,
-/// the merged output, and an exit status whose existence is the settlement. The directory they
-/// live in is [`RemoteProcesses::with_ledger`]'s, and it must be outside every tree a command of
-/// this session can write: a pid file a command can overwrite is a kill aimed at a process the
-/// daemon did not start.
+/// The process host of a remote session: its jobs are files on that machine, and the directory they
+/// live in is [`RemoteProcesses::with_ledger`]'s, outside every tree a command of this session can
+/// write - a pid file a command can overwrite is a kill aimed at a process the daemon did not start.
 pub struct RemoteProcesses {
     ssh: Ssh,
     host: String,
@@ -5170,11 +5166,9 @@ impl RemoteProcesses {
                 cmdline: job.command.clone(),
             });
         }
-        // A group kill only when the pid really leads a group. `kill -TERM -<pid>` on a pid that
-        // is not a group leader signals this shell's group, which could take out something the
-        // operator cares about. `ps -o pgid=` answers it on the remote before the signal.
-        // The pid is a number read off a file, so before it is signalled it has to be proved the
-        // job's own, or a forged pid file aims a group kill at somebody else's process.
+        // A group kill only when the pid really leads a group, which `ps -o pgid=` answers: a
+        // `kill -TERM -<pid>` on a pid that is not a leader signals this shell's group instead.
+        // And the pid is a claim read off a file, proved the job's own before it is signalled.
         match self.whose_pid(job, pid) {
             PidProof::Ours => {}
             PidProof::NotOurs(what) => {
@@ -6281,10 +6275,9 @@ user     = "root"
         host.job(&job).expect("the job")
     }
 
-    /// A pid file is a claim, and a kill is aimed with it: the process behind the number has to be
-    /// the launcher this job wrote, or a forged file sends `kill -TERM -<pid>` to a stranger. The
-    /// fake here answers every start with `started` and every poll with pid 4242, which runs no
-    /// launcher at all.
+    /// A pid file is a claim, and a kill is aimed with it: the number has to be the launcher this job
+    /// wrote, or a forged file sends `kill -TERM -<pid>` to a stranger. This fake answers every poll
+    /// with pid 4242, which runs no launcher at all.
     #[test]
     fn a_pid_that_is_not_the_jobs_launcher_is_not_signalled() {
         let rig = PollRig::new("forged", "").written();

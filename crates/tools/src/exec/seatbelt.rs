@@ -38,9 +38,8 @@ pub const SYSTEM_ROOTS: &[&str] = &[
 ];
 
 /// The mach services a shell, `git`, `cargo`/`rustc`, `python3` and `make` need: a program
-/// wanting one not here fails naming it, and the fix is one line. `com.apple.SecurityServer`
-/// is the keychain service, and it is the top-level seat's alone: `gh` keeps its token in the
-/// keychain, and a child that could ask would have the token its parent is given and it is not.
+/// wanting one not here fails naming it, and the fix is one line. `com.apple.SecurityServer` is the
+/// keychain service, and it is the top-level seat's alone: `gh` keeps its token in the keychain.
 pub const MACH_SERVICES: &[&str] = &[
     "com.apple.system.logger",
     "com.apple.system.notification_center",
@@ -77,11 +76,8 @@ pub const TOOLCHAIN_UNDER_HOME: &[&str] = &[
 ];
 
 /// Denied for read and write after every allow, whatever the view grants, and relative to the
-/// operator's home. A deny rather than an allow-list entry, because it has to win over a
-/// widened view: a grant of the whole home must not bring `~/.ssh` or this tool's store in.
-/// The credential stores are [`crate::secrets::STORES`], which the gate reads too; what is
-/// here is what only a policy can express - the shell's own startup files, which are not secrets
-/// but are how a command leaves itself behind, and the private data a Mac keeps beside them.
+/// operator's home: a deny, because it has to win over a grant of the whole home. The credential
+/// stores are [`crate::secrets::STORES`]; what is here is what only a policy can express.
 pub const SEAT_UNDER_HOME: &[&str] = &[
     "Library/Cookies",
     "Library/Messages",

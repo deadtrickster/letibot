@@ -1175,10 +1175,9 @@ impl HostProcesses {
         Some(pid)
     }
 
-    /// What a table of jobs does when one of them ends: the settled captures go back and the
-    /// finished rows past the window go with them. Called wherever a job ends, not only at the
-    /// next spawn, because a session that runs a hundred commands and then stops must not keep a
-    /// hundred rows for the rest of its life.
+    /// What a table of jobs does when one of them ends: the settled captures go back and the finished
+    /// rows past the window go with them. Called wherever a job ends, so a session that runs a hundred
+    /// commands does not keep a hundred rows for the rest of its life.
     fn housekeeping(&self) {
         self.release_settled_captures(SETTLED_CAPTURE_BUDGET);
         self.prune_finished(KEPT_FINISHED_JOBS, FINISHED_JOB_GRACE, SystemTime::now());
@@ -3143,10 +3142,9 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         std::fs::remove_dir_all(&scratch).ok();
     }
 
-    /// The wrapper writes `$TMPDIR/letibot-joined-<id>` when it has joined its cgroup, and that
-    /// file is the evidence `joined` is read from. A job KILLED before it ends never reaches the
-    /// arm that consumes it on the way out, so the file stayed for the life of the machine: one
-    /// per killed job.
+    /// The wrapper writes `$TMPDIR/letibot-joined-<id>` on joining, and that file is the evidence
+    /// `joined` is read from. A job killed before it ends never reached the arm that consumes it, so
+    /// the file stayed for the life of the machine: one per killed job.
     #[test]
     fn a_job_killed_before_it_ends_leaves_no_join_token_behind() {
         let root = std::env::temp_dir().join(format!("letibot-joined-{}", std::process::id()));

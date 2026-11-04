@@ -1471,10 +1471,9 @@ pub fn unwrap_wrapper(program: &str, argv: &[Word]) -> Option<(String, usize)> {
 
 // Regions and secrets
 
-/// The directories whose bytes are secret. Not the decider (the flow rule is), but it has to know
-/// what a secret is: the stores in [`crate::secrets::STORES`], which the gate's write list and the
-/// macOS seat's fence read too, plus the four this side adds because a read of them is a
-/// disclosure even where nothing writes one.
+/// The directories whose bytes are secret. Not the decider (the flow rule is), but it has to know what
+/// a secret is: [`crate::secrets::STORES`], which the gate and the seat read too, plus the four this
+/// side adds because a read of them is a disclosure even where nothing writes one.
 pub fn secret_dirs() -> Vec<&'static str> {
     let mut out = crate::secrets::stores();
     // `.docker` and not only its config file: a whole directory of registries is a read-side
