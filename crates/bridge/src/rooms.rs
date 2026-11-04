@@ -38,12 +38,38 @@ pub fn base_name(env: Option<&str>, cwd: &std::path::Path) -> String {
     {
         return named.chars().take(32).collect();
     }
-    let folder = cwd
+    let folder = project_folder(cwd)
         .file_name()
         .map(|n| clean(&n.to_string_lossy()))
         .filter(|n| !n.is_empty() && !n.contains('@'))
         .unwrap_or_else(|| "host".to_string());
     format!("cc@{folder}").chars().take(32).collect()
+}
+
+/// The folder whose name stands for the project: the main worktree of the repository holding
+/// `cwd`, else `cwd` itself. Reads `.git` directly so no git process is needed.
+fn project_folder(cwd: &std::path::Path) -> PathBuf {
+    for dir in cwd.ancestors() {
+        let dot_git = dir.join(".git");
+        if dot_git.is_dir() {
+            return dir.to_path_buf();
+        }
+        let Ok(text) = std::fs::read_to_string(&dot_git) else {
+            continue;
+        };
+        let Some(gitdir) = text.trim().strip_prefix("gitdir:").map(str::trim) else {
+            continue;
+        };
+        let gitdir = dir.join(gitdir);
+        // A linked worktree's gitdir is `<main>/.git/worktrees/<name>`; a submodule's is not.
+        let main = gitdir
+            .parent()
+            .filter(|w| w.file_name().is_some_and(|n| n == "worktrees"))
+            .and_then(|w| w.parent())
+            .and_then(|g| g.parent());
+        return main.unwrap_or(dir).to_path_buf();
+    }
+    cwd.to_path_buf()
 }
 
 /// `name` with a short suffix from `salt`, for a second bridge in a folder of the same name.
@@ -975,6 +1001,40 @@ mod tests {
         assert!(base_name(None, std::path::Path::new("/")).starts_with("cc@"));
         let long = std::path::Path::new("/x/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         assert!(a_handle(&base_name(None, long)));
+    }
+
+    #[test]
+    fn the_name_follows_the_repository_not_the_folder_inside_it() {
+        let root = std::env::temp_dir().join(format!("letibot-ccname-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git runs");
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        let multi = root.join("stroppy-io");
+        let repo = multi.join("stroppy-conformity");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "x"]);
+        let wt = repo.join(".claude/worktrees/x-foo");
+        git(&repo, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+        let sub = repo.join("crates");
+        std::fs::create_dir_all(&sub).unwrap();
+        let plain = root.join("scratch");
+        std::fs::create_dir_all(&plain).unwrap();
+
+        assert_eq!(base_name(None, &repo), "cc@stroppy-conformity");
+        assert_eq!(base_name(None, &sub), "cc@stroppy-conformity");
+        assert_eq!(base_name(None, &wt), "cc@stroppy-conformity");
+        assert_eq!(base_name(None, &multi), "cc@stroppy-io");
+        assert_eq!(base_name(None, &plain), "cc@scratch");
+        assert_eq!(base_name(Some("Mine"), &wt), "mine");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
