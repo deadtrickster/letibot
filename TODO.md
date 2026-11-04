@@ -47,7 +47,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 |---|---|---|---|
 | R93 | What the model is told: tics, leaked numbers, contradictions, schema mismatches | Code work | item 3 (B1), item 7 (the F findings the named ones do not cover), item 8 (a fabric memory body no tool reads, and the fabric block's time changing per open) |
 | R74 | What the 2026-10-11 landings left open | Code work | item 20 (the rest of the report sink's sites, 18 of them routed), item 39 (a live gate on lubuntu1/2), item 40 (the inline blocks over 800 lines) |
-| R95 | A variable an earlier command assigned is unread in the next one | Code work | an `export` in one `bash` call still does not reach the next: the model's command is a one-shot spawn and `SessionEnv::observe` has no production caller; the stateful shell needs the deny-list of section 4j.5 |
+| R95 | A variable an earlier command assigned is unread in the next one | Code work, after the release | an `export` in one `bash` call still does not reach the next: the model's command is a one-shot spawn and `SessionEnv::observe` has no production caller; the stateful shell needs the deny-list of section 4j.5 |
 | R104 | A cmd-chord reaches the head as its plain letter (rano drops the super bit) | Code work | rano's `legacy_bytes` still turns a `CSI ... u` into the legacy spelling, so cmd-C still types a `c` into a `!term` pane - a decision, not a line |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | `Hub::turn_in_flight` (`crates/sessionlog/src/hub.rs:1632`) still reads the round, not `ends_turn`; a round with no calls followed by a nudge still says `true`; unclear: leticl's `:turn-finished` arm reading `ends_turn` is in another repo, check there |
 | T15 | Replace section 10's compaction design with structural eviction | Code work | a standalone `prune` |
@@ -390,7 +390,7 @@ nothing to design.
 
 ## R95 - A variable an earlier command assigned is unread in the next one
 
-**Status:** the design note (section 4j), the resolver, the card and a placement-true seed are built (2026-11-03). left: an `export` in one `bash` call still does not reach the next - the model's command is a one-shot spawn and `SessionEnv::observe` has no production caller. Closing it makes the session's shell stateful, which section 4j.5 says needs a deny-list for names that change what a program does without appearing in any text.
+**Status:** the design note (section 4j), the resolver, the card and a placement-true seed are built (2026-11-03). ruled 2026-11-04: persistent env, cwd reset per call, after the release. left: an `export` in one `bash` call still does not reach the next - the model's command is a one-shot spawn and `SessionEnv::observe` has no production caller. Closing it makes the session's shell stateful, which section 4j.5 says needs a deny-list for names that change what a program does without appearing in any text.
 
 About 500 recorded commands (`$p`, `$d`, `$pr`, `$CARGO_TARGET_DIR`, …) use a variable the
 session set in an EARLIER `bash` call, and G3 resolves only a variable assigned earlier in the
@@ -411,6 +411,11 @@ session set when it decided the reading.
 on lab2x1 and 1,347 on the mac. When `PATH` is resolved, each stage's program is resolved to the
 file it will run, and the stage, shape and card name that file when it differs from what the
 bare name finds today, so a grant given for one binary cannot settle a stage that runs another.
+
+**The operator's ruling, 2026-11-04:** bash calls share one persistent shell, after the release.
+The environment persists across calls; the cwd resets to the workspace root before every call,
+because a drifting cwd sends a relative `rm` or `git` to the wrong tree. `cd x && ...` inside one
+command is still resolved by the gate.
 
 **Still open?** grep the corpus replay's unread list for variables with no assignment in the
 same command.
