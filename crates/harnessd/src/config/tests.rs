@@ -19,7 +19,7 @@ fn the_embedder_section_is_read_from_the_project_level_then_the_users() {
 
     let mut cfg = Config::for_this_box(&base);
     assert!(
-        cfg.embedder.is_none() && cfg.embedder_fault.is_none(),
+        cfg.embedder.get().is_none() && cfg.embedder.fault().is_none(),
         "a fixture scores the words alone and has nothing to say"
     );
     assert!(cfg.tier().is_none());
@@ -27,8 +27,11 @@ fn the_embedder_section_is_read_from_the_project_level_then_the_users() {
     cfg.leticode.path = Some(project);
     cfg.leticode_user.path = Some(user);
     cfg.read_embeddings();
-    assert!(cfg.embedder.is_none(), "the section asked for no tier");
-    let said = cfg.embedder_fault.expect("and the refusal is kept");
+    assert!(
+        cfg.embedder.get().is_none(),
+        "the section asked for no tier"
+    );
+    let said = cfg.embedder.fault().expect("and the refusal is kept");
     assert!(said.contains("mode = \"off\""), "{said}");
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -50,9 +53,68 @@ fn a_section_that_turns_the_download_off_keeps_the_refusal() {
     let mut cfg = Config::for_this_box(&base);
     cfg.leticode_user.path = Some(user);
     cfg.read_embeddings();
-    assert!(cfg.embedder.is_none(), "nothing was fetched");
-    let said = cfg.embedder_fault.expect("and the refusal is kept");
+    assert!(cfg.embedder.get().is_none(), "nothing was fetched");
+    let said = cfg.embedder.fault().expect("and the refusal is kept");
     assert!(said.contains("all-MiniLM-L6-v2"), "{said}");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A first-use fetch is off the start path. Offline it waits out the retry ladder before giving up,
+/// and a daemon that opens no session until it has is one the operator believes is broken. The tier
+/// appears when the bytes land; every score until then is the words alone, and the note says so.
+#[test]
+fn a_first_use_fetch_does_not_hold_the_daemon_start() {
+    use letibot_embeddings::{Cache, Embedder, Engine, Planted};
+
+    let base = std::env::temp_dir().join(format!("config-fetch-thread-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).expect("a scratch dir");
+    let data = base.join("data");
+    std::fs::create_dir_all(&data).expect("a data dir");
+
+    let mut cfg = Config::for_this_box(&base);
+    let settings = letibot_embeddings::Settings {
+        mode: letibot_embeddings::Mode::Internal { model: None },
+        download: true,
+        ..Default::default()
+    };
+    let started = std::time::Instant::now();
+    // The fetch's cost, stood in for: the same delay, on the thread the real one would be on.
+    let for_the_thread = data.clone();
+    cfg.open_the_embedder(settings, Some(data), move |_, _| {
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        let cache = Cache::open_in(&for_the_thread).expect("cache");
+        Ok(Some(Embedder::with(
+            Engine::Planted(Planted::new(&[&["alpha"], &["beta"]])),
+            cache,
+        )))
+    });
+    let took = started.elapsed();
+
+    assert!(
+        took < std::time::Duration::from_millis(200),
+        "the start waited {took:?} for the fetch"
+    );
+    assert!(
+        cfg.embedder.get().is_none(),
+        "and until the bytes land every score is the words alone"
+    );
+    assert!(
+        cfg.embedder
+            .take_fetch_note()
+            .is_some_and(|said| said.contains("being fetched now")),
+        "the operator is told why the tier is not there yet"
+    );
+
+    // The tier appears when the thread is done, on the same config every session reads.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while cfg.embedder.get().is_none() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        cfg.tier().expect("the tier the fetch produced").model(),
+        "planted"
+    );
     let _ = std::fs::remove_dir_all(&base);
 }
 

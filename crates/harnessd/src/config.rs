@@ -237,6 +237,87 @@ impl ModelSource {
     }
 }
 
+/// The box's embedder, and what start-up has to say about it. Shared and interior-mutable because a
+/// first-use fetch runs on a thread of its own: offline it waits out the retry ladder before it gives
+/// up, and a daemon must open a session meanwhile. No embedder in it is the lexical score.
+#[derive(Debug, Clone, Default)]
+pub struct EmbedderSlot {
+    inner: std::sync::Arc<SlotInner>,
+}
+
+#[derive(Debug, Default)]
+struct SlotInner {
+    embedder: std::sync::OnceLock<std::sync::Arc<letibot_embeddings::Embedder>>,
+    /// The fetch sentence, handed out once: the first session that opens says it.
+    fetch_note: std::sync::Mutex<Option<String>>,
+    /// Why a section the box DID write produced no embedder. Kept rather than taken, because a tier
+    /// that is silently absent is a tier nobody can fix and every session's open says it once.
+    fault: std::sync::Mutex<Option<String>>,
+}
+
+impl EmbedderSlot {
+    /// The tier, once the box has one.
+    pub fn get(&self) -> Option<&std::sync::Arc<letibot_embeddings::Embedder>> {
+        self.inner.embedder.get()
+    }
+
+    pub fn fault(&self) -> Option<String> {
+        self.inner
+            .fault
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn set_fault(&self, why: impl Into<String>) {
+        *self.inner.fault.lock().unwrap_or_else(|e| e.into_inner()) = Some(why.into());
+    }
+
+    /// The first-use fetch sentence, taken by the first session that opens.
+    pub fn take_fetch_note(&self) -> Option<String> {
+        self.inner
+            .fetch_note
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+
+    pub fn set_fetch_note(&self, said: impl Into<String>) {
+        *self
+            .inner
+            .fetch_note
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(said.into());
+    }
+
+    /// Publish what an open produced, on whatever thread it ran on. The model's own announcement - a
+    /// fetch that did happen - replaces the placeholder note the caller left before the thread ran.
+    fn install(&self, found: Result<Option<std::sync::Arc<letibot_embeddings::Embedder>>, String>) {
+        match found {
+            Ok(Some(embedder)) => {
+                if let Some(said) = embedder.take_announcement() {
+                    eprintln!("  embeddings: {said}");
+                    self.set_fetch_note(said);
+                }
+                // Already filled by another level of the same box: the first one is the tier.
+                let _ = self.inner.embedder.set(embedder);
+            }
+            Ok(None) => {}
+            Err(why) => self.set_fault(why),
+        }
+    }
+}
+
+/// Whether opening this section may reach the network: only the built-in model with `download` on.
+/// A directory the operator named is a file read, and a URL is not opened until a text is embedded.
+fn may_fetch(settings: &letibot_embeddings::Settings) -> bool {
+    settings.download
+        && matches!(
+            settings.mode,
+            letibot_embeddings::Mode::Internal { model: None }
+        )
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub dialect: Dialect,
@@ -460,13 +541,8 @@ pub struct Config {
     /// and a child's workspace is its worktree, so every finished child's tree looked dirty.
     pub logs_root: Option<std::path::PathBuf>,
     /// The box's one embedder, built by [`Config::read_embeddings`] from `[embeddings]` and shared by every scorer (notes offer, near-copy gate, context-claim check, skill offer, plan, commit log, compaction's old half).
-    /// `None` is the lexical score, the default and every fixture.
-    pub embedder: Option<std::sync::Arc<letibot_embeddings::Embedder>>,
-    /// Why a section the box DID write produced no embedder. Said once, at the next session's
-    /// open, because a tier that is silently absent is a tier nobody can fix.
-    pub embedder_fault: Option<String>,
-    /// The first-use fetch sentence, kept for the session's hub: stderr is `/dev/null` under the launcher.
-    pub embedder_fetch_note: Option<String>,
+    /// No embedder in it is the lexical score, the default and every fixture.
+    pub embedder: EmbedderSlot,
     /// Which role this session seats. [`Seat::Orchestrator`] by default, which
     /// is what every invocation gets today. See [`Seat`].
     pub seat: Seat,
@@ -1454,9 +1530,7 @@ impl Config {
             logs_root: None,
             // No tier until `read_embeddings` reads `[embeddings]`: a fixture scores the words
             // alone, and a daemon that never wrote the section scores exactly what it did before.
-            embedder: None,
-            embedder_fault: None,
-            embedder_fetch_note: None,
+            embedder: EmbedderSlot::default(),
             mode: letibot_tools::mode::UNSEEN_PROJECT,
             permission: parse_permission(),
             flowy: None,
@@ -1618,33 +1692,48 @@ impl Config {
             match letibot_embeddings::Settings::load(&file) {
                 Ok(settings) if settings.mode.is_off() => continue,
                 Ok(settings) => {
-                    match crate::embeddings::embedder(&settings, data.as_deref()) {
-                        Ok(found) => {
-                            // A first-use fetch happens on this path - at start, before any
-                            // turn - so its one sentence is said here, and the embedder has it
-                            // only once.
-                            if let Some(said) = found.as_ref().and_then(|e| e.take_announcement()) {
-                                eprintln!("  embeddings: {said}");
-                                self.embedder_fetch_note = Some(said);
-                            }
-                            self.embedder = found;
-                        }
-                        Err(why) => self.embedder_fault = Some(why),
-                    }
+                    self.open_the_embedder(settings, data, crate::embeddings::embedder);
                     return;
                 }
                 Err(why) => {
-                    self.embedder_fault = Some(why.to_string());
+                    self.embedder.set_fault(why.to_string());
                     return;
                 }
             }
         }
     }
 
+    /// Open the tier the section asks for. A first-use fetch goes on a thread of its own, because
+    /// offline it waits out the retry ladder and a daemon that opens no session until then is one the
+    /// operator believes is broken. `open` is a parameter so a test proves the timing with no network.
+    fn open_the_embedder(
+        &mut self,
+        settings: letibot_embeddings::Settings,
+        data: Option<PathBuf>,
+        open: impl FnOnce(
+            &letibot_embeddings::Settings,
+            Option<&Path>,
+        )
+            -> Result<Option<std::sync::Arc<letibot_embeddings::Embedder>>, String>
+        + Send
+        + 'static,
+    ) {
+        if !may_fetch(&settings) {
+            self.embedder.install(open(&settings, data.as_deref()));
+            return;
+        }
+        self.embedder.set_fetch_note(
+            "the built-in embeddings model is not on disk, so it is being fetched now: every \
+             score until it lands is the words alone",
+        );
+        let slot = self.embedder.clone();
+        std::thread::spawn(move || slot.install(open(&settings, data.as_deref())));
+    }
+
     /// One caller's tier over the box's embedder, or `None` when the box has none. A fresh tier
     /// each time: what is inside it is that caller's own corpus.
     pub fn tier(&self) -> Option<letibot_embeddings::Tier> {
-        crate::embeddings::tier(self.embedder.as_ref())
+        crate::embeddings::tier(self.embedder.get())
     }
 
     /// The model name the prompt lookup runs on: `provider/model` for a metered session, the bare

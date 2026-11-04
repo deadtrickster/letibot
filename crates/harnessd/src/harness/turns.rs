@@ -1726,7 +1726,7 @@ impl Harness {
         done.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
         // Read once per turn, not per round: the log is a fork, and a turn cannot change history.
         // Only read when the box has an embedder, so a box without one forks nothing.
-        let done_records = match self.cfg.embedder.is_some() {
+        let done_records = match self.cfg.embedder.get().is_some() {
             true => crate::done_offer::records(&self.cfg.workspace),
             false => Vec::new(),
         };
@@ -1764,7 +1764,7 @@ impl Harness {
                 );
                 // The box's embedder answers for every caller, so its first failure is said ONCE
                 // here - and each caller has already fallen back to its own words by then.
-                if let Some(said) = crate::embeddings::fault_note(self.cfg.embedder.as_ref()) {
+                if let Some(said) = crate::embeddings::fault_note(self.cfg.embedder.get()) {
                     self.warn("embeddings_unavailable", said);
                 }
                 // The brief in hand is the person's prompt and the model's own latest words, which

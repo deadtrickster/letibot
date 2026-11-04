@@ -420,7 +420,7 @@ impl Harness {
     fn open_the_stored(cfg: &mut Config, notes: &mut Vec<String>) -> Result<Opening, HarnessError> {
         // A `[embeddings]` section the box WROTE and did not get is said here, once per session:
         // silently scoring the words alone would leave nobody able to fix the key.
-        if let Some(why) = cfg.embedder_fault.clone() {
+        if let Some(why) = cfg.embedder.fault() {
             notes.push(format!(
                 "the `[embeddings]` section did not produce an embedder, so every score this \
                  session makes is the words alone: {why}"
@@ -1610,10 +1610,10 @@ impl Harness {
     /// The embedder's start-up facts on the session's hub, which a head draws: the launcher
     /// sends daemon stderr nowhere, and the model-facing note alone leaves the operator blind.
     fn say_the_embedder(hub: &Hub, cfg: &Config) {
-        if let Some(said) = &cfg.embedder_fetch_note {
-            hub.warn("embedder_fetching", said.clone());
+        if let Some(said) = cfg.embedder.take_fetch_note() {
+            hub.warn("embedder_fetching", said);
         }
-        if let Some(why) = &cfg.embedder_fault {
+        if let Some(why) = cfg.embedder.fault() {
             hub.warn(
                 "embedder_unavailable",
                 format!("no embedder, so every score is the words alone: {why}"),
@@ -4377,14 +4377,16 @@ mod embedder_warning_tests {
     fn a_failed_embedder_and_a_first_fetch_are_warnings_on_the_hub() {
         let base = std::env::temp_dir().join(format!("embedder-warn-{}", std::process::id()));
         std::fs::create_dir_all(&base).expect("a scratch dir");
-        let mut cfg = Config::for_this_box(&base);
+        let cfg = Config::for_this_box(&base);
 
         let quiet = Hub::new("s-quiet");
         Harness::say_the_embedder(&quiet, &cfg);
         assert!(codes(&quiet).is_empty(), "no section, nothing to say");
 
-        cfg.embedder_fault = Some("fetching model.safetensors: boom".into());
-        cfg.embedder_fetch_note = Some("fetching the embeddings model (87 MiB)".into());
+        cfg.embedder
+            .set_fault("fetching model.safetensors: boom".to_string());
+        cfg.embedder
+            .set_fetch_note("fetching the embeddings model (87 MiB)".to_string());
         let hub = Hub::new("s-fault");
         Harness::say_the_embedder(&hub, &cfg);
         let got = codes(&hub);
