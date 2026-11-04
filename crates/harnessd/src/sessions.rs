@@ -3034,6 +3034,12 @@ impl<'a> Sessions<'a> {
     /// Close one session this worker holds: its harness, every per-session table and its registry entry.
     /// `None` for a session this worker does not hold, else where the work went - see [`Sessions::close_backends`].
     pub fn close(&mut self, session_id: &str) -> Option<String> {
+        // A closed session takes no turn, so the room notes queued for one are for nobody, and a
+        // queue nothing removes is the memory of every session this daemon ever held.
+        let untaken = crate::room::wake::forget(session_id);
+        if untaken > 0 {
+            eprintln!("  {session_id} · closed; {untaken} untaken room note(s) dropped with it");
+        }
         // The panes this session held go first, and they are the one thing here a head can see:
         // the operator typed `!term` into them, and a program still drawing into a pane no session
         // can open again is one nobody can end.

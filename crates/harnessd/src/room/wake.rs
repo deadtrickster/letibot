@@ -2,30 +2,113 @@
 //! the thread blocked on the socket and the turn runs on the daemon's worker, so it becomes a
 //! sentence that outlives its hearer - process-wide, keyed by the session id, unique in a daemon.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 
-fn queues() -> &'static Mutex<BTreeMap<String, Vec<String>>> {
-    static QUEUES: OnceLock<Mutex<BTreeMap<String, Vec<String>>>> = OnceLock::new();
-    QUEUES.get_or_init(|| Mutex::new(BTreeMap::new()))
+/// How many notes one session's queue holds. A note is a sentence of a few hundred bytes, so sixty
+/// four of them is the memory one session's listener may hold when nothing is taking them.
+pub const MAX_NOTES: usize = 64;
+
+/// How many sessions have a queue at once. A daemon's sessions are tens, and a closed one gives its
+/// entry back; the bound is here so a name that is never closed again cannot grow the map.
+pub const MAX_SESSIONS: usize = 256;
+
+/// One session's notes, and the order in which they were pushed - what an eviction needs, without a
+/// clock two pushes in the same millisecond would share.
+#[derive(Debug, Default)]
+struct Queue {
+    lines: VecDeque<String>,
+    pushed: u64,
+    /// Notes the bound took: said on the log rather than cut in silence.
+    dropped: u64,
+}
+
+/// The process-wide queues and the counter that orders them.
+#[derive(Debug, Default)]
+struct Queues {
+    map: BTreeMap<String, Queue>,
+    next: u64,
+}
+
+fn queues() -> &'static Mutex<Queues> {
+    static QUEUES: OnceLock<Mutex<Queues>> = OnceLock::new();
+    QUEUES.get_or_init(Default::default)
 }
 
 /// Put a sentence in front of a session's next turn.
 pub fn push(session: &str, line: String) {
-    let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
-    q.entry(session.to_string()).or_default().push(line);
+    enqueue(
+        &mut queues().lock().unwrap_or_else(|e| e.into_inner()),
+        session,
+        line,
+    );
+}
+
+/// The push, given the queues it goes into - so a test can prove the bounds without filling the
+/// process's own map.
+fn enqueue(queues: &mut Queues, session: &str, line: String) {
+    queues.next += 1;
+    let pushed = queues.next;
+    if !queues.map.contains_key(session)
+        && queues.map.len() >= MAX_SESSIONS
+        && let Some((gone, was)) = queues
+            .map
+            .iter()
+            .min_by_key(|(_, q)| q.pushed)
+            .map(|(k, q)| (k.clone(), q.lines.len()))
+    {
+        queues.map.remove(&gone);
+        eprintln!(
+            "harnessd: dropping {was} room note(s) queued for `{gone}`; the wake queue holds \
+             {MAX_SESSIONS} sessions"
+        );
+    }
+    let entry = queues.map.entry(session.to_string()).or_default();
+    entry.pushed = pushed;
+    entry.lines.push_back(line);
+    while entry.lines.len() > MAX_NOTES {
+        entry.lines.pop_front();
+        entry.dropped += 1;
+        if entry.dropped == 1 {
+            eprintln!(
+                "harnessd: `{session}` already has {MAX_NOTES} untaken room note(s); the oldest \
+                 are dropped - the room's reads have the state"
+            );
+        }
+    }
 }
 
 /// Take everything waiting for this session - what `Harness::wake` composes into its notices.
 pub fn take(session: &str) -> Vec<String> {
     let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
-    q.remove(session).unwrap_or_default()
+    match q.map.remove(session) {
+        Some(queue) => {
+            if queue.dropped > 0 {
+                eprintln!(
+                    "harnessd: {} room note(s) for `{session}` were dropped while they waited",
+                    queue.dropped
+                );
+            }
+            queue.lines.into_iter().collect()
+        }
+        None => Vec::new(),
+    }
+}
+
+/// Forget a session's queue. A session that has closed will take no turn, so its notes are for
+/// nobody - and an entry nothing removes is the memory of every session a daemon ever held.
+pub fn forget(session: &str) -> usize {
+    let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
+    q.map
+        .remove(session)
+        .map(|queue| queue.lines.len())
+        .unwrap_or(0)
 }
 
 /// How many sentences are waiting for a session - the assertion a test makes instead of sleeping.
 pub fn waiting(session: &str) -> usize {
     let q = queues().lock().unwrap_or_else(|e| e.into_inner());
-    q.get(session).map(|v| v.len()).unwrap_or(0)
+    q.map.get(session).map(|v| v.lines.len()).unwrap_or(0)
 }
 
 /// The sentence a chat message that names a session becomes. Bounded: a long message is cut for
@@ -190,5 +273,65 @@ mod tests {
         assert_eq!(waiting(b), 0, "a bell is addressed");
         assert_eq!(take(a), vec!["one".to_string(), "two".to_string()]);
         assert_eq!(take(a), Vec::<String>::new(), "taken is taken");
+    }
+
+    /// One session's queue is bounded, and what the bound takes is the OLDEST note: the newest is
+    /// what the next turn needs, and every read the room answers is still current.
+    #[test]
+    fn one_sessions_queue_is_bounded_from_the_front() {
+        let mut queues = Queues::default();
+        for i in 0..(MAX_NOTES * 2) {
+            enqueue(&mut queues, "s-a", format!("note {i}"));
+        }
+        let q = queues.map.get("s-a").expect("a queue");
+        assert_eq!(q.lines.len(), MAX_NOTES);
+        assert_eq!(q.dropped as usize, MAX_NOTES, "the rest were dropped");
+        assert_eq!(q.lines.front().map(String::as_str), Some("note 64"));
+        assert_eq!(
+            q.lines.back().map(String::as_str),
+            Some("note 127"),
+            "the newest is kept"
+        );
+        // And another session's queue is nobody else's business.
+        assert_eq!(queues.map.get("s-b").map(|q| q.lines.len()), None);
+    }
+
+    /// The map is bounded too, and the session evicted is the one pushed longest ago - which is the
+    /// one whose listener is not turning anything into a turn.
+    #[test]
+    fn the_number_of_sessions_queued_is_bounded() {
+        let mut queues = Queues::default();
+        for i in 0..MAX_SESSIONS {
+            enqueue(&mut queues, &format!("s-{i}"), format!("note {i}"));
+        }
+        assert_eq!(queues.map.len(), MAX_SESSIONS);
+        // A push to an existing session refreshes it, so the next eviction picks another.
+        enqueue(&mut queues, "s-0", "again".into());
+        enqueue(&mut queues, "s-past-the-bound", "new".into());
+        assert_eq!(queues.map.len(), MAX_SESSIONS, "the map did not grow");
+        assert!(
+            queues.map.contains_key("s-0"),
+            "the one just pushed is not the one forgotten"
+        );
+        assert!(
+            !queues.map.contains_key("s-1"),
+            "the least recently pushed is"
+        );
+        assert!(queues.map.contains_key("s-past-the-bound"));
+    }
+
+    /// A closed session takes no turn, so its queue goes: an entry nothing removes is the memory of
+    /// every session the daemon ever held.
+    #[test]
+    fn forgetting_a_session_drops_what_it_never_took() {
+        let (gone, kept) = ("s-room-forget-a", "s-room-forget-b");
+        push(gone, "one".into());
+        push(gone, "two".into());
+        push(kept, "three".into());
+        assert_eq!(forget(gone), 2, "the notes nobody will take");
+        assert_eq!(waiting(gone), 0);
+        assert_eq!(take(gone), Vec::<String>::new());
+        assert_eq!(waiting(kept), 1, "somebody else's queue is untouched");
+        assert_eq!(forget(kept), 1);
     }
 }
