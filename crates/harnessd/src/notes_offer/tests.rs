@@ -713,5 +713,12 @@ fn a_round_embeds_only_what_changed() {
         "a new tool result about the floor and the take-up log",
     ));
     let moved = round(&items);
-    eprintln!("round cost (embedded, lookups): first {first:?} same {same:?} moved {moved:?}");
+    // Measured before the fill fingerprint and the query memo: same (0, 8), moved (1, 8), first (7, 8).
+    assert_eq!(first, (7, 8), "the corpora and the subjects, once");
+    assert_eq!(
+        same,
+        (0, 0),
+        "nothing changed, so nothing is read or embedded"
+    );
+    assert_eq!(moved, (1, 1), "one new subject: one lookup, one embed");
 }

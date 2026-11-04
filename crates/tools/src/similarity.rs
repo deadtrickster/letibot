@@ -29,6 +29,19 @@ use crate::builtins::notes::abstract_of;
 /// is that `id`, `vm`, `ui` and `db` are not terms.
 pub const MIN_TERM: usize = 3;
 
+/// How many characters of a subject are embedded. The model reads `MAX_TOKENS` and drops the rest,
+/// so more text is only more bytes to tokenize, hash and send to an endpoint. Words still score the whole.
+pub const EMBED_CHARS: usize = 1_500;
+
+/// The first [`EMBED_CHARS`] of a text, cut on a character boundary.
+fn bounded(text: &str) -> &str {
+    let cut = (0..=EMBED_CHARS.min(text.len()))
+        .rev()
+        .find(|&i| text.is_char_boundary(i))
+        .unwrap_or(0);
+    &text[..cut]
+}
+
 /// One text as a weighted bag of terms, against a corpus's `idf`. Not a `HashMap`: iteration order over a
 /// score's terms is the difference between a deterministic answer and one that changes with the allocator.
 #[derive(Debug, Clone, Default)]
@@ -196,7 +209,7 @@ impl Corpus {
     /// in-memory index, so a round costs one embedding and never one per note.
     fn scored_with(&self, text: &str, tier: Option<&Tier>) -> Vec<(&Path, f64)> {
         let q = self.weigh(text);
-        let query = tier.and_then(|t| t.query(text, now_ms()).ok());
+        let query = tier.and_then(|t| t.query(bounded(text), now_ms()).ok());
         self.notes
             .iter()
             .map(|n| {

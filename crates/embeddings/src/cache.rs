@@ -9,6 +9,10 @@ use sha2::{Digest, Sha256};
 /// Thirty days, in the millisecond unit `last_used_ms` is.
 pub const STALE_AFTER_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
+/// A hit moves `last_used_ms` only when it is older than this. A row read every round was a
+/// write every round, and the sweep's horizon is thirty days.
+const TOUCH_AFTER_MS: i64 = 24 * 60 * 60 * 1000;
+
 /// The cache's own file, inside the data directory every other durable thing uses.
 pub fn db_path(data_dir: &Path) -> PathBuf {
     data_dir.join("embeddings.db")
@@ -121,25 +125,27 @@ impl Cache {
         now_ms: i64,
     ) -> Result<Option<Vec<f32>>, CacheError> {
         let hash = key(text);
-        let row: Option<(i64, Vec<u8>)> = self
+        let row: Option<(i64, Vec<u8>, i64)> = self
             .conn
             .query_row(
-                "SELECT dim, vector FROM embedding WHERE model = ?1 AND hash = ?2",
+                "SELECT dim, vector, last_used_ms FROM embedding WHERE model = ?1 AND hash = ?2",
                 (model, &hash),
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .map(Some)
             .or_else(|e| match e {
                 rusqlite::Error::QueryReturnedNoRows => Ok(None),
                 other => Err(CacheError::Sqlite(other)),
             })?;
-        let Some((dim, blob)) = row else {
+        let Some((dim, blob, last_used)) = row else {
             return Ok(None);
         };
-        self.conn.execute(
-            "UPDATE embedding SET last_used_ms = ?1 WHERE model = ?2 AND hash = ?3",
-            (now_ms, model, &hash),
-        )?;
+        if now_ms - last_used >= TOUCH_AFTER_MS {
+            self.conn.execute(
+                "UPDATE embedding SET last_used_ms = ?1 WHERE model = ?2 AND hash = ?3",
+                (now_ms, model, &hash),
+            )?;
+        }
         match unpack(&blob, dim) {
             Some(v) => Ok(Some(v)),
             None => {

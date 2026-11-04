@@ -159,7 +159,13 @@ pub struct Embedder {
     /// Texts handed to the engine, and cache lookups made: what a round costs.
     embedded: AtomicU64,
     lookups: AtomicU64,
+    /// The last [`QUERY_MEMO`] query vectors by text hash, so a text asked twice in a few rounds
+    /// is neither embedded nor read from disk again.
+    memo: Mutex<std::collections::VecDeque<(String, Vec<f32>)>>,
 }
+
+/// How many query vectors the embedder keeps in memory.
+const QUERY_MEMO: usize = 32;
 
 /// What an embedder has spent since it opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -299,6 +305,7 @@ impl Embedder {
             announcement: Mutex::new(announcement),
             embedded: AtomicU64::new(0),
             lookups: AtomicU64::new(0),
+            memo: Mutex::new(std::collections::VecDeque::new()),
         })
     }
 
@@ -403,11 +410,18 @@ impl Embedder {
 
     fn embed_or_get(&self, text: &str, now_ms: i64) -> Result<(Vec<f32>, Hit), TierError> {
         let name = self.engine.name();
+        let hash = crate::cache::key(text);
+        if let Some(v) = self.remembered(&hash) {
+            return Ok((v, Hit::Cached));
+        }
         // Two visits to the cache with the embed between them rather than `Cache::embed_or_get`,
         // which would hold the box's one connection for the whole of a request to an endpoint.
         self.lookups.fetch_add(1, Ordering::Relaxed);
         match self.cache().get(&name, text, now_ms) {
-            Ok(Some(v)) => return Ok((v, Hit::Cached)),
+            Ok(Some(v)) => {
+                self.remember(hash, &v);
+                return Ok((v, Hit::Cached));
+            }
             Ok(None) => {}
             Err(e) => return Err(self.fail(EmbedOrCacheError::Cache(e))),
         }
@@ -420,7 +434,21 @@ impl Embedder {
         self.cache()
             .put(&name, text, &vector, now_ms)
             .map_err(|e| self.fail(EmbedOrCacheError::Cache(e)))?;
+        self.remember(hash, &vector);
         Ok((vector, Hit::Embedded))
+    }
+
+    fn remembered(&self, hash: &str) -> Option<Vec<f32>> {
+        let memo = self.memo.lock().unwrap_or_else(|e| e.into_inner());
+        memo.iter().find(|(h, _)| h == hash).map(|(_, v)| v.clone())
+    }
+
+    fn remember(&self, hash: String, vector: &[f32]) {
+        let mut memo = self.memo.lock().unwrap_or_else(|e| e.into_inner());
+        if memo.len() >= QUERY_MEMO {
+            memo.pop_front();
+        }
+        memo.push_back((hash, vector.to_vec()));
     }
 
     fn cache(&self) -> std::sync::MutexGuard<'_, Cache> {
@@ -450,6 +478,9 @@ pub struct Tier {
     /// `&self` because a tool is invoked through it and a round refills a corpus it did not
     /// create; a read is a cosine over the rows already there.
     index: RwLock<Index>,
+    /// Hash of the documents the index was built from: the same documents again are the same
+    /// vectors, so a fill that matches it touches neither the cache nor the engine.
+    filled: Mutex<Option<String>>,
 }
 
 impl std::fmt::Debug for Tier {
@@ -475,6 +506,7 @@ impl Tier {
         Tier {
             embedder,
             index: RwLock::new(Index::default()),
+            filled: Mutex::new(None),
         }
     }
 
@@ -510,13 +542,24 @@ impl Tier {
         documents: impl IntoIterator<Item = (String, String)>,
         now_ms: i64,
     ) -> Result<Filled, TierError> {
-        match self.embedder.vectors(documents, now_ms) {
+        let docs: Vec<(String, String)> = documents.into_iter().collect();
+        let print = fingerprint(&docs);
+        let mut filled = self.filled.lock().unwrap_or_else(|e| e.into_inner());
+        if filled.as_deref() == Some(print.as_str()) {
+            return Ok(Filled {
+                embedded: 0,
+                cached: docs.len(),
+            });
+        }
+        match self.embedder.vectors(docs, now_ms) {
             Ok((rows, done)) => {
                 *self.write() = Index::new(rows);
+                *filled = Some(print);
                 Ok(done)
             }
             Err(e) => {
                 *self.write() = Index::default();
+                *filled = None;
                 Err(e)
             }
         }
@@ -554,6 +597,15 @@ impl Tier {
     fn write(&self) -> std::sync::RwLockWriteGuard<'_, Index> {
         self.index.write().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+/// A hash of keys and texts in order, with lengths so no two lists spell the same bytes.
+fn fingerprint(docs: &[(String, String)]) -> String {
+    let mut all = String::new();
+    for (key, text) in docs {
+        all.push_str(&format!("{}:{key}{}:{text}", key.len(), text.len()));
+    }
+    crate::cache::key(&all)
 }
 
 /// Unit length, because a cosine of two unit vectors is their dot product and a
@@ -947,6 +999,29 @@ mod tests {
                 cached: 3
             }
         );
+    }
+
+    /// The same documents again are not looked up at all, an edited one is, and a query asked
+    /// twice is read from memory.
+    #[test]
+    fn a_fill_of_unchanged_documents_and_a_repeated_query_cost_nothing() {
+        let (_m, _d, tier) = tier("fingerprint");
+        tier.fill(docs(), now()).unwrap();
+        let spent = tier.embedder().spent();
+        let again = tier.fill(docs(), now()).unwrap();
+        assert_eq!((again.embedded, again.cached), (0, 3));
+        assert_eq!(tier.embedder().spent(), spent, "no lookup, no embed");
+        let mut edited = docs().into_iter().collect::<Vec<_>>();
+        edited[0].1.push_str(" kappa lambda");
+        let changed = tier.fill(edited, now()).unwrap();
+        assert_eq!((changed.embedded, changed.cached), (1, 2));
+        let before = tier.embedder().spent();
+        let first = tier.query("alpha beta", now()).unwrap();
+        let second = tier.query("alpha beta", now()).unwrap();
+        let after = tier.embedder().spent();
+        assert_eq!(first, second);
+        assert_eq!(after.embedded - before.embedded, 1);
+        assert_eq!(after.lookups - before.lookups, 1, "the repeat is memory");
     }
 
     /// The ranking a caller uses: the paraphrase of a note comes first and the unrelated
