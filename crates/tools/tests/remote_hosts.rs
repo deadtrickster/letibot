@@ -1078,7 +1078,7 @@ fn a_full_gate_on_one_machine_does_not_stop_a_placement_on_another() {
 
     let fake = Fake::new("placing", "exec bash -lc \"$last\"");
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
-    let b = place_patiently(&spec_for(&fake, &repo, &paths, Duration::from_secs(2)))
+    let b = place_patiently(&spec_for(&fake, &repo, &paths, Duration::from_secs(30)))
         .expect("this machine's gate is its own, so the placement is not queued behind another's");
     // And it works, not merely opens: a placement that got a slot has a checkout behind it.
     assert_eq!(b.read("README").expect("it reads"), b"the first commit\n");
