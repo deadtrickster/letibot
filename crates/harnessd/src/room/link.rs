@@ -263,7 +263,7 @@ impl SessionRoom {
                     let snap = me.read_room();
                     *me.room.lock().unwrap_or_else(|e| e.into_inner()) = Some(snap);
                     me.note_instance();
-                    // The tree, on the same tick as the pane's read. A room keeps no store, so a
+                    // The tree, on the same tick as the pane's read. A room keeps no copy of the tree, so a
                     // restarted coordinator knows nobody until a daemon says - and sending it every
                     // poll rather than on a change is what makes that self-healing.
                     me.say_who_is_here();
@@ -1634,7 +1634,7 @@ mod tests {
             snap = me.snapshot();
         }
         assert_eq!(snap.unreadable, None, "{:?}", snap.unreadable);
-        assert!(snap.identity.contains("no store"), "{}", snap.identity);
+        assert!(snap.identity.contains("no item store"), "{}", snap.identity);
         assert_eq!(snap.arbiter.as_deref(), Some("s-arbiter"));
         assert!(
             snap.connected.iter().any(|c| c == "s-a"),

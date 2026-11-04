@@ -23,7 +23,7 @@ fn feed(rows: Value, questions: Value) -> Feed {
         "now_ms": NOW,
         "here": "s-a",
         "identity": "the room on /tmp/room.sock — started 12s ago and holding 3 item(s) since \
-                     then; the room keeps no store, so a restart begins with no items at all (2 \
+                     then; this room has no item store, so a restart begins with no items at all (2 \
                      connection(s) served since it started)",
         "arbiter": {"session": "s-room-abc", "up": true},
         "connected": ["s-a", "s-b", "s-room-abc"],
@@ -350,7 +350,7 @@ fn the_room_says_what_it_is_and_who_arbitrates_it() {
     let view = view(&feed);
     let drawn = serde_json::to_string(&view).unwrap();
     assert!(drawn.contains("started 12s ago"), "{drawn}");
-    assert!(drawn.contains("no store"), "{drawn}");
+    assert!(drawn.contains("no item store"), "{drawn}");
     assert!(drawn.contains("s-room-abc"), "{drawn}");
     assert!(drawn.contains("connected"), "the arbiter is up: {drawn}");
     // **An arbiter that is not connected is the one thing a person must see** - its questions wait.
@@ -373,7 +373,7 @@ fn an_empty_room_says_that_emptiness_is_what_a_start_looks_like() {
     empty.counts = Counts::default();
     let view = view(&empty);
     let drawn = serde_json::to_string(&view).unwrap();
-    assert!(drawn.contains("this room keeps no store"), "{drawn}");
+    assert!(drawn.contains("without an item store"), "{drawn}");
     assert!(drawn.contains("started 12s ago"), "{drawn}");
     assert_eq!(view["badge"]["text"], json!("0 live"));
 }
@@ -387,7 +387,7 @@ fn an_empty_room_that_was_just_restarted_is_not_an_empty_room_that_has_been_quie
     let mut quiet = feed(json!([]), json!([]));
     quiet.counts = Counts::default();
     quiet.identity = "the room on /tmp/room.sock — started 3h 2m ago and holding 0 item(s) since \
-                     then; the room keeps no store, so a restart begins with no items at all (9 \
+                     then; this room has no item store, so a restart begins with no items at all (9 \
                      connection(s) served since it started)"
         .to_string();
     let quiet = view(&quiet);
@@ -402,7 +402,7 @@ fn an_empty_room_that_was_just_restarted_is_not_an_empty_room_that_has_been_quie
     let mut fresh = feed(json!([]), json!([]));
     fresh.counts = Counts::default();
     fresh.identity = "the room on /tmp/room.sock — started 4s ago and holding 0 item(s) since \
-                     then; the room keeps no store, so a restart begins with no items at all (1 \
+                     then; this room has no item store, so a restart begins with no items at all (1 \
                      connection(s) served since it started)"
         .to_string();
     fresh.restart.marker = Some(Marker {
@@ -443,7 +443,7 @@ fn the_restart_control_is_a_declared_row_and_is_not_offered_without_a_supervisor
         under.iter().any(|u| u
             .as_str()
             .unwrap_or_default()
-            .contains("a restart begins with no items at all")),
+            .contains("a restart keeps the queues")),
         "what survives is stated, not assumed: {under:?}"
     );
     // The panel is reachable by its own key, and it says which verb it is.

@@ -5313,7 +5313,7 @@ mod tests {
             feed["identity"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("no store"),
+                .contains("no item store"),
             "{feed}"
         );
         assert_eq!(feed["tags"][0]["tag"], json!("ram"));
@@ -5667,7 +5667,7 @@ mod tests {
             "the item is drawn: {drawn}"
         );
         assert!(
-            drawn.contains("no store"),
+            drawn.contains("no item store"),
             "and the room's own identity, which is what keeps an empty queue from reading as a \
              quiet one: {drawn}"
         );

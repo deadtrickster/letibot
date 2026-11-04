@@ -372,8 +372,8 @@ fn header(feed: &Feed) -> Value {
 }
 
 /// The server itself - the restart control, and the note the last restart left. What survives is
-/// stated, not assumed: every line below says the room keeps no store, so a restart begins with no
-/// items. A host with no supervisor draws the reason instead of the key.
+/// stated, not assumed: a restart keeps the queues and chat only when the coordinator has its stores,
+/// and the identity line says which. A host with no supervisor draws the reason instead of the key.
 fn server(feed: &Feed) -> Value {
     let mut under: Vec<String> = Vec::new();
     let mut facts: Vec<Cell> = Vec::new();
@@ -398,8 +398,9 @@ fn server(feed: &Feed) -> Value {
         ),
     }
     under.push(
-        "a restart begins with no items at all: the room keeps no store, so everything queued now \
-         goes with it — the supervisor is asked, and the coordinator is never asked to stop itself"
+        "a restart keeps the queues and chat when the coordinator has its stores beside the socket \
+         (the identity line says which) — the supervisor is asked, and the coordinator is never \
+         asked to stop itself"
             .to_string(),
     );
     let cells = vec![
@@ -489,9 +490,9 @@ fn queues(feed: &Feed) -> Value {
         "title": "queues",
         "summary": [{"tree": {
             "rows": rows,
-            "empty": "the room holds nothing. That is not the same as *nothing was posted*: this \
-                      room keeps no store, so an empty queue is what a restart looks like — read \
-                      the line above for how long it has been up.",
+            "empty": "the room holds nothing. That is not the same as *nothing was posted*: without \
+                      an item store an empty queue is what a restart looks like — the identity \
+                      line above says whether there is one, and for how long the room has been up.",
         }}],
     })
 }
@@ -737,8 +738,8 @@ fn legend(feed: &Feed) -> Value {
         "r": "the room itself: what it is, how long it has been up, and who arbitrates",
         "a": "the questions the room is asking, and the decisions a person can take",
         "restart": "restart the box's room — asked of the supervisor that starts coordinators, \
-                    never performed by the room on itself. A restart begins with NO ITEMS AT ALL: \
-                    the room keeps no store, so everything queued goes with it",
+                    never performed by the room on itself. A restart keeps \
+                    queues and chat only when the coordinator has its stores - the identity line says",
         "s": "the server: the restart control, and when and why it last restarted",
         "asked": "a person pressed restart in this pane, and the note names the session",
         "crashed": "the room died and came back without anybody here asking — the note says \

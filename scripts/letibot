@@ -1912,6 +1912,7 @@ room_ensure() {
   local p said
   room_paths
   if room_up; then
+    room_stale_line >&2
     # **And the record is a note this launcher keeps true.** A room started by hand (`harnessd
     # --room` in a terminal), or one whose record a tidy-up removed, is still the box's room — and
     # `--daemons` and `--stop --all` are how a person sees it and stops it.
@@ -2097,6 +2098,22 @@ daemon_stale_line() {
   # carry the day. The path is quoted as resolved, which is what `BIN` now holds.
   printf 'daemon %s started %s; %s was built %s — it is not running what is on disk\n' \
     "$p" "$(epoch_fmt "$dt" '+%m-%d %H:%M')" "$BIN/harnessd" "$(epoch_fmt "$bt" '+%m-%d %H:%M')"
+}
+
+# The box's coordinator against the harnessd on disk: a coordinator started before the last build
+# runs older room code than the daemons started now (the protocol check catches only a bumped
+# number). Says nothing when either time is unknown.
+room_stale_line() {
+  local p dt bt
+  p="$(room_pid 2>/dev/null || true)"
+  [ -n "$p" ] || return 0
+  [ -x "$BIN/harnessd" ] || return 0
+  dt="$(pid_started "$p")"
+  bt="$(file_mtime "$BIN/harnessd")"
+  case "$dt$bt" in '' | *[!0-9]*) return 0 ;; esac
+  [ "$bt" -gt "$dt" ] || return 0
+  printf 'letibot: the box'\''s room (pid %s) runs an older build than %s - restart it with: letibot --room --stop && letibot --room\n' \
+    "$p" "$BIN/harnessd"
 }
 
 # Questions about the store need no socket, no model and no vocabulary. They are
@@ -2295,7 +2312,8 @@ SESSIONS_EOF
       '' | *[!0-9]*) : ;;
       *) echo "  up since $(epoch_fmt $((started_ms / 1000)) '+%Y-%m-%d %H:%M')" ;;
     esac
-    echo "  it keeps no store: a restart begins with no items at all"
+    echo "  chat    ${ROOM_SOCKET%.sock}.chat (history, seq and cursors survive a restart)"
+    echo "  queues  ${ROOM_SOCKET%.sock}.items (items, leases and questions survive a restart)"
     exit 0 ;;
   --stop)
     # `--stop N` and `--stop DIR` reach another folder's daemon; `--stop` alone is
@@ -2315,6 +2333,7 @@ SESSIONS_EOF
       esac
     done
     [ "$STOP_ALL" = 1 ] || retarget "$STOP_AT"
+    room_stale_line >&2
     # What the interrupt is recorded as in each session's transcript: this command.
     STOP_REASON="letibot --stop"
     [ "$STOP_ALL" = 1 ] && STOP_REASON="$STOP_REASON --all"
