@@ -1428,22 +1428,15 @@ impl Server {
                 };
                 let answer = me.answer_frame(&project, seat, &speaker, &hello, now_ms());
                 let mut w = writer;
-                if write_frame(&mut w, &answer.response).is_err() {
-                    return;
-                }
                 // A `Bye` or a refusal is the end of the connection: there is no session here.
-                match &answer.response {
-                    Response::Welcome { .. } => {}
-                    _ => {
-                        let _ = w.shutdown(std::net::Shutdown::Both);
-                        return;
-                    }
+                if !matches!(&answer.response, Response::Welcome { .. }) {
+                    let _ = write_frame(&mut w, &answer.response);
+                    let _ = w.shutdown(std::net::Shutdown::Both);
+                    return;
                 }
                 let id = me.inner.next_conn.fetch_add(1, Ordering::SeqCst) + 1;
                 // From here on, this connection's frames go through ONE writer thread, and the
-                // room's threads only ever enqueue. The handshake above was written directly
-                // because there was no other writer then, and it is written before the thread
-                // starts so the two cannot interleave a frame.
+                // room's threads only ever enqueue.
                 let Ok(their_writer) = w.try_clone() else {
                     // A socket that cannot be cloned has no writer thread, so there is nobody to
                     // send a frame and nothing to keep: the close is the only thing left to say.
@@ -1452,7 +1445,9 @@ impl Server {
                 };
                 let (outbox, frames) =
                     std::sync::mpsc::sync_channel(me.inner.outbox.load(Ordering::SeqCst));
-                spawn_writer(speaker.session.clone(), their_writer, frames);
+                // The `Welcome` is the first queued frame and is written only once the connection
+                // is registered below: a client that has read it may say to this name at once.
+                let _ = outbox.try_send(answer.response.clone());
                 let conn = Arc::new(Conn {
                     who: speaker.clone(),
                     seat,
@@ -1489,6 +1484,7 @@ impl Server {
                 // What was said while this principal had no connection, pushed now that it has
                 // one. After the `Welcome`, and after the connection is registered, so a message
                 // said during the delivery reaches it by one door or the other and not neither.
+                spawn_writer(speaker.session.clone(), their_writer, frames);
                 me.deliver_pending(&conn, &speaker.session);
 
                 // The read loop. Every frame is answered, and every event the answer carries

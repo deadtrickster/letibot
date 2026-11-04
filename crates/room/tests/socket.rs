@@ -936,6 +936,40 @@ fn an_external_that_has_gone_is_not_known_any_more() {
     server.stop();
 }
 
+/// A client that has read its `Welcome` is known: a say to its name, sent at once, is not refused.
+#[test]
+fn a_name_is_known_the_moment_its_welcome_is_read() {
+    let scratch = Scratch::new("welcome-known");
+    let server = Server::serve(&scratch.socket(), Room::new()).expect("a socket");
+    let (me, _events) = client(&server, "s-a");
+    for i in 0..40 {
+        let external = Client::connect_as(
+            server.path(),
+            Speaker::top_level("claude-code"),
+            server.name(),
+            Seat::External,
+            Arc::new(|_: &Event| {}),
+        )
+        .expect("an external connects");
+        let answer = me
+            .request(&Request::Say {
+                id: format!("w{i}"),
+                room: HOST_ROOM.into(),
+                text: "over to you".into(),
+                to: Some("claude-code".into()),
+                thread: None,
+                refs: Vec::new(),
+            })
+            .expect("an answer");
+        assert!(matches!(answer, Response::Said { .. }), "{i}: {answer:?}");
+        drop(external);
+        until("the external's connection to close", || {
+            server.connections() == 1
+        });
+    }
+    server.stop();
+}
+
 /// The per-principal maps are bounded: a connection may name itself anything, and a fresh name each
 /// time would grow a cursor and a missed-count per connection, for ever.
 #[test]
