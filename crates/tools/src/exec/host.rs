@@ -1562,7 +1562,9 @@ impl ProcessHost for HostProcesses {
                 self.capture_bytes,
                 stdin,
             )
-            .with_memory_cap(memory_cap),
+            .with_memory_cap(memory_cap)
+            // Masked as the bytes arrive, so the window and the spill file are one set of bytes.
+            .with_secret_mask(&secret_env),
         );
 
         // A run nothing bounds gets its file here, before a single byte is drained, and one
@@ -1931,19 +1933,22 @@ impl ProcessHost for HostProcesses {
     }
 
     fn output(&self, id: &JobId, from: u64, limit: usize) -> Result<OutputSlice, ExecError> {
-        // The journal, not a table ([`Aggregate::output`]).
+        // The journal, not a table ([`Aggregate::output`]). Its bytes never pass this host's
+        // capture - they were produced on other machines - so this is where they are masked.
         if let Some(agg) = self.aggregate(id) {
-            return Ok(agg.output(from, limit));
+            let mut slice = agg.output(from, limit);
+            slice.bytes = self
+                .secret_env
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .mask(&slice.bytes);
+            return Ok(slice);
         }
+        // A job's own bytes were masked as they arrived ([`Capture::mask`]), so a slice of them
+        // needs nothing more: masking twice would be two copies of one rule.
         let job = self.find(id).ok_or(ExecError::NoSuchJob(id.0.clone()))?;
         let cap = job.capture.lock().expect("capture");
-        let mut slice = cap.slice(from, limit);
-        slice.bytes = self
-            .secret_env
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .mask(&slice.bytes);
-        Ok(slice)
+        Ok(cap.slice(from, limit))
     }
 
     fn kill_job_as(&self, id: &JobId, by: &str) -> Result<Reaping, ExecError> {
@@ -3115,6 +3120,140 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         let _ = h.kill_job_as(&id, "test");
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&scratch).ok();
+    }
+
+    /// The file a backgrounded run is spilled to is read by the model with the file tools, so the
+    /// token must already be gone from it. Read from the disk, not through `output`.
+    #[test]
+    fn a_spill_file_holds_no_secret() {
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            letibot_tools::host_tree().is_ok(),
+        ) else {
+            return;
+        };
+        let token = "gho_fixtureFIXTUREfixture0000000000000000";
+        let root = std::env::temp_dir().join(format!("letibot-mask-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let scratch = std::env::temp_dir().join(format!("letibot-mask-out-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let h = HostProcesses::new(&root).expect("this box has a cgroup v2 tree");
+        h.set_scratch_dir(&scratch);
+        h.set_secret_env(crate::exec::seat::SecretEnv(vec![(
+            "GH_TOKEN".into(),
+            token.into(),
+        )]));
+
+        let id = h
+            .spawn(&SpawnRequest {
+                command: "printf 't=%s' \"$GH_TOKEN\"".into(),
+                slug: None,
+                cwd: "/".into(),
+                scope: ScopeKind::Session,
+                scope_name: None,
+                background: true,
+                env: vec![],
+                tty: false,
+                memory: None,
+            })
+            .expect("a cgroup v2 tree was measured above");
+        let _ = h.wait_job(&id, Duration::from_secs(30));
+
+        let f = h
+            .job(&id)
+            .and_then(|v| v.output_file)
+            .expect("a run with no deadline has its file from its spawn");
+        let on_disk = std::fs::read_to_string(&f.path).expect("the file is there");
+        assert!(
+            !on_disk.contains(token),
+            "the spill file the model is pointed at holds the token: {on_disk}"
+        );
+        assert!(
+            on_disk.starts_with("t=***"),
+            "and the mask is where the token was: {on_disk}"
+        );
+        let window = h.output(&id, 0, 4096).expect("the row stays").text();
+        assert!(!window.contains(token), "the window holds it too: {window}");
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&scratch).ok();
+    }
+
+    /// A job of jobs reads a journal other machines wrote, and that journal never passes this
+    /// host's capture; the branch a reader takes must still be masked.
+    #[test]
+    fn a_job_of_jobs_output_is_masked() {
+        let token = "gho_fixtureFIXTUREfixture0000000000000000";
+        let h =
+            HostProcesses::with_tree("/tmp", Box::new(super::super::scope::NoScopes::new("test")));
+        h.set_secret_env(crate::exec::seat::SecretEnv(vec![(
+            "GH_TOKEN".into(),
+            token.into(),
+        )]));
+        let id = JobId("fanout-1".into());
+        h.hold(&id, Arc::new(OneLine(format!("branch 1: gh auth says {token}\n"))))
+            .expect("an empty host holds the handle");
+
+        let slice = h.output(&id, 0, 4096).expect("the handle is a job");
+        let text = slice.text();
+        assert!(!text.contains(token), "the journal carried the token out: {text}");
+        assert!(
+            text.starts_with("branch 1: gh auth says ***"),
+            "masked where it stood: {text}"
+        );
+        assert_eq!(
+            slice.produced as usize,
+            "branch 1: gh auth says ".len() + token.len() + 1,
+            "masking keeps the length, so an offset still points at the same byte"
+        );
+    }
+
+    /// A job of jobs that answers one fixed line: the branch of `output` above is what is under
+    /// test, so the aggregate itself must not be able to say anything else.
+    struct OneLine(String);
+
+    impl Aggregate for OneLine {
+        fn command(&self) -> String {
+            "fanout".into()
+        }
+        fn slug(&self) -> Option<String> {
+            None
+        }
+        fn state(&self) -> JobState {
+            JobState::Exited { code: 0 }
+        }
+        fn elapsed(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn ran_for(&self) -> Option<Duration> {
+            Some(Duration::ZERO)
+        }
+        fn produced(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn since_last_output(&self) -> Option<Duration> {
+            None
+        }
+        fn output(&self, from: u64, limit: usize) -> OutputSlice {
+            let bytes: Vec<u8> = self.0.bytes().skip(from as usize).take(limit).collect();
+            OutputSlice {
+                from,
+                to: from + bytes.len() as u64,
+                bytes,
+                produced: self.0.len() as u64,
+                dropped: 0,
+                retained: self.0.len() as u64,
+            }
+        }
+        fn wait(&self, _within: Duration) -> Option<JobState> {
+            Some(JobState::Exited { code: 0 })
+        }
+        fn kill(&self, _by: &str) -> Vec<Reaped> {
+            Vec::new()
+        }
+        fn report(&self) -> String {
+            self.0.clone()
+        }
     }
 
     /// A name is unique within the session, and it never moves: two jobs the caller named

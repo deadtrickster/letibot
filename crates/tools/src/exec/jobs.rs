@@ -296,6 +296,68 @@ pub struct Capture {
     /// A file this job's whole output keeps going into, for a run with no deadline. See
     /// [`Capture::spill_to`].
     spill: Option<Spill>,
+    /// Secrets taken out where the bytes arrive, so the window and the spill file are the same
+    /// bytes. `None` for a session carrying none.
+    masker: Option<Masker>,
+}
+
+/// Takes secret values out of a stream as it arrives. Bytes a secret could still complete are
+/// held back, because a token split across two reads is otherwise half published and half masked.
+#[derive(Debug, Default)]
+struct Masker {
+    needles: Vec<Vec<u8>>,
+    held: Vec<u8>,
+}
+
+impl Masker {
+    fn new(needles: Vec<Vec<u8>>) -> Masker {
+        Masker {
+            needles,
+            held: Vec::new(),
+        }
+    }
+
+    /// How far short of the end a match can start and still be decided: one byte less than the
+    /// longest needle, which is the most a later read could complete.
+    fn carry(&self) -> usize {
+        self.needles
+            .iter()
+            .map(|n| n.len())
+            .max()
+            .unwrap_or(0)
+            .saturating_sub(1)
+    }
+
+    /// What may be published of `bytes` plus whatever was held, masked.
+    fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.held.extend_from_slice(bytes);
+        let publish = self.held.len().saturating_sub(self.carry());
+        self.take(publish)
+    }
+
+    /// Nothing can arrive after this, so the hold goes out - masked, since a needle may sit in it
+    /// whole and simply have been undecidable against what followed.
+    fn finish(&mut self) -> Vec<u8> {
+        let all = self.held.len();
+        self.take(all)
+    }
+
+    fn take(&mut self, publish: usize) -> Vec<u8> {
+        // Masked over the WHOLE hold before the prefix leaves: a needle that starts in the
+        // published part and ends in the kept part is otherwise published with its head showing.
+        for n in &self.needles {
+            let mut i = 0;
+            while i + n.len() <= self.held.len() {
+                if &self.held[i..i + n.len()] == n.as_slice() {
+                    self.held[i..i + n.len()].fill(b'*');
+                    i += n.len();
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        self.held.drain(..publish).collect()
+    }
 }
 
 /// Where a run's output goes on living outside the window: the file, the byte of the job's
@@ -339,12 +401,42 @@ impl Capture {
             produced: 0,
             last_at: None,
             spill: None,
+            masker: None,
+        }
+    }
+
+    /// Take these values out of everything this job writes, from the next byte on.
+    pub fn mask(&mut self, needles: Vec<Vec<u8>>) {
+        if !needles.is_empty() {
+            self.masker = Some(Masker::new(needles));
         }
     }
 
     pub fn push(&mut self, bytes: &[u8]) {
+        // Counted on arrival, not where the masker lets them out: `produced` is the denominator
+        // a reader compares against, and a hold of a few bytes must not read as output lost.
         self.produced += bytes.len() as u64;
         self.last_at = Some(SystemTime::now());
+        match &mut self.masker {
+            None => self.keep(bytes),
+            Some(masker) => {
+                let published = masker.feed(bytes);
+                self.keep(&published);
+            }
+        }
+    }
+
+    /// The stream is over: what the masker held back goes out, and the window and the file have
+    /// the whole of it. Called where the drains have joined, which is the last byte there is.
+    pub fn flush_tail(&mut self) {
+        let Some(masker) = &mut self.masker else {
+            return;
+        };
+        let tail = masker.finish();
+        self.keep(&tail);
+    }
+
+    fn keep(&mut self, bytes: &[u8]) {
         self.buf.extend(bytes.iter().copied());
         while self.buf.len() > self.cap {
             let over = self.buf.len() - self.cap;
@@ -386,6 +478,7 @@ impl Capture {
     /// have joined, and from [`Capture::release`]. The path, offset and byte count stay,
     /// because every reader of a settled job is still owed the place.
     pub fn close_spill(&mut self) {
+        self.flush_tail();
         if let Some(spill) = &mut self.spill {
             spill.file = None;
         }
@@ -426,6 +519,7 @@ impl Capture {
     /// N, dropped N, holding 0 rather than reading as a job that wrote nothing. The allocation
     /// goes back too, and the spill's descriptor: a settled job can never write again.
     pub fn release(&mut self) {
+        self.flush_tail();
         self.dropped += self.buf.len() as u64;
         self.buf = VecDeque::new();
         self.close_spill();
@@ -652,6 +746,21 @@ impl Job {
         &self.memory_cap
     }
 
+    /// The secrets this job's output must never carry, taken out where the bytes arrive so the
+    /// window and the spill file are one set of masked bytes rather than two renderings.
+    pub fn with_secret_mask(self, secrets: &super::seat::SecretEnv) -> Job {
+        // A value shorter than eight bytes matches ordinary text too often, and a mask that eats
+        // a path or a word is a reader that stops trusting the mask.
+        let needles: Vec<Vec<u8>> = secrets
+            .0
+            .iter()
+            .filter(|(_, v)| v.len() >= 8)
+            .map(|(_, v)| v.as_bytes().to_vec())
+            .collect();
+        self.capture.lock().expect("capture").mask(needles);
+        self
+    }
+
     /// What the kernel counted for this job's memory - `None` until it settles, and on a tree
     /// with no memory controller.
     pub fn memory_used(&self) -> Option<super::scope::MemoryUse> {
@@ -833,6 +942,59 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// The token arrives in two reads, and neither the window nor the file may hold either half: a
+    /// pipe splits on its own byte boundaries, so a slice-per-output mask leaves the tail behind.
+    #[test]
+    fn a_token_split_across_two_reads_is_masked_in_the_window_and_in_the_file() {
+        let dir = std::env::temp_dir().join(format!("letibot-split-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory to spill into");
+        let path = dir.join("job-j3.out");
+        let token = "gho_fixtureFIXTUREfixture0000000000000000";
+        let (head, tail) = token.split_at(12);
+
+        let mut cap = Capture::new(4096);
+        cap.mask(vec![token.as_bytes().to_vec()]);
+        cap.spill_to(&path).expect("the file opens");
+        cap.push(format!("a={head}").as_bytes());
+        cap.push(format!("{tail}=b").as_bytes());
+        cap.close_spill();
+
+        let window = String::from_utf8(cap.slice(0, 4096).bytes).expect("ascii");
+        assert!(!window.contains(head), "the window kept the token's head: {window}");
+        assert!(!window.contains(tail), "the window kept the token's tail: {window}");
+        assert!(window.contains("a=***"), "the mask is the token's own width: {window}");
+        assert!(
+            window.ends_with("**=b"),
+            "and the bytes after it are untouched: {window}"
+        );
+
+        let on_disk = std::fs::read_to_string(&path).expect("the file is there");
+        assert!(!on_disk.contains(token), "the file holds the token: {on_disk}");
+        assert_eq!(
+            on_disk.len(),
+            window.len(),
+            "masking keeps every offset: the file and the window are one length"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A hold that never gets its second read still comes out: the tail of a run is where a
+    /// half-written token would otherwise sit for ever, and `close_spill` is the last byte.
+    #[test]
+    fn the_hold_goes_out_masked_when_nothing_more_arrives() {
+        let token = "gho_fixtureFIXTUREfixture0000000000000000";
+        let mut cap = Capture::new(4096);
+        cap.mask(vec![token.as_bytes().to_vec()]);
+        cap.push(token.as_bytes());
+        assert!(
+            !String::from_utf8_lossy(&cap.slice(0, 4096).bytes).contains(token),
+            "not even while it is held"
+        );
+        cap.close_spill();
+        let out = String::from_utf8_lossy(&cap.slice(0, 4096).bytes).to_string();
+        assert_eq!(out.len(), token.len(), "every byte came out: {out}");
+        assert!(!out.contains(token), "and masked: {out}");
+    }
     /// A name is one line, capped, and blank words are no name at all: nothing is invented, a name
     /// is not a sentence (breaks are never doubled or dangling), and the bound is [`MAX_JOB_NAME`].
     /// `bash`'s tests pin that its `slug` reads this function and not a copy of it.
