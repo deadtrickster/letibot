@@ -2326,17 +2326,16 @@ fn brace_range(inner: &str) -> Brace {
         if n == b {
             return Brace::Words(out);
         }
-        if a <= b {
-            n += step as i64;
-            if n > b {
-                return Brace::Words(out);
-            }
+        // i128 so a step near u64::MAX or an endpoint near i64::MAX cannot overflow.
+        let next = if a <= b {
+            i128::from(n) + i128::from(step)
         } else {
-            n -= step as i64;
-            if n < b {
-                return Brace::Words(out);
-            }
+            i128::from(n) - i128::from(step)
+        };
+        if (a <= b && next > i128::from(b)) || (a > b && next < i128::from(b)) {
+            return Brace::Words(out);
         }
+        n = next as i64;
     }
 }
 
@@ -2368,13 +2367,14 @@ fn char_range(lo: &str, hi: &str, step: u64) -> Brace {
         if n == end {
             return Brace::Words(out);
         }
+        let step = u32::try_from(step).unwrap_or(u32::MAX);
         if start <= end {
-            n += step as u32;
-            if n > end {
-                return Brace::Words(out);
+            match n.checked_add(step) {
+                Some(next) if next <= end => n = next,
+                _ => return Brace::Words(out),
             }
         } else {
-            n = n.saturating_sub(step as u32);
+            n = n.saturating_sub(step);
             if n < end {
                 return Brace::Words(out);
             }
@@ -2567,6 +2567,20 @@ mod tests {
         // Four stages: two per pass, in pass order.
         assert_eq!(x.stages.len(), 4);
         assert_eq!(x.stages[3].argv[0], Word::Literal("done /w/b".into()));
+    }
+
+    #[test]
+    fn a_brace_range_at_the_integer_edge_ends_instead_of_overflowing() {
+        let words = |inner: &str| match brace_range(inner) {
+            Brace::Words(w) => w,
+            _ => panic!("{inner} is a range"),
+        };
+        assert_eq!(
+            words("9223372036854775800..9223372036854775807..5"),
+            vec!["9223372036854775800", "9223372036854775805"]
+        );
+        assert_eq!(words("1..3..9223372036854775807"), vec!["1"]);
+        assert_eq!(words("a..e..4294967297"), vec!["a"]);
     }
 
     /// A `for` over a brace list is the passes the shell makes of it: a brace is decided by the
