@@ -27,8 +27,10 @@
 //!
 //! # Under the threshold (`Config::restore_within`, default one hour)
 //!
-//! * subagents that were mid-task are resumed (`crate::subagent_record`) * monitors are declared again with the call that declared them - same name, condition
-//!   owner and TTL - and one that cannot be re-established is reported, not dropped * jobs are NOT re-run (running a command twice can do harm) - the model is reminded of
+//! * subagents that were mid-task are resumed (`crate::subagent_record`)
+//! * monitors are declared again with the call that declared them - same name, condition
+//!   owner and TTL - and one that cannot be re-established is reported, not dropped
+//! * jobs are NOT re-run (running a command twice can do harm) - the model is reminded of
 //!   each ([`job_line`]).
 //!
 //! # Over it - or not known to be under it
@@ -72,6 +74,67 @@ pub const BEAT: Duration = Duration::from_secs(30);
 
 /// The default restore threshold - the operator's *"say more than 1 hours after the stop"*.
 pub const RESTORE_WITHIN: Duration = Duration::from_secs(3600);
+
+/// A hub's queued operator prompts, kept in the session store.
+pub struct StoreJournal {
+    path: PathBuf,
+    session_id: String,
+    store: Option<Store>,
+}
+
+impl StoreJournal {
+    /// Attach `hub` to the store at `path`: put back the prompts a dead daemon left queued, and
+    /// keep the queue saved from here on. Returns how many were put back.
+    pub fn attach(hub: &letibot_sessionlog::Hub, path: &std::path::Path) -> usize {
+        let session_id = hub.session_id();
+        let store = Store::open(path).ok();
+        let stored = store
+            .as_ref()
+            .and_then(|s| s.queued_prompts(&session_id).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| letibot_sessionlog::JournaledPrompt {
+                enqueued_ms: p.enqueued_ms,
+                head_id: p.head_id,
+                identity: p.identity,
+                client_request_id: p.client_request_id,
+                text: p.text,
+                attachments: serde_json::from_str(&p.attachments_json).unwrap_or_default(),
+            })
+            .collect();
+        let journal = StoreJournal {
+            path: path.to_path_buf(),
+            session_id,
+            store,
+        };
+        hub.journal_prompts(Box::new(journal), stored)
+    }
+}
+
+impl letibot_sessionlog::PromptJournal for StoreJournal {
+    fn save(&mut self, prompts: &[letibot_sessionlog::JournaledPrompt]) -> Result<(), String> {
+        if self.store.is_none() {
+            self.store = Some(Store::open(&self.path).map_err(|e| e.to_string())?);
+        }
+        let rows: Vec<_> = prompts
+            .iter()
+            .map(|p| letibot_tokencore::store::QueuedPrompt {
+                enqueued_ms: p.enqueued_ms,
+                head_id: p.head_id.clone(),
+                identity: p.identity.clone(),
+                client_request_id: p.client_request_id.clone(),
+                text: p.text.clone(),
+                attachments_json: serde_json::to_string(&p.attachments)
+                    .unwrap_or_else(|_| "[]".into()),
+            })
+            .collect();
+        self.store
+            .as_ref()
+            .ok_or_else(|| "no store".to_string())?
+            .replace_queued_prompts(&self.session_id, &rows)
+            .map_err(|e| e.to_string())
+    }
+}
 
 /// This daemon's life, written down - the start, a heartbeat every [`BEAT`], and the stop.
 /// The stop goes through a connection opened at the START, never a fresh one
@@ -335,7 +398,14 @@ pub fn header(
     // the same whether the daemon can name its stop time or not. `~` is an inference from a
     // heartbeat rather than a recorded stop.
     let est = if estimated_from.is_some() { "~" } else { "" };
-    let _ = (opened_ms, threshold);
+    let past = |opened_ms: u64| {
+        let after = Duration::from_millis(opened_ms.saturating_sub(at_ms));
+        format!(
+            "; the session was opened {} after the stop, past the {} restore window",
+            span(after),
+            span(threshold)
+        )
+    };
     match outcome {
         Outcome::Restored => format!(
             "[restart] The daemon restarted (down {est}{}). Restored:",
@@ -347,9 +417,14 @@ pub fn header(
             span(down)
         ),
         Outcome::Reminded => format!(
-            "[restart] The daemon restarted (down {est}{}). Nothing was restored automatically; \
+            "[restart] The daemon restarted (down {est}{}{}). Nothing was restored automatically; \
              this is what you were running when it stopped — bring back only what still matters:",
-            span(down)
+            span(down),
+            if Duration::from_millis(opened_ms.saturating_sub(at_ms)) >= threshold {
+                past(opened_ms)
+            } else {
+                String::new()
+            }
         ),
         // Unreachable - the empty restart returned above - and written out rather than as an
         // `unreachable!` so that a later arm cannot make this function lie.
@@ -1401,5 +1476,51 @@ mod tests {
             .and_then(|l| l.stopped_ms)
             .unwrap();
         assert!(end >= stopped, "{end} < {stopped}");
+    }
+}
+
+#[cfg(test)]
+mod journal_tests {
+    use super::*;
+    use letibot_sessionlog::{CommandKind, Hub, OwnWork};
+
+    /// A prompt accepted and not started survives a daemon kill: a new hub on the same store gets
+    /// it back, and once taken it is not put back a second time.
+    #[test]
+    fn a_queued_prompt_survives_a_killed_daemon() {
+        let dir = std::env::temp_dir().join(format!("letibot-journal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+        let first = Hub::new("s-killed");
+        assert_eq!(StoreJournal::attach(&first, &path), 0);
+        let head = first.attach("tui", "dead", Default::default(), 0);
+        first.submit(
+            &head.head_id,
+            "c1",
+            0,
+            CommandKind::Prompt {
+                text: "carry on after the restart".into(),
+                attachments: Vec::new(),
+            },
+        );
+        // kill -9: the first hub is simply gone.
+        drop(first);
+        let second = Hub::new("s-killed");
+        assert_eq!(StoreJournal::attach(&second, &path), 1);
+        let OwnWork::Command(c) = second.take_own_work() else {
+            panic!("the prompt was not put back");
+        };
+        assert!(
+            matches!(&c.kind, CommandKind::Prompt { text, .. } if text == "carry on after the restart"),
+            "{c:?}"
+        );
+        let third = Hub::new("s-killed");
+        assert_eq!(
+            StoreJournal::attach(&third, &path),
+            0,
+            "taken, so not put back again"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

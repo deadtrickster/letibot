@@ -642,8 +642,26 @@ impl Harness {
     /// `None` when there was nothing to do, which is the ordinary open.
     pub fn restore_after_restart(&mut self) -> Option<String> {
         use letibot_tools::builtins::task::{RestartFate, RestoreMode};
-        let path = self.cfg.store.clone()?;
-        let store = Store::open(&path).ok()?;
+        let Some(path) = self.cfg.store.clone() else {
+            return self.say_restore_unavailable("this session has no store".into());
+        };
+        // Prompts accepted but not started when the last daemon died: put back, and kept saved.
+        let back = crate::restart::StoreJournal::attach(&self.hub, &path);
+        if back > 0 {
+            eprintln!(
+                "  {} · restart: {back} queued prompt(s) put back",
+                self.cfg.session_id
+            );
+        }
+        let store = match Store::open(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                return self.say_restore_unavailable(format!(
+                    "its store {} could not be opened ({e})",
+                    path.display()
+                ));
+            }
+        };
         let me = self.session_registry.instance().to_string();
         let back_ms = self.session_registry.started_ms();
         // When this session is being opened - the clock the restore threshold is applied to
@@ -973,6 +991,26 @@ impl Harness {
         Some(text)
     }
 
+    /// One row saying restart restore cannot run, for a session that already has a history. A new
+    /// session has nothing a stop could have cut short, so it says nothing.
+    fn say_restore_unavailable(&mut self, why: String) -> Option<String> {
+        if self.items().is_empty() {
+            return None;
+        }
+        let text = format!(
+            "[restart] Restart restore is off: {why}, so nothing that was running before a daemon \
+             stop can be restored or reminded, whatever the {} restore window.",
+            crate::restart::span(self.cfg.restore_within)
+        );
+        if let Err(e) = self.say_without_a_turn(&text) {
+            eprintln!(
+                "  {} · restart: the notice was not recorded ({e})",
+                self.cfg.session_id
+            );
+        }
+        Some(text)
+    }
+
     /// A restart with nothing to restore, said anyway. The stop is dated from the daemons the session's OWN
     /// rows name; a session that names nobody says `unknown` rather than borrowing the newest stop in the
     /// store, which is a claim about another folder's process. Owing nothing gets a row, owing work a turn.
@@ -1033,13 +1071,23 @@ impl Harness {
         // *nothing was running* alone could not know why it is reading it now.
         let text = match owed.any() {
             true => crate::restart::nothing_running_but(&stop, back_ms, owed),
-            false => crate::restart::header(
-                &stop,
-                back_ms,
-                letibot_sessionlog::event::now_ms(),
-                self.cfg.restore_within,
-                crate::restart::Outcome::Nothing,
-            ),
+            false => {
+                let now = letibot_sessionlog::event::now_ms();
+                let mut text = crate::restart::header(
+                    &stop,
+                    back_ms,
+                    now,
+                    self.cfg.restore_within,
+                    crate::restart::Outcome::Nothing,
+                );
+                if stop.at_ms().is_some() && !stop.restores(now, self.cfg.restore_within) {
+                    text.push_str(&format!(
+                        " The stop is older than the {} restore window.",
+                        crate::restart::span(self.cfg.restore_within)
+                    ));
+                }
+                text
+            }
         };
         eprintln!("  {sid} · restart: nothing was running — {text}");
         // One line, not two: in the quiet case the sentence is a transcript row, which the person sees and the

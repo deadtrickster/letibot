@@ -32,9 +32,11 @@ pub use subagents::*;
 mod citations;
 mod leases;
 mod procs;
+mod prompts;
 mod told;
 pub use leases::{Ask, FIRST_PORT, LEASES_SQL, Lease};
 pub use procs::{Check, PROCS_SQL, ProcState, ProcessRecord};
+pub use prompts::{PROMPTS_SQL, QueuedPrompt};
 pub use told::Told;
 
 /// Why `session.role` is nullable: a role belongs to the SESSION and not to the process, and
@@ -186,7 +188,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 37;
+pub const SCHEMA_VERSION: i64 = 38;
 
 /// What this row's columns mean. Stamped on every corpus row, because a column can keep its
 /// name and its type while changing what it records, and a trainer that pools two meanings
@@ -1396,6 +1398,7 @@ impl Store {
         self.conn().execute_batch(writers::WRITERS_SQL)?;
         self.conn().execute_batch(procs::PROCS_SQL)?;
         self.conn().execute_batch(leases::LEASES_SQL)?;
+        self.conn().execute_batch(prompts::PROMPTS_SQL)?;
         self.conn().execute("DELETE FROM schema_version", [])?;
         self.conn().execute(
             "INSERT INTO schema_version (version) VALUES (?1)",
@@ -1954,6 +1957,10 @@ impl Store {
             // v37: nothing in the SCHEMA changes - the new thing is a transcript row KIND (`notice`),
             // which a younger reader meets as an unknown variant and refuses by name. The floor
             // exists for exactly this, so it moves and this arm does nothing else.
+        }
+        if from < 38 {
+            // v38: accepted prompts the hub has not started - one new table, `IF NOT EXISTS`.
+            self.conn().execute_batch(prompts::PROMPTS_SQL)?;
         }
         Ok(())
     }

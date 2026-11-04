@@ -80,6 +80,7 @@ pub const READER_ARMS: &[(i64, Arm)] = &[
     (35, Arm::Additive), // host_lease: a new table (a block of a shared host's ports)
     (36, Arm::Additive), // subagent_run.later_answer: a NULLed column
     (37, Arm::Breaks),   // the `notice` transcript row: a younger reader cannot deserialize it
+    (38, Arm::Additive), // queued_prompt: a new table
 ];
 
 /// The floor a store at `version` carries: the newest arm at or below it that [`Arm::Breaks`],

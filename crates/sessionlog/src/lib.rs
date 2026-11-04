@@ -88,7 +88,10 @@ pub use event::{
     PromptProgress, PromptReading, RESTORING_ROWS, SessionEvent, TARGET_MAX_BYTES, Timings, Usage,
     display_target,
 };
-pub use hub::{Attached, CommandKind, Delivery, Hub, QueuedCommand, Reply, SessionStatus};
+pub use hub::{
+    Attached, CommandKind, Delivery, Hub, JournaledPrompt, PromptJournal, QueuedCommand, Reply,
+    SessionStatus,
+};
 pub use log::{LogBounds, SessionLog};
 pub use origin::{GroupRow, MCP_IDENTITY, SessionGroup, SessionOrigin, group_of};
 pub use protocol::{

@@ -364,6 +364,101 @@ impl Footprint {
     }
 }
 
+/// The command queue. Operator prompts in it are copied to the store (when a journal is set) after
+/// every change, so a daemon killed with prompts queued still has them.
+#[derive(Default)]
+struct CommandQueue {
+    q: VecDeque<QueuedCommand>,
+    journal: Option<Journal>,
+}
+
+struct Journal {
+    sink: Box<dyn PromptJournal>,
+    last: Vec<JournaledPrompt>,
+    session_id: String,
+}
+
+/// An accepted operator prompt that has not started.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JournaledPrompt {
+    pub enqueued_ms: u64,
+    pub head_id: String,
+    pub identity: String,
+    pub client_request_id: String,
+    pub text: String,
+    pub attachments: Vec<crate::protocol::Attachment>,
+}
+
+/// Where queued prompts are kept across a daemon kill. The daemon implements it over its store, so
+/// this crate links no database.
+pub trait PromptJournal: Send {
+    /// Make the saved queue exactly `prompts`, oldest first.
+    fn save(&mut self, prompts: &[JournaledPrompt]) -> Result<(), String>;
+}
+
+impl CommandQueue {
+    fn push_back(&mut self, c: QueuedCommand) {
+        self.q.push_back(c);
+        self.sync();
+    }
+    fn pop_front(&mut self) -> Option<QueuedCommand> {
+        let c = self.q.pop_front();
+        self.sync();
+        c
+    }
+    fn remove(&mut self, i: usize) -> Option<QueuedCommand> {
+        let c = self.q.remove(i);
+        self.sync();
+        c
+    }
+    fn len(&self) -> usize {
+        self.q.len()
+    }
+    fn is_empty(&self) -> bool {
+        self.q.is_empty()
+    }
+    fn replace(&mut self, q: VecDeque<QueuedCommand>) {
+        self.q = q;
+        self.sync();
+    }
+    fn prompts(&self) -> Vec<JournaledPrompt> {
+        self.q
+            .iter()
+            .filter_map(|c| match &c.kind {
+                CommandKind::Prompt { text, attachments } => Some(JournaledPrompt {
+                    enqueued_ms: c.enqueued_ms,
+                    head_id: c.head_id.clone(),
+                    identity: c.identity.clone(),
+                    client_request_id: c.client_request_id.clone(),
+                    text: text.clone(),
+                    attachments: attachments.clone(),
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+    /// Save the prompts if they changed. A save that fails is said on stderr and retried at the
+    /// next change: the queue itself is never held up by it.
+    fn sync(&mut self) {
+        let now = self.prompts();
+        let Some(j) = &mut self.journal else { return };
+        if now == j.last {
+            return;
+        }
+        match j.sink.save(&now) {
+            Ok(()) => j.last = now,
+            Err(e) => eprintln!("  {} · queued prompts not saved: {e}", j.session_id),
+        }
+    }
+}
+
+impl std::ops::Index<usize> for CommandQueue {
+    type Output = QueuedCommand;
+    fn index(&self, i: usize) -> &QueuedCommand {
+        &self.q[i]
+    }
+}
+
 struct Head {
     id: String,
     kind: String,
@@ -387,7 +482,7 @@ struct Inner {
     /// `call_id` -> `(owning head, name, who)`. See [`Hub::detach`].
     operator_calls: std::collections::HashMap<String, (String, String, String)>,
     next_head: u64,
-    commands: VecDeque<QueuedCommand>,
+    commands: CommandQueue,
     /// A wake aimed at the thread that owns this session's turn rather than at the daemon's
     /// worker - see [`Hub::wake_its_own_reader`] for why the bell cannot be used for it.
     /// Taken once, by [`Hub::take_own_work`].
@@ -528,7 +623,7 @@ impl Hub {
                 heads: Vec::new(),
                 operator_calls: std::collections::HashMap::new(),
                 next_head: 0,
-                commands: VecDeque::new(),
+                commands: CommandQueue::default(),
                 own_wake: false,
                 held_now: None,
                 activity_now: None,
@@ -550,6 +645,46 @@ impl Hub {
             activity_source: Mutex::new(None),
             footprint_source: Mutex::new(None),
         })
+    }
+
+    /// Keep this session's queued operator prompts in `sink`, after putting back `stored` - the
+    /// ones a dead daemon left. Returns how many were put back. Idempotent: a second call finds
+    /// the journal set and does nothing.
+    pub fn journal_prompts(
+        &self,
+        sink: Box<dyn PromptJournal>,
+        stored: Vec<JournaledPrompt>,
+    ) -> usize {
+        let mut g = self.lock();
+        if g.commands.journal.is_some() {
+            return 0;
+        }
+        let at_seq = g.log.head_seq();
+        let n = stored.len();
+        for p in &stored {
+            g.commands.q.push_back(QueuedCommand {
+                head_id: p.head_id.clone(),
+                identity: p.identity.clone(),
+                client_request_id: p.client_request_id.clone(),
+                at_seq,
+                enqueued_ms: p.enqueued_ms,
+                kind: CommandKind::Prompt {
+                    text: p.text.clone(),
+                    attachments: p.attachments.clone(),
+                },
+            });
+        }
+        let session_id = g.log.session_id().to_string();
+        g.commands.journal = Some(Journal {
+            sink,
+            last: stored,
+            session_id,
+        });
+        drop(g);
+        if n > 0 {
+            self.cv.notify_all();
+        }
+        n
     }
 
     /// Mark this session as served by the thread that is opening it, not by the worker. See
@@ -1857,7 +1992,7 @@ impl Hub {
         // The whole of the head's queue as it stood: the prefix `0..at`. Those two facts are what
         // make the positional rule the whole-queue rule rather than an approximation.
         let mut kept = VecDeque::with_capacity(g.commands.len());
-        for (i, c) in g.commands.drain(..).enumerate() {
+        for (i, c) in std::mem::take(&mut g.commands.q).into_iter().enumerate() {
             let named = i < at
                 && c.head_id == cmd.head_id
                 && matches!(
@@ -1868,7 +2003,7 @@ impl Hub {
                 kept.push_back(c);
             }
         }
-        g.commands = kept;
+        g.commands.replace(kept);
         true
     }
 
@@ -2823,6 +2958,51 @@ mod tests {
 #[cfg(test)]
 mod mode_steering_tests {
     use super::*;
+
+    /// A queued prompt is saved when accepted, unsaved when taken, and a new hub is handed it.
+    #[test]
+    fn a_queued_prompt_is_journaled_until_taken_and_put_back_by_a_new_hub() {
+        use std::sync::{Arc, Mutex};
+        struct Kept(Arc<Mutex<Vec<JournaledPrompt>>>);
+        impl PromptJournal for Kept {
+            fn save(&mut self, p: &[JournaledPrompt]) -> Result<(), String> {
+                *self.0.lock().unwrap() = p.to_vec();
+                Ok(())
+            }
+        }
+        let kept = Arc::new(Mutex::new(Vec::new()));
+        let hub = Hub::new("s-journal");
+        assert_eq!(
+            hub.journal_prompts(Box::new(Kept(kept.clone())), Vec::new()),
+            0
+        );
+        let a = hub.attach("tui", "dead", Caps::default(), 0);
+        hub.submit(
+            &a.head_id,
+            "c1",
+            0,
+            CommandKind::Prompt {
+                text: "do the thing".into(),
+                attachments: Vec::new(),
+            },
+        );
+        let saved = kept.lock().unwrap().clone();
+        assert_eq!(saved.len(), 1, "an accepted prompt is saved at once");
+        // The daemon is killed here. A new hub is handed what was saved.
+        let again = Hub::new("s-journal");
+        let n = again.journal_prompts(Box::new(Kept(Arc::new(Mutex::new(Vec::new())))), saved);
+        assert_eq!(n, 1);
+        match again.take_own_work() {
+            OwnWork::Command(c) => assert!(
+                matches!(&c.kind, CommandKind::Prompt { text, .. } if text == "do the thing"),
+                "{c:?}"
+            ),
+            other => panic!("{other:?}"),
+        }
+        // Taking it empties the saved queue on the first hub too.
+        assert!(matches!(hub.take_own_work(), OwnWork::Command(_)));
+        assert!(kept.lock().unwrap().is_empty(), "taken, so no longer saved");
+    }
 
     /// Looking is not taking: `has_queued_prompt` exists so a round that backgrounded a job can
     /// decide to hand the floor back, and if it consumed what it found the operator's message

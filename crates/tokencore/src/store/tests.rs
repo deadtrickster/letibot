@@ -2850,3 +2850,33 @@ fn a_v33_store_gains_the_process_table() {
     assert!(s.process("s-a", "j404").unwrap().is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The stored prompt queue is replaced whole, keeps its order, and is per session.
+#[test]
+fn queued_prompts_are_replaced_whole_in_order_per_session() {
+    let s = store();
+    let p = |t: &str| QueuedPrompt {
+        enqueued_ms: 5,
+        head_id: "h".into(),
+        identity: "dead".into(),
+        client_request_id: format!("c-{t}"),
+        text: t.into(),
+        attachments_json: "[]".into(),
+    };
+    s.replace_queued_prompts("s-a", &[p("one"), p("two")])
+        .unwrap();
+    s.replace_queued_prompts("s-b", &[p("other")]).unwrap();
+    let texts = |id: &str| -> Vec<String> {
+        s.queued_prompts(id)
+            .unwrap()
+            .into_iter()
+            .map(|q| q.text)
+            .collect()
+    };
+    assert_eq!(texts("s-a"), vec!["one", "two"]);
+    s.replace_queued_prompts("s-a", &[p("two")]).unwrap();
+    assert_eq!(texts("s-a"), vec!["two"]);
+    assert_eq!(texts("s-b"), vec!["other"]);
+    s.replace_queued_prompts("s-a", &[]).unwrap();
+    assert!(texts("s-a").is_empty());
+}

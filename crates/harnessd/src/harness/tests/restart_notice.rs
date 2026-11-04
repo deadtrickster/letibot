@@ -542,3 +542,42 @@ fn a_session_idle_beyond_the_window_gets_only_the_row() {
     assert!(h.restart_notices.is_empty(), "{:?}", h.restart_notices);
     assert_eq!(restart_rows(&h), vec![text], "{:?}", h.items());
 }
+
+/// A session with history and no store cannot restore anything, and says so in one row naming the
+/// restore window.
+#[test]
+fn a_session_with_no_store_says_restart_restore_is_off() {
+    let dir = Scratch::new("restart-nostore");
+    let Some(gguf) = crate::vocab_gguf() else {
+        letibot_tokencore::apparatus::absent("a vocabulary GGUF");
+        return;
+    };
+    let mut cfg = Config::for_this_box(&dir.0);
+    cfg.dialect = crate::Dialect::Qwen;
+    cfg.store = None;
+    cfg.session_id = "s-nostore".into();
+    cfg.vocab_gguf = Some(gguf);
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    let mut h = Harness::open(&parts, cfg, Hub::new("s-nostore")).expect("the session opens");
+    assert!(
+        h.restore_after_restart().is_none(),
+        "a new session has no history a stop could have cut"
+    );
+    h.say_without_a_turn("an earlier row").unwrap();
+    let text = h.restore_after_restart().expect("said");
+    assert!(text.contains("this session has no store"), "{text}");
+    assert!(text.contains("1h"), "names the restore window: {text}");
+}
+
+/// Opened past the restore window with nothing running, the row names the window.
+#[test]
+fn an_empty_restart_past_the_restore_window_names_it() {
+    let dir = Scratch::new("restart-past");
+    let Some(mut h) = opened_by_a_later_daemon(&dir, "s-restart-past") else {
+        letibot_tokencore::apparatus::absent("a vocabulary GGUF");
+        return;
+    };
+    h.cfg.restore_within = std::time::Duration::from_secs(30);
+    let text = h.restore_after_restart().expect("said");
+    assert!(text.contains("older than the 30s restore window"), "{text}");
+}
