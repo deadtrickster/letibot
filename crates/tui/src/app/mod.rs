@@ -852,7 +852,8 @@ pub struct App {
     /// reader means this head cannot see another daemon (a replay, a test).
     pub(crate) fleet: Vec<letibot_sessionlog::FleetRow>,
     pub(crate) fleet_reader: Option<letibot_sessionlog::FleetReader>,
-    pub(crate) fleet_job: Option<std::sync::mpsc::Receiver<Vec<letibot_sessionlog::FleetRow>>>,
+    pub(crate) fleet_unlisted: usize,
+    pub(crate) fleet_job: Option<std::sync::mpsc::Receiver<letibot_sessionlog::Fleet>>,
     pub(crate) fleet_read: u64,
     /// The workspace's repositories as last read: one for an ordinary workspace, several for a
     /// folder of them (`gitfield::repos_in`).
@@ -1360,6 +1361,7 @@ impl App {
             git_reader: std::sync::Arc::new(crate::gitfield::read_state),
             fleet: Vec::new(),
             fleet_reader: None,
+            fleet_unlisted: 0,
             fleet_job: None,
             fleet_read: 0,
             git_repos: Vec::new(),

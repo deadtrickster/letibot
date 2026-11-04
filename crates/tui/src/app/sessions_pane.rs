@@ -530,8 +530,9 @@ impl App {
     pub fn refresh_fleet(&mut self) {
         if let Some(rx) = &self.fleet_job {
             match rx.try_recv() {
-                Ok(rows) => {
-                    self.fleet = rows;
+                Ok(read) => {
+                    self.fleet = read.rows;
+                    self.fleet_unlisted = read.unlisted;
                     self.fleet_job = None;
                     self.fleet_read = self.now_ms;
                     self.redraw = true;
@@ -652,6 +653,8 @@ impl App {
         json!({
             "sessions": sessions,
             "fleet": fleet,
+            "unlisted": (self.fleet_unlisted > 0)
+                .then(|| letibot_sessionlog::fleet::unlisted_words(self.fleet_unlisted)),
             "here": self.session_id,
             // The one home the head shortens against - the same value its own list uses, so
             // a plugin's rows and the head's rows cannot disagree about what `~` means.
@@ -775,6 +778,26 @@ impl App {
                         number: Some(number),
                         enter: Some(RowAct::switch(id)),
                         open,
+                    });
+                }
+                None if matches!(r.node, crate::app::session::Node::FleetUnlisted { .. }) => {
+                    tree.push(TreeRow {
+                        id: Some(r.node.key().to_string()),
+                        depth: r.depth,
+                        number: None,
+                        open: None,
+                        cells: vec![TreeCell::role(
+                            clean(&r.node.title()),
+                            rano::style::Role::Faint,
+                        )],
+                        ..TreeRow::default()
+                    });
+                    listed.push(Listed {
+                        id: r.node.key().to_string(),
+                        session: None,
+                        number: None,
+                        enter: None,
+                        open: None,
                     });
                 }
                 None if matches!(r.node, crate::app::session::Node::Fleet { .. }) => {

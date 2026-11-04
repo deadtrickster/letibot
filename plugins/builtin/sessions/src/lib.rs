@@ -48,6 +48,9 @@ struct Feed {
     /// Package sessions of other daemons, already worded by the head.
     #[serde(default)]
     fleet: Vec<Fleet>,
+    /// The line ending the group when stopped packages are not listed, worded by the head.
+    #[serde(default)]
+    unlisted: Option<String>,
     /// The session the head is standing in - its list is drawn around it.
     #[serde(default)]
     here: String,
@@ -72,6 +75,7 @@ struct Fleet {
 
 /// The fold key of the packages line, the head's `PACKAGES_KEY`.
 const PACKAGES_KEY: &str = "fleet/packages";
+const UNLISTED_KEY: &str = "fleet/unlisted";
 
 /// One session, as the head holds it and as this list reads it.
 #[derive(Debug, Deserialize)]
@@ -144,6 +148,7 @@ struct Out {
 struct Ctx<'a> {
     sessions: &'a [Session],
     fleet: &'a [Fleet],
+    unlisted: Option<&'a str>,
     here: &'a str,
     home: &'a str,
     folded: &'a std::collections::BTreeMap<String, bool>,
@@ -369,7 +374,7 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
             }
         }
     }
-    if !ctx.fleet.is_empty() {
+    if !ctx.fleet.is_empty() || ctx.unlisted.is_some() {
         let open = ctx.node_open(PACKAGES_KEY);
         out.push(node_row(
             PACKAGES_KEY.to_string(),
@@ -392,6 +397,18 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
                     under: vec![clean(&f.under)],
                     open: None,
                     enter: Some(Act::switch(f.id.clone())),
+                });
+            }
+            if let Some(line) = ctx.unlisted {
+                out.push(Out {
+                    id: UNLISTED_KEY.to_string(),
+                    depth: 1,
+                    number: None,
+                    cells: vec![Cell::role(clean(line), Role::Faint)],
+                    facts: Vec::new(),
+                    under: Vec::new(),
+                    open: None,
+                    enter: None,
                 });
             }
         }
@@ -611,6 +628,7 @@ fn answer(bytes: &[u8]) -> Option<String> {
     let ctx = Ctx {
         sessions: &feed.sessions,
         fleet: &feed.fleet,
+        unlisted: feed.unlisted.as_deref(),
         here: &feed.here,
         home: &feed.home,
         folded: &input.folded,

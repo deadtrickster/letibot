@@ -60,5 +60,27 @@ fn shell_word(s: &str) -> String {
     }
 }
 
+/// What one reading of the other daemons found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Fleet {
+    pub rows: Vec<FleetRow>,
+    /// Stopped packages older than the window, counted and not listed.
+    pub unlisted: usize,
+}
+
+impl Fleet {
+    /// The line that ends the group when something is not listed, or `None`.
+    pub fn unlisted_line(&self) -> Option<String> {
+        (self.unlisted > 0).then(|| unlisted_words(self.unlisted))
+    }
+}
+
+pub fn unlisted_words(n: usize) -> String {
+    format!(
+        "{n} older stopped package{} not listed - `letibot --sessions` lists them",
+        if n == 1 { "" } else { "s" }
+    )
+}
+
 /// What reads the fleet: the head's binary supplies it, a test holds one.
-pub type FleetReader = std::sync::Arc<dyn Fn() -> Vec<FleetRow> + Send + Sync>;
+pub type FleetReader = std::sync::Arc<dyn Fn() -> Fleet + Send + Sync>;

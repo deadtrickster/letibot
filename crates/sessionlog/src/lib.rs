@@ -89,7 +89,7 @@ pub use event::{
     PromptProgress, PromptReading, RESTORING_ROWS, SessionEvent, TARGET_MAX_BYTES, Timings, Usage,
     display_target,
 };
-pub use fleet::{FleetReader, FleetRow, FleetState};
+pub use fleet::{Fleet, FleetReader, FleetRow, FleetState};
 pub use hub::{
     Attached, CommandKind, Delivery, Hub, JournaledPrompt, PromptJournal, QueuedCommand, Reply,
     SessionStatus,

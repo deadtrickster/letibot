@@ -346,7 +346,7 @@ impl App {
                 }
             }
         }
-        if !self.fleet.is_empty() {
+        if !self.fleet.is_empty() || self.fleet_unlisted > 0 {
             let node = Node::Packages {
                 count: self.fleet.len(),
             };
@@ -363,6 +363,16 @@ impl App {
                         idx: None,
                         depth: 1,
                         node: Node::Fleet { id: f.id.clone() },
+                        open: None,
+                    });
+                }
+                if self.fleet_unlisted > 0 {
+                    out.push(SessionRow {
+                        idx: None,
+                        depth: 1,
+                        node: Node::FleetUnlisted {
+                            count: self.fleet_unlisted,
+                        },
                         open: None,
                     });
                 }
@@ -1374,6 +1384,7 @@ impl SystemKind {
 
 /// The fold key of the packages line. Session ids begin `s-` and project keys are paths.
 pub(crate) const PACKAGES_KEY: &str = "fleet/packages";
+pub(crate) const UNLISTED_KEY: &str = "fleet/unlisted";
 
 /// What the line over other daemons' packages says it is.
 pub(crate) const FLEET_LEGEND: &str =
@@ -1402,6 +1413,10 @@ pub(crate) enum Node {
     Packages {
         count: usize,
     },
+    /// The last line of the group: how many stopped packages are not listed.
+    FleetUnlisted {
+        count: usize,
+    },
     /// One of them. Not in `App::sessions`: another daemon holds it.
     Fleet {
         id: String,
@@ -1415,6 +1430,7 @@ impl Node {
         match self {
             Node::Project { key, .. } | Node::System { key, .. } | Node::Group { key, .. } => key,
             Node::Packages { .. } => PACKAGES_KEY,
+            Node::FleetUnlisted { .. } => UNLISTED_KEY,
             Node::Fleet { id } => id,
             Node::Session => "",
         }
@@ -1427,6 +1443,7 @@ impl Node {
             Node::System { count, .. } => format!("system ({count})"),
             Node::Group { kind, count, .. } => format!("{} ({count})", kind.title()),
             Node::Packages { count } => format!("packages in other daemons ({count})"),
+            Node::FleetUnlisted { count } => letibot_sessionlog::fleet::unlisted_words(*count),
             Node::Session | Node::Fleet { .. } => String::new(),
         }
     }
@@ -1438,7 +1455,7 @@ impl Node {
             Node::System { .. } => "the sessions the harness runs for itself",
             Node::Group { kind, .. } => kind.legend(),
             Node::Packages { .. } => FLEET_LEGEND,
-            Node::Session | Node::Fleet { .. } => "",
+            Node::Session | Node::Fleet { .. } | Node::FleetUnlisted { .. } => "",
         }
     }
 

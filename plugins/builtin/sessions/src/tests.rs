@@ -57,6 +57,7 @@ fn draw(feed: &Feed, folded: &[(&str, bool)]) -> Vec<Out> {
     let ctx = Ctx {
         sessions: &feed.sessions,
         fleet: &feed.fleet,
+        unlisted: feed.unlisted.as_deref(),
         here: &feed.here,
         home: &feed.home,
         folded: &folded,
@@ -89,6 +90,7 @@ fn feed(sessions: Vec<Session>, here: &str) -> Feed {
     Feed {
         sessions,
         fleet: Vec::new(),
+        unlisted: None,
         here: here.to_string(),
         home: "/home/dead".into(),
     }

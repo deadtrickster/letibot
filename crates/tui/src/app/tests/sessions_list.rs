@@ -536,3 +536,20 @@ fn packages_of_other_daemons_are_listed_with_folder_and_state() {
     assert_eq!(own, plugins);
     assert!(!own.join("\n").contains("work of s-far-1"));
 }
+
+/// Stopped packages outside the window are said, not dropped: the group ends with how many and how to
+/// see them, in both drawings, and the line is not an act.
+#[test]
+fn the_packages_group_ends_with_how_many_older_stopped_ones_are_not_listed() {
+    let mut a = the_daemon();
+    a.fleet_unlisted = 3;
+    a.set_row_fold(crate::app::session::PACKAGES_KEY, true);
+    let (own, plugins) = both_lists(&a);
+    assert_eq!(own, plugins, "the plugin's list is the head's list");
+    let text = own.join("\n");
+    assert!(text.contains("packages in other daemons (0)"), "{text}");
+    assert!(
+        text.contains("3 older stopped packages not listed - `letibot --sessions` lists them"),
+        "{text}"
+    );
+}
