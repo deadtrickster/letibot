@@ -408,6 +408,11 @@ impl World {
         // Bound HERE rather than on the worker thread: the bridge decides whether to start a
         // daemon by connecting, and a socket that appears a moment later would be a race
         // between the test's first `start` and its own fixture.
+        // The store as the registry's source, as the daemon binary wires it: a session the
+        // bridge stops leaves the live table and is listed from disk.
+        registry.set_source(
+            letibot_harnessd::sessions::StoreSessions::open(&cfg).expect("the store is a source"),
+        );
         let daemon = Daemon::serve(registry.clone(), &socket).expect("the socket binds");
         // Where this daemon's tools run, written where harnessd writes it - see the host above
         // for why the record says a host while the daemon is local.
@@ -1258,7 +1263,7 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
     assert!(
         briefs
             .iter()
-            .any(|b| b.session_id == session && b.status.items > 0),
+            .any(|b| b.session_id == session && (b.status.items > 0 || b.stored_items > 0)),
         "the session and its rows outlive the bridge: {briefs:?}"
     );
 
