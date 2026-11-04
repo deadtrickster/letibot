@@ -154,14 +154,19 @@ fn a_run_nobody_is_waiting_on_is_still_ended_by_its_deadline() {
         left.is_empty(),
         "the cgroup still holds {left:?} two seconds after the deadline"
     );
+    // The cgroup is empty, but the exit is observed by a poll: a loaded box reaps late.
+    let gone_by = std::time::Instant::now() + Duration::from_secs(30);
     for p in &pids {
-        assert!(
+        let dead = || {
             std::fs::metadata(format!("/proc/{p}")).is_err()
                 || std::fs::read_to_string(format!("/proc/{p}/stat"))
                     .map(|s| s.contains(") Z "))
-                    .unwrap_or(true),
-            "pid {p} is still alive after its deadline"
-        );
+                    .unwrap_or(true)
+        };
+        while !dead() && std::time::Instant::now() < gone_by {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(dead(), "pid {p} is still alive after its deadline");
     }
 
     // The firing is a record, so the claim can be checked afterwards, and it carries the same

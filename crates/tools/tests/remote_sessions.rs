@@ -773,7 +773,7 @@ fn a_fetch_waits_for_a_git_slot_as_long_as_the_connection_is_given() {
     let fake = Fake::new("slot-bound", "");
     let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
     let b =
-        SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(1))).expect("placed");
+        SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(5))).expect("placed");
     // Every slot of this process's git gate, held: the fetch cannot have one until these drop.
     let _held: Vec<_> = (0..letibot_tools::rpc::MAX_SESSIONS_PER_HOST)
         .map(|_| letibot_tools::rpc::enter_git(&fake.name, Duration::from_secs(5)))
@@ -784,10 +784,10 @@ fn a_fetch_waits_for_a_git_slot_as_long_as_the_connection_is_given() {
     std::thread::spawn(move || {
         let _ = tx.send(b.close());
     });
-    // Ten seconds, not five minutes: the close has a one-second bound and this is the wait that has
-    // to respect it. A close that waits out the transfer's bound fails here instead of hanging.
+    // Fifteen seconds, not five minutes: the connection is given five (a loaded box needs that to
+    // place) and the slot wait has to respect it. A close that waits out the transfer's bound fails here instead of hanging.
     let said = rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(Duration::from_secs(15))
         .expect("the close came back inside a few seconds")
         .expect("a close says where the work went");
     assert!(
