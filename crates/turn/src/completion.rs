@@ -127,7 +127,8 @@ pub enum FinishReason {
     Word,
     /// The output limit was reached. Acted on, see [`crate::length`].
     Length,
-    /// The turn was aborted by us - a guard, or an urgent steering message.
+    /// The turn ended without the model's own reason - a guard, an urgent steering message, or an
+    /// attempt the provider failed. A head draws it as an ending, never as a clean sum-up.
     Aborted,
     /// A value the server produced that this enum does not model. Kept verbatim
     /// rather than folded into a neighbour, because a `finish_reason` nobody

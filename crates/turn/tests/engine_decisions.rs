@@ -1757,6 +1757,107 @@ fn an_unreached_provider_is_an_io_failure_and_not_a_malformed_answer() {
     }
 }
 
+/// A provider that fails the round in one of the three ways the engine has an arm for.
+struct Failing(&'static str);
+
+impl letibot_backend::MessagesBackend for Failing {
+    fn caps(&self) -> BackendCaps {
+        BackendCaps::METERED_API
+    }
+    fn name(&self) -> &str {
+        "deepseek"
+    }
+    fn model(&self) -> &str {
+        "deepseek-flash"
+    }
+    fn authority(&self) -> String {
+        "api.deepseek.com".into()
+    }
+    fn complete(
+        &self,
+        _req: &letibot_backend::TurnRequest<'_>,
+        _on_delta: &mut dyn FnMut(&letibot_backend::Delta) -> letibot_backend::StreamFlow,
+    ) -> Result<letibot_backend::Completion, letibot_backend::BackendError> {
+        use letibot_backend::BackendError;
+        Err(match self.0 {
+            "refused" => BackendError::Refused {
+                status: 429,
+                body: "slow down".into(),
+                retry_after: None,
+            },
+            "unreachable" => BackendError::Unreachable("connection reset by the peer".into()),
+            _ => BackendError::Malformed("the stream stopped mid-chunk".into()),
+        })
+    }
+}
+
+/// Every failed attempt ends its turn. The refusal, unreachable and malformed arms returned without a
+/// `TurnFinished`, so a mid-stream drop left its deltas hanging off a turn id nothing ever finished.
+#[test]
+fn every_failed_attempt_ends_its_turn() {
+    let _lock = serial();
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
+        eprintln!("SKIPPED: no vocabulary GGUF, so the engine cannot open a session");
+        return;
+    };
+    let idle = Canned::serve(Vec::new(), 0);
+    for kind in ["refused", "unreachable", "malformed"] {
+        let mut engine = engine(idle.endpoint.clone());
+        let mut session = session(&engine, &format!("failed-attempt-{kind}"));
+        let mut sink = RecordingSink::new();
+        session
+            .append_items(&engine, &[user("hello")], &mut sink)
+            .unwrap();
+        let _ = engine
+            .run_turn_messages(
+                &mut session,
+                &mut sink,
+                &mut NoSteering,
+                &Failing(kind),
+                "be terse",
+                &[],
+                None,
+            )
+            .expect_err("the provider failed the round");
+
+        let started: Vec<&String> = sink
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                TurnEvent::TurnStarted { turn_id, .. } => Some(turn_id),
+                _ => None,
+            })
+            .collect();
+        let finished: Vec<(&String, &letibot_turn::FinishReason)> = sink
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                TurnEvent::TurnFinished {
+                    turn_id,
+                    finish_reason,
+                    ..
+                } => Some((turn_id, finish_reason)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(started.len(), 1, "{kind}: one attempt, one start");
+        assert_eq!(
+            finished.len(),
+            1,
+            "{kind}: the attempt opened a turn and never finished it"
+        );
+        assert_eq!(
+            finished[0].0, started[0],
+            "{kind}: the ending names another turn"
+        );
+        assert_eq!(
+            *finished[0].1,
+            letibot_turn::FinishReason::Aborted,
+            "{kind}: the model gave no finish reason, so it must not read as a clean ending"
+        );
+    }
+}
+
 // --------------------------------------------------------------------------
 // An interrupt taken at the end of a successful round
 // --------------------------------------------------------------------------

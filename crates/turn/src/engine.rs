@@ -1219,6 +1219,14 @@ impl TurnEngine {
                 // input, not output, and `absorb` already took them out of the source,
                 // so they go back rather than being appended.
                 pending.give_back(steering);
+                self.end_a_failed_attempt(
+                    sink,
+                    &turn_id,
+                    &model,
+                    session,
+                    started.elapsed().as_millis() as u64,
+                    backend,
+                );
                 return Err(TurnFailure::Http(HttpError::Status {
                     code: status,
                     body,
@@ -1244,6 +1252,14 @@ impl TurnEngine {
                 } else {
                     std::io::ErrorKind::Other
                 };
+                self.end_a_failed_attempt(
+                    sink,
+                    &turn_id,
+                    &model,
+                    session,
+                    started.elapsed().as_millis() as u64,
+                    backend,
+                );
                 return Err(TurnFailure::Http(HttpError::Io(std::io::Error::new(
                     kind, said,
                 ))));
@@ -1253,6 +1269,14 @@ impl TurnEngine {
                 // input, not output, and `absorb` already took them out of the source,
                 // so they go back rather than being appended.
                 pending.give_back(steering);
+                self.end_a_failed_attempt(
+                    sink,
+                    &turn_id,
+                    &model,
+                    session,
+                    started.elapsed().as_millis() as u64,
+                    backend,
+                );
                 return Err(TurnFailure::Http(HttpError::Malformed(e.to_string())));
             }
         };
@@ -1422,6 +1446,34 @@ impl TurnEngine {
             steering_items,
             steering_before,
         ))
+    }
+
+    /// End the attempt that failed. Without this the deltas it streamed hang off a `TurnStarted`
+    /// nothing answers, and a head cannot settle the rows it drew. `Aborted` is the honest reason
+    /// here: the model gave no finish reason of its own, and the daemon says what went wrong.
+    fn end_a_failed_attempt(
+        &self,
+        sink: &mut dyn EventSink,
+        turn_id: &str,
+        model: &str,
+        session: &Session,
+        wall_ms: u64,
+        backend: &dyn letibot_backend::MessagesBackend,
+    ) {
+        sink.emit(TurnEvent::TurnFinished {
+            turn_id: turn_id.to_string(),
+            finish_reason: FinishReason::Aborted,
+            proposed_calls: false,
+            metrics: Box::new(self.messages_metrics(
+                turn_id,
+                model,
+                session,
+                None,
+                wall_ms,
+                FinishReason::Aborted,
+                backend,
+            )),
+        });
     }
 
     /// Metrics for a messages turn: the provider's figures where it gave them,
