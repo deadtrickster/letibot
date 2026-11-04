@@ -258,7 +258,12 @@ pub struct Stack {
     trust: Option<Arc<Trust>>,
     /// Pins already reported as broken, so a poll every two seconds does not say it every time.
     said_pins: std::collections::BTreeSet<String>,
+    /// File listing the disabled built-in ids, one per line. `None` keeps built-in state in memory.
+    builtin_state: Option<PathBuf>,
 }
+
+/// A disk layer's off switch: this file in its directory. It lives and dies with the layer.
+pub const DISABLED_MARK: &str = ".disabled";
 
 impl Stack {
     /// Discover layers from the four scopes. Each argument is the root of a scope and may be
@@ -277,6 +282,7 @@ impl Stack {
             failures: Vec::new(),
             trust: None,
             said_pins: std::collections::BTreeSet::new(),
+            builtin_state: None,
         };
         if let Some(dir) = session_dir {
             stack.discover_scope(Scope::Session, dir);
@@ -288,6 +294,11 @@ impl Stack {
             stack.discover_scope(Scope::User, &root.join("plugins"));
         }
         stack
+    }
+
+    /// Keep the disabled built-ins in `path`, and apply it to built-ins registered from now on.
+    pub fn keep_builtin_state(&mut self, path: PathBuf) {
+        self.builtin_state = Some(path);
     }
 
     /// Hand this stack the trust book, and decide every placed layer against it. A stack nobody
@@ -471,6 +482,9 @@ impl Stack {
             layer.id = format!("{}-{}", Scope::BuiltIn.prefix(), layer.manifest.name);
         }
         layer.scope = Scope::BuiltIn;
+        if self.disabled_builtins().contains(&layer.id) {
+            layer.disabled = true;
+        }
         if self.layers.iter().any(|l| l.id == layer.id) {
             self.failures.push(Failure {
                 layer: layer.id.clone(),
@@ -554,12 +568,75 @@ impl Stack {
     /// *"which of my fixes broke this"*. A disabled layer stays in the stack view, greyed, which
     /// is the point: the stack reads as history, and history that vanished cannot be read.
     pub fn set_disabled(&mut self, id: &str, disabled: bool) -> Result<(), String> {
-        let i = self.layers.iter().position(|l| l.id == id).ok_or_else(|| {
-            let ids: Vec<&str> = self.layers.iter().map(|l| l.id.as_str()).collect();
-            format!("no layer `{id}` — the stack has [{}]", ids.join(", "))
-        })?;
+        let i = self.index_of(id)?;
+        self.persist_disabled(i, disabled)?;
         self.layers[i].disabled = disabled;
         Ok(())
+    }
+
+    /// [`Stack::set_disabled`] for this stack value only, nothing written. For a fork that masks
+    /// layers to ask one question.
+    pub fn mask(&mut self, id: &str, disabled: bool) -> Result<(), String> {
+        let i = self.index_of(id)?;
+        self.layers[i].disabled = disabled;
+        Ok(())
+    }
+
+    fn index_of(&self, id: &str) -> Result<usize, String> {
+        self.layers.iter().position(|l| l.id == id).ok_or_else(|| {
+            let ids: Vec<&str> = self.layers.iter().map(|l| l.id.as_str()).collect();
+            format!("no layer `{id}` — the stack has [{}]", ids.join(", "))
+        })
+    }
+
+    /// A disk layer carries its mark in its own directory, so a deleted layer drops it. A built-in
+    /// has no directory, so its state goes in the stack's state file when it has one.
+    fn persist_disabled(&self, i: usize, disabled: bool) -> Result<(), String> {
+        let layer = &self.layers[i];
+        if layer.scope == Scope::BuiltIn {
+            let Some(path) = self.builtin_state.as_ref() else {
+                return Ok(());
+            };
+            let mut ids = self.disabled_builtins();
+            if disabled {
+                ids.insert(layer.id.clone());
+            } else {
+                ids.remove(&layer.id);
+            }
+            let text: String = ids.iter().map(|id| format!("{id}\n")).collect();
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            return std::fs::write(path, text)
+                .map_err(|e| format!("could not save {}: {e}", path.display()));
+        }
+        if layer.dir.as_os_str().is_empty() {
+            return Ok(());
+        }
+        let mark = layer.dir.join(DISABLED_MARK);
+        let done = if disabled {
+            std::fs::write(&mark, "")
+        } else {
+            match std::fs::remove_file(&mark) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                other => other,
+            }
+        };
+        done.map_err(|e| format!("could not save {}: {e}", mark.display()))
+    }
+
+    fn disabled_builtins(&self) -> std::collections::BTreeSet<String> {
+        self.builtin_state
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|t| {
+                t.lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Resolve one hook through the stack, from the top: pass or unchanged falls through, mask
@@ -721,6 +798,7 @@ impl Stack {
                 let manifest_sha256 =
                     sha256_file(&dir.join(MANIFEST)).unwrap_or_else(|_| String::new());
                 let (trusted, pin) = self.standing_of(&dir, &seen.sha256, &manifest_sha256);
+                let disabled = dir.join(DISABLED_MARK).is_file();
                 let layer = Layer {
                     id: id.clone(),
                     scope: c.scope,
@@ -728,7 +806,7 @@ impl Stack {
                     manifest,
                     sha256: seen.sha256,
                     manifest_sha256,
-                    disabled: false,
+                    disabled,
                     // See `Layer::trusted`: a new directory is the operator's only once the book
                     // says these bytes are theirs.
                     trusted,
@@ -849,6 +927,7 @@ impl Stack {
             let manifest_sha256 =
                 sha256_file(&path.join(MANIFEST)).unwrap_or_else(|_| String::new());
             let (trusted, pin) = self.standing_of(&path, &seen.sha256, &manifest_sha256);
+            let disabled = path.join(DISABLED_MARK).is_file();
             self.layers.push(Layer {
                 id: id.clone(),
                 scope,
@@ -859,7 +938,7 @@ impl Stack {
                 // book decide, and `set_trust` (or the poll) fills these in - a stack nobody gave a
                 // book to leaves every layer untrusted, which is the fail-closed direction.
                 manifest_sha256,
-                disabled: false,
+                disabled,
                 trusted,
                 pin,
             });
@@ -1432,6 +1511,95 @@ mod tests {
         s.set_disabled("u1", true).unwrap();
         assert_eq!(s.call("pane_dashboard", &json!({})).answer, None);
         assert!(s.failures().is_empty());
+    }
+
+    #[test]
+    fn a_disabled_disk_layer_stays_off_after_a_restart_in_every_scope() {
+        let t = TempDir::new("disabled-restart");
+        for scope in ["session", "project/.letibot/plugins", "user/plugins"] {
+            layer(
+                &t.path().join(scope),
+                "a",
+                &["pane_dashboard"],
+                Act::answer(json!({})),
+            );
+        }
+        let mut s = stack(&t);
+        for id in ["s1", "p1", "u1"] {
+            s.set_disabled(id, true).unwrap();
+        }
+        let s = stack(&t);
+        for id in ["s1", "p1", "u1"] {
+            assert!(s.layer(id).unwrap().disabled, "{id} came back on");
+        }
+        let mut s = s;
+        s.set_disabled("p1", false).unwrap();
+        let s = stack(&t);
+        assert!(!s.layer("p1").unwrap().disabled);
+        assert!(s.layer("s1").unwrap().disabled);
+    }
+
+    #[test]
+    fn a_mask_is_not_saved_and_a_deleted_layer_takes_its_mark_along() {
+        let t = TempDir::new("disabled-mask");
+        layer(
+            &t.path().join("session"),
+            "a",
+            &["pane_dashboard"],
+            Act::answer(json!({})),
+        );
+        let mut s = stack(&t);
+        s.mask("s1", true).unwrap();
+        assert!(!stack(&t).layer("s1").unwrap().disabled);
+        s.set_disabled("s1", true).unwrap();
+        std::fs::remove_dir_all(t.path().join("session").join("a")).unwrap();
+        layer(
+            &t.path().join("session"),
+            "a",
+            &["pane_dashboard"],
+            Act::answer(json!({})),
+        );
+        assert!(!stack(&t).layer("s1").unwrap().disabled);
+    }
+
+    #[test]
+    fn a_disabled_builtin_stays_off_after_a_restart() {
+        let t = TempDir::new("disabled-builtin");
+        let state = t.path().join("session").join(".disabled-builtins");
+        let register = |s: &mut Stack| {
+            let manifest = Manifest::parse(
+                "name = \"b\"\npurpose = \"p\"\nhooks = [\"pane_dashboard\"]\n\
+                 capabilities = []\ncontract = 1\n",
+            )
+            .unwrap();
+            s.register_builtin(
+                Layer {
+                    id: String::new(),
+                    scope: Scope::BuiltIn,
+                    dir: PathBuf::new(),
+                    manifest,
+                    sha256: String::new(),
+                    manifest_sha256: String::new(),
+                    disabled: false,
+                    trusted: true,
+                    pin: None,
+                },
+                Box::new(Fake::one("pane_dashboard", Act::answer(json!({})))),
+            );
+        };
+        let mut s = stack(&t);
+        s.keep_builtin_state(state.clone());
+        register(&mut s);
+        s.set_disabled("b-b", true).unwrap();
+        let mut s = stack(&t);
+        s.keep_builtin_state(state.clone());
+        register(&mut s);
+        assert!(s.layer("b-b").unwrap().disabled);
+        s.set_disabled("b-b", false).unwrap();
+        let mut s = stack(&t);
+        s.keep_builtin_state(state);
+        register(&mut s);
+        assert!(!s.layer("b-b").unwrap().disabled);
     }
 
     #[test]

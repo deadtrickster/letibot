@@ -144,12 +144,16 @@ impl PluginHost {
         builder: Arc<dyn Builder>,
     ) -> PluginHost {
         let workspace = workspace.into();
-        let stack = Stack::discover(
+        let mut stack = Stack::discover(
             session_dir.as_deref(),
             Some(&workspace),
             user_dir.as_deref(),
             loader,
         );
+        // Beside the session's layers, not in one: the dir scan only takes subdirectories.
+        if let Some(dir) = session_dir.as_deref() {
+            stack.keep_builtin_state(dir.join(".disabled-builtins"));
+        }
         PluginHost {
             session: session.into(),
             workspace,
@@ -1305,7 +1309,7 @@ impl PluginHost {
                 let mut alone = stack.clone();
                 for layer in stack.layers() {
                     if layer.scope != Scope::BuiltIn && &layer.id != id {
-                        let _ = alone.set_disabled(&layer.id, true);
+                        let _ = alone.mask(&layer.id, true);
                     }
                 }
                 alone
@@ -3736,6 +3740,33 @@ mod tests {
             "with the only layer off, nothing exports the hook"
         );
         assert_eq!(host.lock().rec.inputs("notice_monitor").len(), 0);
+    }
+
+    /// `plugin disable` outlives the daemon: a host rebuilt from the same dirs reads the layer as
+    /// off, and `plugin enable` turns it back on for the next one.
+    #[test]
+    fn a_disabled_layer_stays_off_when_the_host_is_rebuilt() {
+        let root = tempdir("notice-disabled-restart");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "fix",
+            &[("notice_monitor", says(json!({"text": "patched"})))],
+        );
+        let hub = Hub::new("s-plugins");
+        let host = table_host(&root, &table);
+        host.set_enabled(&hub, "fix", false).expect("disable");
+
+        let host = table_host(&root, &table);
+        assert!(
+            host.lock().stack.layers()[0].disabled,
+            "back on after restart"
+        );
+        assert!(host.ask(&hub, "notice_monitor", &json!({})).is_none());
+
+        host.set_enabled(&hub, "fix", true).expect("enable");
+        let host = table_host(&root, &table);
+        assert!(!host.lock().stack.layers()[0].disabled);
     }
 
     /// A layer that traps falls to the one below, and the model is told which failed - the loud
