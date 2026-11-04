@@ -800,7 +800,7 @@ impl App {
         // the record the last frame wrote, and that record describes the list as it was.
         self.todos_follow = true;
         self.redraw = true;
-        // **Remembered across restarts, like every other switch on `/config`** - a switch that
+        // Remembered across restarts, like every other switch on `/config` - a switch that
         // forgets is a switch the reader keeps re-making, and the operator asked for this one
         // about a board whose done rows are the noise.
         let saved = self.save_prefs(RetiredWrite::Union);
@@ -960,7 +960,7 @@ impl App {
         }
     }
 
-    /// **The newest completion notice on the conversation that names `handle`** - its index in
+    /// The newest completion notice on the conversation that names `handle` - its index in
     /// `items`, which is what the notice popup opens, and the job as the notice reported it.
     pub(crate) fn notice_job(
         &self,
@@ -1013,7 +1013,7 @@ impl App {
         }
     }
 
-    /// **A click on link `k` of the last frame**: the cursor goes to the row the link is on  -
+    /// A click on link `k` of the last frame: the cursor goes to the row the link is on  -
     /// so the pane and the bar say which row was acted on - and its wait opens.
     pub(crate) fn open_wait_link(&mut self, k: usize) -> Option<Action> {
         let link = self.todos_wait_links.get(k)?.clone();

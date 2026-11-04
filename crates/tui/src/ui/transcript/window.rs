@@ -31,8 +31,8 @@ impl App {
             &rano::agent::screens::attaching(elapsed, room, cfg.width),
             cfg.palette(),
         );
-        // **Named, because the whole defect was two sessions on one screen with nothing saying
-        // which was which.** The reader can check the name against the row he pressed Enter on.
+        // Named, because the whole defect was two sessions on one screen with nothing saying
+        // which was which. The reader can check the name against the row he pressed Enter on.
         let to = self.switching_to().unwrap_or_default();
         let from = self.session_label(&self.session_id);
         rows.extend(row_strings(
@@ -321,9 +321,8 @@ impl App {
         // reallocations on a per-frame path. A guess, and a cheap one.
         let mut segs: Vec<Seg<'_>> = Vec::with_capacity(8);
         segs.push(Seg::Borrowed(hist_lines));
-        // The history no longer ends with a blank, since separators go before a row now, so the live pane brings
-        // its own. An array on the stack rather than a `Vec` holding one empty line, and `String::new()` allocates
-        // nothing.
+        // The history does not end with a blank (separators go before a row), so the live pane brings
+        // its own. An array on the stack, since `String::new()` allocates nothing.
         let gap: [String; 1] = [String::new()];
         if !hist_lines.is_empty() {
             segs.push(Seg::Borrowed(&gap));

@@ -1173,8 +1173,8 @@ mod tests {
         );
     }
 
-    /// **A process this head is not the parent of is answered by `/proc`, and a pid that never
-    /// existed is gone.** The second is the wrapper's own case, and it must not have been
+    /// A process this head is not the parent of is answered by `/proc`, and a pid that never
+    /// existed is gone. The second is the wrapper's own case, and it must not have been
     /// broken by routeing the child case through `waitpid`.
     #[test]
     fn a_pid_that_is_not_this_processs_child_is_answered_from_proc() {

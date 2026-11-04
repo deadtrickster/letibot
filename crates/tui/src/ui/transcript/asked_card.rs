@@ -255,7 +255,7 @@ pub(crate) fn full_lines(
     Some(rows)
 }
 
-/// **The operator's answer to the question at `k`**: the row right after it, when that row is
+/// The operator's answer to the question at `k`: the row right after it, when that row is
 /// theirs - the same pairing [`replied_to`] draws the other way (`item::question_before`).
 pub(crate) fn answer_after(
     items: &[letibot_sessionlog::view::SnapshotItem],

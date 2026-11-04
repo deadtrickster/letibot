@@ -467,8 +467,8 @@ impl App {
                 if self.seq > 0 && env.session_id == self.session_id && env.seq > self.seq + 1 {
                     let lost = env.seq - self.seq - 1;
                     self.gaps += 1;
-                    // **Said in the conversation, once per gap, and the range is
-                    // named.** Two gaps have to be two lines; deduping on the code
+                    // Said in the conversation, once per gap, and the range is
+                    // named. Two gaps have to be two lines; deduping on the code
                     // would collapse a session's whole history of them into one.
                     self.note(Note::Warned(Warned {
                         code: "log_gap".into(),

@@ -313,8 +313,8 @@ pub(crate) use rano::agent::jobs::JobStop;
 #[derive(Debug, Clone)]
 pub(crate) struct SubOut {
     pub(crate) session_id: String,
-    /// One line per rendered row - **and which renderer produced them is [`SubOut::degraded`]'s
-    /// business**: the session's own rows go through `item_lines`, the same one every row of the
+    /// One line per rendered row - and which renderer produced them is [`SubOut::degraded`]'s
+    /// business: the session's own rows go through `item_lines`, the same one every row of the
     /// transcript uses, and the event-ring fallback goes through `subagent_out_lines`.
     pub(crate) lines: Vec<String>,
     /// The daemon answered with the event ring rather than the session's rows: `Peeked::snapshot` is `None` when the

@@ -29,8 +29,8 @@ impl App {
         // Every key hint on this frame is a button, read back off the frame itself - see
         // `app::keyhints`. Before the links pass, which only adds escapes.
         self.scan_hints(&out);
-        // Every link on this frame is a link (OSC 8) where the terminal speaks it, **and a
-        // target** - see `App::draw_links` and `app::links`.
+        // Every link on this frame is a link (OSC 8) where the terminal speaks it, and a
+        // target - see `App::draw_links` and `app::links`.
         self.draw_links(&mut out);
         if self.hold {
             // The marker takes the hint bar's row. It is one row that always exists, so the
@@ -746,7 +746,11 @@ impl App {
         // step that does not fit would take `stuck` and `done` with it, and the click target, which
         // is read off words drawn whole, with them. The six counts keep their columns instead.
         let mut words = standings.words();
-        if standings.gate.is_some() && right.as_ref().is_some_and(|r| r.width() > w.saturating_sub(5)) {
+        if standings.gate.is_some()
+            && right
+                .as_ref()
+                .is_some_and(|r| r.width() > w.saturating_sub(5))
+        {
             let bare = Standings {
                 gate: None,
                 ..standings
@@ -831,8 +835,8 @@ impl App {
         // window under whatever is covering it now.
         self.payload_rows.clear();
         // What is drawn here is `drawn()`'s answer - the same value `App::key` routes
-        // on and the hint bar describes, so the three can no longer be three hand-written orders
-        // that disagree about which of several open panes is in front.
+        // on and the hint bar describes, so the three cannot disagree about which of several
+        // open panes is in front.
         match self.drawn() {
             Drawn::Term => {
                 // The pane takes the conversation's rectangle and gives it back. First in the chain, because
