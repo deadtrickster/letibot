@@ -1537,3 +1537,122 @@ fn a_settlement_from_a_grandchild_skips_a_parent_that_has_stopped() {
         "the root is the session that has to act on it, and it was never rung"
     );
 }
+
+/// A parent closing while a child settles into it loses nothing: every settlement is in the root's
+/// queue and none is stranded in the closed parent's.
+#[test]
+fn a_parent_closing_while_a_child_settles_strands_nothing() {
+    use letibot_sessionlog::registry::{Registry, SessionWiring, Work};
+
+    for round in 0..20 {
+        let r = Registry::new();
+        let root = r.create("s-root", "", SessionWiring::default()).unwrap();
+        let c1 = r
+            .create_under("s-c1", "", SessionWiring::default(), Some("s-root".into()))
+            .unwrap();
+        let c2 = r
+            .create_under("s-c2", "", SessionWiring::default(), Some("s-c1".into()))
+            .unwrap();
+        for _ in 0..3 {
+            assert!(matches!(r.next_work(), Some(Work::Open(_))));
+        }
+        let bell = Arc::clone(r.bell());
+        let root_watch = JobWatchers::watching_tasks(&root, Some(Arc::clone(&bell)));
+        let c1_watch =
+            JobWatchers::watching_tasks(&c1, Some(Arc::clone(&bell))).shares_tree(&root_watch);
+        let c2_watch = JobWatchers::watching_tasks(&c2, Some(bell)).shares_tree(&c1_watch);
+        let settled = |job: String| JobCompletion {
+            arrived: std::time::SystemTime::UNIX_EPOCH,
+            later: true,
+            kind: BackgroundKind::Job,
+            owner: "s-c2".into(),
+            job,
+            command: "cargo test".into(),
+            slug: None,
+            state: "exited 0".into(),
+            produced: 0,
+            elapsed_ms: 0,
+            detail: String::new(),
+            memory: None,
+        };
+        const PER: usize = 100;
+        const THREADS: usize = 4;
+        let go = std::sync::Barrier::new(THREADS + 1);
+        std::thread::scope(|s| {
+            for t in 0..THREADS {
+                let (c2_watch, go) = (&c2_watch, &go);
+                s.spawn(move || {
+                    go.wait();
+                    for i in 0..PER {
+                        assert!(c2_watch.settle_up(settled(format!("r{round}-t{t}-{i}"))));
+                    }
+                });
+            }
+            go.wait();
+            c1_watch.stop();
+        });
+        assert_eq!(
+            root_watch.take_completions().len(),
+            THREADS * PER,
+            "round {round}: every settlement reached the root"
+        );
+        assert!(
+            c1_watch.take_completions().is_empty(),
+            "round {round}: nothing was stranded in the closed parent"
+        );
+    }
+}
+
+/// A settlement the model has been handed is not `delivered` in the store until the turn that
+/// carried it ends (or a later read shows its text is persisted): a daemon killed in between
+/// brings it back.
+#[test]
+fn a_read_settlement_is_delivered_in_the_store_only_when_its_turn_ends() {
+    let dir = std::env::temp_dir().join(format!("letibot-delivered-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("sessions.db");
+    {
+        let s = Store::open(&path).unwrap();
+        s.put_session(&letibot_tokencore::store::SessionRecord {
+            id: "s-jobs".into(),
+            title: None,
+            model_id: "m".into(),
+            dialect_sha: "sha".into(),
+            workspace_root: "/w".into(),
+            owner: "dead".into(),
+            role: None,
+            approvers: vec![],
+            parent_session_id: None,
+        })
+        .unwrap();
+    }
+    let hub = Hub::new("s-jobs");
+    let w = JobWatchers::watching_tasks(&hub, None);
+    w.record_jobs_into(path.clone(), "s-jobs".into(), "inst", None);
+    let job = JobCompletion {
+        arrived: std::time::SystemTime::UNIX_EPOCH,
+        later: false,
+        kind: BackgroundKind::Job,
+        owner: "s-jobs".into(),
+        job: "j1".into(),
+        command: "cargo test".into(),
+        slug: None,
+        state: "exited 0".into(),
+        produced: 0,
+        elapsed_ms: 0,
+        detail: String::new(),
+        memory: None,
+    };
+    let rec = JobRecorder::new(path.clone(), "s-jobs".into(), Weak::new());
+    rec.record(&job);
+    let s = Store::open(&path).unwrap();
+    let untold = || s.undelivered_jobs("s-jobs").unwrap().len();
+    assert_eq!(untold(), 1);
+
+    w.read_now(std::slice::from_ref(&job));
+    assert_eq!(untold(), 1, "read by the model, text not yet persisted");
+    w.turn_ended(TurnEnd::Done);
+    assert_eq!(untold(), 0, "the turn ended: delivered");
+    let _ = std::fs::remove_dir_all(&dir);
+}
