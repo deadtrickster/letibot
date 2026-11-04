@@ -609,3 +609,87 @@ fn a_member_reconnecting_after_a_restart_gets_a_digest_of_what_it_missed() {
     assert!(got[0].text.contains("s-talker 10"), "{}", got[0].text);
     second.stop();
 }
+
+#[test]
+fn a_short_bridge_name_is_the_one_connected_bridge_or_ambiguous() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let a1 = seat(&server, "s-a1", A, Seat::Session);
+    let one = seat(&server, "cc@app", "", Seat::External);
+
+    // One bridge: `claude-code` in `to` and `@cc` in the text both reach it, by its full name.
+    let m = said(a1.call(Request::Say {
+        id: "1".into(),
+        room: "host".into(),
+        text: "@cc look".into(),
+        to: Some("claude-code".into()),
+        thread: None,
+        refs: Vec::new(),
+    }));
+    assert_eq!(m.to.as_deref(), Some("cc@app"));
+    assert_eq!(m.text, "@cc@app look");
+    let (heard, named) = one.next();
+    assert_eq!(heard.seq, m.seq);
+    assert!(named, "the mention names the bridge");
+
+    // Two bridges: the short name is refused and lists both.
+    let two = seat(&server, "cc@web", "", Seat::External);
+    match refused(a1.say("2", "host", "@claude-code hi")) {
+        Refused::Ambiguous { candidates, .. } => {
+            assert_eq!(candidates, vec!["cc@app".to_string(), "cc@web".to_string()])
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(
+        refused(a1.call(Request::Dm {
+            id: "3".into(),
+            to: "cc".into(),
+            text: "hi".into(),
+            thread: None,
+        })),
+        Refused::Ambiguous { .. }
+    ));
+    // The full name still works, and a name already held is refused.
+    said(a1.call(Request::Dm {
+        id: "4".into(),
+        to: "cc@web".into(),
+        text: "hi".into(),
+        thread: None,
+    }));
+    drop(two);
+    let again = Client::connect_as(
+        server.path(),
+        Speaker::top_level("cc@app"),
+        room_name(&server.name(), ""),
+        Seat::External,
+        Arc::new(|_: &Event| {}),
+    );
+    assert!(
+        again
+            .err()
+            .is_some_and(|e| e.to_string().contains("already speaks")),
+        "a second `cc@app` is refused"
+    );
+}
+
+#[test]
+fn a_room_is_labelled_by_its_project_folder() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let root = dir.0.join("rano");
+    std::fs::create_dir_all(&root).unwrap();
+    let key = letibot_room::project_key(&root.display().to_string());
+    let a1 = seat(&server, "s-a1", &key, Seat::Session);
+    a1.call(Request::Members {
+        rows: Vec::new(),
+        root: root.display().to_string(),
+    });
+    let op = seat(&server, "cc@app", "", Seat::External);
+    match op.call(Request::Rooms) {
+        Response::Rooms { rows } => {
+            let row = rows.iter().find(|r| r.id.starts_with("project/")).unwrap();
+            assert_eq!(row.label, "rano");
+        }
+        other => panic!("{other:?}"),
+    }
+}
