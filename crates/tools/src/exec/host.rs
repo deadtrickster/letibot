@@ -1175,6 +1175,15 @@ impl HostProcesses {
         Some(pid)
     }
 
+    /// What a table of jobs does when one of them ends: the settled captures go back and the
+    /// finished rows past the window go with them. Called wherever a job ends, not only at the
+    /// next spawn, because a session that runs a hundred commands and then stops must not keep a
+    /// hundred rows for the rest of its life.
+    fn housekeeping(&self) {
+        self.release_settled_captures(SETTLED_CAPTURE_BUDGET);
+        self.prune_finished(KEPT_FINISHED_JOBS, FINISHED_JOB_GRACE, SystemTime::now());
+    }
+
     fn find(&self, id: &JobId) -> Option<Arc<Job>> {
         self.by_id.lock().expect("jobs by id").get(id).cloned()
     }
@@ -1409,6 +1418,9 @@ impl ProcessHost for HostProcesses {
         // the cgroup: a file the command's output cannot reach, so `joined` is OBSERVED, not read.
         let token = std::env::temp_dir().join(format!("letibot-joined-{}", id.0));
         let _ = std::fs::remove_file(&token);
+        // The waiter owns the token below; this side keeps the path for the refusal that kills a
+        // process which never joined its scope.
+        let token_path = token.clone();
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.arg("-c")
             .arg(join_script())
@@ -1618,6 +1630,10 @@ impl ProcessHost for HostProcesses {
                 // A job already marked `Killed` keeps that: a SIGKILL from a cgroup reap arrives
                 // here as a signal, and reporting the signal would lose the fact that we did it.
                 if !waiter.state().is_running() {
+                    // A job we killed is settled before the waiter sees the signal, so the
+                    // launcher's marker is not asked about. Its token goes here too: nothing else
+                    // will read it, and a file per killed job is a file per killed job in $TMPDIR.
+                    let _ = std::fs::remove_file(&token);
                     waiter.finished.notify_all();
                     return;
                 }
@@ -1684,6 +1700,9 @@ impl ProcessHost for HostProcesses {
                 .arg(pid.to_string())
                 .status();
             let _ = self.tree.end(&job.lifetime().scope);
+            // The wrapper may have written its token before it was killed: a job that never joined
+            // is still a job whose evidence file must not outlive it.
+            let _ = std::fs::remove_file(&token_path);
             return Err(ExecError::Spawn(format!(
                 "pid {pid} started but was still not a member of its cgroup after 5s; \
                  it was killed rather than left running outside any scope"
@@ -1988,6 +2007,7 @@ impl ProcessHost for HostProcesses {
                 job.state().word()
             ));
         }
+        self.housekeeping();
         Ok(self.record(r))
     }
 
@@ -2012,6 +2032,7 @@ impl ProcessHost for HostProcesses {
             *self.session.lock().expect("session scope") = None;
             *self.turn.lock().expect("turn scope") = None;
         }
+        self.housekeeping();
         Ok(self.record(r))
     }
 
@@ -3122,22 +3143,67 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         std::fs::remove_dir_all(&scratch).ok();
     }
 
+    /// The wrapper writes `$TMPDIR/letibot-joined-<id>` when it has joined its cgroup, and that
+    /// file is the evidence `joined` is read from. A job KILLED before it ends never reaches the
+    /// arm that consumes it on the way out, so the file stayed for the life of the machine: one
+    /// per killed job.
+    #[test]
+    fn a_job_killed_before_it_ends_leaves_no_join_token_behind() {
+        let root = std::env::temp_dir().join(format!("letibot-joined-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        // The plain tree, and a command that ends by itself a second later: the kill marks the
+        // job `Killed` while the process still runs, which is the state the token leaked in.
+        let h = HostProcesses::with_tree(&root, PlainTree::over(root.join("tree")));
+        let id = h
+            .spawn(&SpawnRequest {
+                command: "sleep 1".into(),
+                slug: None,
+                cwd: "/".into(),
+                scope: ScopeKind::Session,
+                scope_name: None,
+                background: true,
+                env: vec![],
+                tty: false,
+                memory: None,
+            })
+            .expect("a run starts");
+        let token = std::env::temp_dir().join(format!("letibot-joined-{}", id.0));
+        let until = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < until && !token.exists() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            token.exists(),
+            "the wrapper must have written its token, or this measures nothing: {}",
+            token.display()
+        );
+
+        let _ = h.kill_job_as(&id, "the test asking");
+        // The waiter joins the drains, finds the job already settled and returns on that arm.
+        let until = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < until && token.exists() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !token.exists(),
+            "a killed job left its evidence in $TMPDIR: {}",
+            token.display()
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// The file a backgrounded run is spilled to is read by the model with the file tools, so the
     /// token must already be gone from it. Read from the disk, not through `output`.
     #[test]
     fn a_spill_file_holds_no_secret() {
-        let Some(_) = letibot_tokencore::apparatus::present(
-            "a process-lifetime tree (cgroup v2; process groups on macOS)",
-            letibot_tools::host_tree().is_ok(),
-        ) else {
-            return;
-        };
         let token = "gho_fixtureFIXTUREfixture0000000000000000";
         let root = std::env::temp_dir().join(format!("letibot-mask-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let scratch = std::env::temp_dir().join(format!("letibot-mask-out-{}", std::process::id()));
         std::fs::create_dir_all(&scratch).unwrap();
-        let h = HostProcesses::new(&root).expect("this box has a cgroup v2 tree");
+        // The plain tree: this measures what reaches the file, not the kernel, and a fixture that
+        // skipped on a box without a delegated cgroup would be a green that measured nothing.
+        let h = HostProcesses::with_tree(&root, PlainTree::over(root.join("tree")));
         h.set_scratch_dir(&scratch);
         h.set_secret_env(crate::exec::seat::SecretEnv(vec![(
             "GH_TOKEN".into(),
@@ -3156,7 +3222,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
                 tty: false,
                 memory: None,
             })
-            .expect("a cgroup v2 tree was measured above");
+            .expect("a run starts");
         let _ = h.wait_job(&id, Duration::from_secs(30));
 
         let f = h
