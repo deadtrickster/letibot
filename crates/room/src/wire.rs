@@ -21,16 +21,41 @@ pub fn protocol_refusal(theirs: u16) -> Option<String> {
     if theirs == ROOM_PROTOCOL_VERSION {
         return None;
     }
-    let older = if theirs < ROOM_PROTOCOL_VERSION {
-        "the client"
+    let (older, how) = if theirs < ROOM_PROTOCOL_VERSION {
+        ("the client", CLIENT_UPGRADE)
     } else {
-        "this room"
+        ("this room", ROOM_UPGRADE)
     };
     Some(format!(
         "this room speaks protocol {ROOM_PROTOCOL_VERSION} and the client speaks {theirs} — {older} \
          is the older of the two, so a frame one of them does not know would be obeyed wrongly and \
-         nothing was done: upgrade {older}"
+         nothing was done: {how}"
     ))
+}
+
+/// The command that replaces an older coordinator with the installed build.
+pub const ROOM_UPGRADE: &str =
+    "restart the coordinator on the current build with `letibot --room --stop && letibot --room`";
+/// What replaces an older daemon or head.
+pub const CLIENT_UPGRADE: &str =
+    "restart the daemon on the current build with `letibot --stop`, then start `letibot` again";
+
+/// The command to add to a refusal that a coordinator of any build wrote ("this room speaks
+/// protocol X and the client speaks Y"), `None` when `why` is not that refusal.
+pub fn upgrade_hint(why: &str) -> Option<&'static str> {
+    let rest = why.split("this room speaks protocol ").nth(1)?;
+    let (room, rest) = rest.split_once(" and the client speaks ")?;
+    let room: u16 = room.trim().parse().ok()?;
+    let client: u16 = rest
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()?;
+    match room.cmp(&client) {
+        std::cmp::Ordering::Less => Some(ROOM_UPGRADE),
+        std::cmp::Ordering::Greater => Some(CLIENT_UPGRADE),
+        std::cmp::Ordering::Equal => None,
+    }
 }
 
 /// What a client sends.
@@ -146,7 +171,7 @@ pub enum Request {
         project: Option<String>,
     },
     /// The project's tree, as the daemon holding it sees it - who is in this room. The room cannot work
-    /// this out: it holds no store, and a subagent never opens a connection, so the connections are not the
+    /// this out: it keeps no tree, and a subagent never opens a connection, so the connections are not the
     /// membership either. A replacement and not a merge, because a merge would keep a session closed since.
     Members { rows: Vec<crate::tree::Member> },
     /// A tag's queue, in order - the read that makes polling unnecessary after a reconnect.

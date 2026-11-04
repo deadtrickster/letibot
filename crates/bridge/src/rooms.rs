@@ -313,15 +313,17 @@ impl RoomLink {
                 *seen = Some(now);
             }
             Some("refused") => {
+                let said = why(&first["why"]);
                 return Err(format!(
-                    "the room refused `{HANDLE}`: {}",
-                    why(&first["why"])
+                    "the room refused `{HANDLE}`: {said}{}",
+                    upgrade_note(&said)
                 ));
             }
             Some("bye") => {
+                let said = first["why"].as_str().unwrap_or("no reason given");
                 return Err(format!(
-                    "the room closed the connection: {}",
-                    first["why"].as_str().unwrap_or("no reason given")
+                    "the room closed the connection: {said}{}",
+                    upgrade_note(said)
                 ));
             }
             _ => return Err(format!("the room answered hello with {first}")),
@@ -525,6 +527,14 @@ fn write_line(w: &mut UnixStream, v: &Value) -> Result<(), String> {
 }
 
 /// A `Refused` as a sentence: its name with the fields it carries.
+/// The command that fixes a protocol skew, when `said` is one - older coordinators only say "upgrade".
+fn upgrade_note(said: &str) -> String {
+    letibot_room::wire::upgrade_hint(said)
+        .filter(|h| !said.contains(h))
+        .map(|h| format!(" - {h}"))
+        .unwrap_or_default()
+}
+
 fn why(v: &Value) -> String {
     let Some(obj) = v.as_object() else {
         return v.to_string();
