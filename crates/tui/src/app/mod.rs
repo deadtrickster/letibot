@@ -117,6 +117,9 @@ pub struct App {
     /// or [`runclick::LIVE_RUN`]; `None` is the whole run. One field, so no door can lift a run
     /// with no panel able to close it. [`App::lifted`] reads it and `runclick` writes it.
     pub(crate) lift: Option<visibility::Show>,
+    /// The open run's own tool-row fold, thrown by `/t` and a click on the run while it is up. The
+    /// transcript-wide [`App::tools`] stays untouched; closing the run puts this back.
+    pub(crate) run_tools: Fold,
     /// What this head holds of each ended job's output, by handle: the second line of a
     /// completion notice and the tail its popup shows. Filled by a `ReadJobOutput` the window
     /// sends for a notice on the screen, once per job (see `App::ask_notice_tails`).
@@ -1110,6 +1113,7 @@ impl App {
             payload_rows: Vec::new(),
             marker_rows: Vec::new(),
             lift: None,
+            run_tools: Fold::Folded,
             job_tails: Default::default(),
             term_fact: PaneFact::Unasked,
             term_ask: None,

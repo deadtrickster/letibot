@@ -1027,3 +1027,70 @@ fn esc_returns_the_fold_to_its_default() {
     );
     assert_eq!(a.reasoning, Fold::Folded, "and the fold itself is closed");
 }
+
+// ───────────────── the open run's rows: `/t`, a click, esc ─────────────────
+
+/// A run of long results opened on its tool calls, folded to the first line of each.
+fn an_open_run_of_long_results() -> App {
+    let mut a = a_run_of("one thought", 6);
+    let (x, y) = find(&a.screen(200, 60), "4 tool calls");
+    a.key(Key::Click { x: x + 1, y });
+    let open = a.screen(200, 60).join("\n");
+    assert!(open.contains("CONTENTS-0"), "{open}");
+    assert!(!open.contains("LINE-0-5"), "the rows start folded:\n{open}");
+    a
+}
+
+#[test]
+fn slash_t_on_an_open_run_unfolds_its_rows_and_keeps_it_open() {
+    let mut a = an_open_run_of_long_results();
+    assert_eq!(a.command("t"), None);
+    assert!(a.run_is_open(), "/t closed the run");
+    assert!(!a.tools.is_open(), "/t moved the transcript-wide fold");
+    let open = a.screen(200, 60).join("\n");
+    assert!(
+        open.contains("LINE-0-5"),
+        "the rows did not unfold:\n{open}"
+    );
+    // Again folds them, still open.
+    a.command("t");
+    assert!(a.run_is_open());
+    assert!(!a.screen(200, 60).join("\n").contains("LINE-0-5"));
+}
+
+#[test]
+fn a_click_on_an_open_runs_rows_unfolds_them() {
+    let mut a = an_open_run_of_long_results();
+    let (x, y) = find(&a.screen(200, 60), "CONTENTS-1");
+    a.key(Key::Click { x, y });
+    assert!(a.run_is_open(), "the click closed the run");
+    assert!(!a.tools.is_open());
+    let open = a.screen(200, 60).join("\n");
+    assert!(
+        open.contains("LINE-0-5"),
+        "the rows did not unfold:\n{open}"
+    );
+}
+
+#[test]
+fn esc_folds_an_unfolded_run_back_and_the_next_one_starts_folded() {
+    let mut a = an_open_run_of_long_results();
+    a.command("t");
+    assert_eq!(a.key(Key::Esc), None);
+    assert!(!a.run_is_open());
+    assert!(!a.screen(200, 60).join("\n").contains("LINE-0-5"));
+    let (x, y) = find(&a.screen(200, 60), "4 tool calls");
+    a.key(Key::Click { x: x + 1, y });
+    let open = a.screen(200, 60).join("\n");
+    assert!(
+        !open.contains("LINE-0-5"),
+        "the new run kept the fold:\n{open}"
+    );
+}
+
+#[test]
+fn slash_t_with_no_run_open_is_still_the_whole_fold() {
+    let mut a = a_run_of("one thought", 6);
+    a.command("t");
+    assert!(a.tools.is_open());
+}

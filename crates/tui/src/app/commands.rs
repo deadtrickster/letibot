@@ -523,6 +523,8 @@ impl App {
             }
             // `/tools` asks what this conversation can call. It used to be a second spelling of ctrl-t, which
             // already folds tool output and is the key anybody uses for it.
+            // With a run open it is that run's rows the verb unfolds, as the rows' own seams say.
+            "t" if self.flip_run_tools() => None,
             "t" => {
                 self.tools = self.tools.flip();
                 // One key for the long rows, and that includes an echo: a queued prompt is one elided headline and

@@ -87,6 +87,11 @@ impl App {
             self.open_marker(m);
             return ControlFlow::Break(None);
         }
+        // A click on the open run's rows unfolds them, as `/t` does while it is up.
+        if target == Target::Conversation && stop.is_none() && self.run_row_at(y) {
+            self.flip_run_tools();
+            return ControlFlow::Break(None);
+        }
         self.click_on(target, stop)
     }
 

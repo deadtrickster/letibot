@@ -773,6 +773,7 @@ impl App {
             note_cards,
             visibility,
             lift,
+            run_tools,
             dismissed,
             read_marks,
             absorbed,
@@ -979,7 +980,7 @@ impl App {
                                 } else {
                                     think
                                 },
-                                tools: tool,
+                                tools: if open_run { *run_tools } else { tool },
                                 raw,
                                 targets: call_targets,
                                 answered: &answered,

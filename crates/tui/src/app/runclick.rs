@@ -105,6 +105,12 @@ impl App {
     /// the lift is only ever read against `payload_sel`.
     pub(crate) fn set_lift(&mut self, show: Option<Show>, run: &str) {
         self.lift = show;
+        // A new run starts folded. The pane's rows landing is the same run, so its address moving
+        // off the sentinel keeps what was opened.
+        if self.payload_sel.as_deref() != Some(LIVE_RUN) && self.payload_sel.as_deref() != Some(run)
+        {
+            self.run_tools = Fold::Folded;
+        }
         // The panel's address and its offset are one act - see [`App::open_payload_window`],
         // which is also what `ctrl-v` opens with.
         self.open_payload_window(run.to_string());
@@ -121,12 +127,63 @@ impl App {
             return;
         }
         self.lift = None;
+        self.run_tools = Fold::Folded;
         if panel {
             self.payload_sel = None;
             self.payload_page = 0;
         }
         self.invalidate_history();
         self.redraw = true;
+    }
+
+    /// Open or fold the rows of the open run, and only those: the one writer behind `/t` and a click
+    /// on the run, so neither can reach the transcript-wide fold. A no-op when no run is up.
+    pub(crate) fn flip_run_tools(&mut self) -> bool {
+        if !self.run_is_open() {
+            return false;
+        }
+        self.run_tools = self.run_tools.flip();
+        self.invalidate_history();
+        self.redraw = true;
+        true
+    }
+
+    /// Is the screen row `y` inside the open run's rows, as the last frame drew them.
+    pub(crate) fn run_row_at(&self, y: u16) -> bool {
+        let Some(id) = self.payload_sel.as_deref().filter(|_| self.run_is_open()) else {
+            return false;
+        };
+        let Some(top) = self
+            .hits
+            .iter()
+            .find(|h| h.target == Target::Conversation)
+            .map(|h| h.rect.y)
+        else {
+            return false;
+        };
+        let Some(line) = usize::from(y).checked_sub(top).map(|r| self.view_top + r) else {
+            return false;
+        };
+        // Past the history is the live pane, which is the open run when the sentinel names it.
+        let Some(i) = self
+            .spans
+            .partition_point(|sp| sp.at <= line)
+            .checked_sub(1)
+        else {
+            return id == LIVE_RUN;
+        };
+        let sp = self.spans[i];
+        if line >= self.hist_lines.len() || line >= sp.at + sp.lines {
+            return id == LIVE_RUN;
+        }
+        crate::ui::transcript::markers::run_open_at(
+            &self.items,
+            self.visibility,
+            &self.bound_prompts,
+            self.live_work_now(),
+            Some(id),
+            sp.row,
+        )
     }
 
     /// Is the model's thinking open on the screen - one question, whichever of the two spellings holds
