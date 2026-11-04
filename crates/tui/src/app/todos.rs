@@ -434,6 +434,21 @@ impl App {
             .map(|d| d.req_id.clone())
             .unwrap_or_default();
         let question = self.open.first().is_some_and(|d| d.kind == "question");
+        // The mode card is not in `open`, so it needs its own detector: a card that appears
+        // over a half-typed line holds it, exactly as a question does, or the Enter that
+        // meant to send the line answers the card instead.
+        let mode_up = self.mode_confirm.is_some();
+        if mode_up != self.mode_up_for {
+            self.mode_up_for = mode_up;
+            self.redraw = true;
+            if mode_up && !self.editor.text().is_empty() {
+                self.hold_line();
+                self.say(
+                    "the allow-all card came up — your line is held, and comes back when the \
+                     card is answered or put away",
+                );
+            }
+        }
         if front != self.sel_for {
             self.sel_for = front.clone();
             self.sel = 0;
@@ -467,7 +482,7 @@ impl App {
                 );
             }
         }
-        if !question && let Some(held) = self.held_line.take() {
+        if !question && !mode_up && let Some(held) = self.held_line.take() {
             let now = self.editor.expanded();
             self.clear_composer();
             if now.trim().is_empty() {

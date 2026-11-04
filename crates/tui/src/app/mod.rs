@@ -546,6 +546,17 @@ pub struct App {
     /// `allow-all` and cannot be the person whose box is the boundary. It rides the same card as
     /// the person's own; what it adds is the `req_id` the answer must name and who asked.
     pub(crate) mode_asked: Option<AskedMode>,
+    /// When the card appeared: a card a frame opens sits under keys already on their way, so its
+    /// first moments take no answer. See `MODE_ARM_MS`.
+    pub(crate) mode_confirm_at: u64,
+    /// Confirmations that arrived while the card was already up. The front card owns the keys,
+    /// so a later one waits rather than silently replacing the request the screen is showing.
+    pub(crate) mode_waiting: Vec<AskedMode>,
+    /// A confirmation Esc put away: the daemon's request stays open, and alt-a brings it back.
+    pub(crate) mode_away: Option<AskedMode>,
+    /// Whether the mode card was up at the last `sync_front` - its change detector, since the
+    /// card is not in `open` and the front-card detector cannot see it arrive.
+    pub(crate) mode_up_for: bool,
     /// The new-todo card: title and detail, the composer being the field. `(title, detail,
     /// typing_the_detail)`, so the field under the cursor is never a keystroke behind. A keyboard
     /// owner like the password field, so `key` returns before the composer sees anything.
@@ -1269,6 +1280,10 @@ impl App {
             pick: None,
             mode_confirm: None,
             mode_asked: None,
+            mode_confirm_at: 0,
+            mode_waiting: Vec::new(),
+            mode_away: None,
+            mode_up_for: false,
             todo_draft: None,
             todo_template: crate::prefs::TodoTemplate::Off,
             todo_seed: Vec::new(),

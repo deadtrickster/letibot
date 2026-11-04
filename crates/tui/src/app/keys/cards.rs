@@ -4,6 +4,11 @@
 use super::*;
 use std::ops::ControlFlow;
 
+/// How long after the `allow-all` card appears its answer keys take nothing. A card a frame
+/// opens sits under keys already on their way, and the arming window is the guard that catches
+/// them: the hold and the composer guard cannot, being read only after a key has landed.
+pub(crate) const MODE_ARM_MS: u64 = 500;
+
 impl App {
     /// The `allow-all` confirmation owns the keyboard, as the password field does: a question this
     /// consequential must not be answered by a key aimed at the composer. `y` and Enter both
@@ -15,6 +20,24 @@ impl App {
                 Key::Click { .. } => return ControlFlow::Break(None),
                 _ => {}
             }
+            // The card opens asynchronously, from another head's frame, so an Enter on its
+            // heels can be the keystroke that sent the line the operator was typing. Words in
+            // the composer hold it back, and so does the card's first moments (MODE_ARM_MS).
+            if matches!(k, Key::Enter | Key::Char('y') | Key::Char('Y')) {
+                if !self.editor.text().is_empty() {
+                    self.say(
+                        "the composer has words in it — clear them (ctrl-c) to answer, or esc puts \
+                         the card away",
+                    );
+                    self.redraw = true;
+                    return ControlFlow::Break(None);
+                }
+                if self.now_ms.saturating_sub(self.mode_confirm_at) < MODE_ARM_MS {
+                    self.say("the card just came up — press enter again to answer it");
+                    self.redraw = true;
+                    return ControlFlow::Break(None);
+                }
+            }
             let name = self.mode_confirm.take().unwrap();
             // Which card this was decides which frame goes out: the operator's own `/mode allow-all`
             // is a point THEY asked for and goes as `Mode { consented }`, while a card another head
@@ -22,7 +45,7 @@ impl App {
             let asked = self.mode_asked.take();
             self.redraw = true;
             let yes = matches!(k, Key::Char('y') | Key::Char('Y') | Key::Enter);
-            return ControlFlow::Break(match (asked, yes) {
+            let out = match (asked, yes) {
                 (Some(asked), yes) => {
                     self.say(if yes {
                         "allow-all confirmed for this session"
@@ -45,7 +68,11 @@ impl App {
                     self.say("allow-all cancelled — the mode did not change");
                     None
                 }
-            });
+            };
+            // A confirmation waiting behind this one takes the slot now: the queue exists so
+            // the front card is never silently replaced, and the drain is what keeps it moving.
+            self.bring_next_mode_card();
+            return ControlFlow::Break(out);
         }
         ControlFlow::Continue(())
     }

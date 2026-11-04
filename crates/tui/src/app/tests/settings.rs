@@ -368,7 +368,9 @@ fn allow_all_asks_before_it_is_sent_and_nothing_else_does() {
     assert!(screen.contains("privilege escalation"), "{screen}");
     assert!(screen.contains("[y] or [enter] confirm"), "{screen}");
 
-    // `y` sends it, with the operator's answer on the frame.
+    // `y` sends it, with the operator's answer on the frame - past the card's arming
+    // window, which is the guard for keys that were on their way before it appeared.
+    a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
     assert_eq!(
         a.key(Key::Char('y')),
         Some(Action::Mode {
@@ -389,6 +391,7 @@ fn enter_confirms_the_allow_all_card_like_every_other_card() {
         a.apply(mode_settings("always-ask", &["always-ask", "allow-all"]));
         assert_eq!(a.take_mode("allow-all".into()), None);
         let named = format!("{k:?}");
+        a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
         assert_eq!(
             a.key(k),
             Some(Action::Mode {
@@ -434,6 +437,7 @@ fn the_wheel_and_a_click_leave_the_allow_all_card_standing() {
         assert_eq!(a.key(k), None, "{named} sent the mode");
         assert!(a.mode_confirm.is_some(), "{named} answered the question");
     }
+    a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
     assert_eq!(
         a.key(Key::Char('y')),
         Some(Action::Mode {
@@ -441,6 +445,151 @@ fn the_wheel_and_a_click_leave_the_allow_all_card_standing() {
             consented: true
         })
     );
+}
+
+/// The card opens asynchronously, from another head's frame, so the Enter that was on its way
+/// can be the keystroke that meant to send the line the operator was typing. The card's first
+/// moments take no answer and say so; past them, Enter is the deliberate key it always was.
+#[test]
+fn the_cards_first_moments_take_no_enter() {
+    let mut a = App::new(plain_cfg(120));
+    a.apply(mode_settings("always-ask", &["always-ask", "allow-all"]));
+    a.session_id = "s-1".into();
+    a.apply(ServerFrame::ModeConfirm {
+        session_id: "s-1".into(),
+        req_id: "h2:req-1".into(),
+        name: "allow-all".into(),
+        asked_by: "mcp".into(),
+    });
+    assert_eq!(a.key(Key::Enter), None, "enter on the card's heels answered it");
+    assert!(a.mode_confirm.is_some(), "the card did not stay up");
+    assert!(
+        a.notice.as_deref().is_some_and(|n| n.contains("just came up")),
+        "the refusal must say what to do"
+    );
+    a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
+    assert_eq!(
+        a.key(Key::Enter),
+        Some(Action::ModeConsent {
+            req_id: "h2:req-1".into(),
+            yes: true
+        })
+    );
+}
+
+/// Enter keeps the quit card's guard: words in the composer are a line being written, and the
+/// card takes no answer until they are gone. The hold empties the composer when the card comes
+/// up, so the guard is asked here below `sync_front` - it is the layer under the hold, and the
+/// hold is what makes it unreachable from the keys.
+#[test]
+fn enter_over_words_in_the_composer_does_not_answer_the_card() {
+    let mut a = App::new(plain_cfg(120));
+    a.apply(mode_settings("always-ask", &["always-ask", "allow-all"]));
+    assert_eq!(a.take_mode("allow-all".into()), None);
+    a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
+    a.set_composer("one more thing");
+    assert!(
+        matches!(a.key_mode_confirm(&Key::Enter), std::ops::ControlFlow::Break(None)),
+        "enter over words answered the card"
+    );
+    assert!(a.mode_confirm.is_some(), "the card did not stay up");
+    assert!(a.notice.as_deref().is_some_and(|n| n.contains("words in it")));
+    a.set_composer("");
+    assert_eq!(
+        a.key(Key::Char('y')),
+        Some(Action::Mode {
+            name: "allow-all".into(),
+            consented: true
+        })
+    );
+}
+
+/// A card that arrives over a half-typed line holds it, as a question does, and gives it back
+/// when the card is answered: the Enter that meant to send the line must never confirm allow-all.
+/// The card arrives as a frame - another head's ask - which is the door that finds words typed.
+#[test]
+fn the_card_holds_the_line_the_operator_was_typing() {
+    let mut a = App::new(plain_cfg(120));
+    a.apply(mode_settings("always-ask", &["always-ask", "allow-all"]));
+    a.session_id = "s-1".into();
+    typed(&mut a, "one more thing");
+    a.apply(ServerFrame::ModeConfirm {
+        session_id: "s-1".into(),
+        req_id: "h2:req-1".into(),
+        name: "allow-all".into(),
+        asked_by: "mcp".into(),
+    });
+    assert_eq!(
+        a.held_line.as_deref(),
+        Some("one more thing"),
+        "the line went with the card"
+    );
+    assert!(a.editor.text().is_empty());
+    a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
+    assert_eq!(
+        a.key(Key::Char('n')),
+        Some(Action::ModeConsent {
+            req_id: "h2:req-1".into(),
+            yes: false
+        })
+    );
+    assert!(a.mode_confirm.is_none());
+    assert_eq!(
+        a.editor.text(),
+        "one more thing",
+        "the held line did not come back with the card's answer"
+    );
+}
+
+/// A second confirmation must not silently replace the first: the card on the screen owns the
+/// keys, so the request behind it waits, and takes the slot when the front one is answered.
+#[test]
+fn a_second_confirmation_waits_behind_the_card_in_front() {
+    let mut a = App::new(plain_cfg(120));
+    a.apply(mode_settings("writes allowed", &["writes allowed", "allow-all"]));
+    a.session_id = "s-1".into();
+    for req in ["h2:req-1", "h2:req-2"] {
+        a.apply(ServerFrame::ModeConfirm {
+            session_id: "s-1".into(),
+            req_id: req.into(),
+            name: "allow-all".into(),
+            asked_by: "mcp".into(),
+        });
+    }
+    assert_eq!(
+        a.mode_asked.as_ref().map(|m| m.req_id.as_str()),
+        Some("h2:req-1"),
+        "the second request replaced the card the screen was showing"
+    );
+    assert_eq!(a.mode_waiting.len(), 1, "the second request was dropped");
+    assert!(a.notice.as_deref().is_some_and(|n| n.contains("waiting behind")));
+
+    // Answering the front card settles ITS id, and the waiting one takes the slot.
+    a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
+    assert_eq!(
+        a.key(Key::Char('n')),
+        Some(Action::ModeConsent {
+            req_id: "h2:req-1".into(),
+            yes: false
+        })
+    );
+    assert_eq!(
+        a.mode_asked.as_ref().map(|m| m.req_id.as_str()),
+        Some("h2:req-2"),
+        "the waiting request did not come up"
+    );
+    assert!(a.mode_confirm.is_some());
+
+    // And it answers by its own id, past its own arming window.
+    a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
+    assert_eq!(
+        a.key(Key::Char('y')),
+        Some(Action::ModeConsent {
+            req_id: "h2:req-2".into(),
+            yes: true
+        })
+    );
+    assert!(a.mode_confirm.is_none() && a.mode_asked.is_none());
 }
 
 /// A confirmation the DAEMON raised - another head asked for `allow-all` - is the same card,
@@ -469,7 +618,9 @@ fn a_confirmation_another_head_asked_for_is_the_same_card_answered_by_its_id() {
         "the card does not say who asked: {screen}"
     );
 
-    // `y` answers THE REQUEST, not a point the head invented.
+    // `y` answers THE REQUEST, not a point the head invented - past the arming window,
+    // which holds the card's first moments against keys pressed before it appeared.
+    a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
     assert_eq!(
         a.key(Key::Char('y')),
         Some(Action::ModeConsent {
@@ -544,6 +695,7 @@ fn a_confirmation_another_head_asked_for_is_the_same_card_answered_by_its_id() {
         a.mode_asked.is_none(),
         "the daemon's request rode the operator's card"
     );
+    a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
     assert_eq!(
         a.key(Key::Char('y')),
         Some(Action::Mode {
@@ -743,6 +895,7 @@ fn the_mode_picker_moves_with_arrows_and_enter_takes_the_marked_row() {
     // what sends it - see `allow_all_asks_before_it_is_sent_and_nothing_else_does`.
     assert_eq!(a.key(Key::Enter), None);
     assert!(a.pick.is_none(), "taking a mode closes the list");
+    a.now_ms += crate::app::keys::MODE_ARM_MS + 1;
     assert_eq!(
         a.key(Key::Char('y')),
         Some(Action::Mode {

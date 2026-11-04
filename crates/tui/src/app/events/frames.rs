@@ -7,6 +7,31 @@ use letibot_sessionlog::protocol::ServerFrame;
 use letibot_sessionlog::view::Warned;
 
 impl App {
+    /// Put the `allow-all` card up, from either door: the operator's own `/mode allow-all` or a
+    /// frame another head asked for. One door so the arming clock is always set - a card that
+    /// forgot it would answer keys pressed before the operator ever saw it.
+    pub(crate) fn open_mode_card(&mut self, name: String, asked: Option<AskedMode>) {
+        self.mode_confirm = Some(name);
+        self.mode_asked = asked;
+        self.mode_confirm_at = self.now_ms;
+        self.redraw = true;
+    }
+
+    /// Take the next waiting confirmation into the slot, if the slot is empty. Called wherever
+    /// the front card leaves, so a queued request never waits on a card nobody is reading.
+    pub(crate) fn bring_next_mode_card(&mut self) {
+        if self.mode_confirm.is_some() {
+            return;
+        }
+        let Some(next) = self.mode_waiting.first().cloned() else {
+            return;
+        };
+        self.mode_waiting.remove(0);
+        let name = next.name.clone();
+        self.open_mode_card(name, Some(next));
+        self.say("another allow-all confirmation came up");
+    }
+
     /// A confirmation of `allow-all` that another head asked for, and how it ended. The daemon posts
     /// it to every head that may decide except the asker, and it raises the same card the operator's
     /// own `/mode allow-all` raises; `ModeSettled` is that card going away, whoever answered.
@@ -19,13 +44,26 @@ impl App {
                 asked_by,
             } => {
                 if session_id == self.session_id {
-                    self.mode_confirm = Some(name.clone());
-                    self.mode_asked = Some(AskedMode {
-                        req_id,
-                        by: asked_by,
-                        name,
-                    });
-                    self.redraw = true;
+                    if self.mode_confirm.is_some() {
+                        // The front card owns the keyboard, so a second request must not
+                        // silently replace it: one keystroke would settle the wrong id.
+                        self.mode_waiting.push(AskedMode {
+                            req_id,
+                            by: asked_by,
+                            name,
+                        });
+                        self.say("another allow-all confirmation is waiting behind this card");
+                        self.redraw = true;
+                    } else {
+                        self.open_mode_card(
+                            name.clone(),
+                            Some(AskedMode {
+                                req_id,
+                                by: asked_by,
+                                name,
+                            }),
+                        );
+                    }
                 }
                 Disposition::Control
             }
@@ -45,6 +83,13 @@ impl App {
                     // a request nobody can settle any more.
                     self.mode_asked = None;
                     self.mode_confirm = None;
+                    self.redraw = true;
+                    self.bring_next_mode_card();
+                }
+                // A card Esc put away can also be the one settled: the request is over for
+                // this head too, and alt-a must not bring a finished question back.
+                if self.mode_away.as_ref().is_some_and(|a| a.req_id == req_id) {
+                    self.mode_away = None;
                     self.redraw = true;
                 }
                 if session_id == self.session_id && mine {

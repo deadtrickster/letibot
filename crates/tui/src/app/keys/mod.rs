@@ -7,6 +7,7 @@ use letibot_ui::editor::Reaction;
 
 pub(crate) mod bindings;
 mod cards;
+pub(crate) use cards::MODE_ARM_MS;
 mod chords;
 mod input;
 mod mouse;

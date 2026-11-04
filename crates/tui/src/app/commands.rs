@@ -57,12 +57,10 @@ impl App {
         // The literal, not `Mode::ALLOW_ALL.name`: the head does not link `letibot-tools` and keeps no
         // mode list, and this is the one name it has to recognise.
         if name == "allow-all" {
-            self.mode_confirm = Some(name);
             // This card is the operator's own, so nothing another head asked for may still
             // be riding it: an answer that carried a stale request id would settle somebody
             // else's question with this person's keystroke.
-            self.mode_asked = None;
-            self.redraw = true;
+            self.open_mode_card(name, None);
             return None;
         }
         Some(Action::Mode {
