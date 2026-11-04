@@ -1,10 +1,6 @@
-//! §5.8: messages that arrive while the model is generating.
-//!
-//! Queuing until the turn ends is wrong for the common case, because the message is usually a
-//! correction and waiting wastes the generation it was correcting; interrupting immediately
-//! truncates a partial turn. So a message is injected at the next step boundary, and one
-//! flagged `urgent` interrupts at the next token with its partial output kept and marked
-//! truncated. Steering never rewrites or reorders anything already in the vector.
+//! Messages that arrive while the model is generating. A message is injected at the next step
+//! boundary; one flagged `urgent` interrupts at the next token with its partial output kept and
+//! marked truncated. Steering never rewrites or reorders what is already in the vector.
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -46,7 +42,7 @@ impl SteeringMessage {
         }
     }
 
-    /// **A delivery, not words**: what the harness learned while the turn ran - a monitor firing.
+    /// A delivery, not words: what the harness learned while the turn ran - a monitor firing.
     /// Its row is a `Notice`, so no reader has to decide whose words it is.
     pub fn notice(text: impl Into<String>) -> Self {
         SteeringMessage {
@@ -85,7 +81,7 @@ impl SteeringMessage {
         }
     }
 
-    /// **The operator's words with what they attached** — the same message, with the parts a
+    /// The operator's words with what they attached - the same message, with the parts a
     /// picture or a file became. See [`SteeringMessage::extra`].
     pub fn operator_with(text: impl Into<String>, extra: Vec<UserPart>) -> Self {
         SteeringMessage {
@@ -109,10 +105,9 @@ impl SteeringMessage {
         }
     }
 
-    /// The transcript item this message becomes: a plain `User` item with exactly its own text, or
-    /// a `Notice` when it is a delivery. No tool envelope, no wrapper, no bookkeeping - an inbound
-    /// message must cost exactly its own tokens, and that regresses the first time somebody adds
-    /// "helpful" metadata here.
+    /// The transcript item this message becomes: a plain `User` item with exactly its own text,
+    /// or a `Notice` for a delivery. No envelope or metadata - an inbound message must cost
+    /// exactly its own tokens.
     pub fn to_item(&self) -> TranscriptItem {
         if let Some(kind) = self.notice {
             return TranscriptItem::Notice {
@@ -130,7 +125,7 @@ impl SteeringMessage {
                 letibot_transcript::Speaker::Agent
             },
             parts: {
-                // **The words first, and as ONE part** — that is what the head's echo is
+                // The words first, and as ONE part - that is what the head's echo is
                 // matched against (`row_says` joins the text parts, and `retire_pending`
                 // spends the row's first lines), so an attachment must never split them.
                 let mut parts = vec![UserPart::Text {
@@ -260,7 +255,7 @@ impl Pending {
         // source, so a take-back that arrived after it cannot reach it, and an interrupt is not
         // something the operator withdraws by editing a line.
         if let Some(u) = self.urgent.take() {
-            // The source is still drained: this early return used to skip `try_next` on every
+            // The source is still drained: an early return would skip `try_next` on every
             // poll, so a prompt typed behind a long call could not be absorbed at all while an
             // urgent was held. The held one still goes first, and a new urgent is held again.
             if let Some(found) = self.drain(source) {
@@ -291,8 +286,8 @@ impl Pending {
             {
                 last.text.push('\n');
                 last.text.push_str(&m.text);
-                // **And the parts come along**, or a prompt typed behind another one
-                // would lose its picture at the boundary — the merge keeps one item, so
+                // And the parts come along, or a prompt typed behind another one
+                // would lose its picture at the boundary - the merge keeps one item, so
                 // it has to keep everything that item was going to be.
                 last.extra.extend(m.extra);
             } else {
@@ -374,9 +369,8 @@ mod tests {
         assert_eq!(text, "the spec changed - RFC 2812 rather than 1459");
     }
 
-    /// A held urgent must not starve the source: the early return used to be taken on every
-    /// poll, so `try_next` was never reached again and a prompt typed behind a long call could
-    /// not be absorbed at all. This is the promise the docstring already made.
+    /// A held urgent must not starve the source: an early return on every poll
+    /// would never reach `try_next` again, so a prompt typed behind a long call is never absorbed.
     #[test]
     fn a_held_urgent_does_not_starve_the_source() {
         let mut src = Fixed(vec![
@@ -391,8 +385,8 @@ mod tests {
         assert_eq!(u.text, "ABORT");
         pending.hold_urgent(u);
 
-        // **THE NEXT POLL MUST STILL REACH THE SOURCE.** It returns the held urgent (it came first),
-        // and it drains what is behind it — which is the operator's prompt.
+        // THE NEXT POLL MUST STILL REACH THE SOURCE. It returns the held urgent (it came first),
+        // and it drains what is behind it - which is the operator's prompt.
         let again = pending
             .absorb(&mut src)
             .expect("the held one is still returned");

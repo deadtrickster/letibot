@@ -4,7 +4,7 @@
 //! # The failure this exists to stop being opaque
 //!
 //! The live tests in this workspace tokenise locally, against a GGUF named in the
-//! config, and post token **ids**. Three model services on this box are singletons
+//! config, and post token ids. Three model services on this box are singletons
 //! that evict each other and have shared a port, so the model behind `:8080` is
 //! whichever one was started last. Point qwen's vocabulary at GLM and the ids are
 //! simply out of range - qwen-3.8-flash-next has 248,320 tokens and GLM-5.3-Flash
@@ -24,7 +24,7 @@
 //!
 //! Same discipline as the live tests themselves: a test that quietly passes when
 //! its model is absent reports the health of a `TcpStream::connect`. [`expect`]
-//! **panics**, and it panics with the served model, the expected model, and the one
+//! panics, and it panics with the served model, the expected model, and the one
 //! command that fixes it.
 
 use crate::http::{self, Endpoint};

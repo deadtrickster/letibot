@@ -1,11 +1,6 @@
-//! The decisions the engine makes about what it received.
-//!
-//! These run against a canned server rather than the live one, because each is a case the live
-//! server cannot be asked to produce without breaking a rule: `length` needs a cap §5.7 removed,
-//! repetition collapse needs a collapsing model, and a prefix violation needs a broken harness.
-//! Replaying the bytes is the same test with the model replaced by the case.
-//!
-//! They still use the real vocabulary, the real tokenizer, the real ledger and the real memfd.
+//! The decisions the engine makes about what it received, against a canned server because the
+//! live one cannot produce them: `length`, repetition collapse, a prefix violation.
+//! Real vocabulary, tokenizer, ledger and memfd; only the model is replaced by the case.
 
 mod support {
     pub mod canned;
@@ -136,7 +131,7 @@ fn deltas(sink: &RecordingSink) -> Vec<(DeltaTarget, &str)> {
         .collect()
 }
 
-/// A turn shaped exactly like the live one T12 was measured on: the generation
+/// A turn shaped exactly like a live one: the generation
 /// prompt has already opened `<think>`, the model thinks, closes the block, answers
 /// and ends the turn.
 fn a_thinking_turn(thought: &[u32], answer: &[u32]) -> Vec<Frame> {
@@ -161,7 +156,7 @@ fn a_thinking_turn(thought: &[u32], answer: &[u32]) -> Vec<Frame> {
 // §5.7 - the nine unnoticed rows, end to end through the engine
 // --------------------------------------------------------------------------
 
-/// A turn that spends its whole budget thinking and hits the limit is a **failed**
+/// A turn that spends its whole budget thinking and hits the limit is a failed
 /// turn, and nothing about it is committed.
 #[test]
 fn a_reasoning_only_length_turn_fails_and_leaves_the_region_untouched() {
@@ -316,7 +311,7 @@ fn a_turn_that_stops_inside_its_own_reasoning_is_not_an_empty_success() {
 }
 
 /// The mirror case, so the check is not a tripwire on every thoughtful turn: the
-/// block **closes**, content follows, and the same stop is an ordinary success.
+/// block closes, content follows, and the same stop is an ordinary success.
 #[test]
 fn a_turn_that_closes_its_reasoning_and_says_something_still_succeeds() {
     let _lock = serial();
@@ -427,7 +422,7 @@ fn a_truncated_tool_argument_refuses_the_entire_batch() {
                 2,
                 "both calls are told, not just the bad one"
             );
-            // R93.D3: what to do, in the words the model now reads.
+            // what to do, in the words the model now reads.
             assert!(
                 notices
                     .iter()
@@ -1359,7 +1354,7 @@ fn the_body_of_a_tool_call_is_never_announced_as_assistant_text() {
 }
 
 // --------------------------------------------------------------------------
-// T23 - a frame that does not account for its own advance
+// A frame that does not account for its own advance
 // --------------------------------------------------------------------------
 
 /// Build the script for a turn the server drops one token out of the middle of.
@@ -1463,7 +1458,7 @@ fn a_suppressed_token_costs_the_tail_of_a_turn_and_not_the_whole_of_it() {
         "the wrong reading, and the opposite remedy: {reason}"
     );
 
-    // The evidence T23 asked for, on disk, verbatim.
+    // The evidence, on disk, verbatim.
     let path = sink
         .warnings()
         .iter()
@@ -1619,7 +1614,7 @@ fn a_stopped_thought_costs_the_next_turn_a_sentence_not_the_thought() {
             unreachable!()
         };
         assert!(*truncated, "and marked: {text:?}");
-        // **The record keeps the whole thing.** This is a projection, not a
+        // The record keeps the whole thing. This is a projection, not a
         // deletion: the store, a resume and any later reader still see it.
         assert!(
             text.contains("+ 0"),
@@ -1763,7 +1758,7 @@ fn an_unreached_provider_is_an_io_failure_and_not_a_malformed_answer() {
 }
 
 // --------------------------------------------------------------------------
-// R91.14 - an interrupt taken at the end of a successful round
+// An interrupt taken at the end of a successful round
 // --------------------------------------------------------------------------
 
 /// A provider that speaks one line and finishes cleanly.

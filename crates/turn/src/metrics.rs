@@ -1,11 +1,6 @@
-//! `turn_metrics`: one row per request.
-//!
-//! `cached_tokens` comes from `timings.cache_n`, never from `tokens_cached`: the first is
-//! prompt tokens reused, the second is the slot's occupancy after generation, and reading
-//! occupancy as reuse would have reported this box's first cold turn as 114% cached.
-//!
-//! `cost.micros_usd` is `None` under `WallClock`, never zero, and `f_keep` and `f_sim` are not
-//! interchangeable: only `f_keep` is indifferent to how much the conversation grew.
+//! `turn_metrics`: one row per request. `cached_tokens` is `timings.cache_n` (prompt tokens
+//! reused), never `tokens_cached` (slot occupancy). `cost.micros_usd` is `None` under
+//! `WallClock`, never zero. `f_keep` and `f_sim` differ: only `f_keep` ignores conversation growth.
 
 use letibot_backend::{Meter, TurnCost};
 
@@ -16,7 +11,7 @@ use crate::prefix::PrefixCheck;
 pub struct TurnMetrics {
     pub turn_id: String,
     pub model: String,
-    /// The dialect's identity, which §4.4 makes the `template_sha` — so a model
+    /// The dialect's identity, which §4.4 makes the `template_sha` - so a model
     /// update that changes the template shows up as a different dialect rather
     /// than as an unexplained cache miss.
     pub dialect_template_sha: String,
@@ -33,7 +28,7 @@ pub struct TurnMetrics {
     /// With only our own count the C10 identity is a tautology rather than a measurement; when
     /// the server's number differs from ours, the prompt it counted is not the one we built.
     pub prompt_tokens_server: u64,
-    /// Prompt tokens the server prefilled this turn — the complement of
+    /// Prompt tokens the server prefilled this turn - the complement of
     /// `cached_tokens`, from the server rather than from subtraction.
     pub prompt_processed: u64,
 
@@ -48,7 +43,7 @@ pub struct TurnMetrics {
     pub id_slot: i64,
 
     /// §18.2's trap: "a tok/s number without its concurrency is not a number".
-    /// `None` when the harness did not look — absent rather than an invented 1.
+    /// `None` when the harness did not look - absent rather than an invented 1.
     pub n_busy_slots: Option<u32>,
 
     /// §18.1-I1, computed for this turn against the previous one.
@@ -192,8 +187,8 @@ mod tests {
         assert_eq!(metrics(100, 90).f_sim(), Some(0.9));
     }
 
-    /// D11: `f_keep`'s denominator is the entry we left in the cache, so it does
-    /// not move when the conversation grows. T22's worked example, both ways.
+    /// `f_keep`'s denominator is the entry we left in the cache, so it does
+    /// not move when the conversation grows. Worked both ways.
     #[test]
     fn f_keep_is_indifferent_to_growth_and_f_sim_is_not() {
         // A perfect turn: the whole 9,000-token entry came back, and the prompt

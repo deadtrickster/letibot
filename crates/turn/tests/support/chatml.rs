@@ -1,15 +1,14 @@
-//! A **test fixture**, not a dialect.
+//! A test fixture, not a dialect.
 //!
 //! # Read this before reusing anything in this file
 //!
 //! The box serves `qwen-3.8-flash-next` on 8080 and GLM is not running. We have a
-//! verified GLM renderer and no Qwen renderer, and T1 settled that the real one
-//! will be template-driven (the model's shipped jinja through minijinja) - building
+//! verified GLM renderer and no Qwen renderer, and the real one will be template-driven (the model's shipped jinja through minijinja) - building
 //! a second hand-written renderer is explicitly *not* this strand's work.
 //!
 //! So this is the smallest thing that makes the engine's own pipeline exercisable
 //! against a live model: enough ChatML to produce tokens Qwen recognises. It is
-//! **not** claimed to be byte-exact with Qwen's shipped template, it is not in the
+//! not claimed to be byte-exact with Qwen's shipped template, it is not in the
 //! fidelity gate, and it must never be promoted out of `tests/`. It lives here
 //! rather than in the library precisely so that promoting it takes a deliberate
 //! move rather than an import.

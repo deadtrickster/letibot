@@ -1,12 +1,6 @@
-//! A one-shot HTTP server that replays a fixed list of SSE frames.
-//!
-//! Three of the engine's decisions cannot be provoked against the real server: `length` needs an
-//! `n_predict` cap §5.7 removed, repetition collapse needs a model that is collapsing, and a
-//! prefix violation needs the harness to be broken. Every one is a decision about bytes the
-//! engine received, so replaying the bytes is the same test with the model replaced by the case.
-//!
-//! The frames are in the server's own wire shape, including the empty `tokens` array on the
-//! terminal frame and the fabricated id 0 on a progress frame.
+//! A one-shot HTTP server that replays a fixed list of SSE frames, for decisions the real
+//! server cannot be made to produce: `length`, repetition collapse, a prefix violation.
+//! Frames use the server's wire shape, including the empty terminal `tokens` and id 0 on progress.
 
 // A fixture, not a library: nineteen test binaries include this file by path and each uses the
 // part of it that binary's subject needs, so the rest is dead in that compilation and alive in
@@ -21,7 +15,7 @@ use letibot_turn::Endpoint;
 
 /// A frame the canned server will send.
 pub enum Frame {
-    /// A progress frame — carries `tokens: [0]`, exactly as llama.cpp does.
+    /// A progress frame - carries `tokens: [0]`, exactly as llama.cpp does.
     Progress { total: u64, processed: u64 },
     /// One generated token.
     Token { id: u32, text: &'static str },
@@ -86,7 +80,7 @@ impl Canned {
         Canned::serve_replies(scripts.into_iter().map(Reply::Frames).collect(), requests)
     }
 
-    /// A different REPLY per request — frames for the turns that answer, a
+    /// A different REPLY per request - frames for the turns that answer, a
     /// status for the ones the provider refuses.
     pub fn serve_replies(scripts: Vec<Reply>, requests: usize) -> Canned {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
@@ -97,8 +91,8 @@ impl Canned {
                     return;
                 };
                 let script = &scripts[i % scripts.len()];
-                // A client that closes early — a guard trip, an urgent steering
-                // message — makes these writes fail. That is the abort working, not
+                // A client that closes early - a guard trip, an urgent steering
+                // message - makes these writes fail. That is the abort working, not
                 // an error.
                 let _ = answer(stream, script);
             }

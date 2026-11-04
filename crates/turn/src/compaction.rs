@@ -1,8 +1,6 @@
-//! Compaction is one more turn, not a special shape: a turn's prompt is the
-//! ledger's whole token region, so appending the instruction as a
-//! [`TranscriptItem`] and running a normal turn asks for the summary over a prefix
-//! the server is already holding. [`CompactionOutcome`] carries the measured reuse
-//! so a caller discloses it rather than assuming it.
+//! Compaction is one more turn: the ledger's whole token region is the prompt, so appending the
+//! instruction as a [`TranscriptItem`] asks for the summary over a prefix the server holds.
+//! [`CompactionOutcome`] carries the measured reuse.
 
 //! The log - the ledger and its items - is the record of what was said, and it is
 //! the truth. The KV cache is an optimisation a server process holds: per-slot,
@@ -92,23 +90,18 @@ pub const SUMMARY_SECTIONS: [&str; 8] = [
 pub const UNFINISHED_REASONING_NOTICE: &str = "\
 Your reply ended inside reasoning with no output. Write the summary now.";
 
-/// **How much of the room a record may claim**, in per-mille of `window - prefix - headroom`.
-///
-/// R22's measured failure: a 1,353,917-token conversation became a 2,250-token record, 600:1, on a
-/// session whose window left ~1.34M to share. Nothing truncated it - the instruction named no
-/// budget at all - so the record is sized by a stated fraction now rather than by the model's
-/// guess. At 150 the record takes 15% of the room and the session keeps 85% of its window before
-/// it compacts again.
+/// How much of the room a record may claim, in per-mille of `window - prefix - headroom`.
+/// A stated fraction sizes the record, because the model's guess produced a tiny one. At 150
+/// the record takes 15% of the room.
 pub const SUMMARY_FIDELITY_PER_MILLE: u64 = 150;
 
 /// The least a budget may be, so a small window still buys a record that can enumerate something.
 /// Never above what the summary turn can actually write - see [`summary_budget`].
 pub const MIN_SUMMARY_TOKENS: u64 = 2_000;
 
-/// What the ASK itself costs in the summary turn's own room: the instruction is appended after the
-/// conversation and its tokens compete with the record's for the window. An allowance rather than a
-/// measurement, because the ask is not tokenized until it is appended and 2k against an ask of
-/// about 700 errs on the side of a record that fits.
+/// What the ask itself costs in the summary turn's room: the instruction is appended after the
+/// conversation and competes with the record for the window. An allowance, since the ask is
+/// not tokenized until appended; 2k against about 700 errs toward a record that fits.
 pub const ASK_ROOM: u64 = 2_000;
 
 /// Characters per token, for the one line that tells a model its room in characters: a model
@@ -173,16 +166,9 @@ impl SummaryBudget {
     }
 }
 
-/// The budget for one compaction of a session at `resident` ledger tokens.
-///
-/// `window`, `prefix_tokens`, `headroom` and `resident` are all in the same unit - the ledger's -
-/// because that is the unit every caller measures in (`Config::planning_window`).
-///
-/// **The turn's own free room is a bound as well as the ratio, and it is the bound that usually
-/// wins.** A compaction fires AT the wall, so `window - resident` is about one headroom, and a
-/// record asked to fill 15% of a 1.34M room would be a generation of 200k tokens into 90k of free
-/// context. Asking for that is asking for a cut record on every compaction; the honest budget is
-/// the smaller of the two, and the report says which.
+/// The budget for one compaction of a session at `resident` ledger tokens, all in the ledger's
+/// unit (`Config::planning_window`). A compaction fires at the wall, so the turn's free room
+/// bounds the record as well as the ratio. The smaller wins, and the report says which.
 pub fn summary_budget(
     window: u64,
     prefix_tokens: u64,
@@ -208,10 +194,9 @@ pub fn summary_budget(
     }
 }
 
-/// **The words a verbatim tail will carry**, for the fidelity gate: what a reader of the new base
-/// can still read. A tool call is included by its argument text, because that is where the path or
-/// the command lives - a tail whose call was counted as a fact it does not carry would be re-asked
-/// for something already in the base.
+/// The words a verbatim tail will carry, for the fidelity gate. A tool call is included by
+/// its argument text, where the path or command lives, so the tail is not re-asked for
+/// something already in the base.
 pub fn carried_text(items: &[TranscriptItem]) -> String {
     let mut out = String::new();
     for item in items {
@@ -254,14 +239,9 @@ pub fn carried_text(items: &[TranscriptItem]) -> String {
     out
 }
 
-/// **The instruction for a record that has a size**, which is the compaction that runs almost
-/// always. [`SUMMARY_INSTRUCTION`] stays exactly as it was for the overrun halves, whose fold R22
-/// deliberately left alone: there the failure is that the conversation does not fit in front of
-/// the window, and the budget is `WRITE_ROOM` rather than a share of anything.
-///
-/// Two texts rather than one, because a budget belongs to the path that has one - and one test
-/// holds the two together on the sections, which is the part a reader depends on
-/// (`the_two_instructions_ask_for_the_same_sections`).
+/// The instruction for a record that has a size, which is almost every compaction.
+/// [`SUMMARY_INSTRUCTION`] stays for the overrun halves, whose budget is `WRITE_ROOM`. One test
+/// holds the two to the same sections (`the_two_instructions_ask_for_the_same_sections`).
 pub fn summary_instruction(budget: &SummaryBudget) -> String {
     format!(
         "\
@@ -337,7 +317,7 @@ Answer with the record and nothing else.",
 mod the_record_has_a_size {
     use super::*;
 
-    /// R22's own session, in the units the decision was made in: a 1,440,006-token window, a
+    /// A real session, in ledger units: a 1,440,006-token window, a
     /// 9,103-token prompt, a headroom of a sixteenth of it, and 1,352,917 tokens resident when the
     /// compaction fired. The record it produced was 2,250 tokens.
     fn the_measured_session() -> SummaryBudget {
@@ -447,7 +427,7 @@ mod the_record_has_a_size {
     }
 
     /// The instruction carries the number, and it does not carry the word that did the damage:
-    /// *"write a **compact** factual record"* is what produced 2,250 tokens for 3,590 rows.
+    /// *"write a compact factual record"* is what produced 2,250 tokens for 3,590 rows.
     #[test]
     fn the_instruction_states_the_budget_and_asks_for_every_line() {
         let b = the_measured_session();
@@ -486,7 +466,7 @@ mod the_record_has_a_size {
         }
     }
 
-    /// Two texts - the overrun halves keep the one R22 left alone - and the sections are the part a
+    /// Two texts - the overrun halves keep the older one - and the sections are the part a
     /// reader depends on, so one test holds the pair together.
     #[test]
     fn the_two_instructions_ask_for_the_same_sections() {
@@ -549,11 +529,11 @@ pub struct CompactionOutcome {
     /// turn's prompt plus its committed generation. The gap to `cached_tokens` is
     /// the server's, not ours - the prompts are proven identical over the span.
     pub reusable: u64,
-    /// Tokens the summary turn generated — reasoning included. The summary's own
+    /// Tokens the summary turn generated - reasoning included. The summary's own
     /// size in the new base is at most the visible part of this.
     pub generated_tokens: u64,
     /// The room this record was given, when the compaction had a size at all: `None` on the
-    /// overrun halves, which R22 left as they were.
+    /// overrun halves.
     pub budget: Option<SummaryBudget>,
     /// What the record kept of what the conversation held, measured against the structure of the
     /// transcript. `None` when nothing was measured - the overrun halves, and any compaction that
@@ -561,7 +541,7 @@ pub struct CompactionOutcome {
     pub fidelity: Option<Fidelity>,
 }
 
-/// **What a record is asked for, when it has a size**: the budget it may fill, and the text of
+/// What a record is asked for, when it has a size: the budget it may fill, and the text of
 /// whatever the compaction carries verbatim beside it - the tail's items are in the new base, so a
 /// fact they hold is not a fact the record dropped, and the gate must not re-ask for it.
 pub struct SummaryAsk<'a> {
@@ -647,14 +627,8 @@ impl Answerer<'_> {
 }
 
 /// Run the compaction turn: append the instruction as a system update and take the turn that
-/// answers it. One turn, not a special shape.
-///
-/// **A fold that fails leaves the transcript where it found it.** The instruction is a debt only a
-/// summary pays, and nothing used to undo it: a session whose folds kept failing carried one more
-/// copy of it per attempt, into the very record the fold was meant to produce.
-///
-/// `ask` is what makes the record SIZED (R22): the budget it may fill, and the tail measured with
-/// it. `None` is the overrun path and the tests, which keep the instruction and the shape they had.
+/// answers it. A fold that fails leaves the transcript where it found it. `ask` sizes the
+/// record: the budget and the measured tail. `None` is the overrun path and the tests.
 #[allow(clippy::too_many_arguments)] // the ask is the caller's fact and does not belong to the engine
 pub fn run_compaction(
     engine: &mut TurnEngine,
@@ -733,12 +707,9 @@ fn compact_turn(
                             }
                             _ => None,
                         };
-                        // **Asked once.** A record that dropped most of what the conversation
-                        // held is sent back with the gap named - and if the second answer is
-                        // thin too, that is the answer: a loop here would spend the session's
-                        // whole budget arguing with a model that cannot see through it. A
-                        // record CUT by the window is not re-asked either: it stopped for a
-                        // mechanical reason the second attempt would meet again.
+                        // Asked once. A record that dropped most of what the conversation held is sent back with the
+                        // gap named; if the second answer is thin too, that is the answer. A record cut by the window
+                        // is not re-asked: it would stop for the same mechanical reason.
                         if !record.truncated
                             && !reasked
                             && let Some(f) = &fidelity
@@ -1409,7 +1380,7 @@ mod the_tail_and_the_template {
         assert_eq!(tail_budget(4_096), MIN_TAIL_TOKENS, "1024 floors at 2000");
     }
 
-    /// **A delivery opens a turn, so a tail may begin at one.** A monitor's firing is a message the
+    /// A delivery opens a turn, so a tail may begin at one. A monitor's firing is a message the
     /// model is handed, exactly as a prompt is; a plan that could not start there would drop the
     /// turn the session is inside, and one that started inside it would carry half an exchange.
     #[test]
@@ -1483,7 +1454,7 @@ mod the_tail_and_the_template {
     #[test]
     fn the_record_splits_into_the_sections_it_was_asked_for() {
         // Written with `Blocked` BEFORE `Active`, which is the other order, and with
-        // `Blocked` empty — so the two things this test is about are both exercised.
+        // `Blocked` empty - so the two things this test is about are both exercised.
         let summary = "## Objective\n\nFix the stale echoes.\n\n## Work State\n\n### \
                        Completed\n\n- the rule\n\n### Blocked\n\n### Active\n\n- \
                        measuring\n\n## Next Move\n\n1. push";
@@ -1504,9 +1475,9 @@ mod the_tail_and_the_template {
         };
         assert_eq!(body("Objective"), "Fix the stale echoes.");
         assert_eq!(body("Completed"), "- the rule");
-        // **Written and empty** — *nothing is blocked*.
+        // Written and empty - *nothing is blocked*.
         assert_eq!(body("Blocked"), "");
-        // **Never written** — *nobody said*. Two facts, two shapes.
+        // Never written - *nobody said*. Two facts, two shapes.
         assert!(!names.contains(&"Important Details") && !names.contains(&"Relevant Files"));
         // `Work State` is a grouping heading: its own body is never returned, because
         // a head drawing it would print *nothing here* about a heading that was never
@@ -1849,12 +1820,9 @@ impl EventSink for CompactionSink<'_> {
     }
 }
 
-/// One summary turn over one slice, in a throwaway session. `half` and `halves` are what the
-/// caller knows, and the progress line is built from them.
-///
-/// The slice is REDUCED first: the bodies whose units cannot be current, whose subagent answered,
-/// or whose call is finished go as stubs before the record is asked about anything. What the
-/// record is asked, then, is what cannot be evicted.
+/// One summary turn over one slice, in a throwaway session. `half` and `halves` build the
+/// progress line. The slice is reduced first: bodies of finished, answered or superseded
+/// calls go as stubs, so the record is asked only about what cannot be evicted.
 #[allow(clippy::too_many_arguments)] // the slice and its place among the halves are the caller's facts
 fn summarise_one(
     engine: &mut TurnEngine,
@@ -1888,8 +1856,7 @@ fn summarise_one(
     // denominator, so a half with no room refuses before it starts.
     let prompt_tokens = scratch.ledger.len() as u64;
 
-    // Progress, not warnings: each half used to open and close with a warning, and four rows
-    // per compaction is a wall a person scrolls past.
+    // Progress, not warnings: warnings per half would be four rows per compaction.
     let ok = run_half(sink, half, halves, prompt_tokens, |progress| {
         engine.without_reasoning(|engine| -> Result<TurnOk, TurnFailure> {
             loop {
@@ -1941,7 +1908,7 @@ fn run_half<T>(
     };
     progress.publish();
     let out = body(&mut progress)?;
-    // The half's last word on the line, with its final count — the strided publish
+    // The half's last word on the line, with its final count - the strided publish
     // may have skipped the last few deltas.
     progress.publish();
     Ok(out)
@@ -2190,7 +2157,7 @@ mod compaction_sink {
                 assert_eq!(s.deltas, i + 1);
             }
         }
-        // 1, 32, 64 and 96 — four publishes for ninety-six deltas, not ninety-six.
+        // 1, 32, 64 and 96 - four publishes for ninety-six deltas, not ninety-six.
         assert_eq!(rec.seen.len(), 4, "strided, not a tick per chunk");
         assert_eq!(
             progress_of(&rec.seen[0]),

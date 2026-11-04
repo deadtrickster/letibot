@@ -1,12 +1,8 @@
-//! The acceptance test for resume: **the hash chain reproduces, or the restore
-//! refuses**.
+//! The acceptance test for resume: the hash chain reproduces, or the restore
+//! refuses.
 //!
-//! `harnessd`'s startup banner used to say a stored session is *"listed and refused
-//! with that reason, not resumed approximately"*, and the reason was right: replaying
-//! the items through `append_items` **re-renders** the assistant rows, which were cut
-//! from the ids the server streamed. Re-rendering them during recovery reintroduces
-//! exactly the renderer non-determinism the chain exists to catch, at the one moment
-//! nobody is watching.
+//! Replaying items through `append_items` would re-render assistant rows that were cut from
+//! streamed ids, reintroducing the renderer non-determinism the chain exists to catch.
 //!
 //! [`Session::restore`] takes the tokens from the store instead. That makes the
 //! refusal unnecessary and makes *this* file the thing that has to hold: a restore
@@ -37,19 +33,19 @@
 //!
 //! # What is asserted, and why each one is here
 //!
-//! 1. **Every restored row's `h_k` is the one the store recorded**, byte for byte,
+//! 1. Every restored row's `h_k` is the one the store recorded, byte for byte,
 //!    and the restored ledger's head is the last stored `h_k`. This is checked
 //!    against the store's own bytes rather than against the value `restore` handed
 //!    back, because `TokenLedger::restore` keeps the persisted row on success - so
 //!    comparing its output to its input would be a tautology.
-//! 2. **`verify_chain` passes on the rebuilt region.** A second, independent pass:
+//! 2. `verify_chain` passes on the rebuilt region. A second, independent pass:
 //!    (1) checks the rows the restore produced, this one recomputes the chain from
 //!    the *tokens in the rebuilt memfd*. A restore that wrote the right rows over the
 //!    wrong bytes fails here and nowhere else.
-//! 3. **A tampered row is refused by name.** Not "restore returned Err" - the error
+//! 3. A tampered row is refused by name. Not "restore returned Err" - the error
 //!    has to say which row and both hashes, because the operator's next question is
 //!    always "which turn".
-//! 4. **The real store, not only fixtures.** The five sessions in
+//! 4. The real store, not only fixtures. The five sessions in
 //!    `~/.local/share/letibot/sessions.db` are what the operator will actually type
 //!    `--continue` against. A fixture proves the code path; those five prove it
 //!    against tokens a real Qwen produced, including tool results and interleaved
@@ -68,7 +64,7 @@ use letibot_turn::{Session, resume};
 /// database a daemon is checkpointing is not a snapshot of it, and a 5 GB store copied once per
 /// test filled a tmpfs. `LiveView` attaches `mode=ro` and copies one transcript per load.
 fn real_store() -> Option<LiveView> {
-    // **Opt in, and asked for separately from the apparatus** - see the module doc. A run that
+    // Opt in, and asked for separately from the apparatus - see the module doc. A run that
     // insists on its apparatus is insisting about the CODE's prerequisites; it cannot insist
     // that the operator's history be intact.
     if !letibot_tokencore::apparatus::check_real_store() {

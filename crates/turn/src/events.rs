@@ -1,11 +1,6 @@
-//! The events one turn emits, and the sink they go to.
-//!
-//! Only the subset a turn produces lives here: `HeadAttached` and the tool-lifecycle events
-//! belong elsewhere, and putting them in this enum would make the turn engine look like it
-//! owns them.
-//!
-//! `Delta` carries only the increment, never accumulated text. The rule is stated as a type:
-//! `Delta` has a `text` and no `full`, and there is nowhere to put one.
+//! The events one turn emits, and the sink they go to. `HeadAttached` and tool-lifecycle events
+//! belong elsewhere. `Delta` carries only the increment: it has a `text` and no `full`, so
+//! accumulated text has nowhere to go.
 
 use letibot_tokencore::TokenId;
 
@@ -66,7 +61,7 @@ pub enum TurnEvent {
         kind: &'static str,
         ledger_head: String,
         tokens: u32,
-        /// **The row itself**, so a log of these events can be read back as a conversation: the
+        /// The row itself, so a log of these events can be read back as a conversation: the
         /// lift decides whether it fits an announcement, and the engine has no opinion on that
         /// number. Boxed because every other variant here is small.
         item: Box<letibot_transcript::TranscriptItem>,
@@ -91,7 +86,7 @@ pub enum TurnEvent {
     /// lifted as itself lands in the head's `turn.progress`, which is the SESSION's, so the
     /// scratch prompt's count was drawn as the session's context.
     CompactionProgress {
-        /// Which half is running, 1-based, in the order they RUN — which for the local
+        /// Which half is running, 1-based, in the order they RUN - which for the local
         /// plan is the recent tail first, since its cold prompt is the cheap one to warm
         /// the cache with.
         half: u64,
@@ -102,7 +97,7 @@ pub enum TurnEvent {
         /// without a conversion nobody named.
         prompt_tokens: u64,
         /// How much of that prompt the server has read. Zero on a transport that reports
-        /// no prefill — a messages stream says nothing until it answers — which is a
+        /// no prefill - a messages stream says nothing until it answers - which is a
         /// real answer here and not a failure to report one.
         processed: u64,
         /// What the half has produced so far, counted in `unit`.
@@ -233,7 +228,7 @@ mod tests {
     }
 }
 
-/// **A sink that forwards progress and swallows rows.**
+/// A sink that forwards progress and swallows rows.
 ///
 /// For a session that is real work but not part of the operator's conversation:
 /// the overrun summariser's scratchpads, which restage history a model has
@@ -250,7 +245,7 @@ mod tests {
 ///
 /// Passing [`NullSink`] instead fixed that and broke the other half: a scratchpad
 /// is a large prompt and prefilling it takes minutes, during which the head had
-/// nothing to show — "tui doesnt show any prefill tho".
+/// nothing to show - "tui doesnt show any prefill tho".
 ///
 /// So `PromptProgress` goes through, because it is the only honest answer to
 /// "what is it doing", and everything else is dropped, because everything else is

@@ -1,20 +1,6 @@
 //! What a prefilled prompt costs the model server's cache, and the size it may not pass.
-//!
-//! `TODO.md` T18: every distinct prompt prefilled becomes one prompt-cache entry, and on a
-//! hybrid model the cost is dominated by a term that does not shrink with the prompt. The
-//! measured split (`docs/qwen-attention.md`) is a fixed per-sequence recurrent accumulator and a
-//! per-token attention half, so a sweep of many SHORT distinct prompts is far dearer than its
-//! token count suggests - which is how the fifth OOM happened.
-//!
-//! Two things follow, and this type is both. The price of an entry is a function of its token
-//! count and nothing else, so it can be computed before the prefill is asked for. And the number
-//! to bound is the number of live entries, not their order: eviction at the server is by
-//! capacity, so interleaving conversations costs nothing and merely HAVING them costs everything.
-//!
-//! So the size the operator sets is the cache's, not one prompt's: [`PromptCache::note`] is asked
-//! before each prefill and answers whether it fits, evicting the least recently used entries to
-//! make room. A single entry larger than the whole budget is refused rather than admitted and
-//! then evicted - a cache that can hold nothing is a cache that pretends.
+//! Price depends only on token count; the bound is on live entries, evicting least recently
+//! used. [`PromptCache::note`] refuses an entry larger than the whole budget.
 
 use std::collections::BTreeMap;
 
@@ -207,7 +193,7 @@ mod tests {
     fn an_entry_costs_the_recurrent_state_plus_its_tokens() {
         assert_eq!(entry_bytes(0), RECURRENT_BYTES);
         assert_eq!(entry_bytes(1), RECURRENT_BYTES + ATTENTION_BYTES_PER_TOKEN);
-        // The point of T18: for a short prompt the fixed term is most of the bill, so a sweep of
+        // For a short prompt the fixed term is most of the bill, so a sweep of
         // many short distinct prompts costs far more than their token count suggests.
         const _: () = assert!(
             SMALL * ATTENTION_BYTES_PER_TOKEN < RECURRENT_BYTES,
@@ -215,7 +201,7 @@ mod tests {
         );
     }
 
-    /// The test T18 asks for: fill past the bound and watch the cache stay inside it.
+    /// Fill past the bound and watch the cache stay inside it.
     #[test]
     fn filling_past_the_bound_evicts_and_never_exceeds_it() {
         // Room for two entries and no more.
@@ -270,7 +256,7 @@ mod tests {
         assert_eq!(cache.len(), 1);
     }
 
-    /// **A live key asked for again is charged what it costs NOW.** A conversation's prompt grows
+    /// A live key asked for again is charged what it costs NOW. A conversation's prompt grows
     /// every turn, so an entry kept at its first turn's price lets the cache hold more than its
     /// budget while still answering `admitted`.
     #[test]

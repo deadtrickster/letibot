@@ -1,13 +1,6 @@
-//! §5.7: no output cap, and `finish_reason: length` is acted on.
-//!
-//! A subagent once spent its whole budget thinking and returned empty content with a full
-//! `reasoning_content`, and that was recorded as a completed turn - nine such rows sat in a
-//! session database unnoticed. The lesson is not "check a flag" but that success was
-//! representable, so this does not return a bool a caller may ignore: the two empty cases
-//! produce [`LengthVerdict::HardFail`] and the engine turns it into an `Err`.
-//!
-//! `ReasoningOnly` names a budget problem; `NoVisibleContent` names a generation that never
-//! started.
+//! No output cap, and `finish_reason: length` is acted on. A turn that spent its budget
+//! thinking and returned empty content must not be recorded as complete, so the two empty cases
+//! produce [`LengthVerdict::HardFail`] rather than a bool a caller may ignore.
 
 use letibot_transcript::ToolCall;
 
@@ -16,7 +9,7 @@ use letibot_transcript::ToolCall;
 pub enum EmptyReason {
     /// No visible content and no tool calls.
     NoVisibleContent,
-    /// Reasoning only — the budget went into thinking and nothing came out.
+    /// Reasoning only - the budget went into thinking and nothing came out.
     /// This is the exact shape of the nine unnoticed rows.
     ReasoningOnly,
 }
@@ -41,7 +34,7 @@ pub enum LengthVerdict {
     /// Tool calls, all of whose arguments parse as complete JSON. Keep them and
     /// continue.
     ToolCallsIntact,
-    /// At least one argument is truncated. **The whole batch fails** — none
+    /// At least one argument is truncated. The whole batch fails - none
     /// executed. Executing the intact half of a batch the model wrote as a unit is
     /// how a half-applied edit happens.
     ToolCallsTruncated { truncated: Vec<String> },
@@ -259,7 +252,7 @@ mod tests {
     #[test]
     fn the_notice_tells_the_model_what_to_do_and_names_the_call() {
         let n = batch_failed_notice("read_file");
-        // R93.D3: what happened, and the one thing to do about it - not the harness's accounting.
+        // what happened, and the one thing to do about it - not the harness's accounting.
         assert_eq!(
             n,
             "Tool call read_file was cut off and not run. Send it again complete (split a large \

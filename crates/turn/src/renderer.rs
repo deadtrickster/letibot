@@ -1,11 +1,6 @@
-//! The seam between the turn engine and whatever turns items into spans.
-//!
-//! The engine depends on this trait and on [`RenderSpan`], never on a concrete renderer: when
-//! the template-driven one lands it implements the same methods and nothing here changes.
-//!
-//! The one thing this trait must never gain is a method returning `Vec<TokenId>`: `RenderSpan`
-//! is text-plus-control-token so a renderer needs no vocab, and a user message containing the
-//! literal `<|assistant|>` is structurally incapable of becoming a boundary.
+//! The seam between the turn engine and whatever turns items into spans. The engine depends on
+//! this trait and [`RenderSpan`]. It must never gain a method returning `Vec<TokenId>`: spans
+//! are text plus control token, so a user's literal `<|assistant|>` cannot become a boundary.
 
 use letibot_dialect::{DialectSpec, RenderSpan, StablePrefix};
 use letibot_transcript::TranscriptItem;
@@ -27,23 +22,9 @@ pub trait PromptRenderer: Send + Sync {
         new_items: &[TranscriptItem],
     ) -> Vec<RenderSpan>;
 
-    /// [`Self::render_incremental`], and where each item's spans END, because a dialect may
-    /// merge a RUN of items into one message (T20.5).
-    ///
-    /// Item `i`'s spans are `all[ends[i - 1]..ends[i]]`, with `0` standing in for `ends[-1]`;
-    /// `ends.len() == new_items.len()`, empty for an empty batch. For a non-empty batch
-    /// `ends.last() == Some(&all.len())`, so whatever closes the batch belongs to its last item.
-    /// The batch is rendered in ONE pass for the reason the method exists: the last item of a
-    /// merged run cannot know whether to write the message's closing token until it sees that
-    /// nothing follows it within the batch.
-    ///
-    /// So the ledger's one-row-per-item rule costs nothing and the batch is the unit. A
-    /// caller that appends a merged run in two calls gets two messages; every caller in this
-    /// tree hands `append_items` a whole round's results.
-    ///
-    /// The default renders one item at a time, which is exact for every dialect whose items
-    /// never merge - GLM's runs of tool results share an opening token, which the past
-    /// settles, not the future.
+    /// [`Self::render_incremental`], plus where each item's spans end, since a dialect may merge a
+    /// run of items into one message: item `i` is `all[ends[i - 1]..ends[i]]`. One pass, so the
+    /// last item of a run knows nothing follows. The default renders item by item.
     fn render_incremental_by_item(
         &self,
         history: &[TranscriptItem],

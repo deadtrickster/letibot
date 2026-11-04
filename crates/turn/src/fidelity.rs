@@ -1,20 +1,6 @@
-//! **What a record kept, and what it dropped** - compaction's fidelity gate, and the only part of
-//! a compaction that can be checked without a model.
-//!
-//! R22's measured failure: a 1,353,917-token conversation became a 2,250-token record. Nothing
-//! truncated it; the instruction asked for something *compact* and named no budget, and the model
-//! obliged. A budget alone does not fix that either - telling a model it MAY write 135k tokens does
-//! not make it write them - so the second half is this: count what the conversation held, count
-//! what the record names, and when most of it is missing say exactly which.
-//!
-//! The facts are read from STRUCTURE, never from prose (see `docs/compaction.md` §4): a tool call
-//! carries a name and JSON arguments, so the files it touched and the commands it ran are exact
-//! strings with identities. A decision has no such identity, so the third level is the plan rows
-//! the conversation wrote - the declared decomposition - and it is compared by its words rather
-//! than by its bytes, because a record is allowed to reword a plan.
-//!
-//! Nothing here is a claim about whether the record is GOOD. It is a claim about whether it is
-//! MISSING things, which is a number, and a number is what can be told to a model and re-asked.
+//! What a record kept, and what it dropped: compaction's fidelity gate, checkable without a
+//! model. Facts are read from structure (`docs/compaction.md` §4) - tool names and arguments,
+//! then plan rows compared by words. It claims what is missing, not whether the record is good.
 
 use letibot_transcript::{TranscriptItem, UserPart};
 
@@ -95,10 +81,9 @@ pub struct Facts {
 }
 
 impl Facts {
-    /// The facts of a conversation, read off its tool calls and its attachments.
-    ///
-    /// A call whose arguments are not JSON contributes nothing: half a call is not a fact, and a
-    /// fact this cannot name would be a gap the model is told to close and cannot.
+    /// The facts of a conversation, read off its tool calls and its attachments. A call whose
+    /// arguments are not JSON contributes nothing: a fact this cannot name would be a gap the
+    /// model is told to close and cannot.
     pub fn of(items: &[TranscriptItem]) -> Facts {
         let mut facts = Facts::default();
         for item in items {
@@ -360,8 +345,8 @@ mod tests {
         }
     }
 
-    /// R22's conversation in shape if not in bytes: 82 operator turns, 3590 rows' worth of tool
-    /// calls, **47 files touched, 21 commands run, 7 plan rows written**. The facts are in the
+    /// A conversation shaped like a real long one: 82 operator turns, 3590 rows' worth of tool
+    /// calls, 47 files touched, 21 commands run, 7 plan rows written. The facts are in the
     /// calls, where the model read them, and nowhere else.
     fn a_long_conversation() -> Vec<TranscriptItem> {
         let mut items = vec![TranscriptItem::System {

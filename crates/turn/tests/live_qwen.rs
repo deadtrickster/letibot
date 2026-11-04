@@ -1,10 +1,6 @@
-//! The engine against the llama.cpp server that is actually running on this box.
-//!
-//! A test that quietly passes when the thing it tests is missing reports the health of a
-//! `TcpStream::connect`, so if the endpoint is wrong for your box, set
-//! `LETIBOT_COMPLETION_URL` and `LETIBOT_VOCAB_GGUF`. The server is in production use with five
-//! slots, so every test here takes one process-wide lock and holds it for one or two short
-//! generations; `finish_reason: length` is not tested live and the policy is exercised offline.
+//! The engine against the llama.cpp server running on this box. Set `LETIBOT_COMPLETION_URL`
+//! and `LETIBOT_VOCAB_GGUF` if the endpoint differs. The server is shared, so every test takes
+//! one process-wide lock for one or two short generations. `length` is tested offline.
 
 mod support {
     pub mod chatml;

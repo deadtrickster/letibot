@@ -1,11 +1,6 @@
-//! Turning a generation into transcript items and the ledger rows beside them.
-//!
-//! `Parser` answers what the model said and, since `ParsedSpan` carries token offsets, which
-//! tokens are this item - both out of one walk of the same ids, so the rows and the items
-//! cannot disagree about where a turn's reasoning ended.
-//!
-//! The lead is never parsed (the harness wrote it) but the first item's range owns it, and
-//! trailing stop tokens are stripped because a boundary belongs to the renderer.
+//! Turning a generation into transcript items and the ledger rows beside them, from one walk
+//! of the ids so rows and items agree where reasoning ended. The first item's range owns the
+//! lead; trailing stop tokens are stripped because a boundary belongs to the renderer.
 
 use std::ops::Range;
 
@@ -186,7 +181,7 @@ pub fn produce(
         }
     }
     if let Some((text, calls, start)) = assistant.take() {
-        // Nothing at all — no tokens, no text, no calls — does not make an item.
+        // Nothing at all - no tokens, no text, no calls - does not make an item.
         if !text.is_empty() || !calls.is_empty() || start < covered_to {
             items.push(ProducedItem {
                 item: TranscriptItem::Assistant {
@@ -424,7 +419,7 @@ mod tests {
     #[test]
     fn the_generation_prompts_own_text_is_never_parsed_as_model_output() {
         let d = decoder().with_text(20, "assistant\n");
-        // lead = [turn-start, "assistant\n", <think>] — the harness wrote all three.
+        // lead = [turn-start, "assistant\n", <think>] - the harness wrote all three.
         let lead = [ASSISTANT, 20, THINK_OPEN];
         let p = produce(
             &lead,

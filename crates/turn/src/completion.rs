@@ -1,12 +1,6 @@
-//! The `/completion` fallback request and the shapes that come back.
-//!
-//! `POST /completion` with `prompt` as a token array: the harness renders and tokenizes and the
-//! server does not, which is the whole design. Every §5.6 field is set by the one constructor
-//! rather than defaulted, and there is no `n_predict` field at all - a cap is a truncation you
-//! chose.
-//!
-//! `cache_prompt`, `return_progress`, `timings_per_token` and `return_tokens` are all required;
-//! dropping any one breaks the cache, the progress display or the token ids.
+//! The `/completion` fallback request and its replies. `prompt` is a token array: the harness
+//! tokenizes, the server does not. One constructor sets every field; there is no `n_predict`,
+//! since a cap is a chosen truncation.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -131,9 +125,9 @@ pub enum FinishReason {
     Eos,
     /// A stop token or stop word fired.
     Word,
-    /// The output limit was reached. **Acted on**, see [`crate::length`].
+    /// The output limit was reached. Acted on, see [`crate::length`].
     Length,
-    /// The turn was aborted by us — a guard, or an urgent steering message.
+    /// The turn was aborted by us - a guard, or an urgent steering message.
     Aborted,
     /// A value the server produced that this enum does not model. Kept verbatim
     /// rather than folded into a neighbour, because a `finish_reason` nobody
@@ -178,13 +172,13 @@ pub enum Chunk {
     Token {
         ids: Vec<TokenId>,
         text: String,
-        /// `tokens_predicted` — the server's own monotone count of generated
+        /// `tokens_predicted` - the server's own monotone count of generated
         /// tokens *including this chunk*. This is the field that makes the
         /// accumulator safe, because it is the fact rather than a proxy for it.
         n_decoded: u64,
         timings: Option<Timings>,
     },
-    /// The terminal frame. Its `tokens` array is **empty** in stream mode.
+    /// The terminal frame. Its `tokens` array is empty in stream mode.
     Final(Box<FinalChunk>),
 }
 
@@ -201,10 +195,10 @@ pub struct FinalChunk {
     pub prompt_truncated: bool,
     pub n_prompt_tokens: u64,
     pub n_decoded: u64,
-    /// `slot.prompt.n_tokens()` after generation. Occupancy, **not** reuse.
+    /// `slot.prompt.n_tokens()` after generation. Occupancy, not reuse.
     pub slot_tokens_after: u64,
     pub timings: Timings,
-    /// Whatever ids the final frame carried. Empty in stream mode — that is the
+    /// Whatever ids the final frame carried. Empty in stream mode - that is the
     /// trap this type exists to make visible rather than to hide.
     pub ids: Vec<TokenId>,
     pub text: String,

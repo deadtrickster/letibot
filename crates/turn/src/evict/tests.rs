@@ -528,7 +528,7 @@ fn the_span_handed_in_is_left_alone() {
     assert_eq!(out.gone(), out.units.iter().map(|u| u.gone).sum::<usize>());
 }
 
-/// **A delivery opens the exchange in hand as a prompt does.** A wake's turn begins with a `Notice`
+/// A delivery opens the exchange in hand as a prompt does. A wake's turn begins with a `Notice`
 /// row, so a span whose last message is a firing is the turn being worked on - and the read under
 /// it must not be evicted out from under a live turn.
 #[test]

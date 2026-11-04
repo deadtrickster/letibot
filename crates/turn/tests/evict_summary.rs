@@ -1,10 +1,6 @@
-//! What the summary turn is actually shown: a long fake conversation of finished calls, and a
-//! backend that records the items it was handed.
-//!
-//! The record is not the only thing a compaction costs. The summary turn is a real turn over the
-//! span it replaces, so every body in that span is prefill the record will never mention - and a
-//! body whose call was repeated, whose file was written over, or whose subagent had answered is
-//! not something the record had to be asked about at all.
+//! What the summary turn is shown: a long fake conversation of finished calls, and a backend
+//! that records the items it was handed. The summary turn is a real turn over the span it
+//! replaces, so every body in the span is prefill the record never mentions.
 
 mod support {
     pub mod canned;

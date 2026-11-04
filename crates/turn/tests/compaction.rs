@@ -1,10 +1,6 @@
-//! The compaction turn, against the canned server.
-//!
-//! The strategy under test - re-send what the previous turn sent and append the instruction as
-//! one more message - is a property of the PROMPT, so it is not visible in a single turn's
-//! frames. What a canned test can assert is that the operation appends the instruction, runs
-//! one normal turn, reads the summary out of it, and surfaces the reuse numbers and any tool
-//! calls instead of swallowing them.
+//! The compaction turn, against the canned server. Re-sending the previous prompt plus the
+//! instruction is a property of the prompt, so what is asserted here is that the operation
+//! appends it, runs one normal turn, reads the summary, and surfaces reuse numbers and tool calls.
 
 mod support {
     pub mod canned;
@@ -176,13 +172,13 @@ fn compaction_appends_the_instruction_and_reads_the_summary_off_the_turn() {
     assert_eq!(outcome.summary, summary_text, "{:?}", outcome.summary);
     assert_eq!(outcome.tool_calls, 0);
     // What the invariant permitted: the first turn's prompt plus its committed
-    // generation — proven identical over that span, whatever the server did.
+    // generation - proven identical over that span, whatever the server did.
     assert_eq!(outcome.reusable, witness.covered_len as u64);
     assert_eq!(outcome.cached_tokens, 39);
     assert!(outcome.generated_tokens > 0);
 
-    // The ledger carries the instruction as a system update — distinguishable
-    // from anything anybody typed — and the turn's own items after it: the
+    // The ledger carries the instruction as a system update - distinguishable
+    // from anything anybody typed - and the turn's own items after it: the
     // reasoning, then the summary as the final assistant text.
     let instruction_at = session
         .items
@@ -336,9 +332,9 @@ fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_co
         .expect("the chain still holds");
 }
 
-/// **A fold that fails leaves the transcript as it was, however often it fails.** The instruction is
-/// appended before the turn runs and it used to stay: six failures left six copies of it in a real
-/// session's transcript, and the fold that finally ran summarised them. Counted, never measured.
+/// A fold that fails leaves the transcript as it was, however often it fails. The instruction is
+/// appended before the turn runs and must not stay, or failed folds leave one copy each.
+/// Counted, never measured.
 #[test]
 fn a_failed_fold_leaves_no_instruction_behind() {
     let Some(_) = letibot_llama::apparatus::present_gguf() else {
@@ -503,12 +499,12 @@ fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes
         panic!("the notice is text, got {:?}", parts[0]);
     };
     assert_eq!(text, letibot_turn::UNFINISHED_REASONING_NOTICE);
-    // R93.D2: it says to write the summary, not to reason "after" — a model whose thinking
+    // it says to write the summary, not to reason "after" - a model whose thinking
     // always comes first cannot.
     assert!(text.contains("Write the summary now"), "{text}");
 
     // And the retry's answer is the last item, one turn's worth of rows after
-    // the notice — the region grew by the instruction, the notice and the
+    // the notice - the region grew by the instruction, the notice and the
     // successful turn, and by nothing from the failed one.
     assert_eq!(
         outcome.summary,
@@ -552,7 +548,7 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
         /// turn must send the session's OWN prefix, and the tool list is the only angle from
         /// which that is visible.
         tools_seen: AtomicUsize,
-        /// The tools themselves, not just the count — a summary sent under a
+        /// The tools themselves, not just the count - a summary sent under a
         /// *different* tool list would still be a different prefix, and a count
         /// cannot tell that apart from the right one.
         names_seen: std::sync::Mutex<Vec<String>>,
@@ -670,8 +666,8 @@ fn a_summary_turn_is_taken_again_when_the_endpoint_says_try_again() {
 
     let summary_text = "decided: the fold landed on the second try; no files changed";
     let frames = a_summary_turn(&ids_of("gather the record"), &ids_of(summary_text), 40, 39);
-    // The endpoint answers `503 Loading model` once — the status a server reloading a
-    // sharded GGUF answers — and the summary on the second call.
+    // The endpoint answers `503 Loading model` once - the status a server reloading a
+    // sharded GGUF answers - and the summary on the second call.
     let canned = Canned::serve_replies(
         vec![
             Reply::Status {
@@ -701,7 +697,7 @@ fn a_summary_turn_is_taken_again_when_the_endpoint_says_try_again() {
     .expect("the second call answered");
     assert_eq!(outcome.summary, summary_text, "{:?}", outcome.summary);
     assert_eq!(ladder.attempts(), 1, "one call failed, and one was retried");
-    // The instruction is in the transcript ONCE — the retry re-ran the turn, not the whole
+    // The instruction is in the transcript ONCE - the retry re-ran the turn, not the whole
     // function.
     let instructions = session
         .items
@@ -752,7 +748,7 @@ fn a_long_fake_conversation() -> Vec<TranscriptItem> {
     items
 }
 
-/// **R22's loop, end to end.** The conversation holds forty files; the first record names one of
+/// The sized-record loop, end to end. The conversation holds forty files; the first record names one of
 /// them and says nothing else; the daemon measures it, tells the model exactly which paths it
 /// dropped, and takes the record it gets back. Two requests and no third: the ask happens once.
 #[test]
@@ -857,7 +853,7 @@ fn a_record_that_drops_most_of_the_conversation_is_asked_for_again_with_the_gap_
 }
 
 /// The other half of the rule: a compaction asked for by nothing - the overrun halves, and every
-/// test above - is not measured and not re-asked. R22 decision 1.
+/// test above - is not measured and not re-asked.
 #[test]
 fn a_record_nobody_asked_for_a_size_is_not_measured_and_not_re_asked() {
     let Some(_) = letibot_llama::apparatus::present_gguf() else {

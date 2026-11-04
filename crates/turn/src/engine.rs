@@ -71,7 +71,7 @@ pub enum TurnFailure {
         reason: EmptyReason,
         metrics: Box<TurnMetrics>,
     },
-    /// §5.7: any truncated argument fails the **whole** batch. The notices are what
+    /// §5.7: any truncated argument fails the whole batch. The notices are what
     /// the model must be told, in tool results, not in a log.
     BatchTruncated {
         turn_id: String,
@@ -221,7 +221,7 @@ pub struct TurnEngine {
     /// The server's own media marker, from `/props` at startup, or `None` for an endpoint
     /// that takes no images. Never a dialect's vision tokens.
     pub media_marker: Option<String>,
-    /// Where a refused frame and its neighbours are written (T23). On by default;
+    /// Where a refused frame and its neighbours are written. On by default;
     /// see [`FrameCapture`] for why the default is on rather than off.
     pub frame_capture: FrameCapture,
     /// The whole turn's start in Unix ms, if the caller knows it.
@@ -260,7 +260,7 @@ fn debug_warnings() -> bool {
 }
 
 impl TurnEngine {
-    /// Resolve the dialect against the vocabulary and fail **now** if it does not fit.
+    /// Resolve the dialect against the vocabulary and fail now if it does not fit.
     ///
     /// Seven arguments and no builder: every one is a fact the engine cannot invent.
     #[allow(clippy::too_many_arguments)]
@@ -440,13 +440,9 @@ impl Session {
         self.append_items_reporting(engine, new_items, sink, &mut |_, _| {})
     }
 
-    /// [`Session::append_items`], saying how far it has got - `progress(done, total)` after
-    /// each item, because a bar fed only by the write that follows sat at zero.
-    ///
-    /// The whole batch is rendered in ONE pass and then cut at the seams the renderer reports, so
-    /// a dialect that merges a run of items into one message (Qwen's runs of tool results) gets the
-    /// merge while the ledger keeps its one-row-per-item rule. Rendering item by item could not:
-    /// the last item of a run owns the message's closing token, and only the batch knows it is last.
+    /// [`Session::append_items`], reporting `progress(done, total)` after each item. The batch is
+    /// rendered in one pass and cut at the renderer's seams, so a dialect that merges a run of
+    /// items into one message gets the merge while the ledger keeps one row per item.
     pub fn append_items_reporting(
         &mut self,
         engine: &TurnEngine,
@@ -554,7 +550,7 @@ impl TurnEngine {
             ledger_head: session.ledger_head(),
             // The engine sees ONE round, so it cannot know when the turn began; the emitter
             // stamps it. See `began_ms`. (`None` here is the honest answer from a caller that
-            // has nothing to stamp with — a test, or a round with no prompt above it.)
+            // has nothing to stamp with - a test, or a round with no prompt above it.)
             began_ms: self.turn_began_ms,
         });
 
@@ -582,10 +578,9 @@ impl TurnEngine {
             self.renderer.generation_prompt()
         })?;
         let mut prompt = session.ledger.tokens().to_vec();
-        // The round's tail, rendered by the same renderer the transcript uses and appended
-        // after everything the ledger holds. One pass for the whole tail, not one per item, for
-        // the reason `append_items_reporting` gives: a run of tail items that merges into one
-        // message needs the batch. The seams are not wanted here - nothing is written.
+        // The round's tail, rendered by the transcript's renderer and appended after everything the
+        // ledger holds. One pass for the whole tail, as `append_items_reporting` explains. The seams
+        // are not wanted: nothing is written.
         if !tail.is_empty() {
             let (spans, _) = self
                 .renderer
@@ -816,8 +811,8 @@ impl TurnEngine {
             });
         }
 
-        // R7's turn-boundary check. The length gate only speaks on `finish_reason == length`;
-        // on a normal `stop` nothing else looks, so an unterminated reasoning block used to
+        // Turn-boundary check. The length gate only speaks on `finish_reason == length`;
+        // on a normal `stop` nothing else looks, so an unterminated reasoning block would
         // commit as an ordinary empty turn. The §5.4 fallback item does not count as content.
         let has_content =
             !produced.visible_text.trim().is_empty() || !produced.tool_calls().is_empty();
@@ -869,7 +864,7 @@ impl TurnEngine {
         self.salvage.cleared();
 
         // §5.8's escape hatch fired: generation stopped at the next token and the partial
-        // output was kept, announced as an interruption. T23 arrives through the same door:
+        // output was kept, announced as an interruption. A bad frame arrives through the same door:
         // the ids before the bad frame were checked, so the head is kept and the seam marked.
         let interrupt_reason = match &outcome.aborted {
             Some(AbortCause::Steering(_)) => Some("steering_urgent".to_string()),
@@ -882,9 +877,9 @@ impl TurnEngine {
                 ids,
                 reading,
             }) => Some(match reading {
-                // **The word `withheld` is load-bearing**: it is the reading's name, it is
+                // The word `withheld` is load-bearing: it is the reading's name, it is
                 // what an operator greps a session log for, and the other arm deliberately
-                // does NOT contain it — so a hit is the UTF-8 gate and nothing else.
+                // does NOT contain it - so a hit is the UTF-8 gate and nothing else.
                 crate::stream::Mismatch::Withheld => format!(
                     "frame_mismatch: the server withheld {} of the {} token(s) it counted \
                      (tokens_predicted {previous} -> {n_decoded}, {ids} id(s) sent) — the \
@@ -904,7 +899,7 @@ impl TurnEngine {
             }),
             _ => None,
         };
-        // The same two ways `TurnOk::truncated` counts — §5.7's kept text and
+        // The same two ways `TurnOk::truncated` counts - §5.7's kept text and
         // §5.8's kept partial. Stamped onto the rows before they are committed so
         // the transcript and the turn record answer the question identically.
         produced.mark_truncated(
@@ -978,7 +973,7 @@ impl TurnEngine {
         }
 
         // Post-flight, against the turn that came before this one. The check is
-        // over the **submitted prompt**, which is the thing the invariant is about,
+        // over the submitted prompt, which is the thing the invariant is about,
         // rather than over the region it was built from.
         let check = prefix::check(
             &self.caps,
@@ -1096,8 +1091,8 @@ impl TurnEngine {
         )
     }
 
-    /// **The same round on a provider, with items the request carries and the log
-    /// does not** — see [`TurnEngine::run_turn_steered_with_tail`], which is the
+    /// The same round on a provider, with items the request carries and the log
+    /// does not - see [`TurnEngine::run_turn_steered_with_tail`], which is the
     /// same argument on the local path and the place it is written down.
     #[allow(clippy::too_many_arguments)]
     pub fn run_turn_messages_with_tail(
@@ -1144,7 +1139,7 @@ impl TurnEngine {
             max_output_tokens,
         };
         let mut urgent: Option<String> = None;
-        // The first-token clock (TODO R81): the first delta of any kind, against the turn's start.
+        // The first-token clock: the first delta of any kind, against the turn's start.
         let mut first_byte_ms: Option<u64> = None;
         let mut on_delta = |d: &Delta| -> StreamFlow {
             if first_byte_ms.is_none() {
@@ -1232,7 +1227,7 @@ impl TurnEngine {
                 // input, not output, and `absorb` already took them out of the source,
                 // so they go back rather than being appended.
                 pending.give_back(steering);
-                // **A timeout keeps its kind.** A provider wraps its own io error into a string, so
+                // A timeout keeps its kind. A provider wraps its own io error into a string, so
                 // `TimedOut` would otherwise be lost and a model API timeout would read as just
                 // another transport failure - the one thing an automation must be able to tell.
                 let said = format!("provider unreachable: {m}");
@@ -1490,7 +1485,7 @@ impl TurnEngine {
         steering: &mut dyn SteeringSource,
         pending: &mut Pending,
     ) -> Result<(StreamOutcome, Option<Trip>), TurnFailure> {
-        // **A turn with a picture in it travels as text** — see [`Prompt`]: llama.cpp honours
+        // A turn with a picture in it travels as text - see [`Prompt`]: llama.cpp honours
         // `multimodal_data` only for a `prompt_string`, so the server tokenizes it. `multimodal` is
         // `None` for every turn that carries no image, which is almost all of them.
         let request = match multimodal {
@@ -1499,7 +1494,7 @@ impl TurnEngine {
             }
             None => CompletionRequest::new(prompt, self.sampling.clone()),
         };
-        // The first-token clock (TODO R81): from the request, so a queue at the server is in it.
+        // The first-token clock: from the request, so a queue at the server is in it.
         let posted = Instant::now();
         let mut first_byte_ms: Option<u64> = None;
         let body = http::post_json(&self.endpoint, "/completion", &request.to_json())?;
@@ -1523,8 +1518,8 @@ impl TurnEngine {
             // already gone past.
             capture.observe(payload);
             if capture.is_armed() {
-                // A frame was refused. Nothing more reaches the accumulator — the
-                // guard has not moved — but a few more frames are read so the
+                // A frame was refused. Nothing more reaches the accumulator - the
+                // guard has not moved - but a few more frames are read so the
                 // capture can say whether the missing id turns up late.
                 return Ok(if capture.trail_complete() {
                     Flow::Stop
@@ -1552,9 +1547,8 @@ impl TurnEngine {
             let before = acc.n_decoded();
             let fresh = match acc.push(&chunk) {
                 Ok(ids) => ids.to_vec(),
-                // T23. The guard is unchanged: this frame's ids are still refused, and
-                // everything after it. What changed is that the ids already accounted for are
-                // kept, so the operator gets an interrupted turn with a partial answer.
+                // This frame's ids are refused, and everything after it. The ids already
+                // accounted for are kept, so the operator gets an interrupted turn with a partial answer.
                 Err(e @ StreamError::FrameMismatch { .. }) => {
                     capture.arm(e.to_string());
                     let StreamError::FrameMismatch {
@@ -1633,7 +1627,7 @@ impl TurnEngine {
                     break;
                 }
                 if self.client_stop_ids.contains(&id) {
-                    // A stop enforced by id, not by matching decoded text — and
+                    // A stop enforced by id, not by matching decoded text - and
                     // only for stops the server will not act on itself.
                     abort = Some(AbortCause::StopToken(id));
                     halt = true;
@@ -1739,7 +1733,7 @@ impl TurnEngine {
 
 /// One `Delta`, on a channel that has already been decided.
 ///
-/// Free-standing, taking the channel as a value: this call used to run before it was computed.
+/// Free-standing, taking the channel as a value: the channel is computed before the call.
 fn emit_delta(sink: &mut dyn EventSink, turn_id: &str, target: DeltaTarget, text: &str) {
     if text.is_empty() {
         return;
@@ -1751,7 +1745,7 @@ fn emit_delta(sink: &mut dyn EventSink, turn_id: &str, target: DeltaTarget, text
     });
 }
 
-/// Flush a T23 capture and say where it went.
+/// Flush a frame capture and say where it went.
 ///
 /// A capture nobody is told about is a file nobody looks in; a failed write is a warning.
 fn report_capture(capture: &crate::capture::CaptureSession, sink: &mut dyn EventSink) {

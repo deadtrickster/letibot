@@ -1,11 +1,6 @@
-//! The generation-inclusive prefix invariant, checked after every turn: request N's prompt
-//! plus what the model generated in turn N must be a prefix of request N+1's prompt.
-//!
-//! The exact form - hash the submitted prompt with the committed generated tokens, and re-hash
-//! the same span next turn - is the assertion. The observable form cannot pass on this box: a
-//! hybrid/recurrent model cannot roll its memory back, so llama.cpp resumes from a context
-//! checkpoint and reuses fewer tokens than the span it holds - a measurement of the server,
-//! reported beside the assertion rather than failing the turn. Skipping is loud, not a pass.
+//! The generation-inclusive prefix invariant, checked after every turn: request N's prompt plus
+//! turn N's generation must prefix request N+1's prompt. Lower server reuse on hybrid models is
+//! reported, not failed. Skipping is loud, not a pass.
 
 use letibot_backend::BackendCaps;
 use letibot_tokencore::{TokenId, hash_tokens};
@@ -52,14 +47,14 @@ pub enum PrefixCheck {
     /// Nothing to compare against yet. Not a pass and not a failure.
     FirstTurn,
     /// The invariant held on the wire. `shortfall` is how far the server's reuse
-    /// fell below what the invariant permits — a fact about the server's cache,
+    /// fell below what the invariant permits - a fact about the server's cache,
     /// since the prompts have just been proven identical over that span.
     Held {
         expected_cached_min: u64,
         cached: u64,
         shortfall: u64,
     },
-    /// **The invariant was violated.** Turn N+1's prompt does not begin with turn
+    /// The invariant was violated. Turn N+1's prompt does not begin with turn
     /// N's prompt plus what the model generated. This is the 612 GB failure with
     /// the lid off, and it is the only verdict here that is a defect in us.
     Violated { detail: String },

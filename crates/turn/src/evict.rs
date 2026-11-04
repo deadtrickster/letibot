@@ -1,14 +1,6 @@
-//! Structural eviction: a whole unit goes before any prose is summarised.
-//!
-//! A compaction that replaces a span with a record pays for the record's input as well as its
-//! output - a summary turn is a real turn over the whole span. Most of a long conversation is not
-//! prose: it is tool calls with their printed bodies, and a body is a fact the CALL already
-//! carries in its arguments. So the span handed to the summariser drops the bodies it cannot need
-//! (a superseded read, a settled subagent's report, a finished call nobody repeats) and keeps the
-//! calls, their outcomes and their facts. The record is then asked only about what is left.
-//!
-//! Nothing here is an edit of the conversation: the reduced span is a value, used to build the
-//! summary turn's own prompt. The session, the ledger and the old transcript are untouched.
+//! Structural eviction: a whole unit goes before any prose is summarised. A summary turn is a
+//! real turn over the span, and a tool body is a fact its call already carries. The reduced span
+//! is a value; the session, ledger and old transcript are untouched.
 
 use letibot_transcript::{ToolOutcome, TranscriptItem};
 
@@ -57,10 +49,9 @@ impl Why {
     }
 }
 
-/// Where a body goes when its unit leaves the prompt, and where `recall` reads it back from.
-///
-/// `None` is a store that would not take it, and then the unit is not evicted at all: an
-/// eviction nobody can undo is the hole a summary was supposed to prevent.
+/// Where a body goes when its unit leaves the prompt, and where `recall` reads it back.
+/// `None` is a store that would not take it, and then the unit is not evicted: an eviction
+/// nobody can undo is the hole a summary was supposed to prevent.
 pub trait BodyStore {
     /// Keep one body and answer the id the map and `recall` spell it by.
     fn keep(&self, tool: &str, body: &[u8]) -> Option<String>;
@@ -272,12 +263,9 @@ fn plan_text(rows: &[String]) -> String {
         .to_lowercase()
 }
 
-/// Reduce a span, evicting whole units in class order and leaving everything else alone.
-///
-/// The span is the part of the conversation a record is about to replace, so a body inside it is
-/// a body that buys a record a longer prompt. What is never touched: the newest exchange (the work
-/// in hand), a failure's body (an error string is the evidence), a call that is still running, and
-/// anything a plan row still names. A body the store will not keep is not evicted either.
+/// Reduce a span, evicting whole units in class order. Never touched: the newest exchange, a
+/// failure's body (the evidence), a call still running, anything a plan row names. A body the
+/// store will not keep is not evicted either.
 pub fn reduce(items: &[TranscriptItem], rows: &[String], store: &dyn BodyStore) -> Eviction {
     let plan = plan_text(rows);
     // Everything after the last thing the operator said is the exchange the session is inside -

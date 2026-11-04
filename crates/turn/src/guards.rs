@@ -1,12 +1,6 @@
-//! §8.5's first guard, over token ids as they arrive.
-//!
-//! GLM's failure mode emits endless `@@@@…` at ~3 t/s and poisons the slot until a
-//! restart, so a rolling n-gram check turns a silent garbage answer into a named event.
-//! The dialect declares what to watch for; the engine owns what to do, so this is a pure
-//! state machine over ids with no model, no server and no dialect knowledge.
-//!
-//! `ReasoningStall` is not a cap on thinking: reasoning past a bound with no content span
-//! is non-termination, not length.
+//! The first guard over token ids as they arrive: a rolling n-gram check turns GLM's endless
+//! `@@@@…` into a named event. The dialect declares what to watch; the engine owns what to do.
+//! `ReasoningStall` is not a thinking cap: reasoning with no content span is non-termination.
 
 use letibot_dialect::{ControlRole, Guard};
 use letibot_tokencore::TokenId;
