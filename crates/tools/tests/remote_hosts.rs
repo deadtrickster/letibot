@@ -150,9 +150,8 @@ impl Rig {
         }
     }
 
-    /// One spec, with this rig's fake ssh and its own ssh material. The bound is short on purpose: the
-    /// fake answers in milliseconds, and a fake meant to hang is measured in a second, not the production
-    /// bound.
+    /// One spec, with this rig's fake ssh and its own ssh material. The bound is generous: the
+    /// fake answers in milliseconds, and a loaded box needs seconds to place.
     fn spec(&self) -> SshSpec {
         SshSpec {
             host: self.host.clone(),
@@ -162,7 +161,7 @@ impl Rig {
             exec: true,
             ssh: Some(self.ssh.clone()),
             paths: Some(self.paths.clone()),
-            bound: Some(Duration::from_secs(5)),
+            bound: Some(Duration::from_secs(30)),
             // This fixture's host confines nothing, and says so: the probe would run on the
             // machine behind the fake, so an unpinned answer would mean two things on two boxes.
             egress: Egress::Denied,

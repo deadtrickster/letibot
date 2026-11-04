@@ -785,7 +785,18 @@ fn remove_tree(dir: &Path) -> bool {
             }
         }
     }
-    ok && std::fs::remove_dir(dir).is_ok()
+    // `rmdir` answers EBUSY for a moment after the last member is reaped on a loaded box, so
+    // it is retried for a bounded time rather than reported as debris.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match std::fs::remove_dir(dir) {
+            Ok(()) => return ok,
+            Err(e) if e.raw_os_error() == Some(16) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => return false,
+        }
+    }
 }
 
 impl ScopeTree for Cgroup2 {
