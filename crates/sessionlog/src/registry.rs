@@ -683,8 +683,21 @@ pub type SkillsSource = Arc<dyn Fn() -> Vec<crate::protocol::SkillRow> + Send + 
 
 /// A live read of one background job's output, answered off the worker: going through the
 /// command queue meant waiting behind whatever the session was doing.
-/// The operator's chat seat, as a head's request reaches it. See [`Registry::set_room_chat`].
-pub type RoomChatHandler = Arc<dyn Fn(serde_json::Value) -> serde_json::Value + Send + Sync>;
+/// The operator's chat seat, as ONE HEAD's request reaches it. The head names whose read
+/// cursor the request moves: every head speaks as `operator`, so the per-head state is the
+/// seat's to hold. See [`Registry::set_room_chat`].
+pub type RoomChatAsk = Arc<dyn Fn(&str, serde_json::Value) -> serde_json::Value + Send + Sync>;
+
+/// A head's connection ended, so its per-head chat state may go. See [`RoomChatSeat`].
+pub type RoomChatGone = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// The operator's chat seat: `ask` answers one head's request, `gone` retires one head. Both
+/// halves arrive together because a head that asks is a head that can leave.
+#[derive(Clone)]
+pub struct RoomChatSeat {
+    pub ask: RoomChatAsk,
+    pub gone: RoomChatGone,
+}
 
 /// See [`Registry::set_broadcast_observer`].
 pub type BroadcastObserver = Arc<dyn Fn(&crate::event::SessionEvent) + Send + Sync>;
@@ -716,7 +729,7 @@ pub struct Registry {
     /// One per session that has a process host, installed by its harness at open beside
     /// [`Registry::notes`] and removed with the session. See [`JobOutputSource`].
     job_output: Mutex<std::collections::HashMap<String, JobOutputSource>>,
-    room_chat: Mutex<Option<RoomChatHandler>>,
+    room_chat: Mutex<Option<RoomChatSeat>>,
     broadcast_observer: Mutex<Option<BroadcastObserver>>,
     /// The close runs ONCE and every other caller waits for it to finish: the `Stop` frame,
     /// `catch_signals` and a head's own exit all arrive here.
@@ -1079,20 +1092,33 @@ impl Registry {
 
     /// The operator's chat seat: answers a head's `RoomChat` request. `None` on a daemon with no
     /// host coordinator, in which case the reply says so.
-    pub fn set_room_chat(&self, handler: RoomChatHandler) {
-        *self.room_chat.lock().unwrap_or_else(|e| e.into_inner()) = Some(handler);
+    pub fn set_room_chat(&self, seat: RoomChatSeat) {
+        *self.room_chat.lock().unwrap_or_else(|e| e.into_inner()) = Some(seat);
     }
 
-    /// Run one operator chat request through the seat, or say there is none.
-    pub fn room_chat(&self, op: serde_json::Value) -> serde_json::Value {
-        let handler = self
+    /// Run one operator chat request for `head` through the seat, or say there is none.
+    pub fn room_chat(&self, head: &str, op: serde_json::Value) -> serde_json::Value {
+        let seat = self
             .room_chat
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        match handler {
-            Some(h) => h(op),
+        match seat {
+            Some(s) => (s.ask)(head, op),
             None => serde_json::json!({"error": "this daemon has no room chat seat"}),
+        }
+    }
+
+    /// A head's connection ended: the seat drops whatever it held for it. Called from the
+    /// connection's own chat worker, which outlives the reader loop by exactly its last reply.
+    pub fn room_chat_gone(&self, head: &str) {
+        if let Some(seat) = self
+            .room_chat
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            (seat.gone)(head);
         }
     }
 

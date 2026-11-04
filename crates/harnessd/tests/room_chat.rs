@@ -92,7 +92,10 @@ fn sessions_the_operator_and_the_daemons_facts_share_the_rooms() {
     assert!(wake::take("s-chat-b1").is_empty());
 
     // The operator's unaddressed word in the host room wakes both.
-    let r = seat.handle(json!({"type": "say", "id": "o1", "room": "host", "text": "status?"}));
+    let r = seat.ask(
+        "h1",
+        json!({"type": "say", "id": "o1", "room": "host", "text": "status?"}),
+    );
     assert_eq!(r["message"]["author"], "operator", "{r}");
     for who in ["s-chat-a1", "s-chat-b1"] {
         wait_for(who, || {
@@ -113,7 +116,7 @@ fn sessions_the_operator_and_the_daemons_facts_share_the_rooms() {
     assert!(err.contains("not a room you can see"), "{err}");
 
     // The operator lists all three rooms.
-    let rooms = seat.handle(json!({"type": "rooms"}));
+    let rooms = seat.ask("h1", json!({"type": "rooms"}));
     let ids: Vec<String> = rooms["rows"]
         .as_array()
         .unwrap()
@@ -131,7 +134,7 @@ fn sessions_the_operator_and_the_daemons_facts_share_the_rooms() {
     ]);
     report_queue_move("merge", "m-7", "landed", "fast-forwarded");
     let lines = wait_for("the facts", || {
-        let r = seat.handle(json!({"type": "read", "room": project_room(A)}));
+        let r = seat.ask("h1", json!({"type": "read", "room": project_room(A)}));
         let text: Vec<String> = r["rows"]
             .as_array()?
             .iter()

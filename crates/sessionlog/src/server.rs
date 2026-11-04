@@ -497,6 +497,34 @@ pub fn serve_registry_rooted(
     })
 }
 
+/// One connection's chat worker: answers `RoomChat` frames for `head` on its own thread, in
+/// arrival order, and retires the head's chat state when the reader loop ends and the channel
+/// goes quiet. The thread is the reader loop's to keep reading while a request is out.
+fn spawn_room_chat_worker(
+    registry: Arc<Registry>,
+    writer: Arc<Mutex<FrameWriter<UnixStream>>>,
+    head: String,
+) -> std::sync::mpsc::Sender<(String, serde_json::Value)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("room-chat".into())
+        .spawn(move || {
+            while let Ok((client_request_id, op)) = rx.recv() {
+                let f = ServerFrame::RoomChat {
+                    client_request_id,
+                    reply: registry.room_chat(&head, op),
+                };
+                let mut w = writer.lock().unwrap_or_else(|e| e.into_inner());
+                if w.write(&f).is_err() {
+                    break;
+                }
+            }
+            registry.room_chat_gone(&head);
+        })
+        .expect("a thread for a head that chats");
+    tx
+}
+
 /// One head's attachment to one session: the hub, the id it has there, and the
 /// flag that tells its pump the difference between a shutdown and a move.
 struct Seat {
@@ -601,6 +629,10 @@ pub fn serve_conn_rooted(
     let mut seat = seat_in(
         &registry, hub, peer, since_seq, &kind, &identity, &caps, &writer,
     )?;
+
+    // The connection's chat answers, handed to a worker on the first `RoomChat` frame: `None`
+    // until a head chats, so a connection that never opens the rooms view pays no thread.
+    let mut chat: Option<std::sync::mpsc::Sender<(String, serde_json::Value)>> = None;
 
     // The reader loop. Ends on Detach or on the peer closing - and a TCP close is detach,
     // never abort: nothing below cancels a turn.
@@ -876,11 +908,32 @@ pub fn serve_conn_rooted(
                 client_request_id,
                 op,
             }) => {
-                let f = ServerFrame::RoomChat {
-                    client_request_id,
-                    reply: registry.room_chat(op),
-                };
-                writer.lock().unwrap().write(&f)?;
+                // Answered off the reader loop, on the connection's own worker: the coordinator
+                // can hold a request for seconds, and a head's Interrupts must be read while
+                // it waits rather than queue behind its own chat. Order is kept - one worker,
+                // one queue - because replies are matched by request id but polls read newest
+                // last, and a poll answered ahead of the read it followed would redraw stale.
+                if chat.is_none() {
+                    chat = Some(spawn_room_chat_worker(
+                        Arc::clone(&registry),
+                        Arc::clone(&writer),
+                        seat.head_id.clone(),
+                    ));
+                }
+                let sent = chat
+                    .as_ref()
+                    .is_some_and(|tx| tx.send((client_request_id.clone(), op)).is_ok());
+                if !sent {
+                    // The worker only ends when its own write failed, which means this socket
+                    // is going; say so rather than drop the frame unheard.
+                    let f = ServerFrame::RoomChat {
+                        client_request_id,
+                        reply: serde_json::json!({
+                            "error": "the chat worker has stopped; reconnecting restarts it"
+                        }),
+                    };
+                    writer.lock().unwrap().write(&f)?;
+                }
             }
             Ok(ClientFrame::NewSession {
                 client_request_id,

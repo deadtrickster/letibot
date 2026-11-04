@@ -1173,7 +1173,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // The operator's seat on the host coordinator, opened on a head's first chat request. The
     // coordinator may start later than the daemon, so nothing connects here.
     if let Some(socket) = crate::room::socket_path() {
-        registry.set_room_chat(crate::room::operator::OperatorSeat::new(socket).handler());
+        registry.set_room_chat(crate::room::operator::OperatorSeat::new(socket).seat());
     }
     // A queue row that moved is a line in the project's room.
     registry.set_broadcast_observer(std::sync::Arc::new(|event| {
