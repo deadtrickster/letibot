@@ -346,6 +346,7 @@ impl Client {
             speaker: self.inner.speaker.clone(),
             room: self.inner.room.clone(),
             seat: self.inner.seat,
+            token: operator_token(&self.inner.path),
         };
         write_frame(&mut writer, &hello)?;
         let first = read_frame(&mut reader)
@@ -528,6 +529,17 @@ impl Drop for Beat {
         // and joining would make a turn's end wait for a socket round trip nobody cares about.
         self.handle.take();
     }
+}
+
+/// The operator's token, read from beside the socket it belongs to. `None` when there is no file:
+/// the room then refuses the seat with a sentence naming the path, which is a better answer than
+/// this end guessing. A confined tool cannot read it - the boundary hides the coordinator's files.
+fn operator_token(socket: &Path) -> Option<String> {
+    let path = crate::operator_token_path(socket);
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn write_frame(w: &mut impl Write, request: &Request) -> Result<(), ClientError> {

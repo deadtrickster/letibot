@@ -48,6 +48,12 @@ pub enum Request {
         /// Who is connecting: a session (the default), the operator, or a named external.
         #[serde(default)]
         seat: crate::chat::Seat,
+        /// The coordinator's operator token, for a connection asking for the operator's seat. It is
+        /// a file's contents, not a secret in the frame: the room writes `<socket>.token` at its
+        /// start (mode 0600, and hidden from a confined tool), so only a process that can read the
+        /// coordinator's own runtime directory can be the person.
+        #[serde(default)]
+        token: Option<String>,
     },
     /// The rooms this connection may see, with unread counts.
     Rooms,
@@ -407,6 +413,7 @@ impl Room {
                 speaker,
                 room: _,
                 seat: _,
+                token: _,
             } => {
                 if let Some(why) = protocol_refusal(*protocol) {
                     return Answer::quiet(Response::Bye { why });

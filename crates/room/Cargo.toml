@@ -27,6 +27,9 @@ sha2 = "0.10"
 # The tree's one wall clock, for the socket's beat and its sweep. The state machine still
 # holds none: `server` reads it and hands the number in.
 letibot-metrics.workspace = true
+# `getsockopt(SO_PEERCRED)` and `getpeereid`, so the server can name the USER on the other end of
+# its socket: the file mode says who may open it, and the kernel says who did.
+libc = "0.2"
 
 [dev-dependencies]
 serde_json.workspace = true

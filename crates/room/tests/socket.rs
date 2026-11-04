@@ -9,7 +9,10 @@ use std::time::{Duration, Instant};
 
 use letibot_room::client::Client;
 use letibot_room::server::Server;
-use letibot_room::{Decision, Event, Request, Response, Room, Speaker, State};
+use letibot_room::{
+    Decision, Event, OPERATOR, ROOM_PROTOCOL_VERSION, Request, Response, Room, Seat, Speaker,
+    State, operator_token_path,
+};
 
 /// A directory of this test's own, removed when the test ends.
 struct Scratch(PathBuf);
@@ -627,5 +630,124 @@ fn a_mutex_guarded_room_is_one_writer_under_two_sessions_at_once() {
         1,
         "a tag is a lock: exactly one claim wins {won:?}"
     );
+    server.stop();
+}
+
+/// One frame written by hand over a raw socket, and the one line that answers it. A refusal closes
+/// the connection, so a test reads exactly one reply and lets the drop do the rest.
+fn hello_raw(socket: &std::path::Path, hello: &Request) -> Response {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    let stream = UnixStream::connect(socket).expect("a connection");
+    let mut reader = BufReader::new(stream.try_clone().expect("a reader"));
+    let mut writer = stream;
+    let mut line = serde_json::to_string(hello).expect("a frame");
+    line.push('\n');
+    writer.write_all(line.as_bytes()).expect("the frame");
+    writer.flush().expect("the frame");
+    let mut answer = String::new();
+    reader.read_line(&mut answer).expect("the answer");
+    serde_json::from_str(answer.trim()).unwrap_or_else(|e| panic!("{e}: {answer:?}"))
+}
+
+fn operator_hello(token: Option<String>, session: &str, seat: Seat) -> Request {
+    Request::Hello {
+        protocol: ROOM_PROTOCOL_VERSION,
+        speaker: Speaker::top_level(session),
+        room: String::new(),
+        seat,
+        token,
+    }
+}
+
+/// The socket and the token beside it are the user's alone. The mode is the first gate and the peer
+/// uid is the second: a file's mode cannot see a descriptor inherited from somebody else.
+#[test]
+fn the_socket_and_its_token_are_the_users_alone() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = Scratch::new("mode");
+    let server = Server::serve(&scratch.socket(), Room::new()).expect("a socket");
+    let token = operator_token_path(&scratch.socket());
+    assert_eq!(token, scratch.0.join("room.token"), "beside the socket");
+    assert!(token.exists(), "the coordinator writes it at its start");
+    for path in [scratch.socket(), token.clone()] {
+        let mode = std::fs::metadata(&path)
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "{} is {mode:o}", path.display());
+    }
+    // And it dies with the socket: a word left behind would be one a later process could present
+    // to a coordinator that never minted it.
+    server.stop();
+    assert!(!token.exists(), "the token goes when the room does");
+}
+
+/// The operator's seat is granted by the token the coordinator minted, and by nothing else. A seat
+/// is what a connection CLAIMS; the file beside the socket is what proves it.
+#[test]
+fn the_operator_seat_is_granted_by_the_coordinators_token() {
+    let scratch = Scratch::new("token");
+    let server = Server::serve(&scratch.socket(), Room::new()).expect("a socket");
+    let token = std::fs::read_to_string(operator_token_path(&scratch.socket()))
+        .expect("the token")
+        .trim()
+        .to_string();
+    // No token: refused, and the sentence says where the one it wants is.
+    let refused = hello_raw(
+        &scratch.socket(),
+        &operator_hello(None, OPERATOR, Seat::Operator),
+    );
+    match refused {
+        Response::Refused { id: None, why } => {
+            let said = why.to_string();
+            assert!(said.contains("no token"), "{said}");
+            assert!(
+                said.contains(&operator_token_path(&scratch.socket()).display().to_string()),
+                "the sentence names the file: {said}"
+            );
+        }
+        other => panic!("a bare operator seat is refused: {other:?}"),
+    }
+    // A token this coordinator did not mint: refused too, so a token from another room on the same
+    // box is not a password.
+    let elsewhere = Scratch::new("token-other");
+    let other = Server::serve(&elsewhere.socket(), Room::new()).expect("another socket");
+    let theirs =
+        std::fs::read_to_string(operator_token_path(&elsewhere.socket())).expect("a token");
+    assert_ne!(theirs.trim(), token, "two coordinators, two tokens");
+    match hello_raw(
+        &scratch.socket(),
+        &operator_hello(Some(theirs), OPERATOR, Seat::Operator),
+    ) {
+        Response::Refused { why, .. } => {
+            assert!(why.to_string().contains("not the one"), "{why}");
+        }
+        other => panic!("another room's token is not this room's: {other:?}"),
+    }
+    // The token the file holds: the seat, and the room answers it.
+    match hello_raw(
+        &scratch.socket(),
+        &operator_hello(Some(token.clone()), OPERATOR, Seat::Operator),
+    ) {
+        Response::Welcome { .. } => {}
+        other => panic!("the minted token is the seat: {other:?}"),
+    }
+    // And a token is not an upgrade: a session seat that presents it and names itself `operator`
+    // is still refused by name, because the name is checked against the seat.
+    match hello_raw(
+        &scratch.socket(),
+        &operator_hello(Some(token), OPERATOR, Seat::Session),
+    ) {
+        Response::Refused { why, .. } => {
+            assert!(
+                matches!(why, letibot_room::Refused::ReservedName { .. }),
+                "{why}"
+            );
+        }
+        other => panic!("a session seat cannot be the operator: {other:?}"),
+    }
+    other.stop();
     server.stop();
 }

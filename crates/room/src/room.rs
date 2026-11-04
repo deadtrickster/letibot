@@ -254,6 +254,11 @@ pub enum Refused {
     },
     /// Only a head's operator seat may do this.
     NotTheOperator,
+    /// The operator's seat is not a claim. A connection asking for it must present the token the
+    /// coordinator minted at its start, and the sentence names where that file is.
+    OperatorSeat {
+        why: String,
+    },
     /// A ref names something other than a todo or a queue row, or is empty.
     BadRef,
 }
@@ -359,6 +364,10 @@ impl fmt::Display for Refused {
                 write!(f, "`{name}` is not a name this connection may speak under")
             }
             Refused::NotTheOperator => write!(f, "only the operator's seat may do this"),
+            Refused::OperatorSeat { why } => write!(
+                f,
+                "the operator's seat is granted by a token, not by naming it: {why}"
+            ),
             Refused::BadRef => write!(
                 f,
                 "a ref is `todo` or `queue` with a row id, at most {} per message",

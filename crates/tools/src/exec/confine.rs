@@ -526,9 +526,10 @@ pub struct ViewSpec {
     pub protected: Vec<PathBuf>,
 }
 
-/// The host room coordinator's files (`room-<host key>.sock`, `.lease`, `.restart`) in letibot's
-/// data directory, plus `$LETIBOT_ROOM_SOCKET` and its lease. Found by scanning, so no host key is
-/// needed. A tool call that could open the socket could post as anyone in the rooms.
+/// The host room coordinator's files (`room-<host key>.sock`, `.lease`, `.restart`, `.token`) in
+/// letibot's data directory, plus `$LETIBOT_ROOM_SOCKET` and its lease and token. Found by
+/// scanning, so no host key is needed. A tool call that could open the socket could post as anyone
+/// in the rooms, and one that could read the token could post as the operator.
 pub fn room_files() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     let data = std::env::var_os("XDG_DATA_HOME")
@@ -544,7 +545,8 @@ pub fn room_files() -> Vec<PathBuf> {
             if name.starts_with("room-")
                 && (name.ends_with(".sock")
                     || name.ends_with(".lease")
-                    || name.ends_with(".restart"))
+                    || name.ends_with(".restart")
+                    || name.ends_with(".token"))
             {
                 out.push(e.path());
             }
@@ -553,6 +555,7 @@ pub fn room_files() -> Vec<PathBuf> {
     if let Some(p) = std::env::var_os("LETIBOT_ROOM_SOCKET").filter(|v| !v.is_empty()) {
         let p = PathBuf::from(p);
         out.push(p.with_extension("lease"));
+        out.push(p.with_extension("token"));
         out.push(p);
     }
     // Both spellings of each path: a symlinked prefix is two strings for one file.

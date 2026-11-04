@@ -20,8 +20,8 @@ pub use chat::{
 pub use item::{Abandonment, Claim, Item, Speaker, State, Wait, Why, duration};
 pub use lease::{
     Acquired, COORDINATOR_LEASE_TTL_MS, CoordinatorLease, Held, Holder, LEASE_BEAT_EVERY_MS,
-    Takeover, coordinator_session, host_key, host_name, lease_path, named_session, pid_alive,
-    socket_path, tag_of_session, tag_session,
+    Takeover, coordinator_session, host_key, host_name, lease_path, named_session,
+    operator_token_path, pid_alive, socket_path, tag_of_session, tag_session,
 };
 pub use restart::{Cause, Marker, marker_path, read_marker, room_running, room_started_ms};
 pub use room::{

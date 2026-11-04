@@ -1618,6 +1618,7 @@ name = "letibot-room"
 version = "0.5.1"
 dependencies = [
  "letibot-metrics",
+ "libc",
  "serde",
  "serde_json",
  "sha2",

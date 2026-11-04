@@ -187,18 +187,20 @@ refused at `hello` (`reserved_name`). Only a `session` seat may send `notify` (a
 fact), only as source `todo` or `queue`, and only into the host room or its own project room.
 
 **How the operator is authenticated on one host.** The coordinator's socket is the user's own (mode
-0600), so any process of that user can open it. What stops a model from speaking as the operator is
-that no model-facing door reaches the operator seat: the `room` tool speaks only over the session's own
-connection, whose author is the session. A head reaches the seat through its daemon with
-`ClientFrame::RoomChat`, and the daemon refuses that frame on any connection that came out of a tool
-call, using the socket peer check (`crates/sessionlog/src/peer.rs`, `door`). The daemon holds one
-operator connection to the coordinator (`crates/harnessd/src/room/operator.rs`), opened on the first
-request, and forwards only chat requests (`rooms`, `say`, `dm`, `read`, `roster`, `inbox`, `ack`).
-Inside a command boundary the coordinator's socket and its lease and marker files are hidden: absent
-or replaced by `/dev/null` under bwrap, and denied for connect and file access under seatbelt, so a tool
-cannot open the socket at all (`docs/boundary-and-adjudication.md`). Limit: an unconfined session has no
-boundary, so a process of the user there that opens the coordinator socket itself and claims
-`seat: operator` is not stopped. The peer check on the daemon is its only guard.
+0600, and the kernel's peer uid is checked at accept, so a descriptor inherited from another user is
+refused), and the operator's seat is a TOKEN: at its start the coordinator mints 32 random bytes,
+writes them to `<socket>.token` (mode 0600, beside the socket), and grants `seat: operator` only to a
+`hello` that presents them (`operator_seat` otherwise). The file is in the runtime directory the
+boundary hides from a tool call (`crates/tools/src/exec/confine.rs`, `room_files`), so a model's
+`bash` can neither open the socket nor read the token. harnessd's own operator connection
+(`crates/harnessd/src/room/operator.rs`) reads that file, which is why no other line has to pass it.
+A head reaches the seat through its daemon with `ClientFrame::RoomChat`, and the daemon refuses that
+frame on any connection that came out of a tool call, using the socket peer check
+(`crates/sessionlog/src/peer.rs`, `door`). Inside a command boundary the coordinator's socket, its
+lease, its marker and its token are hidden: absent or replaced by `/dev/null` under bwrap, and denied
+for connect and file access under seatbelt. Limit: an unconfined session has no boundary, so a
+process of the user there that opens the coordinator socket and reads the token is the operator. That
+is the user's own process trust, and the peer check on the daemon is the other guard.
 
 ### Messages
 
@@ -228,7 +230,7 @@ says `trimmed: true` when messages after the asked-for `seq` were dropped.
 
 | request | answer | notes |
 |---|---|---|
-| `hello {protocol, speaker, room, seat}` | `welcome` | `room` is `<host key>/<project key>` for a session |
+| `hello {protocol, speaker, room, seat, token}` | `welcome` | `room` is `<host key>/<project key>` for a session; `token` is the operator's |
 | `rooms` | `rooms {rows}` | the rooms this connection may see |
 | `say {id, room, text, to?, thread?, refs?}` | `said {id, message}` | `room` empty is the project room, or `host` with no project |
 | `dm {id, to, text, thread?}` | `said` | |

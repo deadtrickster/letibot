@@ -443,6 +443,13 @@ pub fn socket_path(runtime_dir: &Path, host_key: &str) -> PathBuf {
     runtime_dir.join(format!("room-{host_key}.sock"))
 }
 
+/// The file the coordinator's operator token is kept in, derived from the SOCKET rather than from
+/// the host key: a box whose socket is moved by `$LETIBOT_ROOM_SOCKET` moves the token with it, and
+/// the two ends - the server that writes it and the seat that reads it - know one path, not two.
+pub fn operator_token_path(socket: &Path) -> PathBuf {
+    socket.with_extension("token")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

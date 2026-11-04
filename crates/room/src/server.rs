@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -66,6 +67,9 @@ struct Inner {
     chat: Mutex<Chat>,
     /// Names of externals that have connected, so a message to one that is away is not refused.
     externals: Mutex<BTreeSet<String>>,
+    /// The token a connection must present to be the operator, minted at [`Server::with_options`]
+    /// and written beside the socket in mode 0600. The seat is a file, not a word in a frame.
+    operator_token: String,
 }
 
 /// How long a session was out of earshot, and how much it missed while it was - see
@@ -111,6 +115,12 @@ impl Server {
         // tells us by refusing. So it is removed first, and the LEASE is what stops two live ones.
         let _ = std::fs::remove_file(path);
         let listener = UnixListener::bind(path)?;
+        // The mode after the bind, not before: `bind` creates the file, and a socket created 0755
+        // and tightened a moment later was openable for that moment. Mode and peer uid are two
+        // gates on one door - the file says who may open it, the kernel says who did.
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        let operator_token = mint_token()?;
+        write_private(&crate::operator_token_path(path), operator_token.as_bytes())?;
         let lease_ms = room.lease_ms();
         let server = Server {
             inner: Arc::new(Inner {
@@ -128,6 +138,7 @@ impl Server {
                 missed: Mutex::new(BTreeMap::new()),
                 chat: Mutex::new(Chat::new()),
                 externals: Mutex::new(BTreeSet::new()),
+                operator_token,
                 stop: AtomicBool::new(false),
                 served: AtomicU64::new(0),
             }),
@@ -253,6 +264,12 @@ impl Server {
         &self.inner.path
     }
 
+    /// The token the operator's seat is granted by, as this server minted it - what a test (and a
+    /// daemon that wants its own head to speak as the person) reads instead of the file.
+    pub fn operator_token(&self) -> String {
+        self.inner.operator_token.clone()
+    }
+
     pub fn started_ms(&self) -> u64 {
         self.inner.started_ms
     }
@@ -323,10 +340,25 @@ impl Server {
         // The door, and it is answered before the room sees the frame. A skew or a wrong room
         // must not be half-obeyed: the room would vouch for a session that is not going to be
         // spoken to again, and a `post` after a `Bye` is a post in a queue nobody reads.
-        if let Request::Hello { protocol, room, .. } = frame {
+        if let Request::Hello {
+            protocol,
+            room,
+            token,
+            ..
+        } = frame
+        {
             if let Some(why) = crate::wire::protocol_refusal(*protocol) {
                 return Answer {
                     response: Response::Bye { why },
+                    events: Vec::new(),
+                };
+            }
+            // Before the name and before the room: the operator's seat is granted by a token the
+            // coordinator minted, so a connection that cannot read the coordinator's own runtime
+            // directory is told so here rather than admitted as the person and argued with later.
+            if let Some(why) = self.operator_refusal(seat, token.as_deref()) {
+                return Answer {
+                    response: Response::Refused { id: None, why },
                     events: Vec::new(),
                 };
             }
@@ -541,6 +573,9 @@ impl Server {
     pub fn stop(&self) {
         self.inner.stop.store(true, Ordering::SeqCst);
         let _ = std::fs::remove_file(&self.inner.path);
+        // The token dies with the socket it belongs to. A file left behind would be a word a
+        // later process could present to the next coordinator, which never minted it.
+        let _ = std::fs::remove_file(crate::operator_token_path(&self.inner.path));
         if let Some(lease) = self.inner.lease.lock().expect("the lease lock").as_ref() {
             let _ = lease.release();
         }
@@ -562,6 +597,34 @@ impl Server {
     }
 
     // ===== Chat =====
+
+    /// Why this `Hello` may not be the operator's, when it asked to be. The comparison is over the
+    /// whole token: one that stopped at the first wrong byte would answer a guesser byte by byte.
+    fn operator_refusal(&self, seat: Seat, token: Option<&str>) -> Option<crate::Refused> {
+        if seat != Seat::Operator {
+            return None;
+        }
+        let path = crate::operator_token_path(&self.inner.path);
+        let Some(given) = token.map(str::trim).filter(|t| !t.is_empty()) else {
+            return Some(crate::Refused::OperatorSeat {
+                why: format!(
+                    "this hello presented no token, and the coordinator writes the one it grants \
+                     the seat by in {} (mode 0600) at its start",
+                    path.display()
+                ),
+            });
+        };
+        if same_secret(given, &self.inner.operator_token) {
+            return None;
+        }
+        Some(crate::Refused::OperatorSeat {
+            why: format!(
+                "the token presented is not the one this coordinator minted - read {} (mode 0600) \
+                 and present what is in it",
+                path.display()
+            ),
+        })
+    }
 
     /// Why this `Hello` may not speak under this name in this seat, as the reply to send.
     fn hello_name_refusal(&self, seat: Seat, who: &Speaker) -> Option<Response> {
@@ -962,6 +1025,32 @@ impl Server {
         let _ = std::thread::Builder::new()
             .name("room-conn".into())
             .spawn(move || {
+                // The door, before a byte is read: the socket is this user's own and a peer is
+                // checked anyway. It costs one syscall and it refuses a descriptor inherited from
+                // another uid, which a file's mode cannot see.
+                let mine = unsafe { libc::geteuid() };
+                let theirs = peer_uid(&stream);
+                if theirs != Some(mine) {
+                    let said = theirs
+                        .map(|u| u.to_string())
+                        .unwrap_or_else(|| "a user the kernel would not name".to_string());
+                    eprintln!(
+                        "room: refused a connection from uid {said}; this socket is uid {mine}'s"
+                    );
+                    let mut w = stream;
+                    let _ = write_frame(
+                        &mut w,
+                        &Response::Bye {
+                            why: format!(
+                                "this room socket belongs to uid {mine} and the process that \
+                                 connected is uid {said} - a room takes the same user's \
+                                 connections only, and nothing was done"
+                            ),
+                        },
+                    );
+                    let _ = w.shutdown(std::net::Shutdown::Both);
+                    return;
+                }
                 let writer = match stream.try_clone() {
                     Ok(w) => w,
                     Err(_) => return,
@@ -1304,6 +1393,71 @@ fn read_frame(reader: &mut BufReader<UnixStream>) -> std::io::Result<Option<Requ
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
+/// The token an operator's seat is granted by: 32 bytes from the kernel's pool, hex. Read from
+/// `/dev/urandom` rather than a crate, because the platform has the entropy and a guess of this
+/// string is the whole of the seat's security.
+fn mint_token() -> std::io::Result<String> {
+    use std::io::Read;
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Create `path` at mode 0600 with `bytes` in it. Truncate first, so a token shorter than the one
+/// it replaces leaves no tail of the old secret on disk.
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.flush()
+}
+
+/// Are these the same string, in constant time? A comparison that stopped at the first wrong byte
+/// would answer a guesser one byte at a time, and the token is the whole of the operator's proof.
+fn same_secret(given: &str, mine: &str) -> bool {
+    let (a, b) = (given.as_bytes(), mine.as_bytes());
+    let mut diff = a.len() ^ b.len();
+    for i in 0..a.len().max(b.len()) {
+        diff |= (a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(0)) as usize;
+    }
+    diff == 0
+}
+
+/// The user on the other end of `stream`, when the kernel will say. A mode is a fact about a file
+/// and a descriptor can be inherited, so the socket is not trusted on its mode alone.
+#[cfg(target_os = "macos")]
+fn peer_uid(stream: &UnixStream) -> Option<u32> {
+    use std::os::unix::io::AsRawFd;
+    let (mut uid, mut gid): (libc::uid_t, libc::gid_t) = (0, 0);
+    // SAFETY: both out-parameters outlive the call.
+    let rc = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
+    (rc == 0).then_some(uid)
+}
+
+/// [`peer_uid`], from `SO_PEERCRED` - the same answer, and the only spelling Linux has.
+#[cfg(not(target_os = "macos"))]
+fn peer_uid(stream: &UnixStream) -> Option<u32> {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: `cred` is plain data, and zero is a valid value for it.
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `cred` and `len` outlive the call, and `len` is the size of `cred`.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut cred as *mut _ as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    (rc == 0).then_some(cred.uid)
+}
+
 /// The clock every part of the room reads, from the tree's one, re-exported so a beat and a
 /// sweep cannot disagree about what *now* is.
 pub use letibot_metrics::now_ms;
@@ -1351,6 +1505,7 @@ mod tests {
             speaker: Speaker::top_level("s-a"),
             room: server.name(),
             seat: Default::default(),
+            token: None,
         })
         .unwrap();
         a.write_all(format!("{hello}\n").as_bytes()).unwrap();
@@ -1416,6 +1571,7 @@ mod tests {
                 speaker: me.clone(),
                 room: "the-other-box".to_string(),
                 seat: Default::default(),
+                token: None,
             },
             now_ms(),
         );
@@ -1441,6 +1597,7 @@ mod tests {
                 speaker: me.clone(),
                 room: String::new(),
                 seat: Default::default(),
+                token: None,
             },
             now_ms(),
         );
@@ -1473,6 +1630,7 @@ mod tests {
                 speaker: me.clone(),
                 room: String::new(),
                 seat: Default::default(),
+                token: None,
             },
             now,
         );
@@ -1758,5 +1916,27 @@ mod tests {
         );
         server.stop();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The peer's user is what the socket's mode cannot see: the kernel is asked, and it answers
+    /// the uid on the other end. A test can prove the positive on this machine only - a second uid
+    /// is another user's process, and asking for one would be a test that needs root.
+    #[test]
+    fn the_peer_is_named_by_the_kernel() {
+        let (a, _b) = UnixStream::pair().expect("a socket pair");
+        let mine = unsafe { libc::geteuid() };
+        assert_eq!(
+            peer_uid(&a),
+            Some(mine),
+            "a socket of this process is this user's"
+        );
+        drop(_b);
+        // And the token is not guessable from itself: two mints differ, and neither is empty.
+        let (one, two) = (mint_token().expect("a mint"), mint_token().expect("a mint"));
+        assert_eq!(one.len(), 64, "32 bytes, hex");
+        assert_ne!(one, two, "a token is minted, never derived");
+        assert!(same_secret(&one, &one));
+        assert!(!same_secret(&one, &two));
+        assert!(!same_secret(&one[..63], &one), "a prefix is not the token");
     }
 }
