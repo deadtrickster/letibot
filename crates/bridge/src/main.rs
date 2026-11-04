@@ -196,6 +196,9 @@ fn parse_room_wait(args: &[String]) -> Result<(letibot_bridge::rooms::Attention,
     Ok((attention, Instant::now() + timeout))
 }
 
+/// A year. `Instant::now() + timeout` panics on a duration the clock cannot hold.
+const LONGEST_TIMEOUT_SECS: u64 = 365 * 24 * 3600;
+
 /// A duration as a person writes it: `90s`, `15m`, `2h`, or a bare number of seconds.
 fn duration(raw: &str) -> Result<Duration, String> {
     let raw = raw.trim();
@@ -212,7 +215,7 @@ fn duration(raw: &str) -> Result<Duration, String> {
         Some('h') => n.saturating_mul(3600),
         Some(other) => return Err(format!("`{other}` is not a unit; use s, m or h")),
     };
-    Ok(Duration::from_secs(secs))
+    Ok(Duration::from_secs(secs.min(LONGEST_TIMEOUT_SECS)))
 }
 
 #[cfg(test)]
@@ -289,6 +292,7 @@ mod tests {
         assert_eq!(duration("15m").unwrap(), Duration::from_secs(900));
         assert_eq!(duration("2h").unwrap(), Duration::from_secs(7200));
         assert_eq!(duration("45").unwrap(), Duration::from_secs(45));
+        assert!(Instant::now().checked_add(duration("18446744073709551615h").unwrap()).is_some());
         let e = duration("2d").expect_err("not a unit");
         assert!(e.contains('d'), "{e}");
         let e = duration("soon").expect_err("not a number");
