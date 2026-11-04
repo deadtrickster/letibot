@@ -267,16 +267,26 @@ struct Up {
 }
 
 impl Up {
-    /// Where a settlement goes now: the first level up that has not stopped, or the top of the tree
-    /// - which hands nothing further up, so its own queue is where the settlement still goes.
-    fn route(&self) -> (&Arc<Settlements>, &str) {
+    /// Queue settlements at the first level up that has not stopped, or at the top of the tree.
+    /// The flag is read under the target queue's lock: `stop` sets it before taking that lock to
+    /// drain, so a push that sees it clear lands before the drain and one that sees it set moves on.
+    /// Returns the session the settlements went to.
+    fn deliver(&self, items: impl IntoIterator<Item = JobCompletion>) -> String {
+        let mut items: Vec<JobCompletion> = items.into_iter().collect();
         let mut here = self;
-        while here.stopped.load(Ordering::Relaxed)
-            && let Some(above) = &here.up
-        {
-            here = above;
+        loop {
+            let mut g = here.queue.queue.lock().expect("job completions");
+            if here.stopped.load(Ordering::Acquire)
+                && let Some(above) = &here.up
+            {
+                drop(g);
+                here = above;
+                continue;
+            }
+            g.extend(items.drain(..));
+            here.queue.any.store(true, Ordering::SeqCst);
+            return here.who.clone();
         }
-        (&here.queue, &here.who)
     }
 }
 
@@ -291,6 +301,9 @@ pub struct JobWatchers {
     /// [`JobRecorder`]. `None` until the harness says otherwise, which is every test and every
     /// storeless run.
     recorder: Arc<Mutex<Option<JobRecorder>>>,
+    /// Read by the model but not yet marked delivered in the store: the steering text is built
+    /// before it is in a persisted row, so the mark waits for the next boundary or the turn's end.
+    undelivered: Mutex<Vec<(BackgroundKind, String)>>,
     hub: Weak<Hub>,
     /// The other thing that backgrounds.
     tasks: Option<Weak<dyn TaskRunner>>,
@@ -377,6 +390,7 @@ impl JobWatchers {
         Arc::new(JobWatchers {
             host: Some(Arc::downgrade(host)),
             recorder: Arc::new(Mutex::new(None)),
+            undelivered: Mutex::new(Vec::new()),
             hub: Arc::downgrade(hub),
             tasks: None,
             completions: Settlements::new(),
@@ -449,6 +463,7 @@ impl JobWatchers {
         Arc::new(JobWatchers {
             host: None,
             recorder: Arc::new(Mutex::new(None)),
+            undelivered: Mutex::new(Vec::new()),
             hub: Arc::downgrade(hub),
             tasks: None,
             completions: Settlements::new(),
@@ -480,6 +495,7 @@ impl JobWatchers {
             // Not inherited: a recorder names the SESSION its rows belong to, and a copy of
             // the parent's would file a child's job in the parent's history.
             recorder: Arc::new(Mutex::new(None)),
+            undelivered: Mutex::new(Vec::new()),
             completions: Arc::clone(&self.completions),
             // Copied with the queue it describes, never shared with the tree's.
             in_flight: Arc::clone(&self.in_flight),
@@ -512,6 +528,7 @@ impl JobWatchers {
             // Not inherited, for the reason `with_tasks` gives above: the recorder names the
             // session, and this set is another session's.
             recorder: Arc::new(Mutex::new(None)),
+            undelivered: Mutex::new(Vec::new()),
             // Its own: the child's queue is where its own settlements are drained from.
             completions: Arc::clone(&self.completions),
             // Copied with the queue it describes, never shared with the tree's.
@@ -595,10 +612,9 @@ impl JobWatchers {
         let Some(up) = &self.parent else {
             return false;
         };
-        let (above, who) = up.route();
-        above.push(c);
+        let who = up.deliver([c]);
         if let Some(bell) = &self.bell {
-            bell.ring_settlement_wake(who);
+            bell.ring_settlement_wake(&who);
         }
         true
     }
@@ -717,15 +733,28 @@ impl JobWatchers {
         }
         // And the snapshot, which carries each handle's want (`WatchedNow`).
         self.watched.rebuild();
-        // And the settlement is marked delivered in the store, because this is the one place
-        // *the model has been told* is true: a daemon that goes down between a settlement and its
-        // delivery brings it back on the next open, and a delivered one must not come back twice.
+        // Marked delivered in the store only once the text is in a persisted row: a daemon that
+        // goes down before then brings the settlement back, and a repeat is safer than a loss.
+        // The previous read's text is in the transcript by the time a later one is built.
+        self.mark_delivered();
+        self.undelivered
+            .lock()
+            .expect("undelivered")
+            .extend(done.iter().map(|c| (c.kind, c.job.clone())));
+    }
+
+    /// Write the store's `delivered` for what [`Self::read_now`] recorded.
+    pub fn mark_delivered(&self) {
+        let pending = std::mem::take(&mut *self.undelivered.lock().expect("undelivered"));
+        if pending.is_empty() {
+            return;
+        }
         let recorder = self.recorder.lock().expect("job recorder").clone();
         if let Some(rec) = recorder {
-            for c in done {
-                match c.kind {
-                    BackgroundKind::Subagent => rec.subagent_delivered(&c.job),
-                    BackgroundKind::Job => rec.job_delivered(&c.job),
+            for (kind, job) in pending {
+                match kind {
+                    BackgroundKind::Subagent => rec.subagent_delivered(&job),
+                    BackgroundKind::Job => rec.job_delivered(&job),
                 }
             }
         }
@@ -738,6 +767,8 @@ impl JobWatchers {
             r.turns_ended += 1;
             r.ended_at = Some(SystemTime::now());
         }
+        // The turn's rows are written: what it read is delivered.
+        self.mark_delivered();
         // Recorded before the ring, because it is what the ring MEANS: the ending is decided once
         // per turn, and the activity reads it as *a turn is coming for what this one held*.
         self.rings_held
@@ -961,7 +992,7 @@ impl JobWatchers {
     /// Per set, and the set is per session - see [`JobWatchers::shares_tree`] for the defect
     /// that came of sharing this across a tree.
     pub fn stop(&self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.stop.store(true, Ordering::Release);
         let pending: Vec<JobCompletion> = {
             let mut own = self.completions.queue.lock().expect("job completions");
             // What was HELD goes up with the queue : a stopped session has no next break
@@ -982,17 +1013,12 @@ impl JobWatchers {
         if pending.is_empty() {
             return;
         }
-        let (above, who) = up.route();
-        {
-            let mut g = above.queue.lock().expect("job completions");
-            g.extend(pending);
-            above.any.store(true, Ordering::SeqCst);
-        }
+        let who = up.deliver(pending);
         // And the ring, naming the session it was handed TO. The push that queued this rang
         // the owner before the hand-over was possible; without this ring a settlement arriving
         // just after would sit in the parent's queue until the parent woke for something else.
         if let Some(bell) = &self.bell {
-            bell.ring_settlement_wake(who);
+            bell.ring_settlement_wake(&who);
         }
     }
 
@@ -1000,7 +1026,7 @@ impl JobWatchers {
     /// against: a child joining a tree must not take the tree's stop, or a child's turn
     /// ending silences every watcher the root has.
     pub fn stopped(&self) -> bool {
-        self.stop.load(Ordering::Relaxed)
+        self.stop.load(Ordering::Acquire)
     }
 
     /// Watch one backgrounded thing. Idempotent: one already watched, or already settled, is
@@ -1133,15 +1159,14 @@ impl SettlementQueue {
             rec.record(&c);
         }
         let mut g = self.own.queue.lock().expect("job completions");
-        if self.stopped.load(Ordering::Relaxed)
+        if self.stopped.load(Ordering::Acquire)
             && let Some(above) = &self.parent
         {
             // The first level up that is still here: the one this set hands to may have stopped
             // since, and its queue has already been drained to a session nobody serves.
-            let (queue, who) = above.route();
             drop(g);
-            queue.push(c);
-            self.ring(who);
+            let who = above.deliver([c]);
+            self.ring(&who);
             return;
         }
         g.push_back(c);
@@ -1508,7 +1533,7 @@ fn watch_one(
             // Still running - or never seen, which is a boot window and not a finish. The chunk
             // is the shutdown re-check and nothing else; a settlement wakes the wait at once.
             Ok(Waited::Deadline { .. } | Waited::NeverStarted { .. }) => {
-                if queue.stopped.load(Ordering::Relaxed) {
+                if queue.stopped.load(Ordering::Acquire) {
                     break;
                 }
             }
