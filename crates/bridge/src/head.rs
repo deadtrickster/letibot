@@ -92,6 +92,10 @@ pub const SLASH_PATIENCE: Duration = Duration::from_secs(20);
 /// trip. The wait is one deadline, not a retry: `/models` is applied once.
 pub const MODEL_PATIENCE: Duration = Duration::from_secs(120);
 
+/// How long `stop` waits for the daemon to ack the close. The ack follows the session's removal,
+/// which is quick; a daemon busy past this is reported as not confirmed.
+pub const CLOSE_PATIENCE: Duration = Duration::from_secs(30);
+
 /// The answer to one request for a mode confirmation. `answer` is `yes`, `no` or
 /// `nobody`; `applied` is a different question, and a `yes` the session cannot carry is
 /// `applied: false` with the prerequisite check's words in `said`.
@@ -506,6 +510,8 @@ pub struct State {
     /// How the mode confirmations this head asked for ended, by the `client_request_id`
     /// they were asked with. Bounded by [`SETTLED_KEEP`].
     pub mode_settled: Vec<(String, ModeSettled)>,
+    /// Request ids of `CloseSession` frames the daemon has acked as done.
+    pub close_acks: Vec<String>,
     /// `Some(reason)` when the daemon closed the connection; every later send says so
     /// rather than failing on a dead socket two frames later.
     pub closed: Option<String>,
@@ -741,6 +747,13 @@ impl State {
                         },
                     ));
                 }
+            }
+            ServerFrame::Accepted {
+                client_request_id,
+                note,
+                ..
+            } if note == letibot_sessionlog::protocol::NOTE_SESSION_CLOSED => {
+                self.close_acks.push(client_request_id);
             }
             ServerFrame::Bye { reason } => self.closed = Some(reason),
             _ => {}
@@ -1493,6 +1506,7 @@ impl Head {
             peeks: g.peeks,
             peek_error: None,
             mode_settled: Vec::new(),
+            close_acks: Vec::new(),
             closed: g.closed.clone(),
             boot_failed: g.boot_failed.clone(),
             rejection: g.rejection.clone(),
@@ -1604,18 +1618,55 @@ impl Head {
     /// for any head, and the close is what settles a placement: a detach alone leaves the daemon
     /// holding the harness.
     pub fn stop(&self) -> Result<(), String> {
+        self.stop_within(CLOSE_PATIENCE)
+    }
+
+    /// [`Head::stop`] with the wait named. Returns once the daemon acked the close, and an `Err`
+    /// naming the wait when it did not, so a caller never reports a close that was not seen.
+    pub fn stop_within(&self, patience: Duration) -> Result<(), String> {
         self.may_write()?;
-        let mut c = self.said_client()?;
-        let who = c.identity().to_string();
-        c.interrupt(0, "the bridge was asked to stop this session")
-            .map_err(|e| e.to_string())?;
-        c.close_session(
-            0,
-            &who,
-            "the bridge was asked to stop it, so its placement could come home",
-        )
-        .map_err(|e| e.to_string())?;
-        c.detach().map_err(|e| e.to_string())
+        let id = {
+            let mut c = self.said_client()?;
+            let who = c.identity().to_string();
+            c.interrupt(0, "the bridge was asked to stop this session")
+                .map_err(|e| e.to_string())?;
+            c.close_session(
+                0,
+                &who,
+                "the bridge was asked to stop it, so its placement could come home",
+            )
+            .map_err(|e| e.to_string())?
+        };
+        let deadline = Instant::now() + patience;
+        loop {
+            let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            if g.close_acks.contains(&id) {
+                drop(g);
+                let mut c = self.said_client()?;
+                return c.detach().map_err(|e| e.to_string());
+            }
+            if let Some(why) = &g.rejection {
+                return Err(format!("the daemon refused the close: {why}"));
+            }
+            // The hub closes with the session and the daemon ends this connection with a `Bye`,
+            // which can overtake the ack: either way the session is closed.
+            if g.closed.is_some() {
+                return Ok(());
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(format!(
+                    "the close was sent but the daemon did not ack it within {patience:?}, so the \
+                     session may not be closed yet"
+                ));
+            }
+            let (next, _) = self
+                .shared
+                .bell
+                .wait_timeout(g, left)
+                .unwrap_or_else(|e| e.into_inner());
+            drop(next);
+        }
     }
 
     /// Ask the daemon to move this session to an approval point. Queued like a prompt
@@ -2085,6 +2136,31 @@ pub fn create_session_in(d: &Daemon, title: &str, workspace: &str) -> Result<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A close the daemon never acks is reported with the wait, not as a closed session.
+    #[test]
+    fn a_close_nobody_acks_is_reported_as_not_confirmed() {
+        let socket = letibot_sessionlog::testing::scratch_root()
+            .join(format!("bridge-noack-{}.sock", std::process::id()));
+        let hub = letibot_sessionlog::hub::Hub::new("s");
+        let server = letibot_sessionlog::server::serve(hub, socket.clone()).expect("bind");
+        let d = crate::daemon::Daemon {
+            workspace: socket.clone(),
+            key: "k".into(),
+            socket,
+            log: Default::default(),
+            store: Default::default(),
+            placement: None,
+            started: false,
+        };
+        let h = Head::attach(&d, "s").expect("attach");
+        // No time to be acked: the answer says so rather than claiming a close.
+        let why = h
+            .stop_within(Duration::ZERO)
+            .expect_err("no time to be acked");
+        assert!(why.contains("did not ack"), "{why}");
+        server.shutdown();
+    }
 
     /// A daemon that accepts the attach and never answers `/models`: the silence is reported with
     /// the wait that ran out and what that means, and the real wait is longer than one round trip.
