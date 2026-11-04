@@ -73,6 +73,9 @@ pub(crate) struct Member {
     pub connected: bool,
     #[serde(default)]
     pub label: String,
+    /// The project the member works in, empty when it has none.
+    #[serde(default)]
+    pub project: String,
 }
 
 /// One entry of the channel list.
@@ -111,10 +114,13 @@ pub(crate) struct RoomsView {
     /// The channel that vanished while selected, named so the view can say so. `None` until a
     /// poll drops the selected channel, cleared by the next explicit move.
     pub gone: Option<String>,
-    pub roster_open: bool,
     /// The roster lists the offline members too, not just their count.
     pub roster_all: bool,
     pub roster: BTreeMap<String, Vec<Member>>,
+    /// The last draw's member column: its x offset in the pane, its width, and the handle
+    /// on each row, so a click is answered from the frame and not recomputed.
+    pub member_col: (usize, usize),
+    pub member_rows: Vec<(usize, String)>,
     /// Rooms whose oldest stored message is on screen, so asking further back finds nothing.
     pub oldest_known: BTreeSet<String>,
     /// Rooms with a page-back request in flight.
@@ -292,9 +298,7 @@ impl RoomsView {
             Some(Chan::Room(id)) => {
                 ops.push(self.read_op(&id));
                 ops.push(self.read_op("dm"));
-                if self.roster_open {
-                    ops.push(json!({"type": "roster", "room": id}));
-                }
+                ops.push(json!({"type": "roster", "room": id}));
             }
             Some(Chan::Dm(_)) => ops.push(self.read_op("dm")),
             None => {}
@@ -640,20 +644,26 @@ impl App {
         self.redraw = true;
     }
 
-    /// The roster of the selected channel, on or off.
-    /// Closed, then connected members with the offline count, then everyone.
+    /// The roster always shows the connected members. `r` adds or drops the offline ones.
     pub(crate) fn rooms_toggle_roster(&mut self) -> ControlFlow<Option<Action>> {
-        if !self.rooms.roster_open {
-            self.rooms.roster_open = true;
-            self.rooms.roster_all = false;
-        } else if !self.rooms.roster_all {
-            self.rooms.roster_all = true;
-        } else {
-            self.rooms.roster_open = false;
-        }
-        self.rooms.next_poll_ms = 0;
+        self.rooms.roster_all = !self.rooms.roster_all;
         self.redraw = true;
         ControlFlow::Break(None)
+    }
+
+    /// A click on a member: `@handle ` into the composer, after a space when words precede it.
+    pub(crate) fn rooms_mention(&mut self, k: usize) {
+        let Some((_, handle)) = self.rooms.member_rows.get(k).cloned() else {
+            return;
+        };
+        let text = self.editor.text();
+        let lead = if text.is_empty() || text.ends_with(char::is_whitespace) {
+            ""
+        } else {
+            " "
+        };
+        self.editor.insert(&format!("{lead}@{handle} "));
+        self.redraw = true;
     }
 
     fn scroll_rooms_to_tail(&mut self) {

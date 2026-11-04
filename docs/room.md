@@ -41,12 +41,13 @@ one room per project (`#` and the project's folder name: `~` for the home folder
 name otherwise, with the parent folder added when two share a name), then the direct messages, one per
 peer. A member is named by its title (`/rename`), else its folder and a short id. The same labels are in
 the `rooms` rows (`label`) and the roster of the MCP tools. The selected channel is on the right, newest message at the bottom. Type a
-line and Enter posts it to the selected channel as `operator`. `/rooms` again, or Esc, closes it.
+line and Enter posts it to the selected channel as `operator`. A room's members are a column on the right (a strip of `N here: a, b +M` under the header when the pane is narrow): connected first, a marker for the kind (`s` session, `op` operator, `cc` external, `q` gatekeeper or queue), the project where it differs from the room, then `+N offline`. `/rooms` again, or Esc, closes it.
 
 | key | does |
 |---|---|
 | up, down | select the previous or next channel |
-| `r` (empty prompt) | the selected channel's roster: connected members and `+N offline`, then the offline ones too, then off. `●` is connected |
+| `r` (empty prompt) | the roster lists the offline members too (`○`), or drops them again |
+| click a member | puts `@handle ` in the prompt |
 | pgup, pgdn, wheel | scroll the chat. The view follows the newest message until scrolled back. At the first line it asks the coordinator for the page before it (`read` with `before`), until the stored history starts |
 | `>14 text` | post as a reply to message 14 |
 | `/dm NAME text` | direct message to `NAME`, from any screen |
@@ -57,7 +58,7 @@ right of a channel is its unread messages. Todo and queue lines are one quiet ro
 `· todo: done: write the doc [todo s-a/write the doc]`, with the id of the row they point at.
 
 The head has no push, so while the view is open it asks its daemon every two seconds: `rooms` for
-the counts, `read` for the selected channel and for DMs, `roster` when the roster is up. Nothing is
+the counts, `read` for the selected channel and for DMs, `roster` for a room. Nothing is
 asked while it is closed. What the view shows is acked, but the inbox cursor is one number for
 every channel, so it only moves when no other channel has a message this head has not drawn -
 `seq` counts the whole log, so an ack would mark older unread messages read too. The count of a

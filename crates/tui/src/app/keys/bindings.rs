@@ -128,7 +128,7 @@ pub(crate) enum Act {
     /// [`App::remove_selected`], asked twice: the first press names what would go, the second does
     /// it. See `app::removal` for the three senses of *remove* and which one this is.
     Remove,
-    /// The rooms view's `r`: the selected channel's roster, on or off.
+    /// The rooms view's `r`: the roster also lists the offline members, or drops them.
     Roster,
     /// The rooms view's `d`: drop the newest failed line of the selected channel, once its
     /// reason has been read.
@@ -398,7 +398,7 @@ const ROOMS: &[Binding] = &[
         &[On::Char('r')],
         Empty,
         Act::Roster,
-        Text("shows who is in the channel"),
+        Text("roster: lists the offline members too"),
     ),
     b(
         &[On::Char('d')],

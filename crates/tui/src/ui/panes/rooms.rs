@@ -225,44 +225,136 @@ fn message_lines(
     out
 }
 
-fn roster_lines(
-    c: &Chan,
+/// The chat keeps at least this many columns before the member column takes any.
+const CHAT_FLOOR: usize = 40;
+const MEMBER_MAX: usize = 28;
+const MEMBER_MIN: usize = 14;
+
+/// A kind's marker: session, operator, cc/external, gatekeeper/queue.
+fn kind_mark(kind: &str) -> &'static str {
+    match kind {
+        "session" => "s",
+        "operator" => "op",
+        "external" => "cc",
+        "queue" | "gatekeeper" => "q",
+        _ => "?",
+    }
+}
+
+/// The members to show: connected first, each group by name, offline after only when `all`.
+/// Returns the shown and how many offline members are not listed.
+fn ordered<'a>(
+    members: &'a [Member],
+    all: bool,
+    names: &BTreeMap<String, String>,
+) -> (Vec<&'a Member>, usize) {
+    let shown_name = |m: &Member| clean_line(names.get(&m.name).unwrap_or(&m.name));
+    let mut on: Vec<&Member> = members.iter().filter(|m| m.connected).collect();
+    let mut off: Vec<&Member> = members.iter().filter(|m| !m.connected).collect();
+    on.sort_by_key(|m| shown_name(m));
+    off.sort_by_key(|m| shown_name(m));
+    let hidden = if all { 0 } else { off.len() };
+    if all {
+        on.extend(off);
+    }
+    (on, hidden)
+}
+
+/// The member column's rows: a heading, the members, then the offline count. Rows past `room`
+/// are replaced by a `+N more` line, never dropped unsaid. Returns each member row with its
+/// handle for the click.
+fn member_column(
+    room_label: &str,
     members: Option<&Vec<Member>>,
     all: bool,
     names: &BTreeMap<String, String>,
-    rw: usize,
-) -> Vec<Line> {
-    if matches!(c, Chan::Dm(_)) {
-        return vec![pane::faint("  a direct chat has two people in it")];
-    }
+    room: usize,
+) -> (Vec<Line>, Vec<(usize, String)>, usize) {
     let Some(members) = members else {
-        return vec![pane::faint("  asking the coordinator...")];
+        return (vec![pane::faint("asking...")], Vec::new(), MEMBER_MIN);
     };
     let online = members.iter().filter(|m| m.connected).count();
-    let offline = members.len() - online;
-    let mut head = format!("  {online} connected");
-    if offline > 0 {
-        head.push_str(&format!(
-            ", +{offline} offline ({})",
-            if all { "r hides" } else { "r lists" }
-        ));
-    }
-    let mut out = vec![pane::faint(head)];
-    for m in members.iter().filter(|m| all || m.connected) {
+    let (list, hidden) = ordered(members, all, names);
+    let mut rows: Vec<(String, Role, Option<String>)> =
+        vec![(format!("{online} here"), Role::Faint, None)];
+    for m in &list {
         let dot = if m.connected { "●" } else { "○" };
-        let name = names.get(&m.name).unwrap_or(&m.name);
-        let mut text = format!("  {dot} {}  {}", clean_line(name), clean_line(&m.kind));
-        if !m.label.is_empty() && m.label != *name {
-            text.push_str(&format!("  {}", clean_line(&m.label)));
+        let name = clean_line(names.get(&m.name).unwrap_or(&m.name));
+        let mut text = format!("{dot} {} {name}", kind_mark(&m.kind));
+        if !m.project.is_empty() && m.project != room_label {
+            text.push_str(&format!(" ({})", clean_line(&m.project)));
         }
-        let role = if m.connected {
-            Role::Plain
-        } else {
-            Role::Faint
-        };
-        out.push(Line::new(vec![Span::role(trim_to(&text, rw), role)]));
+        let role = if m.connected { Role::Plain } else { Role::Faint };
+        rows.push((text, role, Some(m.name.clone())));
     }
-    out
+    if hidden > 0 {
+        rows.push((format!("+{hidden} offline (r lists)"), Role::Faint, None));
+    } else if members.iter().any(|m| !m.connected) {
+        rows.push(("r hides the offline".into(), Role::Faint, None));
+    }
+    let width = rows
+        .iter()
+        .map(|(t, _, _)| visible_width(t))
+        .max()
+        .unwrap_or(0)
+        .clamp(MEMBER_MIN, MEMBER_MAX);
+    if rows.len() > room {
+        let more = rows.len() - (room - 1);
+        rows.truncate(room - 1);
+        rows.push((format!("+{more} more"), Role::Faint, None));
+    }
+    let mut lines = Vec::new();
+    let mut handles = Vec::new();
+    for (i, (t, role, h)) in rows.into_iter().enumerate() {
+        lines.push(Line::new(vec![Span::role(trim_to(&t, width), role)]));
+        if let Some(h) = h {
+            handles.push((i, h));
+        }
+    }
+    (lines, handles, width)
+}
+
+/// One line under the channel header for a pane too narrow for the column: `N here: a, b +M`.
+fn member_strip(
+    members: Option<&Vec<Member>>,
+    names: &BTreeMap<String, String>,
+    rw: usize,
+) -> Line {
+    let Some(members) = members else {
+        return pane::faint(trim_to("asking who is here...", rw));
+    };
+    let (list, _) = ordered(members, false, names);
+    let n = list.len();
+    let all: Vec<String> = list
+        .iter()
+        .map(|m| clean_line(names.get(&m.name).unwrap_or(&m.name)))
+        .collect();
+    let head = format!("{n} here");
+    if all.is_empty() {
+        return pane::faint(trim_to(&head, rw));
+    }
+    // Names go in while the `+M` that would follow still fits.
+    let mut shown: Vec<&str> = Vec::new();
+    for i in 0..all.len() {
+        let rest = all.len() - i - 1;
+        let tail = if rest > 0 {
+            format!(" +{rest}")
+        } else {
+            String::new()
+        };
+        let mut next = shown.clone();
+        next.push(&all[i]);
+        if visible_width(&format!("{head}: {}{tail}", next.join(", "))) > rw {
+            break;
+        }
+        shown.push(&all[i]);
+    }
+    let more = all.len() - shown.len();
+    let mut text = format!("{head}: {}", shown.join(", "));
+    if more > 0 {
+        text.push_str(&format!(" +{more}"));
+    }
+    pane::faint(trim_to(&text, rw))
 }
 
 impl RoomsView {
@@ -272,9 +364,6 @@ impl RoomsView {
             && let Some(r) = self.rows.iter().find(|r| &r.id == id)
         {
             spans.push(Span::role(format!("  {} here", r.members), Role::Faint));
-        }
-        if self.roster_open {
-            spans.push(Span::role("  · roster (r closes)", Role::Faint));
         }
         let l = Line::new(spans);
         if l.width() > rw {
@@ -370,19 +459,6 @@ impl App {
                 "  {which} is gone - up or down selects a channel"
             ))];
         };
-        if self.rooms.roster_open {
-            let key = match &c {
-                Chan::Room(id) => id.as_str(),
-                Chan::Dm(_) => "",
-            };
-            return roster_lines(
-                &c,
-                self.rooms.roster.get(key),
-                self.rooms.roster_all,
-                &names,
-                rw,
-            );
-        }
         let msgs = self.rooms.messages(&c);
         let with_time = rw >= 64;
         let mut out: Vec<Line> = Vec::new();
@@ -413,6 +489,8 @@ impl App {
 
     pub(crate) fn rooms_lines(&mut self, w: usize, room: usize) -> Vec<String> {
         let palette = self.cfg.palette();
+        self.rooms.member_rows.clear();
+        self.rooms.member_col = (0, 0);
         if room < 3 || w < 24 {
             self.pane_len = 0;
             self.pane_room = room;
@@ -425,8 +503,47 @@ impl App {
         // Recorded for the same reason click arithmetic is: a test reading the column must
         // not re-derive a width the frame already computed.
         self.rooms_left_w = lw;
-        let rw = w.saturating_sub(lw + visible_width(SEP));
-        let chat_room = room - 2;
+        let full = w.saturating_sub(lw + visible_width(SEP));
+        let names = self.rooms_names();
+        let room_key = match self.rooms.selected() {
+            Some(Chan::Room(id)) => Some(id),
+            _ => None,
+        };
+        let members = room_key
+            .as_ref()
+            .and_then(|id| self.rooms.roster.get(id))
+            .cloned();
+        let column = room_key.as_ref().map(|id| {
+            member_column(
+                &self.rooms.room_label(id),
+                members.as_ref(),
+                self.rooms.roster_all,
+                &names,
+                room,
+            )
+        });
+        // The column takes its width from its rows, but never the chat's floor.
+        let wide = column
+            .as_ref()
+            .is_some_and(|(_, _, mw)| full >= CHAT_FLOOR + visible_width(SEP) + mw);
+        let (mlines, mw) = match column {
+            Some((lines, handles, mw)) if wide => {
+                self.rooms.member_rows = handles;
+                (lines, mw)
+            }
+            _ => (Vec::new(), 0),
+        };
+        let rw = if wide {
+            full - mw - visible_width(SEP)
+        } else {
+            full
+        };
+        let strip = (room_key.is_some() && !wide && room >= 5)
+            .then(|| member_strip(members.as_ref(), &names, rw));
+        let chat_room = room - 2 - usize::from(strip.is_some());
+        if wide {
+            self.rooms.member_col = (lw + visible_width(SEP) + rw + visible_width(SEP), mw);
+        }
 
         let left = self.rooms_left(lw, room);
         let body = self.rooms_body(rw);
@@ -471,6 +588,9 @@ impl App {
             .selected()
             .map_or_else(|| pane::title("no channel"), |c| self.rooms.header(&c, rw));
         right.insert(0, header);
+        if let Some(l) = strip {
+            right.insert(1, l);
+        }
         right.push(self.rooms.footer(rw));
 
         let rows: Vec<Line> = left
@@ -483,15 +603,23 @@ impl App {
                     .chain(std::iter::repeat_with(Line::default)),
             )
             .take(room)
-            .map(|(l, r)| {
+            .enumerate()
+            .map(|(i, (l, r))| {
                 let mut out = Line::default();
                 // The left's own style (the picked row's inverse) stays on the left alone.
                 for s in &l.spans {
                     out.push(Span::styled(s.content.clone(), l.style.patch(&s.style)));
                 }
                 out.push(Span::role(SEP, Role::Faint));
+                let r = if wide { padded(r, rw) } else { r };
                 for s in &r.spans {
                     out.push(Span::styled(s.content.clone(), r.style.patch(&s.style)));
+                }
+                if let Some(m) = mlines.get(i) {
+                    out.push(Span::role(SEP, Role::Faint));
+                    for sp in &m.spans {
+                        out.push(sp.clone());
+                    }
                 }
                 out
             })

@@ -348,21 +348,25 @@ fn switching_channel_reads_the_new_one_at_once() {
 }
 
 #[test]
-fn the_roster_key_asks_for_the_roster_of_the_selected_channel() {
+fn the_roster_is_asked_for_on_every_poll_without_a_key() {
     let mut a = opened(1_000);
-    a.key(Key::Char('r'));
-    a.clock(1_100);
+    reply(&mut a, rooms_reply(&[("host", 1, 0, 0)]));
+    a.clock(3_100);
     let next = ops(&mut a);
     assert!(
         next.contains(&json!({"type": "roster", "room": "host"})),
         "{next:?}"
     );
-    // A second press lists the offline members too, a third closes.
+}
+
+#[test]
+fn the_roster_key_toggles_the_offline_members() {
+    let mut a = opened(1_000);
+    assert!(!a.rooms.roster_all);
     a.key(Key::Char('r'));
-    assert!(a.rooms.roster_open && a.rooms.roster_all);
+    assert!(a.rooms.roster_all);
     a.key(Key::Char('r'));
-    a.clock(1_200);
-    assert!(!types(&ops(&mut a)).contains(&"roster"));
+    assert!(!a.rooms.roster_all);
 }
 
 #[test]
@@ -370,7 +374,7 @@ fn a_typed_r_is_a_letter_not_the_roster_key() {
     let mut a = opened(1_000);
     a.set_composer("a");
     a.key(Key::Char('r'));
-    assert!(!a.rooms.roster_open);
+    assert!(!a.rooms.roster_all);
     assert_eq!(a.editor.text(), "ar");
 }
 
@@ -974,45 +978,94 @@ fn a_dm_channel_is_listed_under_direct_messages_with_its_unread_count() {
     }
 }
 
+fn host_roster(a: &mut App) {
+    reply(a, rooms_reply(&[("host", 3, 1, 0)]));
+    reply(
+        a,
+        history(
+            "host",
+            vec![msg(1, "host", "s-a", "session", "hello there")],
+        ),
+    );
+    reply(
+        a,
+        json!({"type": "roster", "room": "host", "rows": [
+            {"name": "s-a", "kind": "session", "connected": false, "project": "", "label": "the doc writer"},
+            {"name": "operator", "kind": "operator", "connected": true, "project": "", "label": ""},
+            {"name": "cc@letibot", "kind": "external", "connected": true, "project": "other", "label": ""},
+            {"name": "gk", "kind": "queue", "connected": true, "project": "", "label": ""},
+        ]}),
+    );
+}
+
 #[test]
-fn the_roster_replaces_the_chat_and_goes_back() {
-    for cols in WIDTHS {
-        let mut a = opened(1_000);
-        reply(&mut a, rooms_reply(&[("host", 2, 1, 0)]));
-        reply(
-            &mut a,
-            history(
-                "host",
-                vec![msg(1, "host", "s-a", "session", "hello there")],
-            ),
-        );
-        a.key(Key::Char('r'));
-        reply(
-            &mut a,
-            json!({"type": "roster", "room": "host", "rows": [
-                {"name": "operator", "kind": "operator", "connected": true, "project": "", "label": ""},
-                {"name": "s-a", "kind": "session", "connected": false, "project": "", "label": "the doc writer"},
-            ]}),
-        );
-        let rows = screen(&mut a, cols);
-        fits(&rows, cols);
-        let all = rows.join("\n");
-        assert!(all.contains("1 connected, +1 offline"), "{all}");
-        assert!(row_with(&rows, "operator  operator").contains('●'));
-        assert!(!all.contains("the doc writer"), "offline is a count: {all}");
-        assert!(!all.contains("hello there"), "{all}");
-        a.key(Key::Char('r'));
-        let all = screen(&mut a, cols).join("\n");
-        assert!(
-            row_with(
-                &all.lines().map(str::to_string).collect::<Vec<_>>(),
-                "the doc writer"
-            )
-            .contains('○')
-        );
-        a.key(Key::Char('r'));
-        assert!(screen(&mut a, cols).join("\n").contains("hello there"));
-    }
+fn the_roster_column_shows_connected_members_with_markers_by_default() {
+    let mut a = opened(1_000);
+    host_roster(&mut a);
+    let rows = screen(&mut a, 120);
+    fits(&rows, 120);
+    let all = rows.join("\n");
+    assert!(all.contains("hello there"), "chat stays: {all}");
+    assert!(row_with(&rows, "operator").contains("● op operator"), "{all}");
+    assert!(row_with(&rows, "cc@letibot").contains("● cc cc@letibot (other)"), "{all}");
+    assert!(row_with(&rows, "gk").contains("● q gk"), "{all}");
+    assert!(row_with(&rows, "+1 offline").contains("r lists"), "{all}");
+    assert!(!all.contains("the doc writer"), "offline is a count: {all}");
+    // Connected members come first, by name.
+    let at = |n: &str| rows.iter().position(|r| r.contains(n)).unwrap();
+    assert!(at("cc@letibot") < at("gk") && at("gk") < at("operator"), "{all}");
+}
+
+#[test]
+fn r_lists_the_offline_members_and_again_hides_them() {
+    let mut a = opened(1_000);
+    host_roster(&mut a);
+    a.key(Key::Char('r'));
+    let rows = screen(&mut a, 120);
+    assert!(row_with(&rows, "the doc writer").contains("○ s "), "{rows:?}");
+    a.key(Key::Char('r'));
+    assert!(!screen(&mut a, 120).join("\n").contains("the doc writer"));
+}
+
+#[test]
+fn a_narrow_pane_shows_a_strip_under_the_header() {
+    let mut a = opened(1_000);
+    host_roster(&mut a);
+    let rows = screen(&mut a, 70);
+    fits(&rows, 70);
+    let all = rows.join("\n");
+    assert!(row_with(&rows, "3 here:").contains("cc@letibot, gk, operator"), "{all}");
+    assert!(!all.contains("● op"), "no column: {all}");
+    let rows = screen(&mut a, 52);
+    fits(&rows, 52);
+    let strip = row_with(&rows, "3 here:");
+    assert!(strip.contains(" +"), "the names that do not fit are counted: {strip}");
+}
+
+#[test]
+fn a_member_joining_shows_on_the_next_roster() {
+    let mut a = opened(1_000);
+    host_roster(&mut a);
+    assert!(!screen(&mut a, 120).join("\n").contains("newcomer"));
+    reply(
+        &mut a,
+        json!({"type": "roster", "room": "host", "rows": [
+            {"name": "newcomer", "kind": "session", "connected": true, "project": "", "label": ""}]}),
+    );
+    assert!(screen(&mut a, 120).join("\n").contains("● s newcomer"));
+}
+
+#[test]
+fn a_click_on_a_member_inserts_the_mention() {
+    let mut a = opened(1_000);
+    host_roster(&mut a);
+    let rows = screen(&mut a, 120);
+    let y = rows.iter().position(|r| r.contains("● cc cc@letibot")).unwrap();
+    let x = rows[y].chars().position(|c| c == '●').unwrap();
+    a.key(Key::Click { x: x as u16, y: y as u16 });
+    assert_eq!(a.editor.text(), "@cc@letibot ");
+    a.key(Key::Click { x: x as u16, y: y as u16 });
+    assert_eq!(a.editor.text(), "@cc@letibot @cc@letibot ");
 }
 
 #[test]

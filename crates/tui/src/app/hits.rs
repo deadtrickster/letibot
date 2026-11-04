@@ -55,6 +55,9 @@ pub(crate) enum Target {
     /// one stop is the panel's index in the view, and it is not a stop of the pane: a panel's
     /// title is a door, and Enter is for the rows behind it.
     PluginPanel,
+    /// A member row of the `/rooms` roster column; its one stop is the row's index in
+    /// `RoomsView::member_rows`. A click puts `@handle ` in the composer.
+    RoomMember,
     /// The decision card; its stops are the ladder's rows.
     Decision,
     /// The quit card; its stops are its two choices.
@@ -182,6 +185,24 @@ impl App {
                                 },
                                 target: Target::TodoWait,
                                 stops: vec![(top + d, k)],
+                            });
+                        }
+                    }
+                }
+                // The roster column's member rows, exactly where the draw put them.
+                if s == Surface::Rooms {
+                    let (col, w) = self.rooms.member_col;
+                    for (k, (row, _)) in self.rooms.member_rows.clone().into_iter().enumerate() {
+                        if row < room {
+                            self.hits.push(Hit {
+                                rect: Rect {
+                                    x: x + col,
+                                    y: top + row,
+                                    w,
+                                    h: 1,
+                                },
+                                target: Target::RoomMember,
+                                stops: vec![(top + row, k)],
                             });
                         }
                     }
