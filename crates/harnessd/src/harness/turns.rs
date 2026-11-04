@@ -3343,8 +3343,9 @@ impl Harness {
             if self.hub.is_closed() {
                 return Waited::Closed;
             }
-            // A person pressing stop ends the wait: the retry ladder's can be sixteen seconds, and
-            // watching only the daemon's own closure left them waiting it out.
+            // A person pressing stop ends the wait: the retry ladder's is the provider's own
+            // `Retry-After` as much as its rungs, and watching only the daemon's own closure left
+            // them waiting out a minute they had already given up on.
             if self.hub.has_queued_interrupt() {
                 return Waited::Interrupted;
             }

@@ -1,6 +1,6 @@
-//! What a failed provider call is worth: the tree's one answer to what is retryable and for how long.
-//! Three classes: `Transport` (no answer, same bytes may be resent), `TryAgain` (provider says not
-//! now) and `Refused` (a retry would be refused identically). Lives beside [`HttpError`].
+//! What a failed provider call is worth: the tree's one answer to what is retryable and for how
+//! long. Three classes: `Transport` (no answer, same bytes may be resent), `TryAgain` (provider says
+//! not now) and `Refused` (a retry would be refused identically); a wait is the rung or *its* instant.
 
 use std::time::Duration;
 
@@ -13,6 +13,10 @@ pub const TRY_AGAIN: &[u16] = &[408, 429, 500, 502, 503, 504];
 
 /// The default number of retries - calls after the first. See [`Policy::standard`].
 pub const STANDARD_RETRIES: u32 = 5;
+
+/// The longest one wait may be, however far ahead the provider puts its own instant: a rate limit
+/// worth respecting is usually a minute, and the stop key ends any wait a person will not sit out.
+pub const LONGEST_WAIT: Duration = Duration::from_secs(60);
 
 /// What one failure is, in the only terms a retry can use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,8 +83,8 @@ pub struct Policy {
 }
 
 impl Policy {
-    /// `retries` calls after the first, waiting 1 s, 2 s, 4 s… between them. `0` is none, and the
-    /// first failure is the answer.
+    /// `retries` calls after the first, waiting 1 s, 2 s, 4 s… between them, or longer where the
+    /// provider sent a `Retry-After`. `0` is none, and the first failure is the answer.
     pub const fn new(retries: u32) -> Self {
         Policy { retries }
     }
@@ -126,7 +130,15 @@ impl Policy {
         if failed >= self.retries || !self.class(e).retryable() {
             return None;
         }
-        Some(Duration::from_secs(1u64 << failed.min(31)))
+        let rung = Duration::from_secs(1u64 << failed.min(31));
+        // The provider's own instant wins when it is longer: a `429` that says sixty seconds is
+        // the only sleep anybody can size, and five calls inside 31 s of it is the whole ladder
+        // spent on a wait that would have lifted.
+        let asked = match e {
+            HttpError::Status { retry_after, .. } => retry_after.map(Duration::from_secs),
+            HttpError::Io(_) | HttpError::Malformed(_) => None,
+        };
+        Some(rung.max(asked.unwrap_or(Duration::ZERO)).min(LONGEST_WAIT))
     }
 
     /// Did the MODEL refuse, rather than the wire failing? A connection refused or a
@@ -557,6 +569,77 @@ mod tests {
         assert!(Policy::none().after(&status(503), 0).is_none());
         assert!(Policy::new(1).after(&status(503), 0).is_some());
         assert!(Policy::new(1).after(&status(503), 1).is_none());
+    }
+
+    /// The provider's own instant wins when it is longer than the rung. Read and never slept on, a
+    /// `429` saying sixty seconds was answered by five calls inside 31 s, and the ladder reported a
+    /// total the daemon had not waited.
+    #[test]
+    fn a_retry_after_longer_than_the_rung_is_waited_out_and_counted() {
+        let p = Policy::standard();
+        let minute = HttpError::Status {
+            code: 429,
+            body: String::new(),
+            retry_after: Some(60),
+        };
+        assert_eq!(
+            p.after(&minute, 0),
+            Some(Duration::from_secs(60)),
+            "the rung is 1 s and the provider asked for 60"
+        );
+        assert_eq!(
+            p.after(&minute, 4),
+            Some(Duration::from_secs(60)),
+            "and it wins at every rung below it, including the 16 s one"
+        );
+        // A short one does not shorten the ladder's own backoff: it is a floor, not a replacement.
+        let three = HttpError::Status {
+            code: 429,
+            body: String::new(),
+            retry_after: Some(3),
+        };
+        assert_eq!(p.after(&three, 0), Some(Duration::from_secs(3)));
+        assert_eq!(
+            p.after(&three, 3),
+            Some(Duration::from_secs(8)),
+            "8 s is already longer than the 3 the provider asked for"
+        );
+        // The cap is a cap: a provider cannot park a turn for an hour.
+        let hour = HttpError::Status {
+            code: 503,
+            body: String::new(),
+            retry_after: Some(3600),
+        };
+        assert_eq!(p.after(&hour, 0), Some(LONGEST_WAIT));
+        // And money is still not a wait, whatever instant comes with it.
+        let money = HttpError::Status {
+            code: 429,
+            body: "insufficient_quota".into(),
+            retry_after: Some(60),
+        };
+        assert_eq!(p.after(&money, 0), None);
+
+        // The ladder reports the wait it took, so the ending cannot say 31 s for a minute's.
+        let mut ladder = Ladder::new(p);
+        let mut slept = Duration::ZERO;
+        for n in 0..p.retries() {
+            let wait = ladder.failed(&minute).expect("retryable");
+            assert_eq!(Some(wait), p.after(&minute, n), "rung {n}");
+            slept += wait;
+        }
+        assert!(ladder.failed(&minute).is_none(), "the ladder is spent");
+        assert_eq!(ladder.attempts(), 6);
+        assert_eq!(slept, Duration::from_secs(300));
+        assert_eq!(
+            ladder.waited(),
+            slept,
+            "the count is the wait, not the rungs"
+        );
+        let ending = ladder.ending(&minute);
+        assert!(
+            ending.contains("tried 6 times over 5m 00s"),
+            "the ending says what was waited: {ending}"
+        );
     }
 
     /// The budget is the caller's, and `0` means the first failure is the answer: the
