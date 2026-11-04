@@ -82,46 +82,94 @@ pub(crate) fn row_drawn_at(
     }
 }
 
+/// The stretches of rows the rung hides and where every row is, precomputed and handed to the
+/// walks, so a per-row question is one lookup instead of a rescan of the run around it (R123.3:
+/// one long hidden run made every walk over it quadratic this way).
+pub(crate) struct RunIndex<'a> {
+    /// Per row, the stretch of undrawn rows it sits in, or [`NO_STRETCH`]. Rows are bounded by
+    /// the bytes a head holds, far below 2^32, so `u32` is the whole index.
+    of_row: Vec<u32>,
+    /// The stretches as `[start, end)`, ascending, each with whether it hides a row: the three
+    /// facts [`unseen_run_at`] used to derive by walking, and nothing else.
+    stretches: Vec<(usize, usize, bool)>,
+    /// Row by id, first occurrence: [`run_open_at`] scanned the transcript per row.
+    by_id: std::collections::HashMap<&'a str, usize>,
+    len: usize,
+    hides: bool,
+}
+
+/// A row that is drawn, or past the end: it is in no stretch.
+const NO_STRETCH: u32 = u32::MAX;
+
+impl<'a> RunIndex<'a> {
+    /// One pass over the rows, asking the same predicates the per-row walks asked: a stretch is
+    /// a maximal run of rows [`row_drawn_at`] refuses, and `hidden` is folded while it grows.
+    pub(crate) fn of(
+        items: &'a [SnapshotItem],
+        vis: Visibility,
+        bound: &std::collections::HashMap<String, String>,
+    ) -> RunIndex<'a> {
+        let hides = vis.hides_the_working();
+        let mut of_row = vec![NO_STRETCH; items.len()];
+        let mut stretches: Vec<(usize, usize, bool)> = Vec::new();
+        let mut by_id = std::collections::HashMap::with_capacity(items.len());
+        let mut open: Option<(usize, bool)> = None;
+        for (r, it) in items.iter().enumerate() {
+            by_id.entry(it.item_id.as_str()).or_insert(r);
+            if hides && !row_drawn_at(vis, bound, it) {
+                let hidden = row_hidden_at(vis, Some(it));
+                match open.as_mut() {
+                    Some((_, h)) => *h |= hidden,
+                    None => open = Some((r, hidden)),
+                }
+            } else if let Some((start, hidden)) = open.take() {
+                let idx = stretches.len() as u32;
+                stretches.push((start, r, hidden));
+                of_row[start..r].fill(idx);
+            }
+        }
+        if let Some((start, hidden)) = open.take() {
+            let idx = stretches.len() as u32;
+            stretches.push((start, items.len(), hidden));
+            of_row[start..items.len()].fill(idx);
+        }
+        RunIndex {
+            of_row,
+            stretches,
+            by_id,
+            len: items.len(),
+            hides,
+        }
+    }
+
+    /// The row an id names, first occurrence - what `position` answered, without the scan.
+    pub(crate) fn row_of(&self, id: &str) -> Option<usize> {
+        self.by_id.get(id).copied()
+    }
+
+    /// The stretch around `row` with its `hidden` flag, when the row is in one.
+    fn stretch(&self, row: usize) -> Option<(usize, usize, bool)> {
+        let idx = self.of_row.get(row).copied().filter(|i| *i != NO_STRETCH)?;
+        Some(self.stretches[idx as usize])
+    }
+}
+
 /// The stretch of rows the reader does not see that `row` sits in, as `[start, end)`, or `None` when this row is
 /// visible. The boundary is [`row_drawn`] and not [`row_hidden`]: an invisible row is not a hidden one, and an
-/// assistant row with no prose is exactly what split one run into eight.
-pub(crate) fn unseen_run_at(
-    items: &[SnapshotItem],
-    vis: Visibility,
-    bound: &std::collections::HashMap<String, String>,
-    live: LiveWork,
-    row: usize,
-) -> Option<(usize, usize)> {
-    if !vis.hides_the_working() || row >= items.len() || row_drawn(items, vis, bound, row) {
-        return None;
-    }
-    let mut start = row;
-    while start > 0 && !row_drawn(items, vis, bound, start - 1) {
-        start -= 1;
-    }
-    let mut end = row + 1;
-    while end < items.len() && !row_drawn(items, vis, bound, end) {
-        end += 1;
-    }
-    let hidden = (start..end).any(|r| row_hidden(items, vis, r));
+/// assistant row with no prose is exactly what split one run into eight. The bounds are [`RunIndex`]'s.
+pub(crate) fn unseen_run_at(runs: &RunIndex, live: LiveWork, row: usize) -> Option<(usize, usize)> {
+    let (start, end, hidden) = runs.stretch(row)?;
     // The live tail is contiguous with a stretch that runs to the end of the transcript: the work in flight comes
     // after every row there is, so it belongs to the last stretch and to nothing else. A stretch that hides nothing
     // draws no marker at all.
-    let reaches_the_turn = end == items.len() && live.work() > 0;
+    let reaches_the_turn = end == runs.len && live.work() > 0;
     (hidden || reaches_the_turn).then_some((start, end))
 }
 
 /// Is this row inside the run that is currently open? Opening a run is not a second rendering of it but the rung
 /// lifted for those rows and no others, so the reader gets the very rows the rung was hiding from the one renderer
 /// that always drew them.
-pub(crate) fn run_open_at(
-    items: &[SnapshotItem],
-    vis: Visibility,
-    bound: &std::collections::HashMap<String, String>,
-    live: LiveWork,
-    open: Option<&str>,
-    row: usize,
-) -> bool {
+pub(crate) fn run_open_at(runs: &RunIndex, live: LiveWork, open: Option<&str>, row: usize) -> bool {
     let Some(id) = open.filter(|id| !id.is_empty()) else {
         return false;
     };
@@ -130,10 +178,10 @@ pub(crate) fn run_open_at(
     if id == LIVE_RUN {
         return false;
     }
-    let Some(start) = items.iter().position(|it| it.item_id == id) else {
+    let Some(start) = runs.row_of(id) else {
         return false;
     };
-    unseen_run_at(items, vis, bound, live, start).is_some_and(|(s, e)| row >= s && row < e)
+    unseen_run_at(runs, live, start).is_some_and(|(s, e)| row >= s && row < e)
 }
 
 /// The run with no row yet: the sentinel `App::payload_sel` carries for the work in flight, so the marker standing
@@ -144,27 +192,22 @@ pub(crate) use crate::app::runclick::LIVE_RUN;
 /// The newest run of invisible rows, by its first row, which is what `ctrl-t` opens: there is no cursor in this
 /// head, so exactly one run can be addressed by a chord and the one a reader means is the newest. A chord may only
 /// be named where it acts.
-pub(crate) fn newest_unseen_run(
-    items: &[SnapshotItem],
-    vis: Visibility,
-    bound: &std::collections::HashMap<String, String>,
-    live: LiveWork,
-) -> Option<usize> {
-    if !vis.hides_the_working() {
+pub(crate) fn newest_unseen_run(runs: &RunIndex, live: LiveWork) -> Option<usize> {
+    if !runs.hides {
         return None;
     }
     // A run with rows comes first and the live tail only when there is none: the fold decides which run carries the
     // work, since `hidden_run_marker` folds the live counts into the run holding one of the current turn's rows.
-    // Preferring a run with rows without that gate is the trap, and this file carries the scar.
-    if let Some(r) = (0..items.len())
+    // Preferring a run with rows without that gate is the trap; the stretches are ascending, so the last is newest.
+    let newest = runs
+        .stretches
+        .iter()
         .rev()
-        .find(|r| unseen_run_at(items, vis, bound, live, *r).is_some_and(|(start, _)| start == *r))
-    {
-        return Some(r);
-    }
+        .find(|&&(_, end, hidden)| hidden || (end == runs.len && live.work() > 0))
+        .map(|&(start, _, _)| start);
     // And only when nothing has rows: the work in flight is its own run, addressed by the one
     // index past the end and drawn by the live pane.
-    (live.work() > 0).then_some(items.len())
+    newest.or_else(|| (live.work() > 0).then_some(runs.len))
 }
 
 /// Is the work in flight already counted by a run that has rows? True when the last row is invisible, since the
@@ -220,17 +263,16 @@ pub(crate) fn run_continues_prose(items: &[SnapshotItem], start: usize) -> bool 
 /// instead.
 pub(crate) fn reserved_for_run(
     items: &[SnapshotItem],
-    vis: Visibility,
-    bound: &std::collections::HashMap<String, String>,
+    runs: &RunIndex,
     live: LiveWork,
     _cfg: &RenderConfig,
     row: usize,
     newest: bool,
 ) -> Option<usize> {
-    if !vis.hides_the_working() || row + 1 >= items.len() {
+    if !runs.hides || row + 1 >= runs.len {
         return None;
     }
-    let (start, end) = unseen_run_at(items, vis, bound, live, row + 1)?;
+    let (start, end) = unseen_run_at(runs, live, row + 1)?;
     if start != row + 1 {
         return None;
     }

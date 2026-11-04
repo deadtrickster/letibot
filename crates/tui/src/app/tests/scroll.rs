@@ -1471,6 +1471,111 @@ fn a_tail_frame_is_far_cheaper_than_a_full_walk() {
     }
 }
 
+/// R123.3: the walks' per-row lookups - the run's bounds, the open run's row, the calls in
+/// force, the answered set - were each a rescan of `items`, so one long hidden run made paging
+/// over it quadratic. 20,000 hidden results in one run must page inside a generous bound.
+#[test]
+fn a_page_through_a_run_of_20_000_hidden_rows_stays_under_a_bound() {
+    // A whole row in one value, the shape a snapshot hands the head, so the setup is one push
+    // per row and not an event round trip.
+    fn whole(id: &str, kind: &str, item: TranscriptItem) -> SnapshotItem {
+        SnapshotItem {
+            item_id: id.into(),
+            kind: kind.into(),
+            ledger_head: String::new(),
+            ts: 0,
+            item: Some(item),
+            citations: Vec::new(),
+        }
+    }
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.items.push(whole(
+        "s.0",
+        "user",
+        TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Operator,
+            parts: vec![UserPart::Text {
+                text: "check every file".into(),
+            }],
+        },
+    ));
+    a.items.push(whole(
+        "s.1",
+        "assistant",
+        TranscriptItem::Assistant {
+            text: "working:".into(),
+            tool_calls: vec![letibot_transcript::ToolCall {
+                id: "c0".into(),
+                name: "bash".into(),
+                arguments: "{\"command\": \"true\"}".into(),
+            }],
+            truncated: false,
+        },
+    ));
+    // The run: one round's settled results, all hidden at the conversation rung.
+    for i in 0..20_000 {
+        a.items.push(whole(
+            &format!("s.r{i}"),
+            "tool_result",
+            TranscriptItem::ToolResult {
+                call_id: "c0".into(),
+                name: "bash".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: format!("line {i}\n"),
+                edit: None,
+                origin: None,
+                media: None,
+            },
+        ));
+    }
+    a.items.push(whole(
+        "s.last",
+        "assistant",
+        TranscriptItem::Assistant {
+            text: "done".into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        },
+    ));
+    a.visibility = Visibility::of(Profile::CONVERSATION);
+    a.invalidate_history();
+    // Tail mode, the way a transcript this long is always held.
+    a.walk_limit = 1;
+
+    // The first frame bootstraps the tail and the carry path walks the whole run to its first
+    // row; the three after it are the reader's pages.
+    let t = std::time::Instant::now();
+    let _ = a.screen(100, 30);
+    for _ in 0..3 {
+        a.scroll += 20;
+        let _ = a.screen(100, 30);
+    }
+    let paged_ms = t.elapsed().as_secs_f64() * 1e3;
+
+    assert!(
+        a.hist_floor <= 2,
+        "the walk did not carry through the run to its first row: floor {}",
+        a.hist_floor
+    );
+    a.scroll = 100_000;
+    let top = a.screen(100, 30).join("\n");
+    assert!(
+        top.contains("20000"),
+        "the run's one marker is not on the frame:\n{top}"
+    );
+    // Generous on purpose, so a slow box does not flake: the bound says *not quadratic*.
+    assert!(
+        paged_ms < 10_000.0,
+        "four frames over one hidden run took {paged_ms:.0} ms"
+    );
+    eprintln!("20,000 hidden rows: the first frame and three pages took {paged_ms:.1} ms");
+}
+
 /// How much of an attach is the history walk. The cold frame over a big
 /// session is the number the operator waited for; the warm frames are the steady
 /// state. Ignored because timing is not an assertion.

@@ -168,25 +168,17 @@ impl App {
         }
         // Has the walk already carried the in-flight counts? It folds them into the run the current turn is
         // working in, and if it has, a marker here would be a second one for one turn's work.
+        // The runs, once: the walk built its own while it held the fields (R123.3).
+        let runs = RunIndex::of(&self.items, self.visibility, &self.bound_prompts);
         let walk_carried_live = live.work() > 0
             && facts.run.is_some_and(|start| {
-                unseen_run_at(
-                    &self.items,
-                    self.visibility,
-                    &self.bound_prompts,
-                    live,
-                    start,
-                )
-                .is_some_and(|(s0, e0)| {
+                unseen_run_at(&runs, live, start).is_some_and(|(s0, e0)| {
                     s0 == start && run_carries_live(&self.items, &turn_rows, s0, e0)
                 })
             });
         if std::env::var("LETIBOT_MARKER_DEBUG").is_ok() {
-            let runs: Vec<(usize, usize)> = (0..self.items.len())
-                .filter_map(|k| {
-                    unseen_run_at(&self.items, self.visibility, &self.bound_prompts, live, k)
-                        .filter(|(s0, _)| *s0 == k)
-                })
+            let shown: Vec<(usize, usize)> = (0..self.items.len())
+                .filter_map(|k| unseen_run_at(&runs, live, k).filter(|(s0, _)| *s0 == k))
                 .collect();
             eprintln!(
                 "MARKER walk_carried_live={walk_carried_live} pane_turn={:?} \
@@ -195,7 +187,7 @@ impl App {
                 live.calls,
                 live.running,
                 live.think_lines,
-                runs.len(),
+                shown.len(),
                 self.items.len(),
                 self.turn
                     .as_ref()
@@ -776,9 +768,13 @@ impl App {
         } = self;
         let diff_split = *diff_split;
         let echo_open = *echo_open;
+        // The runs and the ids, once per frame: the questions below are per row, and
+        // re-deriving them from `items` per row is what made a long hidden run
+        // quadratic (R123.3).
+        let runs = RunIndex::of(items, *visibility, bound_prompts);
         // The run `ctrl-t` opens, computed once per frame: the seam names the chord only on the run it acts on,
         // and asking per row would be a scan of the transcript for every row drawn.
-        let newest_run = newest_unseen_run(items, *visibility, bound_prompts, live);
+        let newest_run = newest_unseen_run(&runs, live);
         // Where the window ends. The ring's own end while it has rows let go, and the session's
         // end once the budget `release_below` set is buying the reader the next screen of them: a
         // walk to `items.len()` with nothing stopped it would be the whole session.
@@ -922,8 +918,7 @@ impl App {
                 // marker and the rows under it draw nothing.
                 let reserve = reserved_for_run(
                     items,
-                    *visibility,
-                    bound_prompts,
+                    &runs,
                     live,
                     cfg,
                     *hist_upto,
@@ -936,17 +931,10 @@ impl App {
                     },
                     None => cfg.clone(),
                 };
-                let open_run = run_open_at(
-                    items,
-                    *visibility,
-                    bound_prompts,
-                    live,
-                    payload_sel.as_deref(),
-                    *hist_upto,
-                );
+                let open_run = run_open_at(&runs, live, payload_sel.as_deref(), *hist_upto);
                 // The marker is drawn whether the run is open or not: an open run's marker is the header of the
                 // rows it lifted, its clauses are the toggle that puts it back, and the hint bar names the key.
-                let unseen = unseen_run_at(items, *visibility, bound_prompts, live, *hist_upto);
+                let unseen = unseen_run_at(&runs, live, *hist_upto);
                 // No blank line in front of a marker: it continues the sentence above it, so the separator's
                 // blank, which says *a new kind of thing starts here*, is the opposite of what it means. See
                 // [`hidden_run_marker`].

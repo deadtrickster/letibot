@@ -75,6 +75,13 @@ impl App {
         self.call_targets = targets_before(&self.items, k);
     }
 
+    /// The transcript's hidden runs and ids as they stand, built fresh by every door that needs
+    /// one. Derived state that cannot go stale is cheaper than an invalidation hook every
+    /// mutation site would have to remember (R123.3).
+    pub(crate) fn runs_index(&self) -> RunIndex<'_> {
+        RunIndex::of(&self.items, self.visibility, &self.bound_prompts)
+    }
+
     /// Where the marker counting row `idx` is drawn: the start of the stretch of undrawn rows it
     /// belongs to, and the drawn row before it, whose line the marker is glued to. A run spans
     /// rounds, so its marker can sit on an earlier round's prose line.
@@ -197,6 +204,15 @@ impl App {
         // Read once, before the loop: the walk needs it per row and recomputing it there
         // would be a scan of `items` for every row drawn.
         let newest_payload = self.newest_payload_row();
+        // The runs and the ids, once for the whole walk: the questions below are asked per
+        // row, and re-deriving them from `items` per row is what made one long hidden run
+        // quadratic (R123.3).
+        let runs = RunIndex::of(&self.items, self.visibility, &self.bound_prompts);
+        // The calls in force and the ids answered, carried down the walk rather than
+        // rescanned per row: both hold until the walk crosses the row that changes them,
+        // which is the row the scans would have stopped at anyway.
+        let mut targets = targets_before(&self.items, self.hist_floor);
+        let mut answered = round_results(&self.items, self.hist_floor);
         let mut k = self.hist_floor;
         // `want` is counted from the reader and not from the buffer's first line: the ring cuts rows
         // off the top, so an absolute line index would say *enough* about a window that has none
@@ -223,7 +239,7 @@ impl App {
         );
         // The run `ctrl-t` opens, once, for the same reason the forward walk computes it
         // once: the seam names the chord only where it acts.
-        let newest_run = newest_unseen_run(&self.items, self.visibility, &self.bound_prompts, live);
+        let newest_run = newest_unseen_run(&runs, live);
         // `carry`: the walk does not stop in the middle of a run, because a run's marker is drawn at its first
         // row and this walk renders the newest first. Continuing costs one predicate per row, and the rows
         // draw no lines.
@@ -241,30 +257,40 @@ impl App {
                 break;
             }
             k -= 1;
-            let targets = targets_before(&self.items, k);
-            let answered = round_results(&self.items, k);
+            // The row just passed over joins the round below it: a result answers a call, the
+            // model's own row ends the round, anything else leaves the set alone - `round_results`'
+            // own ladder. A walk from the very end passes over no row: `k + 1` is past the list.
+            if k + 1 < self.items.len() {
+                match self.items[k + 1].item.as_ref() {
+                    Some(TranscriptItem::ToolResult { call_id, .. }) => {
+                        answered.insert(call_id.clone());
+                    }
+                    Some(TranscriptItem::Assistant { .. }) => {
+                        answered.clear();
+                    }
+                    _ if self.items[k + 1].kind == "assistant" => {
+                        answered.clear();
+                    }
+                    _ => {}
+                }
+            }
+            // And the row reached: when it is an assistant row it held the calls in force for
+            // the row above, so the walk is leaving its round and the table is rebuilt from the
+            // next one down - a rescan, but only ever at an assistant row.
+            if matches!(
+                self.items[k].item.as_ref(),
+                Some(TranscriptItem::Assistant { .. })
+            ) {
+                targets = targets_before(&self.items, k);
+            }
             // The marker, or the row: both walks decide which row of a run owns the line the same way, the
             // run's first, so they agree about a block without either remembering what the other drew.
-            let open_run = run_open_at(
-                &self.items,
-                self.visibility,
-                &self.bound_prompts,
-                live,
-                self.payload_sel.as_deref(),
-                k,
-            );
+            let open_run = run_open_at(&runs, live, self.payload_sel.as_deref(), k);
             // The same reservation the forward walk makes, from the same rule and the same
             // data - so the two walks wrap the introducing sentence identically and the
             // marker lands in the room either of them left.
-            let reserve = reserved_for_run(
-                &self.items,
-                self.visibility,
-                &self.bound_prompts,
-                live,
-                &cfg,
-                k,
-                newest_run == Some(k + 1),
-            );
+            let reserve =
+                reserved_for_run(&self.items, &runs, live, &cfg, k, newest_run == Some(k + 1));
             let row_cfg = match reserve {
                 Some(room) => RenderConfig {
                     width: cfg.width.saturating_sub(room).max(20),
@@ -275,7 +301,7 @@ impl App {
             // The marker is drawn whether the run is open or not - see the forward walk's
             // note: an open run's marker is the header of the rows it lifted, and its clauses are
             // the toggle that closes it again. The two walks keep the same three states.
-            let unseen = unseen_run_at(&self.items, self.visibility, &self.bound_prompts, live, k);
+            let unseen = unseen_run_at(&runs, live, k);
             carry = unseen.is_some_and(|(start, _)| start < k);
             let joinable = unseen.is_some_and(|(start, _)| run_continues_prose(&self.items, start));
             // A row of an OPEN run draws itself under that header, and a row the click's kind
@@ -501,9 +527,7 @@ impl App {
     /// is the run, and the newest one. One function, so the chord and the seam cannot disagree.
     pub(crate) fn newest_openable(&self) -> Option<String> {
         let live = self.live_work_now();
-        if let Some(start) =
-            newest_unseen_run(&self.items, self.visibility, &self.bound_prompts, live)
-        {
+        if let Some(start) = newest_unseen_run(&self.runs_index(), live) {
             // A run with no row yet is addressed by a sentinel, because the work in flight has no item. The
             // chord still opens something, and a marker that cannot be opened is the elision this file refuses.
             return Some(match self.items.get(start) {
@@ -532,17 +556,11 @@ impl App {
                     &self.bound_prompts,
                 );
         }
-        let Some(row) = self.items.iter().position(|it| it.item_id == id) else {
+        let runs = self.runs_index();
+        let Some(row) = runs.row_of(id) else {
             return false;
         };
-        run_open_at(
-            &self.items,
-            self.visibility,
-            &self.bound_prompts,
-            self.live_work_now(),
-            Some(id),
-            row,
-        )
+        run_open_at(&runs, self.live_work_now(), Some(id), row)
     }
 
     /// A ctrl-v window is open - `payload_sel` names a result, not a run (see
@@ -1432,7 +1450,7 @@ impl App {
     /// has to agree with `newest_unseen_run`, or the count is rebuilt on one row while the marker
     /// is drawn on another.
     pub(crate) fn newest_run_row(&self, live: &LiveWork) -> Option<usize> {
-        newest_unseen_run(&self.items, self.visibility, &self.bound_prompts, *live)
+        newest_unseen_run(&self.runs_index(), *live)
     }
 }
 

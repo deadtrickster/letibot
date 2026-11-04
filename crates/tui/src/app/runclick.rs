@@ -177,9 +177,7 @@ impl App {
             return id == LIVE_RUN;
         }
         crate::ui::transcript::markers::run_open_at(
-            &self.items,
-            self.visibility,
-            &self.bound_prompts,
+            &self.runs_index(),
             self.live_work_now(),
             Some(id),
             sp.row,
@@ -258,16 +256,13 @@ impl App {
         if run == LIVE_RUN {
             return self.live_work_now().think_lines > 0;
         }
-        let Some(start) = self.items.iter().position(|it| it.item_id == run) else {
+        let runs = self.runs_index();
+        let Some(start) = runs.row_of(run) else {
             return false;
         };
-        let Some((start, end)) = crate::ui::transcript::markers::unseen_run_at(
-            &self.items,
-            self.visibility,
-            &self.bound_prompts,
-            self.live_work_now(),
-            start,
-        ) else {
+        let Some((start, end)) =
+            crate::ui::transcript::markers::unseen_run_at(&runs, self.live_work_now(), start)
+        else {
             return false;
         };
         (start..end).any(|r| {
@@ -287,9 +282,7 @@ impl App {
     /// sentinel for a turn whose work has no row yet.
     fn newest_run_id(&self) -> Option<String> {
         let at = crate::ui::transcript::markers::newest_unseen_run(
-            &self.items,
-            self.visibility,
-            &self.bound_prompts,
+            &self.runs_index(),
             self.live_work_now(),
         )?;
         Some(match self.items.get(at) {
@@ -456,7 +449,8 @@ impl App {
         if live.work() == 0 {
             return false;
         }
-        let Some(start) = self.items.iter().position(|it| it.item_id == head) else {
+        let runs = self.runs_index();
+        let Some(start) = runs.row_of(head) else {
             return false;
         };
         let turn_rows: std::collections::HashSet<String> = self
@@ -464,14 +458,7 @@ impl App {
             .as_ref()
             .map(|t| t.turn_rows.iter().cloned().collect())
             .unwrap_or_default();
-        crate::ui::transcript::markers::unseen_run_at(
-            &self.items,
-            self.visibility,
-            &self.bound_prompts,
-            live,
-            start,
-        )
-        .is_some_and(|(s0, e0)| {
+        crate::ui::transcript::markers::unseen_run_at(&runs, live, start).is_some_and(|(s0, e0)| {
             s0 == start && crate::ui::run_carries_live(&self.items, &turn_rows, s0, e0)
         })
     }
