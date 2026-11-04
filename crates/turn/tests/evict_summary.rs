@@ -301,6 +301,9 @@ fn summarise(
 #[test]
 fn the_summary_turn_is_shown_the_evicted_span() {
     let _lock = serial();
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
+        return;
+    };
     let items = conversation();
     let before = bytes(&items);
     let (recorder, harvest, kept) = summarise(&items, &plan(), "evict-the-span");
@@ -401,6 +404,9 @@ fn the_summary_turn_is_shown_the_evicted_span() {
 #[test]
 fn an_empty_plan_evicts_what_a_plan_row_would_have_kept() {
     let _lock = serial();
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
+        return;
+    };
     let items = conversation();
     let (recorder, harvest, _kept) = summarise(&items, &[], "evict-the-span-empty");
     let asked = recorder.asked();
