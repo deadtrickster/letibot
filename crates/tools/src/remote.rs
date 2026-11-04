@@ -1092,10 +1092,15 @@ pub const SESSION_MARK: &str = "LETIBOT_SESSION";
 const END_SESSION_BOUND: Duration = Duration::from_secs(25);
 
 /// The sweep [`Ssh::end_session_processes`] runs on the far side. A script, not `pkill`: pids are TERMed,
-/// waited for, then KILLed, so the answer is what is left. The id arrives as `$1`; the mark matches
-/// as a whole field (`-1` is a prefix of `-12`). Linux greps `/proc/<pid>/environ`, a Mac uses `ps eww`.
+/// waited for, then KILLed, so the answer is what is left. The id arrives as `$1` and the ledger as
+/// `$2`; the mark matches as a whole field (`-1` is a prefix of `-12`). Linux greps
+/// `/proc/<pid>/environ`, a Mac uses `ps eww`, and the ledger's own pid files name the groups a
+/// command that cleared its environment left.
 const SESSION_SWEEP: &str = r#"
 mark="LETIBOT_SESSION=$1"
+# Read here, not inside a function: a shell function's `$1` is its own argument, so the ledger
+# would be empty in there.
+ledger="$2"
 self=" "
 p=$$
 while [ -n "$p" ] && [ "$p" != "0" ] && [ "$p" != "1" ]; do
@@ -1107,13 +1112,36 @@ proc_pids() {
     tr '\0' '\n' < "$f" 2>/dev/null | grep -qxF -- "$mark" && echo "$f"
   done | sed 's|^/proc/||; s|/environ$||'
 }
+# A command that ran `env -i` has no mark to find, and it is still this session's: every job the
+# ledger holds a pid for is proved by the launcher script that pid runs, and its group is taken
+# whole, so a child that cleared its environment is ended with the group it was started in.
+ledger_groups() {
+  [ -n "$ledger" ] && [ -d "$ledger" ] || return 0
+  for f in "$ledger"/*.pid; do
+    [ -f "$f" ] || continue
+    k=$(tr -d ' ' < "$f" 2>/dev/null)
+    [ -n "$k" ] || continue
+    case "$(ps -p "$k" -o args= 2>/dev/null)" in
+      *"${f%.pid}.sh"*) ps -p "$k" -o pgid= 2>/dev/null | tr -d ' ';;
+    esac
+  done
+}
+group_pids() {
+  for g in $(ledger_groups); do
+    [ "$g" = "0" ] && continue
+    [ "$g" = "1" ] && continue
+    ps -A -o pid=,pgid= 2>/dev/null | while read -r p pg; do
+      [ "$pg" = "$g" ] && echo "$p"
+    done
+  done
+}
 ps_pids() {
   ps eww -A -o pid=,command= 2>/dev/null | while read -r pid rest; do
     case " $rest " in *" $mark "*) echo "$pid" ;; esac
   done
 }
 mine() {
-  { proc_pids; ps_pids; } | sort -un | while read -r pid; do
+  { proc_pids; ps_pids; group_pids; } | sort -un | while read -r pid; do
     case "$self" in *" $pid "*) continue ;; esac
     case "$(ps -p "$pid" -o stat= 2>/dev/null)" in Z*|"") continue ;; esac
     echo "$pid"
@@ -1663,15 +1691,15 @@ impl Ssh {
     }
 
     /// End every process this session started on that machine, and say what is left. A host has no
-    /// cgroup, so the mark ([`SESSION_MARK`]) is the only handle; a process that cleared its environment
-    /// is out of reach.
-    pub fn end_session_processes(&self) -> Option<String> {
-        self.sweep().said
+    /// cgroup, so the handles are the mark ([`SESSION_MARK`]) and the ledger's own pid files: the
+    /// second reaches a command that cleared its environment, by the group it was started in.
+    pub fn end_session_processes(&self, ledger: &str) -> Option<String> {
+        self.sweep(ledger).said
     }
 
     /// The sweep itself, and whether it was asked at all: [`placements_down`] needs the second
     /// half, because a sweep that never got a slot has not run and must not go with the list.
-    fn sweep(&self) -> Swept {
+    fn sweep(&self, ledger: &str) -> Swept {
         // A guest's processes end with the guest, and that is `down`: nothing of the session's runs
         // in the host's own process table, so there is nothing here to sweep for.
         if self.vm.is_some() {
@@ -1688,9 +1716,10 @@ impl Ssh {
         // `bash -lc <script> name <arg>`: the id is an ARGUMENT, never part of this command's text,
         // because a sweep whose own argv carried the mark would find itself.
         let command = format!(
-            "bash -lc {} letibot-end {}",
+            "bash -lc {} letibot-end {} {}",
             quote(&self.host.with_path(SESSION_SWEEP)),
-            quote(id)
+            quote(id),
+            quote(ledger)
         );
         let step = "ending the processes this session started";
         // Never longer than a step of this connection's own work: a host that has stopped answering
@@ -3399,7 +3428,11 @@ impl SshBackend {
         // What is running here is a session's work until somebody ends it, and the daemon's exit
         // closes no backend: the last act sweeps this list, and fetches what it holds, for exactly
         // that reason.
-        remember_placement(&backend.ssh, backend.home_for_the_last_act());
+        remember_placement(
+            &backend.ssh,
+            backend.home_for_the_last_act(),
+            &backend.ledger,
+        );
         Ok(backend)
     }
 
@@ -3425,7 +3458,10 @@ impl SshBackend {
             match already {
                 Some(had) => had,
                 None => {
-                    let had = self.ssh.end_session_processes().unwrap_or_default();
+                    let had = self
+                        .ssh
+                        .end_session_processes(&self.ledger)
+                        .unwrap_or_default();
                     *self.swept.lock().unwrap_or_else(|e| e.into_inner()) = Some(had.clone());
                     had
                 }
@@ -3996,6 +4032,9 @@ static GUESTS: std::sync::LazyLock<Mutex<Vec<(Ssh, RemoteVm)>>> =
 struct Placement {
     ssh: Ssh,
     home: Option<Home>,
+    /// Where the session's job files are on that host: the sweep's other handle, for a command
+    /// that cleared its environment.
+    ledger: String,
 }
 
 /// Every placement this process made and no session has closed yet. The last act's list, for the
@@ -4011,13 +4050,14 @@ fn placement_key(ssh: &Ssh) -> (&str, Option<&str>) {
 }
 
 /// Take a placement onto the list the last act reads, with the fetch that brings its branch home.
-fn remember_placement(ssh: &Ssh, home: Option<Home>) {
+fn remember_placement(ssh: &Ssh, home: Option<Home>, ledger: &str) {
     let key = placement_key(ssh);
     let mut all = PLACEMENTS.lock().unwrap_or_else(|e| e.into_inner());
     if !all.iter().any(|p| placement_key(&p.ssh) == key) {
         all.push(Placement {
             ssh: ssh.clone(),
             home,
+            ledger: ledger.to_string(),
         });
     }
 }
@@ -4041,7 +4081,7 @@ pub fn placements_down() -> Vec<String> {
         .into_iter()
         .map(|p| {
             std::thread::spawn(move || {
-                let swept = p.ssh.sweep();
+                let swept = p.ssh.sweep(&p.ledger);
                 (p, swept)
             })
         })
@@ -4054,7 +4094,7 @@ pub fn placements_down() -> Vec<String> {
         };
         said.extend(swept.said);
         if !swept.asked {
-            remember_placement(&placement.ssh, placement.home);
+            remember_placement(&placement.ssh, placement.home, &placement.ledger);
             continue;
         }
         if let Some(home) = &placement.home {

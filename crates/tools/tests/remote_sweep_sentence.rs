@@ -100,7 +100,7 @@ fn a_sweep_that_never_answered_does_not_claim_a_retry() {
     .with_mark("s-01abcdef");
 
     let said = ssh
-        .end_session_processes()
+        .end_session_processes("/nonexistent-letibot-ledger")
         .expect("a sweep that never answered says so");
     assert!(
         !said.contains("asked once more"),

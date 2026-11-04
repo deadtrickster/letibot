@@ -184,6 +184,59 @@ impl Drop for Neighbour {
     }
 }
 
+/// A command that ran `env -i` has no mark to be found by, and it is still this session's work:
+/// the ledger's pid files name the launcher of every job, and a job's whole process group is
+/// ended with it, so a child that cleared its environment goes with its group.
+#[test]
+fn a_command_that_cleared_its_environment_is_ended_with_its_group() {
+    let fake = Fake::new("envcleared");
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = SshBackend::place(&spec_for(&repo, &paths, &fake.program))
+        .expect("the placement is arranged");
+    let worktree = PathBuf::from(b.worktree_path());
+    let host = b.processes().expect("a placed session can start processes");
+    host.spawn(&SpawnRequest {
+        command: "env -i sh -c 'echo $$ > env-cleared.pid; exec sleep 300'".into(),
+        slug: None,
+        cwd: String::new(),
+        scope: ScopeKind::Session,
+        scope_name: None,
+        background: true,
+        env: Vec::new(),
+        tty: false,
+        memory: None,
+    })
+    .expect("the job starts");
+    let cleared_pid = worktree.join("env-cleared.pid");
+    let began = Instant::now();
+    while began.elapsed() < Duration::from_secs(20) && !cleared_pid.is_file() {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let child = read_pid(&cleared_pid);
+    assert!(alive(child), "the env-cleared child is running: {child}");
+    // The mark is what the sweep used to rely on, and this process has none: `sh` sets `PWD` and
+    // nothing else, so the absence being measured is the mark's.
+    #[cfg(target_os = "linux")]
+    {
+        let env = std::fs::read(format!("/proc/{child}/environ")).unwrap_or_default();
+        let text = String::from_utf8_lossy(&env);
+        assert!(
+            !text.contains(SESSION_MARK),
+            "the child carries the mark after all, so this measures nothing: {text:?}"
+        );
+    }
+
+    let said = b.close().expect("a close says what became of the session");
+    let gone = Instant::now();
+    while gone.elapsed() < Duration::from_secs(5) && alive(child) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !alive(child),
+        "a child that cleared its environment outlived the session: {child} — {said}"
+    );
+}
+
 /// Both doors that end a session: its own close, and the daemon's last act. One test, because the
 /// last act's list is per process and a parallel test's placement would be swept by it.
 #[test]
@@ -381,7 +434,11 @@ fn a_sweep_ends_the_processes_with_its_own_mark_and_not_one_whose_mark_starts_wi
     .expect("the connection opens")
     .with_mark(&mine);
 
-    let said = ssh.end_session_processes().expect("the sweep ran");
+    // No ledger here: this test is about the mark, and a directory that is not there names no
+    // group.
+    let said = ssh
+        .end_session_processes("/nonexistent-letibot-ledger")
+        .expect("the sweep ran");
     assert!(
         said.starts_with("1 process(es)"),
         "the sweep found its own process and no other: {said}"
