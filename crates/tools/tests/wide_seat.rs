@@ -1,5 +1,6 @@
-//! The wide seat on Linux: the machine at its own paths with the credential stores masked. Every
-//! fixture home here is a temporary directory, never the operator's, and every secret is a fake.
+//! The two Linux seats, measured: the wide one (the machine at its own paths, the stores masked) and
+//! the tight one (a view of the checkout, with a store masked inside a granted directory). Every
+//! fixture home is a temporary directory, never the operator's, and every secret is a fake.
 
 use std::path::{Path, PathBuf};
 
@@ -13,6 +14,9 @@ use letibot_tools::exec::seat::{Level, seat_for_level, seat_view};
 const BOUNDARY: &str = "a usable bubblewrap boundary (bwrap and an unprivileged user namespace)";
 
 const WHO_IS_IT: &str = "letibot-fixture-line-never-a-real-key";
+
+/// A fake crates.io token, shaped like one so a substring match is a real measurement.
+const TOKEN: &str = "letibot-fixture-cargo-token-0000";
 
 /// A fake operator home with a fake key in it, a gh config, a note, and one credential file. The
 /// repository is beside it, so a write outside the home has somewhere to be refused.
@@ -203,15 +207,91 @@ fn a_tight_seat_is_still_a_view_of_the_checkout_and_not_the_machine() {
     assert_ne!(rc, 0, "a tight seat's $HOME is a tmpfs: {out}");
     let (out, rc) = run(&b, &f, "echo x > inside.txt && cat inside.txt");
     assert_eq!(rc, 0, "the checkout is still the checkout: {out}");
-    // And a view built from the tight seat carries no mask list at all: there is nothing of the
-    // operator's in it to hide.
-    assert!(
-        seat_view(
-            &letibot_tools::mode::Mode::WRITES_ALLOWED,
-            "x",
-            &[] as &[&str]
-        )
-        .masked
-        .is_empty()
+
+    // A tight seat still carries the fence, because a grant can put a store inside the view: what
+    // makes it harmless elsewhere is the renderer, which masks only the paths this view reaches.
+    let seat = seat_view(
+        &letibot_tools::mode::Mode::WRITES_ALLOWED,
+        "x",
+        &[f.home().join(".cargo").display().to_string()],
+        &f.home(),
     );
+    assert!(
+        seat.masked
+            .iter()
+            .any(|p| p.ends_with(".cargo/credentials")),
+        "the tight seat's list is the fence a grant can reach into: {}",
+        seat.masked.len()
+    );
+}
+
+/// The tight seat with the operator's toolchain granted read-only, which is where a credential
+/// store arrives inside a view that otherwise holds nothing of theirs.
+fn tight_with_cargo(f: &Fixture) -> Option<Bwrap> {
+    let seat = seat_view(
+        &letibot_tools::mode::Mode::WRITES_ALLOWED,
+        "this machine",
+        &[f.home().join(".cargo").display().to_string()],
+        &f.home(),
+    );
+    let view = ViewSpec::project_only(f.project()).masking(seat.masked.iter().cloned());
+    let view = seat.grants.iter().fold(view, |v, g| v.granting(g.clone()));
+    match Bwrap::probe(view, Egress::Denied) {
+        Ok(b) => Some(b),
+        Err(e) => {
+            letibot_tokencore::apparatus::applies(BOUNDARY, cfg!(target_os = "linux"))?;
+            eprintln!("the tight seat could not be measured on this box: {e}");
+            letibot_tokencore::apparatus::absent(BOUNDARY);
+            None
+        }
+    }
+}
+
+#[test]
+fn a_granted_toolchain_carries_no_credential_store_into_the_view() {
+    let Some(f) = Fixture::new("cargo") else {
+        return;
+    };
+    // A fake crates.io token in a fake home, and a config beside it that must stay readable: a
+    // boundary that hid both would be a boundary that broke `cargo`.
+    let cargo = f.home().join(".cargo");
+    std::fs::create_dir_all(&cargo).expect("a fake toolchain");
+    std::fs::write(cargo.join("credentials.toml"), TOKEN).expect("a fake token file");
+    std::fs::write(
+        cargo.join("config.toml"),
+        "[build]\nrustflags = [\"-C\", \"opt-level=2\"]\n",
+    )
+    .expect("a fake config");
+    let Some(b) = tight_with_cargo(&f) else {
+        return;
+    };
+    let credentials = cargo.join("credentials.toml");
+    assert!(
+        std::fs::read_to_string(&credentials)
+            .expect("the fixture wrote it")
+            .contains(TOKEN),
+        "the fixture's own claim is wrong"
+    );
+    // The measurement: the same path, read from inside the seat, discloses nothing. A tight seat
+    // would otherwise read it, because the grant is the whole directory.
+    let (out, _) = run(
+        &b,
+        &f,
+        &format!("cat {} ; echo \"rc=$?\"", credentials.display()),
+    );
+    assert!(
+        !out.contains(TOKEN),
+        "a granted toolchain leaked its store: {out}"
+    );
+    assert!(
+        out.contains("rc=0"),
+        "the name is there and empty, not refused: {out}"
+    );
+    let (out, rc) = run(
+        &b,
+        &f,
+        &format!("cat {}", cargo.join("config.toml").display()),
+    );
+    assert_eq!(rc, 0, "the toolchain's own config stays readable: {out}");
+    assert!(out.contains("opt-level=2"), "{out}");
 }

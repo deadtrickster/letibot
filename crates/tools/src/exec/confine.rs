@@ -792,6 +792,20 @@ impl ViewSpec {
                 s.push_str(&format!("\n    grant: {}", g.line()));
             }
         }
+        // A grant of a directory can carry a credential store with it, and this view does not: the
+        // list is the one a wide view masks, and only what this view reaches is named.
+        let masked: Vec<String> = self
+            .masked
+            .iter()
+            .filter(|p| self.classify(p) == Presence::Inside)
+            .map(|p| p.display().to_string())
+            .collect();
+        if !masked.is_empty() {
+            s.push_str(&format!(
+                "\n    masked inside the grants: {}",
+                masked.join(", ")
+            ));
+        }
         s
     }
 
@@ -1109,6 +1123,22 @@ impl Boundary {
             for g in &v.grants {
                 s.push_str(&format!(" {}.", g.line()));
             }
+        }
+        // A granted directory can carry a credential store, and a readable store is the thing this
+        // boundary exists to keep out of the transcript, so a model is told which names are empty.
+        let masked: Vec<String> = v
+            .masked
+            .iter()
+            .filter(|p| v.classify(p) == Presence::Inside)
+            .map(|p| format!("`{}`", p.display()))
+            .collect();
+        if !masked.is_empty() {
+            s.push_str(&format!(
+                " Inside those, {} {} masked and holds nothing: a grant covers the directory, and \
+                 these names are not readable through it.",
+                masked.join(", "),
+                if masked.len() == 1 { "is" } else { "are" }
+            ));
         }
         s
     }
@@ -2285,9 +2315,9 @@ fn pieces_of(
     }
 
     if view.wide {
-        // The machine itself, at its own paths and writable as this user: that is the wide seat,
-        // and the masks below are the only thing it hides. The system roots and the project are
-        // inside this bind, so binding them again would only be two mounts of one tree.
+        // The machine itself, at its own paths and writable as this user: that is the wide seat, and
+        // the masks below (after the grants) are the only thing it hides. The system roots and the
+        // project are inside this bind, so binding them again would only be two mounts of one tree.
         arg(&mut a, "--bind");
         arg(&mut a, "/");
         arg(&mut a, "/");
@@ -2295,27 +2325,6 @@ fn pieces_of(
         // show pids the namespace says are not there.
         arg(&mut a, "--proc");
         arg(&mut a, "/proc");
-        // An empty filesystem over a store, or an unreadable `/dev/null` where it is a file. A
-        // path that is not there is skipped: bwrap mounts only over an existing mount point, and
-        // making one would write the operator's home.
-        for p in &view.masked {
-            match (p.is_dir(), p.is_file()) {
-                (true, _) => {
-                    arg(&mut a, "--tmpfs");
-                    arg(&mut a, p.display().to_string());
-                    // Read-only too, so a command cannot fill it and have the operator's own
-                    // tools read what it left there.
-                    arg(&mut a, "--remount-ro");
-                    arg(&mut a, p.display().to_string());
-                }
-                (false, true) => {
-                    arg(&mut a, "--ro-bind");
-                    arg(&mut a, "/dev/null");
-                    arg(&mut a, p.display().to_string());
-                }
-                (false, false) => {}
-            }
-        }
     } else {
         // The system roots, read-only and `-try`: a host without `/lib64` is not a failure, and a
         // merged-`/usr` host has symlinks where a split one has directories.
@@ -2385,6 +2394,31 @@ fn pieces_of(
                 arg(&mut a, path.display().to_string());
                 arg(&mut a, AGENT_SOCKET);
             }
+        }
+    }
+
+    // The seat's fence, after the mounts it has to win over: a wide view reaches every store, and a
+    // tight one reaches the few a grant covers. A store the view does not reach, or that is not on
+    // the disk, gets no mount: bwrap would make the mount point in the operator's own home.
+    for p in &view.masked {
+        if view.classify(p) != Presence::Inside {
+            continue;
+        }
+        match (p.is_dir(), p.is_file()) {
+            (true, _) => {
+                arg(&mut a, "--tmpfs");
+                arg(&mut a, p.display().to_string());
+                // Read-only too, so a command cannot fill it and have the operator's own tools read
+                // what it left there.
+                arg(&mut a, "--remount-ro");
+                arg(&mut a, p.display().to_string());
+            }
+            (false, true) => {
+                arg(&mut a, "--ro-bind");
+                arg(&mut a, "/dev/null");
+                arg(&mut a, p.display().to_string());
+            }
+            (false, false) => {}
         }
     }
 
@@ -2979,6 +3013,73 @@ mod tests {
                 "{p} is on the macOS deny list and not masked here: {joined}"
             );
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A tight view reaches the operator's home only through a grant, and a grant of a toolchain
+    /// directory carries a credential store with it: the store is masked, the toolchain is not, and a
+    /// store the view does not reach gets no mount at all.
+    #[test]
+    fn a_grant_reaches_a_store_and_the_store_is_masked_and_the_toolchain_is_not() {
+        use crate::exec::seat;
+        let dir = std::env::temp_dir().join(format!("letibot-grantmask-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let home = dir.join("operator");
+        let cargo = home.join(".cargo");
+        std::fs::create_dir_all(&cargo).expect("a fake toolchain");
+        std::fs::create_dir_all(home.join(".ssh")).expect("a fake store");
+        std::fs::write(cargo.join("credentials.toml"), "token\n").expect("a fake store");
+        std::fs::create_dir_all(dir.join("project")).expect("a project");
+        let seat = seat::seat_view(
+            &crate::mode::Mode::WRITES_ALLOWED,
+            "this machine",
+            &[cargo.display().to_string()],
+            &home,
+        );
+        let view = seat.grants.iter().fold(
+            ViewSpec::project_only(dir.join("project")).masking(seat.masked.iter().cloned()),
+            |v, g| v.granting(g.clone()),
+        );
+        let argv = build_argv_with(
+            Path::new("/usr/bin/bwrap"),
+            &view,
+            &Egress::Denied,
+            &ConfinePlan {
+                cwd: &dir,
+                env: &[],
+            },
+            Session::Detached,
+        );
+        let joined = argv.join(" ");
+        let granted = cargo.display().to_string();
+        assert!(
+            joined.contains(&format!("--ro-bind {granted} {granted}")),
+            "the toolchain is bound read-only: {joined}"
+        );
+        let store = cargo.join("credentials.toml").display().to_string();
+        assert!(
+            joined.contains(&format!("--ro-bind /dev/null {store}")),
+            "the store inside the grant is masked: {joined}"
+        );
+        assert!(
+            !joined.contains(&cargo.join("config.toml").display().to_string()),
+            "the toolchain's own config is not the fence's business: {joined}"
+        );
+        assert!(
+            !joined.contains(&home.join(".ssh").display().to_string()),
+            "a store the view does not reach gets no mount point: {joined}"
+        );
+        // And the disclosure says so, in the view's own summary and in the model's brief.
+        assert!(
+            view.summary().contains("masked inside the grants"),
+            "{}",
+            view.summary()
+        );
+        assert!(
+            view.summary().contains(&store),
+            "the disclosure names the path: {}",
+            view.summary()
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

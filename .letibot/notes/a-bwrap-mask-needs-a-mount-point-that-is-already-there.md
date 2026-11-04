@@ -43,3 +43,16 @@ namespace chain and not the count and not AppArmor. Every behaviour test of the 
 (with `THIS IS NOT A PASS`) and only the ARGV is measurable; `crates/tools/tests/wide_seat.rs` and
 `crates/harnessd/src/harness/open.rs`'s `linux_wide_seat_tests` assert both branches so the refusal is
 still measured where the boundary cannot be.
+
+The tight seat carries the fence too. `seat_view` (the tight builder) fills `SeatView::masked` with
+the whole `deny_under_home(false)` list joined to the operator's home, and the renderer masks each
+entry only when `classify(p) == Presence::Inside` — so a store is masked exactly when a grant has put
+it in the view. That is what closes `~/.cargo/credentials.toml` (the `~/.cargo` toolchain grant is
+read-only, which used to mean readable), and it also covers a `--grant-ro ~`, because `classify` reads
+the caller's grants, not only the seat's. Mask the list in `seat_view` or in the renderer and one of
+the two levels loses it: the wide seat has no grants to filter by, the tight one has no home of its
+own (its `$HOME` is a tmpfs), so the list is absolute and the filter is the view.
+
+The macOS profile was already right about this: its `(deny file-read* file-write*)` for the same list
+is emitted after every allow, so a read-only `~/.cargo` grant never exposed the credentials file
+there. The Linux rendering is what had no fence under a grant, and a test now holds the two equal.

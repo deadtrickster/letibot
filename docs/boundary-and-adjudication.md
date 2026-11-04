@@ -115,6 +115,11 @@ same one the macOS profile denies (§4k), and a test holds the two renderings eq
 not on the disk is not mounted: bwrap can only mount over an existing mount point, and making one
 would write the operator's home.
 
+A **tight** view carries the same list and masks only what it reaches, which is what a `--grant-ro`
+directory or the toolchain grant makes possible: `~/.cargo` is bound read-only for a build, so
+`~/.cargo/credentials.toml` inside it is masked, and `~/.ssh` - outside the view entirely - gets no
+mount at all. A store too far from anything bound is `Outside`, not denied, and the mask is skipped.
+
 The environment is cleared and a keep-list put back (`KEEP_ENV`: `PATH`, `TERM`, `LANG`, `LC_ALL`,
 `TZ`) - absence beats denial applied to the environment. The argv: `--unshare-user --unshare-pid
 --unshare-ipc --unshare-uts --unshare-cgroup`, plus `--unshare-net` unless egress was granted;

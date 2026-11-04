@@ -451,13 +451,14 @@ impl HostBackend {
                 view = view.protecting(p);
             }
         }
+        // The seat's fence, at either level: a wide view holds all of it, and a tight one holds
+        // whatever a grant lets in — the renderer masks the stores its own view reaches.
+        view = view.masking(seat.masked.iter().cloned());
         if let Some(h) = &seat.home {
-            // The operator's own home makes this the wide seat: the whole machine, and the
-            // seat's masks are the fence, whichever renderer draws them.
+            // The operator's own home makes this the wide seat: the whole machine, at its own paths.
             view = view
                 .with_home(crate::exec::confine::HomeView::Dir(h.clone()))
-                .wide()
-                .masking(seat.masked.iter().cloned());
+                .wide();
         }
         let confine = crate::exec::confine::probe(view, seat.egress)
             .map_err(|e| BackendError::Io(e.to_string()))?;

@@ -95,8 +95,8 @@ pub struct SeatView {
     /// view with a throwaway home.
     pub home: Option<PathBuf>,
     /// Hidden whatever else the view holds, read and write: the stores
-    /// [`super::seatbelt::deny_under_home`] names, joined to `home`. A wide seat's fence, and a
-    /// test holds the list the Linux mask renders and the list the macOS profile denies equal.
+    /// [`super::seatbelt::deny_under_home`] names, joined to `home`. A wide view holds all of them; a
+    /// tight one holds the few a grant lets in, and a test holds the two renderings' lists equal.
     pub masked: Vec<PathBuf>,
 }
 
@@ -130,16 +130,9 @@ pub fn seat_for_level<S: AsRef<str>>(
     gh_token: Option<&str>,
 ) -> SeatView {
     match level {
-        Level::Tight => seat_view(mode, place, present),
+        Level::Tight => seat_view(mode, place, present, operator_home),
         Level::Wide => {
-            let mut masked: Vec<PathBuf> = super::seatbelt::deny_under_home(true)
-                .into_iter()
-                .map(|rel| operator_home.join(rel))
-                .collect();
-            // Sorted and deduped, so a disclosure lists the fence in one order and two stores
-            // spelled twice are one path.
-            masked.sort();
-            masked.dedup();
+            let masked = masked_under_home(true, operator_home);
             SeatView {
                 grants: Vec::new(),
                 egress: network_rule(mode, place),
@@ -377,8 +370,28 @@ pub fn present_under(home: &Path) -> Vec<String> {
     out
 }
 
-/// The whole view for a session on a machine where `present` exists under its home.
-pub fn seat_view<S: AsRef<str>>(mode: &crate::mode::Mode, place: &str, present: &[S]) -> SeatView {
+/// Every store on the seat's list, under `home`, in one order: the names are home-relative and a
+/// view needs paths. A rendering masks the ones its own view reaches, so a store outside the view
+/// costs nothing and a grant that covers one cannot make it readable.
+pub fn masked_under_home(wide: bool, home: &Path) -> Vec<PathBuf> {
+    let mut masked: Vec<PathBuf> = super::seatbelt::deny_under_home(wide)
+        .into_iter()
+        .map(|rel| home.join(rel))
+        .collect();
+    masked.sort();
+    masked.dedup();
+    masked
+}
+
+/// The whole view for a session on a machine where `present` exists under its home. The fence is
+/// carried even though the tight view holds none of it, because a grant of the operator's home - a
+/// toolchain directory today, `--grant-ro` tomorrow - is what puts a store inside it.
+pub fn seat_view<S: AsRef<str>>(
+    mode: &crate::mode::Mode,
+    place: &str,
+    present: &[S],
+    operator_home: &Path,
+) -> SeatView {
     let grants = grants_for(present);
     let mut env = env_for_grants(grants.iter().map(|g| g.path()));
     // A confined view has no business with the operator's credential helpers: a child commits and
@@ -396,7 +409,7 @@ pub fn seat_view<S: AsRef<str>>(mode: &crate::mode::Mode, place: &str, present: 
         egress: network_rule(mode, place),
         env,
         home: None,
-        masked: Vec::new(),
+        masked: masked_under_home(false, operator_home),
         secret_env: SecretEnv::default(),
     }
 }
@@ -409,8 +422,8 @@ mod tests {
     #[test]
     fn one_input_gives_one_view_on_any_platform() {
         let present = ["/h/.gitconfig", "/h/.rustup", "/h/.cargo"];
-        let a = seat_view(&Mode::WRITES_ALLOWED, "x", &present);
-        let b = seat_view(&Mode::WRITES_ALLOWED, "x", &present);
+        let a = seat_view(&Mode::WRITES_ALLOWED, "x", &present, Path::new("/h"));
+        let b = seat_view(&Mode::WRITES_ALLOWED, "x", &present, Path::new("/h"));
         assert_eq!(a, b);
         let paths: Vec<_> = a.grants.iter().map(|g| g.path().to_path_buf()).collect();
         assert_eq!(
@@ -432,7 +445,11 @@ mod tests {
                 ("GIT_CONFIG_VALUE_0".to_string(), String::new()),
             ]
         );
-        assert!(!seat_view(&Mode::READ_ONLY, "x", &present).egress.allowed());
+        assert!(
+            !seat_view(&Mode::READ_ONLY, "x", &present, Path::new("/h"))
+                .egress
+                .allowed()
+        );
     }
 
     const FIXTURE_TOKEN: &str = "gho_fixtureFIXTUREfixture0000000000000000";

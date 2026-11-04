@@ -1,6 +1,6 @@
 //! The operator's credential stores, in one list. Three rules read it and none keeps a copy: the
-//! gate's never-write list, the flow rule's disclosure check, and the macOS seat's fence. A second
-//! copy is how one of the three falls behind the others, which is what happened to the seat's.
+//! gate's never-write list, the flow rule's disclosure check, and the seat's fence, which the macOS
+//! profile denies and the Linux view masks. A second copy is how one falls behind the others.
 
 /// Where the macOS seat's fence puts a store. The operator's ruling is that a top-level session
 /// needs `gh`, so its config is denied only in a child's view; everything else is denied in both.

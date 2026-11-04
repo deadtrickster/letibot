@@ -733,7 +733,12 @@ impl Harness {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default();
-        seat::seat_view(&cfg.mode, "this machine", &seat::present_under(&home))
+        seat::seat_view(
+            &cfg.mode,
+            "this machine",
+            &seat::present_under(&home),
+            &home,
+        )
     }
 
     /// The default seat's view: wide for a top-level session, tight for a child. The GitHub token
