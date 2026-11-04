@@ -78,6 +78,16 @@ impl Seated {
             .expect("a pushed message")
     }
 
+    /// The push of message `seq`; a repeated push of an older one is skipped.
+    fn next_seq(&self, seq: u64) -> (Message, bool) {
+        loop {
+            let got = self.next();
+            if got.0.seq == seq {
+                return got;
+            }
+        }
+    }
+
     fn silent(&self) {
         assert!(
             self.heard.recv_timeout(Duration::from_millis(300)).is_err(),
@@ -777,8 +787,8 @@ fn a_folder_mention_wakes_every_bridge_of_the_folder_and_an_exact_single_stays_s
         m.text, "@cc@solo only",
         "the qualified collapsed form is the handle"
     );
-    assert!(solo.next().1);
-    let (heard, named) = sibling.next();
+    assert!(solo.next_seq(m.seq).1);
+    let (heard, named) = sibling.next_seq(m.seq);
     assert!(!named, "the sibling is not named by {heard:?}");
 }
 
