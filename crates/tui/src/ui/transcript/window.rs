@@ -610,7 +610,7 @@ impl App {
             self.picture_rows.retain(|(r, _)| *r != 0);
             self.payload_rows.retain(|(r, _)| *r != 0);
         }
-        if !self.following() {
+        if !self.following() && !out.is_empty() {
             let behind = total - end;
             let last = out.len().saturating_sub(1);
             // The state, and the act that undoes it - the rule for a disclosure, and

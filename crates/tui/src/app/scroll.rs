@@ -728,7 +728,7 @@ impl App {
     /// The ordinal of the first row this head does not hold. The rows above the base are the tail of
     /// a transcript a resume republished, and the base does not number them, so they do not count.
     pub(crate) fn end_ordinal(&self) -> usize {
-        self.items_base + (self.items.len() - self.items_lead)
+        self.items_base + self.items.len().saturating_sub(self.items_lead)
     }
 
     /// The head holds a window, not the buffer: once it is over `held_limit` the rows the reader is not looking at
@@ -916,7 +916,7 @@ impl App {
     /// Let rendered rows go from one end of the buffer until `need` bytes are freed or `keep` (a line
     /// index) would be crossed. Returns the bytes freed. Rows, not lines: a half row on the screen is
     /// a row cut in two.
-    fn let_lines_go(&mut self, from_below: bool, keep: usize, need: usize) -> usize {
+    pub(crate) fn let_lines_go(&mut self, from_below: bool, keep: usize, need: usize) -> usize {
         if from_below {
             let (mut freed, mut n) = (0, self.spans.len());
             while n > 0 {
@@ -972,7 +972,10 @@ impl App {
         if n == 0 {
             return 0;
         }
-        let kept = self.spans[n];
+        // Every row fits above `keep`: nothing is left to cut at.
+        let Some(kept) = self.spans.get(n).copied() else {
+            return 0;
+        };
         let cut = kept.at;
         self.hist_lines.drain(..cut);
         self.spans.drain(..n);

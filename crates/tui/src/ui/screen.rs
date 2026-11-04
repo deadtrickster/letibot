@@ -746,7 +746,7 @@ impl App {
         // step that does not fit would take `stuck` and `done` with it, and the click target, which
         // is read off words drawn whole, with them. The six counts keep their columns instead.
         let mut words = standings.words();
-        if standings.gate.is_some() && right.as_ref().is_some_and(|r| r.width() > w.max(4) - 5) {
+        if standings.gate.is_some() && right.as_ref().is_some_and(|r| r.width() > w.saturating_sub(5)) {
             let bare = Standings {
                 gate: None,
                 ..standings

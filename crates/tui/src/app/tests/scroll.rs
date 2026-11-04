@@ -5699,3 +5699,20 @@ fn a_window_that_let_rows_go_whole_draws_no_tail_of_the_session() {
         "the echo did not come back with the tail:\n{at_tail}"
     );
 }
+
+/// The ring's cut from above has nothing to cut at when every row sits above `keep`: lines after
+/// the last row (a live pane's, a seam) put `keep` past it.
+#[test]
+fn letting_lines_go_from_above_with_every_row_above_the_keep_cuts_nothing() {
+    let mut a = app();
+    a.hist_lines = (0..10).map(|i| format!("line {i}")).collect();
+    a.spans = vec![Span {
+        row: 0,
+        at: 0,
+        lines: 4,
+        class: RowClass::Other,
+    }];
+    assert_eq!(a.let_lines_go(false, 8, usize::MAX), 0);
+    assert_eq!(a.hist_lines.len(), 10);
+    assert_eq!(a.spans.len(), 1);
+}
