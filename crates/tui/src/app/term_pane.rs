@@ -135,17 +135,19 @@ pub(crate) fn encode(r: &Report, sgr: bool, x: usize, y: usize) -> Option<Vec<u8
     if x > 223 || y > 223 {
         return None;
     }
-    // X10 has no release flag: a release is button 3, the modifiers kept.
+    // X10 has no release flag: a release is button 3, the modifiers kept. A button past the one
+    // byte it has is dropped rather than wrapped.
     let b = if r.release {
         (r.button & !3) | 3
     } else {
         r.button
     };
+    let b = u8::try_from(b).ok().and_then(|b| b.checked_add(32))?;
     Some(vec![
         0x1b,
         b'[',
         b'M',
-        32 + (b as u8),
+        b,
         32 + x as u8,
         32 + y as u8,
     ])
@@ -401,4 +403,35 @@ pub(crate) struct TermAsk {
     /// Which pane - the daemon's number, which is what `TermClose` carries. The card names
     /// it beside the line, so a person ending one of several knows which one.
     pub(crate) pane: u32,
+}
+
+#[cfg(test)]
+mod encode_tests {
+    use super::*;
+
+    fn report(button: u16, release: bool) -> Report {
+        Report {
+            button,
+            x: 1,
+            y: 1,
+            release,
+        }
+    }
+
+    #[test]
+    fn an_x10_button_past_one_byte_is_dropped_and_not_wrapped() {
+        for button in [224, 256, 300, u16::MAX] {
+            for release in [false, true] {
+                assert_eq!(encode(&report(button, release), false, 5, 5), None);
+            }
+        }
+        assert_eq!(
+            encode(&report(0, false), false, 5, 6),
+            Some(vec![0x1b, b'[', b'M', 32, 37, 38])
+        );
+        assert_eq!(
+            encode(&report(0, true), false, 5, 6),
+            Some(vec![0x1b, b'[', b'M', 35, 37, 38])
+        );
+    }
 }
