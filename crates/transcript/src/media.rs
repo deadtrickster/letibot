@@ -14,7 +14,11 @@ pub fn size_of_data_ref(data_ref: &str) -> (Option<u32>, Option<u32>) {
     let mime = head.trim_start_matches("data:");
     let payload = wire_payload(data_ref);
     // 4 KiB of bytes needs 5462 base64 characters, and the padding never crosses the walk.
-    let take = payload.len().min(5 * 1024);
+    let mut take = payload.len().min(5 * 1024);
+    // A non-base64 payload may hold a multibyte char across the cut.
+    while !payload.is_char_boundary(take) {
+        take -= 1;
+    }
     let bytes = decode_base64(&payload[..take]);
     dimensions(mime, &bytes)
 }
@@ -376,6 +380,12 @@ pub fn mark_delivered(items: &mut [crate::TranscriptItem]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_multibyte_payload_cut_mid_char_is_no_size_not_a_panic() {
+        let data_ref = format!("data:image/png;base64,a{}", "\u{e9}".repeat(3000));
+        assert_eq!(size_of_data_ref(&data_ref), (None, None));
+    }
 
     /// A real PNG, `w`×`h` - the shared fixture, so this crate's tests cannot drift back into
     /// a header that is not a picture. See [`crate::testing`] for why that matters.

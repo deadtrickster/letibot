@@ -61,7 +61,14 @@ impl Tokens {
     /// The total a header shows. opencode's `total` is exactly the sum, but it is
     /// computed here rather than read so a row missing `total` still has one.
     pub fn total(&self) -> u64 {
-        self.input + self.output + self.reasoning + self.cache_read + self.cache_write
+        [
+            self.output,
+            self.reasoning,
+            self.cache_read,
+            self.cache_write,
+        ]
+        .into_iter()
+        .fold(self.input, u64::saturating_add)
     }
 }
 
@@ -653,7 +660,7 @@ fn interpret(
                 .unwrap_or_default();
             let hash = str_field(&v, "hash");
             report.patches += 1;
-            report.patch_files += files.len() as u64;
+            report.patch_files = report.patch_files.saturating_add(files.len() as u64);
             let short = if hash.len() > 12 { &hash[..12] } else { &hash };
             let said = if files.is_empty() {
                 format!("a patch (hash {short}) naming no files")
@@ -691,11 +698,17 @@ fn interpret(
         "step-finish" => {
             if let Some(t) = v.get("tokens") {
                 let t = tokens_from(t);
-                report.spend.tokens.input += t.input;
-                report.spend.tokens.output += t.output;
-                report.spend.tokens.reasoning += t.reasoning;
-                report.spend.tokens.cache_read += t.cache_read;
-                report.spend.tokens.cache_write += t.cache_write;
+                report.spend.tokens.input = report.spend.tokens.input.saturating_add(t.input);
+                report.spend.tokens.output = report.spend.tokens.output.saturating_add(t.output);
+                report.spend.tokens.reasoning =
+                    report.spend.tokens.reasoning.saturating_add(t.reasoning);
+                report.spend.tokens.cache_read =
+                    report.spend.tokens.cache_read.saturating_add(t.cache_read);
+                report.spend.tokens.cache_write = report
+                    .spend
+                    .tokens
+                    .cache_write
+                    .saturating_add(t.cache_write);
             }
             if let Some(c) = v.get("cost").and_then(|c| c.as_f64()) {
                 report.spend.cost += c;
@@ -782,6 +795,16 @@ pub fn default_db_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_totals_saturate_instead_of_overflowing() {
+        let t = Tokens {
+            input: u64::MAX,
+            output: 1,
+            ..Tokens::default()
+        };
+        assert_eq!(t.total(), u64::MAX);
+    }
 
     /// A throwaway opencode database, populated by the test. A file and not
     /// `:memory:`, because the point is to open it read-only afterwards and an

@@ -70,7 +70,14 @@ pub struct Tokens {
 
 impl Tokens {
     pub fn total(&self) -> u64 {
-        self.input + self.output + self.reasoning + self.cache_read + self.cache_write
+        [
+            self.output,
+            self.reasoning,
+            self.cache_read,
+            self.cache_write,
+        ]
+        .into_iter()
+        .fold(self.input, u64::saturating_add)
     }
 }
 
@@ -966,11 +973,13 @@ fn interpret(
             if let Some(models) = v.get("modelUsage").and_then(Value::as_object) {
                 for m in models.values() {
                     let n = |k: &str| m.get(k).and_then(Value::as_u64).unwrap_or(0);
-                    tokens.input += n("inputTokens");
-                    tokens.output += n("outputTokens");
-                    tokens.reasoning += n("thinkingTokens");
-                    tokens.cache_read += n("cacheReadInputTokens");
-                    tokens.cache_write += n("cacheCreationInputTokens");
+                    tokens.input = tokens.input.saturating_add(n("inputTokens"));
+                    tokens.output = tokens.output.saturating_add(n("outputTokens"));
+                    tokens.reasoning = tokens.reasoning.saturating_add(n("thinkingTokens"));
+                    tokens.cache_read = tokens.cache_read.saturating_add(n("cacheReadInputTokens"));
+                    tokens.cache_write = tokens
+                        .cache_write
+                        .saturating_add(n("cacheCreationInputTokens"));
                 }
             }
             report.spend = Spend { cost, tokens };

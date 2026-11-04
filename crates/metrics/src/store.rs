@@ -808,7 +808,7 @@ impl Writer {
             .conn
             .query_row("PRAGMA page_count", [], |r| r.get(0))
             .unwrap_or(0);
-        pages.max(0) as u64 * self.page_size()
+        (pages.max(0) as u64).saturating_mul(self.page_size())
     }
 
     /// The parts of it that are rows rather than free pages - what a delete is measured against.

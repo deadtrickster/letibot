@@ -668,3 +668,13 @@ fn a_fresh_cc_session_imports_and_a_resumed_one_does_not() {
     // `cc-` with nothing behind it names no transcript.
     assert_eq!(import_target(false, "cc-"), None);
 }
+
+#[test]
+fn token_totals_saturate_instead_of_overflowing() {
+    let t = Tokens {
+        input: u64::MAX,
+        output: 1,
+        ..Tokens::default()
+    };
+    assert_eq!(t.total(), u64::MAX);
+}
