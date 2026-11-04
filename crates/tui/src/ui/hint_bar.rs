@@ -1,5 +1,6 @@
 //! The hint bar: the keys that do something right now. This head's half is generated from the
-//! tables its keys are dispatched from, so the bar cannot name a key that does something else;
+//! tables its keys are dispatched from, so the bar cannot name a key that does something else
+//! (the `Says` literals have no table: `tests/bindings.rs` drives each one);
 //! rano's cards and editor pane keep rano's own sentences, pinned by tag.
 
 use crate::app::*;
@@ -10,7 +11,7 @@ use rano::style::Role;
 
 /// One of the conversation's chords, as the bar names it - read from the table its dispatch
 /// reads where there is one (`Surface::chord`, `Show::chord`), so the two cannot drift.
-enum Chord {
+pub(crate) enum Chord {
     Surface(Surface, &'static str),
     Show(Show),
     Says(&'static str, &'static str),
@@ -19,15 +20,16 @@ enum Chord {
 /// The conversation's chords, in the order the bar names them. The bar is over capacity at
 /// 80 columns by construction and keeps its head, so the order is a ranking: the panes and the
 /// reflexes first, `/help` - the index - last.
-const CONVERSATION: &[Chord] = &[
+pub(crate) const CONVERSATION: &[Chord] = &[
     Chord::Surface(Surface::Picker, "sessions"),
     Chord::Says("ctrl-n", "clears notes"),
     Chord::Surface(Surface::Todos, "todos"),
     Chord::Surface(Surface::Subagents, "subagents"),
     Chord::Show(Show::Thinking),
     // `ctrl-v` and `/t` are adjacent on purpose: they are the two things a reader
-    // confuses, so the bar states both - one result against all of them.
-    Chord::Says("ctrl-v", "newest result"),
+    // confuses, so the bar states both - one result against all of them. A clipboard picture
+    // is what `ctrl-v` attaches first, so the bar says so.
+    Chord::Says("ctrl-v", "picture or newest result"),
     Chord::Says("/t", "all tool rows"),
     // A notice line's details from the keyboard: the click's other half.
     Chord::Says("alt-n", "newest notice"),

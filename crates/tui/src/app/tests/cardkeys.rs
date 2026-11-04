@@ -1159,3 +1159,103 @@ fn a_card_in_the_chrome_leaves_no_surface_focused() {
     assert!(a.prompt_away);
     assert_eq!(a.focused_surface(), Some(Surface::Help));
 }
+
+// ───────────────── key hints belong to the head, and yield to cards ─────────────────
+
+fn hint_cell(a: &mut App, w: usize, needle: &str) -> (u16, u16) {
+    let screen = a.screen(w, 40);
+    let (y, row) = screen
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, l)| l.contains(needle))
+        .unwrap_or_else(|| panic!("{needle:?} is not on the screen: {screen:#?}"));
+    let col = crate::app::keyhints::cells(row)
+        .windows(needle.chars().count())
+        .position(|c| c.iter().collect::<String>() == needle)
+        .expect("the hint's column");
+    (col as u16, y as u16)
+}
+
+/// A hint clicked, then a card arriving before the read that applies it: the key would answer
+/// the card, so it is dropped.
+#[test]
+fn a_hint_click_is_dropped_when_a_card_came_up_before_it_was_applied() {
+    let mut a = app();
+    let (x, y) = hint_cell(&mut a, 160, "ctrl-g subagents");
+    a.key(Key::Click { x, y });
+    assert_eq!(a.injected, vec![0x07], "the click queued nothing");
+    ask(&mut a, 1, testing::requested("r1", "rm"));
+    assert!(a.take_injected().is_empty(), "the key reached the new card");
+}
+
+/// With a decision in front a click is the card's, and a hint drawn on the bar is not a key.
+#[test]
+fn a_hint_click_under_a_card_types_nothing() {
+    let mut a = app();
+    ask(&mut a, 1, testing::requested("r1", "rm"));
+    let screen = a.screen(160, 40);
+    let bar = screen.last().expect("a bar").clone();
+    assert!(
+        a.hint_rows.last().is_some_and(|r| !r.hints.is_empty()),
+        "{bar}"
+    );
+    let h = a
+        .hint_rows
+        .last()
+        .and_then(|r| r.hints.first())
+        .cloned()
+        .unwrap();
+    a.key(Key::Click {
+        x: h.x as u16,
+        y: h.y as u16,
+    });
+    assert!(
+        a.take_injected().is_empty(),
+        "a click under a card typed {:?}",
+        h.bytes
+    );
+}
+
+/// Text in a decision's command is the other party's: it carries no button, wherever it is drawn.
+#[test]
+fn text_inside_a_decision_is_never_a_hint() {
+    let mut a = app();
+    ask(
+        &mut a,
+        1,
+        testing::requested("r1", "echo · esc closes · /quit"),
+    );
+    let screen = a.screen(160, 40);
+    let drawn = screen
+        .iter()
+        .position(|l| l.contains("echo"))
+        .expect("the command is drawn");
+    assert!(
+        a.hint_rows.get(drawn).is_none_or(|r| r.hints.is_empty()),
+        "the decision's own words became a button: {:?}",
+        a.hint_rows.get(drawn).map(|r| &r.hints)
+    );
+}
+
+/// A pane's body is foreign text (a plugin, a room, a tool's output); only the head's own static
+/// screens keep buttons in the body.
+#[test]
+fn a_panes_body_has_no_hints_and_the_help_screen_keeps_its_own() {
+    let mut a = app();
+    let _ = a.command("help");
+    let _ = a.screen(120, 40);
+    let body = a.body_rows;
+    assert!(
+        a.hint_rows.iter().take(body).any(|r| !r.hints.is_empty()),
+        "/help lost its own buttons"
+    );
+    a.key(Key::Esc);
+    a.key(Key::CtrlT);
+    let _ = a.screen(120, 40);
+    let body = a.body_rows;
+    assert!(
+        a.hint_rows.iter().take(body).all(|r| r.hints.is_empty()),
+        "a pane body became buttons"
+    );
+}

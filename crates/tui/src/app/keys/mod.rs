@@ -137,14 +137,7 @@ impl App {
             return None;
         }
         // `ctrl-e`, settled once here: the editor on an empty prompt with nothing in front of it, `End` everywhere
-        // else and before any card or pane sees the key. A click on a key hint is that key, ahead of every card,
-        // since the hint is drawn ON them.
-        if let Key::Click { x, y } = k
-            && let Some(hint) = self.key_hint_at(x, y).cloned()
-        {
-            let _ = self.press_hint(hint);
-            return None;
-        }
+        // else and before any card or pane sees the key.
         let k = match k {
             Key::CtrlE if self.ctrl_e_opens_editor() => {
                 self.open_editor();
@@ -221,6 +214,15 @@ impl App {
         }
         if let ControlFlow::Break(r) = self.key_todo_draft(&k) {
             return r;
+        }
+        // A click on a key hint is that key, typed - but only with no card in front: a card owns
+        // every click aimed at its slot, and a hint drawn behind it is not what the person meant.
+        if let Key::Click { x, y } = k
+            && !self.card_in_front()
+            && let Some(hint) = self.key_hint_at(x, y).cloned()
+        {
+            let _ = self.press_hint(hint);
+            return None;
         }
         // An open diff popup owns the keyboard, below the cards and asks above (a question
         // that arrives while the operator reads stays answerable) and above everything else.

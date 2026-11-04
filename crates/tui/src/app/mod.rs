@@ -601,6 +601,9 @@ pub struct App {
     /// answered only while that same card is still in front, since a key earlier in the read can
     /// have answered it - and a row index from the old card marks a row on the new one.
     pub(crate) drawn_card: Option<(Target, String)>,
+    /// The rows the last frame's card in the slot took, `[from, to)`: its body is another party's
+    /// text (a command, a question), so no hint is read off it.
+    pub(crate) card_span: Option<(usize, usize)>,
     /// The count labels on the composer's top edge as the last frame drew them, `None` when the
     /// frame drew no edge or cut it. A click on a label opens the pane its count names.
     pub(crate) box_top_hits: Option<BoxTopHits>,
@@ -771,6 +774,8 @@ pub struct App {
     pub(crate) hint_rows: Vec<keyhints::HintRow>,
     /// Keys a click typed, for the head's next read to take before the terminal's.
     pub(crate) injected: Vec<u8>,
+    /// The card in front when [`Self::injected`] was queued; see `take_injected`.
+    pub(crate) injected_for: String,
     /// Where the pointer is, the one fact the hover keeps. What it lights is worked out against
     /// the frame being drawn ([`App::relight`]), never kept from an earlier one.
     pub(crate) pointer_at: Option<(u16, u16)>,
@@ -1303,6 +1308,7 @@ impl App {
             pick_unseeded: false,
             mode_hits: Vec::new(),
             drawn_card: None,
+            card_span: None,
             box_top_hits: None,
             standing: Vec::new(),
             standing_sel: 0,
@@ -1353,6 +1359,7 @@ impl App {
             body_rows: 0,
             hint_rows: Vec::new(),
             injected: Vec::new(),
+            injected_for: String::new(),
             pointer_at: None,
             hovered: None,
             drag: Default::default(),

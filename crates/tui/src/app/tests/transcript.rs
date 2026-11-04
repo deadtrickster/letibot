@@ -1614,7 +1614,7 @@ fn the_bar_says_what_ctrl_v_does_and_names_the_verb_that_does_the_rest() {
     );
     // Adjacent, because they are the two a reader confuses: one result, all of them.
     assert!(
-        bar.contains("ctrl-v newest result · /t all tool rows"),
+        bar.contains("ctrl-v picture or newest result · /t all tool rows"),
         "the pair is not stated as a pair: {bar}"
     );
 
@@ -1669,7 +1669,7 @@ fn the_bar_says_what_ctrl_v_does_and_names_the_verb_that_does_the_rest() {
     // assertions below keep.
     assert_eq!(
         bar.trim().chars().count(),
-        189,
+        200,
         "the bar's width changed; re-measure what is visible at 80: {bar}"
     );
     let at80 = a.screen(80, 24).pop().unwrap_or_default();
@@ -1681,11 +1681,11 @@ fn the_bar_says_what_ctrl_v_does_and_names_the_verb_that_does_the_rest() {
         !at80.contains("ctrl-v"),
         "the pair now fits at 80 — better than the measurement, so update it: {at80}"
     );
-    // Seven columns move the pair's end past 120; it is whole at 128.
-    let at128 = a.screen(128, 24).pop().unwrap_or_default();
+    // The pair's end is past 128 now that `ctrl-v` names the picture too; it is whole at 140.
+    let at128 = a.screen(140, 24).pop().unwrap_or_default();
     assert!(
-        at128.contains("ctrl-v newest result · /t all"),
-        "the pair is not whole at 128, which is where it was measured to be: {at128}"
+        at128.contains("ctrl-v picture or newest result · /t all"),
+        "the pair is not whole at 140, which is where it was measured to be: {at128}"
     );
 }
 

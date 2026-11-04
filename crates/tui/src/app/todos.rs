@@ -482,7 +482,10 @@ impl App {
                 );
             }
         }
-        if !question && !mode_up && let Some(held) = self.held_line.take() {
+        if !question
+            && !mode_up
+            && let Some(held) = self.held_line.take()
+        {
             let now = self.editor.expanded();
             self.clear_composer();
             if now.trim().is_empty() {

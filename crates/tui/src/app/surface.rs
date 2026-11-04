@@ -214,6 +214,15 @@ impl App {
             && !self.quit_card
     }
 
+    /// Whether a card that owns the clicks holds the slot: the chrome cards, a decision, the
+    /// quit or setting card. The reseat card is not one - it yields to everything, and the diff
+    /// popup is drawn over a decision, so its own hints stay buttons.
+    pub(crate) fn card_in_front(&self) -> bool {
+        self.card_up().is_some()
+            || (self.drawn() != Drawn::DiffPopup
+                && (!self.open.is_empty() || self.quit_card || self.pick.is_some()))
+    }
+
     /// Whether `s` is anywhere on the stack - open, drawn or not.
     pub(crate) fn is_open(&self, s: Surface) -> bool {
         self.surfaces.iter().any(|o| o.surface == s)

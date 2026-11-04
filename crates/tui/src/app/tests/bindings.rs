@@ -187,3 +187,56 @@ fn the_bar_follows_the_surface_in_front() {
     assert!(!out.contains("goes into it"), "{out}");
     assert!(out.contains("esc back to the subagents"), "{out}");
 }
+
+/// The `Says` literals on the conversation bar have no dispatch table behind them, so each is
+/// driven here: the key named does what the words say. A new literal fails until it is added.
+#[test]
+fn every_says_literal_on_the_conversation_bar_does_what_it_says() {
+    use crate::ui::hint_bar::{CONVERSATION, Chord};
+    for c in CONVERSATION {
+        let Chord::Says(key, says) = c else { continue };
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        match (*key, *says) {
+            ("ctrl-n", "clears notes") => {
+                a.key(Key::CtrlN);
+                let by_key = a.notice.clone();
+                let mut b = app();
+                let _ = b.notes_command("notes", "dismiss all");
+                assert_eq!(by_key, b.notice, "ctrl-n is not `/notes dismiss all`");
+            }
+            ("ctrl-v", "picture or newest result") => {
+                a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+                let long: String = (0..40).map(|i| format!("line {i}\n")).collect();
+                a_result_row(&mut a, 2, "i1", &long);
+                a.key(Key::CtrlV);
+                assert_eq!(a.payload_sel.as_deref(), Some("i1"), "no result window");
+            }
+            ("/t", "all tool rows") => {
+                assert_eq!(a.command("t"), None);
+                assert!(a.tools.is_open(), "/t did not unfold the tool rows");
+            }
+            ("alt-n", "newest notice") => {
+                a.key(Key::AltN);
+                assert!(
+                    a.notice.as_deref().is_some_and(|n| n.contains("no notice")),
+                    "alt-n did not go for the newest notice: {:?}",
+                    a.notice
+                );
+            }
+            ("ctrl-p", "hold") => {
+                a.key(Key::CtrlP);
+                assert!(a.hold, "ctrl-p did not hold the view");
+            }
+            ("/help", "") => {
+                let _ = a.command("help");
+                assert_eq!(a.top_surface(), Some(Surface::Help));
+            }
+            other => panic!("the bar names {other:?} and no test drives it"),
+        }
+    }
+}

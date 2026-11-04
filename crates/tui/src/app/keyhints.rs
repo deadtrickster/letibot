@@ -311,9 +311,26 @@ impl App {
             .map(|h| (h.rect.y, h.rect.y + h.rect.h))
             .collect();
         let editor = self.editor_drawn().then_some(self.edit_area);
+        // Only text this head wrote is a button. The body above the chrome is another party's
+        // (a room, a plugin, a tool's output, a file) except the two panes of the head's own
+        // static text and the diff popup's edge; the card in the slot carries a decision's
+        // command or a program's question. The hint bar and the composer's edges stay.
+        let own_body = matches!(
+            self.drawn(),
+            Drawn::Surface(Surface::Help | Surface::Stats) | Drawn::DiffPopup
+        );
+        let popup = self.drawn() == Drawn::DiffPopup;
+        let body = self.body_rows;
+        let card = self.card_span;
         self.hint_rows.truncate(frame.len());
         for (y, row) in frame.iter().enumerate() {
-            let skipped = convo.iter().any(|(a, b)| y >= *a && y < *b)
+            let foreign = (y < body
+                && !(own_body
+                    && (!popup
+                        || cells(row).iter().find(|c| !matches!(**c, ' ' | '\0')) == Some(&'╰'))))
+                || card.is_some_and(|(a, b)| y >= a && y < b);
+            let skipped = foreign
+                || convo.iter().any(|(a, b)| y >= *a && y < *b)
                 || editor.is_some_and(|a| {
                     let (top, h) = (usize::from(a.y), usize::from(a.h));
                     y >= top && y < top + h
@@ -384,6 +401,7 @@ impl App {
             p.focused = true;
             p.dirty = true;
         }
+        self.injected_for = self.front_card();
         self.injected.extend(k.bytes);
         self.redraw = true;
         ControlFlow::Break(None)
@@ -391,7 +409,25 @@ impl App {
 
     /// The keys a click typed, for the head's read to take before the terminal's.
     pub fn take_injected(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.injected)
+        let bytes = std::mem::take(&mut self.injected);
+        // Applied on a later read: a card that came up since is not the one the person clicked
+        // under, and its keys would answer it.
+        if !bytes.is_empty() && self.injected_for != self.front_card() {
+            self.say("the click's key was dropped - a card came up first");
+            return Vec::new();
+        }
+        bytes
+    }
+
+    /// Which card holds the slot, as one comparable value.
+    fn front_card(&self) -> String {
+        format!(
+            "{:?}|{}|{}|{}",
+            self.card_up(),
+            self.open.first().map_or("", |d| d.req_id.as_str()),
+            self.quit_card,
+            self.pick.is_some()
+        )
     }
 }
 

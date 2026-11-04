@@ -447,6 +447,18 @@ impl App {
         // half, which the fit never trims; the quit card's choices need the whole card.
         // Cleared first: a frame that drew no card must not leave the last one armed as the click's provenance.
         self.drawn_card = None;
+        // The head's own cards (quit, setting, reseat) keep their keys line as buttons.
+        let own_card = matches!(
+            card_target,
+            Some(Target::QuitCard | Target::SettingCard | Target::ReseatCard)
+        );
+        self.card_span = (!own_card
+            && (card_target.is_some() || self.card_up().is_some())
+            && card_rows_len + pinned_len > 0)
+            .then(|| {
+                let top = body_rows + card_chrome_at.saturating_sub(drained);
+                (top, (top + card_rows_len + pinned_len).min(h))
+            });
         if drained == 0
             && let Some(target) = card_target
         {
