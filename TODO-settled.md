@@ -7403,3 +7403,90 @@ what a recall-versus-needless-prompts decision would need.
 — OPEN: the ordering half was never ruled on, and the revert §5d landed on 2026-09-23 supersedes
 "NOT REVERTED" here (`docs/evidence/basharena-2026-09-22.md:476`, 1eae071e); with the comparison
 ruled off nothing waits in this tree, and nothing was built.
+
+---
+
+settled: the Mac run is done - the seatbelt tests pass on the Mac and sessions run under seatbelt since `7b472c35` and `96461899`; the operator closed the live card check on 2026-11-04
+
+## R98 — macOS has no boundary for a command, so tests there must ask (D16, amended) — **half 1 BUILT 2026-10-27 (the policy), half 2 BUILT, and the default local seat on a Mac now runs inside it; one live card check is left**
+
+D16 admits a command without a card only inside a measured boundary, and its amendment says
+that on a raw host a command that executes code the agent wrote (a test runner) must keep
+asking, and no standing grant may admit it, because the oracle does not read a runner's files.
+The macOS host shell has no boundary at all (firecode VMs are the only macOS boundary letibot
+has, `docs/firecode-on-macos.md`), so every `cargo test` on the Mac is either asked about or
+theater.
+
+Two halves, the first smaller and first:
+
+1. **Make the rule true on a raw host now.** A `bash` call whose stages run a test runner or a
+   build that executes project code (`cargo test|run|build` with build scripts, `pytest`,
+   `go test`, `npm test`, `make`, a script the session wrote) is not settled by a session or
+   durable grant when the backend is unconfined; it asks every time, and the card says why
+   (*"runs code the agent wrote, on a host with no boundary"*). Measure what this costs on the
+   corpus replay (how many past grants would no longer settle) before landing. — **BUILT.** — The
+   rule is the policy now, and it has no setting: `runs_project_code_unconfined` reads one fact,
+   `has_measured_boundary`, which `Harness::open` hands it off the backend — so a Linux test
+   constructs the Mac's case by handing the gate `None`, and nothing in the gate probes a platform.
+   `[permissions] ask_unconfined_code`, `with_unconfined_code_asks` and the startup note that
+   disclosed it are gone with the switch — in `crates/leticode-config`, and in
+   `crates/harnessd/src/harness/open.rs`. Tests:
+   `a_host_with_no_measured_boundary_asks_with_nothing_switched_on`,
+   `the_same_runner_is_admitted_inside_the_boundary` (unchanged) and
+   `the_card_narrows_the_ladder_and_says_why`, whose note must say *no boundary*. The cost was
+   measured on the corpus before it was turned on — `docs/boundary-and-adjudication.md` §R98 (1),
+   **171** of the mac's 834 standing settles would ask, 137 of them the session's own programs and
+   24 `cargo test`.
+2. **Give the Mac a boundary** — **BUILT 2026-10-27**, `crates/tools/src/exec/seatbelt.rs`, and
+   written up in `docs/boundary-and-adjudication.md` §4k. Seatbelt (`sandbox-exec -f <profile>`)
+   renders the same `ViewSpec` the Linux side renders as a bubblewrap argv, and the probe measures
+   it from inside: the deny list beating an allow (a canary inside a writable `$HOME`), a write
+   outside the checkout refused, a write inside it succeeding, fork/exec, a nested `sh -c` denied
+   the same path, `kill -0` on the launcher `EPERM`, and both egress subjects refused when egress
+   is denied. `confine::probe` chooses the mechanism by platform, so `HostBackend::confined`, the
+   session's `/tmp` and every grant re-probe through one dispatch, and a Mac session's `bash`,
+   jobs and persistent shell all run inside it. A Mac that cannot measure one is **unconfined and
+   says so** (`boundary_absent` on the session's log, with the refusal's own words).
+
+   The measured cost: **+5.1 ms per exec** (100 `true` calls: 1.28 → 6.41 ms/call), +4.5 ms on a
+   real `cargo --version`, and it does not grow with the command's work. What macOS cannot give —
+   a PID namespace, so processes are unreachable but not absent, and no `PR_SET_NO_NEW_PRIVS` —
+   is printed on the boundary's own description as `ABSENT` / `NOT APPLICABLE`, never omitted.
+   Reaping stays the process-group tree (`exec::scope::ProcessGroups`), as it already was. — ✓ fixed in 5442b7c8, test the_probe_measures_a_boundary_and_says_what_macos_cannot_give
+
+   **Two levels (2026-11-04).** The tight view alone made `git push` and `gh` fail in a top-level
+   Mac session ("could not read Username", "not logged into any GitHub hosts"). A top-level session
+   is now wide (real `$HOME` read-write, filesystem readable, `DENY_UNDER_HOME` less `.config/gh` as
+   the only fence). A child keeps the tight view plus the operator's git identity and its worktree's
+   git dir (hooks and config read-only), with no credentials, so it commits and cannot push. A
+   top-level seat gets `GH_TOKEN` and a github.com-only git credential helper, from one `gh auth
+   token` the daemon runs at open, masked in output; `Library/Keychains` stays denied. See §4k.
+
+   **What half 2 still needs: a Mac.** `crates/tools/src/exec/seatbelt.rs` and
+   `crates/tools/tests/seatbelt.rs` are in the tree now, and nothing on a Linux box can run
+   `sandbox-exec` or a `#![cfg(target_os = "macos")]` test, so the profile has never been read by
+   the kernel that enforces it and D16's admit *inside* a Mac boundary has never run.
+
+**Done when**: (1) on an unconfined backend no grant settles a test run, with a test; (2) a Mac
+session's commands run inside a measured boundary that `~/.ssh` and the profiles are absent
+from, and D16 admits them there. — **(1) is done**: the rule is the policy and
+`a_host_with_no_measured_boundary_asks_with_nothing_switched_on` proves it from the injected fact,
+with the ladder narrowed and no grant recorded. **(2) is done on its Linux side**: macOS has no
+mount namespace to make `.ssh` and the profiles *absent*, so they are **denied** rather than absent,
+the probe measures the denial, and the description says which of the two it is holding. The
+`bwrap` half is measured on this box; the seatbelt half is not.
+
+**Measured on a Mac, 2026-11-03**: `cargo test --offline -p letibot-tools --test seatbelt --test
+seatbelt_no_helper` passes 8/8. The default local session (`leticode` seat, `bash` on) was NOT inside
+the boundary: a live `writes-allowed` session asked a card for `cargo test --offline` ("this host has
+no boundary") and published no `boundary_absent`, because only `runner`/`coder`/`gatekeeper` took the
+confined arm in `place_the_tools`. Fixed: on macOS that seat's commands run in the seatbelt boundary
+over the checkout (`HostBackend::confined_over`, file tools still rooted at `/`), `backend.boundary()`
+is set so `Prereq::Confinement` and the D16 gate see it, and a refused probe stays unconfined with
+`boundary_absent`. Tests: `harness::open::mac_default_seat_tests` (boundary built, no warning, write
+inside ok, write outside refused). Linux is untouched (the new arm is `cfg(target_os = "macos")`).
+
+**Still open**: the live card. Build the daemon with this branch, start a default local session at
+`writes-allowed` in a checkout, ask it to run `cargo test --offline`: it must run with no card and no
+`boundary_absent`. The refused-probe arm is the old path and is exercised only on a Mac where the probe fails. Expect that a
+build needing a new dependency fails inside the boundary (toolchain is read-only, offline only).
