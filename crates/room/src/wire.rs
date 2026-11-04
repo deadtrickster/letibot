@@ -1,11 +1,6 @@
-//! The wire: the frames a coordinator's socket takes and sends. [`Room::answer`] is the dispatch with
-//! the socket taken out, so a protocol can be tested before anybody writes a listener.
-//!
-//! One connection per top-level session, because a push has an address and a close is a fact: the
-//! coordinator calls [`Room::note_gone`] at once instead of waiting out the lease.
-//!
-//! Every mutating frame carries a client-minted `id`, because reconnection is the normal case: a repeat
-//! is answered from the replay window and carries no events; a version mismatch is [`Response::Bye`].
+//! The wire: frames a coordinator's socket takes and sends. [`Room::answer`] is the dispatch without the socket.
+//! Every mutating frame carries a client-minted `id`: a repeat is answered from the replay window
+//! with no events, and a version mismatch is [`Response::Bye`].
 
 use serde::{Deserialize, Serialize};
 

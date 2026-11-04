@@ -1,10 +1,6 @@
-//! The session's end of the socket: one connection per top-level session, a round trip per verb, the
-//! bell delivered to a callback, and a beat the daemon can run on the session's behalf.
-//!
-//! The socket is the daemon's liveness and the beat is the work's, so the connection stays open for the
-//! session's life: a connection per call would make every close a `note_gone`, and a session that
-//! posted, claimed and read in three calls would lose its claim in between. The beat lives here
-//! because a session that must remember to call `beat` will forget while it works.
+//! The session's end of the socket: one connection per top-level session, a round trip per verb,
+//! the bell delivered to a callback, and a beat run on the session's behalf.
+//! The connection stays open for the session's life, or each close would be a `note_gone`.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;

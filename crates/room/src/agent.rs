@@ -1,11 +1,6 @@
-//! A tag's own agent, and the count of how many times it had to be brought back: who the agent is
-//! (a derived session id), how many times it was reseated, and when the one now running was seated.
-//!
-//! Whether it is UP is not here. That is a fact about a socket, and the room already answers it: an
-//! agent is up when it is connected, which is the same reading the pane makes of the arbiter.
-//!
-//! The ledger is not a field on the room because an agent is not an item: it outlives every item
-//! under its tag. The room keeps its one-writer rule, and the daemon's upkeep writes here instead.
+//! A tag's own agent: its derived session id, how many times it was reseated, and when the current one was seated.
+//! Whether it is up is a fact about a socket and the room already answers it.
+//! The ledger is not a room field because an agent outlives every item under its tag.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};

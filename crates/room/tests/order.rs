@@ -1,4 +1,4 @@
-//! **The ordering rule, stated as tests** - a tag is a queue, first come first served, and a tag
+//! The ordering rule, stated as tests - a tag is a queue, first come first served, and a tag
 //! is a lock.
 
 use letibot_room::{Refused, Room, Speaker};

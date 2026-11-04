@@ -1,4 +1,4 @@
-//! **The lease, and what happens when it runs out** - the boundary, a session the daemon reports
+//! The lease, and what happens when it runs out - the boundary, a session the daemon reports
 //! gone, the count that raises an item instead of cycling, and a late claimant's dispute.
 
 use letibot_room::{ABANDON_THRESHOLD, About, Decision, Event, Refused, Room, Speaker, State, Why};
@@ -257,7 +257,7 @@ fn a_ruling_retries_hands_or_drops() {
     );
 }
 
-/// **A ruling may hand an item to a session the TREE holds**, and needs no separate vouch for it  -
+/// A ruling may hand an item to a session the TREE holds, and needs no separate vouch for it  -
 /// which is what *the room holds what the tree holds* buys: the membership is the daemon's answer
 /// to *who is in this project*, and a hand to one of them is a hand to somebody real.
 #[test]
@@ -307,7 +307,7 @@ fn a_hand_to_a_member_of_the_tree_needs_no_vouch() {
     .unwrap();
     assert_eq!(room.item(1).unwrap().holder(), Some("s-member"));
 
-    // **A member that is a subagent is still refused**, and so is a session the tree does not hold:
+    // A member that is a subagent is still refused, and so is a session the tree does not hold:
     // the tree widens *has the room met this one*, not *may a subagent speak*.
     let mut room = raised();
     room.set_members(vec![letibot_room::Member {

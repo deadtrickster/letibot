@@ -1,10 +1,6 @@
-//! The socket, end to end: a real `Server`, real `Client`s over a real unix socket, and the four things
-//! the room is for - a frame answered, a bell rung at the connections it is about, a close that gives a
-//! claim back at once, and a beat run on a session's behalf.
-//!
-//! `Room::answer` already lets the FRAMES be tested with no socket (`tests/wire.rs`), and that is
-//! still the cheap place to test a verb. What is only testable here is the transport's own three
-//! facts: one connection per session, a push with an address, and the close as liveness.
+//! The socket end to end: a real `Server` and `Client`s over a unix socket.
+//! Frames are tested without a socket in `tests/wire.rs`; here: one connection per session, a push
+//! with an address, and the close as liveness.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};

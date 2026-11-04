@@ -1,8 +1,5 @@
-//! Chat: the coordinator's talk, beside the tagged queue and not instead of it. One append-only log
-//! with one cursor (`seq`), cut into rooms (the host's, one per project) and direct messages.
-//!
-//! This module is the state machine and the vocabulary. It reads no clock and opens no socket: the
-//! server hands in `now` and decides who a message is pushed to.
+//! Chat: one append-only log with one cursor (`seq`), cut into rooms (the host's, one per project) and DMs.
+//! State machine and vocabulary only: no clock, no socket. The server hands in `now` and decides who is pushed to.
 
 use std::collections::{BTreeMap, VecDeque};
 

@@ -1,8 +1,5 @@
 //! The room: one project's agents, one queue per tag, and a claim that is a lease with a beat.
-//!
-//! A tag is a LOCK, not a list of claimable items, so two sessions cannot hold one scarce thing.
-//! The state machine reads no clock and opens no socket: the semantics are what must be right
-//! before the coordinator is wired to them.
+//! A tag is a lock, not a list of claimable items. The state machine reads no clock and opens no socket.
 
 pub mod agent;
 pub mod chat;

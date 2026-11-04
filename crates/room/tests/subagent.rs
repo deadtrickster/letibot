@@ -1,4 +1,4 @@
-//! **Top-level sessions only** - a subagent is refused by name, at every verb, and the refusal is
+//! Top-level sessions only - a subagent is refused by name, at every verb, and the refusal is
 //! the sentence that says why: a subagent speaks through its parent.
 
 use letibot_room::{Refused, Room, Speaker};

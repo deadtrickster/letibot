@@ -1,11 +1,6 @@
-//! A room is a project's, and a project's name is the tree's: the derivation, and the vocabulary a
-//! room's membership is made of.
-//!
-//! [`project_key`] answers the twelve hex characters the rest of the tree already names a folder by, so
-//! a second hash cannot disagree about which folder is which; the rule is written here again because
-//! this crate holds no store, and pinned by a test in a crate that has both.
-//!
-//! [`room_name`] is `<host key>/<project key>`, and the default project is the empty key.
+//! A room is a project's, and a project's name is the tree's: the derivation and the vocabulary of membership.
+//! [`project_key`] repeats the twelve-hex folder rule because this crate holds no store; a test in a
+//! crate that has both pins it. [`room_name`] is `<host key>/<project key>`; the default project is the empty key.
 
 use std::fmt;
 

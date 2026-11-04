@@ -1,11 +1,6 @@
-//! The bell, per client - firecode's four rules, asked of the socket rather than of the room: listen
-//! before working, one read is not membership, acknowledge before acting, and a bell must be able to
-//! inject a turn. The middle one is this file's; the others are asserted where the client is.
-//!
-//! The room keeps no record of a connection that was not there, so a session that was away for an hour
-//! was handed a `Welcome` identical to one that had never left. `Response::Welcome`'s `missed` and
-//! `missed_since_ms` are the answer, and they are a COUNT and not a replay: what a client is owed is
-//! *you missed four, re-read the state*.
+//! The bell, per client: listen before working, one read is not membership, acknowledge before
+//! acting, a bell must be able to inject a turn.
+//! `Response::Welcome`'s `missed` and `missed_since_ms` are a count, not a replay: the client re-reads state.
 
 use std::path::PathBuf;
 use std::sync::Arc;
