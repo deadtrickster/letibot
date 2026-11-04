@@ -1361,7 +1361,7 @@ fn relics_alone_draw_no_reminder_and_are_closed_quietly() {
     ));
     let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
     let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
-    seed_session(&parts, &cfg);
+    seed_idle_session(&parts, &cfg);
     {
         let store = Store::open(&dir.store()).unwrap();
         // The daemon that really stopped did so a moment ago, in order - and left nothing here.
@@ -1896,6 +1896,21 @@ fn seed_session(parts: &Parts, cfg: &Config) {
     d.stop(None);
 }
 
+/// The seeded session, dated five hours back: idle well beyond `restore_within`, so a restart that finds
+/// nothing owed files a row and starts no turn.
+fn seed_idle_session(parts: &Parts, cfg: &Config) {
+    seed_session(parts, cfg);
+    let store = Store::open(cfg.store.as_ref().expect("a store")).unwrap();
+    let at = (letibot_sessionlog::event::now_ms() - 5 * 3_600_000) as i64;
+    let conn = store.connection();
+    conn.execute("UPDATE session SET created_at = ?1", (at,))
+        .unwrap();
+    conn.execute("DROP TRIGGER IF EXISTS transcript_item_no_update", ())
+        .unwrap();
+    conn.execute("UPDATE transcript_item SET created_at = ?1", (at,))
+        .unwrap();
+}
+
 /// Rows a crashed daemon leaves for a session's monitors and background jobs, and a todo row that
 /// waits on the job.
 fn stage_monitors_and_jobs(store: &Store) {
@@ -1986,7 +2001,7 @@ fn an_empty_restart_is_said_once_and_starts_no_turn() {
     ));
     let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
     let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
-    seed_session(&parts, &cfg);
+    seed_idle_session(&parts, &cfg);
     let store = Store::open(&dir.store()).unwrap();
     old_daemon_stopped(&store, Duration::from_secs(1));
     // Nothing was running, and the session still names the daemon that held it: a monitor that

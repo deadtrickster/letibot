@@ -34,6 +34,26 @@ impl Drop for Scratch {
     }
 }
 
+/// How long before the test the earlier daemon stopped.
+const STOPPED_AGO_MS: u64 = 120_000;
+
+/// Date everything the session holds `ago_ms` before now: its row and every transcript row.
+fn age_session(store: &Store, id: &str, ago_ms: u64) {
+    let at = (letibot_sessionlog::event::now_ms() - ago_ms) as i64;
+    let conn = store.connection();
+    conn.execute("UPDATE session SET created_at = ?2 WHERE id = ?1", (id, at))
+        .expect("the session is dated");
+    // Rows are append-only in SQL; the next open recreates the trigger.
+    conn.execute("DROP TRIGGER IF EXISTS transcript_item_no_update", ())
+        .expect("the trigger is lifted");
+    conn.execute(
+        "UPDATE transcript_item SET created_at = ?2 WHERE transcript_id IN \
+         (SELECT id FROM transcript WHERE session_id = ?1)",
+        (id, at),
+    )
+    .expect("its rows are dated");
+}
+
 /// A session an earlier daemon had already created: the row is written first and the vocabulary loaded, and only then
 /// does `Harness::open` mint this daemon's registry, so the row's `created_at` is behind `Registry::started_ms`. `None`
 /// when this box has no vocabulary GGUF.
@@ -55,11 +75,12 @@ fn opened_by_a_later_daemon_with(
     // A daemon has to have stopped here. The guard is a fact about the box rather than an
     // inference from a session's creation time (a seeded session is older than this daemon while
     // nothing restarted), so a fixture that wants the restart said must leave a stopped life.
+    let now = letibot_sessionlog::event::now_ms();
     store
-        .life_started("d-the-earlier-one", 1)
+        .life_started("d-the-earlier-one", now - 3_600_000)
         .expect("the earlier daemon began");
     store
-        .life_stopped("d-the-earlier-one", 2)
+        .life_stopped("d-the-earlier-one", now - STOPPED_AGO_MS)
         .expect("the earlier daemon stopped");
     store
         .put_session(&SessionRecord {
@@ -75,6 +96,8 @@ fn opened_by_a_later_daemon_with(
         })
         .expect("the earlier daemon's row");
     seed(&store);
+    // Idle by default: the quiet cases below are sessions nobody touched for hours before the stop.
+    age_session(&store, id, 5 * 3_600_000);
     drop(store);
     let mut cfg = Config::for_this_box(&dir.0);
     cfg.dialect = crate::Dialect::Qwen;
@@ -404,6 +427,7 @@ fn a_session_that_answered_last_is_told_in_a_row_and_not_woken() {
             truncated: false,
         },
     );
+    age_session(&Store::open(&dir.store()).unwrap(), id, 5 * 3_600_000);
     drop(h);
     let mut h = reopened(&dir, id);
     let text = h.restore_after_restart().expect("a restart is said");
@@ -445,4 +469,76 @@ fn the_restart_row_it_filed_is_not_work_it_owes() {
         second.ends_with(". Nothing was running."),
         "no clause, because nothing is owed: {second}"
     );
+}
+
+/// **A session active just before the stop is woken though it owes nothing recorded** - the model that told the
+/// operator "after you restart I will verify X" has to run again without being typed to. The notice says what to do.
+#[test]
+fn a_recently_active_session_owing_nothing_gets_a_wake_turn() {
+    let dir = Scratch::new("restart-recent");
+    let id = "s-restart-recent";
+    let Some(h) = opened_by_a_later_daemon(&dir, id) else {
+        return;
+    };
+    stage_a_last_row(
+        &dir,
+        id,
+        TranscriptItem::Assistant {
+            text: "the build is done".into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        },
+    );
+    age_session(
+        &Store::open(&dir.store()).unwrap(),
+        id,
+        STOPPED_AGO_MS + 600_000,
+    );
+    drop(h);
+    let mut h = reopened(&dir, id);
+    let text = h.restore_after_restart().expect("a restart is said");
+    assert!(text.contains("The daemon restarted (down "), "{text}");
+    assert!(text.contains("continue now"), "{text}");
+    assert!(text.contains("end this turn with no reply"), "{text}");
+    assert_eq!(h.restart_notices, vec![text], "{:?}", h.restart_notices);
+    assert!(restart_rows(&h).is_empty(), "{:?}", h.items());
+}
+
+/// **An old session is woken only when its last words wait on the restart**, and one whose last message is
+/// unrelated keeps the row (`a_session_that_answered_last_is_told_in_a_row_and_not_woken`).
+#[test]
+fn an_old_session_that_promised_to_continue_after_a_restart_is_woken() {
+    let dir = Scratch::new("restart-promise");
+    let id = "s-restart-promise";
+    let Some(h) = opened_by_a_later_daemon(&dir, id) else {
+        return;
+    };
+    stage_a_last_row(
+        &dir,
+        id,
+        TranscriptItem::Assistant {
+            text: "Patch is in. After you restart the daemon I'll verify the migration landed."
+                .into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        },
+    );
+    age_session(&Store::open(&dir.store()).unwrap(), id, 5 * 3_600_000);
+    drop(h);
+    let mut h = reopened(&dir, id);
+    let text = h.restore_after_restart().expect("a restart is said");
+    assert_eq!(h.restart_notices, vec![text], "{:?}", h.restart_notices);
+}
+
+/// A session idle beyond the window with nothing promised keeps today's row and no turn.
+#[test]
+fn a_session_idle_beyond_the_window_gets_only_the_row() {
+    let dir = Scratch::new("restart-idle");
+    let Some(mut h) = opened_by_a_later_daemon(&dir, "s-restart-idle") else {
+        return;
+    };
+    let text = h.restore_after_restart().expect("a restart is said");
+    assert!(!text.contains("continue now"), "{text}");
+    assert!(h.restart_notices.is_empty(), "{:?}", h.restart_notices);
+    assert_eq!(restart_rows(&h), vec![text], "{:?}", h.items());
 }

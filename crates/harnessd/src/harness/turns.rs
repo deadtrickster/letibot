@@ -791,7 +791,8 @@ impl Harness {
             // turn the work already costs.
             let owed = self
                 .owed_after_a_restart(row.as_ref().and_then(|s| s.last_item.as_ref()), settlements);
-            return self.say_nothing_was_running(&store, back_ms, &owed);
+            let last_active_ms = last_real_activity_ms(&store, &sid, row.as_ref());
+            return self.say_nothing_was_running(&store, back_ms, owed, last_active_ms);
         }
 
         // How long the daemon was down: from the latest stop among the daemons these records came from, to this
@@ -979,7 +980,8 @@ impl Harness {
         &mut self,
         store: &Store,
         back_ms: u64,
-        owed: &crate::restart::Owed,
+        mut owed: crate::restart::Owed,
+        last_active_ms: Option<u64>,
     ) -> Option<String> {
         let sid = self.cfg.session_id.clone();
         let mut instances: Vec<(String, u64)> = Vec::new();
@@ -1016,6 +1018,17 @@ impl Harness {
                 .map(|(i, at)| crate::restart::stop_of(store, i, *at))
                 .chain(std::iter::once(latest_box_stop(store))),
         );
+        // A session active just before the stop, or whose last words wait on a restart, is woken even
+        // owing nothing recorded, so a promise made to the operator is kept.
+        let recent = match (stop.at_ms(), last_active_ms) {
+            (Some(stop_ms), Some(last)) => {
+                std::time::Duration::from_millis(stop_ms.saturating_sub(last))
+                    < self.cfg.restore_within
+            }
+            _ => false,
+        };
+        owed.wake = recent || self.last_words_wait_on_a_restart();
+        let owed = &owed;
         // The same sentence, and one clause when the session owes work - a model woken to
         // *nothing was running* alone could not know why it is reading it now.
         let text = match owed.any() {
@@ -1040,6 +1053,25 @@ impl Harness {
         Some(text)
     }
 
+    /// Whether the model's last message reads as waiting on a restart (`restart::RESTART_PROMISES`).
+    fn last_words_wait_on_a_restart(&self) -> bool {
+        let last = self.items().iter().rev().find_map(|i| match i {
+            TranscriptItem::Assistant { text, .. } if !text.trim().is_empty() => Some(text),
+            _ => None,
+        });
+        last.is_some_and(|t| {
+            let tail: String = t
+                .chars()
+                .rev()
+                .take(1500)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            crate::restart::promises_a_restart(&tail, self.cfg.tier().as_ref())
+        })
+    }
+
     /// What this session still owes, as `restart::Owed`: the four facts that decide whether an otherwise empty
     /// restart is a turn. The board is read twice on purpose, since `due_rows` is the wake's own predicate and
     /// `plan_rows` is every row still owed. A postponed or cancelled row is the operator's act.
@@ -1059,6 +1091,7 @@ impl Harness {
             settlements,
             due_rows: self.due_todo_rows().len(),
             plan_rows,
+            wake: false,
         }
     }
 
@@ -4024,6 +4057,33 @@ fn probe_answer() {
 fn probe_row() {
     #[cfg(test)]
     SWEPT_ROWS.with(|n| n.set(n.get() + 1));
+}
+
+/// When the session last did anything a person or the model did: the newest row that is not a
+/// `[restart]` notice, so a row-only notice does not make the next restart look recent.
+fn last_real_activity_ms(
+    store: &Store,
+    sid: &str,
+    row: Option<&letibot_tokencore::store::StoredSession>,
+) -> Option<u64> {
+    let fallback = row.map(|s| s.created_ms.max(0) as u64);
+    let Ok(Some(tid)) = store.current_transcript_id(sid) else {
+        return fallback;
+    };
+    let n = store.item_count(&tid).unwrap_or(0);
+    let rows = store
+        .rows_json_from(&tid, n.saturating_sub(16), 16)
+        .unwrap_or_default();
+    let real = rows
+        .iter()
+        .rev()
+        .find(|r| match serde_json::from_str::<TranscriptItem>(&r.3) {
+            Ok(TranscriptItem::User { parts, .. }) => !parts
+                .iter()
+                .any(|p| matches!(p, UserPart::Text { text } if text.starts_with("[restart] "))),
+            _ => true,
+        });
+    real.map(|r| r.4).or(fallback)
 }
 
 #[cfg(test)]

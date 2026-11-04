@@ -53,7 +53,9 @@
 //! and read at the next turn, never a turn of its own - except when the session still OWES
 //! something (*"i expected that after restart you will continue"*), where the person is waiting
 //! for it to continue and [`Owed`] sends the same sentence through the turn door
-//! ([`nothing_running_but`]).
+//! ([`nothing_running_but`]). A session also gets the turn when its last turn ended within the
+//! threshold of the stop, or its last words read as waiting on a restart
+//! ([`promises_a_restart`]), so "after you restart I'll verify X" is not left to sit.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -407,12 +409,15 @@ pub struct Owed {
     /// Rows still owed - the plan the model wrote, `Pending` or `InProgress`. A row the
     /// operator postponed or struck off is not owed, and a completed one is not either.
     pub plan_rows: usize,
+    /// The session was active within the threshold of the stop, or its last message promised
+    /// to continue after a restart. It is woken so it can follow through on that.
+    pub wake: bool,
 }
 
 impl Owed {
     /// Whether there is anything at all - the one question the door is chosen on.
     pub fn any(&self) -> bool {
-        self.mid_turn || self.settlements + self.due_rows + self.plan_rows > 0
+        self.mid_turn || self.wake || self.settlements + self.due_rows + self.plan_rows > 0
     }
 
     /// Why this restart is a turn, as the sentence says it - every arm that holds, in the
@@ -458,12 +463,61 @@ impl Owed {
 /// [`nothing_running`], with the reason it is a TURN rather than a row: a model woken to *nothing
 /// was running* alone has no way to know why it is reading it now.
 pub fn nothing_running_but(stop: &Stopped, back_ms: u64, owed: &Owed) -> String {
-    format!(
-        "{} — but this session has work outstanding ({}), so this turn is that work continuing \
-         and not a notice about it: read the conversation and carry on.",
-        nothing_running(stop, back_ms),
-        owed.clause()
-    )
+    let mut text = nothing_running(stop, back_ms);
+    let work = owed.clause();
+    if !work.is_empty() {
+        text.push_str(&format!(
+            " — but this session has work outstanding ({work}), so this turn is that work \
+             continuing and not a notice about it: read the conversation and carry on."
+        ));
+    }
+    if owed.wake {
+        text.push_str(WAKE_TAIL);
+    }
+    text
+}
+
+/// What a woken model is told to do about the restart it may have been waiting on.
+const WAKE_TAIL: &str = " If you told the operator you would continue after a restart, \
+    continue now. If nothing was waiting on it, end this turn with no reply.";
+
+/// What a model says when it has put work off until the operator restarts something. A last
+/// message that reads like one of these is waiting on this restart, whatever its age.
+pub const RESTART_PROMISES: &[&str] = &[
+    "after you restart I will verify the fix",
+    "once the daemon is back I will check it",
+    "when you restart letibot I'll continue from here",
+    "ping me after the rebuild and the restart",
+    "after the restart I will run the tests again",
+    "restart the daemon and tell me, then I will confirm",
+    "I will pick this up when letibot is back up",
+    "waiting for you to restart before I carry on",
+];
+
+/// The score a sentence has to reach against a probe. Lexical-only scores on the fixture sit
+/// 0.48 and up for promises and 0.25 and below for unrelated text; the floor is between, nearer
+/// the promises so a stray mention of "restart" does not wake a session.
+pub const PROMISE_FLOOR: f64 = 0.4;
+
+/// Whether `text` reads as waiting on a restart: its best sentence against [`RESTART_PROMISES`],
+/// with the box's second tier when it has one.
+pub fn promises_a_restart(text: &str, tier: Option<&letibot_embeddings::Tier>) -> bool {
+    use letibot_tools::similarity::Corpus;
+    let probes: Vec<(PathBuf, String)> = RESTART_PROMISES
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (PathBuf::from(format!("probe-{i}")), (*p).to_string()))
+        .collect();
+    let corpus = Corpus::of_texts(&probes);
+    let _ = corpus.fill(tier);
+    text.split(['.', '!', '?', '\n'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .any(|s| {
+            corpus
+                .best_with(s, tier)
+                .is_some_and(|(_, score)| score >= PROMISE_FLOOR)
+        })
 }
 
 /// The call that declares a monitor again, as the model would write it.
@@ -841,6 +895,23 @@ fn ttl_of(args: &serde_json::Value) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn restart_promises_match_and_other_text_does_not() {
+        use super::promises_a_restart;
+        for t in [
+            "After you restart the daemon I'll verify the migration landed.",
+            "Fixed it. Once the daemon is back, ping me and I will rerun the suite",
+        ] {
+            assert!(promises_a_restart(t, None), "{t}");
+        }
+        for t in [
+            "I fixed the parser bug and added tests for the lexer.",
+            "The restart of the cache is not needed here",
+            "Done. The branch is merged and the todo list is clear.",
+        ] {
+            assert!(!promises_a_restart(t, None), "{t}");
+        }
+    }
 
     /// A GitHub watch is recorded with its own default life, so a restart inside it re-arms it.
     #[test]
