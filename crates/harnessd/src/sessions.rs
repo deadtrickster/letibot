@@ -2783,8 +2783,19 @@ impl<'a> Sessions<'a> {
             return 0;
         }
         let mut rows = 0;
-        for harness in self.open.values_mut() {
+        let mut linked = Vec::new();
+        for (id, harness) in self.open.iter_mut() {
+            let wanted = harness.wants_room();
             rows += harness.fill_room_board();
+            if wanted && let Some(link) = harness.room_link() {
+                linked.push((id.clone(), link));
+            }
+        }
+        // A session that linked just now has a plugin host built without a room.
+        for (id, link) in linked {
+            if let (Some(host), Some(hub)) = (self.plugins.get(&id), self.registry.get(&id)) {
+                host.link_room(link, &hub);
+            }
         }
         rows
     }

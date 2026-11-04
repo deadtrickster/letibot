@@ -62,7 +62,7 @@ pub struct PluginHost {
     /// Where a pane's view of the room comes from - the session's own connection to the box's
     /// coordinator, set by [`PluginHost::with_room`]. `None` in a test's host and on a box with no
     /// coordinator, and the `room` feed is then no key at all rather than an empty room.
-    room: Option<Arc<dyn room_feed::RoomFeed>>,
+    room: Mutex<Option<Arc<dyn room_feed::RoomFeed>>>,
 }
 
 struct Inner {
@@ -171,7 +171,7 @@ impl PluginHost {
             }),
             builder,
             sessions: None,
-            room: None,
+            room: Mutex::new(None),
         }
     }
 
@@ -184,8 +184,8 @@ impl PluginHost {
 
     /// Hand this host the session's own connection to the box's room, so a pane declaring the
     /// `room` feed is given one and its four controls have somewhere to go.
-    pub fn with_room(mut self, source: Arc<dyn room_feed::RoomFeed>) -> PluginHost {
-        self.room = Some(source);
+    pub fn with_room(self, source: Arc<dyn room_feed::RoomFeed>) -> PluginHost {
+        *self.room.lock().unwrap_or_else(|e| e.into_inner()) = Some(source);
         self
     }
 
@@ -297,11 +297,22 @@ impl PluginHost {
         }
     }
 
+    fn room_source(&self) -> Option<Arc<dyn room_feed::RoomFeed>> {
+        self.room.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Give a host built before the session had a room its connection, and show the pane to a head
+    /// that is already attached.
+    pub fn link_room(&self, source: Arc<dyn room_feed::RoomFeed>, hub: &Arc<Hub>) {
+        *self.room.lock().unwrap_or_else(|e| e.into_inner()) = Some(source);
+        PaneDriver::attach(self, "", hub);
+    }
+
     /// Install the built-in whose pane this daemon answers - the room's - the first time a head
     /// comes through a door that needs it: its four controls are the host's verbs, so the daemon
     /// that can perform them is the one that must draw it. Lazily, because a compile costs seconds.
     fn ensure_the_room_pane(&self) {
-        if self.room.is_none() {
+        if self.room_source().is_none() {
             return;
         }
         // A layer that already answers the hook is the one that draws it - ours would sit below it
@@ -730,10 +741,10 @@ impl PluginHost {
                     }
                 }
                 letibot_plugin::pane::Feed::Room => {
-                    if let Some(source) = self.room.as_ref() {
+                    if let Some(source) = self.room_source() {
                         out.insert(
                             want.name().to_string(),
-                            room_feed::room(&**source, &self.session, feed::now_ms()),
+                            room_feed::room(&*source, &self.session, feed::now_ms()),
                         );
                     }
                 }
@@ -1727,7 +1738,7 @@ impl PaneDriver for PluginHost {
         // A room pane's keys are the room's own verbs and this host performs them: what a claim
         // does is the room's state machine, one process away, so the act is taken here and not
         // handed back to the layer. `View::validate_for` has already gated the row's words.
-        if let Some(room) = self.room.as_ref()
+        if let Some(room) = self.room_source().as_ref()
             && pane_hook(pane) == ROOM_HOOK
         {
             // The fifth control is not a room verb: a restart is a daemon lifetime, asked of the
@@ -5498,6 +5509,27 @@ mod tests {
     /// The committed `room` module runs, against a real room, through the daemon's own host. A guest
     /// that compiles is not a guest that has run - the example's committed `.wasm` had never been
     /// executed and trapped on its first call - so this asserts the answer is the LAYER's.
+    #[test]
+    fn a_room_linked_after_the_host_was_built_gets_its_pane() {
+        let (_dir, server) = a_room("room-late-pane");
+        let workspace = tempdir("room-late-pane-ws");
+        let host = PluginHost::production("s-late-pane", &workspace);
+        let hub = Hub::new("s-late-pane");
+        host.open("s-late-pane", &hub, "room/room", (100, 30));
+        assert!(host.panes().is_empty(), "no room, no room pane");
+        let link = crate::room::link::SessionRoom::connect(
+            "s-late-pane",
+            server.path(),
+            letibot_room::DEFAULT_PROJECT,
+            None,
+            Arc::new(|_: &str| {}),
+            None,
+        )
+        .expect("the session connects");
+        host.link_room(link, &hub);
+        assert_eq!(host.panes(), vec!["room/room".to_string()]);
+    }
+
     #[test]
     fn the_builtin_room_layer_answers_its_pane_with_a_real_room_behind_it() {
         let (dir, server) = a_room("room-builtin");
