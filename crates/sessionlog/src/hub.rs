@@ -417,6 +417,9 @@ impl CommandQueue {
     fn is_empty(&self) -> bool {
         self.q.is_empty()
     }
+    fn iter(&self) -> impl Iterator<Item = &QueuedCommand> {
+        self.q.iter()
+    }
     fn replace(&mut self, q: VecDeque<QueuedCommand>) {
         self.q = q;
         self.sync();
