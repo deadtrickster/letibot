@@ -1005,9 +1005,14 @@ impl TurnEngine {
             });
         }
 
-        session.witness = Some(PrefixWitness::record(
-            &prompt,
-            &produced.tokens[lead.len()..],
+        // Over the ledger the turn committed, which is what the next prompt begins with: the tail
+        // rode on this round and was committed nowhere, so hashing the prompt made every round that
+        // carried one end the NEXT turn as a divergence.
+        let covered = session.ledger.tokens().to_vec();
+        session.witness = Some(PrefixWitness::record_committed(
+            prompt_tokens,
+            (produced.tokens.len() - lead.len()) as u64,
+            &covered,
         ));
 
         let metrics = self.metrics_for(

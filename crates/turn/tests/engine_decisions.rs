@@ -1133,6 +1133,58 @@ fn two_turns_hold_the_invariant_and_the_reuse_is_reported_separately() {
     session.ledger.verify_chain().unwrap();
 }
 
+/// A round that carries a tail is not a divergence. The tail rides on the request and is committed
+/// nowhere, so the witness has to be the ledger the turn left: hashed as the prompt, one offer made
+/// every following turn a Failure-class `prefix_divergence`.
+#[test]
+fn a_tail_on_a_round_does_not_make_the_next_turn_diverge() {
+    let _lock = serial();
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
+        eprintln!("SKIPPED: no vocabulary GGUF, so the engine cannot open a session");
+        return;
+    };
+    let canned = Canned::serve(a_thinking_turn(&ids_of("a colour"), &ids_of("Blue.")), 2);
+    let mut engine = engine(canned.endpoint.clone());
+    let mut session = session(&engine, "tail-witness");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("a colour")], &mut sink)
+        .unwrap();
+
+    // The tail is the round's own: a note the request carries and the log never keeps.
+    let tail = [TranscriptItem::User {
+        speaker: letibot_transcript::Speaker::Agent,
+        parts: vec![UserPart::Text {
+            text: "[standing-notes offer] `.letibot/notes/x.md` looks relevant".into(),
+        }],
+    }];
+    engine
+        .run_turn_steered_with_tail(&mut session, &mut sink, &mut NoSteering, &tail)
+        .expect("the first turn");
+    let witness = session.witness().expect("a witness").clone();
+    assert_eq!(
+        witness.covered_len,
+        session.ledger.tokens().len(),
+        "the witness is the ledger, not the prompt that carried the tail"
+    );
+
+    // The next prompt is that ledger plus this turn's generation prompt, and nothing else.
+    let second = engine
+        .run_turn(&mut session, &mut sink)
+        .expect("the second turn");
+    match &second.metrics.prefix_check {
+        PrefixCheck::Held { .. } => {}
+        other => panic!("a round with a tail made the next turn {other:?}"),
+    }
+    assert!(
+        !sink
+            .warnings()
+            .iter()
+            .any(|(c, _)| *c == "prefix_divergence"),
+        "a tail is committed nowhere, so it cannot diverge from the ledger"
+    );
+}
+
 // The live view and the stored view must agree about the channel: the symptom was one thing and
 // the causes were two, so each case below fails on its own cause rather than on both.
 

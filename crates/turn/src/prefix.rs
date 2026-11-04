@@ -5,15 +5,15 @@
 use letibot_backend::BackendCaps;
 use letibot_tokencore::{TokenId, hash_tokens};
 
-/// What turn N leaves behind so turn N+1 can check it: turn N's submitted prompt plus the
-/// generated tokens that were committed, which is the generation-inclusive part of the
-/// invariant and why one hash settles both halves.
+/// What turn N leaves behind so turn N+1 can check it: the LEDGER the turn committed, which is
+/// what the next prompt begins with, and the counts a violation is reported in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrefixWitness {
-    /// `prompt_tokens(N) + committed_generated(N)`.
+    /// The ledger after turn N's commit - the span turn N+1's prompt must extend.
     pub covered_len: usize,
-    /// `H(prompt_N ‖ committed_generated_N)`.
+    /// `H(that ledger)`.
     pub covered_hash: [u8; 32],
+    /// What turn N submitted, the tail and the generation prompt included, for the message.
     pub prompt_tokens: u64,
     /// Generated tokens the harness committed, not the server's `predicted`: a trailing stop
     /// token is a boundary the renderer owns and is stripped before commit, so counting it
@@ -22,22 +22,43 @@ pub struct PrefixWitness {
 }
 
 impl PrefixWitness {
-    /// Record what turn N sent and kept.
+    /// Record what turn N sent and kept, when the whole prompt is the ledger: no tail, nothing
+    /// elided. The engine uses [`Self::record_committed`], which is this over the real ledger.
     pub fn record(prompt: &[TokenId], committed_generated: &[TokenId]) -> PrefixWitness {
         let mut covered = Vec::with_capacity(prompt.len() + committed_generated.len());
         covered.extend_from_slice(prompt);
         covered.extend_from_slice(committed_generated);
+        PrefixWitness::over(
+            &covered,
+            prompt.len() as u64,
+            committed_generated.len() as u64,
+        )
+    }
+
+    /// Record the ledger a turn left. Not the prompt it sent: a tail rides on the round and is
+    /// committed nowhere, and an elided thought is committed as its replacement, so hashing either
+    /// made the next ordinary turn read as a divergence.
+    pub fn record_committed(
+        sent: u64,
+        committed_generated: u64,
+        ledger: &[TokenId],
+    ) -> PrefixWitness {
+        PrefixWitness::over(ledger, sent, committed_generated)
+    }
+
+    fn over(covered: &[TokenId], sent: u64, committed_generated: u64) -> PrefixWitness {
         PrefixWitness {
             covered_len: covered.len(),
-            covered_hash: hash_tokens(&covered),
-            prompt_tokens: prompt.len() as u64,
-            committed_generated: committed_generated.len() as u64,
+            covered_hash: hash_tokens(covered),
+            prompt_tokens: sent,
+            committed_generated,
         }
     }
 
-    /// The observable expectation for the next turn.
+    /// The observable expectation for the next turn: the span the prompts are proven identical
+    /// over, which is the whole of what the server can have cached of it.
     pub fn expected_cached_min(&self) -> u64 {
-        self.prompt_tokens + self.committed_generated
+        self.covered_len as u64
     }
 }
 
@@ -247,5 +268,36 @@ mod tests {
         assert_eq!(w.committed_generated, 2);
         assert_eq!(w.expected_cached_min(), 5);
         assert_eq!(w.covered_hash, hash_tokens(&[1, 2, 3, 4, 5]));
+    }
+
+    /// The witness is the LEDGER a turn left, and the tail a round carried is not in it: hashed over
+    /// the prompt, one offer made the next ordinary turn read as the 612 GB failure with the lid off.
+    #[test]
+    fn the_witness_is_the_ledger_and_leaves_the_rounds_tail_out() {
+        // The prompt that went out: the ledger's head, then the tail, then the generation prompt.
+        let prompt = [1, 2, 3, 90, 91, 92];
+        // What the commit left: the same head, then what the model wrote. No tail.
+        let ledger = [1, 2, 3, 4, 5];
+        let w = PrefixWitness::record_committed(prompt.len() as u64, 2, &ledger);
+        assert_eq!(w.covered_len, ledger.len());
+        assert_eq!(w.covered_hash, hash_tokens(&ledger));
+        assert_eq!(w.expected_cached_min(), ledger.len() as u64);
+        assert_eq!(w.prompt_tokens, 6, "what the server was given is reported");
+
+        // The next prompt is that ledger plus its own generation prompt.
+        let next = [1, 2, 3, 4, 5, 6];
+        assert!(
+            check(&BackendCaps::OWN_SERVER, Some(&w), &next, 5).held(),
+            "the ledger is a prefix of the next prompt, so the invariant holds"
+        );
+        // The control: the witness over the PROMPT does not, which is the false alarm this fixes.
+        let stale = PrefixWitness::record(&prompt, &[4, 5]);
+        assert!(
+            matches!(
+                check(&BackendCaps::OWN_SERVER, Some(&stale), &next, 5),
+                PrefixCheck::Violated { .. }
+            ),
+            "a prompt-plus-generation witness hashes a tail the ledger never carried"
+        );
     }
 }
