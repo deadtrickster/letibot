@@ -568,6 +568,18 @@ pub fn serve_conn_rooted(
         );
     }
 
+    // A seat is a head's. An inside peer may take one only to reach `sudo`'s askpass door.
+    if peer.inside && kind != crate::peer::ASKPASS_KIND {
+        let mut w = writer.lock().unwrap();
+        w.write(&ServerFrame::Bye {
+            reason: format!(
+                "attaching as {kind:?} is a head's act, and this connection came from inside a                  session's tool tree; only kind {:?} may attach from there",
+                crate::peer::ASKPASS_KIND
+            ),
+        })?;
+        return Ok(());
+    }
+
     let Some(hub) = registry.resolve(&session_id) else {
         let mut w = writer.lock().unwrap();
         let held: Vec<String> = registry.list().into_iter().map(|s| s.session_id).collect();

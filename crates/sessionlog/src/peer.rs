@@ -6,6 +6,9 @@ use std::os::unix::net::UnixStream;
 
 use crate::protocol::ClientFrame;
 
+/// The `kind` the askpass helper attaches with: the one seat an inside peer may take.
+pub const ASKPASS_KIND: &str = "askpass";
+
 /// The process the kernel named for this connection, and what that makes the connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Peer {
@@ -241,9 +244,40 @@ fn descended_from(pid: i32, ancestor: i32) -> bool {
 /// Whether the process sits in a cgroup this daemon opened: `letibot.<daemon pid>.<n>` and
 /// everything under it, which is where every tool call and job runs. This is the arm a
 /// double-forked child cannot leave, and it is empty on a host with no cgroup v2.
+/// On macOS the scope is a process group: the peer's group is looked up in the group ids the
+/// daemon recorded for its tool scopes. A child that calls `setsid` or `setpgid` leaves it.
 #[cfg(target_os = "macos")]
-fn in_daemon_tree(_pid: i32, _daemon: i32) -> bool {
-    false
+fn in_daemon_tree(pid: i32, daemon: i32) -> bool {
+    // SAFETY: `getpgid` takes a pid and returns -1 on failure.
+    let pgid = unsafe { libc::getpgid(pid) };
+    // A peer whose group cannot be read is not placed, so it falls on the refusing side.
+    pgid <= 0 || recorded_group(&std::env::temp_dir().join("letibot-scopes"), daemon, pgid)
+}
+
+/// Whether `pgid` is listed in a `cgroup.procs` anywhere under the roots `letibot.<daemon>.<n>` of
+/// `parent`: the file the tool launcher writes its group leader's pid into.
+#[cfg(any(test, target_os = "macos"))]
+fn recorded_group(parent: &std::path::Path, daemon: i32, pgid: i32) -> bool {
+    fn walk(dir: &std::path::Path, pgid: i32) -> bool {
+        if let Ok(s) = std::fs::read_to_string(dir.join("cgroup.procs")) {
+            if s.lines().any(|l| l.trim().parse::<i32>() == Ok(pgid)) {
+                return true;
+            }
+        }
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        rd.flatten()
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .any(|e| walk(&e.path(), pgid))
+    }
+    let prefix = format!("letibot.{daemon}.");
+    let Ok(rd) = std::fs::read_dir(parent) else {
+        return false;
+    };
+    rd.flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        .any(|e| walk(&e.path(), pgid))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -318,6 +352,48 @@ mod tests {
         // The program name holds a space and a bracket, which a field count from the left misses.
         let stat = "4242 (a program (x)) S 31337 4242 4242 0 -1";
         assert_eq!(stat_ppid(stat), Some(31337));
+    }
+
+    /// A double-forked child of a tool: the shell exits, the grandchild is reparented to init, and
+    /// only its process group still ties it to the scope the daemon recorded.
+    #[test]
+    fn a_double_forked_child_of_a_tool_is_in_the_recorded_group() {
+        use std::os::unix::process::CommandExt;
+        let dir = std::env::temp_dir().join(format!("peer-groups-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let daemon = std::process::id() as i32;
+        let scope = dir.join(format!("letibot.{daemon}.0")).join("session.s1");
+        std::fs::create_dir_all(&scope).unwrap();
+        let mut leader = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("nohup sleep 30 >/dev/null 2>&1 & echo $!")
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("a tool shell");
+        let mut out = String::new();
+        std::io::Read::read_to_string(leader.stdout.as_mut().unwrap(), &mut out).unwrap();
+        let _ = leader.wait();
+        let grandchild: i32 = out.trim().parse().expect("the grandchild pid");
+        std::fs::write(scope.join("cgroup.procs"), format!("{}\n", leader.id())).unwrap();
+        // SAFETY: `getpgid` takes a pid and returns -1 on failure.
+        let pgid = unsafe { libc::getpgid(grandchild) };
+        assert_eq!(pgid, leader.id() as i32, "the grandchild kept the group");
+        assert!(
+            recorded_group(&dir, daemon, pgid),
+            "a double-forked child is inside through its recorded group"
+        );
+        assert!(
+            !recorded_group(&dir, daemon + 1, pgid),
+            "another daemon's scopes do not count"
+        );
+        assert!(
+            !recorded_group(&dir, daemon, std::process::id() as i32),
+            "this process's own group is not recorded, so a head is not inside"
+        );
+        // SAFETY: `kill` with a pid this test spawned.
+        unsafe { libc::kill(grandchild, libc::SIGKILL) };
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

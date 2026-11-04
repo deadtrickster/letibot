@@ -25,6 +25,8 @@ const CHILD_PATIENCE: Duration = Duration::from_secs(150);
 /// Set in the child's environment, so the helper test knows it was re-executed as one.
 const CHILD: &str = "LETIBOT_PEER_DOORS_CHILD";
 /// Set in the seat child's environment, the same way.
+/// Set in the head-attaching child's environment, the same way.
+const HEAD_CHILD: &str = "LETIBOT_PEER_HEAD_CHILD";
 const SEAT_CHILD: &str = "LETIBOT_PEER_SEAT_CHILD";
 /// The socket the child connects to.
 /// Set in the launcher child's environment, the same way.
@@ -161,7 +163,7 @@ fn the_tool_trees_child() {
     }
     let socket = std::env::var(CHILD_SOCKET).expect("the socket to connect to");
     let (mut client, _hello, mut reader) =
-        HeadClient::attach(&socket, "s", 0, "tui", "tool-tree", Caps::default())
+        HeadClient::attach(&socket, "s", 0, "askpass", "tool-tree", Caps::default())
             .expect("a tool call's command can attach");
 
     for (which, door) in operator_doors().into_iter().enumerate() {
@@ -190,7 +192,7 @@ fn the_seat_a_tool_call_is_given() {
         ..Caps::default()
     };
     let (_client, hello, reader) =
-        HeadClient::attach(&socket, "s", 0, "tui", "dead", caps).expect("attach");
+        HeadClient::attach(&socket, "s", 0, "askpass", "dead", caps).expect("attach");
     let ServerFrame::Hello {
         snapshot,
         sessions,
@@ -346,6 +348,48 @@ fn a_connection_from_inside_the_tool_tree_is_refused_every_operator_door() {
         "the password door was not served to the tool tree:\n{said}"
     );
     assert_eq!(answered, 1, "one card was raised for the tool tree's ask");
+}
+
+/// The child that attaches as a head, which a tool call may not.
+#[test]
+fn the_head_attaching_child() {
+    if std::env::var(HEAD_CHILD).as_deref() != Ok("1") {
+        return;
+    }
+    let socket = std::env::var(CHILD_SOCKET).expect("the socket to connect to");
+    match HeadClient::attach(&socket, "s", 0, "tui", "tool-tree", Caps::default()) {
+        Err(e) => println!("ATTACH refused :: {e}"),
+        Ok(_) => println!("ATTACH seated"),
+    }
+}
+
+/// A tool call is refused a head's seat before any is taken: nothing is attached to the hub.
+#[test]
+fn a_tool_call_attaching_as_a_head_is_refused_before_a_seat() {
+    let server = start_wired("noseat");
+    let out = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+        .args(["--exact", "the_head_attaching_child", "--nocapture"])
+        .env(HEAD_CHILD, "1")
+        .env(CHILD_SOCKET, server.path())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("the child runs");
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "the child failed: {said}");
+    assert!(
+        said.contains("ATTACH refused"),
+        "the child was seated: {said}"
+    );
+    assert!(
+        said.contains("tool tree"),
+        "the refusal does not say why: {said}"
+    );
+    let hub = server.registry().resolve("s").expect("the session's hub");
+    assert_eq!(
+        hub.attached_heads(),
+        0,
+        "a seat was taken before the refusal"
+    );
 }
 
 /// The other half. A process that is not inside the daemon keeps every door: the `!` line runs
