@@ -690,10 +690,18 @@ fn a_short_bridge_name_resolves_when_unique_and_both_show_qualified_when_two_sha
     let dir = Scratch::new();
     let server = coordinator(&dir);
     let a1 = seat(&server, "s-a1", A, Seat::Session);
-    let one = seat(&server, "cc@stroppy-io:stroppy-conformity", "", Seat::External);
+    let one = seat(
+        &server,
+        "cc@stroppy-io:stroppy-conformity",
+        "",
+        Seat::External,
+    );
 
     let m = said(a1.say("1", "host", "@cc@stroppy-conformity hi"));
-    assert_eq!(m.text, "@cc@stroppy-conformity hi", "the short form is shown");
+    assert_eq!(
+        m.text, "@cc@stroppy-conformity hi",
+        "the short form is shown"
+    );
     let (heard, named) = one.next();
     assert_eq!(heard.text, "@cc@stroppy-conformity hi");
     assert!(named, "the short form reached the bridge");
@@ -758,11 +766,17 @@ fn a_folder_mention_wakes_every_bridge_of_the_folder_and_an_exact_single_stays_s
 
     let sibling = seat(&server, "cc@solo:other", "", Seat::External);
     let m = said(a1.say("3", "host", "@cc@solo hi"));
-    assert_eq!(m.text, "@cc@solo:* hi", "a shared folder makes the folder form a group");
+    assert_eq!(
+        m.text, "@cc@solo:* hi",
+        "a shared folder makes the folder form a group"
+    );
     assert!(solo.next().1);
     assert!(sibling.next().1);
     let m = said(a1.say("4", "host", "@cc@solo:solo only"));
-    assert_eq!(m.text, "@cc@solo only", "the qualified collapsed form is the handle");
+    assert_eq!(
+        m.text, "@cc@solo only",
+        "the qualified collapsed form is the handle"
+    );
     assert!(solo.next().1);
     assert!(!sibling.next().1);
 }

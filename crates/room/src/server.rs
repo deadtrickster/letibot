@@ -2145,9 +2145,9 @@ fn replace_mention(text: &str, from: &str, to: &str) -> String {
     {
         let end = i + needle.len();
         let before_ok = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
-        let after_ok = !bytes
-            .get(end)
-            .is_some_and(|b| b.is_ascii_alphanumeric() || matches!(*b, b'-' | b'_' | b'@' | b':' | b'*'));
+        let after_ok = !bytes.get(end).is_some_and(|b| {
+            b.is_ascii_alphanumeric() || matches!(*b, b'-' | b'_' | b'@' | b':' | b'*')
+        });
         out.push_str(&text[at..i]);
         if before_ok && after_ok {
             out.push('@');

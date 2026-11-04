@@ -51,7 +51,9 @@ pub fn valid_handle(name: &str) -> bool {
         && !name.ends_with('@')
         && !name.ends_with(':')
         && name.matches(':').count() <= 1
-        && name.find(':').is_none_or(|c| name.find('@').is_some_and(|a| a < c))
+        && name
+            .find(':')
+            .is_none_or(|c| name.find('@').is_some_and(|a| a < c))
         && name.bytes().all(|b| {
             b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'@' | b':')
         })
@@ -78,8 +80,7 @@ pub fn group_folder(mention: &str) -> Option<&str> {
 
 /// Does the group mention `mention` address the bridge `who`?
 pub fn group_names(mention: &str, who: &str) -> bool {
-    group_folder(mention)
-        .is_some_and(|f| bridge_parts(who).is_some_and(|(folder, _)| folder == f))
+    group_folder(mention).is_some_and(|f| bridge_parts(who).is_some_and(|(folder, _)| folder == f))
 }
 
 /// May a session's name slug stand as its member handle: lowercase letters, digits and `-`, not

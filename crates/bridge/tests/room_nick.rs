@@ -65,7 +65,10 @@ fn a_nick_changes_the_handle_survives_a_reconnect_and_is_refused_when_taken() {
     let refused = rooms::call(&link, "room_nick", &json!({"nick": "taken"})).unwrap_err();
     assert!(refused.contains("cc@stroppy-io:taken"), "{refused}");
     assert_eq!(rooms::handle(), "cc@stroppy-io", "the old handle is kept");
-    assert!(link.request(&json!({"type": "rooms"})).is_ok(), "and still connected");
+    assert!(
+        link.request(&json!({"type": "rooms"})).is_ok(),
+        "and still connected"
+    );
     assert!(rooms::call(&link, "room_nick", &json!({"nick": "Bad Nick"})).is_err());
     drop(holder);
 

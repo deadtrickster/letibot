@@ -171,7 +171,9 @@ fn valid_nick(nick: &str) -> Result<(), String> {
 fn is_me(author: &str, me: &str) -> bool {
     match letibot_room_parts(me) {
         Some((folder, name)) => {
-            author == me || author == format!("cc@{name}") || author == format!("cc@{folder}:{name}")
+            author == me
+                || author == format!("cc@{name}")
+                || author == format!("cc@{folder}:{name}")
         }
         None => author == me,
     }
@@ -379,7 +381,9 @@ pub fn channel_notification(m: &Value) -> Value {
 fn group_mention(text: &str, me: &str) -> Option<String> {
     let (folder, _) = letibot_room_parts(me)?;
     let want = format!("@cc@{folder}:*");
-    text.to_lowercase().contains(&want).then(|| want[1..].to_string())
+    text.to_lowercase()
+        .contains(&want)
+        .then(|| want[1..].to_string())
 }
 
 struct Live {
@@ -1134,8 +1138,9 @@ mod tests {
     fn a_handle(n: &str) -> bool {
         n.len() <= 32
             && n.matches('@').count() <= 1
-            && n.bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'@' || b == b':')
+            && n.bytes().all(|b| {
+                b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'@' || b == b':'
+            })
     }
 
     /// Pins the same table as the room crate's `the_host_key_matches_what_the_launcher_derives`.
@@ -1209,7 +1214,16 @@ mod tests {
         assert_eq!(read_nick(&data, &multi).as_deref(), Some("proj"));
         assert_eq!(read_nick(&data, &repo), None, "keyed by the folder");
         assert!(valid_nick("proj-2").is_ok());
-        for bad in ["", "Proj", "a b", "s-x", "cc", "operator", "-a", &"x".repeat(21)] {
+        for bad in [
+            "",
+            "Proj",
+            "a b",
+            "s-x",
+            "cc",
+            "operator",
+            "-a",
+            &"x".repeat(21),
+        ] {
             assert!(valid_nick(bad).is_err(), "{bad}");
         }
         assert!(a_handle(&qualified(&"f".repeat(30), &"n".repeat(30))));
