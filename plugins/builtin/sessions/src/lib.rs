@@ -392,7 +392,11 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
                     cells: vec![Cell::role(clean(&f.name), Role::Plain)],
                     facts: vec![Cell::role(
                         clean(&f.facts),
-                        if f.running { Role::Pending } else { Role::Faint },
+                        if f.running {
+                            Role::Pending
+                        } else {
+                            Role::Faint
+                        },
                     )],
                     under: vec![clean(&f.under)],
                     open: None,
