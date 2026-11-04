@@ -1482,7 +1482,8 @@ mod tests {
 #[cfg(test)]
 mod journal_tests {
     use super::*;
-    use letibot_sessionlog::{CommandKind, Hub, OwnWork};
+    use letibot_sessionlog::hub::OwnWork;
+    use letibot_sessionlog::{CommandKind, Hub};
 
     /// A prompt accepted and not started survives a daemon kill: a new hub on the same store gets
     /// it back, and once taken it is not put back a second time.
