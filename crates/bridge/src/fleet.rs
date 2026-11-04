@@ -191,7 +191,14 @@ mod tests {
         }
         let a = rows.iter().find(|r| r.id == "s-a").unwrap();
         assert_eq!(a.workspace, "/w/one");
-        assert_eq!(a.attach_command(), "cd /w/one && letibot --session s-a");
+        assert_eq!(
+            a.attach_command(),
+            "cd /w/one && letibot --session 'title of s-a'",
+            "a named session is attached by its name"
+        );
+        let mut bare = a.clone();
+        bare.title.clear();
+        assert_eq!(bare.attach_command(), "cd /w/one && letibot --session s-a");
         assert!(
             !run.read_dir().unwrap().any(|_| true),
             "no daemon was started"

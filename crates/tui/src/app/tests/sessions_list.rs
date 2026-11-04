@@ -524,9 +524,9 @@ fn packages_of_other_daemons_are_listed_with_folder_and_state() {
     assert!(text.contains("host:lab2x1"), "{text}");
     a.switch_to("s-far-2".into());
     assert!(
-        a.notice.as_deref().is_some_and(
-            |n| n.contains("cd /home/dead/Projects/letibot/wt-b && letibot --session s-far-2")
-        ),
+        a.notice.as_deref().is_some_and(|n| n.contains(
+            "cd /home/dead/Projects/letibot/wt-b && letibot --session 'work of s-far-2'"
+        )),
         "{:?}",
         a.notice
     );
@@ -551,5 +551,44 @@ fn the_packages_group_ends_with_how_many_older_stopped_ones_are_not_listed() {
     assert!(
         text.contains("3 older stopped packages not listed - `letibot --sessions` lists them"),
         "{text}"
+    );
+}
+
+/// The header and the tree lead with a session's name and keep the id for the details line under
+/// the row. A session with no name keeps its short id as its label.
+#[test]
+fn the_header_and_the_tree_lead_with_the_name_and_keep_the_id_in_details() {
+    let mut a = app();
+    a.home = HOME.to_string();
+    let named = brief("s-1793000000000000007", "stroppy-conformity", true);
+    let bare = brief("s-1793000000000000008", "", false);
+    a.apply(hello(
+        "s-1793000000000000007",
+        vec![named, bare],
+        Hub::new("s-1793000000000000007").snapshot(),
+    ));
+    assert_eq!(a.header_view().name, "stroppy-conformity");
+    assert_eq!(
+        a.session_label("s-1793000000000000008"),
+        letibot_sessionlog::registry::short_id("s-1793000000000000008"),
+        "unnamed keeps its current label"
+    );
+    a.push_surface(Surface::Picker);
+    open_everything(&mut a);
+    let (own, plugins) = both_lists(&a);
+    assert_eq!(own, plugins);
+    let at = own
+        .iter()
+        .position(|l| l.contains("stroppy-conformity"))
+        .unwrap_or_else(|| panic!("the name leads its row: {own:#?}"));
+    assert!(
+        !own[at].contains("s-1793000000000000007"),
+        "the id is not on the name's line: {}",
+        own[at]
+    );
+    assert!(
+        own[at + 1].contains("s-1793000000000000007"),
+        "the id is in the details under the row: {}",
+        own[at + 1]
     );
 }

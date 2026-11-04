@@ -39,12 +39,18 @@ pub struct FleetRow {
 }
 
 impl FleetRow {
-    /// The command that attaches to this session through its own daemon.
+    /// The command that attaches to this session through its own daemon: by name when it has one,
+    /// which `--session` resolves inside that folder, else by id.
     pub fn attach_command(&self) -> String {
+        let handle = if self.title.is_empty() {
+            &self.id
+        } else {
+            &self.title
+        };
         format!(
             "cd {} && letibot --session {}",
             shell_word(&self.workspace),
-            shell_word(&self.id)
+            shell_word(handle)
         )
     }
 }
