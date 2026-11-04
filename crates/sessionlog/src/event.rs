@@ -159,18 +159,22 @@ pub struct TodoEntry {
     pub needs: Vec<TodoNeed>,
 }
 
-/// How long a row's TITLE may be, and what a title is: the wire's copy of the store's bound,
-/// because a head and the daemon must cut at the same place.
-pub const TODO_TITLE_MAX: usize = 135;
+/// What one row's words may cost: the wire's copy of the store's bound, because a head's doors
+/// and the daemon's tool must refuse at the same place. See [`TODO_ROWS_MAX`] for why this
+/// crate has its own copy of the store's constants.
+pub const TODO_ROW_MAX_BYTES: usize = 4 * 1024;
+
+/// How many rows one write may add to a board: the wire's copy of the store's bound, kept beside
+/// [`TODO_ROW_MAX_BYTES`] for the same reason.
+pub const TODO_ROWS_MAX: usize = 256;
 
 /// The separator between a row's title and its detail - an em dash between the two, which is what
-/// the head's card and template seed already write. See [`TODO_TITLE_MAX`] for why this crate has
-/// its own copy of the store's constant.
+/// the head's card and template seed already write.
 pub const TODO_DETAIL_SEP: &str = " — ";
 
 /// A row's TITLE: the words before [`TODO_DETAIL_SEP`], or the whole row when it has none - the
-/// string [`TODO_TITLE_MAX`] bounds. The store's `todo_title`, copied for [`TODO_TITLE_MAX`]'s
-/// reason.
+/// part the pane draws first. The store's `todo_title`, copied so a head and the daemon split a
+/// row in the same place.
 pub fn todo_title(content: &str) -> &str {
     content
         .split_once(TODO_DETAIL_SEP)
@@ -1732,12 +1736,17 @@ mod tests {
         }
     }
 
-    /// The wire's title rule is the STORE's title rule: the test that makes a copy safe. The enum
+    /// The wire's row rule is the STORE's row rule: the test that makes a copy safe. The enum
     /// copies get their bound from the store's own.
     #[test]
-    fn the_wires_title_rule_is_the_stores() {
+    fn the_wires_row_rule_is_the_stores() {
         use letibot_tokencore::store;
-        assert_eq!(TODO_TITLE_MAX, store::TODO_TITLE_MAX, "one cap, not two");
+        assert_eq!(
+            TODO_ROW_MAX_BYTES,
+            store::TODO_ROW_MAX_BYTES,
+            "one cap, not two"
+        );
+        assert_eq!(TODO_ROWS_MAX, store::TODO_ROWS_MAX, "one bound, not two");
         assert_eq!(
             TODO_DETAIL_SEP,
             store::TODO_DETAIL_SEP,

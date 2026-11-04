@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use letibot_tokencore::store::{
-    TODO_TITLE_MAX, TodoBy, TodoCondition, TodoItem, TodoNeed, TodoStatus, todo_title,
+    TODO_ROW_MAX_BYTES, TODO_ROWS_MAX, TodoBy, TodoCondition, TodoItem, TodoNeed, TodoStatus,
 };
 use serde_json::{Value, json};
 
@@ -63,8 +63,8 @@ impl TodoBoard {
     }
 
     /// The operator's half, replaced wholesale: a head sends its whole list on every change, and
-    /// a delta protocol would be a second source of truth. The title cap is not checked here - a
-    /// replace carries rows written before the cap, and one of them must stay closeable.
+    /// a delta protocol would be a second source of truth. The resource bounds are not checked
+    /// here - a replace carries rows written before them, and one of them must stay closeable.
     pub fn set_operator(&self, todos: Vec<TodoItem>) -> u64 {
         *self.operator.lock().unwrap_or_else(|e| e.into_inner()) = todos;
         self.version.fetch_add(1, Ordering::SeqCst) + 1
@@ -399,14 +399,14 @@ impl TodoBoard {
 
     /// A parent's write: an upsert scoped to the parent's own authorship, so the child's rows,
     /// the operator's rows and every other author's are untouched and nothing is deleted. A new
-    /// row's title is capped here, before anything is pushed.
+    /// row is resource-checked here, before anything is pushed.
     pub fn upsert_parent(
         &self,
         rows: &[(String, TodoStatus, Vec<TodoNeed>)],
         by: &TodoBy,
     ) -> Result<usize, String> {
         let mut half = self.parent.lock().unwrap_or_else(|e| e.into_inner());
-        check_titles(&half, rows)?;
+        check_rows(&half, rows)?;
         let mut changed = 0usize;
         for (content, status, needs) in rows {
             let want = content.trim();
@@ -1810,10 +1810,9 @@ impl Tool for TodoWriteTool {
              one, so retire a row by marking it `completed`. A row whose trimmed text matches \
              one already there moves that row's state and its edges; a new text adds a row. To \
              move ONE row without re-sending the list, name it in `update`.\n\n\
-             **A row is a TITLE, and a title is at most 135 characters**: the pane cuts a longer \
-             one at its right edge, and an entry over it is REFUSED by name, with nothing \
-             written. The rest of a row goes after ` — ` in the same `content` — `title — the \
-             detail` — where it is uncapped.\n\n\
+             A row is a TITLE, and the pane cuts a long one at its right edge: put the part \
+             worth reading whole after ` — ` as the row's DETAIL. Length is never refused; a row \
+             over 4096 bytes, or a write past 256 rows, is, to bound what the board stores.\n\n\
              A row the OPERATOR postponed comes back `[p]`: it is theirs, not work you are asked \
              for, and `postponed` is not a status you may send.\n\n\
              A row may WAIT — on another row, a child, a job, a monitor or the operator's answer \
@@ -1872,10 +1871,12 @@ impl Tool for TodoWriteTool {
                             "properties": {
                                 "content": {
                                     "type": "string",
-                                    "description": "The step, as a TITLE of at most 135 \
-                                                    characters. Anything longer goes after ` — ` \
-                                                    in this same string, uncapped; the pane \
-                                                    draws it as the row's detail."
+                                    "description": "The step, as a TITLE: the pane cuts a \
+                                                    long one at its right edge, so the part \
+                                                    worth reading whole goes after ` — ` here \
+                                                    as the DETAIL it draws after the title. \
+                                                    Stored exactly as written, to 4096 \
+                                                    bytes."
                                 },
                                 "status": {
                                     "type": "string",
@@ -2081,17 +2082,17 @@ impl TodoWriteTool {
                     format!("`{target}` was not written: {why}"),
                     format!(
                         "a `target` must be a session THIS session spawned with `task`, and the rows \
-                         you send are titles of at most {TODO_TITLE_MAX} characters (the part after \
-                         ` — ` is the detail, which is not capped). Quote one of your children — the \
-                         subagent pane (`ctrl-g`) and `task_result` list them — or leave `target` out \
-                         to write your own board."
+                         you send are board rows of at most {TODO_ROW_MAX_BYTES} bytes. Quote one \
+                         of your children — the subagent pane (`ctrl-g`) and `task_result` list \
+                         them — or leave `target` out to write your own board."
                     ),
                 ),
             };
         }
-        // The title cap is here and not in `upsert_model` because this call is all or nothing: a
-        // list refused after both halves moved would leave them drifted. `before` is read above the
-        // moves; a `job` name and a child's slug are resolved to the ids every reader keys on.
+        // The resource bounds are here and not in `upsert_model` because this call is all or
+        // nothing: a list refused after both halves moved would leave them drifted. `before` is
+        // read above the moves; a `job` name and a child's slug are resolved to the ids every
+        // reader keys on.
         if let Err(inv) = resolve_child_needs(&mut rows, self.children.as_deref(), jobs) {
             return inv;
         }
@@ -2099,8 +2100,8 @@ impl TodoWriteTool {
             return inv;
         }
         let before = self.board.model_snapshot();
-        if let Err(why) = check_titles(&before, &rows) {
-            return Invocation::failed(format!("nothing was written: {why}"), title_why());
+        if let Err(why) = check_rows(&before, &rows) {
+            return Invocation::failed(format!("nothing was written: {why}"), rows_why());
         }
         let updates = match parse_moves(args.get("update"), "update") {
             Ok(v) => v,
@@ -2363,42 +2364,45 @@ impl TodoWriteTool {
     }
 }
 
-/// The title cap, in one place: the check every write of a board row's words passes. It bounds
-/// what a call writes and never what a row is, so a row already on this half is being restated
-/// and the cap has nothing to say; the whole list is checked before any of it is written.
-fn check_titles(
+/// The board's resource bounds, in one place: the check every write of a new row passes. It
+/// bounds what a call writes and never what a row on the board already is, so a row that
+/// predates the bound can still be restated and moved; the whole list is checked before any of
+/// it is written. Nothing here is a UI rule: the pane cuts a row at the terminal's real width
+/// at draw time, and a row under the bounds is stored exactly as written.
+fn check_rows(
     existing: &[TodoItem],
     rows: &[(String, TodoStatus, Vec<TodoNeed>)],
 ) -> Result<(), String> {
+    let mut fresh = 0usize;
     for (content, _, _) in rows {
         if existing.iter().any(|t| t.content.trim() == content.trim()) {
             continue;
         }
-        let title = todo_title(content);
-        let n = title.chars().count();
-        if n > TODO_TITLE_MAX {
+        fresh += 1;
+        let n = content.len();
+        if n > TODO_ROW_MAX_BYTES {
             return Err(format!(
-                "`{title}` is {n} characters, and a title is at most {TODO_TITLE_MAX}"
+                "a row is at most {TODO_ROW_MAX_BYTES} bytes, and that row is {n}"
             ));
         }
+    }
+    let would = existing.len() + fresh;
+    if would > TODO_ROWS_MAX {
+        return Err(format!(
+            "a board holds at most {TODO_ROWS_MAX} rows, and this write would make it {would}"
+        ));
     }
     Ok(())
 }
 
-/// What a title over the cap is told, beside the refusal: the cap, where the number comes from,
-/// and where the rest of the row goes. One spelling, because both writers that can write a new
-/// row reach it.
-fn title_why() -> String {
+/// What a write over the board's resource bounds is told, beside the refusal. One spelling,
+/// because both writers that can write a new row reach it.
+fn rows_why() -> String {
     format!(
-        "**nothing was written.** A row's TITLE — the words before ` — `, or the whole row when it \
-         has none — is at most {TODO_TITLE_MAX} characters: the todos pane draws a row at the \
-         operator's 160-cell terminal less the gutter and the row's own mark, number and `— model`, \
-         and a longer title is cut off at the pane's right edge. **The rest of a row is not lost: \
-         put it after ` — ` in the same `content`** — `Fix the flaky test — it fails when the store \
-         is busy` — and that part is the row's DETAIL: it is not capped, and the pane draws it after \
-         the title. A row already on the board is never refused for its length — the cap binds the \
-         words a call WRITES — so a long row written before it can still be restated, or moved by \
-         quoting it in `update`."
+        "a row is at most {TODO_ROW_MAX_BYTES} bytes and a board holds at most {TODO_ROWS_MAX} \
+         rows; both bound what every write stores and renders back to you. Shorten the row, or \
+         split it into two, and mark finished work `completed` rather than leaving it on the \
+         list."
     )
 }
 

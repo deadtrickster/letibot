@@ -987,9 +987,9 @@ fn todos_are_replaced_whole_and_read_back_in_order() {
     assert!(s.todos("sess-1").unwrap().is_empty());
 }
 
-/// A row's title is what precedes the detail separator - the string [`TODO_TITLE_MAX`] bounds -
-/// and a row with no separator is all title. The split is a function rather than a rule each writer
-/// spells, because the cap is only worth anything if all three measure the same string.
+/// A row's title is what precedes the detail separator - the part the pane draws first - and
+/// a row with no separator is all title. The split is a function rather than a rule each reader
+/// spells, because every reader must cut the row in the same place.
 #[test]
 fn a_rows_title_is_what_precedes_the_detail_separator() {
     assert_eq!(todo_title("plain row"), "plain row");
@@ -1010,20 +1010,17 @@ fn a_rows_title_is_what_precedes_the_detail_separator() {
              body the row has — see `todo_title`'s doc"
     );
     assert_eq!(TODO_DETAIL_SEP, " — ", "the spelling both heads write");
-    assert_eq!(
-        TODO_TITLE_MAX, 135,
-        "the pane's own arithmetic — see its doc"
-    );
 }
 
-/// A row written before the title cap still reads - the cap is a rule about WRITING, and nothing
-/// in the store refuses or shortens a row that is already there. A store that dropped one would be a
-/// migration by accident, which is the one outcome the fail-loud rules here exist against.
+/// A row longer than the writer's bounds still reads - the bounds are a rule about WRITING, and
+/// nothing in the store refuses or shortens a row that is already there. A store that dropped one
+/// would be a migration by accident, which is the one outcome the fail-loud rules here exist
+/// against.
 #[test]
-fn a_row_written_before_the_title_cap_still_reads() {
+fn a_row_longer_than_the_bound_still_reads() {
     let s = store();
     let _seeded = seeded(&s);
-    let legacy = "L".repeat(TODO_TITLE_MAX + 40);
+    let legacy = "L".repeat(TODO_ROW_MAX_BYTES + 40);
     s.conn()
         .execute(
             "INSERT INTO todo (session_id, todos_json, updated_ms) VALUES (?1, ?2, 0) \
@@ -1044,11 +1041,11 @@ fn a_row_written_before_the_title_cap_still_reads() {
     );
     assert_eq!(
         todo_title(&back[0].content).chars().count(),
-        TODO_TITLE_MAX + 40
+        TODO_ROW_MAX_BYTES + 40
     );
 
     // And it survives a write of the whole list, which is what a resumed session does with
-    // it: the store is not a second door the cap is enforced at.
+    // it: the store is not a second door the bounds are enforced at.
     s.put_todos("sess-1", &back).unwrap();
     assert_eq!(s.todos("sess-1").unwrap()[0].content, legacy);
 }

@@ -1028,7 +1028,7 @@ impl App {
         // The layer's failure is said LAST, after this row's own sentence, because `say` keeps only the last line:
         // said first, the row overwrites it and a session whose layer is broken adds rows silently.
         let broke = self.layer_failure.take();
-        if let Some(why) = title_refusal(&content) {
+        if let Some(why) = row_refusal(&content) {
             self.say(&why);
             if let Some(why) = broke {
                 self.say(&why);

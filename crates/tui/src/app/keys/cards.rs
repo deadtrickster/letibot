@@ -91,10 +91,10 @@ impl App {
                         text.push_str(" — ");
                         text.push_str(draft.detail.trim());
                     }
-                    // The title cap, with the card still up: the rule `/todo TEXT` and `todo_write`
-                    // keep, asked of the COMPOSED row so both doors measure one string. What is capped
-                    // is the title, and the detail field is where the rest goes.
-                    if let Some(why) = title_refusal(&text) {
+                    // The row byte cap, with the card still up: the rule `/todo TEXT` and `todo_write`
+                    // keep, asked of the COMPOSED row so both doors measure one string. A row is
+                    // stored as written; only this bound is refused.
+                    if let Some(why) = row_refusal(&text) {
                         self.todo_draft = Some(draft);
                         self.say(&why);
                         self.redraw = true;

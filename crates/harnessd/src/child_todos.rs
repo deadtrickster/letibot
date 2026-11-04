@@ -275,9 +275,9 @@ impl ChildTodos for ParentTodos {
             ));
         };
         let author = TodoBy::parent_of(&self.caller);
-        // The title cap is the BOARD's here, and `Err` is its refusal. A parent writes onto a
-        // half this tool cannot see - the child's - so `upsert_parent` holds the one spelling of
-        // the rule and refuses a NEW row whose title is over it before anything is pushed.
+        // The resource bounds are the BOARD's here, and `Err` is its refusal. A parent writes
+        // onto a half this tool cannot see - the child's - so `upsert_parent` holds the one
+        // spelling of the rule and refuses a NEW row over them before anything is pushed.
         let changed = board.upsert_parent(rows, &author)?;
         if changed > 0 {
             // Persist and publish at the moment of the write - see the module doc. The publish

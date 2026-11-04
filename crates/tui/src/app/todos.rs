@@ -678,7 +678,7 @@ impl App {
             return;
         }
         let mut mine = self.operator_todos();
-        // A template item over the title cap is not seeded, and it is said: from the person's side a row that
+        // A template item over the row byte cap is not seeded, and it is said: from the person's side a row that
         // silently did not arrive is indistinguishable from a file never read, and the rest of the template still
         // lands.
         let mut skipped: Vec<(String, String)> = Vec::new();
@@ -688,7 +688,7 @@ impl App {
                 content.push_str(" — ");
                 content.push_str(&r.body.join(" · "));
             }
-            if let Some(why) = title_refusal(&content) {
+            if let Some(why) = row_refusal(&content) {
                 skipped.push((content, why));
                 continue;
             }
@@ -1042,18 +1042,16 @@ impl App {
     }
 }
 
-/// The title cap at the person's own door: the refusal `/todo TEXT`, the new-todo card and the template seed all
+/// The row byte cap at the person's own door: the refusal `/todo TEXT`, the new-todo card and the template seed all
 /// ask, so one rule is spelled once for the person the way `todo_write` spells it for the model. The number is the
-/// token crate's.
-pub(crate) fn title_refusal(text: &str) -> Option<String> {
-    use letibot_sessionlog::event::{TODO_TITLE_MAX, todo_title};
-    let title = todo_title(text);
-    let n = title.chars().count();
-    (n > TODO_TITLE_MAX).then(|| {
+/// wire's copy of the store's.
+pub(crate) fn row_refusal(text: &str) -> Option<String> {
+    use letibot_sessionlog::event::TODO_ROW_MAX_BYTES;
+    let n = text.len();
+    (n > TODO_ROW_MAX_BYTES).then(|| {
         format!(
-            "that title is {n} characters, and a title is at most {TODO_TITLE_MAX} — the width the \
-             todos pane draws a row at. The rest is the DETAIL: put it after ` — ` and the pane \
-             shows it after the title"
+            "that row is {n} bytes, and a board row is at most {TODO_ROW_MAX_BYTES}, so nothing \
+             was added"
         )
     })
 }

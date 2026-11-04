@@ -870,19 +870,25 @@ pub enum MergeGateOutcome {
     Killed,
 }
 
-/// How long a row's TITLE may be: 135, which is the pane's own row and not a round number. The
-/// pane draws a row at the terminal less four columns, and 21 of those go before the words, so
-/// a longer title is a row it CUTS with nothing saying it did. Counted in `char`s.
-pub const TODO_TITLE_MAX: usize = 135;
+/// What one row's words may cost: a guard for the store's `todos_json` blob, which every write
+/// rewrites whole, and for the rendered list that rides each `todo_write` answer and a fresh
+/// prompt after a clear. Not a UI rule - the pane cuts a row at the terminal's real width at
+/// draw time - and a row under it is stored exactly as written. Counted in bytes.
+pub const TODO_ROW_MAX_BYTES: usize = 4 * 1024;
+
+/// The other half of the pair above: a board is a plan, and more rows than this is a runaway
+/// write rather than a plan anybody reads. Bounds the rows one write adds to a board.
+pub const TODO_ROWS_MAX: usize = 256;
 
 /// The separator between a row's title and its detail. The board has no second field and needs
 /// none: `content` is the row's one key, since a need names a row by its exact text, so the
 /// detail rides after this separator and the pane draws it after the title.
 pub const TODO_DETAIL_SEP: &str = " — ";
 
-/// A row's TITLE: the words before [`TODO_DETAIL_SEP`], or the whole row. A function rather
-/// than a rule each writer spells, because three writers bound this string. A newline is NOT
-/// a separator: the pane flattens it, so a second line is not a body the row has.
+/// A row's TITLE: the words before [`TODO_DETAIL_SEP`], or the whole row - the part the pane
+/// draws first, with the detail after it. One function rather than a rule each reader spells,
+/// because every reader must split the row in the same place. A newline is NOT a separator:
+/// the pane flattens it, so a second line is not a body the row has.
 pub fn todo_title(content: &str) -> &str {
     content
         .split_once(TODO_DETAIL_SEP)

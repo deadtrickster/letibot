@@ -3,7 +3,7 @@
 //! ability to mark waits_on) so they dont occupy it for ever"*.
 
 use letibot_room::Reminder;
-use letibot_tokencore::store::{TODO_TITLE_MAX, TodoBy, TodoItem, TodoNeed, TodoStatus};
+use letibot_tokencore::store::{TodoBy, TodoItem, TodoNeed, TodoStatus};
 
 /// How often the daemon asks the room what this session holds. Five seconds - the room's own
 /// sweep interval and a third of the default beat - so a claim, a wait and a `done` all reach the
@@ -49,12 +49,17 @@ pub fn the_room_is_working_on(r: &Reminder) -> bool {
     !r.stale && r.holding.waits_on.is_some()
 }
 
+/// How much of the poster's body a reminder row carries. A reminder is a nag line, one row of a
+/// board drawn in a pane, so a long body is one short line with an ellipsis rather than a row
+/// that buries the board.
+const BODY_CUT: usize = 135;
+
 /// The row's words - `you hold `ram` #3 - 8 GB`. Stable by construction: the tag, the number
-/// and the poster's body, and nothing that moves. The body is cut to keep the whole inside
-/// [`TODO_TITLE_MAX`], the length the board's own writers are held to.
+/// and the poster's body, and nothing that moves. The body is cut to keep the whole row inside
+/// [`BODY_CUT`].
 pub fn content(tag: &str, item: u64, body: &str) -> String {
     let head = format!("you hold `{tag}` #{item} — ");
-    let room = TODO_TITLE_MAX.saturating_sub(head.chars().count());
+    let room = BODY_CUT.saturating_sub(head.chars().count());
     let body = one_line(body);
     let body = if body.chars().count() > room {
         let mut cut: String = body.chars().take(room.saturating_sub(1)).collect();
@@ -136,15 +141,15 @@ mod tests {
         );
     }
 
-    /// A long body is cut inside the title cap, because a row is quoted back to a tool and
-    /// drawn in a pane; a body with a newline is one line, because a newline in `content` is a row
-    /// that draws as two and resolves as one.
+    /// A long body is cut to one short line, because a row is quoted back to a tool and drawn in
+    /// a pane; a body with a newline is one line, because a newline in `content` is a row that
+    /// draws as two and resolves as one.
     #[test]
-    fn a_body_is_one_line_and_fits_the_title_cap() {
+    fn a_body_is_one_line_and_cut_to_one_short_row() {
         let long = "x".repeat(400);
         let said = content("ram", 7, &long);
         assert!(
-            said.chars().count() <= TODO_TITLE_MAX,
+            said.chars().count() <= BODY_CUT,
             "{} chars",
             said.chars().count()
         );

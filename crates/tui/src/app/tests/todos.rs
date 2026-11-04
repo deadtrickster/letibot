@@ -1811,11 +1811,11 @@ fn the_starter_todos_switch_is_off_by_default() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The title cap, at the person's own doors: `/todo TEXT` and the card, which are the two ways they write a row. A
-/// title longer than the pane's row is cut at the edge and read by nobody, so it is refused by name instead.
+/// A long title at the person's own doors: `/todo TEXT` and the card store it verbatim - the
+/// pane cuts at draw time, not the writer - and only the row byte bound is refused, by name.
 #[test]
-fn a_title_over_the_cap_is_refused_at_the_operators_own_doors() {
-    use letibot_sessionlog::event::TODO_TITLE_MAX;
+fn a_long_title_is_added_verbatim_at_the_operators_own_doors() {
+    use letibot_sessionlog::event::TODO_ROW_MAX_BYTES;
     let mut a = app();
     a.apply(hello(
         "s",
@@ -1823,19 +1823,41 @@ fn a_title_over_the_cap_is_refused_at_the_operators_own_doors() {
         Hub::new("s").snapshot(),
     ));
 
-    // The typed door. `/todo <a long title>` says why and sends nothing at all.
-    let long = "x".repeat(TODO_TITLE_MAX + 1);
-    assert_eq!(a.command(&format!("todo {long}")), None, "nothing was sent");
+    // The typed door: a 168-character title is added whole and sent as written.
+    let long = "x".repeat(168);
+    match a.command(&format!("todo {long}")) {
+        Some(Action::SetOperatorTodos { items, .. }) => {
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].content, long, "every character of it");
+        }
+        other => panic!("expected the add, got {other:?}"),
+    }
+
+    // The card, which composes title and detail into ONE row: same rule, measured on the
+    // composed string.
+    a.command("todo");
+    typed(&mut a, &long);
+    assert!(a.key(Key::Enter).is_some(), "the row was added");
+    assert!(a.todo_draft.is_none(), "the card closed");
+    assert_eq!(
+        a.operator_todos()
+            .iter()
+            .filter(|t| t.content == long)
+            .count(),
+        2,
+        "both doors stored it verbatim: {:?}",
+        a.operator_todos()
+    );
+
+    // A row over the byte bound is refused, and nothing is sent.
+    let huge = "h".repeat(TODO_ROW_MAX_BYTES + 1);
+    assert_eq!(a.command(&format!("todo {huge}")), None, "nothing was sent");
     let said = a.notice.clone().unwrap_or_default();
     assert!(
-        said.contains(&format!("at most {TODO_TITLE_MAX}")),
-        "the refusal names the cap: {said}"
+        said.contains(&format!("at most {TODO_ROW_MAX_BYTES}")),
+        "the refusal names the bound: {said}"
     );
-    assert!(
-        said.contains("put it after ` — `"),
-        "and where the rest of the row goes: {said}"
-    );
-    assert!(a.operator_todos().is_empty(), "no row was added: {said}");
+    assert_eq!(a.operator_todos().len(), 2, "no row was added: {said}");
     assert!(
         !a.queued
             .iter()
@@ -1843,41 +1865,13 @@ fn a_title_over_the_cap_is_refused_at_the_operators_own_doors() {
         "and no half was queued: {:?}",
         a.queued
     );
-
-    // A title AT the cap passes - the bound is a bound and not a shave.
-    let exact = "y".repeat(TODO_TITLE_MAX);
-    match a.command(&format!("todo {exact}")) {
-        Some(Action::SetOperatorTodos { items, .. }) => {
-            assert_eq!(items.len(), 1);
-            assert_eq!(items[0].content, exact);
-        }
-        other => panic!("expected the add, got {other:?}"),
-    }
-
-    // The card, which measures the COMPOSED row - so a long title is refused with the card still
-    // up, and what was typed is not lost.
-    a.command("todo");
-    typed(&mut a, &long);
-    assert!(a.key(Key::Enter).is_none(), "nothing was added");
-    assert!(a.todo_draft.is_some(), "the card stayed up");
-    let said = a.notice.clone().unwrap_or_default();
-    assert!(
-        said.contains(&format!("at most {TODO_TITLE_MAX}")),
-        "the card's refusal names the cap too: {said}"
-    );
-    assert_eq!(
-        a.operator_todos().len(),
-        1,
-        "still the one row that fitted: {:?}",
-        a.operator_todos()
-    );
 }
 
-/// A row written before the cap is still theirs to move: `SetOperatorTodos` replaces the half wholesale, so a cap
+/// A row written before the bound is still theirs to move: `SetOperatorTodos` replaces the half wholesale, so a bound
 /// checked there would refuse `/todo done 2` because some old row is long. The check is at creation.
 #[test]
-fn an_operator_row_written_before_the_cap_is_still_movable() {
-    use letibot_sessionlog::event::TODO_TITLE_MAX;
+fn an_operator_row_written_before_the_bound_is_still_movable() {
+    use letibot_sessionlog::event::TODO_ROW_MAX_BYTES;
     use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
     let mut a = app();
     a.apply(hello(
@@ -1885,7 +1879,7 @@ fn an_operator_row_written_before_the_cap_is_still_movable() {
         vec![brief("s", "one", false)],
         Hub::new("s").snapshot(),
     ));
-    let legacy = "L".repeat(TODO_TITLE_MAX * 2);
+    let legacy = "L".repeat(TODO_ROW_MAX_BYTES + 64);
     a.apply(ServerFrame::Event(env(
         1,
         SessionEvent::TodosUpdated {
@@ -1944,13 +1938,67 @@ fn a_board_row_with_a_newline_is_drawn_on_one_line() {
     );
 }
 
-/// A template item whose title is over the cap is not seeded, and it is said: from the person's side a row that
+/// A long title draws as one row, cut to the pane's own width: the cut is the pane's, at draw
+/// time, and the rows around a long one keep their own lines.
+#[test]
+fn a_long_row_is_drawn_cut_to_the_panes_width() {
+    use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    let long = "L".repeat(168);
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::TodosUpdated {
+            todos: vec![
+                TodoEntry {
+                    content: long.clone(),
+                    status: TodoStatus::Pending,
+                    by: TodoBy::Model,
+                    when: None,
+                    needs: Vec::new(),
+                },
+                TodoEntry {
+                    content: "after it".into(),
+                    status: TodoStatus::Pending,
+                    by: TodoBy::Model,
+                    when: None,
+                    needs: Vec::new(),
+                },
+            ],
+        },
+    )));
+    let lines = a.todos_lines(40);
+    let drawn = lines
+        .iter()
+        .find(|l| l.contains(&long[..10]))
+        .expect("the long row is drawn");
+    assert!(
+        !drawn.contains(&long[30..]),
+        "cut to the width it was given, not spliced: {drawn}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.trim_start().starts_with(&long[30..31])),
+        "and its tail is not a row of its own: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("after it")),
+        "the row after it keeps its own line: {lines:#?}"
+    );
+}
+
+/// A template item over the byte bound is not seeded, and it is said: from the person's side a row that
 /// silently did not arrive is indistinguishable from a file never read. The rest of the template still lands.
 #[test]
-fn a_template_item_over_the_cap_is_not_seeded_and_is_said() {
-    use letibot_sessionlog::event::TODO_TITLE_MAX;
+fn a_template_item_over_the_byte_bound_is_not_seeded_and_is_said() {
+    use letibot_sessionlog::event::TODO_ROW_MAX_BYTES;
     let dir = std::env::temp_dir().join(format!("letibot-seed-cap-{}", std::process::id()));
-    let long = "z".repeat(TODO_TITLE_MAX + 1);
+    let long = "z".repeat(TODO_ROW_MAX_BYTES + 1);
     let mut a = seeded_head(
         &dir,
         &format!("## Phase 0\n\n- [ ] {long}\n- [ ] a row that fits\n"),
