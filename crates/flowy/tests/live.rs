@@ -1,9 +1,6 @@
-//! Against the real node, with the real seat, from the usual path.
-//!
-//! Runs only with `FLOWY_LIVE=1`; everything else skips loudly, because a check
-//! that did not run is not a pass. It takes no message off the seat's inbox unless
-//! the reader is free, and when a live `flowy inbox` holds it the assertion is that
-//! the second listener is REFUSED, naming the pid, and nothing is killed.
+//! Against the real node and seat. Runs only with `FLOWY_LIVE=1`; otherwise skips loudly.
+//! Takes no message off the inbox unless the reader is free; when a live `flowy inbox` holds it,
+//! the second listener must be refused naming the pid, and nothing is killed.
 
 use letibot_flowy::creds::{Onboarding, discover};
 use letibot_flowy::seat::{PollOutcome, Seat, SeatState};

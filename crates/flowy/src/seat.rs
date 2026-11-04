@@ -356,7 +356,7 @@ impl Seat {
     }
 
     /// Ask the loop to renew a monitor by name each cycle, for as long as the
-    /// registry lives. This is the explicit renewal T24 requires, made by the
+    /// registry lives. This is the explicit renewal, made by the
     /// declarer - the daemon - which is alive for exactly as long as the seat.
     pub fn keep_renewing(&self, monitors: &Arc<Monitors>, name: &str) {
         self.shared

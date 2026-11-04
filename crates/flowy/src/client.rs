@@ -1,11 +1,6 @@
-//! The node's API, as the connector uses it. Bearer-authenticated, blocking,
-//! over [`letibot_http`].
-//!
-//! Every method is a door the node already has, so nothing is written against an
-//! endpoint that has not landed. Three failures are kept apart: `Unreachable` is
-//! the encoder gone, `Refused` carries the node's own sentence, and `NoReader`
-//! must be read specially - the same sentence appears when a token has been
-//! SWITCHED, and re-declaring there loses every message since the switch.
+//! The node's API as the connector uses it: bearer-authenticated, blocking, over [`letibot_http`].
+//! Three failures are kept apart: `Unreachable`, `Refused` (the node's own sentence), and `NoReader`,
+//! which also appears when a token was switched, where re-declaring would lose messages.
 
 use std::time::Duration;
 

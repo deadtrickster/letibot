@@ -1,11 +1,6 @@
-//! A blocking HTTP/1.1 client, just large enough for `POST /completion` and, since
-//! the flowy connector, for a bearer-authenticated request against the node.
-//!
-//! Hand-written rather than `reqwest` because the turn engine needs byte-level
-//! control of a `text/event-stream` response, and an async stack would put a runtime
-//! under a crate that is otherwise a pure state machine over token ids.
-//! One crate, two callers: a second hand-rolled client would be a second place for a
-//! framing bug to live, and TLS, redirects and HTTP/2 stay deliberately absent.
+//! A blocking HTTP/1.1 client for `POST /completion` and bearer-authenticated node requests.
+//! Hand-written because the turn engine needs byte-level control of `text/event-stream` and an async
+//! runtime does not belong under a pure state machine. TLS, redirects and HTTP/2 are absent on purpose.
 
 pub mod retry;
 
@@ -64,8 +59,8 @@ impl Endpoint {
         Endpoint {
             host: host.into(),
             port,
-            // Comfortably above the measured 29–31 s cold reload, which is the
-            // longest gap between bytes this endpoint can legitimately produce.
+            // Above a cold model reload, the longest gap between bytes this endpoint
+            // can legitimately produce.
             read_timeout: Duration::from_secs(180),
             connect_timeout: Duration::from_secs(10),
         }
@@ -98,7 +93,7 @@ pub struct Body {
     reader: BufReader<TcpStream>,
     framing: Framing,
     done: bool,
-    /// **The chunk-size line, kept between chunks.** `read_line` appends to a `String`, so a fresh
+    /// The chunk-size line, kept between chunks. `read_line` appends to a `String`, so a fresh
     /// one per chunk was an allocation per chunk for a line of four hex digits. Cleared, not
     /// replaced: the capacity survives, and a chunked body is one chunk per TCP read.
     size_line: String,
@@ -217,7 +212,7 @@ impl Body {
         while self.next_bytes(&mut chunk)? {
             pending.extend_from_slice(&chunk);
             // SSE frames are terminated by a blank line. A chunk boundary is not a
-            // frame boundary — assuming it is works right up until a long tool-call
+            // frame boundary - assuming it is works right up until a long tool-call
             // argument spans two TCP segments.
             while let Some(pos) = find(&pending, b"\n\n") {
                 // Parsed from a slice of `pending`, not from a copy: a frame is a
@@ -233,12 +228,12 @@ impl Body {
                     } else if let Some(v) = line.strip_prefix("id:") {
                         frame.id = Some(v.trim().to_string());
                     }
-                    // A `:` comment line — the heartbeat — is a frame with nothing
+                    // A `:` comment line - the heartbeat - is a frame with nothing
                     // in it, and it is still handed over: a reader that wants to
                     // know the connection is alive reads the empty frame.
                 }
                 // The borrow of `pending` ends with `raw` and the frame's own strings, so the
-                // drain is free to take it mutably — and it must come after the parse, which is
+                // drain is free to take it mutably - and it must come after the parse, which is
                 // the whole point of borrowing rather than copying.
                 drop(raw);
                 pending.drain(..pos + 2);
@@ -279,7 +274,7 @@ pub struct Request<'a> {
     pub path: &'a str,
     pub headers: &'a [(&'a str, &'a str)],
     /// Sent with `Content-Length` when present. `None` sends no body and no
-    /// length — a `GET` or a `DELETE`.
+    /// length - a `GET` or a `DELETE`.
     pub body: Option<&'a str>,
 }
 

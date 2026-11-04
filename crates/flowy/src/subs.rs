@@ -1,11 +1,6 @@
-//! Subscriptions to entities: a todo somebody decided to watch for comments, a
-//! diagram for a change, a thread for its replies. The inbox delivers what is said
-//! TO a seat; a subscription is the other direction, and the three kinds ride three
-//! transports because that is what the node has: a thread is already delivered so
-//! the attention table decides, a todo arrives on the node's SSE envelope, and an
-//! artifact body edit writes no event, so it is polled against a baseline.
-//!
-//! Envelopes, not deltas: a duplicate is a wasted read, nothing partial is applied.
+//! Subscriptions to entities: a todo watched for comments, a diagram for a change, a thread for replies.
+//! Three transports because that is what the node has: threads use the attention table, todos the SSE
+//! envelope, artifact body edits are polled against a baseline. Envelopes, not deltas.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -375,7 +370,7 @@ impl EntityWatch {
                         let Some(me) = weak2.upgrade() else {
                             return Ok(letibot_http::Flow::Stop);
                         };
-                        // On every frame — heartbeats included — ask whether
+                        // On every frame - heartbeats included - ask whether
                         // anybody still wants this. The stream only returns on
                         // a close, so this is where "no subscriptions" ends it.
                         if me.stop.load(Ordering::SeqCst)

@@ -1,11 +1,6 @@
-//! The flowy connector, as a monitor: a seat's inbox watched across turns through
-//! the [`letibot_tools::exec::monitor::Condition`] seam, with a per-room attention
-//! table, entity subscriptions, and a `flowy` tool to drive them.
-//!
-//! A seat is persistent and person-shaped - one inbox reader keeping its place in
-//! the log - while a session is temporary and attaches with its own attention
-//! table. Detaching does not touch the seat, and nothing said meanwhile is lost.
-//! A stall is declared: the seat says so once and refuses to `say` into the void.
+//! The flowy connector as a monitor: a seat's inbox watched across turns through the
+//! [`letibot_tools::exec::monitor::Condition`] seam, with per-room attention, subscriptions and a `flowy` tool.
+//! The seat is persistent; a session attaches with its own table. A stall is declared once.
 
 pub mod attention;
 pub mod client;

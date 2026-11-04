@@ -36,7 +36,7 @@ fn a_comment(body: &str) -> Comment {
     }
 }
 
-/// **A reviewer that gets only a diff reviews the wrong change.** The brief carries what the author
+/// A reviewer that gets only a diff reviews the wrong change. The brief carries what the author
 /// said the pull request is and what has already been said on it, because neither is in the diff.
 #[test]
 fn the_brief_carries_the_title_the_description_the_diff_and_the_comments() {
@@ -84,7 +84,7 @@ fn a_re_review_s_brief_says_what_the_new_commits_are_measured_against() {
     );
 }
 
-/// **A fork's brief says the tree is not ours**, so a session that would run the diff's tests is
+/// A fork's brief says the tree is not ours, so a session that would run the diff's tests is
 /// told not to before it starts rather than after.
 #[test]
 fn a_fork_s_brief_says_nothing_of_it_runs() {
@@ -120,7 +120,7 @@ fn a_pull_request_without_a_description_says_so() {
     assert!(brief.contains("no description"), "{brief}");
 }
 
-/// **What the session says is the review**: the prose is the summary, and each line spelled
+/// What the session says is the review: the prose is the summary, and each line spelled
 /// `path:LINE: what is wrong` is an inline comment on that line.
 #[test]
 fn the_session_s_answer_becomes_the_review() {
@@ -171,7 +171,7 @@ fn the_review_is_asked_in_the_pull_requests_own_session() {
     assert_eq!(review.comments.len(), 1);
 }
 
-/// **A mention is answered by the pull request's session**, and the brief carries the question.
+/// A mention is answered by the pull request's session, and the brief carries the question.
 #[test]
 fn a_mention_is_asked_in_the_pull_requests_session() {
     let session = a_session();

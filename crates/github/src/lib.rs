@@ -1,9 +1,6 @@
 //! The GitHub reviewer seat: one open pull request, one letibot session, one review.
-//!
-//! **Nothing here talks to the real GitHub.** [`source`] is the trait, [`fake`] is the source every
-//! test uses, and [`gh`] is `gh api` as a subprocess whose command line a test asserts and never
-//! runs. [`seat`] is the poll: what is open, what changed, what is owed a review, and what is owed
-//! an answer - and, until an identity named `letibot` exists, every review is kept as a draft.
+//! [`source`] is the trait, [`fake`] the test source, [`gh`] a subprocess whose command line tests assert.
+//! [`seat`] is the poll. Until an identity named `letibot` exists every review is a draft.
 
 pub mod fake;
 pub mod gh;

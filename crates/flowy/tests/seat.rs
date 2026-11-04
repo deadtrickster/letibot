@@ -1,11 +1,6 @@
-//! The seat against a fake node: the delivery contract, end to end, through the
-//! monitor registry the harness wakes on.
-//!
-//! The fake speaks exactly the doors the seat uses - `whoami`, `inbox/wait`
-//! (a real long poll, on a condvar), `inbox/ack`, `inbox/readers`,
-//! `chat/{room}/say`, `artifact/{id}`, `events` - and records the ORDER things
-//! happened in, because the contract under test is an ordering: spool before
-//! ack, mark over everything read, notice before silence.
+//! The seat against a fake node: the delivery contract end to end through the monitor registry.
+//! The fake speaks the doors the seat uses and records ORDER, since the contract is an ordering:
+//! spool before ack, mark over everything read, notice before silence.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};

@@ -1,13 +1,11 @@
 //! The reviewer worker: one brief into the pull request's own session, one review out.
-//!
-//! The seat decides *what* is owed and keeps the draft; this decides *what to ask* and what the
-//! answer means. Where the session lives is a daemon's business, so it arrives through
-//! [`Sessions`] and a test answers with a fake.
+//! The seat decides what is owed; this decides what to ask and what the answer means.
+//! Session placement arrives through [`Sessions`], which tests fake.
 
 use crate::seat::{Job, Reviewer, Session};
 use crate::source::{Event, Inline, Pull, Review, Standing};
 
-/// **Where a pull request's session comes from.** One session per pull request, opened once and
+/// Where a pull request's session comes from. One session per pull request, opened once and
 /// reused for every push on it - so the second review of a change knows what the first one said.
 pub trait Sessions {
     /// A session standing in this pull request's tree, or a refusal in words.
@@ -56,7 +54,7 @@ impl<S: Sessions> Reviewer for Worker<S> {
     }
 }
 
-/// **The brief a review is asked with.** Everything a reviewer needs is in it and nothing is left to
+/// The brief a review is asked with. Everything a reviewer needs is in it and nothing is left to
 /// a session's own look around: the diff, what the author said, and what has been said since.
 pub fn review_brief(job: &Job<'_>) -> String {
     let pull = job.pull;
@@ -112,7 +110,7 @@ pub fn answer_brief(question: &str) -> String {
     )
 }
 
-/// **The review a session's answer is.** The prose is the summary and each line spelled
+/// The review a session's answer is. The prose is the summary and each line spelled
 /// `path:LINE: what is wrong` is a comment on that line; the event is always a comment, because an
 /// unattended reviewer's verdict is not a gate.
 pub fn review_of(said: &str) -> Result<Review, String> {

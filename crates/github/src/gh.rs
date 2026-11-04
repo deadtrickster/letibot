@@ -1,8 +1,6 @@
-//! The real source: `gh api`, as a subprocess.
-//!
-//! Nothing here runs `gh` in a test. [`Gh`] builds the command line and hands it to a [`Run`], so a
-//! test asserts the command and the body it would send. The token file `[github] token_path` names
-//! is handed to `gh` as `GH_TOKEN`, so the identity is that file's and not `gh`'s own store.
+//! The real source: `gh api` as a subprocess.
+//! [`Gh`] builds the command line and hands it to a [`Run`], so tests assert the command and never run `gh`.
+//! `[github] token_path` is passed as `GH_TOKEN`, so the identity is that file's.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -23,7 +21,7 @@ const COMMENTS: &str = ".[] | [.id, .user.login, (.created_at | fromdateiso8601)
 /// The header that asks GitHub for a diff rather than for JSON.
 const DIFF: &str = "Accept: application/vnd.github.v3.diff";
 
-/// **The one thing this crate cannot test**: a program that answers `argv` on its standard output.
+/// The one thing this crate cannot test: a program that answers `argv` on its standard output.
 /// Every test hands in a recorder instead, which is why no test here needs a network or a token.
 pub trait Run: Send + Sync {
     /// Run `argv`, feeding `stdin` when there is any, and answer its stdout.
@@ -391,7 +389,7 @@ mod tests {
         }
     }
 
-    /// **The list question is a `gh api` on the org and then one per repository**, and a fork is
+    /// The list question is a `gh api` on the org and then one per repository, and a fork is
     /// read from where the head lives - not from anything GitHub calls a flag.
     #[test]
     fn the_org_list_is_asked_repository_by_repository() {
@@ -565,7 +563,7 @@ mod tests {
         assert_eq!(why, "nothing left to answer");
     }
 
-    /// **The token file decides the identity.** Without `GH_TOKEN` a post goes out under whatever
+    /// The token file decides the identity. Without `GH_TOKEN` a post goes out under whatever
     /// account `gh` is logged in as, which is the one the operator's key file exists to keep out.
     #[test]
     fn the_token_file_is_handed_to_gh_as_gh_token() {

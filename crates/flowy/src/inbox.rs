@@ -1,11 +1,6 @@
-//! The [`Condition`] a session's `flowy` monitor watches. One per attached
-//! session: each runs a delivery through its own attention table and subscription
-//! set, keeps what passed, counts what did not, and pings the monitor poller.
-//!
-//! `met` drains everything pending into one firing - a burst of five messages is
-//! one wake - and carries the counts of what went past, so a session can tell a
-//! busy room it asked to be spared from a silent one. The table is the session's,
-//! not the seat's: the seat polls at the loosest of the sessions on it.
+//! The [`Condition`] a session's `flowy` monitor watches, one per attached session.
+//! `met` drains everything pending into one firing with counts of what was filtered.
+//! The table is the session's; the seat polls at the loosest of its sessions.
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
@@ -28,10 +23,10 @@ pub enum Delivery {
     Message(Event),
     /// A watched entity moved: runs through the subscription set.
     Entity(EntityChange),
-    /// The seat talking about itself — stalled, reattached, stopped, a backlog
+    /// The seat talking about itself - stalled, reattached, stopped, a backlog
     /// label. Always delivered.
     Notice(String),
-    /// Addressed to THIS session by name — `@seat/session` in the body. Bypasses
+    /// Addressed to THIS session by name - `@seat/session` in the body. Bypasses
     /// the table, the own-actor rule included: the tag is the recipient's name,
     /// and two sessions on one seat are the same actor on the node.
     Direct(Event),
@@ -42,7 +37,7 @@ pub struct InboxCondition {
     /// Which session this is for. A label for listings, and the second half of
     /// this session's address on the fabric: `@seat/session`.
     pub session: String,
-    /// A short name for the same address — the session's title, so a person can
+    /// A short name for the same address - the session's title, so a person can
     /// write `@seat/planner` rather than a timestamped id. Matched
     /// case-insensitively; empty is no alias.
     alias: Mutex<String>,
@@ -89,12 +84,12 @@ impl InboxCondition {
         self.alias.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// `@seat/session` — how somebody on the fabric names exactly this session.
+    /// `@seat/session` - how somebody on the fabric names exactly this session.
     pub fn address(&self) -> String {
         format!("@{}/{}", self.seat, self.session)
     }
 
-    /// Whether `fragment` — the part after `@seat/` — names this session: its
+    /// Whether `fragment` - the part after `@seat/` - names this session: its
     /// id exactly, or its alias ignoring case.
     pub fn is_addressed_as(&self, fragment: &str) -> bool {
         if fragment == self.session {
@@ -134,7 +129,7 @@ impl InboxCondition {
         self.subs.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// Record a subscription. A thread goes into the attention table too — that
+    /// Record a subscription. A thread goes into the attention table too - that
     /// is its transport.
     pub fn subscribe(&self, sub: Subscription) -> bool {
         if let Subscription::Thread(t) = &sub {
@@ -193,7 +188,7 @@ impl InboxCondition {
         kept
     }
 
-    /// Offer a page: everything is queued, then the poller is pinged **once**, so
+    /// Offer a page: everything is queued, then the poller is pinged once, so
     /// a page of five is one firing rather than a race between the poller's
     /// tick and the fan-out. Returns how many were kept.
     pub fn offer_all(&self, ds: &[Delivery]) -> usize {
@@ -279,7 +274,7 @@ impl Condition for InboxCondition {
 
     fn install(self: Arc<Self>, signal: Arc<dyn Fn() + Send + Sync>) {
         *self.signal.lock().unwrap_or_else(|e| e.into_inner()) = Some(signal);
-        // Something may already be waiting — a backlog offered at attach, before
+        // Something may already be waiting - a backlog offered at attach, before
         // the monitor was declared.
         if self.pending_count() > 0 {
             self.ping();

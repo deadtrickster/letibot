@@ -1,11 +1,6 @@
-//! The fabric, as a block in the system prompt: what skills are on the shelf
-//! and what memories exist, so the model knows what it could load.
-//!
-//! Skills are summaries and memories are titles, because both are pointers - a
-//! body costs tokens, and the `skill` tool or the `flowy` CLI reads one. The
-//! block names a door only when the session has it: see [`Reach`].
-//!
-//! Offline is a state, not an empty block: the block names its source.
+//! The fabric as a block in the system prompt: skills on the shelf and memories that exist.
+//! Skills are summaries and memories are titles, since bodies cost tokens. A door is named only when
+//! the session has it ([`Reach`]). Offline is a state: the block names its source.
 
 use std::path::{Path, PathBuf};
 
@@ -104,7 +99,7 @@ impl FabricContext {
         })
     }
 
-    /// The block, as the model reads it — naming only the doors in `reach`.
+    /// The block, as the model reads it - naming only the doors in `reach`.
     pub fn render(&self, source: &Source, reach: Reach) -> String {
         let mut s = String::new();
         s.push_str(&format!(
@@ -291,7 +286,7 @@ mod tests {
     fn the_summary_skips_a_blockquote() {
         let body = "# Title\n\n> Quoted from another page.\n> Still the quote.\n\nThe first real paragraph.";
         assert_eq!(first_paragraph(body), "The first real paragraph.");
-        // One plain line and the block is prose, not a quote — kept whole.
+        // One plain line and the block is prose, not a quote - kept whole.
         assert_eq!(
             first_paragraph("> Quoted.\nA plain line."),
             "> Quoted. A plain line."
@@ -337,7 +332,7 @@ mod tests {
         assert!(live.contains("- 01M [project] r10 data is invalid"));
         assert!(live.contains("`skill` with `action` \"load\""));
         assert!(live.contains("`flowy` CLI through `bash`"));
-        // **A door the seat lacks is not named** (R93.G4, G7): no `skill`, no `bash`.
+        // A door the seat lacks is not named: no `skill`, no `bash`.
         let bare = ctx.render(&Source::Live, Reach::default());
         assert!(!bare.contains("`skill`"), "{bare}");
         assert!(

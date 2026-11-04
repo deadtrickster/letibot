@@ -1,11 +1,6 @@
-//! One waiter per name, enforced against `flowy inbox` itself. flowy allows many
-//! writers under one name and exactly one reader, enforced by a claim file under
-//! `$XDG_RUNTIME_DIR/flowy` holding a pid. So this writes the same file, in the same
-//! format, in the same directory: each guard refuses a name the other holds,
-//! because two guards that cannot see each other's claim are no guard.
-//!
-//! A tracked waiter stands down a forked one, because a detached successor can wake
-//! nobody and a listener that can wake a session must replace it.
+//! One waiter per name, enforced against `flowy inbox` itself via the same pid claim file under
+//! `$XDG_RUNTIME_DIR/flowy`, in the same format, so each guard sees the other's claim.
+//! A tracked waiter stands down a forked one, since a detached successor can wake nobody.
 
 use std::path::{Path, PathBuf};
 

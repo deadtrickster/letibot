@@ -1,11 +1,5 @@
-//! What a streaming SSE response costs the allocator - and why this is its own file.
-//!
-//! The framing tests next door pin the framing's behaviour, which was correct and had
-//! no coverage. What changed in `Body` is how many times the allocator is called
-//! getting that behaviour, and only a counter can see it.
-//!
-//! One measuring test per binary: cargo runs the tests within one file on parallel
-//! threads and the counter is global, so two tests in one file count each other.
+//! What a streaming SSE response costs the allocator, in its own file.
+//! One measuring test per binary: tests in a file run in parallel and the counter is global.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
@@ -126,7 +120,7 @@ fn a_streaming_response_does_not_allocate_per_chunk() {
     for i in 0..FRAMES {
         body.extend_from_slice(format!("data: {{\"n\":{i}}}\n\n").as_bytes());
     }
-    // **One frame per chunk**, which is the shape a real SSE response has and the shape that makes
+    // One frame per chunk, which is the shape a real SSE response has and the shape that makes
     // a per-chunk allocation cost 200 of them. Two lines per chunk, so the chunk is not a frame.
     let chunks: Vec<Vec<u8>> = body
         .split_inclusive(|b| *b == b'\n')

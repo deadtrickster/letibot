@@ -1,8 +1,6 @@
 //! The seat: what a scope is doing, which pull requests it has met, and what it did about each.
-//!
-//! The poll is one pass of four questions - what is open, what changed, what is owed a review, and
-//! what is owed an answer - and every answer is written on a row a person reads. Nothing here runs a
-//! command of a pull request's own: a review is handed a diff, and a fork is handed it read-only.
+//! One poll pass asks what is open, what changed, what is owed a review and what is owed an answer.
+//! Nothing here runs a command of a pull request's own; a fork is handed the diff read-only.
 
 use serde::{Deserialize, Serialize};
 
@@ -10,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::source::{Comment, Pull, Review, Scope, Source, Standing};
 
-/// **What the seat may send, and to whom.** `post = false` is the shipped state: reviews are kept as
+/// What the seat may send, and to whom. `post = false` is the shipped state: reviews are kept as
 /// drafts until an identity named `letibot` exists, and the pane says so on every draw.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -37,13 +35,13 @@ impl Default for Config {
 }
 
 impl Config {
-    /// **Whether anything leaves this box.** Both facts are needed: a scope told to post without a
+    /// Whether anything leaves this box. Both facts are needed: a scope told to post without a
     /// token is the "token missing" state the pane draws, not an attempt that fails per push.
     pub fn posting(&self) -> bool {
         self.post && self.token.is_some()
     }
 
-    /// **The seat's config from what a file may set**, with the token file's mode checked here so
+    /// The seat's config from what a file may set, with the token file's mode checked here so
     /// the child that reads it later is not the first to notice. `~` is `home`, not the process's.
     pub fn resolved(post: bool, token_path: Option<&str>, home: &Path) -> Result<Config, String> {
         let config = Config::default();
@@ -167,12 +165,12 @@ pub struct Job<'a> {
     pub diff: &'a str,
     pub since: Option<&'a str>,
     pub standing: Standing,
-    /// **What has already been said on it.** A review of a change somebody has argued about is a
+    /// What has already been said on it. A review of a change somebody has argued about is a
     /// different review from one of the same diff alone.
     pub comments: &'a [Comment],
 }
 
-/// **The review machinery behind a trait.** The merge queue's reviewer is the real one; a fork's job
+/// The review machinery behind a trait. The merge queue's reviewer is the real one; a fork's job
 /// arrives [`Standing::ReadOnly`] and a reviewer that runs anything in it is the defect this exists
 /// to make impossible to write by accident.
 pub trait Reviewer {
@@ -274,7 +272,7 @@ impl Seat {
         self.rows.iter().flat_map(|r| r.drafts.iter()).collect()
     }
 
-    /// **Stop asking GitHub for this scope.** The rows stay as they are: a pause is not a reset.
+    /// Stop asking GitHub for this scope. The rows stay as they are: a pause is not a reset.
     pub fn pause(&mut self, scope: &str) {
         for run in self.scopes.iter_mut().filter(|r| r.scope.as_str() == scope) {
             run.state = ScopeState::Paused;
@@ -290,7 +288,7 @@ impl Seat {
         }
     }
 
-    /// **One pass over every scope.** `said` is what it did, in the order it did it, and every
+    /// One pass over every scope. `said` is what it did, in the order it did it, and every
     /// sentence is also written on the row it is about.
     pub fn poll<S: Source, R: Reviewer>(
         &mut self,
@@ -738,7 +736,7 @@ pub struct PullView {
     pub age_ms: u64,
     #[serde(default)]
     pub session: String,
-    /// **What would be sent, in full.** The operator's decision is about these words, so a pane
+    /// What would be sent, in full. The operator's decision is about these words, so a pane
     /// that only counted them would be asking for a decision it does not show.
     #[serde(default)]
     pub drafts: Vec<DraftView>,

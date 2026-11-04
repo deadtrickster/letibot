@@ -1,11 +1,6 @@
-//! The chunked-transfer framing, against a server that actually chunks.
-//!
-//! The provider suite's fake server answers with `Content-Length`, so every green test
-//! in this workspace went through `Framing::Length` and the chunked path - the one a
-//! real llama.cpp endpoint uses, and the one that carries the SSE frames a turn is
-//! made of - was never executed at all.
-//! Three things are easy to get wrong: a frame split across two chunks, two frames in
-//! one chunk, and a frame boundary landing on a chunk boundary.
+//! The chunked-transfer framing against a server that actually chunks.
+//! Real llama.cpp endpoints use it and it carries the SSE frames. Cases: a frame split across two
+//! chunks, two frames in one chunk, and a frame boundary on a chunk boundary.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -128,7 +123,7 @@ fn many_small_chunks_reassemble_into_the_same_frames() {
 
 #[test]
 fn a_chunk_size_line_carrying_an_extension_still_names_the_size() {
-    // `1a;ext=1` — the semicolon and what follows are not part of the hex.
+    // `1a;ext=1` - the semicolon and what follows are not part of the hex.
     let (endpoint, server) = chunked_server(vec![ONE.as_bytes().to_vec()]);
     assert_eq!(payloads(&endpoint), vec!["{\"n\":1}"]);
     server.join().unwrap();

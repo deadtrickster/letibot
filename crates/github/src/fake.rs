@@ -1,7 +1,5 @@
 //! The source in memory: what the seat's tests read and write, with no network and no `gh`.
-//!
-//! A pull request is its commits here, because that is what a push is: a re-review must not see the
-//! commits the last review already read, and the only way to test that is for the fake to know them.
+//! A pull request is its commits, so a re-review can be tested to skip commits already read.
 
 use std::sync::Mutex;
 
@@ -104,7 +102,7 @@ impl FakeSource {
             .clone()
     }
 
-    /// **What each diff was asked with**, which is how a test says a re-review is of the new
+    /// What each diff was asked with, which is how a test says a re-review is of the new
     /// commits only.
     pub fn diffs_asked(&self) -> Vec<(String, u64, Option<String>)> {
         self.inner
@@ -285,7 +283,7 @@ mod tests {
         }
     }
 
-    /// **A re-review is of the new commits only**, because the fake knows the commits - and that is
+    /// A re-review is of the new commits only, because the fake knows the commits - and that is
     /// the only way the seat's claim about a push can be tested at all.
     #[test]
     fn a_diff_since_a_sha_is_only_the_commits_after_it() {

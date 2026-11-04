@@ -1,7 +1,5 @@
-//! One pull request's facts, and the one trait the seat reads and writes them through.
-//!
-//! Two implementations: [`crate::gh`] shells out to `gh api`, and [`crate::fake`] is memory. The
-//! seat is written against this trait only, so every test of it is offline.
+//! One pull request's facts, and the trait the seat reads and writes them through.
+//! Implemented by [`crate::gh`] (`gh api`) and [`crate::fake`] (memory), so seat tests are offline.
 
 /// A scope: one org's repositories, or one repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,7 +11,7 @@ pub enum Scope {
 }
 
 impl Scope {
-    /// **What the operator typed**, `letibot attach github <scope>`: `stroppy-io` is an org and
+    /// What the operator typed, `letibot attach github <scope>`: `stroppy-io` is an org and
     /// `stroppy-io/letibot` is one repository. Anything else is refused by name, because a scope
     /// guessed wrong is a seat that reviews somebody else's repositories.
     pub fn parse(text: &str) -> Result<Scope, String> {
@@ -47,7 +45,7 @@ impl Scope {
         }
     }
 
-    /// **The repositories this poll has to ask about.** An org's list comes from GitHub, so this
+    /// The repositories this poll has to ask about. An org's list comes from GitHub, so this
     /// is `None` for one - the source answers it - and `Some` for the repository the operator named.
     pub fn known_repo(&self) -> Option<&str> {
         match self {
@@ -67,11 +65,11 @@ pub struct Pull {
     pub base_sha: String,
     /// The head branch's name, for the worktree.
     pub branch: String,
-    /// **A pull request from a fork is not this repository's code**: its diff is reviewed and
+    /// A pull request from a fork is not this repository's code: its diff is reviewed and
     /// nothing in it is ever run ([`Standing::ReadOnly`]).
     pub from_fork: bool,
     pub title: String,
-    /// **What the author said the pull request is.** A reviewer with only a diff reviews the wrong
+    /// What the author said the pull request is. A reviewer with only a diff reviews the wrong
     /// change: the description is where the intent is.
     pub description: String,
     pub author: String,
@@ -166,14 +164,12 @@ impl Review {
 }
 
 /// What the seat reads and writes: one hub's API, as this seat needs it.
-///
-/// Every method answers a refusal in words rather than a typed error, because every one of them
-/// ends up in a row's `last_action` and on a person's screen.
+/// Methods answer refusals in words, since each ends up in a row's `last_action` on a person's screen.
 pub trait Source {
     /// Every open pull request in the scope, with the head it is on now.
     fn list_open(&self, scope: &Scope) -> Result<Vec<Pull>, String>;
 
-    /// **The diff to review.** `since` is the head the last review was of, so a push is reviewed
+    /// The diff to review. `since` is the head the last review was of, so a push is reviewed
     /// as the commits it added and not as the whole pull request again; `None` is the whole thing.
     fn diff(&self, pull: &Pull, since: Option<&str>) -> Result<String, String>;
 
@@ -187,7 +183,7 @@ pub trait Source {
     fn reply(&self, pull: &Pull, comment: &Comment, body: &str) -> Result<u64, String>;
 }
 
-/// **Whether a pull request's code may be run.** A fork's may not: the seat reviews the diff and
+/// Whether a pull request's code may be run. A fork's may not: the seat reviews the diff and
 /// starts nothing, because the diff is a stranger's and this box's boundary is not the stranger's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Standing {

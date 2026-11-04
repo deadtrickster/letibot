@@ -1,11 +1,6 @@
-//! A delivery as the sentence the model is given. The firing's `why` is what
-//! reaches the transcript, and it is where "monitors and timers which pollute the
-//! context" is paid or not: one message costs its own words plus one header line,
-//! and nothing the node already said is repeated.
-//!
-//! Each header field is there because a reply goes wrong without it: two rooms
-//! share a name, the sender's kind decides whether this needs answering, the id is
-//! what a citation names, and the node's clock is the one time that can be checked.
+//! A delivery as the sentence the model is given: one message costs its words plus one header line.
+//! Each header field prevents a wrong reply: room name, sender kind (needs an answer or not), the id
+//! a citation names, and the node's clock.
 
 use crate::attention::Identity;
 use crate::client::Event;

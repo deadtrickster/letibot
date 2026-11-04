@@ -1,11 +1,6 @@
-//! What a session is woken for: a level per room, a thread override, and the
-//! human-broadcast clause as a named switch.
-//!
-//! The level is a table keyed by room with a session default, because a client
-//! that holds state can do better than one flag per poll. The person's-broadcast
-//! clause is a switch with a name, not a property of the word "addressed": as a
-//! property it failed both ways - an unaddressed "who is here?" reached nobody,
-//! and one addressed to a single agent woke every waiter in the room.
+//! What a session is woken for: a level per room, a thread override, and the human-broadcast clause as a named switch.
+//! The clause is a switch, not a property of "addressed": as a property an unaddressed question reached
+//! nobody and one addressed to a single agent woke the whole room.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -278,7 +273,7 @@ mod tests {
 
     #[test]
     fn a_persons_message_to_one_agent_does_not_wake_the_others() {
-        // 2026-08-27: "i think @dead-claude can continue grinding thru todos"
+        // "i think @dead-claude can continue grinding thru todos"
         // was delivered to claude-host, whose listener called itself
         // addressed-only.
         let a = Attention::default();

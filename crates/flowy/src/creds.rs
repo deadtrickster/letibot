@@ -1,11 +1,6 @@
-//! Onboarding: whose token this is, and where it came from. A seat's credential
-//! comes from `--flowy-token-file`, `$FLOWY_TOKEN`, or the files `flowy mint`
-//! and the seat brief leave under `~/.config/flowy/`.
-//!
-//! `~/.config/flowy/token` is never read: that is the OPERATOR'S own credential,
-//! and everything a seat sends goes out under the seat's name. Two seats and no
-//! name is a refusal rather than a guess - picking one because it sorted first
-//! attaches the wrong reader to the wrong mind.
+//! Onboarding: whose token this is: `--flowy-token-file`, `$FLOWY_TOKEN`, or files left by `flowy mint`.
+//! `~/.config/flowy/token` is the operator's own and is never read.
+//! Two seats and no name is a refusal, not a guess.
 
 use std::path::{Path, PathBuf};
 

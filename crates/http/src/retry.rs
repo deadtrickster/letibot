@@ -1,11 +1,6 @@
-//! What a failed provider call is worth: the tree's one answer to what is retryable,
-//! and for how long. The rule was spread over four private functions in the daemon,
-//! each answering a slightly different question about the same failure, and the
-//! questions drifted - so it lives here, in the leaf crate that owns [`HttpError`].
-//!
-//! Three classes: `Transport` (no answer reached, so the same bytes may be sent
-//! again), `TryAgain` (the provider saying not now, which the ladder exists for) and
-//! `Refused` (the provider saying no, and a retry would be refused identically).
+//! What a failed provider call is worth: the tree's one answer to what is retryable and for how long.
+//! Three classes: `Transport` (no answer, same bytes may be resent), `TryAgain` (provider says not
+//! now) and `Refused` (a retry would be refused identically). Lives beside [`HttpError`].
 
 use std::time::Duration;
 
@@ -16,7 +11,7 @@ use crate::HttpError;
 /// get through this time; a `429` naming money is [`Policy::states_a_refusal`]'s.
 pub const TRY_AGAIN: &[u16] = &[408, 429, 500, 502, 503, 504];
 
-/// **The default number of retries** - calls after the first. See [`Policy::standard`].
+/// The default number of retries - calls after the first. See [`Policy::standard`].
 pub const STANDARD_RETRIES: u32 = 5;
 
 /// What one failure is, in the only terms a retry can use.
@@ -46,7 +41,7 @@ impl Class {
     }
 }
 
-/// **The four ways a model's provider is in trouble**, and the whole of the vocabulary an
+/// The four ways a model's provider is in trouble, and the whole of the vocabulary an
 /// automation branches on: a caller waits out a rate limit, gives up on a quota, retries a
 /// timeout, and replaces a provider that keeps stalling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,12 +85,12 @@ impl Policy {
         Policy { retries }
     }
 
-    /// **No retry at all** - a caller that already knows the endpoint is not there.
+    /// No retry at all - a caller that already knows the endpoint is not there.
     pub const fn none() -> Self {
         Policy::new(0)
     }
 
-    /// **The daemon's default**: [`STANDARD_RETRIES`], doubling from a second. See the module
+    /// The daemon's default: [`STANDARD_RETRIES`], doubling from a second. See the module
     /// docs for why 31 seconds and why half of what it was.
     pub const fn standard() -> Self {
         Policy::new(STANDARD_RETRIES)
@@ -105,7 +100,7 @@ impl Policy {
         self.retries
     }
 
-    /// **Which of the three classes this failure is in.**
+    /// Which of the three classes this failure is in.
     pub fn class(&self, e: &HttpError) -> Class {
         match e {
             HttpError::Io(_) | HttpError::Malformed(_) => Class::Transport,
@@ -141,7 +136,7 @@ impl Policy {
         matches!(e, HttpError::Status { code, .. } if *code == 429 || *code >= 500)
     }
 
-    /// **Which of the four troubles this failure is**, or `None` for one that is not about the
+    /// Which of the four troubles this failure is, or `None` for one that is not about the
     /// provider being unavailable: a bad request, a bad key, a server that is merely broken.
     pub fn trouble(e: &HttpError) -> Option<Trouble> {
         match e {
@@ -170,10 +165,8 @@ impl Policy {
         }
     }
 
-    /// **When the provider said its limit lifts**, Unix millis, from a clock the caller owns
-    /// (`now_ms`). Only `Retry-After` is read: it is seconds, and seconds need no timezone. A
-    /// provider that says it in prose has said it to a person, and `None` says nothing rather than
-    /// guessing an instant in a zone this box does not know.
+    /// When the provider said its limit lifts, Unix millis, from the caller's clock (`now_ms`).
+    /// Only `Retry-After` seconds is read; prose is for a person, so `None` rather than a guessed instant.
     pub fn reset_ms(e: &HttpError, now_ms: u64) -> Option<u64> {
         let HttpError::Status { retry_after, .. } = e else {
             return None;
@@ -260,11 +253,8 @@ impl Policy {
         }
     }
 
-    /// **A failure's four words**, for the one line a retried call draws: what a reader scanning
-    /// a row that counts attempts needs is WHICH failure, and [`Policy::what`]'s sentence is the
-    /// ending's, where there is room for it. The status is the instrument where there is one,
-    /// because `429` is what a person says and `the provider said to try again` is what a
-    /// sentence says.
+    /// A failure's four words for the one line a retried call draws: which failure, not the ending's
+    /// sentence ([`Policy::what`]). The status is used where there is one (`429`).
     pub fn brief(e: &HttpError) -> String {
         match e {
             HttpError::Status { code, body, .. } => {
@@ -413,7 +403,7 @@ mod tests {
         ))
     }
 
-    /// **The four troubles, and the failures that are none of them.** A 500 is an outage the ladder
+    /// The four troubles, and the failures that are none of them. A 500 is an outage the ladder
     /// handles; a 400 is what was sent; only these four are worth waking an automation for.
     #[test]
     fn a_trouble_is_one_of_four_and_nothing_else() {
@@ -458,7 +448,7 @@ mod tests {
         assert_eq!(Trouble::Stall.name(), "stall");
     }
 
-    /// **The reset time is the header's, or it is nothing.** A provider that says it in prose has
+    /// The reset time is the header's, or it is nothing. A provider that says it in prose has
     /// said it to a person; an instant invented out of a wall clock in an unknown zone is worse than
     /// `None`, because a caller sleeps on it.
     #[test]
@@ -479,7 +469,7 @@ mod tests {
         assert_eq!(Policy::reset_ms(&dns(), 1_000_000), None);
     }
 
-    /// **The three classes, over the statuses the brief names.**
+    /// The three classes, over the statuses the brief names.
     #[test]
     fn the_classes_are_the_statuses_the_policy_states() {
         let p = Policy::standard();
@@ -501,7 +491,7 @@ mod tests {
         assert_eq!(p.class(&status(501)), Class::Refused);
     }
 
-    /// **`408` waits and does not move a session** - the one that looks like a 5xx and is not.
+    /// `408` waits and does not move a session - the one that looks like a 5xx and is not.
     #[test]
     fn a_server_that_waited_too_long_for_us_is_waited_for() {
         let p = Policy::standard();
@@ -513,7 +503,7 @@ mod tests {
         );
     }
 
-    /// **The six-times 429**: a refusal that names money is one call, and a rate limit is not.
+    /// The six-times 429: a refusal that names money is one call, and a rate limit is not.
     #[test]
     fn a_429_that_names_money_is_refused_and_a_rate_limit_is_not() {
         let p = Policy::standard();
@@ -548,7 +538,7 @@ mod tests {
         assert!(p.after(&limit, 0).is_some());
     }
 
-    /// **The ladder's numbers**, and the cap is a cap.
+    /// The ladder's numbers, and the cap is a cap.
     #[test]
     fn the_ladder_doubles_from_a_second_and_runs_out() {
         let p = Policy::standard();
@@ -587,7 +577,7 @@ mod tests {
         assert!(ladder.failed(&e).is_none());
         assert_eq!(ladder.attempts(), 1, "one call, and no waiting after it");
         assert_eq!(ladder.waited(), Duration::ZERO);
-        // **A budget in between is honoured as itself**, so this is a number and not a boolean
+        // A budget in between is honoured as itself, so this is a number and not a boolean
         // wearing one: the field is named for RETRIES, and `1` is one call after the first.
         assert!(Policy::new(1).after(&e, 0).is_some(), "one retry is one");
         assert!(Policy::new(1).after(&e, 1).is_none(), "and only one");
@@ -595,7 +585,7 @@ mod tests {
         assert!(Policy::new(3).after(&e, 3).is_none());
     }
 
-    /// **A turn that never reached the network is tried before it is called a failure** - the
+    /// A turn that never reached the network is tried before it is called a failure - the
     /// report this module opens with.
     #[test]
     fn a_name_that_did_not_resolve_is_tried_again() {
@@ -610,7 +600,7 @@ mod tests {
         );
     }
 
-    /// **A failure's four words**, for a row that says what is being retried. The full sentence
+    /// A failure's four words, for a row that says what is being retried. The full sentence
     /// (`Policy::what`) is the ending's, and a row counting attempts cannot carry it once per
     /// attempt: what a reader needs there is which failure, in a phrase they can scan.
     #[test]
@@ -639,7 +629,7 @@ mod tests {
         assert_eq!(Policy::brief(&dns()), "name resolution failed");
     }
 
-    /// **The ending sentence, in the two shapes the operator reads.**
+    /// The ending sentence, in the two shapes the operator reads.
     #[test]
     fn the_ending_names_the_attempts_or_says_there_were_none() {
         // A ladder that ran out.

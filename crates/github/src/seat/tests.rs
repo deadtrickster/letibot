@@ -1,8 +1,6 @@
-//! The seat's behaviour, with no network, no token and no `gh`.
-//!
-//! Every test here is one sentence of the operator's ask: a new pull request gets one draft, a push
-//! gets a review of the new commits only, a mention gets an answer, a fork gets a review and runs
-//! nothing, and with `post = false` nothing leaves the box.
+//! The seat's behaviour with no network, token or `gh`. Each test is one sentence of the operator's
+//! ask: a new pull request gets one draft, a push reviews only new commits, a mention gets an answer,
+//! a fork gets a review and runs nothing, and `post = false` sends nothing.
 
 use std::path::PathBuf;
 
@@ -103,7 +101,7 @@ fn a_seat() -> Seat {
     Seat::new(vec![Scope::Org("stroppy-io".into())], Config::default())
 }
 
-/// **A new pull request gets one review draft and nothing is sent**: that is the shipped state until
+/// A new pull request gets one review draft and nothing is sent: that is the shipped state until
 /// the operator's identity exists.
 #[test]
 fn a_new_pull_request_gets_one_draft_and_nothing_is_sent() {
@@ -133,7 +131,7 @@ fn a_new_pull_request_gets_one_draft_and_nothing_is_sent() {
     assert_eq!(seat.drafts().len(), 1);
 }
 
-/// **A review is handed what a reviewer needs**: what the author said the pull request is, and
+/// A review is handed what a reviewer needs: what the author said the pull request is, and
 /// what has already been said on it. A reviewer given a bare diff cannot answer either.
 #[test]
 fn a_review_is_handed_the_description_and_the_comments_so_far() {
@@ -162,7 +160,7 @@ fn a_review_is_handed_the_description_and_the_comments_so_far() {
     assert_eq!(job.diff, "-first\n+first change");
 }
 
-/// **A push is reviewed as the commits it added**, and the review it makes is a second review - not
+/// A push is reviewed as the commits it added, and the review it makes is a second review - not
 /// a second review of the whole pull request.
 #[test]
 fn a_push_is_reviewed_as_the_new_commits_only() {
@@ -201,7 +199,7 @@ fn a_push_is_reviewed_as_the_new_commits_only() {
     );
 }
 
-/// **A mention is answered by that pull request's session**, once, and by nobody else.
+/// A mention is answered by that pull request's session, once, and by nobody else.
 #[test]
 fn a_mention_is_answered_by_the_pull_requests_session() {
     let source = a_source();
@@ -238,7 +236,7 @@ fn a_mention_is_answered_by_the_pull_requests_session() {
     assert_eq!(reviewer.answers.len(), 1);
 }
 
-/// **A fork is reviewed and nothing of it is run**: its session and its job are read-only.
+/// A fork is reviewed and nothing of it is run: its session and its job are read-only.
 #[test]
 fn a_fork_is_reviewed_read_only_and_nothing_runs() {
     let source = FakeSource::new();
@@ -417,7 +415,7 @@ fn the_snapshot_is_the_panes_rows() {
     );
     assert_eq!(pull.age_ms, 60_000);
     assert_eq!(pull.session, "s-stroppy-io-letibot-12");
-    // **The draft itself is on the wire, not only a count**: the pane draws what would be sent,
+    // The draft itself is on the wire, not only a count: the pane draws what would be sent,
     // because a draft nobody can read is not a review the operator can decide about.
     assert_eq!(pull.drafts.len(), 1, "{pull:#?}");
     assert_eq!(pull.drafts[0].kind, "review");
@@ -456,7 +454,7 @@ fn a_closed_pull_request_is_dropped() {
     assert!(seat.rows().is_empty());
 }
 
-/// **A token that anyone can read is not a token.** Posting needs the file, and the file's mode is
+/// A token that anyone can read is not a token. Posting needs the file, and the file's mode is
 /// checked here so the child that reads it later is not the first to notice.
 #[test]
 fn posting_needs_a_token_file_only_the_operator_can_read() {
@@ -513,7 +511,7 @@ fn a_worker_seat(sessions: FakeSessions, config: Config) -> (Seat, Worker<FakeSe
 /// A session's answer that is a review: a summary and one comment on a line.
 const A_REVIEW: &str = "This loads the widget once now.\n\ncrates/tui/src/widget.rs:42: this leaks";
 
-/// **A push is one more draft, and its brief is the new commits only.** A second review of the same
+/// A push is one more draft, and its brief is the new commits only. A second review of the same
 /// commits is the defect this measures: the row is owed one review per push and no more.
 #[test]
 fn a_new_push_is_one_more_draft_and_its_brief_is_the_new_commits() {
@@ -568,7 +566,7 @@ fn a_new_push_is_one_more_draft_and_its_brief_is_the_new_commits() {
     assert_eq!(worker.sessions().briefs().len(), 2);
 }
 
-/// **A mention is answered by that pull request's session** - the one the review ran in - and the
+/// A mention is answered by that pull request's session - the one the review ran in - and the
 /// answer is kept as a draft while nothing is posted.
 #[test]
 fn a_mention_is_answered_by_that_pull_request_s_session() {
@@ -614,7 +612,7 @@ fn a_mention_is_answered_by_that_pull_request_s_session() {
     assert!(source.replies().is_empty(), "nothing is posted");
 }
 
-/// **`post = false` is a gate, not a default**: with a token file in hand and everything reviewed,
+/// `post = false` is a gate, not a default: with a token file in hand and everything reviewed,
 /// not one review or answer leaves the box.
 #[test]
 fn posting_is_refused_while_post_is_false() {
@@ -649,7 +647,7 @@ fn posting_is_refused_while_post_is_false() {
     assert!(!seat.snapshot().posting);
 }
 
-/// **Six reviews an hour per repository, and the seventh waits** - then it is owed again once the
+/// Six reviews an hour per repository, and the seventh waits - then it is owed again once the
 /// hour has passed, rather than lost.
 #[test]
 fn the_hourly_cap_holds_at_six_and_frees_the_seventh_an_hour_later() {

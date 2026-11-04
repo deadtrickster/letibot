@@ -1,11 +1,6 @@
-//! `flowy` - the one tool the model drives the connector with.
-//!
-//! One tool taking an `action`, for the reason `monitor` is one: the tool ceiling
-//! is real and none of these is a different question.
-//!
-//! Declaring, renewing and retiring the listener belong to the daemon, because the
-//! model reads messages rather than arming a bell. Polling is absent because a
-//! message arrives as a firing and a blocking tool would hold the turn hostage.
+//! `flowy` - the one tool the model drives the connector with, taking an `action`.
+//! Declaring, renewing and retiring the listener belong to the daemon. Polling is absent: a message
+//! arrives as a firing, and a blocking tool would hold the turn.
 
 use std::sync::Arc;
 

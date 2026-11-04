@@ -1,11 +1,6 @@
 //! The fabric's shelf: rows of `kind=skill`, as a [`SkillShelf`] for `skill`.
-//!
-//! A skill somebody wrote on another box is loaded by id or title through the same
-//! `skill` tool a disk skill is, so the model never hand-builds curls to
-//! `/api/artifacts` and guesses the filters.
-//!
-//! Reads go through the seat's node with the seat's token, so the shelf is the
-//! node's permission filter, not a claim. An absent node is unreadable, not empty.
+//! Reads go through the seat's node with the seat's token, so the node's permission filter applies.
+//! An absent node is unreadable, not empty.
 
 use letibot_tools::builtins::skill::{ShelfEntry, Skill, SkillShelf, SkillSource};
 
