@@ -1819,7 +1819,7 @@ impl Harness {
                 .cloned();
             let skill_taken =
                 skill_offers.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
-            self.show_offers(note_offer.as_ref(), &skill_taken);
+            let mut staged = self.offer_rows(note_offer.as_ref(), &skill_taken);
             waits.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
             done.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
             // What the agent says it is doing, recorded before its calls are adjudicated: the sentence in front of its
@@ -1848,6 +1848,7 @@ impl Harness {
             // round owed to it; a round that proposed none is decided by the checks below, which are
             // this loop's own convergence and the only thing that knows whether the turn goes on.
             if calls.is_empty() {
+                self.append_offer_rows(&mut staged)?;
                 // A model that stopped because the context is full when it is not: first, ahead of the intent check,
                 // since the excuse is usually why a promise was not kept. It goes through `append_notice`, because the
                 // turn is over and the loop continuing is what makes it a correction rather than a report.
@@ -1926,6 +1927,7 @@ impl Harness {
                 context_claim,
                 &mut nudges_left,
             )?;
+            self.append_offer_rows(&mut staged)?;
 
             // A backgrounded job gives the floor back to the OPERATOR, not to the model: ending only the `bash` call
             // handed control straight back, and the model's next move was a bounded wait. So the turn ends here, and
@@ -2931,24 +2933,39 @@ impl Harness {
         })
     }
 
-    /// Show the operator what the model was offered this round, settled. A hub warning and not a row: a row
-    /// would enter the prompt, and the model already holds its own tail line.
-    fn show_offers(
+    /// The rows that show the operator what the model was offered this round, settled.
+    fn offer_rows(
         &self,
         note: Option<&crate::notes_offer::Offer>,
         skills: &[crate::skills_offer::Offer],
-    ) {
+    ) -> Vec<TranscriptItem> {
         use crate::offer_rows as rows;
+        let mut out = Vec::new();
         if let Some(o) = note {
             let notes =
                 crate::standing_notes::Reader::new(&*self.runtime.backend, &self.cfg.workspace);
-            let text = notes.read(&o.path);
-            rows::show_note(&self.hub, o, text.as_deref());
+            out.push(rows::note_row(o, notes.read(&o.path).as_deref()));
         }
         for o in skills {
-            let body = self.skills.load(&o.name);
-            rows::show_skill(&self.hub, o, body);
+            out.push(rows::skill_row(o, self.skills.load(&o.name)));
         }
+        out
+    }
+
+    /// File staged offer rows at a round boundary, after the results: a row between a call and its
+    /// result closes the pairing window. They render to nothing, so the prompt is unchanged.
+    pub(crate) fn append_offer_rows(
+        &mut self,
+        staged: &mut Vec<TranscriptItem>,
+    ) -> Result<(), HarnessError> {
+        if staged.is_empty() {
+            return Ok(());
+        }
+        let items = std::mem::take(staged);
+        let mut sink = CapturingSink::new(self.hub.clone());
+        self.session.append_items(&self.engine, &items, &mut sink)?;
+        self.reconcile(&mut sink, &items);
+        self.persist()
     }
 
     /// Tell this session's model something the HARNESS found, without running a turn: a plugin failure is a fact

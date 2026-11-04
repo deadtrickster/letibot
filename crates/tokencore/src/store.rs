@@ -626,6 +626,7 @@ pub fn item_kind(item: &TranscriptItem) -> &'static str {
         TranscriptItem::ToolResult { .. } => "tool_result",
         TranscriptItem::Notice { .. } => "notice",
         TranscriptItem::SegmentMark { .. } => "segment_mark",
+        TranscriptItem::Offer { .. } => "offer",
     }
 }
 
@@ -2580,6 +2581,7 @@ impl Store {
                       WHERE i.transcript_id = (SELECT t.id FROM transcript t
                           WHERE t.session_id = s.id
                           ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)
+                        AND i.kind <> 'offer'
                       ORDER BY i.seq DESC LIMIT 1),
                     s.prefix_fingerprint,
                     s.nags_paused_until,

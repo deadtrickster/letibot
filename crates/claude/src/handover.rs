@@ -275,7 +275,7 @@ fn line_for(
             Value::Array(vec![json!({"type": "text", "text": text})]),
             true,
         ),
-        TranscriptItem::SegmentMark { .. } => {
+        TranscriptItem::SegmentMark { .. } | TranscriptItem::Offer { .. } => {
             skipped.marks += 1;
             return None;
         }
@@ -385,6 +385,7 @@ fn markdown_for(item: &TranscriptItem) -> String {
             format!("**letibot (the session's own voice, not the operator's)**\n\n{text}\n\n")
         }
         TranscriptItem::SegmentMark { label, .. } => format!("> *{label}*\n\n"),
+        TranscriptItem::Offer { title, .. } => format!("> *{title}*\n\n"),
     }
 }
 

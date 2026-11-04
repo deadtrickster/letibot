@@ -357,6 +357,7 @@ impl Store {
                       WHERE i.transcript_id = (SELECT t.id FROM transcript t
                           WHERE t.session_id = s.id
                           ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)
+                        AND i.kind <> 'offer'
                       ORDER BY i.seq DESC LIMIT 1)
                FROM session s
               WHERE s.parent_session_id = ?1

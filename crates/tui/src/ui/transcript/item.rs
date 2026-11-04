@@ -206,6 +206,11 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
         TranscriptItem::Reasoning { .. } => reasoning_row_lines(item, ctx, ind),
         TranscriptItem::Assistant { .. } => assistant_row_lines(it, item, ctx, ind),
         TranscriptItem::ToolResult { .. } => tool_result_row_lines(it, item, ctx, newest, ind),
+        TranscriptItem::Offer { kind, title, .. } => {
+            let line = crate::ui::transcript::offer_card::offer_card(*kind, title)
+                .cut(session_text_cols(it.ts, cfg));
+            (RowClass::Other, session_card_block(&[line], it.ts, cfg))
+        }
         TranscriptItem::SegmentMark { label, .. } => (
             RowClass::Other,
             vec![crate::ui::render::row(

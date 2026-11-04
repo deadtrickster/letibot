@@ -266,7 +266,7 @@ fn to_openai_messages(prefix: &StablePrefix, items: &[TranscriptItem]) -> Value 
 
     for item in items {
         match item {
-            TranscriptItem::SegmentMark { .. } => {}
+            TranscriptItem::SegmentMark { .. } | TranscriptItem::Offer { .. } => {}
             TranscriptItem::System { text, .. } => {
                 flush(&mut turn, &mut msgs);
                 msgs.push(json!({"role": "system", "content": text}));

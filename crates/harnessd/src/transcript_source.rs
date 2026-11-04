@@ -335,6 +335,7 @@ fn visible_text(item: &TranscriptItem) -> String {
         TranscriptItem::SegmentMark {
             label, kind, edge, ..
         } => format!("[segment {kind} {label} {edge:?}]"),
+        TranscriptItem::Offer { title, .. } => format!("[offer] {title}"),
     }
 }
 

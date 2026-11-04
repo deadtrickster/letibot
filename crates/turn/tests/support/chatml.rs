@@ -151,7 +151,7 @@ fn open_assistant(st: &mut State, out: &mut Vec<RenderSpan>) {
 fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSpan>) {
     for item in items {
         match item {
-            TranscriptItem::SegmentMark { .. } => {}
+            TranscriptItem::SegmentMark { .. } | TranscriptItem::Offer { .. } => {}
             TranscriptItem::System { text: s, .. } => {
                 close_turn(st, out);
                 ctl(out, &IM_START);

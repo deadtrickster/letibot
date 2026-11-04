@@ -12,7 +12,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 63;
+pub const PROTOCOL_VERSION: u32 = 64;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -1331,8 +1331,12 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 63,
-            "the match above was last reconciled with the frame list at 63. 63 gave \
+            PROTOCOL_VERSION, 64,
+            "the match above was last reconciled with the frame list at 64. 64 added \
+             `TranscriptItem::Offer`, the display-only row that shows the operator a skill or \
+             note offered to the model: a version-63 head cannot decode a snapshot or an \
+             announcement that carries one, so the number moves. Every renderer skips it, so the \
+             prompt is unchanged. 63 gave \
              `SessionEvent::TurnFinished` its `prefix_check` and `dialect_template_sha`: a head \
              could not tell a slot that did not hold the history from a prompt of ours that \
              diverged, which is §18.2's question, and could not say which template produced the \

@@ -43,6 +43,7 @@ mod import_rows;
 mod intent;
 mod jobs;
 mod misc;
+mod offer_row;
 mod operator_ask;
 mod parentage;
 mod prefix_on_open;

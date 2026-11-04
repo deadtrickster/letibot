@@ -65,6 +65,7 @@ fn kinds(rows: &[Row]) -> Vec<&'static str> {
             TranscriptItem::ToolResult { .. } => "tool_result",
             TranscriptItem::Notice { .. } => "notice",
             TranscriptItem::SegmentMark { .. } => "mark",
+            TranscriptItem::Offer { .. } => "offer",
             TranscriptItem::System { .. } => "system",
         })
         .collect()

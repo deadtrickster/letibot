@@ -1,5 +1,4 @@
 use super::*;
-use letibot_sessionlog::hub::Hub;
 
 fn skill(taken: bool) -> skills_offer::Offer {
     skills_offer::Offer {
@@ -10,24 +9,17 @@ fn skill(taken: bool) -> skills_offer::Offer {
     }
 }
 
-/// The operator's row reaches heads and the log, and never the transcript the prompt is rendered
-/// from: the model's only copy is the request tail.
+/// The row splits into headline and body, and the model's tail stays a pointer.
 #[test]
-fn an_offer_is_published_to_heads_and_adds_no_transcript_row() {
-    let hub = Hub::new("s");
-    let before = hub.snapshot();
+fn an_offer_row_holds_the_headline_and_the_body() {
     let o = skill(true);
-    show_skill(&hub, &o, Some("Run clippy.\nRun fmt."));
-    let after = hub.snapshot();
-    assert_eq!(after.items, before.items, "a row would enter the prompt");
-    let w = after.warnings.last().expect("the offer is a warning");
-    assert_eq!(w.code, SKILL_CODE);
-    assert!(
-        w.detail
-            .starts_with("skill offered: rust-skills (0.41) · loaded\n\nRun clippy."),
-        "{}",
-        w.detail
-    );
+    let TranscriptItem::Offer { kind, title, body } = skill_row(&o, Some("Run clippy.\nRun fmt."))
+    else {
+        panic!("not an offer row");
+    };
+    assert_eq!(kind, OfferKind::Skill);
+    assert_eq!(title, "skill offered: rust-skills (0.41) · loaded");
+    assert_eq!(body, "Run clippy.\nRun fmt.");
     let tail = format!("{:?}", o.tail());
     assert!(!tail.contains("Run clippy"), "the tail stays a pointer");
 }

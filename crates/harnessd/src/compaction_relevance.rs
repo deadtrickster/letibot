@@ -135,7 +135,7 @@ pub fn text_of(item: &TranscriptItem) -> String {
             .collect::<Vec<&str>>()
             .join("\n"),
         TranscriptItem::ToolResult { payload, .. } => payload.clone(),
-        TranscriptItem::SegmentMark { .. } => String::new(),
+        TranscriptItem::SegmentMark { .. } | TranscriptItem::Offer { .. } => String::new(),
     };
     // The cut lands on a character boundary, never through one: an item is prose in any script.
     let cut = ITEM_CHARS.min(whole.len());

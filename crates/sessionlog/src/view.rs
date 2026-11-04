@@ -977,6 +977,7 @@ pub fn body_of(item: &TranscriptItem) -> String {
             })
             .collect::<Vec<_>>()
             .join("\n"),
+        TranscriptItem::Offer { body, .. } => body.clone(),
         // A segment mark renders to nothing, so it has no body to page.
         TranscriptItem::SegmentMark { .. } => String::new(),
     }

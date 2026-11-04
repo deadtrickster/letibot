@@ -127,7 +127,6 @@ pub(crate) const WARNING_KINDS: &[WarningKind] = &[
     review_card::WARNING,
     restart_card::WARNING,
     stale_card::WARNING,
-    crate::ui::transcript::offer_card::WARNING,
 ];
 
 fn kind_of(text: &str) -> Option<&'static SessionKind> {

@@ -178,45 +178,89 @@ fn a_handed_over_skill_draws_as_one_folded_row_at_80_columns() {
     assert!(drawn.lines().count() <= 4, "{drawn}");
 }
 
-/// A skill offered to the model draws as one faint row, and a click opens its body.
+/// A hub holding a user row, an offer row and an assistant row, as a head that attaches later
+/// gets them in its snapshot.
+fn attached_after_an_offer() -> App {
+    use letibot_transcript::{OfferKind, Speaker, TranscriptItem, UserPart};
+    let hub = Hub::new("s");
+    let rows = [
+        TranscriptItem::User {
+            speaker: Speaker::Operator,
+            parts: vec![UserPart::Text {
+                text: "first question".into(),
+            }],
+        },
+        TranscriptItem::Offer {
+            kind: OfferKind::Skill,
+            title: "skill offered: rust-skills (0.41) · loaded".into(),
+            body: "Step one: run clippy.\nStep two: fmt.".into(),
+        },
+        TranscriptItem::Assistant {
+            text: "the answer".into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        },
+    ];
+    for (n, item) in rows.iter().enumerate() {
+        hub.append_row(&format!("s#t1:{n}"), "k", "00", item);
+    }
+    let mut a = app();
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    a
+}
+
+/// An offer is a transcript row: a head attaching later draws it in place, between the rows around
+/// it and not in the notes, and a click opens its body.
 #[test]
-fn an_offered_skill_draws_as_a_row_and_a_click_opens_its_body() {
-    use super::redcard::{holds, popup_text, rows_with, with_warning};
-    let detail =
-        "skill offered: rust-skills (0.41) · loaded\n\nStep one: run clippy.\nStep two: fmt.";
-    let mut a = with_warning("skill_offer", detail);
+fn an_offer_row_from_a_snapshot_draws_in_place_and_a_click_opens_its_body() {
+    use super::redcard::{holds, popup_text, rows_with};
+    let mut a = attached_after_an_offer();
     let screen = a.screen(100, 30);
     let drawn = screen.join("\n");
-    assert_eq!(
-        rows_with(
-            &screen,
-            "skill offered: rust-skills (0.41) · loaded · click for details"
-        )
-        .len(),
-        1,
-        "{drawn}"
+    let line = "skill offered: rust-skills (0.41) · loaded · click for details";
+    let at = rows_with(&screen, line);
+    assert_eq!(at.len(), 1, "{drawn}");
+    let y = screen.iter().position(|l| l.contains(line)).unwrap();
+    let first = screen.iter().position(|l| l.contains("first question"));
+    let last = screen.iter().position(|l| l.contains("the answer"));
+    assert!(
+        first.is_some_and(|f| f < y) && last.is_some_and(|l| y < l),
+        "between the rows it sits between: {drawn}"
     );
     assert!(!drawn.contains("Step one"), "{drawn}");
-    assert_eq!(a.card_rows.len(), 1, "{drawn}");
-    let (y, _) = a.card_rows[0];
+    assert!(a.notes.is_empty(), "not a note: {:?}", a.notes);
     a.key(Key::Click { x: 10, y: y as u16 });
     let whole = popup_text(&mut a);
     assert!(holds(&whole, "Step one: run clippy."), "{whole}");
 }
 
-/// Two offers in a minute stay two rows, not a counted burst.
+/// Two offers in a row stay two rows.
 #[test]
 fn two_offers_close_together_are_two_rows() {
-    use super::redcard::{rows_with, with_warning};
-    let mut a = with_warning("note_offer", "note offered: build.md (0.33)\n\nbody");
-    a.apply(ServerFrame::Event(env(
-        2,
-        SessionEvent::Warning {
-            code: "skill_offer".into(),
-            detail: "skill offered: release (0.30)".into(),
-            compaction: None,
-        },
-    )));
+    use super::redcard::rows_with;
+    use letibot_transcript::{OfferKind, TranscriptItem};
+    let hub = Hub::new("s");
+    for (n, t) in [
+        "note offered: build.md (0.33)",
+        "skill offered: release (0.30)",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let kind = if n == 0 {
+            OfferKind::Note
+        } else {
+            OfferKind::Skill
+        };
+        let item = TranscriptItem::Offer {
+            kind,
+            title: t.into(),
+            body: "body".into(),
+        };
+        hub.append_row(&format!("s#t1:{n}"), "offer", "00", &item);
+    }
+    let mut a = app();
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
     let screen = a.screen(100, 30);
     assert_eq!(
         rows_with(&screen, "offered:").len(),

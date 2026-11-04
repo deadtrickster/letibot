@@ -142,7 +142,9 @@ fn condense_row(item: &TranscriptItem) -> String {
         TranscriptItem::System { text, .. } | TranscriptItem::Notice { text, .. } => text.clone(),
         // A draft and a mark are not conversation: the one is abandoned and the other
         // is a pointer, and neither is context a suggestion should be built on.
-        TranscriptItem::Reasoning { .. } | TranscriptItem::SegmentMark { .. } => String::new(),
+        TranscriptItem::Reasoning { .. }
+        | TranscriptItem::SegmentMark { .. }
+        | TranscriptItem::Offer { .. } => String::new(),
     };
     cut(&text)
 }

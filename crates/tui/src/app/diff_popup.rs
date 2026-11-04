@@ -142,6 +142,11 @@ impl App {
             });
             return;
         }
+        // An offer to the model is one faint line; the click opens what was offered.
+        if let Some((title, body)) = offer_row_text(it) {
+            self.open_text_popup(body, (title, Role::Faint));
+            return;
+        }
         // A skill the operator handed over is drawn as one folded line; the click reads it whole.
         if let Some(text) = skill_row_text(it) {
             self.open_text_popup(text, ("skill handed to the session".into(), Role::Faint));
@@ -204,7 +209,9 @@ impl App {
             .find(|sp| {
                 sp.lines > 0
                     && self.items.get(sp.row).is_some_and(|it| {
-                        agent_row_text(it).is_some() || system_row_text(it).is_some()
+                        agent_row_text(it).is_some()
+                            || system_row_text(it).is_some()
+                            || offer_row_text(it).is_some()
                     })
             })
             .map(|sp| (sp.row, sp.at));
@@ -332,6 +339,10 @@ impl App {
                             .items
                             .get(sp.row)
                             .is_some_and(|it| skill_row_text(it).is_some())
+                        || self
+                            .items
+                            .get(sp.row)
+                            .is_some_and(|it| offer_row_text(it).is_some())
                         || self
                             .items
                             .get(sp.row)
@@ -691,6 +702,24 @@ pub(crate) fn skill_row_text(it: &letibot_sessionlog::view::SnapshotItem) -> Opt
         } => {
             let text = crate::ui::transcript::user::user_text(parts);
             crate::ui::transcript::blocks::fold_skill(&text).map(|_| text)
+        }
+        _ => None,
+    }
+}
+
+/// An offer row's headline and what a click opens, or `None` for any other row.
+pub(crate) fn offer_row_text(
+    it: &letibot_sessionlog::view::SnapshotItem,
+) -> Option<(String, String)> {
+    match it.item.as_ref()? {
+        letibot_transcript::TranscriptItem::Offer { title, body, .. } => {
+            let head = title.lines().next().unwrap_or("").trim().to_string();
+            let text = if body.trim().is_empty() {
+                title.clone()
+            } else {
+                body.clone()
+            };
+            Some((head, text))
         }
         _ => None,
     }

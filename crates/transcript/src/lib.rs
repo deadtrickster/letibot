@@ -67,6 +67,14 @@ pub enum NoticeKind {
     Monitor,
 }
 
+/// What an [`TranscriptItem::Offer`] offered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OfferKind {
+    Skill,
+    Note,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 /// One entry in the conversation, in the order the model produced or consumed it.
@@ -135,6 +143,15 @@ pub enum TranscriptItem {
         kind: NoticeKind,
         text: String,
     },
+    /// What the model was offered in a round, for the operator. Display-only: every renderer skips
+    /// it, so it adds no tokens and no request item, and heads draw it in place from the record.
+    Offer {
+        kind: OfferKind,
+        /// The headline line a head draws.
+        title: String,
+        /// What a click opens.
+        body: String,
+    },
     /// A zero-width delimiter that renders to nothing, kept so per-segment decay and
     /// user-assisted compaction have something to address later. If those never arrive it
     /// has cost one row and zero rendered bytes.
@@ -197,6 +214,7 @@ impl TranscriptItem {
                     + media.as_ref().map(|m| m.data_ref.len()).unwrap_or(0)
             }
             TranscriptItem::Notice { text, .. } => text.len(),
+            TranscriptItem::Offer { title, body, .. } => title.len() + body.len(),
             TranscriptItem::SegmentMark { label, .. } => label.len(),
         }
     }

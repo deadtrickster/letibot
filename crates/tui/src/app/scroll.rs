@@ -1562,6 +1562,7 @@ pub(crate) fn row_words(it: &SnapshotItem) -> Option<String> {
             (!payload.is_empty()).then(|| payload.clone())
         }
         TranscriptItem::SegmentMark { label, .. } => (!label.is_empty()).then(|| label.clone()),
+        TranscriptItem::Offer { title, .. } => Some(title.clone()),
         TranscriptItem::User { parts, .. } => {
             let joined = parts
                 .iter()
@@ -1588,6 +1589,7 @@ pub(crate) fn row_says(it: &SnapshotItem, words: &str) -> bool {
         | Some(TranscriptItem::Reasoning { text, .. }) => text == words,
         Some(TranscriptItem::ToolResult { payload, .. }) => payload == words,
         Some(TranscriptItem::SegmentMark { label, .. }) => label == words,
+        Some(TranscriptItem::Offer { title, .. }) => title == words,
         Some(TranscriptItem::User { parts, .. }) => user_says(parts, words),
     }
 }

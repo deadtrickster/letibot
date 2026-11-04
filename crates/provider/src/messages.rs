@@ -487,7 +487,7 @@ pub fn convert_with_tail(
                     }
                 }
             }
-            TranscriptItem::SegmentMark { .. } => {}
+            TranscriptItem::SegmentMark { .. } | TranscriptItem::Offer { .. } => {}
             TranscriptItem::Assistant {
                 text, tool_calls, ..
             } => {
@@ -884,6 +884,46 @@ mod tests {
             msgs.last().unwrap()["role"],
             "user",
             "and the request already ended on a user turn"
+        );
+    }
+
+    /// An offer row is for the operator's eyes: the request is the same with it anywhere in the
+    /// history, even between a call and its result.
+    #[test]
+    fn an_offer_row_is_not_in_the_request() {
+        let offer = TranscriptItem::Offer {
+            kind: letibot_transcript::OfferKind::Skill,
+            title: "skill offered: x (0.40)".into(),
+            body: "the whole skill".into(),
+        };
+        let call = TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "c1".into(),
+                name: "glob".into(),
+                arguments: "{}".into(),
+            }],
+            truncated: false,
+        };
+        let result = TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "glob".into(),
+            outcome: ToolOutcome::Ok,
+            payload: "a".into(),
+            edit: None,
+            origin: None,
+            media: None,
+        };
+        let user = TranscriptItem::User {
+            speaker: Default::default(),
+            parts: vec![UserPart::Text { text: "go".into() }],
+        };
+        let plain = vec![user.clone(), call.clone(), result.clone()];
+        let with = vec![offer.clone(), user, call, offer.clone(), result, offer];
+        assert_eq!(
+            convert("s", &plain, true),
+            convert("s", &with, true),
+            "an offer row reached the request"
         );
     }
 

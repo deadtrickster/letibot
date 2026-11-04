@@ -1,13 +1,11 @@
-//! What the operator sees of an offer: a warning on the hub, never a transcript row. A row would
-//! enter the prompt and cannot be un-said, and the model already has its own tail line.
+//! What the operator sees of an offer: a display-only `Offer` row in the transcript. Every
+//! renderer skips it, so the model keeps only its own tail line.
+
+use letibot_transcript::{OfferKind, TranscriptItem};
 
 use crate::{notes_offer, skills_offer};
 
-/// The hub warning codes the head draws as clickable rows.
-pub const SKILL_CODE: &str = "skill_offer";
-pub const NOTE_CODE: &str = "note_offer";
-
-/// How much of the body rides in the warning. The log keeps every offer, so a whole note would
+/// How much of the body rides in the row. The store keeps every offer, so a whole note would
 /// grow it by the note each round.
 const BODY_MAX: usize = 6_000;
 
@@ -60,14 +58,24 @@ pub fn note_detail(o: &notes_offer::Offer, text: Option<&str>) -> String {
     )
 }
 
-/// Publish a skill offer to the heads. The hub's log keeps it, so a head attaching later has it.
-pub fn show_skill(hub: &letibot_sessionlog::hub::Hub, o: &skills_offer::Offer, body: Option<&str>) {
-    hub.warn(SKILL_CODE, skill_detail(o, body));
+/// The row for `detail`: the headline, then the body a click opens.
+fn row(kind: OfferKind, detail: String) -> TranscriptItem {
+    let (title, body) = detail.split_once("\n\n").unwrap_or((&detail, ""));
+    TranscriptItem::Offer {
+        kind,
+        title: title.to_string(),
+        body: body.to_string(),
+    }
 }
 
-/// Publish a note offer to the heads.
-pub fn show_note(hub: &letibot_sessionlog::hub::Hub, o: &notes_offer::Offer, text: Option<&str>) {
-    hub.warn(NOTE_CODE, note_detail(o, text));
+/// The transcript row for a skill offer.
+pub fn skill_row(o: &skills_offer::Offer, body: Option<&str>) -> TranscriptItem {
+    row(OfferKind::Skill, skill_detail(o, body))
+}
+
+/// The transcript row for a note offer.
+pub fn note_row(o: &notes_offer::Offer, text: Option<&str>) -> TranscriptItem {
+    row(OfferKind::Note, note_detail(o, text))
 }
 
 #[cfg(test)]

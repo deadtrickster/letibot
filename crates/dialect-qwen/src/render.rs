@@ -268,7 +268,7 @@ fn render_items(
     for item in items {
         match item {
             // Renders to nothing, by contract.
-            TranscriptItem::SegmentMark { .. } => {}
+            TranscriptItem::SegmentMark { .. } | TranscriptItem::Offer { .. } => {}
 
             // Unrenderable on this template past position 0: it raises. The daemon is expected to use
             // `system_update_item` instead; rendering it as a marked user turn rather than panicking means a

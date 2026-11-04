@@ -433,6 +433,36 @@ fn segment_marks_are_zero_width_and_transparent() {
     );
 }
 
+/// An offer row is display-only: it renders to nothing and splits no block.
+#[test]
+fn offer_rows_are_zero_width_and_transparent() {
+    let r = GlmRenderer::new();
+    let p = StablePrefix {
+        system: String::new(),
+        tools_json: vec![],
+    };
+    let offer = || TranscriptItem::Offer {
+        kind: letibot_transcript::OfferKind::Note,
+        title: "note offered: a.md (0.30)".into(),
+        body: "text".into(),
+    };
+    let without = vec![user("hi"), calls(&["c1", "c2"]), result("c1"), result("c2")];
+    let with = vec![
+        user("hi"),
+        calls(&["c1", "c2"]),
+        offer(),
+        result("c1"),
+        offer(),
+        result("c2"),
+        offer(),
+    ];
+    assert_eq!(
+        spans_to_string(&r.render(&p, &without)),
+        spans_to_string(&r.render(&p, &with)),
+        "an offer row changed the prompt"
+    );
+}
+
 #[test]
 fn out_of_order_tool_results_are_reported_not_silently_rendered() {
     let ordered = vec![user("hi"), calls(&["c1", "c2"]), result("c1"), result("c2")];

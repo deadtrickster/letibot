@@ -655,7 +655,9 @@ impl EndedIn {
             Some(TranscriptItem::System { .. } | TranscriptItem::Notice { .. }) => {
                 EndedIn::OnNotice
             }
-            Some(TranscriptItem::SegmentMark { .. }) => EndedIn::OnMark,
+            Some(TranscriptItem::SegmentMark { .. } | TranscriptItem::Offer { .. }) => {
+                EndedIn::OnMark
+            }
         }
     }
 
