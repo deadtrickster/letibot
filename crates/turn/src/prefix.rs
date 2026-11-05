@@ -95,7 +95,9 @@ impl PrefixCheck {
     /// defect and a skip means the check did not run, so both change what somebody would do;
     /// a shortfall changes nothing, and a warning nobody can act on teaches them to skim.
     pub fn diagnostic_only(&self) -> bool {
-        matches!(self, PrefixCheck::Held { .. })
+        // The one verdict that changes nothing is the one that HELD: read off `held` so the two
+        // cannot drift, and so the guarantee is a caller's and not only the tests'.
+        self.held()
     }
 
     /// The `Warning` this verdict should raise, if any.
@@ -197,6 +199,26 @@ mod tests {
         assert!(reason.contains("not a pass"), "{reason}");
         assert!(!c.held(), "a skip must never answer `held`");
         assert_eq!(c.warning().unwrap().0, "prefix_check_skipped");
+    }
+
+    /// The head's *only a diagnostic* answer is read off the check's own `held`, so the two cannot
+    /// come apart and silence a divergence or draw a shortfall as a defect.
+    #[test]
+    fn only_a_held_check_is_a_diagnostic() {
+        for c in [
+            PrefixCheck::FirstTurn,
+            PrefixCheck::Held {
+                expected_cached_min: 1,
+                cached: 1,
+                shortfall: 0,
+            },
+            PrefixCheck::Violated { detail: "x".into() },
+            PrefixCheck::Skipped {
+                reason: "asserted".into(),
+            },
+        ] {
+            assert_eq!(c.diagnostic_only(), c.held(), "{c:?}");
+        }
     }
 
     #[test]

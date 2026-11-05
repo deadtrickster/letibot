@@ -816,6 +816,23 @@ fn a_provider_that_never_answers_times_out_at_the_deadline_it_was_given() {
     );
 }
 
+/// The first byte has a deadline of its own and does not wait on the answer's budget: a provider
+/// that says nothing at all fails on the first-byte clock, while an answer still streaming keeps
+/// the long one.
+#[test]
+fn a_provider_that_says_nothing_fails_at_the_first_byte_deadline() {
+    let url = raw_server(None);
+    let p = provider(&url).with_first_byte(Duration::from_millis(300));
+    let started = Instant::now();
+    let e = bare_request(&p).expect_err("a silent provider answers nothing");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the round waited out the answer budget instead of the first byte: {:?}",
+        started.elapsed()
+    );
+    assert!(e.timed_out(), "and the deadline is its kind: {e}");
+}
+
 /// Half a stream is not an answer: a socket that closes cleanly is indistinguishable from a finished
 /// one, so `Stop` with zero usage bills the fragment as nothing and draws it as a completed thought.
 #[test]

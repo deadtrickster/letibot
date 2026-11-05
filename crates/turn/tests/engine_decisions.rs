@@ -1998,6 +1998,56 @@ fn a_timeout_is_the_kind_and_not_the_words() {
     }
 }
 
+/// A round that read nothing has produced nothing to interrupt, so the deadline is the first
+/// moment the operator's stop can be heard: it ends the round, and the turn says the interrupt
+/// rather than the provider's silence.
+#[test]
+fn an_urgent_steer_ends_a_silent_read_with_the_interrupt_and_not_the_deadline() {
+    let _lock = serial();
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
+        eprintln!("SKIPPED: no vocabulary GGUF, so the engine cannot open a session");
+        return;
+    };
+    let idle = Canned::serve(Vec::new(), 0);
+    let mut engine = engine(idle.endpoint.clone());
+    let mut session = session(&engine, "silent-read");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("hello")], &mut sink)
+        .unwrap();
+    let silent = Typed {
+        message: "error sending request: timed out",
+        kind: std::io::ErrorKind::TimedOut,
+    };
+    let mut steering = Once(vec![SteeringMessage::urgent("STOP")]);
+    let err = engine
+        .run_turn_messages(
+            &mut session,
+            &mut sink,
+            &mut steering,
+            &silent,
+            "be terse",
+            &[],
+            None,
+        )
+        .expect_err("a round that read nothing did not answer");
+    match err {
+        TurnFailure::Guard { trip, .. } => {
+            assert_eq!(trip.code, "steering_urgent");
+            assert_eq!(trip.detail, "STOP", "the operator's own words are gone");
+        }
+        other => panic!("the stop was reported as the provider's failure: {other:?}"),
+    }
+    assert!(
+        sink.kinds().contains(&"TurnInterrupted"),
+        "the head never heard the interrupt: {:?}",
+        sink.kinds()
+    );
+    let back = &steering.0;
+    assert_eq!(back.len(), 1, "the operator's message was dropped");
+    assert!(back[0].urgent, "it came back as something else: {back:?}");
+}
+
 // --------------------------------------------------------------------------
 // An interrupt taken at the end of a successful round
 // --------------------------------------------------------------------------

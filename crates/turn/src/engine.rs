@@ -1177,7 +1177,23 @@ impl TurnEngine {
             }
             StreamFlow::Continue
         };
-        let done = match backend.complete(&req, &mut on_delta) {
+        let failed = backend.complete(&req, &mut on_delta);
+        // A round that produced nothing has nothing to interrupt, so a deadline is the first moment
+        // an urgent steer can be heard: it closes the round, and the failure is the interrupt the
+        // operator asked for rather than the provider's silence.
+        let failed = match failed {
+            Err(e) if e.timed_out() && first_byte_ms.is_none() => match pending.absorb(steering) {
+                Some(u) => {
+                    urgent = Some(u.text.clone());
+                    // Held back, so the failed round hands it to the source rather than eating it.
+                    pending.hold_urgent(u);
+                    Err(BackendError::Aborted)
+                }
+                None => Err(e),
+            },
+            other => other,
+        };
+        let done = match failed {
             Ok(d) => d,
             Err(BackendError::Aborted) => {
                 let reason = urgent.unwrap_or_else(|| "aborted".into());

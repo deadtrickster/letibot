@@ -13,8 +13,11 @@ use serde_json::{Value, json};
 use crate::keys::Credentials;
 use crate::presets::Preset;
 
-/// How long a provider may take to send response headers before the read gives up, and the same
-/// budget for the whole stream. A provider that never comes back is a failure, not a hang.
+/// How long a provider may take to send its first byte: SSE headers go out with the first chunk,
+/// so a provider that says nothing at all is caught here and not at the answer's budget.
+pub const DEFAULT_FIRST_BYTE: Duration = Duration::from_secs(60);
+
+/// The budget for the whole stream once bytes are arriving: a long answer is progress, not a hang.
 pub const DEFAULT_ANSWER_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// One provider, one model, one key.
@@ -56,28 +59,27 @@ impl OpenAiProvider {
             url,
             creds,
             catalogue,
-            agent: Self::agent(DEFAULT_ANSWER_TIMEOUT),
+            agent: Self::agent(DEFAULT_FIRST_BYTE, DEFAULT_ANSWER_TIMEOUT),
             thinking: false,
             sampling: json!({}),
             notes: None,
         }
     }
 
-    /// The HTTP agent, with the one number that decides when a provider that has said nothing is a
-    /// failure rather than a hang.
-    fn agent(answer: Duration) -> ureq::Agent {
+    /// The HTTP agent, with the two numbers that decide when a provider that has said nothing is a
+    /// failure rather than a hang: the first byte's deadline, and the stream's own budget.
+    fn agent(first_byte: Duration, answer: Duration) -> ureq::Agent {
         let config = ureq::Agent::config_builder()
             // A 4xx/5xx is an answer to read, not an error to unwrap.
             .http_status_as_error(false)
             .timeout_connect(Some(Duration::from_secs(20)))
-            // The response headers, on their own clock. This is where a model API that never comes
-            // back is caught: `timeout_recv_body` starts only once the headers have arrived, so a
-            // provider that sends nothing at all would otherwise be waited on until the socket died.
-            .timeout_recv_response(Some(answer))
+            // The response headers, on their own clock: a model API sends them with its first
+            // token, so this is the silence a person waits through, and it is the short deadline.
+            .timeout_recv_response(Some(first_byte))
             // No global timeout: a long answer streams for minutes and is
-            // progress. The per-read timeout is the liveness check.
+            // progress. `timeout_recv_body` is the stream's whole budget.
             .timeout_global(None)
-            .timeout_recv_body(Some(DEFAULT_ANSWER_TIMEOUT))
+            .timeout_recv_body(Some(answer))
             .build();
         ureq::Agent::new_with_config(config)
     }
@@ -86,7 +88,15 @@ impl OpenAiProvider {
     /// [`DEFAULT_ANSWER_TIMEOUT`]. A caller that must react to a model API timeout sets its own
     /// patience here rather than waiting ten minutes for a deadline nobody chose.
     pub fn with_response_timeout(mut self, answer: Duration) -> Self {
-        self.agent = Self::agent(answer);
+        self.agent = Self::agent(DEFAULT_FIRST_BYTE.min(answer), answer);
+        self
+    }
+
+    /// How long this provider may stay silent before its first byte, over the default of
+    /// [`DEFAULT_FIRST_BYTE`]. Separate from the answer budget: a provider that says nothing is a
+    /// failure in a minute, and an answer still streaming at that point is not.
+    pub fn with_first_byte(mut self, first_byte: Duration) -> Self {
+        self.agent = Self::agent(first_byte, DEFAULT_ANSWER_TIMEOUT);
         self
     }
 
