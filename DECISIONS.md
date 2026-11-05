@@ -469,3 +469,6 @@ what it chooses, not for the mechanism.
    can run anything the operator can and read their credentials, and a branch under review may
    carry a test that does something destructive. That is a boundary on ATTENTION, not a sandbox,
    and a project that wants a real one says `reviewers = "vm"`.
+4. **Fanning out is opt-in.** `[queue] reviewer_hosts = [...]` (or `--reviewer-hosts`) places host
+   reviewers on declared hosts (`["*"]` is all of them). Unset, the pool is this machine alone and the
+   claim limit is the old fixed one. `lubuntu3` is refused by name. See `mergequeue::review::hosts`.

@@ -48,6 +48,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement) |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | only leticl's `:turn-finished` arm reading `ends_turn`: that repo is not under ~/Projects, so it is unchecked |
 | R121 | What a command boundary holds is hardcoded and invisible | Code work | items 5-8 (perimeters as config, children narrow and widening is an ask, file tools obey the perimeter), item 3's probe line, item 4's tool refusals |
+| R126 | Reviewers fan out to the declared hosts, opt-in | Needs the operator | setting `[queue] reviewer_hosts` in the operator's `leticode.toml` and one live review on lab2x1 (the fan-out is landed and tested against fakes, never against a real host) |
 | R125 | Script plugin layers: where a JavaScript engine comes from, and the JS-side contract | Needs the operator | the two decisions, then `docs/plugins-plan.md` step 11: no JavaScript engine is available offline here, and a vendored one compiled in would run freely as a built-in |
 | R114 | Embeddings as the second similarity tier, for every similarity caller | Code work | item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase case scored against the worst measured negative, the per-round cost on lab2x1 |
 | R118 | A GitHub reviewer seat: `letibot attach github` reviews every PR and answers as @letibot | Code work | the seat in the daemon so the pane has a feed, a mirror per repository, the review panel, R116's verdict, R114's similarity offers |
@@ -839,6 +840,17 @@ From the tool runtime, in descending order of consequence.
 # Needs the operator
 
 A decision, an account, a live run on real hosts, or an install. Do not start these from an agent seat.
+
+---
+
+## R126 - Reviewers fan out to the declared hosts, opt-in
+
+**Status:** landed opt-in. D18 stands: reviewers run on this machine unless `[queue] reviewer_hosts` (or `--reviewer-hosts`) names hosts. `["*"]` is every host in `hosts.toml`, `["local"]` or no key is this machine, and `lubuntu3` is refused by name. `reviewers_at_once` is per project and the pool is per daemon. left: the operator sets the key in `leticode.toml` (its comment still says "not landed yet") and runs one live review on lab2x1.
+
+A remote reviewer is a `task` child with `Placement::Remote(host)` and the queue's clone as `vm_source`. Its verdict comes home through `review_verdict` and frees its place (`ReviewHosts::keep`), a placement failure falls back to this machine without spending an attempt, and the fallback's desk entry survives the pass that opened it. Tests are under `mergequeue/review/placement_tests.rs`, `review/hosts/tests.rs` and `serve/tests.rs`, all against fakes.
+
+**Done when**: a review with `reviewer_hosts = ["lab2x1"]` runs on lab2x1 and its verdict lands on the row.
+**Still open?** the live review.
 
 ---
 
