@@ -25,9 +25,8 @@ pub fn etiquette(me: &str) -> String {
 }
 
 /// The room handle for a bridge: `$LETIBOT_ROOM_NAME` when set, else `cc@<folder>:<name>` (just
-/// `cc@<name>` when the two match). The name is the folder's nick when one was set with
-/// `room_nick`, else the repository's name (the main worktree's folder). The folder is the one
-/// holding that repository, or the working folder itself outside a repository.
+/// `cc@<name>` when the two match). The name is the folder's nick or the repository's, and the
+/// folder is the one holding that repository, or the working folder outside one.
 pub fn base_name(env: Option<&str>, nick: Option<&str>, cwd: &std::path::Path) -> String {
     let clean = |raw: &str| -> String {
         let s: String = raw

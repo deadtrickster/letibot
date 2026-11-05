@@ -1,9 +1,6 @@
 //! What one session's requests have learned about pictures: the bytes a provider refused, and the
-//! models that take text only.
-//!
-//! They belong to the session that earned them: one conversation's refusal must not re-render
-//! another's pictures as placeholders, which re-prefills that session's cache, and the session's row
-//! keeps them so a restart does not earn the same 400 twice.
+//! models that take text only. They belong to the session that earned them, because one conversation's
+//! refusal must not re-render another's pictures as placeholders, and the row keeps them across a restart.
 
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};

@@ -1,10 +1,6 @@
-//! Every warning code named in this tree has a severity, and this test keeps the table from
-//! rotting: it reads the tree, finds each code named at its emission site and fails until it has a
-//! row. A code reaching the wire through a variable is invisible, so only one direction is asserted.
-//!
-//! Four shapes carry a code: `Warning { code: … }` and `Warned { … }` (the variant built by hand),
-//! `import_note("code", …)` (the import's writer), and the doors `warn`/`warn_with`/`warning`/
-//! `warning_with`, whose FIRST argument is the code.
+//! Every warning code named in this tree has a severity, and this test keeps the table from rotting:
+//! it reads the tree, finds each code at its emission site and fails until it has a row. Four shapes
+//! carry one - `Warning { code }`, `Warned`, `import_note("code")`, and the doors' first argument.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -124,11 +120,9 @@ fn codes_in_literal(src: &str, open: usize) -> Vec<String> {
     out
 }
 
-/// The warning codes a door is handed - `.warn("code", ...)`, `.warn_with(...)`,
-/// `::warning(...)`, `::warning_with(...)`. The first TWO arguments are read, because
-/// `Sessions::warn` names the session before the code; the second top-level comma ends it, so an
-/// `if`/`else` is one argument and both its strings are codes, while a sentence after them is not
-/// (`looks_like_a_code` refuses one with a space in it).
+/// The warning codes a door is handed - `.warn("code", ...)`, `.warn_with(...)`, `::warning(...)`,
+/// `::warning_with(...)`. The first TWO arguments are read, because `Sessions::warn` names the session
+/// before the code; a sentence after them is not one (`looks_like_a_code` refuses a space in it).
 fn codes_in_call(src: &str, open: usize) -> Vec<String> {
     let b = src.as_bytes();
     let mut out = Vec::new();
@@ -195,10 +189,9 @@ fn codes_in(src: &str) -> Vec<String> {
             continue;
         }
         let rest = &b[i..];
-        // The call-shaped doors first, longest name first: `warn` is a prefix of `warn_with`. A
-        // METHOD (`.warn(`) or the constructor (`::warning(`) and never a bare call: `testing::warn`
-        // is a fixture whose argument is a detail, and `warn("a")` in this crate's own tests is
-        // one too.
+        // The call-shaped doors first, longest name first: `warn` is a prefix of `warn_with`. A METHOD
+        // (`.warn(`) or the constructor (`::warning(`) and never a bare call: `testing::warn` is a
+        // fixture whose argument is a detail.
         let mut matched = false;
         for (kw, lead) in [
             (&b"warning_with"[..], b':'),

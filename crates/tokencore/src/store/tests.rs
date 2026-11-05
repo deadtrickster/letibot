@@ -1014,10 +1014,9 @@ fn a_rows_title_is_what_precedes_the_detail_separator() {
     assert_eq!(TODO_DETAIL_SEP, " — ", "the spelling both heads write");
 }
 
-/// A row longer than the writer's bounds still reads - the bounds are a rule about WRITING, and
-/// nothing in the store refuses or shortens a row that is already there. A store that dropped one
-/// would be a migration by accident, which is the one outcome the fail-loud rules here exist
-/// against.
+/// A row longer than the writer's bounds still reads: the bounds are a rule about WRITING, and nothing
+/// in the store refuses or shortens a row that is already there. Dropping one would be a migration by
+/// accident, which is the outcome the fail-loud rules here exist against.
 #[test]
 fn a_row_longer_than_the_bound_still_reads() {
     let s = store();

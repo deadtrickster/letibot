@@ -86,10 +86,9 @@ pub const PEEK_PATIENCE: Duration = Duration::from_secs(10);
 /// that has stopped talking, not for one that is thinking.
 pub const SLASH_PATIENCE: Duration = Duration::from_secs(20);
 
-/// How long `set_model` waits for the daemon's reply to `/models`. The reply comes off the session's
-/// worker, which on a host placement opens its remote tree first (an ssh connect and a checkout)
-/// and on a busy box queues behind the daemon's other starts, so it is far longer than one round
-/// trip. The wait is one deadline, not a retry: `/models` is applied once.
+/// How long `set_model` waits for the daemon's reply to `/models`: the reply comes off the session's
+/// worker, which on a host placement opens its remote tree first and on a busy box queues behind
+/// other starts. One deadline, not a retry, because `/models` is applied once.
 pub const MODEL_PATIENCE: Duration = Duration::from_secs(120);
 
 /// How long `stop` waits for the daemon to ack the close. The ack follows the session's removal,

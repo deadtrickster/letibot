@@ -907,10 +907,9 @@ pub enum MergeGateOutcome {
     Killed,
 }
 
-/// What one row's words may cost: a guard for the store's `todos_json` blob, which every write
-/// rewrites whole, and for the rendered list that rides each `todo_write` answer and a fresh
-/// prompt after a clear. Not a UI rule - the pane cuts a row at the terminal's real width at
-/// draw time - and a row under it is stored exactly as written. Counted in bytes.
+/// What one row's words may cost, in bytes: a guard for the store's `todos_json` blob, which every
+/// write rewrites whole, and for the rendered list that rides each `todo_write` answer. Not a UI
+/// rule - the pane cuts a row at the terminal's width - and a row under it is stored as written.
 pub const TODO_ROW_MAX_BYTES: usize = 4 * 1024;
 
 /// The other half of the pair above: a board is a plan, and more rows than this is a runaway
@@ -922,10 +921,9 @@ pub const TODO_ROWS_MAX: usize = 256;
 /// detail rides after this separator and the pane draws it after the title.
 pub const TODO_DETAIL_SEP: &str = " — ";
 
-/// A row's TITLE: the words before [`TODO_DETAIL_SEP`], or the whole row - the part the pane
-/// draws first, with the detail after it. One function rather than a rule each reader spells,
-/// because every reader must split the row in the same place. A newline is NOT a separator:
-/// the pane flattens it, so a second line is not a body the row has.
+/// A row's TITLE: the words before [`TODO_DETAIL_SEP`], or the whole row. One function rather than a
+/// rule each reader spells, because every reader must split the row in the same place. A newline is
+/// NOT a separator: the pane flattens it, so a second line is not a body the row has.
 pub fn todo_title(content: &str) -> &str {
     content
         .split_once(TODO_DETAIL_SEP)
@@ -2669,11 +2667,9 @@ impl Store {
         filter: &str,
         args: &[&dyn rusqlite::ToSql],
     ) -> Result<Vec<StoredSession>> {
-        // Count and last activity read the newest `seq` by key: `seq` is dense from 0 (the insert
-        // trigger enforces it) and rows are written in time order, so neither needs a row scan.
-        // The "current transcript" subquery orders by `created_at DESC, rowid DESC`, and the rowid
-        // is not decoration: a fork is written in the same millisecond as the transcript it forked
-        // from, and a created-at-only order breaks that tie randomly.
+        // Count and last activity read the newest `seq` by key: `seq` is dense from 0 and rows are
+        // written in time order, so neither needs a row scan. The "current transcript" subquery orders
+        // by `created_at DESC, rowid DESC`, because a fork shares its parent's millisecond and needs it.
         let conn = self.conn();
         let mut stmt = conn.prepare(&sessions_sql(filter))?;
         let mut out: Vec<StoredSession> = stmt

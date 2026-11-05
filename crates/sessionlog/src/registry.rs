@@ -684,11 +684,9 @@ pub type NotesSource = Arc<dyn Fn() -> Vec<crate::protocol::NoteEntry> + Send + 
 /// [`NotesSource`]: read on the ask, and a corpus that cannot be read is no rows.
 pub type SkillsSource = Arc<dyn Fn() -> Vec<crate::protocol::SkillRow> + Send + Sync>;
 
-/// A live read of one background job's output, answered off the worker: going through the
-/// command queue meant waiting behind whatever the session was doing.
-/// The operator's chat seat, as ONE HEAD's request reaches it. The head names whose read
-/// cursor the request moves: every head speaks as `operator`, so the per-head state is the
-/// seat's to hold. See [`Registry::set_room_chat`].
+/// The operator's chat seat, as ONE HEAD's request reaches it. The head names whose read cursor the
+/// request moves: every head speaks as `operator`, so the per-head state is the seat's to hold. See
+/// [`Registry::set_room_chat`].
 pub type RoomChatAsk = Arc<dyn Fn(&str, serde_json::Value) -> serde_json::Value + Send + Sync>;
 
 /// A head's connection ended, so its per-head chat state may go. See [`RoomChatSeat`].

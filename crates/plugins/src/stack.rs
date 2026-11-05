@@ -645,11 +645,9 @@ impl Stack {
             .unwrap_or_default()
     }
 
-    /// Resolve one hook through the stack, from the top: pass or unchanged falls through, mask
-    /// stops everything below, `below` round trips, anything else answers. A layer that fails is
-    /// recorded and skipped - one failure never stops the resolution, so a broken fix costs only itself.
-    /// Guard hooks ([`FAIL_CLOSED`]) are the exception: a failed layer sets `refused`. Every other
-    /// hook (notices, panes, results) fails open.
+    /// Resolve one hook through the stack, from the top: pass or unchanged falls through, mask stops
+    /// everything below, `below` round trips, anything else answers. A failed layer is recorded and
+    /// skipped, except a guard hook ([`FAIL_CLOSED`]), where a failure sets `refused`.
     pub fn call(&self, hook: &str, input: &Value) -> Resolved {
         let mut walk = Walk {
             hook,

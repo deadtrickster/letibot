@@ -405,11 +405,9 @@ impl World {
         registry
             .create(session.clone(), "", Sessions::wiring(&cfg))
             .expect("a fresh registry takes the session");
-        // Bound HERE rather than on the worker thread: the bridge decides whether to start a
-        // daemon by connecting, and a socket that appears a moment later would be a race
-        // between the test's first `start` and its own fixture.
-        // The store as the registry's source, as the daemon binary wires it: a session the
-        // bridge stops leaves the live table and is listed from disk.
+        // Bound HERE rather than on the worker thread: the bridge decides whether to start a daemon
+        // by connecting, and a socket that appears a moment later would be a race between the test's
+        // first `start` and its own fixture. The store is the source, as the daemon binary wires it.
         registry.set_source(
             letibot_harnessd::sessions::StoreSessions::open(&cfg).expect("the store is a source"),
         );

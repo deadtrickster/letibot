@@ -241,11 +241,9 @@ fn descended_from(pid: i32, ancestor: i32) -> bool {
     true
 }
 
-/// Whether the process sits in a cgroup this daemon opened: `letibot.<daemon pid>.<n>` and
-/// everything under it, which is where every tool call and job runs. This is the arm a
-/// double-forked child cannot leave, and it is empty on a host with no cgroup v2.
-/// On macOS the scope is a process group: the peer's group is looked up in the group ids the
-/// daemon recorded for its tool scopes. A child that calls `setsid` or `setpgid` leaves it.
+/// Whether the process sits in a cgroup this daemon opened: `letibot.<daemon pid>.<n>` and everything
+/// under it, which is where every tool call and job runs. This is the arm a double-forked child cannot
+/// leave. On macOS the scope is a process group, and a child that calls `setsid` leaves it.
 #[cfg(target_os = "macos")]
 fn in_daemon_tree(pid: i32, daemon: i32) -> bool {
     // SAFETY: `getpgid` takes a pid and returns -1 on failure.
