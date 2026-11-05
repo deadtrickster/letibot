@@ -40,7 +40,7 @@ poll() {
   deadline=$(($(date +%s) + 48 * 3600))
   while [ "$(date +%s)" -lt "$deadline" ]; do
     sleep 15
-    out=$("${ssh_[@]}" "cat ~/$rdir/status.json && echo && systemctl --user is-active rrun-$name" 2>/dev/null) || continue
+    out=$("${ssh_[@]}" "cat ~/$rdir/status.json && echo && systemctl --user is-active rrun-$name; true" 2>/dev/null) || continue
     unit=$(printf '%s\n' "$out" | tail -n 1)
     printf '%s\n' "$out" | sed '$d' >"$st_file.tmp"
     [ -s "$st_file.tmp" ] || continue
