@@ -1,4 +1,4 @@
-<!-- abstract: `HostProcesses::new` needs a delegated cgroup v2 subtree, which a confined session does not have, so every spawn-based `exec::host` test skips here and reads as passed; `HostProcesses::with_tree(root, PlainTree::over(..))` spawns for real without one, and bwrap cannot nest at all in this session. -->
+<!-- abstract: `HostProcesses::new` needs a delegated cgroup v2 subtree and bwrap cannot nest in this session at all, so spawn and boundary tests either skip (and read as passed) or, on the wide-seat path, FAIL: `harnessd/tests/clear_context.rs` is red from inside a seat on any tree, so a whole-workspace gate needs `--no-fail-fast` and a per-failure judgement. -->
 
 # A host test that needs a cgroup skips here, and the plain tree is how to measure anyway
 
@@ -33,3 +33,24 @@ here, but `/proc/sys/user/max_user_namespaces` reads 2147483647, so a 0 limit is
 either: the kernel refuses a user namespace whose parent is already at its nesting limit, and the
 daemon this session hangs off is deep. See
 `a-bwrap-mask-needs-a-mount-point-that-is-already-there.md`.
+
+## Some boundary tests do not skip - they FAIL (MEASURED 2026-11-05, wt-z-t10)
+
+`crates/harnessd/tests/clear_context.rs`'s `a_childs_clear_is_answered_by_its_own_thread` sets
+`Seat::Leticode` and `allow_bash`, and on Linux that seat asks for the WIDE seat, so `Harness::open`
+builds a boundary and refuses with `Setup(...)` when it cannot:
+
+```
+bwrap: Creating new namespace failed: nesting depth or /proc/sys/user/max_*_namespaces exceeded (ENOSPC)
+thread '...' panicked at crates/harnessd/tests/clear_context.rs:84:14: the parent opens: Setup("this session asks for the wide seat and no boundary could be built for it: ...")
+```
+
+It reaches no `apparatus::present` skip, so from inside a seat it is RED on every tree - proved
+cheaply by the same command the test needs: `/usr/bin/bwrap --dev-bind / / -- /bin/true` exits 1
+with that message in this shell, and `/proc/sys/user/max_user_namespaces` reads 2147483647, so it
+is the daemon's nesting depth and not a limit.
+
+Two consequences for running the gate from a seat: `cargo test --workspace` stops at the FIRST
+failing target, so the crates after it never run - use `--no-fail-fast` and read every
+`test result: FAILED` line; and a gate verdict from here cannot be "green", only "every failure is
+one of the two known classes (no cgroup, no nesting)".
