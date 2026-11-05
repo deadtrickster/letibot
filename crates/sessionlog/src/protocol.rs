@@ -1009,6 +1009,10 @@ pub enum ServerFrame {
     StandingNotes {
         session_id: String,
         notes: Vec<NoteEntry>,
+        /// The project's notes directory, which the pane watches even while it is empty.
+        /// Defaulted both ways, so either side of an older pair reads it as absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dir: Option<String>,
     },
     /// The answer to [`ClientFrame::ListSkills`]: what this session can be handed, in the order the
     /// index lists it, and never a body - a listing of bodies is not a listing. An empty list is an

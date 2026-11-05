@@ -28,7 +28,13 @@ fn dir(name: &str) -> PathBuf {
 /// production one over a host backend rooted where the fixture wrote its files.
 fn with_reader<T>(ws: &Path, f: impl FnOnce(&Reader<'_>) -> T) -> T {
     let backend = letibot_tools::backend::HostBackend::new(ws).expect("a fixture root");
-    f(&Reader::new(&backend, ws))
+    f(&Reader::new(&backend, ws).with_notes(notes(ws)))
+}
+
+/// A fixture's project notes directory: beside the workspace, as the notes checkout is.
+fn notes(ws: &Path) -> PathBuf {
+    let name = ws.file_name().expect("a named fixture").to_string_lossy();
+    ws.with_file_name(format!("{name}-notes"))
 }
 
 fn section(
@@ -164,10 +170,7 @@ fn a_small_note_is_whole_beside_a_large_one() {
     // what is left of the budget.
     let ws = dir("mixed");
     write(&ws.join("AGENTS.md"), &format!("# Big\n\n{body}\n"));
-    write(
-        &ws.join(".letibot/notes/small.md"),
-        "the small note's one line\n",
-    );
+    write(&notes(&ws).join("small.md"), "the small note's one line\n");
     let s = section(&ws, &dir("none"), &no_box(), &vocab()).expect("a section");
     assert!(s.contains(", indexed:"), "the large file is indexed: {s}");
     assert!(
@@ -183,10 +186,7 @@ fn a_small_note_is_whole_beside_a_large_one() {
         &ws2.join("AGENTS.md"),
         "# Rules\n\nShort and to the point.\n",
     );
-    write(
-        &ws2.join(".letibot/notes/big.md"),
-        &format!("# Big\n\n{body}\n"),
-    );
+    write(&notes(&ws2).join("big.md"), &format!("# Big\n\n{body}\n"));
     let s2 = section(&ws2, &dir("none"), &no_box(), &vocab()).expect("a section");
     assert!(
         s2.contains("Short and to the point."),
@@ -213,7 +213,7 @@ fn a_headingless_note_is_indexed_by_its_paragraphs() {
          A second paragraph says something else entirely. It has its own range.\n\n\
          {filler}\n"
     );
-    write(&ws.join(".letibot/notes/pin.md"), &note);
+    write(&notes(&ws).join("pin.md"), &note);
     let s = section(&ws, &dir("none"), &no_box(), &vocab()).expect("a section");
     assert!(s.contains("pin.md") && s.contains(", indexed:"), "{s}");
     assert!(
@@ -275,7 +275,7 @@ fn the_abstract_never_ends_inside_a_path() {
 fn an_authors_abstract_leads_the_index() {
     let ws = dir("written");
     write(
-        &ws.join(".letibot/notes/pin.md"),
+        &notes(&ws).join("pin.md"),
         &format!(
             "<!-- abstract: the rano pin is absent on this box -->\n\n\
              First prose line here. And more of it.\n\n{}\n",
@@ -336,17 +336,17 @@ fn the_sources_keep_the_order_the_rule_states() {
     write(&ws.join("AGENTS.md"), "agents\n");
     write(&global.join("a-old.md"), "global old\n");
     write(&global.join("b-new.md"), "global new\n");
-    write(&ws.join(".letibot/notes/a-old.md"), "project old\n");
-    write(&ws.join(".letibot/notes/b-new.md"), "project new\n");
-    write(&ws.join(".letibot/notes/c-tie.md"), "project tie c\n");
-    write(&ws.join(".letibot/notes/d-tie.md"), "project tie d\n");
+    write(&notes(&ws).join("a-old.md"), "project old\n");
+    write(&notes(&ws).join("b-new.md"), "project new\n");
+    write(&notes(&ws).join("c-tie.md"), "project tie c\n");
+    write(&notes(&ws).join("d-tie.md"), "project tie d\n");
     for (path, secs) in [
         (&global.join("a-old.md"), 1_000),
         (&global.join("b-new.md"), 2_000),
-        (&ws.join(".letibot/notes/a-old.md"), 1_000),
-        (&ws.join(".letibot/notes/b-new.md"), 2_000),
-        (&ws.join(".letibot/notes/c-tie.md"), 1_000),
-        (&ws.join(".letibot/notes/d-tie.md"), 1_000),
+        (&notes(&ws).join("a-old.md"), 1_000),
+        (&notes(&ws).join("b-new.md"), 2_000),
+        (&notes(&ws).join("c-tie.md"), 1_000),
+        (&notes(&ws).join("d-tie.md"), 1_000),
     ] {
         set_mtime(path, secs);
     }
@@ -452,7 +452,7 @@ fn carried_reads_the_section_off_a_composed_prompt() {
 fn the_envelope_splits_authorship_and_carries_the_historical_caveat() {
     let ws = dir("envelope");
     write(
-        &ws.join(".letibot/notes/session-find.md"),
+        &notes(&ws).join("session-find.md"),
         "a session wrote this\n",
     );
     let s = section(&ws, &dir("none"), &no_box(), &vocab()).unwrap();
@@ -461,8 +461,8 @@ fn the_envelope_splits_authorship_and_carries_the_historical_caveat() {
         "whose AGENTS.md and box-wide notes are: {s}"
     );
     assert!(
-        s.contains(".letibot/notes/`"),
-        "the project notes are named as their own source, written by the tool: {s}"
+        s.contains("this project's notes"),
+        "the project notes are named as their own source: {s}"
     );
     assert!(
         s.contains("not text from this conversation"),
@@ -495,11 +495,11 @@ fn the_panes_rows_are_the_indexes_own_fields() {
     );
     let body = over_budget();
     write(
-        &ws.join(".letibot/notes/big.md"),
+        &notes(&ws).join("big.md"),
         &format!("# Big\n\nFirst sentence of the big note. More after it.\n\n{body}\n"),
     );
     write(
-        &ws.join(".letibot/notes/small.md"),
+        &notes(&ws).join("small.md"),
         "<!-- abstract: the author's own line -->\n\nthe small note's prose\n",
     );
     let rows = rows(&ws, &dir("none"), &no_box(), &vocab());
@@ -825,31 +825,43 @@ fn the_section_carries_the_skills_index_and_never_a_body() {
     let _ = std::fs::remove_dir_all(&g);
 }
 
-/// A note on the session's own backend is read into the prompt. A placed session's notes are
-/// on that host, and the reader went to the daemon's path for the workspace instead: the note the
-/// model had just written reached no prompt until the branch came home.
+/// A placed session's project notes are read from the notes checkout on this box, and a file
+/// left in either tree's `.letibot/notes/` is not a note.
 #[test]
-fn a_note_on_the_session_backend_reaches_the_section() {
+fn project_notes_come_from_the_notes_dir_and_not_from_either_tree() {
     let host = dir("placed-host");
     let scope = dir("placed-scope");
+    let checkout = dir("placed-notes");
+    write(&checkout.join("placed.md"), "the checkout's note\n");
     write(
-        &host.join(".letibot/notes/placed.md"),
-        "the host's own note\n",
+        &host.join(".letibot/notes/stray.md"),
+        "a stray in the host tree\n",
     );
+    write(
+        &scope.join(".letibot/notes/stray2.md"),
+        "a stray in the daemon's tree\n",
+    );
+    let backend = letibot_tools::backend::HostBackend::writable(&host).expect("the session's root");
     let s = super::section(
-        &Reader::new(
-            &letibot_tools::backend::HostBackend::writable(&host).expect("the session's root"),
-            &scope,
-        ),
+        &Reader::new(&backend, &scope).with_notes(checkout.clone()),
+        &dir("none"),
+        &no_box(),
+        &vocab(),
+    )
+    .expect("a section");
+    assert!(s.contains("the checkout's note"), "{s}");
+    assert!(!s.contains("a stray"), "{s}");
+    let none = super::section(
+        &Reader::new(&backend, &scope).with_notes(PathBuf::new()),
         &dir("none"),
         &no_box(),
         &vocab(),
     );
     assert!(
-        s.as_deref()
-            .is_some_and(|s| s.contains("the host's own note")),
-        "the note the session wrote on its own backend reached no prompt: {s:?}"
+        none.is_none(),
+        "no notes dir reads no project notes: {none:?}"
     );
-    let _ = std::fs::remove_dir_all(&host);
-    let _ = std::fs::remove_dir_all(&scope);
+    for d in [&host, &scope, &checkout] {
+        let _ = std::fs::remove_dir_all(d);
+    }
 }

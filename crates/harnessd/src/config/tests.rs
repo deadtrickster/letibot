@@ -875,7 +875,7 @@ fn the_default_prompt_carries_the_notes_convention_and_not_the_envelope() {
     assert!(paragraph.contains("not as a summary of what you did"));
     // Where they live and how to write one.
     assert!(paragraph.contains("`notes` tool"));
-    assert!(paragraph.contains(".letibot/notes/"));
+    assert!(paragraph.contains("notes repository outside the tree"));
     // The caveat, so a note is not read as ground truth.
     assert!(paragraph.contains("what was true or intended when it was written"));
     // And not the injected block's framing - that sentence is the
@@ -2024,4 +2024,41 @@ fn only_the_vm_placed_session_itself_mounts_its_workspace() {
     let mut copied = cfg.clone();
     copied.vm_mount = false;
     assert!(!copied.vm_mounts_workspace(), "--vm-copy");
+}
+
+/// The notes checkout: a fixture has none, the daemon's default is under the data directory, the
+/// user's `[notes] repo` moves it, `$LETIBOT_NOTES_REPO` beats the key, and a project's directory
+/// is a keyed subdirectory of it, never a path in the tree.
+#[test]
+fn the_notes_repo_is_outside_the_tree_and_configurable() {
+    let base = std::env::temp_dir().join(format!("config-notes-{}", std::process::id()));
+    let ws = base.join("proj");
+    std::fs::create_dir_all(&ws).expect("a scratch dir");
+    let mut cfg = Config::for_this_box(&ws);
+    assert_eq!(cfg.notes_repo(), None, "a fixture has no notes checkout");
+    assert_eq!(cfg.project_notes(), PathBuf::new());
+
+    cfg.notes_home = Some(base.join("data/notes"));
+    assert_eq!(cfg.notes_repo(), Some(base.join("data/notes")));
+    let project = cfg.project_notes();
+    assert!(project.starts_with(base.join("data/notes")), "{project:?}");
+    assert!(!project.starts_with(&ws), "{project:?}");
+    assert!(
+        project
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("proj-")),
+        "{project:?}"
+    );
+
+    cfg.box_dirs.home = base.join("home");
+    cfg.leticode.notes.repo = Some("~/my-notes".into());
+    cfg.leticode.notes.remote = Some("https://example.invalid/notes.git".into());
+    assert_eq!(cfg.notes_repo(), Some(base.join("home/my-notes")));
+    assert_eq!(
+        cfg.notes_remote().as_deref(),
+        Some("https://example.invalid/notes.git")
+    );
+    cfg.notes_home_env = true;
+    assert_eq!(cfg.notes_repo(), Some(base.join("data/notes")));
+    let _ = std::fs::remove_dir_all(&base);
 }

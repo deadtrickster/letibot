@@ -58,6 +58,7 @@ mod boundary;
 mod github;
 pub mod launcher;
 pub mod migrate;
+mod notes;
 mod roles;
 mod stats;
 
@@ -286,6 +287,8 @@ fn main() -> ExitCode {
                     stats::run_stats(&tail())
                 } else if word == "boundary" {
                     boundary::run(&tail())
+                } else if word == "notes" {
+                    notes::run(&tail())
                 } else if word == "fb" {
                     stats::run_fb(&tail())
                 } else if word == "migrate" || word == "--migrate" {
@@ -344,6 +347,7 @@ VERBS
   stats [VERB]                read metrics.db: today, waits, deliveries, tools, models,
                               turns, feedback, session ID, sql
   boundary [--mode NAME]      what a command gets: paths, network, env, hidden
+  notes path|push             the notes checkout, and the one step that pushes it
   fb --session S [+|-] NOTE   mark a session's last turn from a shell
   migrate SESSION --to HOST   move a session's whole daemon to a host, or back with
                               `--to local` (`letibot --migrate` is the same verb)

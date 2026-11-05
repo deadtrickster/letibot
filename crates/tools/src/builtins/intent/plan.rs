@@ -233,6 +233,9 @@ mod tests {
         fn global_dir(&self) -> std::path::PathBuf {
             std::path::PathBuf::new()
         }
+        fn project_dir(&self) -> std::path::PathBuf {
+            std::path::PathBuf::new()
+        }
     }
 
     #[test]

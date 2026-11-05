@@ -621,6 +621,8 @@ pub struct App {
     /// change the pane can notice. `None` until the first draw after the rows land, which is the
     /// baseline rather than a change. See [`standing::Corpus`].
     pub(crate) standing_corpus: Option<standing::Corpus>,
+    /// The project notes directory the daemon named, watched while it holds no note.
+    pub(crate) standing_dir: Option<String>,
     /// The skills, as the daemon last answered `ListSkills`: a name, its one line and where it was
     /// found. Never a body, which the daemon injects on Enter (`Action::LoadSkill`).
     pub(crate) skills: Vec<letibot_sessionlog::protocol::SkillRow>,
@@ -1317,6 +1319,7 @@ impl App {
             skills_stop_rows: Vec::new(),
             standing_stop_rows: Vec::new(),
             standing_corpus: None,
+            standing_dir: None,
             queues: Default::default(),
             queues_all: Default::default(),
             queue_scope: QueueScope::default(),

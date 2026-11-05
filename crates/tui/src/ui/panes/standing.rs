@@ -38,11 +38,10 @@ impl App {
     fn standing_view(&self, w: usize) -> (PaneLines, Corpus) {
         let mut out = PaneLines::new();
         let mut corpus = Corpus::default();
-        // The workspace's notes directory is watched even when empty: with no rows to name
-        // it, a first note written under an open pane would be a change nothing sees. The
-        // box-wide directory is only named by a row, so a first note there goes unnoticed.
-        if !self.wiring.workspace.is_empty() {
-            corpus.watch_dir(&std::path::Path::new(&self.wiring.workspace).join(".letibot/notes"));
+        // The project's notes directory is watched even when empty: with no rows to name it, a
+        // first note written under an open pane would be a change nothing sees.
+        if let Some(dir) = &self.standing_dir {
+            corpus.watch_dir(std::path::Path::new(dir));
         }
         let n = self.standing.len();
         out.push(pane::title(format!(
@@ -52,7 +51,7 @@ impl App {
         if self.standing.is_empty() {
             out.push(pane::faint(
                 "    none. The harness reads AGENTS.md, the box-wide notes and this project's \
-                 `.letibot/notes/`; it found nothing in any of them. A note is written with \
+                 notes repository; it found nothing in any of them. A note is written with \
                  the `notes` tool.",
             ));
             return (out, corpus);

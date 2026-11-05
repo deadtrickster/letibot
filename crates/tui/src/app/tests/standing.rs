@@ -33,9 +33,14 @@ fn note(
 }
 
 fn frame(notes: Vec<NoteEntry>) -> ServerFrame {
+    framed(notes, None)
+}
+
+fn framed(notes: Vec<NoteEntry>, dir: Option<&std::path::Path>) -> ServerFrame {
     ServerFrame::StandingNotes {
         session_id: "s1".into(),
         notes,
+        dir: dir.map(|d| d.display().to_string()),
     }
 }
 
@@ -413,22 +418,23 @@ fn a_note_edited_while_the_pane_is_open_makes_the_pane_ask_again() {
     a.screen(120, 24);
     assert!(!a.take_actions().contains(&Action::ListNotes));
 
-    // And a note that did not exist before is a change too, in the workspace's own notes
-    // directory - watched whether or not it has anything in it, so an empty pane does not sit
+    // And a note that did not exist before is a change too, in the project notes directory the
+    // daemon named - watched whether or not it has anything in it, so an empty pane does not sit
     // there saying there are none while one is being written.
+    let notes_dir = d.join("notes-repo/proj");
     let mut b = app();
     b.session_id = "s1".into();
     b.wiring.workspace = d.display().to_string();
     b.command("standing");
-    b.apply(frame(Vec::new()));
+    b.apply(framed(Vec::new(), Some(&notes_dir)));
     b.take_actions();
     b.screen(120, 24);
-    std::fs::create_dir_all(d.join(".letibot/notes")).unwrap();
-    std::fs::write(d.join(".letibot/notes/fresh.md"), "brand new\n").unwrap();
+    std::fs::create_dir_all(&notes_dir).unwrap();
+    std::fs::write(notes_dir.join("fresh.md"), "brand new\n").unwrap();
     b.screen(120, 24);
     assert!(
         b.take_actions().contains(&Action::ListNotes),
-        "a note written into the workspace's notes dir is a change"
+        "a note written into the project notes dir is a change"
     );
     let _ = std::fs::remove_dir_all(&d);
 }

@@ -240,8 +240,7 @@ impl Supersession for NoSupersession {
 pub struct KeeperRequest {
     /// The note under review.
     pub note: PathBuf,
-    /// The workspace the note belongs to: the directory whose `.letibot/notes/` the harness
-    /// reads, and the roots the references were resolved against
+    /// The workspace the note belongs to: the roots the references were resolved against
     /// ([`crate::references::tree_roots`]).
     pub workspace: PathBuf,
     /// The note, verbatim. The artifact, given whole, on the brief-first rule.
@@ -265,7 +264,7 @@ impl KeeperRequest {
     ) -> Result<KeeperRequest, String> {
         let text = std::fs::read_to_string(note)
             .map_err(|e| format!("`{}` could not be read: {e}", note.display()))?;
-        let references = references::check(workspace, &text);
+        let references = references::check(workspace, note.parent(), &text);
         let offers = offers_log(workspace);
         let superseded = match supersession.nearest(&text, note) {
             Some((path, score)) if score >= SUPERSEDED_FLOOR => Nearest::Note { path, score },
@@ -323,7 +322,7 @@ pub fn keeper_prompt(req: &KeeperRequest) -> String {
          3. **Then the repair, through the `notes` tool.** Repair with `notes` action=\"append\" or \
          action=\"replace\" — never by writing a file (you have no `write` or `edit`), and never \
          by touching code. That is what keeps the note a note: the tool writes into \
-         `.letibot/notes/` only, keeps the author's abstract line, and every read of it carries \
+         the notes repository only, keeps the author's abstract line, and every read of it carries \
          the caveat that says it is a record. **Do not rewrite history to make a note look \
          current.** A sentence that says MEASURED on a date is a record of a measurement, not a \
          claim about now; what you add or correct is the reference that moved, the fact the tree \

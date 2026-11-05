@@ -488,6 +488,47 @@ pub struct LeticodeConfig {
     /// How many consecutive model timeouts earn that move. `None` is the daemon's own
     /// number, and `0` never reaches here: it is refused at the parser by name.
     pub fallback_after_timeouts: Option<u32>,
+    /// The `[notes]` table: where the notes checkout is and the remote it pushes to.
+    pub notes: NotesKeys,
+}
+
+/// `[notes]` in a `leticode.toml`: the git checkout notes are written into, outside every
+/// project tree, and the remote `letibot notes push` sends it to.
+///
+/// ```toml
+/// [notes]
+/// repo = "~/.local/share/letibot/notes"
+/// remote = "https://github.com/letiflow/letibot-notes.git"
+/// ```
+///
+/// The user file wins over the project's, because a project file is writable by its sessions
+/// and must not move where every project's notes go.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NotesKeys {
+    pub repo: Option<String>,
+    pub remote: Option<String>,
+}
+
+/// The `[notes]` table as the file wrote it; unknown keys refused by name.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NotesTable {
+    #[serde(default)]
+    repo: Option<String>,
+    #[serde(default)]
+    remote: Option<String>,
+}
+
+fn notes_keys(value: &toml::Value) -> Result<NotesKeys, String> {
+    let t: NotesTable = value.clone().try_into().map_err(|e| {
+        format!(
+            "[notes]: {e}; the keys are `repo` (the notes checkout) and `remote` (its push URL)"
+        )
+    })?;
+    Ok(NotesKeys {
+        repo: t.repo.as_deref().and_then(non_empty),
+        remote: t.remote.as_deref().and_then(non_empty),
+    })
 }
 
 /// `[github]` in a `leticode.toml` - the two facts the reviewer seat needs before it may post.
@@ -891,6 +932,10 @@ impl LeticodeConfig {
                 }
                 None => None,
             },
+            notes: match &file.notes {
+                Some(v) => notes_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
+                None => NotesKeys::default(),
+            },
         };
 
         // One seat, two answers. The guard and the adjudicator are one oracle in this
@@ -993,6 +1038,15 @@ impl LeticodeConfig {
             fallback_after_timeouts: other
                 .fallback_after_timeouts
                 .or(self.fallback_after_timeouts),
+            // The user's over the project's, the reverse of the models: see [`NotesKeys`].
+            notes: NotesKeys {
+                repo: self.notes.repo.clone().or_else(|| other.notes.repo.clone()),
+                remote: self
+                    .notes
+                    .remote
+                    .clone()
+                    .or_else(|| other.notes.remote.clone()),
+            },
         }
     }
 
@@ -1163,6 +1217,9 @@ struct LeticodeConfigFile {
     #[serde(default)]
     #[allow(dead_code)]
     embeddings: Option<toml::Value>,
+    /// The `[notes]` table, see [`NotesKeys`].
+    #[serde(default)]
+    notes: Option<toml::Value>,
 }
 
 /// The fallback list as the file wrote it: an array of model names, in the order they are
@@ -1361,6 +1418,31 @@ mod tests {
     /// The user level is the same file at a fixed path, read by the same call, so the two
     /// levels cannot disagree about what a key means and the user level is not a second
     /// grammar to learn.
+    #[test]
+    fn the_user_files_notes_keys_win_over_the_projects() {
+        let u = project_dir("notes_user");
+        let p = project_dir("notes_project");
+        let user = LeticodeConfig::load_as(
+            &write_file(&u, "[notes]\nrepo = \"~/notes\"\n"),
+            Level::User,
+        )
+        .expect("user");
+        let project = LeticodeConfig::load(&write_file(
+            &p,
+            "[notes]\nrepo = \"/elsewhere\"\nremote = \"https://example.invalid/n.git\"\n",
+        ))
+        .expect("project");
+        let merged = user.overridden_by(&project);
+        assert_eq!(merged.notes.repo.as_deref(), Some("~/notes"));
+        assert_eq!(
+            merged.notes.remote.as_deref(),
+            Some("https://example.invalid/n.git"),
+            "a key the user left unset falls through to the project's"
+        );
+        let bad = LeticodeConfig::load(&write_file(&p, "[notes]\ndir = \"x\"\n"));
+        assert!(bad.unwrap_err().contains("[notes]"));
+    }
+
     #[test]
     fn the_user_file_is_the_same_parser_at_a_fixed_path() {
         let dir = project_dir("user_level");

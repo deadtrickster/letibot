@@ -1,6 +1,6 @@
-//! The standing-notes scope behind the `notes` tool - the sibling of [`crate::transcript_source`]
-//! and [`crate::decision_source`], for the same reason: `letibot-tools` cannot know where the
-//! workspace or the config dir are. Both answers come from the session's own [`Config`].
+//! The standing-notes scope behind the `notes` tool: `letibot-tools` cannot know where the
+//! workspace, the config dir or the notes checkout are, so every answer comes from the session's
+//! own [`crate::config::Config`].
 
 use std::path::PathBuf;
 
@@ -10,13 +10,20 @@ use letibot_tools::builtins::notes::NotesScope;
 pub struct ConfigNotes {
     workspace: PathBuf,
     global: PathBuf,
+    project: PathBuf,
+    repo: Option<PathBuf>,
 }
 
 impl ConfigNotes {
-    /// Over a workspace and a box-wide notes directory the harness has already settled -
-    /// for a resumed session, the store's answer rather than the daemon's start directory.
-    pub fn new(workspace: PathBuf, global: PathBuf) -> Self {
-        ConfigNotes { workspace, global }
+    /// Over directories the harness has already settled - for a resumed session, the store's
+    /// workspace rather than the daemon's start directory.
+    pub fn of(cfg: &crate::config::Config) -> Self {
+        ConfigNotes {
+            workspace: cfg.workspace.clone(),
+            global: cfg.global_notes(),
+            project: cfg.project_notes(),
+            repo: cfg.notes_repo(),
+        }
     }
 }
 
@@ -27,5 +34,13 @@ impl NotesScope for ConfigNotes {
 
     fn global_dir(&self) -> PathBuf {
         self.global.clone()
+    }
+
+    fn project_dir(&self) -> PathBuf {
+        self.project.clone()
+    }
+
+    fn repo(&self) -> Option<PathBuf> {
+        self.repo.clone()
     }
 }

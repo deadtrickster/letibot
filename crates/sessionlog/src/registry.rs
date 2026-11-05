@@ -725,6 +725,8 @@ pub struct Registry {
     /// One per session, installed by the session's own harness at open - the half that owns the
     /// token counter - and removed with the session ([`Registry::remove`]). See [`NotesSource`].
     notes: Mutex<std::collections::HashMap<String, NotesSource>>,
+    /// Each session's project notes directory, for the pane to watch while it holds no note.
+    notes_dirs: Mutex<std::collections::HashMap<String, String>>,
     /// The `/skills` pane's rows, one source per session - see [`SkillsSource`].
     skills: Mutex<std::collections::HashMap<String, SkillsSource>>,
     /// One per session that has a process host, installed by its harness at open beside
@@ -879,6 +881,7 @@ impl Registry {
             first_attach: std::sync::atomic::AtomicBool::new(false),
             panes: Mutex::new(std::collections::HashMap::new()),
             notes: Mutex::new(std::collections::HashMap::new()),
+            notes_dirs: Mutex::new(std::collections::HashMap::new()),
             skills: Mutex::new(std::collections::HashMap::new()),
             job_output: Mutex::new(std::collections::HashMap::new()),
             room_chat: Mutex::new(None),
@@ -1468,6 +1471,10 @@ impl Registry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(session_id);
+        self.notes_dirs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session_id);
         let skills = self
             .skills
             .lock()
@@ -1669,6 +1676,23 @@ impl Registry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(session_id.to_string(), source);
+    }
+
+    /// Set the directory this session's notes tool writes into. See [`Registry::notes_dir`].
+    pub fn set_notes_dir(&self, session_id: &str, dir: String) {
+        self.notes_dirs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id.to_string(), dir);
+    }
+
+    /// The session's project notes directory, `None` when it has none.
+    pub fn notes_dir(&self, session_id: &str) -> Option<String> {
+        self.notes_dirs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session_id)
+            .cloned()
     }
 
     /// The standing notes a session's harness reads, one row each, read NOW. A read and not a

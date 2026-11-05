@@ -94,9 +94,8 @@ impl Tool for Edit {
                 "call `edit` again with `path`, `old_string` and `new_string`.",
             );
         };
-        // The one directory this door must not open: `.letibot/notes/` is the `notes` tool's,
-        // and a note put there by a path goes around the similarity gate that is the whole
-        // reason the tool exists. Before the `edits` dispatch, so a batch cannot slip past it.
+        // Notes are not kept in the tree; see `write`. Before the `edits` dispatch, so a batch
+        // cannot slip past it.
         if let Some(refusal) = notes::refuse_a_path_into_the_notes_dir(ctx.backend, path) {
             return refusal;
         }

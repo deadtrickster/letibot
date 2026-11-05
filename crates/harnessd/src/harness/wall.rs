@@ -717,9 +717,10 @@ impl Harness {
     /// and a row had been written, so every refused attempt left an orphan. `None` when unchanged or storeless.
     fn reseat_candidate(&mut self) -> Option<StablePrefix> {
         let declared = crate::standing_notes::preloaded(self.skills.as_ref(), &self.cfg.skills);
-        // The same substrate the tools write through: a base rebuild re-reads the notes where the
-        // session's own `notes` tool put them, not on this box.
-        let files = crate::standing_notes::Reader::new(&*self.runtime.backend, &self.cfg.workspace);
+        // The same sources the open read: instruction files through the session's backend, the
+        // project's notes from the notes checkout.
+        let files = crate::standing_notes::Reader::new(&*self.runtime.backend, &self.cfg.workspace)
+            .with_notes(self.cfg.project_notes());
         let notes = crate::standing_notes::section_with_skills(
             &files,
             &self.cfg.global_notes(),

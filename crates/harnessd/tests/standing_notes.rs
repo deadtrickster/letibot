@@ -201,10 +201,10 @@ fn an_edited_agents_md_lands_in_the_next_base() {
 
 /// A note the `notes` tool writes is one the reader injects - round-tripped, not assumed.
 /// The tool lives in `letibot-tools` and the reader here, joined only by a trait
-/// (`NotesScope`) and a convention about directories.
+/// (`NotesScope`) naming the notes checkout, which is outside the workspace.
 #[test]
 fn a_note_the_tool_writes_is_one_the_reader_injects() {
-    struct Scope(std::path::PathBuf, std::path::PathBuf);
+    struct Scope(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf);
     impl letibot_tools::builtins::notes::NotesScope for Scope {
         fn workspace(&self) -> std::path::PathBuf {
             self.0.clone()
@@ -212,10 +212,21 @@ fn a_note_the_tool_writes_is_one_the_reader_injects() {
         fn global_dir(&self) -> std::path::PathBuf {
             self.1.clone()
         }
+        fn project_dir(&self) -> std::path::PathBuf {
+            self.2.join("proj")
+        }
+        fn repo(&self) -> Option<std::path::PathBuf> {
+            Some(self.2.clone())
+        }
     }
     let ws = TempDir::new("roundtrip");
     let global = TempDir::new("roundtrip-global");
-    let scope = std::sync::Arc::new(Scope(ws.path().to_path_buf(), global.path().to_path_buf()));
+    let repo = TempDir::new("roundtrip-notes");
+    let scope = std::sync::Arc::new(Scope(
+        ws.path().to_path_buf(),
+        global.path().to_path_buf(),
+        repo.path().to_path_buf(),
+    ));
     // The runtime the daemon builds for the tool: the tool itself, an
     // admitting gate (these tests are about the tool, not the gate), and a
     // writable host backend over the workspace.
@@ -245,14 +256,17 @@ fn a_note_the_tool_writes_is_one_the_reader_injects() {
     // And the reader - the same `section` the prompt is composed with - picks
     // it up, verbatim, under its path.
     let vocab = letibot_tokencore::Vocab::bytes([], []);
-    // Through the session's own backend: that is where the tool above wrote, and the reader has
-    // to be looking at the same tree the writer used.
-    let files = standing_notes::Reader::new(&*rt.backend, ws.path());
+    let files =
+        standing_notes::Reader::new(&*rt.backend, ws.path()).with_notes(repo.path().join("proj"));
     let s = standing_notes::section(&files, global.path(), &no_box(global.path()), &vocab)
         .expect("the reader sees the note");
     assert!(
-        s.contains(".letibot/notes/qwen-tail.md"),
+        s.contains("proj/qwen-tail.md"),
         "under the path the tool said it wrote: {s}"
+    );
+    assert!(
+        !ws.path().join(".letibot").exists(),
+        "the project tree stays clean"
     );
     assert!(
         s.contains("beats truncating it"),

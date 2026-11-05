@@ -1233,6 +1233,7 @@ impl Harness {
     fn install_notes_source(&self) {
         let workspace = self.cfg.workspace.clone();
         let global = self.cfg.global_notes();
+        let project = self.cfg.project_notes();
         // The box's instruction directories, from the config and not from `$HOME`: the pane
         // re-reads the corpus on every open and the answer is the config's, so a fixture's pane
         // names the files a fixture wrote.
@@ -1241,13 +1242,18 @@ impl Harness {
         // engine's, because the pane's read happens on the server's thread and must not measure with the
         // vocabulary the session OPENED on.
         let vocab = self.note_vocab.clone();
-        // The session's own backend, shared: the pane reads the notes where the session's `notes`
-        // tool wrote them, and this closure outlives the call that opened the session.
+        // The session's own backend, shared: the instruction files are read where the session's
+        // tools see them, and this closure outlives the call that opened the session.
         let backend = self.runtime.backend.clone();
+        if !project.as_os_str().is_empty() {
+            self.session_registry
+                .set_notes_dir(&self.cfg.session_id, project.display().to_string());
+        }
         self.session_registry.set_notes_source(
             &self.cfg.session_id,
             std::sync::Arc::new(move || {
-                let files = crate::standing_notes::Reader::new(&*backend, &workspace);
+                let files = crate::standing_notes::Reader::new(&*backend, &workspace)
+                    .with_notes(project.clone());
                 crate::standing_notes::rows(&files, &global, &box_dirs, &vocab)
             }),
         );

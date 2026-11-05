@@ -717,8 +717,7 @@ fn a_notes_body_is_prose_so_the_list_does_not_refuse_it() {
         r.outcome,
         r.render()
     );
-    let (ws, _) = h.notes_dirs();
-    let landed = ws.join(".letibot/notes/a-note-about-keys.md");
+    let landed = h.notes_project_dir().join("a-note-about-keys.md");
     assert!(landed.exists(), "and the note landed: {}", r.render());
     let said = std::fs::read_to_string(&landed).expect("the note");
     assert!(said.contains(&store), "with its prose intact: {said}");
@@ -741,9 +740,8 @@ fn a_notes_name_is_still_a_path_like_argument() {
         r.render()
     );
     assert!(r.render().contains("never-write list"), "{}", r.render());
-    let (ws, _) = h.notes_dirs();
     assert!(
-        !ws.join(format!(".letibot/notes/{name}.md")).exists(),
+        !h.notes_project_dir().join(format!("{name}.md")).exists(),
         "and nothing landed"
     );
 }

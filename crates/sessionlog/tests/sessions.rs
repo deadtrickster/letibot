@@ -86,7 +86,9 @@ fn frame_kind(f: &ServerFrame) -> String {
         } => {
             format!("Jobs({session_id}, {} entries)", jobs.len())
         }
-        ServerFrame::StandingNotes { session_id, notes } => {
+        ServerFrame::StandingNotes {
+            session_id, notes, ..
+        } => {
             format!("StandingNotes({session_id}, {} notes)", notes.len())
         }
         ServerFrame::Skills { session_id, skills } => {

@@ -833,6 +833,7 @@ pub fn serve_conn_rooted(
                 let f = ServerFrame::StandingNotes {
                     session_id: seat.hub.session_id().to_string(),
                     notes: registry.notes(&seat.hub.session_id()),
+                    dir: registry.notes_dir(&seat.hub.session_id()),
                 };
                 writer.lock().unwrap().write(&f)?;
             }

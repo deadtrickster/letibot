@@ -523,6 +523,11 @@ pub struct Config {
     /// (`mergequeue::git::landing_root`); `None` in every fixture built with
     /// [`Config::for_this_box`], so no test reaches the box's real `~/.local/share/letibot`.
     pub landing_root: Option<std::path::PathBuf>,
+    /// The daemon's notes checkout: `$LETIBOT_NOTES_REPO`, else `[notes] repo`, else
+    /// `<data dir>/notes`. `None` in every fixture, which then reads and writes no project notes.
+    pub notes_home: Option<std::path::PathBuf>,
+    /// Whether `notes_home` came from `$LETIBOT_NOTES_REPO`, which a config key does not override.
+    pub notes_home_env: bool,
     /// The directory inside a boundary that commands may write and the model is told is its
     /// scratch. The daemon's scratch root is not bound into the view, because job output lives
     /// there; set when the tools are placed, `None` for a seat with no boundary.
@@ -862,8 +867,8 @@ pub fn default_section(name: &str, f: &SeatFacts) -> Option<String> {
             _ => None,
         },
         "notes" => f.has("notes").then(|| {
-            "Keep standing notes with the `notes` tool: markdown in `.letibot/notes/` that the \
-             harness reads into this prompt, so a note outlives a compaction. Write one for \
+            "Keep standing notes with the `notes` tool: markdown in a notes repository outside the \
+             tree that the harness reads into this prompt, so a note outlives a compaction. Write one for \
              something interesting, remarkable or surprising that you would not want to \
              rediscover — not as a summary of what you did. `AGENTS.md` and the box-wide notes \
              are the operator's: read them, do not edit them. A note says what was true or \
@@ -1531,6 +1536,8 @@ impl Config {
             seat: Seat::default(),
             grants_ro: Vec::new(),
             landing_root: None,
+            notes_home: None,
+            notes_home_env: false,
             session_scratch: None,
             // `None` is the daemon's own `<temp>/letibot-review-clones`; a fixture that serves
             // reviews sets its own directory. See the field.
@@ -1633,6 +1640,7 @@ impl Config {
         // `reviewers_at_once` is not copied: the claiming pass reads it per repository.
         // `$LETIBOT_LOGS_ROOT` first: what a test that spawns a daemon sets, as it sets
         // `$LETIBOT_LANDING_ROOT`, so it never writes into the box's real data directory.
+        cfg.read_notes_home();
         cfg.logs_root = std::env::var_os("LETIBOT_LOGS_ROOT")
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
@@ -1657,6 +1665,45 @@ impl Config {
             None,
             crate::mergequeue::git::letibot_data_dir().as_deref(),
         );
+    }
+
+    /// The daemon's notes checkout before any `[notes] repo`: `$LETIBOT_NOTES_REPO`, else
+    /// `<data dir>/notes`. Not in `for_this_box`, so no fixture reaches the box's real notes.
+    pub fn read_notes_home(&mut self) {
+        let env = std::env::var_os(NOTES_REPO_ENV).filter(|v| !v.is_empty());
+        self.notes_home_env = env.is_some();
+        self.notes_home = env
+            .map(PathBuf::from)
+            .or_else(|| crate::mergequeue::git::letibot_data_dir().map(|d| d.join("notes")));
+    }
+
+    /// The notes checkout every project's notes are committed in, outside every project tree.
+    pub fn notes_repo(&self) -> Option<PathBuf> {
+        let home = self.notes_home.clone()?;
+        if self.notes_home_env {
+            return Some(home);
+        }
+        Some(match self.leticode.notes.repo.as_deref() {
+            Some(p) => match p.strip_prefix("~/") {
+                Some(rest) => self.box_dirs.home.join(rest),
+                None => PathBuf::from(p),
+            },
+            None => home,
+        })
+    }
+
+    /// The remote `letibot notes push` sends the checkout to, `[notes] remote`.
+    pub fn notes_remote(&self) -> Option<String> {
+        self.leticode.notes.remote.clone()
+    }
+
+    /// This project's notes: `<notes repo>/<project key>`. Empty when there is no notes repo, and
+    /// every reader and the writer treat that as none.
+    pub fn project_notes(&self) -> PathBuf {
+        match self.notes_repo() {
+            Some(repo) => repo.join(project_key_cached(&self.workspace)),
+            None => PathBuf::new(),
+        }
     }
 
     /// The box-wide standing notes: the config dir's `notes/`, beside `providers.toml`, which
@@ -3001,6 +3048,23 @@ pub fn now_ns() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0)
+}
+
+/// The environment variable that puts the notes checkout somewhere else - what a test that spawns
+/// a daemon sets, so no test writes into the box's real notes.
+pub const NOTES_REPO_ENV: &str = "LETIBOT_NOTES_REPO";
+
+/// [`letibot_tools::notes_repo::project_key`], asked once per workspace: it runs git, and the
+/// offer reads the notes every round.
+fn project_key_cached(workspace: &Path) -> String {
+    static KEYS: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
+    let mut keys = KEYS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, k)) = keys.iter().find(|(w, _)| w == workspace) {
+        return k.clone();
+    }
+    let k = letibot_tools::notes_repo::project_key(workspace);
+    keys.push((workspace.to_path_buf(), k.clone()));
+    k
 }
 
 #[cfg(test)]

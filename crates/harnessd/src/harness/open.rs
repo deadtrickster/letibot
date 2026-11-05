@@ -1983,7 +1983,7 @@ impl Harness {
         registry
             .register(Box::new(
                 letibot_tools::builtins::notes::NotesTool::new(std::sync::Arc::new(
-                    crate::notes_scope::ConfigNotes::new(cfg.workspace.clone(), cfg.global_notes()),
+                    crate::notes_scope::ConfigNotes::of(&cfg),
                 ))
                 .with_tier(cfg.tier()),
             ))
@@ -2796,9 +2796,10 @@ impl Harness {
             );
         }
         let declared = crate::standing_notes::preloaded(parts.skills.as_ref(), &cfg.skills);
-        // Through the backend the session's tools use: a placed session's notes are on that host,
-        // and this is the first prompt they have to reach.
-        let notes_files = crate::standing_notes::Reader::new(&*runtime.backend, &cfg.workspace);
+        // Through the backend the session's tools use: a placed session's instruction files are on
+        // that host, and this is the first prompt they have to reach.
+        let notes_files = crate::standing_notes::Reader::new(&*runtime.backend, &cfg.workspace)
+            .with_notes(cfg.project_notes());
         let standing = crate::standing_notes::section_with_skills(
             &notes_files,
             &cfg.global_notes(),

@@ -330,7 +330,7 @@ pub fn same_note(a: &Path, b: &Path) -> bool {
         return false;
     }
     // `.md` optional on either side: the `notes` tool takes a bare stem and the offer names the
-    // file, so `the-offer-and-the-tail` and `/ws/.letibot/notes/the-offer-and-the-tail.md` are one.
+    // file, so `the-offer-and-the-tail` and `/notes/proj/the-offer-and-the-tail.md` are one.
     let norm = |p: &Path| p.display().to_string().trim_end_matches(".md").to_string();
     let (a, b) = (norm(a), norm(b));
     a == b || a.ends_with(&format!("/{b}")) || b.ends_with(&format!("/{a}"))

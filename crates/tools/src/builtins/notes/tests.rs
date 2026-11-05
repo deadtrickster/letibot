@@ -6,10 +6,10 @@ use crate::testing::writable_harness;
 #[test]
 fn read_carries_the_historical_line_with_the_age() {
     let mut h = writable_harness();
-    let (ws, _global) = h.notes_dirs();
-    std::fs::create_dir_all(ws.join(".letibot/notes")).expect("project dir");
+    let notes = h.notes_project_dir();
+    std::fs::create_dir_all(&notes).expect("project dir");
     std::fs::write(
-        ws.join(".letibot/notes/oddity.md"),
+        notes.join("oddity.md"),
         "the rano pin is absent on this box; build from outside the repo\n",
     )
     .expect("fixture");
@@ -44,8 +44,8 @@ fn add_writes_into_the_project_notes_dir_and_reads_back() {
     );
     assert!(r.is_grounded(), "{}", r.render());
     let (ws, global) = h.notes_dirs();
-    let wrote =
-        std::fs::read_to_string(ws.join(".letibot/notes/finding.md")).expect("the note is on disk");
+    let notes = h.notes_project_dir();
+    let wrote = std::fs::read_to_string(notes.join("finding.md")).expect("the note is on disk");
     assert_eq!(wrote, "qwen scores better with the tail clamped\n");
     assert!(
         !global.join("finding.md").exists(),
@@ -62,7 +62,7 @@ fn add_writes_into_the_project_notes_dir_and_reads_back() {
         r#"{"action":"read","name":"finding.md"}"#,
         &format!(
             r#"{{"action":"read","path":"{}"}}"#,
-            ws.join(".letibot/notes/finding.md").display()
+            notes.join("finding.md").display()
         ),
     ] {
         let r = h.call("notes", args);
@@ -96,9 +96,9 @@ fn the_write_verbs_refuse_the_cases_they_must_not_do_silently() {
         said.contains("already exists") && said.contains("last written"),
         "the refusal reports the note it refused to touch: {said}"
     );
-    let (ws, _) = h.notes_dirs();
+    let notes = h.notes_project_dir();
     assert_eq!(
-        std::fs::read_to_string(ws.join(".letibot/notes/gate.md")).unwrap(),
+        std::fs::read_to_string(notes.join("gate.md")).unwrap(),
         "the gate refuses by class\n",
         "the refusal left the original alone"
     );
@@ -128,7 +128,7 @@ fn the_write_verbs_refuse_the_cases_they_must_not_do_silently() {
         "the replacement says what it threw away: {said}"
     );
     assert_eq!(
-        std::fs::read_to_string(ws.join(".letibot/notes/gate.md")).unwrap(),
+        std::fs::read_to_string(notes.join("gate.md")).unwrap(),
         "replaced wholesale\n"
     );
 
@@ -139,7 +139,7 @@ fn the_write_verbs_refuse_the_cases_they_must_not_do_silently() {
     );
     assert!(r.is_grounded(), "{}", r.render());
     assert_eq!(
-        std::fs::read_to_string(ws.join(".letibot/notes/gate.md")).unwrap(),
+        std::fs::read_to_string(notes.join("gate.md")).unwrap(),
         "replaced wholesale\n\n- and by name\n",
         "append joins with a blank line and keeps one trailing newline"
     );
@@ -180,7 +180,7 @@ const STORE_LOCK_PARA: &str = "<!-- abstract: a database query stalls for a mome
 #[test]
 fn a_near_duplicate_note_is_refused_and_a_new_one_is_not() {
     let mut h = writable_harness();
-    let (ws, _) = h.notes_dirs();
+    let notes = h.notes_project_dir();
 
     // With one note in the corpus every term is in every note, so `idf` is zero and
     // nothing scores: a gate that cannot discriminate admits, which is the unsafe
@@ -214,7 +214,7 @@ fn a_near_duplicate_note_is_refused_and_a_new_one_is_not() {
         "and that nothing happened: {said}"
     );
     assert!(
-        !ws.join(".letibot/notes/store-connection-wait.md").exists(),
+        !notes.join("store-connection-wait.md").exists(),
         "the refused note is not on disk"
     );
 
@@ -229,7 +229,7 @@ fn a_near_duplicate_note_is_refused_and_a_new_one_is_not() {
         "a note about something else is not a near-copy: {}",
         r.render()
     );
-    assert!(ws.join(".letibot/notes/compaction-tail-clamp.md").exists());
+    assert!(notes.join("compaction-tail-clamp.md").exists());
 }
 
 /// An edit that would turn a note into a near-copy of another is caught just before it
@@ -238,7 +238,7 @@ fn a_near_duplicate_note_is_refused_and_a_new_one_is_not() {
 #[test]
 fn an_edit_that_would_make_a_note_a_near_copy_is_caught() {
     let mut h = writable_harness();
-    let (ws, _) = h.notes_dirs();
+    let notes = h.notes_project_dir();
     h.call(
         "notes",
         &format!(r#"{{"action":"add","name":"store-write-lock","text":{STORE_LOCK:?}}}"#),
@@ -247,7 +247,7 @@ fn an_edit_that_would_make_a_note_a_near_copy_is_caught() {
         "notes",
         r###"{"action":"add","name":"tui-scrollbar-width","abstract":"the pane scrollbar is one column wide and the border colour is not the theme's","text":"## The width\n\nOne column.\n\n## The colour\n\nIt comes from the theme.\n"}"###,
     );
-    let before = std::fs::read_to_string(ws.join(".letibot/notes/tui-scrollbar-width.md"))
+    let before = std::fs::read_to_string(notes.join("tui-scrollbar-width.md"))
         .expect("the second note is on disk");
 
     // `replace`, turning the TUI note into the store note's near-copy.
@@ -264,7 +264,7 @@ fn an_edit_that_would_make_a_note_a_near_copy_is_caught() {
         r.render()
     );
     assert_eq!(
-        std::fs::read_to_string(ws.join(".letibot/notes/tui-scrollbar-width.md")).unwrap(),
+        std::fs::read_to_string(notes.join("tui-scrollbar-width.md")).unwrap(),
         before,
         "the refusal is before the write, so the note is byte-identical"
     );
@@ -280,7 +280,7 @@ fn an_edit_that_would_make_a_note_a_near_copy_is_caught() {
         "a note is not a duplicate of itself: {}",
         r.render()
     );
-    let grown = std::fs::read_to_string(ws.join(".letibot/notes/store-write-lock.md")).unwrap();
+    let grown = std::fs::read_to_string(notes.join("store-write-lock.md")).unwrap();
     assert!(grown.contains("configurable"), "the append landed: {grown}");
 }
 
@@ -291,7 +291,7 @@ fn an_edit_that_would_make_a_note_a_near_copy_is_caught() {
 fn a_paraphrase_with_no_shared_word_is_refused_by_the_second_tier() {
     // The words alone, over a session with no tier: nothing to score, so the write lands.
     let mut plain = writable_harness();
-    let (ws, _) = plain.notes_dirs();
+    let notes = plain.notes_project_dir();
     plain.call(
         "notes",
         &format!(r#"{{"action":"add","name":"store-write-lock","text":{STORE_LOCK:?}}}"#),
@@ -305,7 +305,7 @@ fn a_paraphrase_with_no_shared_word_is_refused_by_the_second_tier() {
         "the words have nothing to go on: {}",
         r.render()
     );
-    assert!(ws.join(".letibot/notes/mutex-stall.md").exists());
+    assert!(notes.join("mutex-stall.md").exists());
 
     // And the same writer with the box's second tier: the meaning is what the gate needed.
     let data = std::env::temp_dir().join(format!("notes-tier-{}", std::process::id()));
@@ -324,7 +324,7 @@ fn a_paraphrase_with_no_shared_word_is_refused_by_the_second_tier() {
         ],
     );
     let mut h = crate::testing::writable_harness_with_tier(tier);
-    let (ws, _) = h.notes_dirs();
+    let notes = h.notes_project_dir();
     h.call(
         "notes",
         &format!(r#"{{"action":"add","name":"store-write-lock","text":{STORE_LOCK:?}}}"#),
@@ -344,7 +344,7 @@ fn a_paraphrase_with_no_shared_word_is_refused_by_the_second_tier() {
         "and names the way to say what differs, which is the field the score reads: {said}"
     );
     assert!(
-        !ws.join(".letibot/notes/mutex-stall.md").exists(),
+        !notes.join("mutex-stall.md").exists(),
         "the refused note is not on disk"
     );
     let _ = std::fs::remove_dir_all(&data);
@@ -429,6 +429,7 @@ fn a_name_that_escapes_the_notes_dir_is_refused() {
     // so write one and compare bytes after: the honest check is
     // byte-identical, not absent.
     let (ws, _) = h.notes_dirs();
+    let notes = h.notes_project_dir();
     std::fs::write(ws.join("AGENTS.md"), "the operator's own instructions\n")
         .expect("fixture AGENTS.md");
     let agents_before = std::fs::read(ws.join("AGENTS.md")).expect("the fixture's AGENTS.md");
@@ -455,7 +456,7 @@ fn a_name_that_escapes_the_notes_dir_is_refused() {
         agents_before,
         "AGENTS.md is byte-identical — no spelling of a write reached it"
     );
-    let wrote: Vec<_> = std::fs::read_dir(ws.join(".letibot/notes"))
+    let wrote: Vec<_> = std::fs::read_dir(&notes)
         .map(|rd| {
             rd.flatten()
                 .map(|e| e.file_name().to_string_lossy().to_string())
@@ -488,8 +489,8 @@ fn the_other_doors_into_the_notes_dir_are_refused_and_the_tool_still_writes() {
         assert!(!r.is_grounded(), "`{path}` must be refused: {}", r.render());
         let said = r.render();
         assert!(
-            said.contains("which the `notes` tool owns"),
-            "the refusal is by name — the directory and the tool that owns it: {said}"
+            said.contains("notes are not kept in the tree"),
+            "the refusal is by name: {said}"
         );
         assert!(said.contains("Nothing was written"), "{said}");
         assert!(
@@ -512,7 +513,7 @@ fn the_other_doors_into_the_notes_dir_are_refused_and_the_tool_still_writes() {
         let r = h.call("edit", &args);
         assert!(!r.is_grounded(), "{args}: {}", r.render());
         assert!(
-            r.render().contains("which the `notes` tool owns"),
+            r.render().contains("notes are not kept in the tree"),
             "{args}: {}",
             r.render()
         );
@@ -539,7 +540,7 @@ fn the_other_doors_into_the_notes_dir_are_refused_and_the_tool_still_writes() {
         r.render()
     );
     assert_eq!(
-        std::fs::read_to_string(ws.join(NOTES_DIR).join("scored.md")).unwrap(),
+        std::fs::read_to_string(h.notes_project_dir().join("scored.md")).unwrap(),
         "the gate scored this one before it landed\n"
     );
     // And the gate on that door is still the gate - a verbatim copy under a new
@@ -683,14 +684,15 @@ fn a_read_only_backend_refuses_the_write_verbs() {
 fn list_reports_every_source_in_the_readers_order() {
     let mut h = writable_harness();
     let (ws, global) = h.notes_dirs();
+    let notes = h.notes_project_dir();
     std::fs::create_dir_all(&global).expect("global dir");
     std::fs::write(global.join("g.md"), "global note\n").expect("fixture");
     std::fs::write(ws.join("AGENTS.md"), "# Rules\n").expect("fixture");
-    std::fs::create_dir_all(ws.join(".letibot/notes")).expect("project dir");
-    std::fs::write(ws.join(".letibot/notes/older.md"), "project older\n").expect("fixture");
-    std::fs::write(ws.join(".letibot/notes/newer.md"), "project newer\n").expect("fixture");
-    set_mtime(&ws.join(".letibot/notes/older.md"), 1_000);
-    set_mtime(&ws.join(".letibot/notes/newer.md"), 2_000);
+    std::fs::create_dir_all(&notes).expect("project dir");
+    std::fs::write(notes.join("older.md"), "project older\n").expect("fixture");
+    std::fs::write(notes.join("newer.md"), "project newer\n").expect("fixture");
+    set_mtime(&notes.join("older.md"), 1_000);
+    set_mtime(&notes.join("newer.md"), 2_000);
     let r = h.call("notes", r#"{"action":"list"}"#);
     assert!(r.is_grounded(), "{}", r.render());
     let said = r.render();
@@ -713,16 +715,17 @@ fn list_reports_every_source_in_the_readers_order() {
 #[test]
 fn search_answers_with_paths_line_numbers_and_lines() {
     let mut h = writable_harness();
-    let (ws, global) = h.notes_dirs();
+    let (_ws, global) = h.notes_dirs();
+    let notes = h.notes_project_dir();
     std::fs::create_dir_all(&global).expect("global dir");
     std::fs::write(
         global.join("box.md"),
         "the box-wide rule\nand a second line about the budget\n",
     )
     .expect("fixture");
-    std::fs::create_dir_all(ws.join(".letibot/notes")).expect("project dir");
+    std::fs::create_dir_all(&notes).expect("project dir");
     std::fs::write(
-        ws.join(".letibot/notes/ledger.md"),
+        notes.join("ledger.md"),
         "the ledger counts tokens\n\nnothing else here\n",
     )
     .expect("fixture");
@@ -785,13 +788,13 @@ fn a_search_that_matches_nothing_abstains_with_the_corpus() {
 #[test]
 fn an_abstract_is_the_authors_line_or_the_notes_first_sentence() {
     let mut h = writable_harness();
-    let (ws, _global) = h.notes_dirs();
+    let notes = h.notes_project_dir();
     let r = h.call(
         "notes",
         r#"{"action":"add","name":"pins","abstract":"the rano pin is absent on this box","text":"Build from outside the repo.\nThe second line is detail."}"#,
     );
     assert!(r.is_grounded(), "{}", r.render());
-    let wrote = std::fs::read_to_string(ws.join(".letibot/notes/pins.md")).expect("on disk");
+    let wrote = std::fs::read_to_string(notes.join("pins.md")).expect("on disk");
     assert_eq!(
         wrote,
         concat!(
@@ -816,7 +819,7 @@ fn an_abstract_is_the_authors_line_or_the_notes_first_sentence() {
     );
     assert!(r.is_grounded(), "{}", r.render());
     assert_eq!(
-        std::fs::read_to_string(ws.join(".letibot/notes/derived.md")).unwrap(),
+        std::fs::read_to_string(notes.join("derived.md")).unwrap(),
         "First proper sentence here. Second one.\n",
         "nothing is added to the author's text"
     );
@@ -834,7 +837,7 @@ fn an_abstract_is_the_authors_line_or_the_notes_first_sentence() {
         r#"{"action":"append","name":"pins","text":"- and a bullet"}"#,
     );
     assert!(r.is_grounded(), "{}", r.render());
-    let grew = std::fs::read_to_string(ws.join(".letibot/notes/pins.md")).unwrap();
+    let grew = std::fs::read_to_string(notes.join("pins.md")).unwrap();
     assert_eq!(
         grew.matches("<!-- abstract:").count(),
         1,
@@ -849,7 +852,7 @@ fn an_abstract_is_the_authors_line_or_the_notes_first_sentence() {
         r#"{"action":"append","name":"pins","abstract":"now about pins and bullets","text":"more"}"#,
     );
     assert!(r.is_grounded(), "{}", r.render());
-    let regrew = std::fs::read_to_string(ws.join(".letibot/notes/pins.md")).unwrap();
+    let regrew = std::fs::read_to_string(notes.join("pins.md")).unwrap();
     assert_eq!(regrew.matches("<!-- abstract:").count(), 1, "{regrew}");
     assert!(
         regrew.starts_with("<!-- abstract: now about pins and bullets -->")
@@ -939,11 +942,10 @@ fn set_mtime(path: &Path, secs: i64) {
     assert_eq!(rc, 0, "utimensat on {}", path.display());
 }
 
-/// A note lands where the session's other tools land. The scope's workspace is the path the
-/// DAEMON sees; a placed session's files are on the host, and a note written against the scope
-/// was the one write that did not follow the session.
+/// A placed session's note lands in the notes checkout on the daemon's box, not in the host's
+/// tree and not in the daemon's copy of the workspace, and the read verbs find it there.
 #[test]
-fn a_note_lands_in_the_backends_tree_and_not_the_scopes_workspace() {
+fn a_placed_sessions_note_lands_in_the_notes_checkout_and_in_neither_tree() {
     let backend_dir = crate::backend::tempdir::TempDir::new();
     let scope_ws = crate::backend::tempdir::TempDir::new();
     let global = crate::backend::tempdir::TempDir::new();
@@ -958,20 +960,54 @@ fn a_note_lands_in_the_backends_tree_and_not_the_scopes_workspace() {
         r#"{"action":"add","name":"placed","text":"the host's own note"}"#,
     );
     assert!(r.is_grounded(), "{}", r.render());
-    let wrote = std::fs::read_to_string(backend_dir.path().join(".letibot/notes/placed.md"))
-        .expect("the note is in the backend's tree");
+    let wrote = std::fs::read_to_string(h.notes_project_dir().join("placed.md"))
+        .expect("the note is in the notes checkout");
     assert_eq!(wrote, "the host's own note\n");
-    assert!(
-        !scope_ws.path().join(".letibot").exists(),
-        "the scope's workspace is the daemon's, and nothing was written there"
-    );
-    // And the read verbs read it back from where it landed rather than from the scope.
+    for tree in [backend_dir.path(), scope_ws.path()] {
+        assert!(
+            !tree.join(".letibot").exists(),
+            "{} stays clean",
+            tree.display()
+        );
+    }
     let r = h.call("notes", r#"{"action":"read","name":"placed"}"#);
     assert!(r.is_grounded(), "{}", r.render());
     assert!(r.render().contains("the host's own note"), "{}", r.render());
     let r = h.call("notes", r#"{"action":"list"}"#);
     assert!(r.is_grounded(), "{}", r.render());
     assert!(r.render().contains("placed.md"), "{}", r.render());
+}
+
+/// Every write is a commit in the notes checkout, made a repository on the first one, and the
+/// project tree is left as it was.
+#[test]
+fn a_write_is_committed_in_the_notes_repository() {
+    let mut h = writable_harness();
+    for args in [
+        r#"{"action":"add","name":"first","text":"the first note"}"#,
+        r#"{"action":"append","name":"first","text":"and more of it"}"#,
+    ] {
+        let r = h.call("notes", args);
+        assert!(r.is_grounded(), "{args}: {}", r.render());
+        assert!(!r.render().contains("Not committed"), "{}", r.render());
+    }
+    let log = std::process::Command::new("git")
+        .arg("-C")
+        .arg(h.notes_repo())
+        .args(["log", "--format=%s", "--name-only"])
+        .output()
+        .expect("git");
+    let log = String::from_utf8_lossy(&log.stdout);
+    assert!(
+        log.contains("add first") && log.contains("append first"),
+        "{log}"
+    );
+    assert!(log.contains("proj/first.md"), "{log}");
+    let (ws, _) = h.notes_dirs();
+    assert!(
+        !ws.join(".letibot").exists(),
+        "the project tree stays clean"
+    );
 }
 
 /// A session whose files are on a host that has stopped answering: every call fails, and that is
@@ -1057,5 +1093,8 @@ impl NotesScope for FixtureScope {
     }
     fn global_dir(&self) -> PathBuf {
         self.global.clone()
+    }
+    fn project_dir(&self) -> PathBuf {
+        self.workspace.join("notes-repo/proj")
     }
 }

@@ -248,6 +248,7 @@ impl OneShot {
             .env("XDG_DATA_HOME", dir.join("data"))
             .env("XDG_RUNTIME_DIR", dir)
             .env("LETIBOT_LANDING_ROOT", home.join("landing"))
+            .env("LETIBOT_NOTES_REPO", home.join("notes"))
             .env("LETIBOT_LOGS_ROOT", home.join("logs"))
             .env_remove("DEEPSEEK_API_KEY")
             .env_remove("GLM_API_KEY")

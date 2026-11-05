@@ -191,6 +191,7 @@ impl Daemon {
             .env("XDG_STATE_HOME", home.join("state"))
             .env("XDG_RUNTIME_DIR", home.join("run"))
             .env("LETIBOT_LANDING_ROOT", home.join("landing"))
+            .env("LETIBOT_NOTES_REPO", home.join("notes"))
             .env("LETIBOT_LOGS_ROOT", home.join("logs"))
             // A line a second: the watchdog's own reading of the heap, beside the kernel's of rss.
             .env("LETIBOT_MEMWATCH_SECS", "1")

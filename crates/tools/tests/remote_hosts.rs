@@ -2446,11 +2446,10 @@ fn mise_false_is_no_wrapper_and_mise_at_a_path_is_that_path() {
     let _ = std::fs::remove_dir_all(&fake.dir);
 }
 
-/// The `notes` tool writes where the session's other tools write: a note in a placed session
-/// lands in the remote checkout, not the daemon's workspace. Read back with `std::fs` from the far
-/// path rather than asking the tool.
+/// A note in a placed session lands in the notes checkout on the daemon's box, in neither the
+/// remote checkout nor the daemon's workspace. Read back with `std::fs` rather than the tool.
 #[test]
-fn a_note_written_in_a_placed_session_lands_in_the_remote_checkout() {
+fn a_note_written_in_a_placed_session_lands_in_the_notes_checkout() {
     let mut rig = Rig::new("notes");
     let backend = rig.place();
     let worktree = rig.worktree.clone();
@@ -2472,17 +2471,19 @@ fn a_note_written_in_a_placed_session_lands_in_the_remote_checkout() {
     );
     assert!(r.is_grounded(), "{}", r.render());
     assert_eq!(
-        std::fs::read_to_string(worktree.join(".letibot/notes/placed.md"))
-            .expect("the note is in the remote checkout"),
+        std::fs::read_to_string(h.notes_project_dir().join("placed.md"))
+            .expect("the note is in the notes checkout"),
         "a note from the host\n"
     );
-    assert!(
-        !local.join(".letibot").exists(),
-        "the daemon's own workspace got no notes directory: {}",
-        local.display()
-    );
+    for tree in [&worktree, &local] {
+        assert!(
+            !tree.join(".letibot").exists(),
+            "{} got no notes directory",
+            tree.display()
+        );
+    }
 
-    // And `read` over the same harness finds it where it was written, not where the scope is.
+    // And `read` over the same harness finds it where it was written.
     let r = h.call("notes", r#"{"action":"read","name":"placed"}"#);
     assert!(r.is_grounded(), "{}", r.render());
     assert!(
@@ -2493,14 +2494,12 @@ fn a_note_written_in_a_placed_session_lands_in_the_remote_checkout() {
     let _ = std::fs::remove_dir_all(&local);
 }
 
-/// The note corpus is one round trip per page, not one per note. Over a placed session every
-/// read is an ssh call: a `search` over twelve notes was fourteen of them, which is the cost the
-/// same commit's stat-in-the-listing change was made to avoid.
+/// A placed session's note corpus costs no ssh call per note: the project's notes are on the
+/// daemon's box, and only the instruction file is read over the session's backend.
 #[test]
-fn a_placed_session_reads_its_note_corpus_in_pages() {
+fn a_placed_session_reads_its_note_corpus_without_a_call_per_note() {
     let mut rig = Rig::new("notes-pages");
     let backend = rig.place();
-    let worktree = rig.worktree.clone();
     let local = std::env::temp_dir().join(format!(
         "letibot-notes-pages-{}-{}",
         std::process::id(),
@@ -2511,21 +2510,17 @@ fn a_placed_session_reads_its_note_corpus_in_pages() {
     ));
     let global = local.join("global");
     std::fs::create_dir_all(&global).expect("the box-wide notes dir");
-    // Seeded through the filesystem: this test counts ssh calls, and a write would be part of the
-    // number it asserts on.
-    std::fs::create_dir_all(worktree.join(".letibot/notes")).expect("the notes dir");
-    for i in 0..12 {
-        std::fs::write(
-            worktree.join(format!(".letibot/notes/note-{i}.md")),
-            format!("note {i}\n"),
-        )
-        .expect("a note on the far side");
-    }
-
     let mut h = letibot_tools::testing::harness_over(Box::new(backend), local.clone(), global);
+    // Seeded through the filesystem: a write would be part of the number this asserts on.
+    let notes = h.notes_project_dir();
+    std::fs::create_dir_all(&notes).expect("the notes dir");
+    for i in 0..12 {
+        std::fs::write(notes.join(format!("note-{i}.md")), format!("note {i}\n")).expect("a note");
+    }
     let before = rig.ssh_log().matches("ARGV ").count();
     let r = h.call("notes", r#"{"action":"search","query":"note"}"#);
     assert!(r.is_grounded(), "{}", r.render());
+    assert!(r.render().contains("note-11.md"), "{}", r.render());
     let calls = rig.ssh_log().matches("ARGV ").count() - before;
     assert!(
         calls <= 4,

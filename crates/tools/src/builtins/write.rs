@@ -58,9 +58,8 @@ impl Tool for Write {
             );
         };
 
-        // The one directory this door must not open: `.letibot/notes/` belongs to the `notes`
-        // tool, which scores a note against the corpus before it lands, and a note written
-        // here would be injected as though it had been.
+        // Notes are not kept in the tree: a file in `.letibot/notes/` is read by nobody, and the
+        // `notes` tool is the door that scores and commits one.
         if let Some(refusal) = notes::refuse_a_path_into_the_notes_dir(ctx.backend, path) {
             return refusal;
         }

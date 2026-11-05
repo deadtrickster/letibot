@@ -170,9 +170,14 @@ impl App {
             // The standing notes, whole - the pane's bootstrap read, and the rows are the daemon's own
             // reading of the corpus, so the head draws what the model was given rather than a second
             // opinion. Only the file's size, age and presence are read at DRAW time.
-            ServerFrame::StandingNotes { session_id, notes } => {
+            ServerFrame::StandingNotes {
+                session_id,
+                notes,
+                dir,
+            } => {
                 if session_id == self.session_id {
                     self.standing = notes;
+                    self.standing_dir = dir;
                     self.standing_sel =
                         self.standing_sel.min(self.standing.len().saturating_sub(1));
                     self.redraw = true;

@@ -76,6 +76,9 @@ pub struct Harness {
     /// The two directories the `notes` tool is scoped to, for a test that writes a fixture note
     /// or reads one back: the workspace and the box-wide notes dir.
     _notes: (std::path::PathBuf, std::path::PathBuf),
+    /// The notes checkout, outside the workspace, and the project's directory in it.
+    _notes_repo: TempDir,
+    _notes_project: std::path::PathBuf,
     /// The file the `host_changelog` tool records into, held so the temp
     /// directory outlives the tool's scope. A test reads it directly: a test
     /// that asked the tool whether it wrote is a test of the tool's opinion.
@@ -115,6 +118,16 @@ impl Harness {
     /// mutably).
     pub fn notes_dirs(&self) -> (std::path::PathBuf, std::path::PathBuf) {
         self._notes.clone()
+    }
+
+    /// The project's notes directory: inside the notes checkout, never inside the workspace.
+    pub fn notes_project_dir(&self) -> std::path::PathBuf {
+        self._notes_project.clone()
+    }
+
+    /// The notes checkout `notes_project_dir` lives in.
+    pub fn notes_repo(&self) -> std::path::PathBuf {
+        self._notes_repo.path().to_path_buf()
     }
 
     /// The host changelog this harness records into: a temp file, so a test can read what the
@@ -297,6 +310,8 @@ pub fn runner_harness_with_gate(
         _scratch: Some(scratch),
         _notes_global: TempDir::new(),
         _notes: (std::path::PathBuf::new(), std::path::PathBuf::new()),
+        _notes_repo: TempDir::new(),
+        _notes_project: std::path::PathBuf::new(),
         _changelog: std::path::PathBuf::new(),
         _changelog_dir: TempDir::new(),
         _host_config: FixturePlatform::new(),
@@ -325,6 +340,8 @@ pub fn text_only_runner_harness() -> Harness {
         _scratch: None,
         _notes_global: TempDir::new(),
         _notes: (std::path::PathBuf::new(), std::path::PathBuf::new()),
+        _notes_repo: TempDir::new(),
+        _notes_project: std::path::PathBuf::new(),
         _changelog: std::path::PathBuf::new(),
         _changelog_dir: TempDir::new(),
         _host_config: FixturePlatform::new(),
@@ -387,6 +404,8 @@ pub fn confined_harness_with_gate(
         _scratch: None,
         _notes_global: TempDir::new(),
         _notes: (std::path::PathBuf::new(), std::path::PathBuf::new()),
+        _notes_repo: TempDir::new(),
+        _notes_project: std::path::PathBuf::new(),
         _changelog: std::path::PathBuf::new(),
         _changelog_dir: TempDir::new(),
         _host_config: FixturePlatform::new(),
@@ -439,9 +458,13 @@ pub fn harness_over(
     global: std::path::PathBuf,
 ) -> Harness {
     let mut registry = crate::coder_tools(Arc::new(Unavailable)).expect("built-ins register");
+    let notes_repo = TempDir::new();
+    let notes_project = notes_repo.path().join("proj");
     let scope: Arc<dyn crate::builtins::notes::NotesScope> = Arc::new(TestNotesScope {
         workspace: workspace.clone(),
         global: global.clone(),
+        repo: notes_repo.path().to_path_buf(),
+        project: notes_project.clone(),
     });
     registry
         .register(Box::new(crate::builtins::notes::NotesTool::new(scope)))
@@ -457,6 +480,8 @@ pub fn harness_over(
         _scratch: None,
         _notes_global: TempDir::new(),
         _notes: (workspace, global),
+        _notes_repo: notes_repo,
+        _notes_project: notes_project,
         _changelog: std::path::PathBuf::new(),
         _changelog_dir: TempDir::new(),
         _host_config: FixturePlatform::new(),
@@ -563,9 +588,13 @@ fn build_ext(
     // never reads this box's real config. Registered in the read-only shape too, because the
     // tool's read verbs must refuse honestly there rather than vanish.
     let notes_global = TempDir::new();
+    let notes_repo = TempDir::new();
+    let notes_project = notes_repo.path().join("proj");
     let notes_scope: Arc<dyn crate::builtins::notes::NotesScope> = Arc::new(TestNotesScope {
         workspace: dir.path().to_path_buf(),
         global: notes_global.path().to_path_buf(),
+        repo: notes_repo.path().to_path_buf(),
+        project: notes_project.clone(),
     });
     let notes_dirs = (dir.path().to_path_buf(), notes_global.path().to_path_buf());
     registry
@@ -602,6 +631,8 @@ fn build_ext(
         _scratch: scratch,
         _notes_global: notes_global,
         _notes: notes_dirs,
+        _notes_repo: notes_repo,
+        _notes_project: notes_project,
         _changelog: changelog_file,
         _changelog_dir: changelog_dir,
         _host_config: host_config,
@@ -614,6 +645,8 @@ fn build_ext(
 struct TestNotesScope {
     workspace: std::path::PathBuf,
     global: std::path::PathBuf,
+    repo: std::path::PathBuf,
+    project: std::path::PathBuf,
 }
 /// The `host_changelog` tool's scope for a fixture: one temp file and a chosen writer, so a test
 /// records without ever touching this box's real config dir.
@@ -784,6 +817,12 @@ impl crate::builtins::notes::NotesScope for TestNotesScope {
     }
     fn global_dir(&self) -> std::path::PathBuf {
         self.global.clone()
+    }
+    fn project_dir(&self) -> std::path::PathBuf {
+        self.project.clone()
+    }
+    fn repo(&self) -> Option<std::path::PathBuf> {
+        Some(self.repo.clone())
     }
 }
 

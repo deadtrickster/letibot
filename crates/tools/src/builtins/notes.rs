@@ -1,6 +1,6 @@
-//! `notes` - read and write the standing notes the harness injects.
-//! Writes go to the workspace's `.letibot/notes/` only, through a [`NotesScope`] and the session's
-//! [`ExecBackend`], so a note lands where `write` lands. Index derivation and sort live here.
+//! `notes` - read and write the standing notes the harness injects. Writes go to the project's
+//! notes directory only, in a git checkout outside the tree ([`crate::notes_repo`]), committed
+//! after each write. Index derivation and sort live here.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,12 +17,18 @@ use crate::similarity;
 /// daemon owns the workspace and the config dir, and this crate holds only the trait
 /// so that `letibot-tools` depends on nothing above it.
 pub trait NotesScope: Send + Sync {
-    /// The workspace root: `AGENTS.md` and `.letibot/notes/` are read from
-    /// here, and `.letibot/notes/` is the one directory the tool writes.
+    /// The workspace root, where `AGENTS.md` is read from.
     fn workspace(&self) -> PathBuf;
     /// The box-wide notes directory, beside `providers.toml` - read here,
     /// never written.
     fn global_dir(&self) -> PathBuf;
+    /// This project's notes, the one directory the tool writes. Empty is none configured: nothing
+    /// is read from it and a write is refused, never resolved against the working directory.
+    fn project_dir(&self) -> PathBuf;
+    /// The checkout `project_dir` lives in, committed after every write. `None` commits nothing.
+    fn repo(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 pub struct NotesTool {
@@ -278,7 +284,7 @@ impl Source {
 /// The three sources in the reader's order: `AGENTS.md`, then the box-wide notes, then
 /// the project's. The order decides what arrives whole and what arrives as an index,
 /// and it is what makes `list`'s "in prompt order" true.
-fn sources(fs: &NoteFs<'_>, global: &Path) -> Vec<Source> {
+fn sources(fs: &NoteFs<'_>, global: &Path, project: &Path) -> Vec<Source> {
     let ws = fs.root.clone();
     vec![
         Source {
@@ -292,7 +298,7 @@ fn sources(fs: &NoteFs<'_>, global: &Path) -> Vec<Source> {
             label: "box-wide (the operator's)",
         },
         Source {
-            dir: ws.join(NOTES_DIR),
+            dir: project.to_path_buf(),
             file: None,
             label: "project notes (written with this tool, and by the operator)",
         },
@@ -302,9 +308,13 @@ fn sources(fs: &NoteFs<'_>, global: &Path) -> Vec<Source> {
 /// Every note the harness injects, as `(path, text)`: the corpus a score is computed
 /// over, in the same sources and order the injected section is assembled from, so no
 /// score is ever about a note the reader would not inject.
-fn corpus(fs: &NoteFs<'_>, global: &Path) -> Result<Vec<(PathBuf, String)>, String> {
+fn corpus(
+    fs: &NoteFs<'_>,
+    global: &Path,
+    project: &Path,
+) -> Result<Vec<(PathBuf, String)>, String> {
     let mut notes: Vec<Note> = Vec::new();
-    for src in sources(fs, global) {
+    for src in sources(fs, global, project) {
         notes.extend(src.notes(fs)?);
     }
     let mut out = Vec::with_capacity(notes.len());
@@ -324,14 +334,12 @@ pub fn sort_newest_first(paths: &mut [PathBuf]) {
     paths.sort_by(|a, b| mtime(b).cmp(&mtime(a)).then_with(|| a.cmp(b)));
 }
 
-/// Where the project notes live under a workspace - the one directory this tool
-/// writes, named once so the reader, the writer and the refusals that keep the
-/// other doors out cannot come to disagree about it.
+/// The in-tree directory notes are not kept in. A file written there by path is read by nobody,
+/// so `write` and `edit` refuse it and point at this tool.
 pub const NOTES_DIR: &str = ".letibot/notes";
 
-/// The other doors into the notes directory: `write` and `edit` take a path, and a
-/// path can spell `.letibot/notes/foo.md`, which lands a note nobody scored. Not a
-/// [`crate::adjudicate::NEVER_WRITE`] row, because that would refuse this tool's own writes.
+/// The other doors into a notes directory: `write` and `edit` take a path, and a path can spell
+/// `.letibot/notes/foo.md`, which lands a file that looks like a note and is not one.
 pub(crate) fn refuse_a_path_into_the_notes_dir(
     backend: &dyn crate::backend::ExecBackend,
     path: &str,
@@ -365,17 +373,13 @@ pub(crate) fn refuse_a_path_into_the_notes_dir(
         return None;
     }
     Some(Invocation::failed(
-        format!("`{path}` is inside `{NOTES_DIR}/`, which the `notes` tool owns"),
-        format!(
-            "Nothing was written. A note put there by `write` or `edit` goes around the 
-             similarity gate those two verbs do not carry — the gate that refuses a note 
-             which would land as a near-copy of one that already exists — and the reader 
-             injects what lands exactly as it injects the notes that were scored. So this 
-             is not a file to write: it is a note. Call `notes` with a bare `name` (not a 
-             path) and `action` = \"add\" to create one, \"append\" to grow one that 
-             exists, or \"replace\" to rewrite one — it writes into `{NOTES_DIR}/` itself, 
-             and it refuses a near-copy rather than letting the corpus fill with them."
-        ),
+        format!("`{path}` is inside `{NOTES_DIR}/`, and notes are not kept in the tree"),
+        "Nothing was written. Notes live in a separate repository outside the project, and a \
+         file here would be read by nobody. Call `notes` with a bare `name` (not a path) and \
+         `action` = \"add\" to create one, \"append\" to grow one that exists, or \"replace\" \
+         to rewrite one. It writes into the notes repository itself and refuses a near-copy \
+         rather than letting the corpus fill with them."
+            .to_string(),
     ))
 }
 
@@ -630,7 +634,7 @@ impl Tool for NotesTool {
              and the door to use when the index in the prompt is not enough to tell you \
              which note you want), `add` (create one), `append` (add to one that exists), \
              `replace` (rewrite one that exists, reporting what it replaced). Writes go to \
-             the workspace's `.letibot/notes/` only, by bare `name` — `AGENTS.md` and the \
+             this project's notes only, by bare `name`. `AGENTS.md` and the \
              box-wide notes are the operator's. A write that would land as a near-copy of a \
              note that already exists is refused and names it: grow that note instead, or say \
              what distinguishes this one. Write down what is worth keeping: something \
@@ -699,7 +703,11 @@ impl NotesTool {
         target: &Path,
         after: &str,
     ) -> Result<Option<(PathBuf, f64)>, String> {
-        let corpus = similarity::Corpus::new(&corpus(fs, &self.scope.global_dir())?);
+        let corpus = similarity::Corpus::new(&corpus(
+            fs,
+            &self.scope.global_dir(),
+            &self.scope.project_dir(),
+        )?);
         if corpus.is_empty() {
             return Ok(None);
         }
@@ -720,7 +728,7 @@ impl NotesTool {
         let mut out = String::from("the standing notes the harness reads, in prompt order:\n");
         let mut total = 0usize;
         let mut unread: Vec<String> = Vec::new();
-        for src in sources(fs, &self.scope.global_dir()) {
+        for src in sources(fs, &self.scope.global_dir(), &self.scope.project_dir()) {
             let notes = match src.notes(fs) {
                 Ok(notes) => notes,
                 Err(why) => {
@@ -779,7 +787,7 @@ impl NotesTool {
     /// `AGENTS.md`; a path matches exactly or by its trailing components.
     fn read(&self, fs: &NoteFs<'_>, path: Option<&str>, name: Option<&str>) -> Invocation {
         let mut all: Vec<Note> = Vec::new();
-        for src in sources(fs, &self.scope.global_dir()) {
+        for src in sources(fs, &self.scope.global_dir(), &self.scope.project_dir()) {
             match src.notes(fs) {
                 Ok(notes) => all.extend(notes),
                 // A miss is an answer about the corpus, so it may not come from a reader that
@@ -812,7 +820,7 @@ impl NotesTool {
                         have == want
                     } else {
                         // A relative path matches by its trailing components, so a bare `foo.md` and
-                        // `.letibot/notes/foo.md` find one note.
+                        // `<key>/foo.md` find one note.
                         have == want || have.ends_with(&format!("/{want}"))
                     }
                 })
@@ -897,7 +905,7 @@ impl NotesTool {
         };
         let needle = query.to_lowercase();
         let mut all: Vec<Note> = Vec::new();
-        for src in sources(fs, &self.scope.global_dir()) {
+        for src in sources(fs, &self.scope.global_dir(), &self.scope.project_dir()) {
             match src.notes(fs) {
                 Ok(notes) => all.extend(notes),
                 Err(why) => {
@@ -1059,7 +1067,15 @@ impl NotesTool {
                 ),
             );
         }
-        let dir = fs.root.join(NOTES_DIR);
+        let dir = self.scope.project_dir();
+        if dir.as_os_str().is_empty() {
+            return Invocation::failed(
+                "this session has no notes directory",
+                "Nothing was written. The daemon names no notes repository for this project \
+                 (`[notes] repo` in leticode.toml, or a data directory), so there is nowhere \
+                 outside the tree to put a note.",
+            );
+        }
         let target = dir.join(format!("{stem}.md"));
         // A note that cannot be read is not an absent one: an `add` over it would overwrite text
         // nobody saw, and an `append` would grow a note from a guess at what it holds.
@@ -1104,18 +1120,21 @@ impl NotesTool {
                 // `append` and `replace` both refuse to create: a typo'd name
                 // that silently grows a new note is a note nobody meant, and
                 // the refusal is where the near-miss belongs.
-                let near: Vec<String> = match sources(fs, &self.scope.global_dir())[2].notes(fs) {
-                    Ok(notes) => notes
-                        .iter()
-                        .map(|n| {
-                            n.path
-                                .file_stem()
-                                .map(|s| s.to_string_lossy().to_string())
-                                .unwrap_or_default()
-                        })
-                        .collect(),
-                    Err(why) => {
-                        return Invocation::failed(
+                let near: Vec<String> =
+                    match sources(fs, &self.scope.global_dir(), &self.scope.project_dir())[2]
+                        .notes(fs)
+                    {
+                        Ok(notes) => notes
+                            .iter()
+                            .map(|n| {
+                                n.path
+                                    .file_stem()
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .unwrap_or_default()
+                            })
+                            .collect(),
+                        Err(why) => {
+                            return Invocation::failed(
                             format!(
                                 "no note named `{stem}` to {action}, and the project notes could \
                                  not be listed: {why}"
@@ -1124,8 +1143,8 @@ impl NotesTool {
                              that would hold one did not answer."
                                 .to_string(),
                         );
-                    }
-                };
+                        }
+                    };
                 let near_names = super::near_names(
                     &stem,
                     &near
@@ -1244,8 +1263,19 @@ impl NotesTool {
                  target, so a failure leaves the original untouched.",
             );
         }
+        // Committed where it landed when that is this box; a commit that fails leaves the note
+        // written, and the next write's `add -A` picks it up.
+        let committed = match self.scope.repo() {
+            Some(repo) if fs.on_backend(&target).is_none() => {
+                match crate::notes_repo::commit(&repo, &format!("{action} {stem}")) {
+                    Ok(()) => String::new(),
+                    Err(why) => format!("\nNot committed to the notes repository: {why}"),
+                }
+            }
+            _ => String::new(),
+        };
         let mut inv = Invocation::ok(format!(
-            "{said}: {}.\n{}\n\n{WHEN_READ}\n",
+            "{said}: {}.{committed}\n{}\n\n{WHEN_READ}\n",
             super::human(after.len() as u64),
             // What the index will lead with, said while the author can still change it: their
             // line, the first sentence, or the fact that there is no prose. It uses the reader's

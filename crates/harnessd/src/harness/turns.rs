@@ -1746,10 +1746,11 @@ impl Harness {
             // turn's results and handed to the engine as a trailing item `session.items` never sees. Not on a
             // compaction turn, where an offer would be settled against calls the summary never made.
             if !self.compacting {
-                // The corpus is read through the session's own backend: a note it wrote on a placed
-                // host is the one worth offering, and the daemon's copy of the tree is not.
+                // The instruction files through the session's own backend, the project's notes from
+                // the notes checkout.
                 let notes =
-                    crate::standing_notes::Reader::new(&*self.runtime.backend, &self.cfg.workspace);
+                    crate::standing_notes::Reader::new(&*self.runtime.backend, &self.cfg.workspace)
+                        .with_notes(self.cfg.project_notes());
                 // One subject for all four offers, embedded at most once and only when words
                 // leave the score undecided: the model's latest words, then the prompt and results.
                 let shared = Some(
@@ -2994,7 +2995,8 @@ impl Harness {
         let mut out = Vec::new();
         if let Some(o) = note {
             let notes =
-                crate::standing_notes::Reader::new(&*self.runtime.backend, &self.cfg.workspace);
+                crate::standing_notes::Reader::new(&*self.runtime.backend, &self.cfg.workspace)
+                    .with_notes(self.cfg.project_notes());
             out.push(rows::note_row(o, notes.read(&o.path).as_deref()));
         }
         for o in skills {

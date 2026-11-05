@@ -197,9 +197,9 @@ pub fn tree_roots(workspace: &Path) -> Vec<PathBuf> {
     roots
 }
 
-/// Every reference one note makes, resolved: the one entry point. `workspace` is the directory
-/// whose `.letibot/notes/` the harness reads, and [`tree_roots`] turns it into the trees searched.
-pub fn check(workspace: &Path, text: &str) -> ReferenceReport {
+/// Every reference one note makes, resolved: the one entry point. [`tree_roots`] turns
+/// `workspace` into the trees searched; `notes` is the directory a bare note name resolves in.
+pub fn check(workspace: &Path, notes: Option<&Path>, text: &str) -> ReferenceReport {
     let roots = tree_roots(workspace);
     let repo = roots.iter().find(|r| is_a_repo(r)).cloned();
 
@@ -245,6 +245,7 @@ pub fn check(workspace: &Path, text: &str) -> ReferenceReport {
 
     let ctx = Ctx {
         roots: &roots,
+        notes,
         repo: repo.as_deref(),
         symbol_hits: symbol_hits.as_ref(),
         shorthand: shorthand.as_ref(),
@@ -272,6 +273,7 @@ pub fn check(workspace: &Path, text: &str) -> ReferenceReport {
 /// `Uncheckable`, never `Unresolved`.
 struct Ctx<'a> {
     roots: &'a [PathBuf],
+    notes: Option<&'a Path>,
     repo: Option<&'a Path>,
     symbol_hits: Option<&'a HashMap<String, usize>>,
     shorthand: Option<&'a HashMap<String, Shorthand>>,
@@ -311,7 +313,7 @@ impl Ctx<'_> {
     }
 
     /// Where a token is, in the order the lookups are cheap and the answers specific: the path
-    /// under each root, then a bare name under that root's `.letibot/notes/`, then a git ref,
+    /// under each root, then a bare name in the notes directory, then a git ref,
     /// then the shorthand index.
     fn locate(&self, token: &str) -> Placement {
         for root in self.roots {
@@ -319,11 +321,13 @@ impl Ctx<'_> {
             if std::fs::metadata(&at).is_ok() {
                 return Placement::At(at);
             }
-            if !token.contains('/') {
-                let note = root.join(".letibot").join("notes").join(token);
-                if std::fs::metadata(&note).is_ok() {
-                    return Placement::At(note);
-                }
+        }
+        if !token.contains('/')
+            && let Some(notes) = self.notes
+        {
+            let note = notes.join(token);
+            if std::fs::metadata(&note).is_ok() {
+                return Placement::At(note);
             }
         }
         if let Some(repo) = self.repo
@@ -823,7 +827,7 @@ mod tests {
     }
 
     fn check_in(root: &Path, text: &str) -> ReferenceReport {
-        let r = check(root, text);
+        let r = check(root, None, text);
         let _ = std::fs::remove_dir_all(root);
         r
     }
@@ -1038,6 +1042,7 @@ mod tests {
         std::fs::write(root.join("crates/here.rs"), "one\n").expect("write");
         let r = check(
             &root,
+            None,
             "`crates/here.rs` and `some_symbol_here` and `3d5d273`.",
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -1094,7 +1099,7 @@ mod tests {
         let roots = tree_roots(&outer);
         assert_eq!(roots[0], outer, "the workspace is tried first");
         assert!(roots.contains(&repo), "{roots:?}");
-        let r = check(&outer, "the checker is `crates/tools/src/here.rs`.");
+        let r = check(&outer, None, "the checker is `crates/tools/src/here.rs`.");
         assert_eq!(r.repo.as_deref(), Some(repo.as_path()), "{:?}", r.repo);
         let path = r
             .references

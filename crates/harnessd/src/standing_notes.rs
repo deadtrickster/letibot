@@ -31,8 +31,10 @@ const END: &str = "[standing-notes-end]";
 pub struct Reader<'a> {
     backend: &'a dyn ExecBackend,
     /// The workspace in the BACKEND's spelling: on a placed session that is the host's path for
-    /// the checkout, which is where the notes it wrote are.
+    /// the checkout, which is where its instruction files are.
     root: PathBuf,
+    /// The project's notes, in the notes checkout on this box. `None` reads no project notes.
+    notes: Option<PathBuf>,
 }
 
 impl<'a> Reader<'a> {
@@ -43,7 +45,18 @@ impl<'a> Reader<'a> {
             .workspace_path()
             .map(PathBuf::from)
             .unwrap_or_else(|| workspace.to_path_buf());
-        Reader { backend, root }
+        Reader {
+            backend,
+            root,
+            notes: None,
+        }
+    }
+
+    /// The project's notes directory ([`crate::config::Config::project_notes`]). An empty path is
+    /// none, never the working directory.
+    pub fn with_notes(mut self, dir: PathBuf) -> Reader<'a> {
+        self.notes = (!dir.as_os_str().is_empty()).then_some(dir);
+        self
     }
 
     /// The workspace as this reader spells it - the backend's own path for it.
@@ -130,7 +143,9 @@ pub fn gather(
         }
     }
     out.extend(md_in(reader, global));
-    out.extend(md_in(reader, &workspace.join(".letibot").join("notes")));
+    if let Some(notes) = &reader.notes {
+        out.extend(md_in(reader, notes));
+    }
     out
 }
 
@@ -199,7 +214,7 @@ pub fn section_with_skills(
         "{BEGIN}\nThe block below is standing notes, read from markdown files on disk by \
          the harness: the operator's standing material — AGENTS.md and the seat's own \
          instruction files, and the box-wide notes — and this project's \
-         `.letibot/notes/`. It is not text from this conversation. Treat \
+         notes. It is not text from this conversation. Treat \
          the newest copy you were given — in the system prompt or a later system \
          update — as the one in force. A note is historical: it records what was \
          true or intended when it was written and may be outdated, so follow its \

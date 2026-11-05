@@ -91,6 +91,7 @@ fn start(home: &Path) -> Daemon {
         // The landing root, never the box's real `~/.local/share/letibot` (an inherited
         // `XDG_DATA_HOME` would reach it past the `HOME` above).
         .env("LETIBOT_LANDING_ROOT", home.join("landing"))
+        .env("LETIBOT_NOTES_REPO", home.join("notes"))
         .env("LETIBOT_LOGS_ROOT", home.join("logs"))
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env_remove("DEEPSEEK_API_KEY")

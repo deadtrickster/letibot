@@ -24,7 +24,8 @@ impl Fixture {
         let _ = std::fs::remove_dir_all(&base);
         let ws = base.join("ws");
         let global = base.join("global");
-        std::fs::create_dir_all(ws.join(".letibot/notes")).expect("ws");
+        std::fs::create_dir_all(&ws).expect("ws");
+        std::fs::create_dir_all(base.join("notes/proj")).expect("notes");
         std::fs::create_dir_all(&global).expect("global");
         // The reader spells the workspace as its backend does, which is the resolved path.
         let ws = ws.canonicalize().expect("a real path");
@@ -43,7 +44,12 @@ impl Fixture {
 
     /// The corpus as a session reads it: through its backend, rooted where it works.
     fn reader(&self) -> crate::standing_notes::Reader<'_> {
-        crate::standing_notes::Reader::new(&self.backend, &self.ws)
+        crate::standing_notes::Reader::new(&self.backend, &self.ws).with_notes(self.notes())
+    }
+
+    /// The project's notes, in a checkout beside the workspace and not inside it.
+    fn notes(&self) -> PathBuf {
+        self.ws.parent().expect("the base").join("notes/proj")
     }
 
     /// The one note the fixtures offer: an abstract and headings about the offer design, which is
@@ -53,7 +59,7 @@ impl Fixture {
         for h in headings {
             text.push_str(&format!("\n## {h}\n\nbody text about {h}\n"));
         }
-        let path = self.ws.join(".letibot/notes").join(format!("{stem}.md"));
+        let path = self.notes().join(format!("{stem}.md"));
         std::fs::write(&path, text).expect("fixture note");
         path
     }
@@ -252,7 +258,7 @@ fn a_read_of_the_offered_path_is_the_take_up() {
 
     // The path as `read` would spell it: workspace-relative, which is what the model sees, while
     // the offer names the absolute one.
-    let relative = ".letibot/notes/the-offer-and-the-tail.md";
+    let relative = "proj/the-offer-and-the-tail.md";
     let mut offers = Offers::new();
     assert!(offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &items));
     let settled = offers
@@ -334,10 +340,7 @@ fn nothing_is_said_when_nothing_is_earned() {
     let mut items = prompt(ABOUT);
     items.push(TranscriptItem::Assistant {
         text: String::new(),
-        tool_calls: vec![call(
-            "read",
-            r#"{"path":".letibot/notes/the-offer-and-the-tail.md"}"#,
-        )],
+        tool_calls: vec![call("read", r#"{"path":"proj/the-offer-and-the-tail.md"}"#)],
         truncated: false,
     });
     items.push(result("the note's own text, now permanent"));

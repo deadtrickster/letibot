@@ -13,8 +13,7 @@ description = "the merge queue: what the queue is doing now, what it has finishe
 
 [lib]
 # `cdylib` is the module the host loads; `rlib` is what this crate's own tests link, so the view is
-# asserted natively with no engine in the way — the measured rake this exists for is a committed
-# `.wasm` that had never been executed (`.letibot/notes/the-pane-contracts-two-look-keys.md`).
+# asserted natively with no engine in the way, since a committed `.wasm` was once never executed.
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

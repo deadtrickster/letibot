@@ -185,6 +185,9 @@ a `-w` sentinel with `rfind`, so a forged body cannot lie about headers.
 
 ## Rakes
 
+- Notes are not in this repository. The `notes` tool commits into a separate checkout
+  (`letibot notes path`, `docs/notes.md`), and `.letibot/` is gitignored. Agent scratch and
+  write-ups go in `scratch/` or their own repository, never in a commit here.
 - `scratch/` is gitignored. `answer-key.tsv`, which a test reads, lives at
   `crates/tools/tests/data/`. Nothing in the build reads `scratch/`.
 - Test targets that load the GGUF abort with a CUDA error while the model server holds the GPU.
