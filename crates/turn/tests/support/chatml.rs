@@ -31,7 +31,8 @@ use std::borrow::Cow;
 
 use letibot_dialect::{
     ControlRole, ControlToken, ControlTokens, DialectSpec, Guard, ParsedSpan, Parser,
-    ReasoningField, RenderSpan, StablePrefix, StopToken, SystemUpdateMode, TokenDecoder,
+    ReasoningField, RenderSpan, RenderState, StablePrefix, StopToken, SystemUpdateMode,
+    TokenDecoder,
 };
 use letibot_transcript::{ToolOutcome, TranscriptItem, UserPart};
 use letibot_turn::PromptRenderer;
@@ -90,7 +91,7 @@ enum Think {
     Closed,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Copy)]
 struct State {
     assistant_open: bool,
     think: Think,
@@ -98,15 +99,29 @@ struct State {
 
 pub struct ChatMlRenderer {
     spec: DialectSpec,
+    /// Items this renderer has walked out of a HISTORY to recover its boundary state. A test that
+    /// threads the state token expects this not to grow; it is the replay the token replaces.
+    replayed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Default for ChatMlRenderer {
     fn default() -> Self {
-        ChatMlRenderer { spec: spec() }
+        ChatMlRenderer {
+            spec: spec(),
+            replayed: Default::default(),
+        }
     }
 }
 
 impl ChatMlRenderer {
+    // Used by `render_state`, not by the other targets that include this module as source, so
+    // most of them report it unused.
+    #[allow(dead_code)]
+    /// The counter `replayed` above, shared with this renderer.
+    pub fn replays(&self) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        self.replayed.clone()
+    }
+
     // Used by `engine_decisions`, not by `live_qwen`; both include this module as
     // source, so one target always reports it unused.
     #[allow(dead_code)]
@@ -115,6 +130,7 @@ impl ChatMlRenderer {
     pub fn with_guards(guards: Vec<Guard>) -> Self {
         ChatMlRenderer {
             spec: DialectSpec { guards, ..spec() },
+            replayed: Default::default(),
         }
     }
 }
@@ -294,14 +310,46 @@ impl PromptRenderer for ChatMlRenderer {
         history: &[TranscriptItem],
         new_items: &[TranscriptItem],
     ) -> Vec<RenderSpan> {
-        let mut st = State::default();
-        if !history.is_empty() {
-            let mut discard = Vec::new();
-            render_items(history, &mut st, &mut discard);
-        }
+        self.render_incremental_by_item(history, new_items).0
+    }
+
+    /// One pass with the item seams, so the engine's ledger keeps a row per item and this fixture
+    /// pays what the real renderers pay. `ChatMl` merges nothing, so a seam is an item's end.
+    fn render_incremental_by_item(
+        &self,
+        history: &[TranscriptItem],
+        new_items: &[TranscriptItem],
+    ) -> (Vec<RenderSpan>, Vec<usize>) {
+        self.render_incremental_from(history, &mut RenderState::default(), new_items)
+    }
+
+    /// The boundary state carried in and out: the fixture has one, so a test that counts what a
+    /// series of appends costs measures the seam rather than a replay the fixture forced.
+    fn render_incremental_from(
+        &self,
+        history: &[TranscriptItem],
+        state: &mut RenderState,
+        new_items: &[TranscriptItem],
+    ) -> (Vec<RenderSpan>, Vec<usize>) {
+        let mut st = match state.as_state::<State>() {
+            Some(st) => *st,
+            None => {
+                self.replayed
+                    .fetch_add(history.len(), std::sync::atomic::Ordering::Relaxed);
+                let mut st = State::default();
+                let mut discard = Vec::new();
+                render_items(history, &mut st, &mut discard);
+                st
+            }
+        };
         let mut out = Vec::new();
-        render_items(new_items, &mut st, &mut out);
-        out
+        let mut ends = Vec::with_capacity(new_items.len());
+        for item in new_items {
+            render_items(std::slice::from_ref(item), &mut st, &mut out);
+            ends.push(out.len());
+        }
+        *state = RenderState::holding(st);
+        (out, ends)
     }
 
     fn generation_prompt(&self) -> Vec<RenderSpan> {

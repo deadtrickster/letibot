@@ -2,7 +2,7 @@
 //! this trait and [`RenderSpan`]. It must never gain a method returning `Vec<TokenId>`: spans
 //! are text plus control token, so a user's literal `<|assistant|>` cannot become a boundary.
 
-use letibot_dialect::{DialectSpec, RenderSpan, StablePrefix};
+use letibot_dialect::{DialectSpec, RenderSpan, RenderState, StablePrefix};
 use letibot_transcript::TranscriptItem;
 
 pub trait PromptRenderer: Send + Sync {
@@ -39,6 +39,19 @@ pub trait PromptRenderer: Send + Sync {
             ends.push(all.len());
         }
         (all, ends)
+    }
+
+    /// [`Self::render_incremental_by_item`] with the boundary state carried in and out of `state`:
+    /// a caller that appends more than once threads one token and skips the replay. `history` stays
+    /// an argument, because a renderer that keeps no token, or is handed another's, replays it.
+    fn render_incremental_from(
+        &self,
+        history: &[TranscriptItem],
+        state: &mut RenderState,
+        new_items: &[TranscriptItem],
+    ) -> (Vec<RenderSpan>, Vec<usize>) {
+        let _ = state;
+        self.render_incremental_by_item(history, new_items)
     }
 
     /// What the model is handed to start speaking, e.g. `<|assistant|><think>`. Not part of a
@@ -98,6 +111,26 @@ pub mod glm {
             new_items: &[TranscriptItem],
         ) -> Vec<RenderSpan> {
             self.renderer.render_incremental(history, new_items)
+        }
+
+        /// The one pass that also says where each item ends, and the token a caller carries
+        /// across appends. The wrapped renderer is the only thing that reads the token's type.
+        fn render_incremental_by_item(
+            &self,
+            history: &[TranscriptItem],
+            new_items: &[TranscriptItem],
+        ) -> (Vec<RenderSpan>, Vec<usize>) {
+            self.renderer.render_incremental_by_item(history, new_items)
+        }
+
+        fn render_incremental_from(
+            &self,
+            history: &[TranscriptItem],
+            state: &mut RenderState,
+            new_items: &[TranscriptItem],
+        ) -> (Vec<RenderSpan>, Vec<usize>) {
+            self.renderer
+                .render_incremental_from(history, state, new_items)
         }
 
         fn generation_prompt(&self) -> Vec<RenderSpan> {

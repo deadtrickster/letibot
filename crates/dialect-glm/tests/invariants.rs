@@ -1,7 +1,7 @@
 //! The two round-trip invariants plus GLM's own.
 //! Property tests over an exhaustively enumerated transcript space, since the renderer is a pure function.
 
-use letibot_dialect::{ParsedSpan, Parser, RenderSpan, StablePrefix, spans_to_string};
+use letibot_dialect::{ParsedSpan, Parser, RenderSpan, RenderState, StablePrefix, spans_to_string};
 use letibot_dialect_glm::{
     Anomaly, GlmParser, GlmRenderer, TableDecoder, check_transcript, generation_prompt,
     glm_tool_json, tokens,
@@ -144,6 +144,70 @@ fn render_incremental_agrees_with_render() {
         }
     });
     assert_eq!(checked, 323_847, "the enumeration changed shape");
+}
+
+/// The token a caller carries, with no history after the first call: the three appends must
+/// build the prompt one render would. `Session::append_items` now takes this path, and the
+/// history it no longer passes is exactly what used to make each append a replay.
+#[test]
+fn a_carried_token_agrees_where_the_history_is_not_passed_again() {
+    let r = GlmRenderer::new();
+    let p = prefix();
+    each_transcript(4, |items| {
+        for k in 0..=items.len() {
+            for j in k..=items.len() {
+                let mut state = RenderState::default();
+                let mut built = r.render(&p, &items[..k]);
+                built.extend(r.render_incremental_from(&items[..k], &mut state, &[]).0);
+                built.extend(r.render_incremental_from(&[], &mut state, &items[k..j]).0);
+                built.extend(r.render_incremental_from(&[], &mut state, &items[j..]).0);
+                assert_eq!(
+                    spans_to_string(&built),
+                    spans_to_string(&r.render(&p, items)),
+                    "carried token diverged at k={k} j={j} for {items:?}"
+                );
+            }
+        }
+    });
+}
+
+/// A token from another renderer is not a guess: it falls back to the history, so a session that
+/// lost its token renders the same prompt, only slower. Rendering from the default state instead
+/// would leave this transcript's assistant turn open.
+#[test]
+fn another_renderers_token_falls_back_to_the_history() {
+    let r = GlmRenderer::new();
+    let items = [user("hi"), reasoning("thinking"), assistant("said")];
+    let mut foreign = RenderState::holding(7u8);
+    let (spans, ends) = r.render_incremental_from(&items[..2], &mut foreign, &items[2..]);
+    assert_eq!(ends.len(), 1);
+    assert_eq!(
+        spans_to_string(&spans),
+        spans_to_string(&r.render_incremental(&items[..2], &items[2..])),
+        "a foreign token must read as the history, not as a fresh state"
+    );
+}
+
+/// One pass with the item seams: each item's slice is its own, and the batch is their
+/// concatenation. GLM merges nothing, so cutting at the seams is the same prompt.
+#[test]
+fn the_seams_cut_the_batch_into_one_piece_per_item() {
+    let r = GlmRenderer::new();
+    let p = prefix();
+    each_transcript(3, |items| {
+        for k in 0..=items.len() {
+            let (spans, ends) = r.render_incremental_by_item(&items[..k], &items[k..]);
+            assert_eq!(ends.len(), items.len() - k);
+            assert_eq!(ends.last().copied().unwrap_or(0), spans.len());
+            let mut cut = r.render(&p, &items[..k]);
+            cut.extend(spans);
+            assert_eq!(
+                spans_to_string(&cut),
+                spans_to_string(&r.render(&p, items)),
+                "the seams moved the prompt at k={k} for {items:?}"
+            );
+        }
+    });
 }
 
 /// The same, appending a whole batch rather than one item - which is what a turn

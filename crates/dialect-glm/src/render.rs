@@ -5,13 +5,13 @@
 use crate::ReasoningEffort;
 use crate::json::arg_value_text;
 use crate::tokens as tk;
-use letibot_dialect::{ControlToken, RenderSpan, StablePrefix};
+use letibot_dialect::{ControlToken, RenderSpan, RenderState, StablePrefix};
 use letibot_transcript::{ToolOutcome, TranscriptItem, UserPart};
 use serde_json::Value;
 
 /// GLM's hand-written renderer: a pure function of `(effort, prefix, items)`, kept as a
-/// differential against the template. Appending takes the history, which is what the
-/// boundary state needs.
+/// differential against the template. Appending recovers its boundary state from the history
+/// unless a caller hands back the token a previous append left.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GlmRenderer {
     effort: ReasoningEffort,
@@ -41,22 +41,52 @@ impl GlmRenderer {
     }
 
     /// The spans to append to a render of `history`, for `new_items`: must agree with
-    /// [`GlmRenderer::render`], which is what the append-only design rests on. `history` is the
-    /// whole transcript, not a count, because the boundary state is not derivable from one.
+    /// [`GlmRenderer::render`], which is what the append-only design rests on.
     pub fn render_incremental(
         &self,
         history: &[TranscriptItem],
         new_items: &[TranscriptItem],
     ) -> Vec<RenderSpan> {
-        let mut st = State::default();
-        if !history.is_empty() {
-            // Replay the already-rendered items for their effect on the state only.
-            let mut discard = Vec::new();
-            render_items(history, &mut st, &mut discard);
-        }
+        self.render_incremental_by_item(history, new_items).0
+    }
+
+    /// [`Self::render_incremental`], and the span each item ends at. One pass: every item's
+    /// spans are its own, so the seams are where a caller cuts the batch into ledger rows.
+    pub fn render_incremental_by_item(
+        &self,
+        history: &[TranscriptItem],
+        new_items: &[TranscriptItem],
+    ) -> (Vec<RenderSpan>, Vec<usize>) {
+        self.render_incremental_from(history, &mut RenderState::default(), new_items)
+    }
+
+    /// The same, seeded from the boundary state a previous call left in `state` and leaving the
+    /// state after `new_items` there. A caller that appends in batches carries one token and
+    /// never replays; `history` is only read when the token is absent or another renderer's.
+    pub fn render_incremental_from(
+        &self,
+        history: &[TranscriptItem],
+        state: &mut RenderState,
+        new_items: &[TranscriptItem],
+    ) -> (Vec<RenderSpan>, Vec<usize>) {
+        let mut st = match state.as_state::<State>() {
+            Some(st) => *st,
+            None => {
+                // Replay the already-rendered items for their effect on the state only.
+                let mut st = State::default();
+                let mut discard = Vec::new();
+                render_items(history, &mut st, &mut discard);
+                st
+            }
+        };
         let mut out = Vec::new();
-        render_items(new_items, &mut st, &mut out);
-        out
+        let mut ends = Vec::with_capacity(new_items.len());
+        for item in new_items {
+            render_item(item, &mut st, &mut out);
+            ends.push(out.len());
+        }
+        *state = RenderState::holding(st);
+        (out, ends)
     }
 }
 
@@ -71,7 +101,7 @@ enum Think {
     Closed,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 struct State {
     assistant_open: bool,
     think: Think,

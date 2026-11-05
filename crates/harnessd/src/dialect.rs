@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use letibot_dialect::{DialectSpec, Parser, RenderSpan, StablePrefix};
+use letibot_dialect::{DialectSpec, Parser, RenderSpan, RenderState, StablePrefix};
 use letibot_transcript::TranscriptItem;
 use letibot_turn::PromptRenderer;
 use serde_json::Value;
@@ -149,6 +149,24 @@ impl PromptRenderer for GlmAdapter {
     ) -> Vec<RenderSpan> {
         self.renderer.render_incremental(history, new_items)
     }
+    /// GLM merges nothing, so one pass over the batch cuts at exactly the item seams - which is
+    /// what the trait's default, one replay per item, buys at a quadratic price.
+    fn render_incremental_by_item(
+        &self,
+        history: &[TranscriptItem],
+        new_items: &[TranscriptItem],
+    ) -> (Vec<RenderSpan>, Vec<usize>) {
+        self.renderer.render_incremental_by_item(history, new_items)
+    }
+    fn render_incremental_from(
+        &self,
+        history: &[TranscriptItem],
+        state: &mut RenderState,
+        new_items: &[TranscriptItem],
+    ) -> (Vec<RenderSpan>, Vec<usize>) {
+        self.renderer
+            .render_incremental_from(history, state, new_items)
+    }
     fn generation_prompt(&self) -> Vec<RenderSpan> {
         letibot_dialect_glm::generation_prompt()
     }
@@ -184,6 +202,15 @@ impl PromptRenderer for QwenAdapter {
         new_items: &[TranscriptItem],
     ) -> (Vec<RenderSpan>, Vec<usize>) {
         self.renderer.render_incremental_by_item(history, new_items)
+    }
+    fn render_incremental_from(
+        &self,
+        history: &[TranscriptItem],
+        state: &mut RenderState,
+        new_items: &[TranscriptItem],
+    ) -> (Vec<RenderSpan>, Vec<usize>) {
+        self.renderer
+            .render_incremental_from(history, state, new_items)
     }
     fn generation_prompt(&self) -> Vec<RenderSpan> {
         letibot_dialect_qwen::generation_prompt()

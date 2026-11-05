@@ -14,7 +14,7 @@
 //! renders the batch and says where each item ends, which is what lets `Session::append_items` keep
 //! one ledger row per item under a prompt that carries one turn per run.
 
-use letibot_dialect::{RenderSpan, StablePrefix};
+use letibot_dialect::{RenderSpan, RenderState, StablePrefix};
 use letibot_transcript::{ToolCall, ToolOutcome, TranscriptItem, UserPart};
 use serde_json::Value;
 
@@ -137,14 +137,31 @@ impl QwenRenderer {
         history: &[TranscriptItem],
         new_items: &[TranscriptItem],
     ) -> (Vec<RenderSpan>, Vec<usize>) {
-        let mut st = State::default();
-        if !history.is_empty() {
-            let mut discard = Vec::new();
-            render_items(history, &mut st, &mut discard, None);
-        }
+        self.render_incremental_from(history, &mut RenderState::default(), new_items)
+    }
+
+    /// The same, seeded from the boundary state a previous call left in `state` and leaving the
+    /// state after `new_items` there. A caller that appends in batches carries one token and
+    /// never replays; `history` is only read when the token is absent or another renderer's.
+    pub fn render_incremental_from(
+        &self,
+        history: &[TranscriptItem],
+        state: &mut RenderState,
+        new_items: &[TranscriptItem],
+    ) -> (Vec<RenderSpan>, Vec<usize>) {
+        let mut st = match state.as_state::<State>() {
+            Some(st) => *st,
+            None => {
+                let mut st = State::default();
+                let mut discard = Vec::new();
+                render_items(history, &mut st, &mut discard, None);
+                st
+            }
+        };
         let mut out = Vec::new();
         let mut ends = Vec::with_capacity(new_items.len());
         render_items(new_items, &mut st, &mut out, Some(&mut ends));
+        *state = RenderState::holding(st);
         (out, ends)
     }
 
@@ -882,6 +899,120 @@ mod tests {
             assert_eq!(ends.len(), k);
             assert_eq!(ends.last().copied().unwrap_or(0), spans.len());
         }
+    }
+
+    /// The token a caller carries, with the history given to the first call only: three appends
+    /// must build what three replays build. The splits land inside a run of tool results, which is
+    /// the state a `usize` cannot carry - `tool_turn_open` is what decides whether the second call
+    /// may write the run's `<|im_end|>`.
+    #[test]
+    fn a_carried_token_builds_what_the_replays_build() {
+        let items = [
+            user("Compare a and b."),
+            TranscriptItem::Assistant {
+                text: String::new(),
+                tool_calls: vec![
+                    ToolCall {
+                        id: "c1".into(),
+                        name: "read".into(),
+                        arguments: r#"{"path":"a"}"#.into(),
+                    },
+                    ToolCall {
+                        id: "c2".into(),
+                        name: "read".into(),
+                        arguments: r#"{"path":"b"}"#.into(),
+                    },
+                ],
+                truncated: false,
+            },
+            TranscriptItem::ToolResult {
+                call_id: "c1".into(),
+                name: "read".into(),
+                outcome: ToolOutcome::Ok,
+                payload: "alpha".into(),
+                edit: None,
+                origin: None,
+                media: None,
+            },
+            TranscriptItem::ToolResult {
+                call_id: "c2".into(),
+                name: "read".into(),
+                outcome: ToolOutcome::Ok,
+                payload: "beta".into(),
+                edit: None,
+                origin: None,
+                media: None,
+            },
+            user("Thanks."),
+        ];
+        let r = QwenRenderer::new();
+        for k in 0..=items.len() {
+            for j in k..=items.len() {
+                let mut state = RenderState::default();
+                let mut carried = r.render_incremental_from(&[], &mut state, &items[..k]).0;
+                carried.extend(r.render_incremental_from(&[], &mut state, &items[k..j]).0);
+                carried.extend(r.render_incremental_from(&[], &mut state, &items[j..]).0);
+
+                let mut replayed = r.render_incremental(&[], &items[..k]);
+                replayed.extend(r.render_incremental(&items[..k], &items[k..j]));
+                replayed.extend(r.render_incremental(&items[..j], &items[j..]));
+                assert_eq!(
+                    spans_to_string(&carried),
+                    spans_to_string(&replayed),
+                    "carried token diverged at k={k} j={j}"
+                );
+            }
+        }
+        // A split at a run boundary is the ordinary case, and there the appends must also be the
+        // whole render: a run split ACROSS appends is two turns, which is the template's rule and
+        // not something a token could fix - `append_items` is handed a whole run.
+        let p = prefix("Be terse.", &[]);
+        let mut state = RenderState::default();
+        let mut appends = r.render(&p, &[]);
+        appends.extend(r.render_incremental_from(&[], &mut state, &items[..2]).0);
+        appends.extend(r.render_incremental_from(&[], &mut state, &items[2..4]).0);
+        appends.extend(r.render_incremental_from(&[], &mut state, &items[4..]).0);
+        assert_eq!(
+            spans_to_string(&appends),
+            spans_to_string(&r.render(&p, &items)),
+            "the appends are not the whole render"
+        );
+    }
+
+    /// A token from another renderer falls back to the history rather than to a fresh state: the
+    /// second call would otherwise open a second user turn for a run that is still going.
+    #[test]
+    fn another_renderers_token_falls_back_to_the_history() {
+        let r = QwenRenderer::new();
+        let history = [
+            user("Compare a and b."),
+            TranscriptItem::Assistant {
+                text: "Reading both.".into(),
+                tool_calls: vec![ToolCall {
+                    id: "c1".into(),
+                    name: "read".into(),
+                    arguments: r#"{"path":"a"}"#.into(),
+                }],
+                truncated: false,
+            },
+        ];
+        let batch = [TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "read".into(),
+            outcome: ToolOutcome::Ok,
+            payload: "alpha".into(),
+            edit: None,
+            origin: None,
+            media: None,
+        }];
+        let mut foreign = RenderState::holding(7u8);
+        let (spans, ends) = r.render_incremental_from(&history, &mut foreign, &batch);
+        assert_eq!(ends.len(), 1);
+        assert_eq!(
+            spans_to_string(&spans),
+            spans_to_string(&r.render_incremental(&history, &batch)),
+            "a foreign token must read as the history, not as a fresh state"
+        );
     }
 
     /// The template's own bytes for a run of two results, copied from its `messages` loop:

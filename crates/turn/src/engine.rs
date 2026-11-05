@@ -20,7 +20,8 @@ use std::time::Instant;
 
 use letibot_backend::BackendCaps;
 use letibot_dialect::{
-    ControlRole, DialectSpec, Parser, ReasoningField, RenderSpan, StablePrefix, TokenDecoder,
+    ControlRole, DialectSpec, Parser, ReasoningField, RenderSpan, RenderState, StablePrefix,
+    TokenDecoder,
 };
 use letibot_tokencore::{
     ControlMap, TokenId, TokenLedger, Vocab, VocabDecoder, resolve, resolve_stops, tokenize_spans,
@@ -395,6 +396,7 @@ impl TurnEngine {
             items: Vec::new(),
             witness: None,
             turn_seq: 0,
+            render_state: (0, RenderState::default()),
         })
     }
 }
@@ -407,6 +409,10 @@ pub struct Session {
     pub items: Vec<TranscriptItem>,
     witness: Option<PrefixWitness>,
     turn_seq: u64,
+    /// The renderer's boundary state at the end of `items`, with the item count it was taken at.
+    /// A token from any other length is not trusted: a turn's rows are committed as streamed ids
+    /// that no render produced, and a fold rolls items back, so a stale token would move a boundary.
+    render_state: (usize, RenderState),
 }
 
 impl Session {
@@ -425,6 +431,7 @@ impl Session {
             items,
             witness: None,
             turn_seq,
+            render_state: (0, RenderState::default()),
         }
     }
 
@@ -451,9 +458,18 @@ impl Session {
         progress: &mut dyn FnMut(u64, u64),
     ) -> Result<(), EngineError> {
         let total = new_items.len() as u64;
-        let (spans, ends) = engine
-            .renderer
-            .render_incremental_by_item(&self.items, new_items);
+        // The token is taken out and only put back when the whole batch lands. A partial append
+        // would leave a state describing rows the transcript does not hold, and a length check
+        // cannot see that when the item that failed was the batch's first.
+        let mut state = if self.render_state.0 == self.items.len() {
+            std::mem::take(&mut self.render_state.1)
+        } else {
+            RenderState::default()
+        };
+        let (spans, ends) =
+            engine
+                .renderer
+                .render_incremental_from(&self.items, &mut state, new_items);
         if ends.len() != new_items.len() {
             // A renderer that answers the wrong number of seams cannot be trusted to have put the
             // items in the order it was handed, so the ledger would record the wrong text.
@@ -486,6 +502,7 @@ impl Session {
             });
             progress(done as u64 + 1, total);
         }
+        self.render_state = (self.items.len(), state);
         Ok(())
     }
 
@@ -585,12 +602,17 @@ impl TurnEngine {
         })?;
         let mut prompt = session.ledger.tokens().to_vec();
         // The round's tail, rendered by the transcript's renderer and appended after everything the
-        // ledger holds. One pass for the whole tail, as `append_items_reporting` explains. The seams
-        // are not wanted: nothing is written.
+        // ledger holds. The token is COPIED, not moved: nothing of the tail is written, so the state
+        // the transcript stands at must not move with it - and without it every round replays all.
         if !tail.is_empty() {
-            let (spans, _) = self
-                .renderer
-                .render_incremental_by_item(&session.items, tail);
+            let mut state = if session.render_state.0 == session.items.len() {
+                session.render_state.1.clone()
+            } else {
+                RenderState::default()
+            };
+            let (spans, _) =
+                self.renderer
+                    .render_incremental_from(&session.items, &mut state, tail);
             prompt.extend_from_slice(&self.tokenize(&spans)?);
         }
         prompt.extend_from_slice(&lead);

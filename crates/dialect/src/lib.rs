@@ -28,6 +28,49 @@ pub enum RenderSpan {
     Control(ControlToken),
 }
 
+/// A renderer's boundary state at the end of a batch: what the next append needs and a `usize`
+/// cannot say (is an assistant turn open, was `<think>` closed). Opaque on purpose - only the
+/// renderer that boxed a token can read it back.
+#[derive(Default)]
+pub struct RenderState(Option<Box<dyn Cloneable>>);
+
+/// What a token's box has to answer: the renderer's own type back, and a copy of it. A second
+/// trait because `Box<dyn Any>` cannot be cloned, and a caller that renders something it will not
+/// commit (a request's tail) must not consume the state the transcript stands at.
+trait Cloneable: Send + Sync {
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn copied(&self) -> Box<dyn Cloneable>;
+}
+
+impl<S: std::any::Any + Clone + Send + Sync> Cloneable for S {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn copied(&self) -> Box<dyn Cloneable> {
+        Box::new(self.clone())
+    }
+}
+
+impl Clone for RenderState {
+    fn clone(&self) -> RenderState {
+        RenderState(self.0.as_deref().map(|b: &dyn Cloneable| b.copied()))
+    }
+}
+
+impl RenderState {
+    /// A token holding `state`, which only a renderer of that type reads back.
+    pub fn holding<S: std::any::Any + Clone + Send + Sync>(state: S) -> RenderState {
+        RenderState(Some(Box::new(state)))
+    }
+
+    /// The state as `S`. `None` means the start of a transcript or another renderer's token, and
+    /// both are answered the same way: the caller replays the history, which is slower and right.
+    pub fn as_state<S: std::any::Any>(&self) -> Option<&S> {
+        let held: &dyn Cloneable = self.0.as_deref()?;
+        held.as_any().downcast_ref::<S>()
+    }
+}
+
 /// A control token, identified symbolically and literally. The `literal` is what the shipped
 /// jinja emits and what the fidelity gate checks; the `role` is what `Parser` and the
 /// invariant tests reason about. `Cow` because a GGUF-loaded dialect cannot be `&'static`.
@@ -332,6 +375,36 @@ mod tests {
         ControlToken::borrowed(ControlRole::TurnEnd, "<|endoftext|>"),
         ControlToken::borrowed(ControlRole::TurnEnd, "<|eot_id|>"),
     ];
+
+    /// A copied token is a copy: a caller that renders something it will not commit (a request's
+    /// tail) must leave the transcript's own state where it stood. Sharing it would move the next
+    /// append's boundary.
+    #[test]
+    fn a_copied_token_does_not_move_with_the_copy() {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+        struct State(u8);
+
+        let held = RenderState::holding(State(1));
+        let mut copy = held.clone();
+        assert_eq!(
+            copy.as_state::<State>(),
+            Some(&State(1)),
+            "a copy starts where it was taken"
+        );
+        // What a renderer does with the token it is handed: write the state it ended at back.
+        copy = RenderState::holding(State(9));
+        assert_eq!(held.as_state::<State>(), Some(&State(1)));
+        assert_eq!(copy.as_state::<State>(), Some(&State(9)));
+        assert_eq!(held.clone().as_state::<State>(), Some(&State(1)));
+        assert_eq!(
+            RenderState::default().clone().as_state::<State>(),
+            None,
+            "an empty token stays empty"
+        );
+        // And a renderer's token is not another's: the type is the token's identity.
+        assert_eq!(held.as_state::<u64>(), None);
+        assert_eq!(held.as_state::<State>(), Some(&State(1)));
+    }
 
     #[test]
     fn a_control_literal_inside_user_text_stays_text() {
