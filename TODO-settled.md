@@ -7517,3 +7517,59 @@ than fixed for that release, and every one has since landed:
 settled: items 1 `51026bb3` (`crates/tools/src/exec/open.rs`), 2 `83a364d6`, 3 `c3138603`, 4
 `crates/provider/src/marks.rs`, 5 `crates/room/src/store.rs`, 6 `crates/bridge/src/fleet.rs`, all
 on main
+
+## R104 - A ⌘-chord reaches the head as its plain letter, because rano drops the super bit - **SETTLED 2026-11-05**
+
+**settled:** rano 832d00b (`legacy_bytes` swallows a super chord, test `a_pane_gets_legacy_bytes_under_the_kitty_keyboard`) and letibot 05fb6f04 (test `the_pane_gets_legacy_bytes_under_the_kitty_keyboard`: `CSI 99;9u` and `CSI 99;13u` deliver nothing to a pane, plain `c` and ctrl-c still do). The operator ruled 2026-11-05: cmd chords are swallowed, the head owns cmd.
+
+MEASURED 2026-10-29 on this box, rano pinned at `bf3fa48`: the operator selects with the mouse
+and types ⌘C. The text is copied (the terminal's own copy, and this head's drag release), **and a
+`c` lands in the composer** — because the chord never arrives as a chord. Ghostty sends it as
+`CSI 99;9u` (modifier 9 = 1 + 8, and bit 8 is super — this head does ask for the kitty keyboard),
+and:
+
+* rano's `Mods::from_bits` is `Mods(b & 7)` (`src/term/event.rs:27-29`, and there is no super
+  constant at all), so the bit is discarded before any letibot code sees it; — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter
+* `kitty_key` then re-encodes the character through `kitty_legacy`, which carries alt and ctrl
+  only (`src/term/decode.rs:402-421`, `482-512`), so `CSI 99;9u` decodes to `Key::Char('c')` with
+  empty mods; — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter
+* and the one door to the raw bytes is lossy the same way — `Terminal::raw_input` answers
+  `legacy_bytes` under the kitty keyboard (`src/term/terminal.rs:504-514`). — ✓ fixed in rano 832d00b (`legacy_bytes` drops a `CSI … u` carrying the super bit), test the_pane_gets_legacy_bytes_under_the_kitty_keyboard.
+
+**The fix is two lines in rano**, not in this tree: keep the bit in `Mods::from_bits`, and in
+`kitty_key` emit `Char(ch)` **with its mods** when a bit the legacy spelling cannot carry is set.
+Verified against a scratch copy of the pinned rev: both `CSI 99;9u` and `CSI 99;13u` then decode
+to nothing, every existing decode test still passes, and **letibot needs no change** — `key()`'s
+last character arm already answers `None` for a modifier it does not bind. — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter; the head's own bindings landed in 8eaa4985, so "letibot needs no change" was not quite so.
+
+**And ⌘⌃C is worse than the report**: with the super bit masked it decodes to `CtrlC`, which
+interrupts the turn instead of copying. — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter (both bits are kept and the head answers nothing)
+
+`crates/tui/src/app/tests/keys.rs` carries a characterization test pinning today's decode
+(`a_cmd_chord_arrives_as_its_plain_character_because_rano_drops_the_super_bit`), written to fail
+loudly with instructions the day rano keeps the bit, and
+`a_selection_does_not_swallow_what_is_typed` refuses the tempting wrong fix (a head that goes deaf
+under a selection). — ✓ fixed in 8eaa4985, test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter (the characterization test and its file are gone; a_selection_does_not_swallow_what_is_typed is at `crates/tui/src/app/tests/editor.rs:1136`)
+**Still open?** `printf '\033[99;9u'` into the key decoder, or press ⌘C over a selection after a
+rano bump — a `c` in the composer means it is still rano's. — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter — the decoder is fed exactly those bytes and no `c` comes out
+
+---
+
+## R122 - Tool output that is a diff is drawn plain - **SETTLED 2026-11-05**
+
+A command's stdout is not a terminal, so git turns colour off: `git show --stat`, `git diff` and
+`git log -p` reach the operator with no green `+` and red `-`. Forcing colour (`color.ui=always`)
+is wrong, because the escape codes reach the model too, cost tokens and garble what it reads.
+
+The head colours instead, and the model keeps the plain text. rano paints a tool row's body that
+reads as a diff or a diffstat: `+` lines added, `-` lines removed, `@@` hunk headers and
+`diff --git`/`---`/`+++` file headers, and the `++++----` bars of a `--stat` line. letibot only
+tells rano the body is command output; rano decides it is a diff (rano draws, see the rano blend).
+
+**settled:** rano 548f86b (`src/agent/diffbody.rs`, painted in `ToolRow::layout` for a command verb; tests `a_commands_diff_body_is_painted_and_a_flag_list_is_not`, `ls_l_and_a_flag_list_are_not_painted`) and letibot bc5e66fa (test `a_diff_body_is_coloured_and_a_dash_line_of_other_output_is_not`). letibot needed no code change: the tool name already tells rano the body is command output.
+
+**Done when**: a `git show --stat` and a `git diff` row in a letibot head are coloured like a
+terminal's git; the transcript and the model's view hold no escape codes; a test pins that a line
+which merely starts with `-` in non-diff output (a `ls -l`, a flag list) is not painted.
+
+---

@@ -48,11 +48,9 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R93 | What the model is told: tics, leaked numbers, contradictions, schema mismatches | Code work | item 3 (B1), item 7 (the F findings the named ones do not cover), item 8 (a fabric memory body no tool reads, and the fabric block's time changing per open) |
 | R74 | What the 2026-10-11 landings left open | Code work | item 20 (the rest of the report sink's sites, 18 of them routed), item 39 (a live gate on lubuntu1/2), item 40 (the inline blocks over 800 lines) |
 | R95 | A variable an earlier command assigned is unread in the next one | Code work, after the release | an `export` in one `bash` call still does not reach the next: the model's command is a one-shot spawn and `SessionEnv::observe` has no production caller; the stateful shell needs the deny-list of section 4j.5 |
-| R104 | A cmd-chord reaches the head as its plain letter (rano drops the super bit) | Code work | rano's `legacy_bytes` still turns a `CSI ... u` into the legacy spelling, so cmd-C still types a `c` into a `!term` pane - a decision, not a line |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | `Hub::turn_in_flight` (`crates/sessionlog/src/hub.rs:1632`) still reads the round, not `ends_turn`; a round with no calls followed by a nudge still says `true`; unclear: leticl's `:turn-finished` arm reading `ends_turn` is in another repo, check there |
 | T15 | Replace section 10's compaction design with structural eviction | Code work | a standalone `prune` |
 | R121 | What a command boundary holds is hardcoded and invisible | Code work | grants/env/hide as config with documented defaults, one candidate list for Linux and macOS, a `/boundary` view and `letibot boundary`, refusals that name the key, the top-level and default subagent perimeters as config, children narrow and widening is an ask |
-| R122 | Tool output that is a diff is drawn plain | Code work, after the release | rano colours a diff or diffstat body in the head; the model keeps plain text |
 | R124 | The package waiter exits on every provider stall | Code work | all of it: a `wait` option (or default) that rides over a stall while the request is open and still exits on rate limit, quota and timeout |
 | R105 | The work order after the 2026-11-01 review | Code work | step 4's four live facts on lab2x1, step 6's comment rule (486 blocks over three lines by `scripts/comment-blocks.py count`), step 8's two decisions (JS engine source, JS-side contract), step 9 (the backlog entries in this file) |
 | R114 | Embeddings as the second similarity tier, for every similarity caller | Code work | item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase case scored against the worst measured negative, the per-round cost on lab2x1 |
@@ -441,43 +439,6 @@ merge; without it, the seed is the whole of what the gate can honestly resolve.
 
 ---
 
-## R104 - A ⌘-chord reaches the head as its plain letter, because rano drops the super bit
-
-**Status:** open, filed 2026-10-29, rano's. The chord reaches the head as a chord (46f8409b, rano f4c624e). left: rano's `legacy_bytes` still turns a `CSI ... u` into the legacy spelling and that is the door a `!term` pane's program reads, so cmd-C still types a `c` into a pane - a decision, not a line (rechecked at rano v0.10.1).
-
-MEASURED 2026-10-29 on this box, rano pinned at `bf3fa48`: the operator selects with the mouse
-and types ⌘C. The text is copied (the terminal's own copy, and this head's drag release), **and a
-`c` lands in the composer** — because the chord never arrives as a chord. Ghostty sends it as
-`CSI 99;9u` (modifier 9 = 1 + 8, and bit 8 is super — this head does ask for the kitty keyboard),
-and:
-
-* rano's `Mods::from_bits` is `Mods(b & 7)` (`src/term/event.rs:27-29`, and there is no super
-  constant at all), so the bit is discarded before any letibot code sees it; — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter
-* `kitty_key` then re-encodes the character through `kitty_legacy`, which carries alt and ctrl
-  only (`src/term/decode.rs:402-421`, `482-512`), so `CSI 99;9u` decodes to `Key::Char('c')` with
-  empty mods; — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter
-* and the one door to the raw bytes is lossy the same way — `Terminal::raw_input` answers
-  `legacy_bytes` under the kitty keyboard (`src/term/terminal.rs:504-514`). — OPEN: rano's `legacy_bytes` still turns a `CSI … u` into the legacy spelling (`crates/tui/src/app/keys/input.rs:571` pins it) and that is the door a `!term` pane's program reads (`crates/tui/src/head.rs:1041`), so ⌘C still types a `c` into a pane — a decision, not a line. Rechecked at rano v0.10.1 (4e16345f): the super bit is still carried and the head's chord test passes on it, and `Terminal::raw_input` still answers `legacy_bytes`, so this bullet stays open.
-
-**The fix is two lines in rano**, not in this tree: keep the bit in `Mods::from_bits`, and in
-`kitty_key` emit `Char(ch)` **with its mods** when a bit the legacy spelling cannot carry is set.
-Verified against a scratch copy of the pinned rev: both `CSI 99;9u` and `CSI 99;13u` then decode
-to nothing, every existing decode test still passes, and **letibot needs no change** — `key()`'s
-last character arm already answers `None` for a modifier it does not bind. — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter; the head's own bindings landed in 8eaa4985, so "letibot needs no change" was not quite so.
-
-**And ⌘⌃C is worse than the report**: with the super bit masked it decodes to `CtrlC`, which
-interrupts the turn instead of copying. — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter (both bits are kept and the head answers nothing)
-
-`crates/tui/src/app/tests/keys.rs` carries a characterization test pinning today's decode
-(`a_cmd_chord_arrives_as_its_plain_character_because_rano_drops_the_super_bit`), written to fail
-loudly with instructions the day rano keeps the bit, and
-`a_selection_does_not_swallow_what_is_typed` refuses the tempting wrong fix (a head that goes deaf
-under a selection). — ✓ fixed in 8eaa4985, test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter (the characterization test and its file are gone; a_selection_does_not_swallow_what_is_typed is at `crates/tui/src/app/tests/editor.rs:1136`)
-**Still open?** `printf '\033[99;9u'` into the key decoder, or press ⌘C over a selection after a
-rano bump — a `c` in the composer means it is still rano's. — ✓ fixed in 46f8409b (rano f4c624e), test a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter — the decoder is fed exactly those bytes and no `c` comes out
-
----
-
 ## R55 - A round's end and a turn's end are the same event on the wire
 
 **Status:** the field is built - `SessionEvent::TurnFinished` carries `ends_turn` (`crates/sessionlog/src/event.rs:12`, test `crates/harnessd/tests/turn_end_marker.rs`) and this head's row holds across rounds (`a_prompt_in_flight_holds_the_row_up_between_its_rounds`). left: `Hub::turn_in_flight` (`crates/sessionlog/src/hub.rs:1632`) still reads the round and not the field; a round with no calls followed by a nudge still says `true`; unclear: leticl's `:turn-finished` arm reading `ends_turn` is in another repo, check there.
@@ -704,23 +665,6 @@ Tested end to end in `crates/harnessd/src/harness/tests/recall.rs`. §10 of the 
 
 ---
 
-## R122 - Tool output that is a diff is drawn plain - **OPEN, filed 2026-11-04, the operator's ask, after the release**
-
-A command's stdout is not a terminal, so git turns colour off: `git show --stat`, `git diff` and
-`git log -p` reach the operator with no green `+` and red `-`. Forcing colour (`color.ui=always`)
-is wrong, because the escape codes reach the model too, cost tokens and garble what it reads.
-
-The head colours instead, and the model keeps the plain text. rano paints a tool row's body that
-reads as a diff or a diffstat: `+` lines added, `-` lines removed, `@@` hunk headers and
-`diff --git`/`---`/`+++` file headers, and the `++++----` bars of a `--stat` line. letibot only
-tells rano the body is command output; rano decides it is a diff (rano draws, see the rano blend).
-
-**Done when**: a `git show --stat` and a `git diff` row in a letibot head are coloured like a
-terminal's git; the transcript and the model's view hold no escape codes; a test pins that a line
-which merely starts with `-` in non-diff output (a `ls -l`, a flag list) is not painted.
-
----
-
 ## R124 - The package waiter exits on every provider stall
 
 Status: OPEN, filed 2026-11-05 by the operator. left: all of it.
@@ -808,7 +752,7 @@ Record: `docs/review/2026-11-01-ab5f7841-90dd9c84.md` (three reviewers, two roun
 6. Deslop per `hands-off/templates/deslop.md`: comments to the 2-3 line rule, `.letibot/notes` merged into rewritten topic docs.
 7. Structure: split `open_with_registry`, `rounds`, `run_to_completion`; break `harness.rs` into modules.
 8. Plugins: script layers (`docs/plugins-plan.md` step 11).
-9. Backlog, unchanged: R95, R98 half 1, R104, R89-R93, R64-R66 and the older open entries below.
+9. Backlog, unchanged: R95, R98 half 1, R89-R93, R64-R66 and the older open entries below.
 
 **Status 2026-11-03, each step re-checked against main.** 1, 2, 3, 5 and 7 are closed. 4 is built and owes a live run on lab2x1. 6 is half: the docs and the reviewed range's code are deslopped, the tree-wide comment rule is not. 8 is not built and stops on a decision. 9 is the backlog further down.
 
