@@ -269,15 +269,18 @@ fn a_child_cannot_shadow_a_branch_kept_only_in_packed_refs() {
     let Some(f) = Fixture::build("packed", true) else {
         return;
     };
-    let repo = f.root.join("repo");
-    assert!(
-        !f.common.join("refs/heads/main").exists(),
-        "the fixture must start with main packed only"
-    );
-    let main_before = git(&repo, &["rev-parse", "main"]);
+    // The probe leaves an empty mountpoint at the protected name, so "packed only" is read from
+    // packed-refs, and the loose name must stay empty.
+    let packed = std::fs::read_to_string(f.common.join("packed-refs")).expect("packed-refs");
+    let main_before = packed
+        .lines()
+        .find_map(|l| l.strip_suffix(" refs/heads/main"))
+        .expect("main is packed")
+        .to_string();
+    let loose = f.common.join("refs/heads/main");
     let (out, _) = f.run(&format!(
-        "git commit -q --allow-empty -m child; \
-         git rev-parse HEAD > {c}/refs/heads/main 2>&1 && echo WROTE; \
+        "git commit -q --allow-empty -m child; \\
+         git rev-parse HEAD > {c}/refs/heads/main 2>&1 && echo WROTE; \\
          git update-ref refs/heads/main HEAD 2>&1 && echo UPDATED; true",
         c = f.common.display()
     ));
@@ -286,8 +289,13 @@ fn a_child_cannot_shadow_a_branch_kept_only_in_packed_refs() {
         "the child created the loose ref: {out}"
     );
     assert!(!out.contains("UPDATED"), "the child shadowed main: {out}");
-    assert!(!f.common.join("refs/heads/main").exists());
-    assert_eq!(main_before, git(&repo, &["rev-parse", "main"]));
+    assert_eq!(
+        std::fs::read_to_string(&loose).unwrap_or_default(),
+        "",
+        "the loose name must hold nothing"
+    );
+    let after = std::fs::read_to_string(f.common.join("packed-refs")).unwrap();
+    assert!(after.contains(&format!("{main_before} refs/heads/main")));
     let (out, rc) = f.run("git commit -q --allow-empty -m again");
     assert_eq!(rc, 0, "the child's own branch stopped moving: {out}");
 }
