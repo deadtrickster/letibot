@@ -162,6 +162,9 @@ pub enum TurnState {
         finish_reason: FinishReason,
         usage: Usage,
         timings: Timings,
+        /// Whether this round ended the prompt. Absent in a snapshot older than the field: an ending.
+        #[serde(default = "crate::event::an_ending")]
+        ends_turn: bool,
     },
     Interrupted {
         reason: String,
@@ -583,9 +586,7 @@ impl SessionView {
                 finish_reason,
                 usage,
                 timings,
-                // Not read: this view answers *is the model generating*, which a round's end
-                // does settle. Whether the PROMPT is over is a head's rule, from the field.
-                ends_turn: _,
+                ends_turn,
                 // Also not read here: the check and the dialect are a turn's record, and this
                 // view's finished state is what a head draws about the turn that just stopped.
                 prefix_check: _,
@@ -599,6 +600,7 @@ impl SessionView {
                         finish_reason: finish_reason.clone(),
                         usage: *usage,
                         timings: *timings,
+                        ends_turn: *ends_turn,
                     };
                 }
             }

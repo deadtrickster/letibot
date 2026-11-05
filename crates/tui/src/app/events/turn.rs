@@ -273,6 +273,7 @@ impl App {
                         finish_reason,
                         usage,
                         timings,
+                        ends_turn,
                     });
                 }
                 // What the live pane had lifted stays lifted on the rows this round left.

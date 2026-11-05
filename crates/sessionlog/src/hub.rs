@@ -1783,12 +1783,14 @@ impl Hub {
         match g.view.turn() {
             Some(t) => match t.state {
                 crate::view::TurnState::Running => true,
-                // The round's generation ended and its calls are being run: this is the window the
-                // round-level `running` flag cannot see.
-                crate::view::TurnState::Finished { .. } => t
-                    .calls
-                    .iter()
-                    .any(|c| !matches!(c.state, crate::view::CallState::Finished { .. })),
+                // A round that did not end the prompt leaves it in flight, calls or not: the
+                // daemon's `ends_turn` is the only word on it. An ending still waits on its calls.
+                crate::view::TurnState::Finished { ends_turn, .. } => {
+                    !ends_turn
+                        || t.calls
+                            .iter()
+                            .any(|c| !matches!(c.state, crate::view::CallState::Finished { .. }))
+                }
                 // A turn that was interrupted or failed is over, whatever its calls were left as.
                 crate::view::TurnState::Interrupted { .. }
                 | crate::view::TurnState::Failed { .. } => false,
@@ -2167,6 +2169,25 @@ mod tests {
             hub.retained().last().map(|e| e.event.clone()),
             Some(SessionEvent::warning(the_code, "same sentence")),
         );
+    }
+
+    /// A round with no calls that is followed by a nudge is not the prompt's end: only the frame
+    /// with `ends_turn` is, so the hub keeps saying in-flight across the round boundary.
+    #[test]
+    fn a_turn_stays_in_flight_across_rounds_until_the_ending_frame() {
+        let hub = Hub::new("s-flight");
+        assert!(!hub.turn_in_flight());
+        hub.publish(turn_started("t1"));
+        assert!(hub.turn_in_flight());
+        // Round one proposed no calls; a nudge follows.
+        hub.publish(turn_finished_round("t1"));
+        assert!(hub.turn_in_flight(), "no calls, no ending frame yet");
+        hub.publish(turn_started("t2"));
+        hub.publish(turn_finished_round("t2"));
+        assert!(hub.turn_in_flight());
+        hub.publish(turn_started("t3"));
+        hub.publish(turn_finished("t3"));
+        assert!(!hub.turn_in_flight(), "the ending frame stands it down");
     }
 
     /// The footprint is the harness's to answer and the hub's to carry. Three shapes are told

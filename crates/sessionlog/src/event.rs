@@ -1541,7 +1541,7 @@ pub enum SessionEvent {
 
 /// The default for a `TurnFinished` that does not say: absent means an ending, because a daemon
 /// older than the field published nothing else.
-fn an_ending() -> bool {
+pub(crate) fn an_ending() -> bool {
     true
 }
 
