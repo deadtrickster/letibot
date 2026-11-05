@@ -53,7 +53,6 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | T15 | Replace section 10's compaction design with structural eviction | Code work | a standalone `prune` |
 | R121 | What a command boundary holds is hardcoded and invisible | Code work | grants/env/hide as config with documented defaults, one candidate list for Linux and macOS, a `/boundary` view and `letibot boundary`, refusals that name the key, the top-level and default subagent perimeters as config, children narrow and widening is an ask |
 | R122 | Tool output that is a diff is drawn plain | Code work, after the release | rano colours a diff or diffstat body in the head; the model keeps plain text |
-| R123 | What the 2026-11-04 release review deferred | Code work, after the release | items 1, 2, 3, 4 and 6; item 5 (room claims restored after a coordinator restart) is done on `z-r123-claims` |
 | R105 | The work order after the 2026-11-01 review | Code work | step 4's four live facts on lab2x1, step 6's comment rule (486 blocks over three lines by `scripts/comment-blocks.py count`), step 8's two decisions (JS engine source, JS-side contract), step 9 (the backlog entries in this file) |
 | R114 | Embeddings as the second similarity tier, for every similarity caller | Code work | item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase case scored against the worst measured negative, the per-round cost on lab2x1 |
 | R118 | A GitHub reviewer seat: `letibot attach github` reviews every PR and answers as @letibot | Code work | the seat in the daemon so the pane has a feed, a mirror per repository, the review panel, R116's verdict, R114's similarity offers |
@@ -718,28 +717,6 @@ tells rano the body is command output; rano decides it is a diff (rano draws, se
 **Done when**: a `git show --stat` and a `git diff` row in a letibot head are coloured like a
 terminal's git; the transcript and the model's view hold no escape codes; a test pins that a line
 which merely starts with `-` in non-diff output (a `ls -l`, a flag list) is not painted.
-
----
-
-## R123 - What the 2026-11-04 release review deferred - **OPEN, filed 2026-11-04**
-
-**Status:** open. Item 5 is done on `z-r123-claims`: the queues are kept in one append-only store
-beside the socket (`crates/room/src/store.rs`), every project's room appends to it and reloads at
-start, and a claim whose beat stopped while the coordinator was down is taken back on reload by
-the room's own sweep (requeued below the threshold, raised at it). Item 1 is on `z-r123-wide`: a
-`leticode` session with a shell on Linux gets the wide seat (`ViewSpec::wide`: `--bind / /`, the
-operator's home as `$HOME`, every store on `seatbelt::deny_under_home` masked), and a machine that
-cannot build it is refused with `boundary_absent` instead of running unconfined. left: items 2, 3,
-4 and 6.
-
-Record: `docs/reviews/2026-11-04-release.md` (30 reports verbatim, synthesis and decisions at the end). The agreed must-fix list is being fixed for the release; these were deferred there:
-
-1. A wide bwrap seat for a Linux top-level session (the release only tells the model and the head that there is no boundary). Folds into R121. **On `z-r123-wide`.**
-2. The refused compaction summary turn stays in the transcript and spends context at the wall; roll it back.
-3. The transcript walk is O(L^2) over a long hidden run (`crates/tui/src/app/scroll.rs:244-248`, `ui/transcript/markers.rs:99-161`).
-4. **DONE** — the picture and text-only marks belong to the SESSION: `crates/provider/src/marks.rs` is a bounded set (64, oldest out) entered around each provider call, and `session_marks` (schema 40) keeps it on the session's row across a restart. A refusal in one session leaves another's request untouched (`a_refusal_learned_in_one_session_leaves_another_sessions_request_alone`), the bound holds, and `crates/harnessd/src/harness/tests/marks.rs` reopens a session and finds its mark.
-5. Room claims a session holds are not restored after a coordinator restart.
-6. ~~A head cannot see packages of another daemon (the fleet view).~~ Listed in the head (`letibot_bridge::fleet`); attach is the printed command, not a socket switch.
 
 ---
 

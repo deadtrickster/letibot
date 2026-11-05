@@ -7490,3 +7490,30 @@ inside ok, write outside refused). Linux is untouched (the new arm is `cfg(targe
 `writes-allowed` in a checkout, ask it to run `cargo test --offline`: it must run with no card and no
 `boundary_absent`. The refused-probe arm is the old path and is exercised only on a Mac where the probe fails. Expect that a
 build needing a new dependency fails inside the boundary (toolchain is read-only, offline only).
+
+---
+
+## R123 — What the 2026-11-04 release review deferred — **DONE 2026-11-05: all six items are on main**
+
+Record: `docs/reviews/2026-11-04-release.md`. These were the items the release review deferred rather
+than fixed for that release, and every one has since landed:
+
+1. A wide bwrap seat for a Linux top-level session: `51026bb3`, `ViewSpec::wide` in
+   `crates/tools/src/exec/open.rs` (`--bind / /`, the operator's home as `$HOME`, every store under
+   `seatbelt::deny_under_home` masked), refused with `boundary_absent` where the seat cannot be built.
+2. The refused compaction summary turn stays in the transcript and spends context at the wall:
+   `83a364d6`, the turn and its witness are taken back.
+3. The transcript walk is O(L^2) over a long hidden run: `c3138603`, the hidden runs are indexed
+   once per frame (`crates/tui/src/app/scroll.rs`).
+4. The picture and text-only marks belong to the SESSION: `crates/provider/src/marks.rs` is a
+   bounded set entered around each provider call, and `session_marks` keeps it on the session's row
+   across a restart.
+5. Room claims are restored after a coordinator restart: `crates/room/src/store.rs`, one
+   append-only store beside the socket, reloaded at start with a stopped beat taken back by the
+   room's own sweep.
+6. A head cannot see packages of another daemon: `crates/bridge/src/fleet.rs`; the fleet node is in
+   the head's sessions tree, and Enter prints the attach command.
+
+settled: items 1 `51026bb3` (`crates/tools/src/exec/open.rs`), 2 `83a364d6`, 3 `c3138603`, 4
+`crates/provider/src/marks.rs`, 5 `crates/room/src/store.rs`, 6 `crates/bridge/src/fleet.rs`, all
+on main
