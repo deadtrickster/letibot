@@ -1207,6 +1207,13 @@ fn run_step(
         }
     };
     let pgid = child.id() as i32;
+    let _record = super::gate_orphans::write(
+        &super::gate_orphans::dir(),
+        child.id(),
+        worktree,
+        step,
+        scope.as_ref().map(|s| s.path()),
+    );
     let kill = |child: &mut std::process::Child| kill_group(pgid, child, scope.as_ref());
     let mut last_beat = Instant::now();
     let end = loop {

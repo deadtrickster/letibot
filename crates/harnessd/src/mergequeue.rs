@@ -15,6 +15,7 @@ pub mod carry;
 pub mod desk;
 pub mod gate;
 pub mod gate_host;
+pub mod gate_orphans;
 pub mod git;
 pub mod lease;
 pub mod notices;

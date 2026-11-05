@@ -3460,6 +3460,14 @@ impl QueueService {
             }
             match store.acquire_queue_lease(&key, &self.env.me, gate::now_ms(), LEASE_TTL_MS)? {
                 LeaseOutcome::Held { previous } => {
+                    // Before the re-gate below: a step a dead daemon left would compete with it
+                    // for the box and for the landing worktree's build lock.
+                    if let Ok(root) = (self.env.landing_root)(&repo) {
+                        let landing = git::landing_dir_in(&root, &repo);
+                        for r in super::gate_orphans::reap_said(&landing) {
+                            eprintln!("  merge queue: {key}: {r}");
+                        }
+                    }
                     let recovered =
                         store.recover_queue(&key, &self.env.me.owner, gate::now_ms())?;
                     // : a tip whose last verdict was red, blocked or timed out is
