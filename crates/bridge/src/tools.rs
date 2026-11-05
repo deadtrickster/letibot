@@ -1163,6 +1163,16 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 /// is the notification. The head is a watcher, so a session never waits on a card nobody could
 /// answer. Codes: `0` ended, `10` ask, `20` failed, `30` deadline, `40` provider in trouble.
 pub fn wait(worktree: &str, session: &str, deadline: Instant) -> (i32, String) {
+    wait_with(worktree, session, deadline, false)
+}
+
+/// [`wait`], where `exit_on_stall` makes a provider stall end it with `40` instead of being ridden out.
+pub fn wait_with(
+    worktree: &str,
+    session: &str,
+    deadline: Instant,
+    exit_on_stall: bool,
+) -> (i32, String) {
     let d = match daemon::resolve(Path::new(worktree)) {
         Ok(d) => d,
         Err(e) => return (20, e),
@@ -1171,7 +1181,7 @@ pub fn wait(worktree: &str, session: &str, deadline: Instant) -> (i32, String) {
         Ok(h) => h,
         Err(e) => return (20, e),
     };
-    match h.wait(deadline) {
+    match h.wait_with(deadline, exit_on_stall) {
         Attention::TurnEnded { message } => (0, message),
         Attention::Ask(ask) => (10, ask.to_json().to_string()),
         Attention::Failed { why } => (20, why),

@@ -2,7 +2,7 @@
 //!
 //! ```text
 //!   letibot-mcp                              MCP over stdio (what Claude Code runs)
-//!   letibot-mcp wait <worktree> <session> --until attention [--timeout 2h]
+//!   letibot-mcp wait <worktree> <session> --until attention [--timeout 2h] [--exit-on-stall]
 //!   letibot-mcp room-wait [--attention to_me|mentions|all] [--timeout 2h]
 //! ```
 //!
@@ -19,7 +19,7 @@
 //! | 10 | a permission ask is pending | the ask, as JSON |
 //! | 20 | the session failed, or could not be reached | why |
 //! | 30 | the timeout passed | nothing (the reason is on stderr) |
-//! | 40 | the provider is in trouble | the event, as JSON |
+//! | 40 | the provider is in trouble (not a stall, unless `--exit-on-stall`) | the event, as JSON |
 //!
 //! stdout is the MCP wire when serving, and nothing may be printed to it there. The
 //! wait's stdout is its own and holds nothing but the payload above.
@@ -27,7 +27,7 @@
 use std::time::{Duration, Instant};
 
 use letibot_bridge::mcp;
-use letibot_bridge::tools::{Bridge, DEFAULT_TIMEOUT, wait};
+use letibot_bridge::tools::{Bridge, DEFAULT_TIMEOUT, wait_with};
 
 const USAGE: &str = "\
 letibot-mcp — the Claude Code bridge to leticode
@@ -35,16 +35,18 @@ letibot-mcp — the Claude Code bridge to leticode
   letibot-mcp
       MCP over stdio. This is what Claude Code runs; it is not meant to be typed.
 
-  letibot-mcp wait <worktree> <session> --until attention [--timeout 2h]
+  letibot-mcp wait <worktree> <session> --until attention [--timeout 2h] [--exit-on-stall]
       Attach as a head and exit when the session needs you:
         0   the turn ended        (the last assistant message is on stdout)
         10  an ask is pending     (the ask is on stdout, as JSON)
         20  the session failed    (why is on stdout)
         30  the timeout passed    (nothing on stdout)
-        40  the provider is stuck (a rate limit, a quota, a timeout or a stall: the event
-                                  is on stdout, as JSON)
+        40  the provider is stuck (a rate limit, a quota or a timeout: the event is on
+                                  stdout, as JSON). A stall, a slow round with the request
+                                  still open, does not end the wait unless --exit-on-stall.
 
       --timeout takes s, m or h (2h, 90s, 15m). Default 2h.
+      --exit-on-stall makes a stall exit 40 too.
 
   letibot-mcp room-wait [--attention to_me|mentions|all] [--timeout 2h]
       Connect to the host's chat rooms as `cc@<folder>` ($LETIBOT_ROOM_NAME names it) and exit when a message arrives
@@ -70,8 +72,8 @@ fn main() {
             0
         }
         Some("wait") => match parse_wait(&args[1..]) {
-            Ok((worktree, session, deadline)) => {
-                let (code, said) = wait(&worktree, &session, deadline);
+            Ok((worktree, session, deadline, exit_on_stall)) => {
+                let (code, said) = wait_with(&worktree, &session, deadline, exit_on_stall);
                 match code {
                     // The payload is the message or the ask: a person reading the
                     // notification sees the words, and the orchestrator that only wants the
@@ -130,10 +132,11 @@ fn serve() -> i32 {
     }
 }
 
-/// `wait <worktree> <session> --until attention [--timeout DUR]`. `--until attention` is the
+/// `wait <worktree> <session> --until attention [--timeout DUR] [--exit-on-stall]`. `--until attention` is the
 /// only value this build understands, and it is required rather than defaulted: a future
 /// `--until` that means something else must not be read as this one by a caller who typed nothing.
-fn parse_wait(args: &[String]) -> Result<(String, String, Instant), String> {
+fn parse_wait(args: &[String]) -> Result<(String, String, Instant, bool), String> {
+    let mut exit_on_stall = false;
     let mut worktree: Option<String> = None;
     let mut session: Option<String> = None;
     let mut until: Option<String> = None;
@@ -152,6 +155,7 @@ fn parse_wait(args: &[String]) -> Result<(String, String, Instant), String> {
                 let raw = it.next().ok_or("--timeout wants a duration (2h)")?;
                 timeout = duration(raw)?;
             }
+            "--exit-on-stall" => exit_on_stall = true,
             other if other.starts_with('-') => return Err(format!("unknown flag `{other}`")),
             other => {
                 if worktree.is_none() {
@@ -172,7 +176,7 @@ fn parse_wait(args: &[String]) -> Result<(String, String, Instant), String> {
     }
     let worktree = worktree.ok_or("wait wants a worktree")?;
     let session = session.ok_or("wait wants a session id")?;
-    Ok((worktree, session, Instant::now() + timeout))
+    Ok((worktree, session, Instant::now() + timeout, exit_on_stall))
 }
 
 /// `room-wait [--attention A] [--timeout DUR]`.
@@ -231,7 +235,7 @@ mod tests {
     #[test]
     fn the_wait_verb_parses_and_bounds_its_deadline() {
         let before = Instant::now();
-        let (worktree, session, deadline) = parse_wait(&args(&[
+        let (worktree, session, deadline, exit_on_stall) = parse_wait(&args(&[
             "/tmp/wt",
             "s-1",
             "--until",
@@ -242,13 +246,15 @@ mod tests {
         .expect("parses");
         assert_eq!(worktree, "/tmp/wt");
         assert_eq!(session, "s-1");
+        assert!(!exit_on_stall, "a stall is ridden out unless asked");
         let left = deadline.saturating_duration_since(before);
         assert!(
             left > Duration::from_secs(89) && left < Duration::from_secs(91),
             "{left:?}"
         );
         // The flags may come in any order, and a bare number is seconds.
-        let (_, _, deadline) = parse_wait(&args(&[
+        let (_, _, deadline, exit_on_stall) = parse_wait(&args(&[
+            "--exit-on-stall",
             "--timeout",
             "120",
             "--until",
@@ -258,6 +264,7 @@ mod tests {
         ]))
         .expect("parses");
         assert!(deadline > Instant::now() + Duration::from_secs(110));
+        assert!(exit_on_stall);
     }
 
     /// `--until` is required and `attention` is the only value: a `wait` that silently

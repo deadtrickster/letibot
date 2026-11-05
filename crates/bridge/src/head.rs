@@ -1903,6 +1903,13 @@ impl Head {
     /// over everything, then a failure, then the daemon's own [`Activity`] saying the session
     /// is quiet. A session that has never run a turn is never answered as ended.
     pub fn wait(&self, deadline: Instant) -> Attention {
+        self.wait_with(deadline, false)
+    }
+
+    /// [`Head::wait`], choosing whether a `stall` ends it. A stall is a round that is slow with its
+    /// request still open, so by default it is ridden out: a stall that lasts becomes a `timeout`
+    /// trouble when the transport gives up, and that one always ends the wait.
+    pub fn wait_with(&self, deadline: Instant, exit_on_stall: bool) -> Attention {
         let mut g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         let baseline = match &g.turn {
             Turn::Failed(why) => Some(why.clone()),
@@ -1911,7 +1918,7 @@ impl Head {
         // Only a trouble this wait saw. A provider that was rate limited ten minutes ago is not
         // news to a wait that started a minute ago, and answering with it would wake an orchestrator
         // for a session that has since answered.
-        let troubles = g.troubles;
+        let mut troubles = g.troubles;
         // Whether this wait saw the session working. Turn and calls only: `delivery` says
         // a turn is OWED, which is not one having run. A job or a child counts too, because
         // its settlement wakes the model and this wait will see the turn it starts.
@@ -1951,7 +1958,10 @@ impl Head {
             if g.troubles > troubles
                 && let Some(t) = &g.last_trouble
             {
-                return Attention::Trouble(Box::new(t.clone()));
+                if exit_on_stall || t.kind != "stall" {
+                    return Attention::Trouble(Box::new(t.clone()));
+                }
+                troubles = g.troubles;
             }
             let now = Instant::now();
             if g.activity.is_quiet() {
