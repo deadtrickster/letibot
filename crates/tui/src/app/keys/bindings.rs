@@ -253,6 +253,16 @@ fn fold_done_says(folded: bool) -> &'static str {
     if folded { "shows done" } else { "folds done" }
 }
 
+/// The words `r` carries now, on the same rule: a bar offering `lists the offline` over a roster
+/// that already lists them names a key whose press does the opposite of what it says.
+fn roster_says(offline_shown: bool) -> &'static str {
+    if offline_shown {
+        "roster: hides the offline members"
+    } else {
+        "roster: lists the offline members"
+    }
+}
+
 const TODO_ROW: &[Binding] = &[
     b(UPDOWN, Always, Act::Scroll, Text("scroll")),
     PAGE,
@@ -398,7 +408,7 @@ const ROOMS: &[Binding] = &[
         &[On::Char('r')],
         Empty,
         Act::Roster,
-        Text("roster: lists the offline members too"),
+        Says::Switch("roster: lists or hides the offline members"),
     ),
     b(
         &[On::Char('d')],
@@ -707,6 +717,7 @@ impl App {
     pub(crate) fn switch_says(&self, b: &Binding) -> Option<String> {
         match b.act {
             Act::FoldDone => Some(fold_done_says(self.todos_fold_done).to_string()),
+            Act::Roster => Some(roster_says(self.rooms.roster_all).to_string()),
             _ => None,
         }
     }

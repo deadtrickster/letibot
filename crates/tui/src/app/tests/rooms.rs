@@ -407,6 +407,25 @@ fn the_roster_key_toggles_the_offline_members() {
     assert!(!a.rooms.roster_all);
 }
 
+/// The bar says what `r` would DO now. It offered `roster: lists the offline members` over a
+/// roster that already listed them, so the press undid what the words promised.
+#[test]
+fn the_bar_says_what_the_roster_key_would_do() {
+    let mut a = opened(1_000);
+    let bar = a.hint_bar(200);
+    assert!(bar.contains("r roster: lists the offline members"), "{bar}");
+    a.key(Key::Char('r'));
+    let bar = a.hint_bar(200);
+    assert!(bar.contains("r roster: hides the offline members"), "{bar}");
+    assert!(!bar.contains("lists the offline"), "{bar}");
+    // The help lists both, because it is read without a pane in front of it.
+    let (_, help) = App::surface_help(Surface::Rooms).expect("rooms is in the help");
+    assert!(
+        help.contains("r roster: lists or hides the offline members"),
+        "{help}"
+    );
+}
+
 #[test]
 fn a_typed_r_is_a_letter_not_the_roster_key() {
     let mut a = opened(1_000);
