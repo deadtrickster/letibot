@@ -527,6 +527,62 @@ fn an_approved_branch_lands_through_the_gate_in_the_queues_own_worktree() {
     );
 }
 
+/// A gate whose NAME is a host's, which is the whole of what a row carries about where it ran. The
+/// transport is `gate_host`'s and needs the operator's fleet key, so what a test can hold is that
+/// the name reaches the rows a person reads.
+struct OnHost(&'static str);
+
+impl GateRunner for OnHost {
+    fn run(&self, wt: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
+        LocalGate.run(wt, steps, ctl)
+    }
+    fn name(&self) -> String {
+        self.0.to_string()
+    }
+}
+
+/// The done-when's readable half: a landing, and every row it leaves behind says on which machine
+/// its gate ran - the merge row a person reads last, the transition that ran it, and the target's
+/// health. Silent about the host is how a gate on lubuntu1 and a gate on this box read alike.
+#[test]
+fn a_landing_names_the_machine_its_gate_ran_on() {
+    let w = World::new("host-gate-said");
+    let (wt, base, head) = branch(&w.repo, "one", "one.txt");
+    w.enqueue("one", &wt, &base, &head);
+    let q = w.worker(Arc::new(OnHost("lubuntu1")), "a");
+    run(&q, 1);
+    let m = w.accept("one", "test/a");
+    run(&q, 2);
+
+    let landed = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(landed.state, MergeState::Landed, "{landed:?}");
+    assert!(
+        landed.evidence.contains(", lubuntu1 gate)"),
+        "the landed row says where its gate ran: {}",
+        landed.evidence
+    );
+    // And the row the gate's own line was written to, while it ran: one step, on that machine.
+    let said: Vec<String> = w
+        .store()
+        .transitions("merge", &m)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.why)
+        .collect();
+    assert!(
+        said.iter()
+            .any(|why| why.contains("(1 step(s), lubuntu1 gate)")),
+        "a pane reading the queue mid-gate is told the machine: {said:?}"
+    );
+    let health = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(health.state, HealthState::Green);
+    assert!(
+        health.evidence.contains(", lubuntu1 gate)"),
+        "and the green tip says which machine judged it: {}",
+        health.evidence
+    );
+}
+
 /// The target moved during the gate → rebase and gate again, not fail (requirement 3). The
 /// v23 queue's `merge --ff-only` failed and parked the entry `failed` (defect 7).
 #[test]
@@ -3407,11 +3463,7 @@ fn a_repositorys_alert_reaches_its_sessions_and_the_board_and_not_the_home_sessi
         &reg,
         Some(&w.db),
         &w.key(),
-        SessionEvent::Warning {
-            code: "target_red".into(),
-            detail: "EMERGENCY".into(),
-            compaction: None,
-        },
+        SessionEvent::warning("target_red", "EMERGENCY"),
     );
     assert_eq!(reached, 3);
     let heard = |i: usize| {

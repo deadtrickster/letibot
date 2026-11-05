@@ -452,14 +452,9 @@ impl RepoQueue {
     /// a code a head can style: `queue_blocked` (high) and `target_red` (emergency).
     fn raise(&self, code: &str, detail: String) {
         eprintln!("  merge queue: {code}: {detail}");
-        self.env.door.announce_to(
-            &self.key,
-            SessionEvent::Warning {
-                code: code.into(),
-                detail,
-                compaction: None,
-            },
-        );
+        self.env
+            .door
+            .announce_to(&self.key, SessionEvent::warning(code, detail));
     }
 
     fn review_to(&self, r: &ReviewRow, to: ReviewState, mv: Move) -> Result<bool, StoreError> {
@@ -3213,8 +3208,12 @@ impl RepoQueue {
         let rows_json = |steps: &[letibot_tokencore::store::MergeGateStep]| {
             serde_json::to_string(steps).unwrap_or_else(|_| "[]".into())
         };
+        // The machine is in the sentence a person reads after the landing: where a gate ran is
+        // the whole of the fact a host gate adds, and the health row says it already.
         let why = format!(
-            "landed on `{target}` at {rebased} (onto {tip}){train_note}; {pushed_text}.{install_note}"
+            "landed on `{target}` at {rebased} (onto {tip}, {gate} gate){train_note}; \
+             {pushed_text}.{install_note}",
+            gate = self.env.gate.name()
         );
         let state = if pushed_text.starts_with(PUSH_FAILED) {
             MergeState::LandedLocal
@@ -3238,9 +3237,12 @@ impl RepoQueue {
             sha: rebased.clone(),
             state: HealthState::Green,
             checked_ms: gate::now_ms(),
+            // The machine, as the gated-tip path says it: a green tip's row is where a reader
+            // checks what judged it, and a landing is one more way a tip gets green.
             evidence: format!(
-                "the queue's own gate passed on this tree (`{}`)",
-                row.branch
+                "the queue's own gate passed on this tree (`{}`, {} gate)",
+                row.branch,
+                self.env.gate.name()
             ),
             gate_steps: run.steps,
         };
@@ -3481,15 +3483,14 @@ impl QueueService {
                 } => {
                     if !*said_schema {
                         *said_schema = true;
-                        self.env.door.announce(SessionEvent::Warning {
-                            code: "queue_wrong_build".into(),
-                            detail: format!(
+                        self.env.door.announce(SessionEvent::warning(
+                            "queue_wrong_build",
+                            format!(
                                 "this daemon serves NO queue: the store's schema is {theirs} and this \
                                  build knows {mine}. A daemon whose build does not match the store \
                                  never takes a queue (R61). Restart it on the current build."
                             ),
-                            compaction: None,
-                        });
+                        ));
                     }
                 }
             }
@@ -3733,14 +3734,13 @@ fn work(store_path: PathBuf, repo: PathBuf, env: Arc<QueueEnv>, stop: &AtomicBoo
     while !stop.load(Ordering::Relaxed) {
         match q.pass(stop) {
             Ok(Pass::LostLease) => {
-                env.door.announce(SessionEvent::Warning {
-                    code: "queue_lease_lost".into(),
-                    detail: format!(
+                env.door.announce(SessionEvent::warning(
+                    "queue_lease_lost",
+                    format!(
                         "this daemon no longer holds the queues of {key} (its heartbeat was \
                          missed, or the store changed schema); another daemon serves them now"
                     ),
-                    compaction: None,
-                });
+                ));
                 return;
             }
             Ok(Pass::Worked) => {
