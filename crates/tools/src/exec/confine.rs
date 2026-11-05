@@ -3131,7 +3131,11 @@ mod tests {
         std::fs::write(run.join("abc.json"), "").unwrap();
         std::fs::write(dir.join("letibot-ssh-1-x-call.sock"), "").unwrap();
         std::fs::write(dir.join("other.sock"), "").unwrap();
-        let got = daemon_sockets_in(&[run.clone()], &dir, Some(dir.join("named.sock")));
+        let got = daemon_sockets_in(
+            std::slice::from_ref(&run),
+            &dir,
+            Some(dir.join("named.sock")),
+        );
         let has = |p: PathBuf| got.contains(&p) || got.contains(&p.canonicalize().unwrap_or(p));
         assert!(has(run.join("abc.sock")), "{got:?}");
         assert!(has(dir.join("letibot-ssh-1-x-call.sock")), "{got:?}");
