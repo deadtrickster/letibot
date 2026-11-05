@@ -101,8 +101,8 @@ fn inner() {
         "{why}"
     );
     assert!(
-        why.contains("[memory] gate"),
-        "names the line that raises it: {why}"
+        why.contains("the operator's call") && !why.contains("providers.toml"),
+        "says who raises the cap, and names no key to a model that cannot: {why}"
     );
     assert_eq!(run.steps[0].outcome, MergeGateOutcome::Killed, "{run:#?}");
     assert!(
