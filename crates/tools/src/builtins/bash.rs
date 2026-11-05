@@ -260,7 +260,7 @@ impl Tool for Bash {
              so a foreground command dies with the turn and a background one with the \
              session unless you name a `scope`. Do not write `pkill`, `pgrep` or a \
              `while ... sleep` wait loop in a command: those match the process running \
-             them, and `job_kill` and `job_wait` take a job id instead of a pattern. \
+             them — `job_kill` and `job_wait` take a job id, and the `pkill` tool takes a pattern and kills by pid. \
              When this session has a boundary, the command runs in a filesystem view \
              rooted at the workspace: a path outside that view is absent rather than \
              denied, and a result that says a path is not in the view is a fact about \
@@ -679,10 +679,10 @@ impl Tool for Bash {
                 p.how.clone(),
                 &next,
                 format!(
-                    "{body}\n\n[`{label}` was moved to the background — you did not ask \
-                     for it]\n  command: {command}\n{file_line}  owned by: {} — {}\n\nIts \
-                     completion will reach you on its own the moment it ends — this call was \
-                     waiting on it, so it is not held for a break; do not wait on it.\n",
+                    "{body}\n\n[`{label}` was moved to the background by the operator]\
+                     \n  command: {command}\n{file_line}  owned by: {} — {}\n\nIts \
+                     completion is delivered when it ends; \
+                     nothing is held for a break.\n",
                     p.to,
                     p.to.kind.reaped_when()
                 ),

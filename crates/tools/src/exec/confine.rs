@@ -1352,12 +1352,10 @@ impl Boundary {
                 .join(", ");
             let mut note = format!(
                 "{list} {} not in this session's filesystem view, so the command saw \
-                 {} as absent. That failure is the boundary, NOT an answer about \
-                 whether anything is there: this session's view is {}. Nothing \
-                 outside it can be reached by another spelling of the path, and {}. \
-                 If the work genuinely needs a path outside the view, the operator is \
-                 being asked to grant it in — re-running before they answer will not \
-                 change it.",
+                 {} as absent — an absence the boundary makes, not an answer about whether \
+                 anything is there. This session's view is {}; no other spelling of the path \
+                 reaches past it, and {}. The operator is being asked to grant it in, and \
+                 re-running before they answer will not change it.",
                 if outside.len() == 1 { "is" } else { "are" },
                 if outside.len() == 1 { "it" } else { "them" },
                 self.view.summary().lines().next().unwrap_or("the project"),
@@ -3391,7 +3389,7 @@ mod tests {
         let n = &notes[0];
         assert!(n.contains("not in this session's filesystem view"), "{n}");
         assert!(n.contains("/home/dead/.ssh/id_rsa"), "{n}");
-        assert!(n.contains("another spelling"), "{n}");
+        assert!(n.contains("no other spelling of the path"), "{n}");
         // The note must not claim the path exists on the host: nothing was stat'ed, and the
         // sentence does not assert it either way.
         assert!(!n.contains("exists on"), "{n}");

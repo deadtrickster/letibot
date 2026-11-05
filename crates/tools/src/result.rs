@@ -84,11 +84,6 @@ impl ToolResult {
             head.push_str(n);
             head.push('\n');
         }
-        if let Some(s) = &self.spill {
-            head.push_str("[note] ");
-            head.push_str(&s.notice);
-            head.push('\n');
-        }
 
         match &self.outcome {
             ToolOutcome::Ok => {

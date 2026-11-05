@@ -108,8 +108,6 @@ pub struct SpillRef {
     pub hash: String,
     pub full_bytes: usize,
     pub inline_bytes: usize,
-    /// The exact notice appended to the preview.
-    pub notice: String,
 }
 
 #[derive(Debug)]
@@ -353,7 +351,6 @@ impl Spiller {
                 hash,
                 full_bytes,
                 inline_bytes: preview.len(),
-                notice,
             }),
         )
     }

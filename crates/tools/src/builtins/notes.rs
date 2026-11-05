@@ -445,9 +445,8 @@ fn caveat(modified: Option<u64>) -> String {
 
 /// The one-line frame for what a write means: when the harness will read the
 /// note back. A note that never lands in a prompt is a file, not a note.
-const WHEN_READ: &str = "The harness reads notes into the prompt at session open, at every \
-                         base rebuild (a compaction counts), and every turn on a provider \
-                         session.";
+const WHEN_READ: &str = "The harness reads notes into the prompt at session open and at every \
+                         base rebuild (a compaction counts).";
 
 /// The marker line an author's abstract rides on, at the top of a note:
 ///
@@ -1220,28 +1219,17 @@ impl NotesTool {
                 );
             }
         };
-        if let Some((other, score)) = near {
+        if let Some((other, _score)) = near {
             return Invocation::failed(
+                format!("`{stem}` would be a near-copy of `{}`", other.display()),
                 format!(
-                    "`{stem}` would be a near-copy of `{}` (score {score:.2} of 1.00)",
-                    other.display()
-                ),
-                format!(
-                    "Nothing was written. The score is the same measure the read hint \
-                     uses — IDF-weighted cosine over each note's abstract, title and \
-                     headings{} — and {:.2} is at or over the {DUPLICATE_FLOOR:.2} floor. The \
-                     corpus is curated on purpose: every note in it is one somebody decided was \
-                     worth keeping, so a near-copy makes the index worse for every reader of \
-                     it. What to do instead: grow the note that exists (`action` = \"append\", \
-                     `name` = {:?}), or rewrite it deliberately (`action` = \"replace\"), or — if \
-                     this really is a different thing — say what distinguishes it in the \
-                     abstract and the headings, because those are the fields the score reads. \
-                     The nearest note is the one named above; `notes` action=\"read\" opens it.",
-                    match self.tier.is_some() {
-                        true => ", and the meaning of both through the box's embedder",
-                        false => "",
-                    },
-                    score,
+                    "Nothing was written. The corpus is curated: a note in it is one somebody \
+                     decided was worth keeping, so a near-copy makes the index worse for every \
+                     reader of it. Grow the note that exists instead (`action` = \"append\", \
+                     `name` = {:?}), rewrite it deliberately (`action` = \"replace\"), or, if this \
+                     really is a different thing, say what distinguishes it in the abstract and \
+                     the headings — those are the fields the score reads. The nearest note is the \
+                     one named above; `notes` action=\"read\" opens it.",
                     other
                         .file_stem()
                         .map(|s| s.to_string_lossy().to_string())

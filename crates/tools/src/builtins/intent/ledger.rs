@@ -291,12 +291,7 @@ impl Reconciliation {
         }
         if self.findings.len() > MAX_FINDINGS {
             let more = self.findings.len() - MAX_FINDINGS;
-            out.push_str(&match plan {
-                None => {
-                    format!("  … and {more} more; call `todo` with `op: \"list\"` for the rest\n")
-                }
-                Some(_) => format!("  … and {more} more\n"),
-            });
+            out.push_str(&format!("  … and {more} more\n"));
         }
         out.push_str(&format!("board: {}\n", plan.unwrap_or(self.board)));
         Some(out)

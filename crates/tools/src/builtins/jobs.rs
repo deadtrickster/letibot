@@ -239,7 +239,7 @@ impl Tool for JobList {
              by default** — the ones whose completion has not arrived — because a listing \
              that leads with forty finished `grep`s buries the one job anybody acts on; \
              how many were left out is always stated. `all` includes the settled ones, and \
-             `scope` shows one scope's. Use this instead of `ps` or `pgrep`: it reads cgroup \
+             `scope` shows one scope's. `ps` lists processes; this lists jobs. It reads cgroup \
              membership, so it has no pattern that could match the process asking.",
             serde_json::json!({
                 "type": "object",
@@ -953,7 +953,7 @@ impl Tool for JobKill {
              handle is stopped by interrupting the turn it is running** — a subagent owns \
              no process, so there is no pid or cgroup to report, and a `task_result` on it \
              afterwards says it was stopped rather than answered. The result lists what was \
-             actually killed, and says whether anything survived. Use this instead of \
+             actually killed, and says whether anything survived. For a process this harness did not start, the `pkill` tool takes a pattern and kills by pid; not a shell \
              `pkill` or `kill`.",
             serde_json::json!({
                 "type": "object",

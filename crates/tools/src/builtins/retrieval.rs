@@ -94,8 +94,8 @@ impl Retrieval for Unavailable {
                 kind.tool_name(),
                 "no retrieval backend",
                 "no corpus was queried and no index was opened",
-                "attach a retrieval backend to the session; none is running on this \
-                 fleet, which was checked rather than assumed (T16.6)",
+                "no retrieval backend is attached to this session, so nothing was \
+                 queried; `grep` and `read` over this tree answer what it would have.",
             )
             .instead("`grep` and `read` over this tree"),
         ))

@@ -405,8 +405,8 @@ fn remedy(hazards: &[Hazard]) -> &'static str {
          `bash` or `job_list`) or `scope` (`turn`, `session`, or an explicit scope's \
          name) and kills that cgroup — every descendant included, with no pattern, so \
          nothing can match the caller. `job_list` shows the ids. A process this \
-         harness did not start is not yours to kill from here; say what you want \
-         stopped and why."
+         harness did not start belongs to the `pkill` tool: a pattern, a listing, then a pid. Don't reach for \
+         a shell `kill`."
     }
 }
 

@@ -356,8 +356,8 @@ fn render_full(r: &DecisionRow) -> String {
         out.push_str(&format!("  because   {}\n", r.verdict_basis));
     }
     match (r.p_allow, r.oracle_ms) {
-        (Some(p), Some(ms)) => {
-            out.push_str(&format!("  P(allow)  {p:.3}, in {ms} ms\n"));
+        (Some(p), _) => {
+            out.push_str(&format!("  P(allow)  {p:.3}\n"));
         }
         (None, Some(ms)) => out.push_str(&format!(
             "  oracle    answered in {ms} ms, no logprobs — so `allow` here is a \
@@ -651,7 +651,9 @@ mod tests {
         assert!(out.contains("oracle:glm"), "who: {out}");
         // The field this was built for.
         assert!(out.contains("man page sweep"), "the oracle's reason: {out}");
-        assert!(out.contains("2100 ms"), "the latency: {out}");
+        // The latency is the operator's number: it measures the oracle and says nothing the
+        // model can act on (R93.F45).
+        assert!(!out.contains("2100 ms"), "the latency: {out}");
         assert!(out.contains("0.940"), "the confidence: {out}");
         assert!(out.contains("ar t libfoo.a"), "the brief: {out}");
     }

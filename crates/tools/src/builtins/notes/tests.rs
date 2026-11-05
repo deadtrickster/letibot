@@ -340,8 +340,8 @@ fn a_paraphrase_with_no_shared_word_is_refused_by_the_second_tier() {
         "the refusal names the note that was too close: {said}"
     );
     assert!(
-        said.contains("meaning"),
-        "and says the meaning was part of the score: {said}"
+        said.contains("distinguishes it in the abstract"),
+        "and names the way to say what differs, which is the field the score reads: {said}"
     );
     assert!(
         !ws.join(".letibot/notes/mutex-stall.md").exists(),

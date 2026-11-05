@@ -1024,7 +1024,7 @@ impl Tool for TaskTool {
                 + super::DELIVERED
                 + " `task_result` shows its state or re-reads its answer. **A child that \
              writes code must be told, in its prompt, to END with \
-             `sh scripts/check-fmt.sh <the ref it was cut from>`**: code a child has \
+             the repository's own format check (`sh scripts/check-fmt.sh <the ref it was cut from>` in this tree)**: code a child has \
              written, built and TESTED can still be unformatted, because `cargo fmt` \
              is in no brief and CI's `Format (the files this change touches)` job is \
              the only thing that reads it. The same one line goes for `cargo test \
