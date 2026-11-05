@@ -1,7 +1,6 @@
-//! The hint bar: the keys that do something right now. This head's half is generated from the
-//! tables its keys are dispatched from, so the bar cannot name a key that does something else
-//! (the `Says` literals have no table: `tests/bindings.rs` drives each one);
-//! rano's cards and editor pane keep rano's own sentences, pinned by tag.
+//! The hint bar: the keys that do something right now. This head's half is generated from the tables
+//! its keys are dispatched from, so the bar cannot name a key that does something else; rano's cards
+//! and editor pane keep rano's own sentences, pinned by tag.
 
 use crate::app::*;
 use crate::ui::panes::picker::SETTING_BAR;

@@ -333,10 +333,9 @@ impl App {
             .map(|h| (h.rect.y, h.rect.y + h.rect.h))
             .collect();
         let editor = self.editor_drawn().then_some(self.edit_area);
-        // Only text this head wrote is a button. The body above the chrome is another party's
-        // (a room, a plugin, a tool's output, a file) except the two panes of the head's own
-        // static text and the diff popup's edge; the card in the slot carries a decision's
-        // command or a program's question. The hint bar and the composer's edges stay.
+        // Only text this head wrote is a button. The body above the chrome is another party's (a
+        // room, a plugin, a tool's output, a file) except the head's own static screens and the diff
+        // popup; the hint bar and the composer's edges stay.
         let own_body = matches!(
             self.drawn(),
             Drawn::Surface(Surface::Help | Surface::Stats) | Drawn::DiffPopup

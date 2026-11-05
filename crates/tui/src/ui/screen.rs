@@ -442,10 +442,9 @@ impl App {
             }
             _ => Vec::new(),
         };
-        // The card in the slot, as a click target, and only on a frame whose chrome the backstop did not drain:
-        // rows measured from a front that was cut are rows nobody can see. The decision's ladder is its answer
-        // half, which the fit never trims; the quit card's choices need the whole card.
-        // Cleared first: a frame that drew no card must not leave the last one armed as the click's provenance.
+        // The card in the slot, as a click target, and only on a frame whose chrome the backstop did
+        // not drain: rows measured from a front that was cut are rows nobody can see. Cleared first, so
+        // a frame that drew no card does not leave the last one armed as the click's provenance.
         self.drawn_card = None;
         // The head's own cards (quit, setting, reseat) keep their keys line as buttons.
         let own_card = matches!(

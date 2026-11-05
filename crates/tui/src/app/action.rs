@@ -147,9 +147,8 @@ pub enum Action {
     /// because a listing of bodies is not a listing.
     ListSkills,
     /// One chat request as the operator, a room `Request` as JSON. The answer comes back as
-    /// `ServerFrame::RoomChat` and is routed to the `/rooms` view. `id` is the request id a
-    /// send was minted under, so its answer can be told from a poll's: a send that failed is
-    /// kept until the operator deals with it, and no other answer may clear it.
+    /// `ServerFrame::RoomChat`, routed to the `/rooms` view. `id` is the request id the send was
+    /// minted under, so a send that failed is kept until the operator deals with it.
     RoomChat {
         op: serde_json::Value,
         id: Option<String>,

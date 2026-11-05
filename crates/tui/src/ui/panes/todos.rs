@@ -55,10 +55,9 @@ impl App {
             let t = &self.todos[i];
             let mine = t.by == TodoBy::Operator;
             drawn.push(i);
-            // A board row has no BODY of its own: rano's `TodoLine` has no field for a detail,
-            // so it rides in `content` after ` - ` and is drawn on the same line, cut to the
-            // pane's width at draw time. A spliced extra line would put every stop below it a
-            // row out.
+            // A board row has no BODY of its own: rano's `TodoLine` has no field for a detail, so it
+            // rides in `content` after the separator and is cut to the pane's width at draw time. A
+            // spliced extra line would put every stop below it a row out.
             lines.push(TodoLine {
                 mark: match t.status {
                     TodoStatus::Pending => TodoMark::Open,

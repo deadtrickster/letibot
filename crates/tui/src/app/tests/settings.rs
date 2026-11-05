@@ -483,10 +483,9 @@ fn the_cards_first_moments_take_no_enter() {
     );
 }
 
-/// Enter keeps the quit card's guard: words in the composer are a line being written, and the
-/// card takes no answer until they are gone. The hold empties the composer when the card comes
-/// up, so the guard is asked here below `sync_front` - it is the layer under the hold, and the
-/// hold is what makes it unreachable from the keys.
+/// Enter keeps the quit card's guard: words in the composer are a line being written, and the card
+/// takes no answer until they are gone. The guard is asked below `sync_front`, because the hold is
+/// what makes it unreachable from the keys.
 #[test]
 fn enter_over_words_in_the_composer_does_not_answer_the_card() {
     let mut a = App::new(plain_cfg(120));

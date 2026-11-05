@@ -194,10 +194,9 @@ impl App {
         ControlFlow::Continue(())
     }
 
-    /// A password field owns the keyboard: while `sudo` is waiting, characters and pastes go into
-    /// the buffer, Enter sends it and Ctrl+C refuses. Esc puts the card away and sends nothing,
-    /// as it does on every card. Nothing reaches the composer, the ladder or the scrollback, so
-    /// a password cannot land in a prompt.
+    /// A password field owns the keyboard: while `sudo` is waiting, characters and pastes go into the
+    /// buffer, Enter sends it and Ctrl+C refuses. Esc puts the card away and sends nothing, and nothing
+    /// reaches the composer, the ladder or the scrollback, so a password cannot land in a prompt.
     pub(crate) fn key_secret(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if let Some(ask) = &self.secret
             && !self.secret_away
