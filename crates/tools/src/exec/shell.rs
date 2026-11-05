@@ -208,26 +208,56 @@ pub const ENV_PAIRS: usize = 64;
 /// still leaves room for the rest.
 pub const ENV_BYTES: usize = 16384;
 
-/// The line written once, at session start, that defines the trailer's functions.
-/// `$?` is read at the top of the body, where it is still the status of the line before the
-/// call. The environment half prints only a value that is already one plain word ([`PLAIN`]).
-pub fn trailer_definition(fn_name: &str) -> String {
-    let env_fn = format!("{fn_name}_env");
+/// The function body that dumps the exported environment, shared by the persistent shell's
+/// trailer and the one-shot call's so the two filters are one list: the `compgen` guard, the
+/// plain-word case and the three caps are written once here.
+fn env_dump_fn(env_fn: &str) -> String {
     format!(
         "{env_fn}() {{ command -v compgen >/dev/null 2>&1 || return; local n v c=0 b=0; \
          for n in $(compgen -e); do \
-         case \"${{!n}}\" in ''|*[!{plain}]*) continue;; esac; v=${{!n}}; \
+         case \"${{!n}}\" in \"\"|*[!{plain}]*) continue;; esac; v=${{!n}}; \
          [ ${{#v}} -gt {value} ] && continue; \
-         printf '%s=%s;' \"$n\" \"$v\"; c=$((c+1)); b=$((b+${{#n}}+${{#v}}+2)); \
-         [ $c -ge {pairs} ] && return; [ $b -ge {bytes} ] && return; done; }}\n\
-         {fn_name}() {{ printf '\\033]1337;letibot;%s;%s;%s\n' \"$LETIBOT_MARK\" \"$?\" \"$PWD\"; \
-         {env_fn}; printf '\\007'; }}",
+         printf \"%s=%s;\" \"$n\" \"$v\"; c=$((c+1)); b=$((b+${{#n}}+${{#v}}+2)); \
+         [ $c -ge {pairs} ] && return; [ $b -ge {bytes} ] && return; done; }}",
         plain = PLAIN,
         pairs = ENV_PAIRS,
         bytes = ENV_BYTES,
         // The same per-value cap `intent::env` holds: a value the daemon would drop is a
         // value not worth carrying up a pty.
         value = crate::intent::env::ENV_VALUE,
+    )
+}
+
+/// The line written once, at session start, that defines the trailer's functions.
+/// `$?` is read at the top of the body, where it is still the status of the line before the
+/// call. The environment half prints only a value that is already one plain word ([`PLAIN`]).
+pub fn trailer_definition(fn_name: &str) -> String {
+    let env_fn = format!("{fn_name}_env");
+    format!(
+        "{}\n\
+         {fn_name}() {{ printf '\\033]1337;letibot;%s;%s;%s\n' \"$LETIBOT_MARK\" \"$?\" \"$PWD\"; \
+         {env_fn}; printf '\\007'; }}",
+        env_dump_fn(&env_fn)
+    )
+}
+
+/// The lines appended to a one-shot `bash` call so it reports its own environment on the way
+/// out. The model's command is a fresh `/bin/sh -c`, so the dump runs in a child `bash` that
+/// inherits exactly what the command exported. The command's `$?` is saved before anything of
+/// ours runs and the last line exits with it, so the call's answer stays the command's own; a
+/// `bash` that is not on the pinned `PATH` prints nothing, and a call this is appended to must
+/// parse as a whole program, which is the caller's guard. `mark` is this call's nonce, so only
+/// this call's trailer is taken back out of its output.
+pub fn oneshot_trailer(mark: &str) -> String {
+    let saved = format!("__lt_s_{mark}");
+    let dump = env_dump_fn(&format!("__lt_dump_{mark}"));
+    format!(
+        "{saved}=$?\n\
+         command -v bash >/dev/null 2>&1 && bash -c '{dump}; \
+         __lt_end_{mark}() {{ printf \"\\033]1337;letibot;{mark};%s;%s\\n\" \"$1\" \"$2\"; \
+         __lt_dump_{mark}; printf \"\\007\"; }}; \
+         __lt_end_{mark} \"$1\" \"$2\"' letibot-trailer \"${saved}\" \"$PWD\"\n\
+         exit \"${saved}\""
     )
 }
 
@@ -1088,6 +1118,103 @@ mod tests {
             "bash's own two lines about job control reached the session: {:?}",
             text(&t)
         );
+    }
+
+    /// Run one command under `/bin/sh -c` with the one-shot trailer appended, the way the
+    /// host composes a model's `bash` call, and answer with the whole stdout and the status.
+    fn run_oneshot(command: &str, env: &[(String, String)]) -> (Vec<u8>, Option<i32>) {
+        let mark = nonce();
+        let composed = format!("{command}\n{}", oneshot_trailer(&mark));
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(&composed)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .envs(env.iter().cloned())
+            .current_dir("/")
+            .output()
+            .expect("a /bin/sh -c run");
+        (out.stdout, out.status.code())
+    }
+
+    /// A bash these tests can drive: the child the trailer runs in needs `compgen -e`.
+    fn oneshot_bash() -> bool {
+        letibot_tokencore::apparatus::present(
+            "a bash with `compgen -e` (the child the one-shot trailer runs)",
+            Path::new("/bin/bash").exists(),
+        )
+        .is_some()
+    }
+
+    /// The one-shot trailer reports what the command exported, keeps the command's own
+    /// status as the run's answer, and leaves the command's output in front of the marker:
+    /// `take_turn` is the reader, so this is the whole contract on real bytes.
+    #[test]
+    fn a_oneshot_trailer_reports_the_environment_and_keeps_the_status() {
+        if !oneshot_bash() {
+            return;
+        }
+        let (stdout, code) = run_oneshot(
+            "echo before\nexport LT_ONE=/x\nLT_TWO=/y false",
+            &[("LT_SEED".to_string(), "/s".to_string())],
+        );
+        let mark = trailer_mark_of(&stdout);
+        let mut buf = stdout.clone();
+        let turn = take_turn(&mut buf, &mark).expect("a whole trailer").expect("it arrived");
+        assert_eq!(turn.status, 1, "the failed command's own status");
+        assert!(turn.cwd == "/", "the cwd the shell reported: {}", turn.cwd);
+        assert!(turn.env.contains("LT_ONE=/x;"), "the export: {}", turn.env);
+        assert!(turn.env.contains("LT_SEED=/s;"), "the inherited pair: {}", turn.env);
+        assert!(!turn.env.contains("LT_TWO"), "an unexported assignment: {}", turn.env);
+        assert!(text(&turn).contains("before"), "the command's own output");
+        assert!(!text(&turn).contains("1337"), "no trailer bytes in the output");
+        assert!(buf.is_empty(), "nothing follows the trailer: {buf:?}");
+        assert_eq!(code, Some(1), "the run answers with the command's status, not ours");
+    }
+
+    /// No bash on the `PATH`, no trailer and no noise: the command's output and status are
+    /// exactly what they would have been without the append.
+    #[test]
+    fn a_oneshot_trailer_without_bash_prints_nothing_and_changes_nothing() {
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("echo hi\n{}", oneshot_trailer("none")))
+            .env_clear()
+            .env("PATH", "/nonexistent")
+            .output()
+            .expect("a /bin/sh -c run");
+        assert_eq!(out.status.code(), Some(0));
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "hi\n");
+        assert!(String::from_utf8_lossy(&out.stderr).is_empty(), "no noise");
+    }
+
+    /// The mark of the trailer in `stdout`, read back out so the test parses with the same
+    /// nonce the host minted - a trailer whose mark nobody knows is one nobody can take.
+    fn trailer_mark_of(stdout: &[u8]) -> String {
+        let s = String::from_utf8_lossy(stdout);
+        let at = s.find("\x1b]1337;letibot;").expect("a trailer") + "\x1b]1337;letibot;".len();
+        s[at..].split(';').next().unwrap_or_default().to_string()
+    }
+
+    /// The two spellings of the trailer share one filter: a value the dump drops is dropped
+    /// by both, because the dump body is written once.
+    #[test]
+    fn the_two_trailers_share_one_dump_body() {
+        let persistent = trailer_definition("__lt_end_x");
+        let oneshot = oneshot_trailer("x");
+        let body = env_dump_fn("SHARED");
+        let shell_body = body.replace("SHARED", "");
+        for fragment in [
+            "compgen -e",
+            "*[!",
+            "printf \"%s=%s;\"",
+            "-ge 64 ] && return",
+            "-ge 16384 ] && return",
+        ] {
+            assert!(persistent.contains(fragment), "persistent lost {fragment}");
+            assert!(oneshot.contains(fragment), "oneshot lost {fragment}");
+            assert!(shell_body.contains(fragment), "the shared body lost {fragment}");
+        }
     }
 
     /// Two sessions do not share a nonce. The mark is what makes a trailer unforgeable
