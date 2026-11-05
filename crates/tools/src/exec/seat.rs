@@ -264,9 +264,32 @@ pub fn git_dir_protected(project: &Path) -> Vec<Protection> {
         Protection::dir(common.join("refs/tags")),
         Protection::dir(common.join("refs/remotes")),
     ];
-    for (path, name) in loose_refs(common, &common.join("refs/heads")) {
-        if dirs.own_ref.as_deref() != Some(name.as_str()) {
-            out.push(Protection::file(path));
+    // Every branch name the repository knows, loose or packed or only named by a worktree's
+    // HEAD. A name that is merely absent as a file is one a child could create and so shadow.
+    let mut names: Vec<String> = loose_refs(common, &common.join("refs/heads"))
+        .into_iter()
+        .map(|(_, n)| n)
+        .collect();
+    names.extend(packed_branches(common));
+    names.extend(worktree_head_branches(common));
+    names.sort();
+    names.dedup();
+    let own = dirs.own_ref.as_deref();
+    for name in names.iter().filter(|n| Some(n.as_str()) != own) {
+        let at = common.join(name);
+        if at.exists() || at.parent().is_some_and(Path::exists) {
+            out.push(Protection::file(at));
+            continue;
+        }
+        // The parent is absent, so a file placeholder cannot be mounted: hold the first absent
+        // ancestor as an empty read-only directory, unless the child's own branch lives in it.
+        let mut top = at.clone();
+        while let Some(p) = top.parent().filter(|p| !p.exists()) {
+            top = p.to_path_buf();
+        }
+        let own_in_it = own.is_some_and(|o| common.join(o).starts_with(&top));
+        if !own_in_it {
+            out.push(Protection::dir(top));
         }
     }
     // A sibling worktree's `HEAD` says which branch it has out, and its `commondir`/`gitdir`
@@ -294,6 +317,30 @@ pub fn git_dir_protected(project: &Path) -> Vec<Protection> {
         out.push(Protection::file(common.join("HEAD")));
     }
     out
+}
+
+/// Branch names (`refs/heads/x`) listed in `packed-refs`; a ref git has packed has no file to
+/// protect, and creating the loose one shadows it.
+fn packed_branches(common: &Path) -> Vec<String> {
+    std::fs::read_to_string(common.join("packed-refs"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.starts_with(['#', '^']))
+        .filter_map(|l| l.split_once(' ').map(|(_, n)| n.trim().to_string()))
+        .filter(|n| n.starts_with("refs/heads/"))
+        .collect()
+}
+
+/// The branches other worktrees have out, including ones not yet born.
+fn worktree_head_branches(common: &Path) -> Vec<String> {
+    std::fs::read_dir(common.join("worktrees"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| std::fs::read_to_string(e.path().join("HEAD")).ok())
+        .filter_map(|h| h.trim().strip_prefix("ref: ").map(|r| r.trim().to_string()))
+        .filter(|n| n.starts_with("refs/heads/"))
+        .collect()
 }
 
 /// Every loose ref under `dir`, as the path and git's name for it relative to the common dir
@@ -573,6 +620,55 @@ mod tests {
             !has(common.join("worktrees/wt/HEAD")),
             "a worktree's own HEAD is the one it works on"
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A branch only in `packed-refs` has no file, so it is protected by name.
+    #[test]
+    fn a_packed_only_branch_is_protected_by_name() {
+        let root = std::env::temp_dir().join(format!("letibot-packed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let common = root.join("repo/.git");
+        let wt = root.join("wt");
+        for d in [
+            common.join("refs/heads/agent"),
+            common.join("worktrees/wt"),
+            wt.clone(),
+        ] {
+            std::fs::create_dir_all(&d).unwrap();
+        }
+        std::fs::write(common.join("refs/heads/agent/child"), "1".repeat(40)).unwrap();
+        std::fs::write(
+            common.join("packed-refs"),
+            format!(
+                "# pack-refs with: peeled\n{} refs/heads/main\n{} refs/heads/feat/deep\n^{}\n{} refs/tags/t\n",
+                "0".repeat(40),
+                "2".repeat(40),
+                "3".repeat(40),
+                "4".repeat(40)
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            common.join("worktrees/wt/HEAD"),
+            "ref: refs/heads/agent/child\n",
+        )
+        .unwrap();
+        std::fs::write(common.join("worktrees/wt/commondir"), "../..\n").unwrap();
+        std::fs::write(
+            wt.join(".git"),
+            format!("gitdir: {}\n", common.join("worktrees/wt").display()),
+        )
+        .unwrap();
+        let prot = git_dir_protected(&wt);
+        let has = |p: PathBuf| prot.iter().any(|q| q.path == p);
+        let c = common.canonicalize().unwrap();
+        assert!(has(c.join("refs/heads/main")), "{prot:?}");
+        assert!(
+            has(c.join("refs/heads/feat")),
+            "absent parent held as a dir: {prot:?}"
+        );
+        assert!(!has(c.join("refs/heads/agent/child")), "{prot:?}");
         std::fs::remove_dir_all(&root).ok();
     }
 

@@ -726,6 +726,78 @@ fn a_child_commits_in_a_worktree_with_the_operators_identity_and_has_no_credenti
     assert!(!out.contains("password="), "{out}");
 }
 
+/// `main` kept only in `packed-refs` has no ref file; a child must not be able to create the loose
+/// one, and must still commit on its own branch.
+#[test]
+fn a_child_cannot_shadow_a_packed_only_branch_and_still_commits() {
+    let f = Fixture::new("packed");
+    let git = |dir: &Path, args: &[&str]| {
+        let o = std::process::Command::new("/usr/bin/git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "f")
+            .env("GIT_AUTHOR_EMAIL", "f@x.test")
+            .env("GIT_COMMITTER_NAME", "f")
+            .env("GIT_COMMITTER_EMAIL", "f@x.test")
+            .output()
+            .expect("git");
+        assert!(o.status.success(), "{args:?}: {o:?}");
+    };
+    let repo = f.root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main", "."]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "root"]);
+    let wt = f.root.join("wt");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "agent/child",
+            wt.to_str().unwrap(),
+        ],
+    );
+    git(&repo, &["pack-refs", "--all", "--prune"]);
+    let op = f.root.join("operator");
+    std::fs::create_dir_all(&op).unwrap();
+    let mut view = ViewSpec::project_only(&wt)
+        .with_home(HomeView::Dir(f.home()))
+        .with_tmp(TmpView::Session(f.root.join("tmp")));
+    for g in letibot_tools::exec::seat::worktree_git_grants(&wt) {
+        for p in letibot_tools::exec::seat::git_dir_protected(&wt) {
+            view = view.protecting(p);
+        }
+        view = view.granting(g);
+    }
+    let s = Seatbelt::probe_as(view, Egress::Denied, vec![f.denied()], op)
+        .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+    let common = repo.join(".git").canonicalize().unwrap();
+    assert!(
+        !common.join("refs/heads/main").exists(),
+        "main must be packed only"
+    );
+    let (rc, out) = run_in(
+        &s,
+        &wt,
+        &format!(
+            "git rev-parse HEAD > {c}/refs/heads/main; test ! -e {c}/refs/heads/main",
+            c = common.display()
+        ),
+    );
+    assert_ne!(rc, 0, "a child shadowed main with a loose ref: {out}");
+    assert!(!common.join("refs/heads/main").exists(), "{out}");
+    let (rc, out) = run_in(
+        &s,
+        &wt,
+        "GIT_AUTHOR_NAME=c GIT_AUTHOR_EMAIL=c@x.test GIT_COMMITTER_NAME=c \
+         GIT_COMMITTER_EMAIL=c@x.test git commit -q --allow-empty -m child",
+    );
+    assert_eq!(rc, 0, "{out}");
+}
+
 /// Security.framework trust evaluation needs `trustd`, which the profile now allows in both seats
 /// (Go's `x509: OSStatus -26276` was this). `security verify-cert` runs SecTrust on a system root,
 /// and the keychain item lookup stays refused in the tight seat.

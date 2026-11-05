@@ -50,6 +50,11 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Option<Fixture> {
+        Self::build(name, false)
+    }
+
+    /// `packed`: every ref is packed and pruned before the view is read, so no branch has a file.
+    fn build(name: &str, packed: bool) -> Option<Fixture> {
         let root =
             std::env::temp_dir().join(format!("letibot-gitchild-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -72,6 +77,9 @@ impl Fixture {
             ],
         );
         let common = repo.join(".git");
+        if packed {
+            git(&repo, &["pack-refs", "--all", "--prune"]);
+        }
 
         let mut view = ViewSpec::project_only(&worktree)
             .with_home(HomeView::Tmpfs)
@@ -252,4 +260,34 @@ fn an_absent_protected_file_cannot_be_created() {
     ));
     assert_ne!(rc, 0, "a child created packed-refs: {out}");
     assert!(!out.contains("WROTE"), "{out}");
+}
+
+/// `main` is only in `packed-refs`, so there is no ref file to protect: a child that creates the
+/// loose one shadows the operator's branch. Its own branch must still move.
+#[test]
+fn a_child_cannot_shadow_a_branch_kept_only_in_packed_refs() {
+    let Some(f) = Fixture::build("packed", true) else {
+        return;
+    };
+    let repo = f.root.join("repo");
+    assert!(
+        !f.common.join("refs/heads/main").exists(),
+        "the fixture must start with main packed only"
+    );
+    let main_before = git(&repo, &["rev-parse", "main"]);
+    let (out, _) = f.run(&format!(
+        "git commit -q --allow-empty -m child; \
+         git rev-parse HEAD > {c}/refs/heads/main 2>&1 && echo WROTE; \
+         git update-ref refs/heads/main HEAD 2>&1 && echo UPDATED; true",
+        c = f.common.display()
+    ));
+    assert!(
+        !out.contains("WROTE"),
+        "the child created the loose ref: {out}"
+    );
+    assert!(!out.contains("UPDATED"), "the child shadowed main: {out}");
+    assert!(!f.common.join("refs/heads/main").exists());
+    assert_eq!(main_before, git(&repo, &["rev-parse", "main"]));
+    let (out, rc) = f.run("git commit -q --allow-empty -m again");
+    assert_eq!(rc, 0, "the child's own branch stopped moving: {out}");
 }
