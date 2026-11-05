@@ -604,6 +604,54 @@ pub fn room_files() -> Vec<PathBuf> {
     out
 }
 
+/// The daemon's control sockets a tight seat must not reach: every socket in the per-user
+/// `letibot` runtime directories (the daemon's own, the ssh control masters) and `$LETIBOT_SOCKET`.
+/// The wide seat keeps them: `sudo -A` reaches the session through that socket, and the daemon
+/// answers a command's tree with that one door only.
+pub fn daemon_sockets() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
+        dirs.push(PathBuf::from(d).join("letibot"));
+    }
+    dirs.push(std::env::temp_dir().join("letibot"));
+    // SAFETY: `getuid` cannot fail.
+    dirs.push(PathBuf::from(format!("/run/user/{}/letibot", unsafe {
+        libc::getuid()
+    })));
+    daemon_sockets_in(
+        &dirs,
+        &std::env::temp_dir(),
+        std::env::var_os("LETIBOT_SOCKET")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from),
+    )
+}
+
+/// [`daemon_sockets`] over given directories, so a test does not race the process environment.
+fn daemon_sockets_in(dirs: &[PathBuf], tmp: &Path, named: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for dir in dirs {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            if e.file_name().to_string_lossy().ends_with(".sock") {
+                out.push(e.path());
+            }
+        }
+    }
+    // The ssh masters fall back to the temp dir when the runtime dir is too long for a socket path.
+    for e in std::fs::read_dir(tmp).into_iter().flatten().flatten() {
+        let n = e.file_name().to_string_lossy().to_string();
+        if n.starts_with("letibot-ssh-") && n.ends_with(".sock") {
+            out.push(e.path());
+        }
+    }
+    out.extend(named);
+    let canon: Vec<PathBuf> = out.iter().filter_map(|p| p.canonicalize().ok()).collect();
+    out.extend(canon);
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// The read-only system paths bound by default, with `--ro-bind-try` so a host that does
 /// not have one is not a failure. This is what `/bin/sh` needs to exist, not a security
 /// decision: the security decision is everything not on it, where `$HOME` and `/root` live.
@@ -3068,6 +3116,28 @@ mod tests {
                 "{p} is on the macOS deny list and not masked here: {joined}"
             );
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The daemon's own socket and the ssh masters are found by scanning; a plain file and a
+    /// socket outside the letibot directories are not.
+    #[test]
+    fn the_daemons_sockets_are_found_in_the_runtime_dirs() {
+        let dir = std::env::temp_dir().join(format!("letibot-dsock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let run = dir.join("run/letibot");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("abc.sock"), "").unwrap();
+        std::fs::write(run.join("abc.json"), "").unwrap();
+        std::fs::write(dir.join("letibot-ssh-1-x-call.sock"), "").unwrap();
+        std::fs::write(dir.join("other.sock"), "").unwrap();
+        let got = daemon_sockets_in(&[run.clone()], &dir, Some(dir.join("named.sock")));
+        let has = |p: PathBuf| got.contains(&p) || got.contains(&p.canonicalize().unwrap_or(p));
+        assert!(has(run.join("abc.sock")), "{got:?}");
+        assert!(has(dir.join("letibot-ssh-1-x-call.sock")), "{got:?}");
+        assert!(has(dir.join("named.sock")), "{got:?}");
+        assert!(!got.iter().any(|p| p.ends_with("abc.json")), "{got:?}");
+        assert!(!got.iter().any(|p| p.ends_with("other.sock")), "{got:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

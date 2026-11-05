@@ -450,6 +450,9 @@ impl HostBackend {
             for p in crate::exec::seat::git_dir_protected(&project) {
                 view = view.protecting(p);
             }
+            for p in crate::exec::confine::daemon_sockets() {
+                view = view.hiding(p);
+            }
         }
         // The seat's fence, at either level: a wide view holds all of it, and a tight one holds
         // whatever a grant lets in — the renderer masks the stores its own view reaches.
