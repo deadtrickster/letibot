@@ -1374,7 +1374,17 @@ impl Boundary {
                      decide.",
                     p.display()
                 ));
-                note.push_str(&boundary_key_hint(p));
+            }
+            // Once for the list, so the reply stays as short as a hit: the first path that can
+            // be granted stands for the shape of the key.
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            let mut keyed = false;
+            for p in &outside {
+                let hint = key_hint_under(p, home.as_deref());
+                if hint.contains("never granted") || !keyed {
+                    note.push_str(&hint);
+                    keyed |= !hint.contains("never granted");
+                }
             }
             notes.push(note);
         }
@@ -1860,11 +1870,6 @@ fn judged(helper: PathBuf, boundary: Boundary) -> Result<Bwrap, ExecError> {
 
 /// The config key that would put `p` in a view, or the sentence saying none can: the fixed
 /// never-grant list is the credential stores and the letibot store, under any home.
-pub fn boundary_key_hint(p: &Path) -> String {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    key_hint_under(p, home.as_deref())
-}
-
 fn key_hint_under(p: &Path, home: Option<&Path>) -> String {
     let fixed = home.and_then(|home| {
         super::boundary::never_grant()
@@ -1875,11 +1880,11 @@ fn key_hint_under(p: &Path, home: Option<&Path>) -> String {
         Some(rel) => format!(
             " `~/{rel}` is never granted: no `[boundary]` key in leticode.toml changes that."
         ),
-        None => format!(
-            " The operator's keys: `[boundary] grants_ro = [\"{0}\"]`, or `grants_rw` for \
-             write, in `~/.config/letibot/leticode.toml`.",
-            p.display()
-        ),
+        None => {
+            " The operator's keys: `[boundary] grants_ro = [\"PATH\"]`, or `grants_rw` for write, \
+             in `~/.config/letibot/leticode.toml`."
+                .to_string()
+        }
     }
 }
 
@@ -3401,7 +3406,6 @@ mod tests {
             ask.contains("[boundary] grants_ro") && ask.contains("grants_rw"),
             "{ask}"
         );
-        assert!(ask.contains("/home/dead/datasets"), "{ask}");
         let never = key_hint_under(Path::new("/home/dead/.ssh/id_rsa"), Some(home));
         assert!(
             never.contains("never granted") && !never.contains("grants_ro"),
