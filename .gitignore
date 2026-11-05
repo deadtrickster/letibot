@@ -3,38 +3,20 @@
 .env
 scripts/__pycache__/
 
-# Scratch: working files, scrape output and logs. Kept on disk, never in the
-# repository — the one thing under it that a BUILD needs (the recall test key)
-# lives beside its test at crates/tools/tests/data/answer-key.tsv.
+# Working files, scrape output and logs. Nothing in the build reads it.
 scratch/
-# **Worktrees a hand-made branch was cut into.** `task_start` puts its worktrees beside the
-# repository (`~/Projects/letibot/worktrees/`, or `.claude/worktrees` at the top); a branch arranged
-# by hand with `git worktree add worktrees/<slug>` lands here instead, and the tree keeps the
-# worktree's own bookkeeping in `.git`, not in this directory.
+# Worktrees made by hand with `git worktree add worktrees/<slug>`.
 /worktrees/
 
-# The launcher's delivery log is a run's record, kept beside the notes it is not one of.
-/.letibot/delivery-log.jsonl
+# The daemon's per-project state. Notes live in their own repository (docs/notes.md).
+/.letibot/
 
-# **No local `.cargo/config.toml`, and never a committed one.** `rano` is a git
-# dependency pinned to a tag, and unreleased rano work is built through a `[patch]`
-# on the branch that needs it, dropped before the merge. A `paths = [...]` override
-# here is the old arrangement and a trap: cargo swaps the dependency for the local
-# checkout whatever version the lock asks for, so a checkout left at an old release
-# breaks the build silently. MEASURED 2026-10-08 on the Linux box: a v0.2.1 checkout
-# under a lock that wanted v0.6.0, and nothing that depends on crates/ui compiled.
-# Still ignored, because an absolute path in a committed file is what made the
-# daemon unbuildable on a runner.
+# A local `.cargo/config.toml` with `paths = [...]` swaps the pinned rano for a local checkout
+# whatever the lock asks for. Unreleased rano work goes through a `[patch]` on its branch.
 /.cargo/config.toml
-# **A disabled copy of it keeps the same company.** `config.toml.off-<date>` is how one is put
-# aside rather than deleted (2026-10-12), and it is a local arrangement like the file it came from:
-# an absolute `paths = [...]` in it would break every other tree that checked it out.
 /.cargo/config.toml.off-*
 
-# The example plugin crates are standalone workspaces: their build output is theirs, not this
-# tree's, and a `.wasm` somebody built is a copy at `plugin.wasm` beside it.
+# The plugin crates are standalone workspaces with their own build output. A built example's
+# `.wasm` is committed as `plugin.wasm` beside it.
 /plugins/examples/*/target/
-# The same for the layers the binary carries (`crates/builtins`): its build script gives each guest
-# a target directory of its own under `OUT_DIR`, and `cargo test` run in a guest's own directory
-# leaves one here.
 /plugins/builtin/*/target/
