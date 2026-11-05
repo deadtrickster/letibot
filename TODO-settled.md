@@ -7727,3 +7727,37 @@ has given up on still exit 40, so a caller can move the session to another model
 
 **Done when**: a wait over a session whose provider stalls and then answers exits only at the
 turn's end; a quota refusal still exits 40 at once; a test drives both.
+## R105 - The work order after the 2026-11-01 review, folded with the open list - **SETTLED 2026-11-05: every step closed or moved to the entry that owns it, so nothing of its own is left**
+
+**settled:** step 6 by the five commits ending `5b04dd8d` (75 blocks over three lines before, 4 after,
+and those four are string content inside `crates/harnessd/src/plugins/scaffold.rs`); step 8 by
+`66f0a048`, which is R125. Steps 1, 2, 3, 5 and 7 closed earlier, named per step below.
+
+Record: `docs/review/2026-11-01-ab5f7841-90dd9c84.md` (three reviewers, two rounds, synthesis). In order; each step relies on the one before it.
+
+The steps as written:
+
+1. Guards. Remove the 15 `#![allow(clippy::all)]` crate by crate, each replaced by targeted allows with a reason. The gate's clippy step must not pass on a warm target. A check that every `#[test]` sits on its own function (or `--list` counts per binary). A test that cannot run on the gate host fails there instead of printing SKIPPED (`crates/bridge/tests/daemon_record.rs:84-89`).
+2. Orchestration bugs that cost runs: R106, R107, R108; re-check R99's own Done-when now that R101 is closed.
+3. Contracts from the review: version the sessions plugin answer so a layer written for groups is refused out loud; record reviewers-on-host in DECISIONS.md and restore a test of the VM arm (`mergequeue/review.rs:700`); the single-attempt retry test (`crates/http/src/retry.rs`); the room protocol bumps only at release points.
+4. R100, firecode for remote sessions.
+5. De-duplication: one queue renderer (`crates/tui/src/ui/panes/queue.rs` or `plugins/builtin/queue`), one `now_ms`, one truncation helper, `crates/harnessd/tests/common`.
+6. Deslop per `hands-off/templates/deslop.md`: comments to the 2-3 line rule, `.letibot/notes` merged into rewritten topic docs.
+7. Structure: split `open_with_registry`, `rounds`, `run_to_completion`; break `harness.rs` into modules.
+8. Plugins: script layers (`docs/plugins-plan.md` step 11).
+9. Backlog, unchanged: R98 half 1, R89-R92, R64-R66 and the older open entries below (R93 and R95 settled 2026-11-05).
+
+**Where each step stands, re-checked against main on 2026-11-03 and against this tree on 2026-11-05.**
+
+1. **Closed.** No crate root carries `#![allow(clippy::all)]` any more; they went crate by crate, with the items annotated that the allow had hidden (d1a22002 provider, 5f799705 turn, 76b1d3b9 sessionlog, 2c604e95 tools, a91283f7 tui, 77634a08 flowy, 90c249a9 opencode, e6f1239e dialect-glm). The gate's clippy step is `scripts/clippy-gate.sh`, which touches every member's root so a warm target cannot answer for the lints (3feb2606, and agents.md says why). `scripts/check-test-attrs.sh` is the gate's second step, and rejects a `#[test]` that is not on a function of its own (d0e344cb). The daemon-record test refuses on a box without python3 instead of printing SKIPPED (6daadf89).
+2. **Closed, except R99's Done-when, which is a live run.** R106 landed as `ecae1af7` (`a_session_that_joins_a_daemon_runs_its_own_model`), R107 as `f1e7f9ec` (with `crates/bridge/tests/wait_activity.rs` holding a wait on a running job and answering through it when the daemon says quiet), and R108 is closed in this file (`8d1b0f2a`). R99's code is `ccf7b895`, `559048a7` and `36752792`; its Done-when, six packages placed on lab2x1 at once and a forced mid-write drop, needs a real host and a real sshd, so nothing in a sandbox can say it.
+3. **Closed.** The sessions answer is versioned: `MOVED` (`crates/plugins/src/lib.rs:98`) and `[contracts] pane_sessions = 3` refuse a layer written for the groups at load, naming the layer and both numbers (`b5a2925a`, `a_layer_written_for_the_old_shape_is_refused_and_the_layer_below_answers`). D18 records reviewers-on-host, and the VM arm's test is back (`fcc559aa`, `a_project_that_asks_for_vms_gets_its_reviewer_placed_in_one`). The single-attempt retry test is `one_attempt_means_no_retry_and_the_default_still_retries` (`59c9c90d`). The room's number moves at release points, said above the constant (`609521f9`).
+4. **R100's, and it says so there.** `Placement::RemoteVm` is built, and the two arms the review found asserted nowhere have tests: the checkout a VM placement makes is a clone and a host placement's is a linked worktree (`7a964d46`), and the mode a placement puts a session in is `mode_in_vm`, with `RemoteVm` asserted at allow-all (`16e91852`). What is left is R100's live run on lab2x1 and its four facts: a real `firecode` copy carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, and the copy-out's cost off the daemon's own line.
+5. **Closed.** One queue renderer (`e147d979`: the pane is the `queue` layer's answer and the head hosts it), one clock (`682e5a69`, fifteen copies into `letibot-metrics`; the `i64` sites keep a named two-line adapter, and the copy that arrived after it went in `397b3ef2`), one truncation helper per meaning in `letibot_transcript::text` (`2b356d3a`; two aliases went in `397b3ef2`), and the tests' shared support is `crates/harnessd/tests/support` (`a43d2748`), not `tests/common`.
+6. **Closed 2026-11-05.** The docs were deslopped one by one, and the notes were merged into them and cut: `.letibot/notes` holds 160 files, with the ones whose content moved deleted in the same commit. The comment rule is tree-wide now: `python3 scripts/comment-blocks.py count $(git ls-files 'crates/**/*.rs')` read 75 blocks over three lines before this pass and 4 after, and those four are string content inside `crates/harnessd/src/plugins/scaffold.rs`, which `plugin scaffold` writes into the plugin's own `src/lib.rs` - changing one changes what the tool writes, so they are not this tree's comments. Every block that was cut kept its why and dropped the history, the measurements, the version tags and the restatement, and `scripts/same-code.py` read 0 files differing over the whole tree before each of the five commits.
+7. **Closed.** `harness.rs` is 1,894 lines and its parts are `crates/harnessd/src/harness/` (`open.rs` e4e00ff0, `turns.rs` 967c5718, `children.rs` 0d2aca9c, `models.rs` 42931d7c, `wall.rs` c2a9c60d and the rest), and the three long functions are named steps (`rounds` 7aa68541, 60a3af8a, 8767a6f6, 8e3b3a9a; `run_to_completion` c86e6f44; `open_with_registry` 43f26515, 2b0701a2, 3ce469cf, 592241c4).
+8. **Moved to R125, which the operator deferred on 2026-11-05.** It stops on two decisions this entry could not take (`docs/plugins-plan.md` step 11): where a JavaScript engine comes from, with none in `Cargo.lock` and none in the offline registry cache, and the JS-side contract, including how the shadow gate's replay stays exact with a clock and `Math.random` inside it.
+9. **Not this entry's work**: the backlog entries further down `TODO.md` are their own, and each is an entry there.
+
+**Done when**: steps 1-8 are closed or moved to their own entries. Met: 1, 2, 3, 5, 6 and 7 are
+closed, 4 is R100's, and 8 is R125's.

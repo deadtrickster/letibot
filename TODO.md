@@ -48,7 +48,6 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement) |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | only leticl's `:turn-finished` arm reading `ends_turn`: that repo is not under ~/Projects, so it is unchecked |
 | R121 | What a command boundary holds is hardcoded and invisible | Code work | items 5-8 (perimeters as config, children narrow and widening is an ask, file tools obey the perimeter), item 3's probe line, item 4's tool refusals |
-| R105 | The work order after the 2026-11-01 review | Code work | step 4's four live facts on lab2x1, step 6's comment rule (486 blocks over three lines by `scripts/comment-blocks.py count`), step 8's two decisions (JS engine source, JS-side contract), step 9 (the backlog entries in this file) |
 | R125 | Script plugin layers: where a JavaScript engine comes from, and the JS-side contract | Needs the operator | the two decisions, then `docs/plugins-plan.md` step 11: no JavaScript engine is available offline here, and a vendored one compiled in would run freely as a built-in |
 | R114 | Embeddings as the second similarity tier, for every similarity caller | Code work | item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase case scored against the worst measured negative, the per-round cost on lab2x1 |
 | R118 | A GitHub reviewer seat: `letibot attach github` reviews every PR and answers as @letibot | Code work | the seat in the daemon so the pane has a feed, a mirror per repository, the review panel, R116's verdict, R114's similarity offers |
@@ -684,38 +683,6 @@ Open:
 - `load_user` in `leticode-config` reads the user file as `Level::Project`; `perimeter::load` uses
   `load_as(.., Level::User)` instead. Left alone.
 - The R95 seam: `boundary::env_refusal` is the env deny-list. R95's carry-over should call it.
-
----
-
-## R105 - The work order after the 2026-11-01 review, folded with the open list
-
-**Status:** steps 1, 2, 3, 5 and 7 are closed (evidence per step below), 4 is built and owes a live run, 6 is half done, 8 stops on two decisions, 9 is the backlog. left: step 4's four live facts on lab2x1 (R100), step 6's comment rule (486 blocks over three lines by `scripts/comment-blocks.py count`; the list below says 456, written earlier), step 8's two decisions (where a JavaScript engine comes from, and the JS-side contract), step 9 (the entries in this file).
-
-Record: `docs/review/2026-11-01-ab5f7841-90dd9c84.md` (three reviewers, two rounds, synthesis). In order; each step relies on the one before it.
-
-1. Guards. Remove the 15 `#![allow(clippy::all)]` crate by crate, each replaced by targeted allows with a reason. The gate's clippy step must not pass on a warm target. A check that every `#[test]` sits on its own function (or `--list` counts per binary). A test that cannot run on the gate host fails there instead of printing SKIPPED (`crates/bridge/tests/daemon_record.rs:84-89`).
-2. Orchestration bugs that cost runs: R106, R107, R108; re-check R99's own Done-when now that R101 is closed.
-3. Contracts from the review: version the sessions plugin answer so a layer written for groups is refused out loud; record reviewers-on-host in DECISIONS.md and restore a test of the VM arm (`mergequeue/review.rs:700`); the single-attempt retry test (`crates/http/src/retry.rs`); the room protocol bumps only at release points.
-4. R100, firecode for remote sessions.
-5. De-duplication: one queue renderer (`crates/tui/src/ui/panes/queue.rs` or `plugins/builtin/queue`), one `now_ms`, one truncation helper, `crates/harnessd/tests/common`.
-6. Deslop per `hands-off/templates/deslop.md`: comments to the 2-3 line rule, `.letibot/notes` merged into rewritten topic docs.
-7. Structure: split `open_with_registry`, `rounds`, `run_to_completion`; break `harness.rs` into modules.
-8. Plugins: script layers (`docs/plugins-plan.md` step 11).
-9. Backlog, unchanged: R98 half 1, R89-R92, R64-R66 and the older open entries below (R93 and R95 settled 2026-11-05).
-
-**Status 2026-11-03, each step re-checked against main.** 1, 2, 3, 5 and 7 are closed. 4 is built and owes a live run on lab2x1. 6 is half: the docs and the reviewed range's code are deslopped, the tree-wide comment rule is not. 8 is not built and stops on a decision. 9 is the backlog further down.
-
-1. **Closed.** No crate root carries `#![allow(clippy::all)]` any more; they went crate by crate, with the items annotated that the allow had hidden (d1a22002 provider, 5f799705 turn, 76b1d3b9 sessionlog, 2c604e95 tools, a91283f7 tui, 77634a08 flowy, 90c249a9 opencode, e6f1239e dialect-glm). The gate's clippy step is `scripts/clippy-gate.sh`, which touches every member's root so a warm target cannot answer for the lints (3feb2606, and agents.md says why). `scripts/check-test-attrs.sh` is the gate's second step, and rejects a `#[test]` that is not on a function of its own (d0e344cb). The daemon-record test refuses on a box without python3 instead of printing SKIPPED (6daadf89).
-2. **Closed, except R99's Done-when, which is a live run.** R106 landed as `ecae1af7` (`a_session_that_joins_a_daemon_runs_its_own_model`), R107 as `f1e7f9ec` (with `crates/bridge/tests/wait_activity.rs` holding a wait on a running job and answering through it when the daemon says quiet), and R108 is closed in TODO-settled.md (`8d1b0f2a`). R99's code is `ccf7b895`, `559048a7` and `36752792`; its Done-when, six packages placed on lab2x1 at once and a forced mid-write drop, needs a real host and a real sshd, so nothing in a sandbox can say it.
-3. **Closed.** The sessions answer is versioned: `MOVED` (`crates/plugins/src/lib.rs:98`) and `[contracts] pane_sessions = 3` refuse a layer written for the groups at load, naming the layer and both numbers (`b5a2925a`, `a_layer_written_for_the_old_shape_is_refused_and_the_layer_below_answers`). D18 records reviewers-on-host, and the VM arm's test is back (`fcc559aa`, `a_project_that_asks_for_vms_gets_its_reviewer_placed_in_one`). The single-attempt retry test is `one_attempt_means_no_retry_and_the_default_still_retries` (`59c9c90d`). The room's number moves at release points, said above the constant (`609521f9`).
-4. **Built; the shape has tests now, the live run still owes four facts.** `Placement::RemoteVm` is built, and the two arms the review found asserted nowhere have tests: the checkout a VM placement makes is a clone and a host placement's is a linked worktree (`7a964d46`), and the mode a placement puts a session in is `mode_in_vm`, with `RemoteVm` asserted at allow-all (`16e91852`). Still owed are the lab2x1 run's four facts: item 2 with a real `firecode` copy carrying a commit out, item 4 with a resumed session, the guest's `cargo test` with no card, and the copy-out's cost off the daemon's own line.
-5. **Closed.** One queue renderer (`e147d979`: the pane is the `queue` layer's answer and the head hosts it), one clock (`682e5a69`, fifteen copies into `letibot-metrics`; the `i64` sites keep a named two-line adapter, and the copy that arrived after it went in `397b3ef2`), one truncation helper per meaning in `letibot_transcript::text` (`2b356d3a`; two aliases went in `397b3ef2`), and the tests' shared support is `crates/harnessd/tests/support` (`a43d2748`), not `tests/common`.
-6. **Half.** The docs were deslopped one by one, and the notes were merged into them and cut: `.letibot/notes` holds 160 files, with the ones whose content moved deleted in the same commit. The comment rule is not tree-wide: `python3 scripts/comment-blocks.py count $(git ls-files 'crates/**/*.rs')` still finds 456 blocks over three lines.
-7. **Closed.** `harness.rs` is 1,894 lines and its parts are `crates/harnessd/src/harness/` (`open.rs` e4e00ff0, `turns.rs` 967c5718, `children.rs` 0d2aca9c, `models.rs` 42931d7c, `wall.rs` c2a9c60d and the rest), and the three long functions are named steps (`rounds` 7aa68541, 60a3af8a, 8767a6f6, 8e3b3a9a; `run_to_completion` c86e6f44; `open_with_registry` 43f26515, 2b0701a2, 3ce469cf, 592241c4).
-8. **Not built, and it stops on two decisions this entry cannot take** (`docs/plugins-plan.md` step 11): where a JavaScript engine comes from, with none in `Cargo.lock` and none in the offline registry cache, and the JS-side contract, including how the shadow gate's replay stays exact with a clock and `Math.random` inside it.
-9. **Unchanged**: the backlog entries further down this file are their own work.
-
-**Done when**: steps 1-8 are closed or moved to their own entries. **Still open?** step 4's live run, step 6's comment rule, step 8's two decisions, and step 9's backlog.
 
 ---
 
