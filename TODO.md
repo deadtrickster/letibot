@@ -46,7 +46,6 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | id | title | group | left |
 |---|---|---|---|
 | R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement), item 40 (the inline blocks over 800 lines) |
-| R95 | A variable an earlier command assigned is unread in the next one | Code work, after the release | an `export` in one `bash` call still does not reach the next: the model's command is a one-shot spawn and `SessionEnv::observe` has no production caller; the stateful shell needs the deny-list of section 4j.5 |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | `Hub::turn_in_flight` (`crates/sessionlog/src/hub.rs:1632`) still reads the round, not `ends_turn`; a round with no calls followed by a nudge still says `true`; unclear: leticl's `:turn-finished` arm reading `ends_turn` is in another repo, check there |
 | R121 | What a command boundary holds is hardcoded and invisible | Code work | items 5-8 (perimeters as config, children narrow and widening is an ask, file tools obey the perimeter), item 3's probe line, item 4's tool refusals |
 | R124 | The package waiter exits on every provider stall | Code work | all of it: a `wait` option (or default) that rides over a stall while the request is open and still exits on rate limit, quota and timeout |
@@ -408,59 +407,6 @@ nothing to design.
 
 ---
 
-## R95 - A variable an earlier command assigned is unread in the next one
-
-**Status:** the design note (section 4j), the resolver, the card and a placement-true seed are built (2026-11-03). ruled 2026-11-04: persistent env, cwd reset per call, after the release. left: an `export` in one `bash` call still does not reach the next - the model's command is a one-shot spawn and `SessionEnv::observe` has no production caller. Closing it makes the session's shell stateful, which section 4j.5 says needs a deny-list for names that change what a program does without appearing in any text.
-
-About 500 recorded commands (`$p`, `$d`, `$pr`, `$CARGO_TARGET_DIR`, …) use a variable the
-session set in an EARLIER `bash` call, and G3 resolves only a variable assigned earlier in the
-SAME command, so these stay unread (`docs/boundary-and-adjudication.md` §4i.4).
-
-**The operator's decision (D14):** the session's environment is tracked, and a value the session
-set may make a command readable for adjudication. Observed, not inferred: the persistent shell's
-trailer (`ShellSession`, which already reports cwd) reports the environment after every call.
-`PATH` is recorded but not used for resolution until R96 is ruled.
-
-**Done when**: a design note in `docs/boundary-and-adjudication.md` (where it is observed, its
-lifetime across a daemon restart, a migrated session, a confined and a remote shell, and how the
-card shows it); the resolver reads the tracked environment; the corpus replay shows the
-cross-command bucket gone without any command becoming unread; the card names a variable the
-session set when it decided the reading.
-
-**And R96, `$PATH`, decided 2026-10-27 (D15): resolved too, built with this.** 527 commands
-on lab2x1 and 1,347 on the mac. When `PATH` is resolved, each stage's program is resolved to the
-file it will run, and the stage, shape and card name that file when it differs from what the
-bare name finds today, so a grant given for one binary cannot settle a stage that runs another.
-
-**The operator's ruling, 2026-11-04:** bash calls share one persistent shell, after the release.
-The environment persists across calls; the cwd resets to the workspace root before every call,
-because a drifting cwd sends a relative `rm` or `git` to the wrong tree. `cd x && ...` inside one
-command is still resolved by the gate.
-
-**Still open?** grep the corpus replay's unread list for variables with no assignment in the
-same command.
-
-**What is built (2026-11-03).** §4j is the design note; the resolver reads the tracked environment
-(`intent::env`, `parameters::value_at`), and the card names the value and its source for both of the
-sources this tree has — the pairs a spawn is given, and a shell's report. The seed is now the
-environment this box's spawn really gives, on this box only: a remote host's and a guest's spawn
-export the CALL's own pairs into their own shell, so `surroundings_for` seeds nothing there and a
-command using one stays unread rather than being placed on a machine it is not on
-(`a_placement_that_is_not_this_box_seeds_no_environment`). The corpus counterfactual is built
-(`Report::env_fixed`) and needs `~/letibot-corpus/<host>.json`, which this box has not got.
-
-**What is left, precisely.** Nothing observes a `bash` call's own environment, so an `export` in
-one call is still not in the next: the model's command is a one-shot `/bin/sh -c` that exits with
-whatever it exported, and `ShellSession` — the only thing in the tree whose trailer reports an
-environment — is opened by its own tests and no production code. A trailer appended to each call
-would report it; carrying that report into the next spawn's pairs is what makes the session's
-shell stateful, and §4j.5 refuses that without a deny-list for the names that change what a
-program does without appearing in any text (`LD_PRELOAD`, `BASH_ENV`, `PATH` itself). That is the
-operator's call, not this item's: with it, R95's remaining sentence is one trailer and one pair
-merge; without it, the seed is the whole of what the gate can honestly resolve.
-
----
-
 ## R55 - A round's end and a turn's end are the same event on the wire
 
 **Status:** the field is built - `SessionEvent::TurnFinished` carries `ends_turn` (`crates/sessionlog/src/event.rs:12`, test `crates/harnessd/tests/turn_end_marker.rs`) and this head's row holds across rounds (`a_prompt_in_flight_holds_the_row_up_between_its_rounds`). left: `Hub::turn_in_flight` (`crates/sessionlog/src/hub.rs:1632`) still reads the round and not the field; a round with no calls followed by a nudge still says `true`; unclear: leticl's `:turn-finished` arm reading `ends_turn` is in another repo, check there.
@@ -773,7 +719,7 @@ Record: `docs/review/2026-11-01-ab5f7841-90dd9c84.md` (three reviewers, two roun
 6. Deslop per `hands-off/templates/deslop.md`: comments to the 2-3 line rule, `.letibot/notes` merged into rewritten topic docs.
 7. Structure: split `open_with_registry`, `rounds`, `run_to_completion`; break `harness.rs` into modules.
 8. Plugins: script layers (`docs/plugins-plan.md` step 11).
-9. Backlog, unchanged: R95, R98 half 1, R89-R92, R64-R66 and the older open entries below (R93 settled 2026-11-05).
+9. Backlog, unchanged: R98 half 1, R89-R92, R64-R66 and the older open entries below (R93 and R95 settled 2026-11-05).
 
 **Status 2026-11-03, each step re-checked against main.** 1, 2, 3, 5 and 7 are closed. 4 is built and owes a live run on lab2x1. 6 is half: the docs and the reviewed range's code are deslopped, the tree-wide comment rule is not. 8 is not built and stops on a decision. 9 is the backlog further down.
 

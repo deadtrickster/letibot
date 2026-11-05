@@ -7663,3 +7663,48 @@ the transcript is); `a_carried_token_agrees_where_the_history_is_not_passed_agai
 settled: item 4 `eff5cb36` (`crates/dialect/src/lib.rs`, `crates/turn/src/renderer.rs`,
 `crates/turn/src/engine.rs`, `crates/dialect-glm/src/render.rs`, `crates/dialect-qwen/src/render.rs`);
 items 1, 2, 3 and 5 `e5a11374`, `5a01de3b`, `e51847ed`, all on main
+---
+
+## R95 — A variable an earlier command assigned is unread in the next one — **DONE 2026-11-05 on branch `remote/80621000`: the session's shell is stateful behind the deny-list, per the 2026-11-04 ruling**
+
+Filed 2026-11-03, ruled 2026-11-04 (persistent env, cwd reset per call). About 500 recorded
+commands (`$p`, `$d`, `$pr`, `$CARGO_TARGET_DIR`, …) used a variable the session set in an
+EARLIER `bash` call, and G3 resolved only a variable assigned earlier in the SAME command.
+
+What closed it:
+
+- The deny-list one list for both halves (`intent::env::denied`, `crates/tools/src/intent/env.rs`):
+  a denied name is never held, never resolved and never carried - the loaders' namespace
+  (`LD_*`, `DYLD_*`), `BASH_ENV`/`ENV`/`SHELLOPTS`/`BASHOPTS`, the `PATH`, and the shell's own
+  machinery (`PWD`, `OLDPWD`, `SHLVL`, `_`). The narrowest safe default; widening it (whether
+  `PATH` may be carried with §4j.5's file-naming as the honesty mechanism, and which further
+  names belong on either side) is the operator's open ruling, recorded in §4j.5.
+- The one-shot trailer (`exec::shell::oneshot_trailer`, `crates/tools/src/exec/shell.rs`): appended
+  to the command a spawn runs, the dump in a child `bash` that inherits what the command exported,
+  the command's `$?` saved before anything of ours runs and the last line exiting with it. The dump
+  body is the one function the `!` shell's trailer uses, so the two filters cannot drift.
+- The capture gives the trailer up (`exec::jobs::TrailerTaker`): taken out before the secret
+  masker, so the window, the spill file and `produced` never carry machinery the command did not
+  print; a refused report is stripped and drops everything the shell said.
+- The gate observes and the spawn merges (`Gate::{observes_shell_env, shell_env_pairs,
+  observe_shell_env}`): `bash` arms the trailer where the gate's environment is seeded (Host
+  placements only) and observes a settled call's report; `job_wait` observes a backgrounded run's.
+  A command that is not a whole program gets no trailer and the job's row keeps the model's own
+  text.
+
+The cwd resets per call by construction (every spawn starts at the cwd the call named); shell
+functions and aliases do not persist, and the operator's `!` runs (a tty) are not observed.
+
+Tests: `a_report_drops_the_names_the_deny_list_refuses`, `shell_pairs_carry_only_what_the_shell_said`
+(`intent/env.rs`), `a_oneshot_trailer_reports_the_environment_and_keeps_the_status`,
+`a_oneshot_trailer_without_bash_prints_nothing_and_changes_nothing`,
+`the_two_trailers_share_one_dump_body` (`exec/shell.rs`), the three capture tests
+(`exec/jobs.rs`), `an_export_in_one_call_reaches_the_next_spawn`,
+`a_command_that_is_not_a_whole_program_gets_no_trailer_and_runs_as_written` (`exec/host.rs`),
+`the_gate_observes_the_shells_environment_and_a_refused_report_drops_it`
+(`adjudicate/tests/gate.rs`). The corpus-replay counterfactual could not be re-run: it needs
+`~/letibot-corpus/<host>.json`, which this box has not got; the cross-command claim is proven by
+the end-to-end chain instead.
+
+settled: deny-list `9d841b26`, trailer `0533ef39`, capture `28ae4cdc`, wiring `3dd2f445`, doc
+`fa2dcd00`, all on branch `remote/80621000`
