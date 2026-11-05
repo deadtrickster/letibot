@@ -49,6 +49,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | only leticl's `:turn-finished` arm reading `ends_turn`: that repo is not under ~/Projects, so it is unchecked |
 | R121 | What a command boundary holds is hardcoded and invisible | Code work | items 5-8 (perimeters as config, children narrow and widening is an ask, file tools obey the perimeter), item 3's probe line, item 4's tool refusals |
 | R105 | The work order after the 2026-11-01 review | Code work | step 4's four live facts on lab2x1, step 6's comment rule (486 blocks over three lines by `scripts/comment-blocks.py count`), step 8's two decisions (JS engine source, JS-side contract), step 9 (the backlog entries in this file) |
+| R125 | Script plugin layers: where a JavaScript engine comes from, and the JS-side contract | Needs the operator | the two decisions, then `docs/plugins-plan.md` step 11: no JavaScript engine is available offline here, and a vendored one compiled in would run freely as a built-in |
 | R114 | Embeddings as the second similarity tier, for every similarity caller | Code work | item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase case scored against the worst measured negative, the per-round cost on lab2x1 |
 | R118 | A GitHub reviewer seat: `letibot attach github` reviews every PR and answers as @letibot | Code work | the seat in the daemon so the pane has a feed, a mirror per repository, the review panel, R116's verdict, R114's similarity offers |
 | R116 | Claude Code as a merge-queue reviewer through headless `claude -p` | Code work | all of it - no `claude -p`, `--json-schema` or `structured_output` use exists under `crates/` |
@@ -871,6 +872,20 @@ From the tool runtime, in descending order of consequence.
 # Needs the operator
 
 A decision, an account, a live run on real hosts, or an install. Do not start these from an agent seat.
+
+---
+
+## R125 - Script plugin layers: where a JavaScript engine comes from, and the JS-side contract
+
+**Status:** not built, and deferred by the operator on 2026-11-05, because it stops on two decisions an agent seat cannot take. left: both decisions, then `docs/plugins-plan.md` step 11 itself.
+
+A script layer is a layer that is source text, with no toolchain: the model writes plain JavaScript, the host runs it, and nothing is compiled. Step 11 of `docs/plugins-plan.md` is the only step there not built.
+
+1. Where the engine artifact comes from. No JavaScript engine is available offline on this box: `Cargo.lock` holds none and the offline registry cache has no `quickjs`/`rquickjs`/`boa`/`javy`, and `crates/builtins/build.rs` compiles Rust guests with cargo, not C. A vendored blob compiled into the binary would be a BUILT-IN, so `docs/plugins-plan.md` §2.5 runs it freely, `exec` included, and the model's `.js` text would be the only untrusted thing in the path. That is a trust decision, not a build detail.
+2. The JS-side contract, including how the shadow gate's replay stays exact with a clock and `Math.random` inside it. What a script layer's module IS is already decided and built: `plugin.toml` carries `module = "<file>"` (default `plugin.wasm`), one relative path inside the layer's own directory, refused at admit if it leaves it, so a `.js` layer pins on the script text and an edit to it un-pins the layer like any rebuild.
+
+**Done when**: both decisions are made and recorded in `docs/plugins-plan.md`, and a `.js` layer loads, pins on its text, and answers a hook.
+**Still open?** the two decisions.
 
 ---
 
