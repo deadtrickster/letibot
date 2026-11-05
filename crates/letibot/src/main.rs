@@ -54,6 +54,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::ExitCode;
 
+mod boundary;
 mod github;
 pub mod launcher;
 pub mod migrate;
@@ -283,6 +284,8 @@ fn main() -> ExitCode {
                 };
                 if word == "stats" {
                     stats::run_stats(&tail())
+                } else if word == "boundary" {
+                    boundary::run(&tail())
                 } else if word == "fb" {
                     stats::run_fb(&tail())
                 } else if word == "migrate" || word == "--migrate" {
@@ -340,6 +343,7 @@ ROLES
 VERBS
   stats [VERB]                read metrics.db: today, waits, deliveries, tools, models,
                               turns, feedback, session ID, sql
+  boundary [--mode NAME]      what a command gets: paths, network, env, hidden
   fb --session S [+|-] NOTE   mark a session's last turn from a shell
   migrate SESSION --to HOST   move a session's whole daemon to a host, or back with
                               `--to local` (`letibot --migrate` is the same verb)

@@ -26,6 +26,7 @@ impl SlashReply {
 /// this is the authority for the daemon's half of the namespace.
 pub const VERBS: &[&str] = &[
     "auto-compact",
+    "boundary",
     "clear",
     "default-model",
     "flowy",
@@ -74,6 +75,8 @@ pub enum Slash {
     /// `/monitor retire NAME`: end a monitor the model armed - the monitors pane's `x`. The
     /// model is told it was retired, and by whom, on its next turn.
     MonitorRetire(String),
+    /// What this session's commands get: paths, network, env, hidden. See [`crate::perimeter`].
+    Boundary,
     /// What this conversation can call, and what it only looks like it can.
     Tools,
     Models,
@@ -258,6 +261,7 @@ impl Slash {
             },
             Some("prune") => Slash::Prune,
             Some("tools") => Slash::Tools,
+            Some("boundary") => Slash::Boundary,
             // `off` and `on` are kept as the same verbs, because they are what somebody reaches
             // for first; the replies use `pause` and `resume`.
             Some("nag") | Some("nags") => match crate::nag_pause::parse(&words[1..]) {
@@ -1143,6 +1147,7 @@ mod tests {
     #[test]
     fn tools_is_a_daemon_verb_now() {
         assert!(matches!(Slash::parse("tools"), Slash::Tools));
+        assert!(matches!(Slash::parse("boundary"), Slash::Boundary));
     }
 
     /// One verb, one effect: `/models` switches this conversation, `/default-model` says what a

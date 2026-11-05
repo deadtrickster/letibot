@@ -1374,6 +1374,7 @@ impl Boundary {
                      decide.",
                     p.display()
                 ));
+                note.push_str(&boundary_key_hint(p));
             }
             notes.push(note);
         }
@@ -1855,6 +1856,31 @@ fn judged(helper: PathBuf, boundary: Boundary) -> Result<Bwrap, ExecError> {
         )));
     }
     Ok(Bwrap { helper, boundary })
+}
+
+/// The config key that would put `p` in a view, or the sentence saying none can: the fixed
+/// never-grant list is the credential stores and the letibot store, under any home.
+pub fn boundary_key_hint(p: &Path) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    key_hint_under(p, home.as_deref())
+}
+
+fn key_hint_under(p: &Path, home: Option<&Path>) -> String {
+    let fixed = home.and_then(|home| {
+        super::boundary::never_grant()
+            .into_iter()
+            .find(|rel| p.starts_with(home.join(rel)))
+    });
+    match fixed {
+        Some(rel) => format!(
+            " `~/{rel}` is never granted: no `[boundary]` key in leticode.toml changes that."
+        ),
+        None => format!(
+            " The operator's keys: `[boundary] grants_ro = [\"{0}\"]`, or `grants_rw` for \
+             write, in `~/.config/letibot/leticode.toml`.",
+            p.display()
+        ),
+    }
 }
 
 /// What a probe of another machine found, before any view is applied to it. The parts are
@@ -3364,6 +3390,26 @@ mod tests {
         // The note must not claim the path exists on the host: nothing was stat'ed, and the
         // sentence does not assert it either way.
         assert!(!n.contains("exists on"), "{n}");
+    }
+
+    /// A refusal names the key that would grant the path, and says plainly when none can.
+    #[test]
+    fn an_absence_note_names_the_boundary_key_or_says_none_grants_it() {
+        let home = Path::new("/home/dead");
+        let ask = key_hint_under(Path::new("/home/dead/datasets"), Some(home));
+        assert!(
+            ask.contains("[boundary] grants_ro") && ask.contains("grants_rw"),
+            "{ask}"
+        );
+        assert!(ask.contains("/home/dead/datasets"), "{ask}");
+        let never = key_hint_under(Path::new("/home/dead/.ssh/id_rsa"), Some(home));
+        assert!(
+            never.contains("never granted") && !never.contains("grants_ro"),
+            "{never}"
+        );
+        let b = boundary_with(vec![]);
+        let notes = b.absence_notes("cat: /nowhere/data: No such file or directory");
+        assert!(notes[0].contains("[boundary] grants_ro"), "{}", notes[0]);
     }
 
     #[test]

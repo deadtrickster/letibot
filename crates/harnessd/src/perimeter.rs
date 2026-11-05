@@ -69,3 +69,57 @@ pub fn lines(level: Level, mode: &Mode, workspace: &Path) -> Vec<String> {
         Err(why) => vec![format!("boundary config refused: {why}")],
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn workspace(tag: &str, body: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("letibot-perimeter-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a workspace");
+        std::fs::write(dir.join("leticode.toml"), body).expect("a config");
+        dir
+    }
+
+    /// `/boundary` and `letibot boundary` draw both levels, name the key a hidden path came from
+    /// and never print the token's value.
+    #[test]
+    fn the_view_shows_paths_hidden_and_env_without_the_token() {
+        let dir = workspace(
+            "view",
+            "[boundary]\nhide = [\"/opt/hidden-thing\"]\n[boundary.env]\nRUST_LOG = \"info\"\n",
+        );
+        let wide = lines(Level::Wide, &Mode::WRITES_ALLOWED, &dir).join("\n");
+        assert!(wide.starts_with("top-level perimeter"), "{wide}");
+        assert!(
+            wide.contains("/opt/hidden-thing - `[boundary] hide` at"),
+            "{wide}"
+        );
+        assert!(wide.contains("RUST_LOG=info"), "{wide}");
+        assert!(wide.contains("GH_TOKEN=<redacted>"), "{wide}");
+        assert!(
+            wide.contains("/.ssh - credential or profile, fixed"),
+            "{wide}"
+        );
+        let tight = lines(Level::Tight, &Mode::WRITES_ALLOWED, &dir).join("\n");
+        assert!(tight.starts_with("subagent perimeter"), "{tight}");
+        assert!(
+            !tight.contains("GH_TOKEN"),
+            "a child carries no token: {tight}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A config that does not parse is shown as refused, with the file and line, and no view.
+    #[test]
+    fn a_refused_config_is_shown_refused_and_not_as_a_view() {
+        let dir = workspace("refused", "[boundary]\nhide = []\ngrants = []\n");
+        let said = lines(Level::Tight, &Mode::WRITES_ALLOWED, &dir).join("\n");
+        assert!(said.starts_with("boundary config refused"), "{said}");
+        assert!(said.contains("leticode.toml:3:"), "{said}");
+        assert!(!said.contains("paths:"), "{said}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

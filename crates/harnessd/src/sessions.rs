@@ -1733,6 +1733,16 @@ impl<'a> Sessions<'a> {
                     ok: false,
                 },
             },
+            Slash::Boundary => match self.open.get(session_id) {
+                Some(h) => SlashReply {
+                    lines: h.boundary_lines(),
+                    ok: true,
+                },
+                None => SlashReply {
+                    lines: vec![format!("session {session_id} is not open")],
+                    ok: false,
+                },
+            },
             Slash::MonitorRetire(name) => match self.open.get(session_id) {
                 Some(h) => h.retire_monitor_for_operator(&name),
                 None => SlashReply {

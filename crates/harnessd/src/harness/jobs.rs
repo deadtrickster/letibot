@@ -218,6 +218,13 @@ impl Harness {
         Ok(out)
     }
 
+    /// What this session's commands get, for `/boundary`: the perimeter at this session's level
+    /// with `[boundary]` applied.
+    pub fn boundary_lines(&self) -> Vec<String> {
+        let level = letibot_tools::exec::seat::Level::of(self.cfg.parent_session_id.as_deref());
+        crate::perimeter::lines(level, &self.cfg.mode, &self.cfg.workspace)
+    }
+
     /// What this conversation can actually call, for `/tools`: the REGISTRY is what this daemon seated, while the PROMPT
     /// is what message zero announces and it is fixed the moment a transcript starts. So a restarted daemon has a new
     /// tool seated and unannounced, and the model cannot call it however the banner reads.
