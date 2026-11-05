@@ -46,18 +46,11 @@ impl Offer {
             speaker: Speaker::Agent,
             parts: vec![UserPart::Text {
                 text: format!(
-                    "[standing-notes offer — the harness's own line, not the operator's] `{}` \
-                     looks relevant to what you are doing now (similarity {:.2} of 1.00, \
-                     {}). It is not in this prompt. \
-                     If it is worth the context, open it — `read` that path, or `notes` \
+                    "[note offer — the harness's own line, not the operator's] `{}` may be relevant to what you are doing now, and it \
+                     is not in this prompt. Read it — `read` that path, or `notes` \
                      action=\"read\". This line is composed for this round and is gone from \
                      the next one; the note itself, once read, is not.",
                     self.path.display(),
-                    self.score,
-                    match self.blended {
-                        true => "over its abstract, title and headings, and their meaning",
-                        false => "lexical over its abstract, title and headings",
-                    }
                 ),
             }],
         }

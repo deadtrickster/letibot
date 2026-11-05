@@ -19,7 +19,7 @@ const KILLED_NOTICE: &str = include_str!("fixtures/unjudged_main_killed_notice.t
 const KILLED_WARNING: &str = include_str!("fixtures/unjudged_main_killed_warning.txt");
 
 /// The paragraph to the model, which the line does not draw.
-const TO_THE_MODEL: &str = "With the `queue` tool you can read both queues";
+const TO_THE_MODEL: &str = "See `queue` action: \"status\" for both queues";
 
 /// A head attached to `s` with `notice` as its one row, spoken by the harness.
 pub(super) fn with_notice(notice: &str) -> App {
@@ -172,7 +172,7 @@ fn a_click_on_the_emergency_opens_the_whole_notice() {
         "The failing step is 1 of 1, `bin/firecode test`. The end of its output:",
         "frame_matches_golden",
         "(`red-main-60bf819c3342`)",
-        "whose decision it is.",
+        "regate once the cause is gone.",
     ] {
         assert!(holds(&whole, needle), "the popup lost `{needle}`: {whole}");
     }
@@ -181,7 +181,7 @@ fn a_click_on_the_emergency_opens_the_whole_notice() {
     // Scrollable, like the job card's: the whole notice is taller than the screen.
     assert_eq!(a.key(Key::End), None);
     let end = a.screen(120, 30).join("\n");
-    assert!(end.contains("whose decision"), "{end}");
+    assert!(end.contains("regate once the cause"), "{end}");
     assert_eq!(a.key(Key::Esc), None);
     assert!(a.diff_popup.is_none());
     assert_eq!(a.screen(120, 30), before);
@@ -278,8 +278,8 @@ fn the_reviewers_warnings_draw_as_one_line() {
 /// one line with their own word.
 #[test]
 fn a_timed_out_or_unjudged_target_is_one_line() {
-    let tail = "\n\n```\nstill compiling\n```\n\nWith the `queue` tool you can read both queues \
-                — say so: `\"propose_target\"` puts it to the operator, whose decision it is.";
+    let tail = "\n\n```\nstill compiling\n```\n\nSee `queue` action: \"status\" for both queues \
+                and the gate's evidence, and regate once the cause is gone.";
     for (notice, line) in [
         (
             format!(
@@ -600,5 +600,29 @@ fn a_fork_does_not_carry_a_red_cards_pairing_onto_the_operators_next_message() {
         a.card_rows.len(),
         0,
         "the red card of the replaced transcript is drawn in the new one:\n{joined}"
+    );
+}
+
+/// The head splits a row of notices after the closing words the notice carries: the one
+/// `mergequeue::notices` writes today, and the longer one rows already in a store end with. Keyed
+/// on one closing only, a reworded tail swallowed the notice after it into the red card.
+#[test]
+fn a_notice_splits_after_the_closing_it_was_written_with() {
+    use crate::ui::transcript::line_cards::split_card;
+    let next = "[job] a job you backgrounded has ended:";
+    let rest_of = |text: String| split_card(&text).map(|(_, rest, _)| rest.to_string());
+    assert_eq!(
+        rest_of(format!("{NOTICE}\n\n{next}")).as_deref(),
+        Some(next),
+        "the closing the queue writes now ends the notice"
+    );
+    let stored = NOTICE.replace(
+        "and regate once the cause is gone.",
+        "say so: `\"propose_target\"` puts it to the operator, whose decision it is.",
+    );
+    assert_eq!(
+        rest_of(format!("{stored}\n\n{next}")).as_deref(),
+        Some(next),
+        "and so does the one a stored row ends with"
     );
 }

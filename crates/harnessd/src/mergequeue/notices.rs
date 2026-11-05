@@ -44,13 +44,8 @@ fn step_and_tail(h: &TargetHealth) -> String {
     }
 }
 
-const TOOL_WAYS: &str = "With the `queue` tool you can read both queues and the gate's evidence \
-     (`action: \"status\"`), gate the tip again once the cause is gone — a flake, the machine, a \
-     gate fixed outside the target (`\"regate\"`), withdraw a row that no longer means anything \
-     (`\"withdraw\"`), and restart a parked one (`\"restart\"`). If the gate is wrong for this \
-     branch — it names another branch's artifact, or the project lands on another branch — say \
-     so: `\"propose_target\"` puts the `[queue] target` line of the project's `leticode.toml` to \
-     the operator, whose decision it is.";
+const TOOL_WAYS: &str = "See `queue` action: \"status\" for both queues and the gate's \
+     evidence, and regate once the cause is gone.";
 
 /// The hub warning for a tip the gate's own setup kept it from judging (`gate_setup_failed`), raised by
 /// `RepoQueue` beside the session notice [`health`] writes. `key` is the repository's queue key. The

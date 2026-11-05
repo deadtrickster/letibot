@@ -660,8 +660,8 @@ fn a_paraphrase_with_no_shared_word_is_offered_by_the_second_tier() {
     };
     assert!(text.contains(&path.display().to_string()), "{text}");
     assert!(
-        text.contains("their meaning"),
-        "the line says what the score is: {text}"
+        text.contains("may be relevant"),
+        "and says why it is here without the score's internals: {text}"
     );
 }
 

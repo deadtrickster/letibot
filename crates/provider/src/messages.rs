@@ -57,7 +57,7 @@
 //! limit cannot free context with the call that is being rejected, and short turns keep
 //! working until a conversation has run for hours.
 
-use letibot_transcript::{ToolOutcome, TranscriptItem, UserPart};
+use letibot_transcript::{TranscriptItem, UserPart};
 use serde_json::{Value, json};
 
 /// Whether the model this request is going to takes pictures: the one fact about the model
@@ -500,8 +500,9 @@ pub fn convert_with_tail(
             }
             TranscriptItem::ToolResult {
                 call_id,
-                name,
-                outcome,
+                // The payload names its own outcome, so neither is needed here.
+                name: _,
+                outcome: _,
                 payload,
                 // Display-only; the prompt never sees it.
                 edit: _,
@@ -514,10 +515,9 @@ pub fn convert_with_tail(
                 ) {
                     own_author.insert(call_id.clone());
                 }
-                let content = match outcome {
-                    ToolOutcome::Ok => payload.clone(),
-                    other => format!("[{name}: {}]\n{payload}", outcome_word(other)),
-                };
+                // The payload already names its own outcome - `render` wraps a failure, a timeout
+                // and a backgrounding in their own envelope - so a second prefix here said it twice.
+                let content = payload.clone();
                 out.push(json!({"role": "tool", "tool_call_id": call_id, "content": content}));
                 // When the call read a picture, the picture follows as its own user message, the
                 // shape every vision API accepts. A model that does not see gets the words and one
@@ -685,18 +685,6 @@ fn unanswered(id: &str) -> Value {
     })
 }
 
-fn outcome_word(o: &ToolOutcome) -> String {
-    match o {
-        ToolOutcome::Ok => "ok".into(),
-        ToolOutcome::Abstained { reason } => format!("abstained — {reason}"),
-        ToolOutcome::Failed { reason } => format!("failed — {reason}"),
-        ToolOutcome::Denied { req_id } => format!("denied (request {req_id})"),
-        ToolOutcome::Timeout => "timed out".into(),
-        ToolOutcome::NotRun { why } => format!("not run — {why}"),
-        ToolOutcome::Backgrounded { .. } => "backgrounded".into(),
-    }
-}
-
 /// Tool schemas as the API wants them. The harness hands over its dialect's rendering, either the
 /// wrapped shape already or the bare `{name, description, parameters}`; the bare one is wrapped,
 /// and anything else is refused rather than sent as a string the provider would 400 on.
@@ -723,7 +711,7 @@ pub fn tools(tools_json: &[String]) -> Result<Vec<Value>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use letibot_transcript::{SystemOrigin, ToolCall};
+    use letibot_transcript::{SystemOrigin, ToolCall, ToolOutcome};
 
     /// [`super::convert`] for a model that SEES, which is what every test here means unless it
     /// says otherwise: the subject is the SHAPE of a request, and a model's eyes are an input to
@@ -956,12 +944,9 @@ mod tests {
         assert_eq!(m[2]["tool_calls"][0]["function"]["name"], "glob");
         assert_eq!(m[3]["role"], "tool");
         assert_eq!(m[3]["tool_call_id"], "c1");
-        assert!(
-            m[3]["content"]
-                .as_str()
-                .unwrap()
-                .starts_with("[glob: failed — no such dir]")
-        );
+        // The payload is sent as it was rendered: `ToolResult::render` already names the
+        // outcome, and a second prefix said it twice (R93.F35).
+        assert_eq!(m[3]["content"], "nothing");
         // A system prompt with no leading System item is prepended once.
         let m2 = convert("sys", &items[1..2], false);
         assert_eq!(m2[0]["role"], "system");
@@ -1500,7 +1485,7 @@ mod tests {
 #[cfg(test)]
 mod pairing_tests {
     use super::*;
-    use letibot_transcript::{ToolCall, TranscriptItem, UserPart};
+    use letibot_transcript::{ToolCall, ToolOutcome, TranscriptItem, UserPart};
 
     /// [`super::convert`] for a model that SEES - see the sibling module's helper.
     fn convert(system: &str, items: &[TranscriptItem], echo_reasoning: bool) -> Vec<Value> {

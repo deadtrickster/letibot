@@ -38,8 +38,9 @@ pub(crate) const ALARM: &str = "‼";
 
 /// The last words of a session notice - `TOOL_WAYS`' closing clause in
 /// `mergequeue::notices`, which every `health` notice ends with. A row of several notices is
-/// split after it.
-const NOTICE_END: &str = "the operator, whose decision it is.";
+/// split after it. The longer clause this replaced is kept: rows already in a store end with it.
+const NOTICE_END: &str = "regate once the cause is gone.";
+const NOTICE_END_BEFORE: &str = "the operator, whose decision it is.";
 
 /// What is wrong with the target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -327,7 +328,7 @@ pub(crate) fn notice_tip(text: &str) -> Option<RedTip> {
 /// `health`'s three openings and ends with [`NOTICE_END`].
 pub(crate) const SESSION: SessionKind = SessionKind {
     opens: opens_notice,
-    ends: &[NOTICE_END],
+    ends: &[NOTICE_END, NOTICE_END_BEFORE],
     read: notice_card,
     carries: &[],
 };
