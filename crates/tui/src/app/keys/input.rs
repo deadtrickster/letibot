@@ -572,6 +572,13 @@ mod tests {
         assert_eq!(legacy_bytes(b"\x1b[92;5u"), vec![0x1c]);
         assert_eq!(legacy_bytes(b"\x1b[27u"), vec![0x1b]);
         assert_eq!(legacy_bytes(b"\x1b[13;2u"), b"\r".to_vec());
+        // cmd is the head's: a super chord reaches the pane as nothing, never as its plain
+        // letter, while plain `c` and ctrl-c still arrive.
+        assert_eq!(legacy_bytes(b"\x1b[99;9u"), Vec::<u8>::new());
+        assert_eq!(legacy_bytes(b"\x1b[99;13u"), Vec::<u8>::new());
+        assert_eq!(legacy_bytes(b"\x1b[99u"), b"c".to_vec());
+        assert_eq!(legacy_bytes(b"c"), b"c".to_vec());
+        assert_eq!(legacy_bytes(b"\x1b[99;5u"), vec![3]);
         // Everything that is not a `CSI … u` passes untouched.
         assert_eq!(
             legacy_bytes(b"\x1b[A\x1b[1;5C"),
