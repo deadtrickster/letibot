@@ -170,6 +170,19 @@ fn key_bytes(token: &str) -> Option<(Vec<u8>, bool)> {
     }
 }
 
+/// The one-letter words that are articles rather than keys: prose that opens with one is
+/// refused unless the rest of the segment is what the table writes for that letter.
+const ARTICLES: &[char] = &['a'];
+
+/// A segment's words after its first key, as the bar wrote them.
+fn rest_of(words: &[(usize, String)]) -> String {
+    words
+        .iter()
+        .map(|(_, w)| w.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The key hints on one row of text cells, at row `y`: every ` · `-separated segment that starts
 /// with a key. A segment's first key takes the whole segment (`esc closes` is one button); a
 /// segment that is only keys (`↑↓ PgUp PgDn Home End`, `pgup/pgdn`) gives each its own cells.
@@ -259,6 +272,15 @@ pub(crate) fn scan_row(y: usize, cs: &[char]) -> Vec<KeyHint> {
         // letter in a sentence is not a hint.
         let letter = first.chars().count() == 1 && first.chars().all(|c| c.is_ascii_lowercase());
         if letter && (words.len() < 2 || single) {
+            continue;
+        }
+        // The article is not a key: `a click reads from there` and the queue's `a approve` are
+        // one word apart, so an article's letter must carry the words the table writes for it.
+        if letter
+            && let Some(c) = first.chars().next()
+            && ARTICLES.contains(&c)
+            && !Surface::letter_says(c).contains(&rest_of(&words[1..]).as_str())
+        {
             continue;
         }
         if letter {
@@ -502,5 +524,25 @@ mod tests {
         // A lone letter with nothing after it, or on a line with no other segment.
         assert!(hints("  p").is_empty());
         assert!(hints("  a fine day for it").is_empty());
+    }
+
+    /// The payload window's bar says `a click reads from there`, which made the article a button
+    /// next to `esc closes`. The queue's `a approve` is the same shape and IS a key, so the
+    /// difference is the table's own words for that letter.
+    #[test]
+    fn the_article_a_is_not_a_key() {
+        assert_eq!(
+            hints("  esc closes · a click reads from there · enter still sends"),
+            vec![
+                ("esc closes".into(), b"\x1b".to_vec()),
+                ("enter still sends".into(), b"\r".to_vec()),
+            ]
+        );
+        let queue = hints("  a approve · v veto · esc closes");
+        assert_eq!(
+            queue.iter().map(|(_, b)| b.clone()).collect::<Vec<_>>(),
+            vec![b"a".to_vec(), b"v".to_vec(), b"\x1b".to_vec()],
+            "{queue:?}"
+        );
     }
 }

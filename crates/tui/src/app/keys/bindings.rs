@@ -441,6 +441,20 @@ const PLUGIN_DETAIL: &[Binding] = &[
 ];
 
 impl Surface {
+    /// The words the table writes for a one-letter binding - `a` reads `approve` on the queue.
+    /// A bar's own words for such a key are these, so a scanner can tell the key from prose.
+    pub(crate) fn letter_says(c: char) -> Vec<&'static str> {
+        Surface::ALL
+            .iter()
+            .flat_map(|s| s.bindings())
+            .filter(|b| b.on.contains(&On::Char(c)))
+            .filter_map(|b| match b.says {
+                Says::Text(t) => Some(t),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The surface's keys - the one table its dispatch, its bar and its help read.
     pub(crate) fn bindings(self) -> &'static [Binding] {
         match self {
