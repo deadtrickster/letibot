@@ -7733,7 +7733,7 @@ turn's end; a quota refusal still exits 40 at once; a test drives both.
 and those four are string content inside `crates/harnessd/src/plugins/scaffold.rs`); step 8 by
 `66f0a048`, which is R125. Steps 1, 2, 3, 5 and 7 closed earlier, named per step below.
 
-Record: `docs/review/2026-11-01-ab5f7841-90dd9c84.md` (three reviewers, two rounds, synthesis). In order; each step relies on the one before it.
+Record: `docs/reviews/2026-11-01-ab5f7841-90dd9c84.md` (three reviewers, two rounds, synthesis). In order; each step relies on the one before it.
 
 The steps as written:
 
