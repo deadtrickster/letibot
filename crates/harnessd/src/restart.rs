@@ -398,7 +398,6 @@ pub fn header(
     // the same whether the daemon can name its stop time or not. `~` is an inference from a
     // heartbeat rather than a recorded stop.
     let est = if estimated_from.is_some() { "~" } else { "" };
-    let _ = (opened_ms, threshold);
     match outcome {
         Outcome::Restored => format!(
             "[restart] The daemon restarted (down {est}{}). Restored:",
@@ -409,10 +408,15 @@ pub fn header(
              what you were running:",
             span(down)
         ),
+        // A late open is the one case whose cause is invisible without the threshold, so the
+        // sentence names the window and the gap the session was opened over.
         Outcome::Reminded => format!(
-            "[restart] The daemon restarted (down {est}{}). Nothing was restored automatically; \
-             this is what you were running when it stopped — bring back only what still matters:",
-            span(down)
+            "[restart] The daemon restarted (down {est}{}). Nothing was restored automatically: a \
+             session is restored only within {} of the stop, and this one was opened {} after it. \
+             This is what you were running when it stopped — bring back only what still matters:",
+            span(down),
+            span(threshold),
+            span(Duration::from_millis(opened_ms.saturating_sub(at_ms)))
         ),
         // Unreachable - the empty restart returned above - and written out rather than as an
         // `unreachable!` so that a later arm cannot make this function lie.
@@ -1134,8 +1138,7 @@ mod tests {
     }
 
     /// The threshold is measured to the OPEN, not to the daemon's return - the session's gap,
-    /// not the daemon's - and the sentence says the down time only, because the open is the
-    /// daemon's reckoning rather than something the model acts on.
+    /// not the daemon's - and a reminded notice names the window and the gap it was opened over.
     #[test]
     fn a_session_opened_hours_after_the_stop_is_measured_from_the_open() {
         let stop = Stopped::At {
@@ -1155,14 +1158,40 @@ mod tests {
         let h = header(&stop, back, opened, RESTORE_WITHIN, Outcome::Reminded);
         assert_eq!(
             h,
-            "[restart] The daemon restarted (down 5m00s). Nothing was restored automatically; \
-             this is what you were running when it stopped — bring back only what still matters:"
+            "[restart] The daemon restarted (down 5m00s). Nothing was restored automatically: a \
+             session is restored only within 1h00m of the stop, and this one was opened 4h00m \
+             after it. This is what you were running when it stopped — bring back only what still \
+             matters:"
         );
         // A late open still under the threshold restores, and says the same thing.
         let soon = AT + 20 * 60_000;
         assert!(stop.restores(soon, RESTORE_WITHIN));
         let h = header(&stop, back, soon, RESTORE_WITHIN, Outcome::Restored);
         assert_eq!(h, "[restart] The daemon restarted (down 5m00s). Restored:");
+    }
+
+    /// The window the sentence names is the one in force, not the default: a daemon configured
+    /// to 15m says 15m, and the gap is measured to the open.
+    #[test]
+    fn a_reminded_notice_names_the_configured_window_and_the_gap() {
+        let stop = Stopped::At {
+            at_ms: AT,
+            estimated_from: None,
+        };
+        let window = Duration::from_secs(15 * 60);
+        let h = header(
+            &stop,
+            AT + 4_000,
+            AT + 2 * 3_600_000,
+            window,
+            Outcome::Reminded,
+        );
+        assert!(h.contains("only within 15m00s of the stop"), "{h}");
+        assert!(h.contains("opened 2h00m after it"), "{h}");
+        assert!(
+            h.starts_with("[restart] The daemon restarted (down 4s)."),
+            "{h}"
+        );
     }
 
     /// No record of the stop is said as no record - *"these gray walls are hilarious"* about

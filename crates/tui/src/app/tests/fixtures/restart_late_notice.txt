@@ -1,4 +1,4 @@
-[restart] The daemon restarted (down ~3h12m). Nothing was restored automatically; this is what you were running when it stopped — bring back only what still matters:
+[restart] The daemon restarted (down ~3h12m). Nothing was restored automatically: a session is restored only within 1h00m of the stop, and this one was opened 3h12m after it. This is what you were running when it stopped — bring back only what still matters:
 - subagent `s-1-sub-2` (fix the flaky test) was working in worktree `/w/.worktrees/flaky` on branch `agent/flaky` and was NOT resumed. To bring it back — same conversation, worktree, role and model — call `task_resume {"task": "s-1-sub-2"}`.
 - monitor `built` was watching; re-arm it with `monitor {"name":"built","path":"out.txt","ttl_ms":600000}` if it still matters.
 - job `j9`: NOT run again — its process was the old daemon's, and a crash may have left it running (check with `pkill` pattern="<a fragment of its command>" action="list", which kills nothing). Its output was in the old daemon's memory and is gone. To run it again: `bash {"command":"cargo build","background":true,"cwd":"/w"}`.
