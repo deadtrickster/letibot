@@ -93,7 +93,9 @@ impl App {
         let Some(name) = self.selected_skill_row().map(|s| s.name.clone()) else {
             return ControlFlow::Continue(());
         };
-        self.say(&format!("`{name}` handed to the session"));
+        // The act, not its outcome: nothing has been asked yet, so the daemon's acceptance
+        // (or its refusal) is what says the skill was handed over.
+        self.say(&format!("handing `{name}` to the session..."));
         ControlFlow::Break(Some(Action::LoadSkill {
             name,
             then: String::new(),

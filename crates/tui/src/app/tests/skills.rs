@@ -138,6 +138,49 @@ fn s_on_a_skill_row_hands_that_skill_over() {
     );
 }
 
+/// The notice says what is HAPPENING, and the daemon's answer is the outcome: it said `handed to
+/// the session` before anything had been asked, over a skill the daemon may still refuse.
+#[test]
+fn the_notice_says_handing_until_the_daemon_answers() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.open_surface(Surface::Skills);
+    a.apply(frame(rows()));
+    a.screen(120, 40);
+    assert!(matches!(
+        a.key(Key::Char('s')),
+        Some(Action::LoadSkill { .. })
+    ));
+    let said = a.notice.clone().unwrap_or_default();
+    assert!(said.contains("handing `release` to the session"), "{said}");
+    assert!(
+        !said.contains("handed"),
+        "nothing has been handed over yet: {said}"
+    );
+    // The acceptance's own words replace the act's.
+    a.apply(ServerFrame::Accepted {
+        client_request_id: "r1".into(),
+        seq: 1,
+        note: "`release` queued — its body is handed to the model in the next turn".into(),
+    });
+    let said = a.notice.clone().unwrap_or_default();
+    assert!(said.contains("`release` queued"), "{said}");
+    // And a refusal is the refusal, not a second handing.
+    assert!(matches!(
+        a.key(Key::Char('s')),
+        Some(Action::LoadSkill { .. })
+    ));
+    a.apply(ServerFrame::Rejected {
+        client_request_id: "r2".into(),
+        reason: "no skill is called `release` here. Nothing was loaded.".into(),
+        expected_seq: 1,
+        actual_seq: 1,
+    });
+    let said = a.notice.clone().unwrap_or_default();
+    assert!(said.contains("no skill is called `release`"), "{said}");
+    assert!(!said.contains("handed"), "{said}");
+}
+
 /// The pane's bar and the `/skills` help both say Enter opens and `s` hands over.
 #[test]
 fn the_pane_and_help_say_enter_opens_and_s_hands_over() {
