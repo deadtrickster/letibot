@@ -484,6 +484,14 @@ impl Tool for Bash {
         if ctx.tty {
             env.extend(crate::exec::console::env());
         }
+        // What the session's shell reported an earlier call holds, merged where the gate
+        // observes one, so an `export` in one call is in the next call's environment - the
+        // same list the resolver read when it adjudicated this command. Before
+        // `LETIBOT_COMMAND`, so the harness's own machinery name cannot be exported over.
+        let observes_env = !ctx.tty && ctx.observes_shell_env();
+        if observes_env {
+            env.extend(ctx.shell_env_pairs());
+        }
         // So a helper the command runs can say what it is running for: `letibot-askpass` puts it
         // on the password card.
         env.push(("LETIBOT_COMMAND".to_string(), command.to_string()));
@@ -503,6 +511,10 @@ impl Tool for Bash {
             // keeps its pipe: escape codes around every name are a cost it cannot see.
             tty: ctx.tty,
             memory,
+            // The trailer reports what this call exported, but only where the gate observes
+            // the session's environment; a run with a terminal is the operator's own and never
+            // gets one.
+            env_trailer: observes_env,
         };
         let id = match host.spawn(&req) {
             Ok(id) => id,
@@ -623,6 +635,15 @@ impl Tool for Bash {
         // waiting, and a card that outlived its command would be a person answering nothing.
         if answerable.is_some() {
             ctx.operator_run(OperatorRun::Ended { job: &id.0 });
+        }
+        // What this call's shell holds, observed now that it has settled: the next call's
+        // adjudication and its spawn read the same list. A run still going (a promotion) reports
+        // with the wait that ends it; a killed one reports nothing, which is the honest no.
+        if let Foreground::State(s) = &foreground
+            && !s.is_running()
+            && let Some(report) = host.job(&id).and_then(|v| v.env_report)
+        {
+            ctx.observe_shell_env(&report);
         }
 
         let Ok(out) = host.output(&id, 0, usize::MAX) else {

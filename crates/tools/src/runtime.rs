@@ -359,6 +359,41 @@ impl InvokeCtx<'_> {
         )
     }
 
+    /// Whether this session's shell environment is observed, so a `bash` call arms the
+    /// one-shot trailer. No gate is `false`: a report nobody observes is machinery for
+    /// nothing.
+    pub fn observes_shell_env(&self) -> bool {
+        let Some(gate) = self.gate else {
+            return false;
+        };
+        gate.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .observes_shell_env()
+    }
+
+    /// The pairs a shell reported, for this call's spawn to carry on top of the pairs the
+    /// harness always gives. Read at the spawn, so the environment the resolver read when it
+    /// adjudicated the command and the environment the command really gets are one list.
+    pub fn shell_env_pairs(&self) -> Vec<(String, String)> {
+        let Some(gate) = self.gate else {
+            return Vec::new();
+        };
+        gate.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .shell_env_pairs()
+    }
+
+    /// One report from this session's shell, taken after a call settled: the next call's
+    /// adjudication and spawn both read what this wrote.
+    pub fn observe_shell_env(&self, report: &Result<String, String>) {
+        let Some(gate) = self.gate else {
+            return;
+        };
+        gate.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .observe_shell_env(report);
+    }
+
     /// Put a memory ask above the ceiling to the operator, see [`Gate::grant_memory`].
     /// The gate's lock is taken for the question, as `admit` takes it: a card may wait
     /// minutes for a person, and a `/mode` typed meanwhile must not move the gate.
@@ -689,6 +724,24 @@ pub trait Gate: Send + Sync {
     ) -> Result<(), String> {
         Err("this gate has no adjudicator, so an advisor would have nothing to advise".into())
     }
+
+    /// Whether this session's shell environment is observed. A caller arms the one-shot
+    /// trailer only where this is true, because a report nobody observes is machinery for
+    /// nothing; the default is `false`, the fail-closed direction.
+    fn observes_shell_env(&self) -> bool {
+        false
+    }
+
+    /// The pairs a shell reported, for the next call's spawn to carry. The default is empty,
+    /// which leaves a caller nothing to merge - the same answer as a session with no shell.
+    fn shell_env_pairs(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    /// One report from this session's shell after a call: the `Ok` pairs the trailer carried,
+    /// an `Ok` empty dump that had nothing to say, or an `Err` report this build refuses to
+    /// believe. The default ignores it: a gate that does not observe observes nothing.
+    fn observe_shell_env(&mut self, _report: &Result<String, String>) {}
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -169,6 +169,7 @@ fn spawn(host: &dyn ProcessHost, command: &str) -> JobId {
         env: vec![],
         tty: false,
         memory: None,
+        env_trailer: false,
     })
     .expect("spawn")
 }

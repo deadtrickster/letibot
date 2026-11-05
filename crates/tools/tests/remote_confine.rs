@@ -578,6 +578,7 @@ fn a_job_runs_inside_the_boundary_and_its_group_is_killed() {
             env: vec![("A_JOB_VARIABLE".into(), "set".into())],
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .expect("the job starts");
 

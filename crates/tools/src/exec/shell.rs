@@ -174,10 +174,11 @@ impl std::fmt::Debug for Turn {
     }
 }
 
-/// A nonce, unique per session on this box. The pid makes two sessions on one host differ; the
-/// clock makes two sessions in one process differ; the counter makes two sessions in one
-/// nanosecond differ, which is what a test does.
-fn nonce() -> String {
+/// A nonce, unique on this box. The pid makes two sessions on one host differ; the clock
+/// makes two sessions in one process differ; the counter makes two sessions in one nanosecond
+/// differ, which is what a test does. Also the mark of a one-shot call's trailer, where
+/// unique-per-call is what keeps a forged trailer out.
+pub fn nonce() -> String {
     static N: AtomicU64 = AtomicU64::new(0);
     let t = SystemTime::now()
         .duration_since(UNIX_EPOCH)

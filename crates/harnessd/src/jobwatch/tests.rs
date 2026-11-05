@@ -177,6 +177,7 @@ fn spawn_a_short_job(host: &HostProcesses, secs: &str) -> JobId {
         // No terminal: these are the substrate's own tests, not an operator's run.
         tty: false,
         memory: None,
+        env_trailer: false,
     })
     .expect("spawn")
 }
@@ -1115,6 +1116,7 @@ fn a_jobs_process_record_reads_running_then_done() {
         produced: 0,
         since_last_output: None,
         output_file: None,
+        env_report: None,
     };
 
     rec.process(&view);

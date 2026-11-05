@@ -651,10 +651,18 @@ fn wait_on_job(
     // The name every sentence about this job uses, once, so no branch can drift. The lines
     // naming an ARGUMENT keep the bare id: only half of a label resolves.
     let label = before.label();
+    // A backgrounded call's shell reports when it settles, and this is the door that sees it:
+    // observed so the session's environment catches up with a run that outlived its call.
+    let observe_shell_env = |ctx: &mut InvokeCtx<'_>, v: Option<&JobView>| {
+        if let Some(report) = v.and_then(|v| v.env_report.clone()) {
+            ctx.observe_shell_env(&report);
+        }
+    };
     // Presence, before absence. A job that already finished is not a wait that
     // succeeded; it is a wait there was nothing to do, and saying so keeps the two
     // apart.
     if !before.state.is_running() {
+        observe_shell_env(ctx, Some(&before));
         return Invocation::ok(format!(
             "`{label}` had already {} before this wait began — {} elapsed, {} bytes of \
              output. Nothing was waited for. Read it with `job_output`.{}",
@@ -712,6 +720,9 @@ fn wait_on_job(
         Err(e) => return Invocation::failed(e.to_string(), String::new()),
     };
     let after = host.job(&jid);
+    if matches!(waited, Waited::Happened { .. }) {
+        observe_shell_env(ctx, after.as_ref());
+    }
     match waited {
         Waited::Happened { state, took } => Invocation::ok(format!(
             "`{label}` {} after {}.\n  command: {}\n  output:  {} bytes — read it with \
@@ -1265,6 +1276,7 @@ mod tests {
             memory_cap: crate::exec::MemoryCap::NotAsked,
             memory: None,
             output_file: None,
+            env_report: None,
         }
     }
 

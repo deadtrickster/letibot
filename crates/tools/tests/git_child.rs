@@ -137,6 +137,7 @@ impl Fixture {
                 ],
                 tty: false,
                 memory: None,
+                env_trailer: false,
             })
             .expect("a confined run starts");
         let waited = self

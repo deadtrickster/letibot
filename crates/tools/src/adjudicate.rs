@@ -2491,6 +2491,35 @@ impl Gate for AdjudicatedGate {
         Ok(dropped)
     }
 
+    fn observes_shell_env(&self) -> bool {
+        // The seed is what makes this true: a session whose environment was seeded is one
+        // whose spawns this daemon composes, so a report from its shell is a fact about
+        // this box. Empty - a remote or guest placement, a seat with no exec - is the honest
+        // no, and nothing is armed there.
+        !self.surroundings.session.is_empty()
+    }
+
+    fn shell_env_pairs(&self) -> Vec<(String, String)> {
+        self.surroundings.session.shell_pairs()
+    }
+
+    fn observe_shell_env(&mut self, report: &Result<String, String>) {
+        match report {
+            // The dump ran and had nothing plain to say: not a refusal and not a claim.
+            // The last report stands, exactly as `ShellSession::take_env` keeps it.
+            Ok(pairs) if pairs.is_empty() => {}
+            Ok(pairs) => {
+                if self.surroundings.session.observe(pairs).is_err() {
+                    // A pair this build refuses leaves nothing the shell said standing: the
+                    // last believable report is not the current environment, and a stale
+                    // value spliced into the next reading is the lie this refuses.
+                    self.surroundings.session.mark_dead();
+                }
+            }
+            Err(_) => self.surroundings.session.mark_dead(),
+        }
+    }
+
     fn set_supervision(&mut self, on: bool) -> Result<String, String> {
         // Refuses rather than pretending: a gate told to supervise with no guard model
         // installed that answered "ok" would leave the operator believing every later call was

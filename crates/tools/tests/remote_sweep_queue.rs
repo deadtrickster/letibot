@@ -178,6 +178,7 @@ fn a_sweep_that_got_no_slot_is_asked_again() {
             env: Vec::new(),
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .expect("the job starts");
     let pid = host.job(&job).expect("the job is known").pid;

@@ -453,6 +453,7 @@ fn a_background_job_outlives_its_ssh_and_is_read_and_killed() {
             env: vec![("A_JOB_VARIABLE".into(), "set".into())],
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .expect("the job starts");
 
@@ -536,6 +537,7 @@ fn a_rewritten_pid_file_does_not_move_the_kill() {
             env: Vec::new(),
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .expect("the job starts");
     let real = host.job(&id).expect("known").pid;
@@ -597,6 +599,7 @@ fn a_settled_job_takes_its_deadline_killer_with_it() {
             env: Vec::new(),
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .expect("the job starts");
     let real = host.job(&id).expect("known").pid;
@@ -645,6 +648,7 @@ fn a_finished_job_reports_the_commands_own_exit_status() {
             env: Vec::new(),
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .expect("the job starts");
     let waited = host
@@ -1345,6 +1349,7 @@ fn a_jobs_output_and_kill_stop_at_their_bound() {
             env: Vec::new(),
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .expect("the job starts");
     let pid = host.job(&id).expect("known").pid;
@@ -1540,6 +1545,7 @@ fn the_sessions_own_job_directory_is_excluded_from_the_tree() {
             env: Vec::new(),
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .expect("the job starts");
     let _ = host.wait_job(&id, Duration::from_secs(30));
@@ -1978,6 +1984,7 @@ fn a_jobs_polling_does_not_fill_the_record_ring() {
             env: Vec::new(),
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .expect("the job starts");
     // A second and a half of waiting: about a dozen polls, plus the launch's own pid poll.

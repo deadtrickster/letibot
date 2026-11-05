@@ -367,7 +367,15 @@ impl TrailerTaker {
                 }
             }
         }
-        let publish = self.held.len() - self.carry();
+        // Not a whole trailer yet: publish what cannot be part of one. Once the opening has
+        // arrived, everything from it is held until its BEL does - a marker is not something
+        // the rest of the stream can dilute - and before that, only the bytes that could
+        // still grow INTO an opening are held.
+        let open = super::shell::opening(&self.mark);
+        let publish = match self.held.windows(open.len()).position(|w| w == open.as_slice()) {
+            Some(at) => at,
+            None => self.held.len() - self.carry(),
+        };
         out.extend(self.held.drain(..publish));
         out
     }
@@ -891,11 +899,11 @@ impl Job {
         self
     }
 
-    /// The trailer this job's command was appended, so its output gives the trailer up where the
-    /// bytes arrive. `mark` is the nonce the spawn minted for this one call.
-    pub fn with_env_trailer(self, mark: &str) -> Job {
+    /// Arm the trailer this job's command was appended, so its output gives the trailer up
+    /// where the bytes arrive. `mark` is the nonce the spawn minted for this one call, and
+    /// `&self` because the spawn holds the job behind an `Arc` before any byte can arrive.
+    pub fn arm_env_trailer(&self, mark: &str) {
         self.capture.lock().expect("capture").strip_trailer(mark);
-        self
     }
 
     /// The environment report this job's trailer took, for the harness to observe once the job

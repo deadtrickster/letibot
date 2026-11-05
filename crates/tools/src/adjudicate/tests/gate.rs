@@ -694,3 +694,59 @@ fn the_never_write_list_is_about_paths_and_not_prose() {
     }
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The session's shell, observed: a report an earlier call's trailer carried becomes the pairs
+/// the next call's spawn merges, and only where the gate was seeded - an unseeded gate observes
+/// nothing, which is a remote placement's honest answer. A report this build refuses to believe
+/// drops everything the shell said, because the last believable report is not the current
+/// environment.
+#[test]
+fn the_gate_observes_the_shells_environment_and_a_refused_report_drops_it() {
+    let mut bare = AdjudicatedGate::closed();
+    assert!(
+        !bare.observes_shell_env(),
+        "a gate nobody seeded has no shell to observe, so nothing is armed"
+    );
+    assert!(bare.shell_env_pairs().is_empty());
+
+    let seeded = crate::intent::Surroundings::from_env("/w").with_session(
+        crate::intent::env::SessionEnv::seeded([(
+            "PATH".to_string(),
+            "/usr/bin:/bin".to_string(),
+        )]),
+    );
+    let mut g = AdjudicatedGate::closed().with_surroundings(seeded);
+    assert!(
+        g.observes_shell_env(),
+        "a seeded session composes its own spawns, so its shell's report is a fact about this box"
+    );
+
+    g.observe_shell_env(&Ok("LT_CHAIN=/w;LT_GONE=/g;".to_string()));
+    assert_eq!(
+        g.shell_env_pairs(),
+        vec![
+            ("LT_CHAIN".to_string(), "/w".to_string()),
+            ("LT_GONE".to_string(), "/g".to_string()),
+        ],
+        "the pairs the next call's spawn is given"
+    );
+
+    // A dump that had nothing plain to say keeps the last report: not a refusal, not a claim.
+    g.observe_shell_env(&Ok(String::new()));
+    assert_eq!(g.shell_env_pairs().len(), 2);
+
+    // An `unset` is a report by omission, so the shell's own answer stops resolving.
+    g.observe_shell_env(&Ok("LT_CHAIN=/w;".to_string()));
+    assert_eq!(
+        g.shell_env_pairs(),
+        vec![("LT_CHAIN".to_string(), "/w".to_string())],
+        "LT_GONE was unset and must not resolve from a stale report"
+    );
+
+    // And a trailer this build refuses to parse drops the shell's whole half.
+    g.observe_shell_env(&Err("a trailer whose status is not a number".to_string()));
+    assert!(
+        g.shell_env_pairs().is_empty(),
+        "a refused report must not leave a stale value to splice into the next reading"
+    );
+}

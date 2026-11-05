@@ -665,6 +665,7 @@ fn a_real_job_reads_running_and_then_done_in_the_record() {
             env: vec![],
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .expect("spawn");
     let view = host.job(&id).expect("the job is in the table");
@@ -743,6 +744,7 @@ fn a_restarted_host_adopts_a_live_job_from_its_record() {
             env: vec![],
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .expect("spawn");
     let view = host.job(&id).expect("the job is in the table");

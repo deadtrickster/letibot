@@ -93,6 +93,7 @@ fn inner() {
                 env: vec![],
                 tty: false,
                 memory: Some(memory),
+                env_trailer: false,
             })
             .expect("spawn");
         host.wait_job(&id, Duration::from_secs(60)).expect("wait");

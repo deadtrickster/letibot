@@ -653,6 +653,7 @@ impl ExecBackend for HostBackend {
                 // through, and its reader is a tool that wants bytes.
                 tty: false,
                 memory: None,
+                env_trailer: false,
             })
             .map_err(|e| BackendError::Io(e.to_string()))?;
         let waited = host

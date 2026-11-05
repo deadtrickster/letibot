@@ -5007,6 +5007,9 @@ impl RemoteProcesses {
             // [`crate::exec::OutputFile`] is a path a reader on THIS box can open, so a remote
             // job's path here would be a locator that fails the one call it suggests.
             output_file: None,
+            // No trailer is appended to a command on another machine: its report would be
+            // the far box's environment, claimed of a spawn this daemon never composes.
+            env_report: None,
         }
     }
 
@@ -6480,6 +6483,7 @@ user     = "root"
                 env: Vec::new(),
                 tty: false,
                 memory: None,
+                env_trailer: false,
             })
             .expect("the job starts");
         // The finish the poll reads as a kill: the status file is written and the pid is gone by
@@ -6506,6 +6510,7 @@ user     = "root"
                 env: Vec::new(),
                 tty: false,
                 memory: None,
+                env_trailer: false,
             })
             .expect("the job starts");
         let reaping = host

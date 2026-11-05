@@ -50,6 +50,7 @@ fn spawn_sleep(host: &dyn ProcessHost, scope: ScopeKind, name: Option<&str>, slu
             env: vec![],
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .expect("a sleep starts");
     id.0

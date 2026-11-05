@@ -313,6 +313,7 @@ mod tests {
                     env: vec![],
                     tty: false,
                     memory: None,
+                    env_trailer: false,
                 })
                 .expect("a sleep starts");
             giver.job(&id).expect("listed").pid

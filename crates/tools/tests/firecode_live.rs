@@ -111,6 +111,7 @@ fn a_vm_backend_reads_writes_lists_runs_and_lands_its_work() {
             // No terminal: these are the substrate's own tests, not an operator's run.
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .unwrap();
     let w = host

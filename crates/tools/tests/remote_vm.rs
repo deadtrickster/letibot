@@ -459,6 +459,7 @@ fn a_background_job_starts_in_a_guest_whose_client_forwards_no_stdin() {
             env: Vec::new(),
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .expect("the launcher reaches the guest and the job starts");
     assert!(

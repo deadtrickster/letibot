@@ -62,6 +62,10 @@ pub struct SpawnRequest {
     /// operator's own run. The host does not choose a number; it only makes the kernel
     /// hold the one the tool chose.
     pub memory: Option<u64>,
+    /// Append the environment trailer to this call, so it reports what it exported on the
+    /// way out ([`super::shell::oneshot_trailer`]). The caller asks for it only where the
+    /// session's environment is observed, and never for a run with a terminal.
+    pub env_trailer: bool,
 }
 
 /// How a wait ended. Three outcomes and they are never conflated: a deadline reported as a
@@ -124,6 +128,10 @@ pub struct JobView {
     /// and `None` for a run that still has one. The window above is bounded, this is not, and
     /// a reader told only about the window loses a long build's first half ([`OutputFile`]).
     pub output_file: Option<OutputFile>,
+    /// The environment report this job's trailer took, once it did. `None` for every run that
+    /// was not given one and for one whose trailer has not arrived; the harness observes the
+    /// `Ok` pairs and treats an `Err` as a report it cannot believe.
+    pub env_report: Option<Result<String, String>>,
 }
 
 /// What a job is called: the caller's name and the id, or just the id when nobody
@@ -1216,6 +1224,9 @@ impl HostProcesses {
             produced: agg.produced(),
             since_last_output: agg.since_last_output(),
             output_file: None,
+            // Its bytes were produced on other machines and never passed this host's
+            // capture, so there is no trailer to have taken.
+            env_report: None,
         }
     }
 
@@ -1267,6 +1278,7 @@ impl HostProcesses {
             produced: cap.produced(),
             since_last_output: cap.since_last(),
             output_file: cap.output_file(),
+            env_report: cap.env_report(),
         }
     }
 
@@ -1452,6 +1464,17 @@ impl ProcessHost for HostProcesses {
         // The waiter owns the token below; this side keeps the path for the refusal that kills a
         // process which never joined its scope.
         let token_path = token.clone();
+        // The environment trailer, appended only where the caller armed one, the run has no
+        // terminal of its own, and the command parses as a WHOLE program: text after an
+        // unterminated heredoc or a dangling `|` becomes part of the command, and the honest
+        // answer for a command like that is no report rather than a different command. The
+        // job's record keeps the model's own text - the append is argv, not the row.
+        let whole_program = !letibot_code::shell::normalise(&req.command).partial;
+        let trailer = (req.env_trailer && !req.tty && whole_program).then(super::shell::nonce);
+        let run_command = match &trailer {
+            Some(mark) => format!("{}\n{}", req.command, super::shell::oneshot_trailer(mark)),
+            None => req.command.clone(),
+        };
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.arg("-c")
             .arg(join_script())
@@ -1475,7 +1498,7 @@ impl ProcessHost for HostProcesses {
         for s in shell {
             cmd.arg(s);
         }
-        cmd.arg(&req.command);
+        cmd.arg(&run_command);
         cmd.current_dir(&cwd);
         // stdin, which the pty branch below replaces whenever there is a pty to give the run.
         // What is set here is the fallback: the pipe that keeps the operator's own run answerable,
@@ -1609,6 +1632,11 @@ impl ProcessHost for HostProcesses {
             // Masked as the bytes arrive, so the window and the spill file are one set of bytes.
             .with_secret_mask(&secret_env),
         );
+        // Armed after the masker and before the first drain starts, so no byte can reach the
+        // ring without first passing the trailer out of the stream.
+        if let Some(mark) = &trailer {
+            job.arm_env_trailer(mark);
+        }
 
         // A run nothing bounds gets its file here, before a single byte is drained, and one
         // that already has it keeps it. Not for a run with a deadline: an 8 MiB window is what
@@ -2627,6 +2655,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
                 // No terminal: these are the substrate's own tests, not an operator's run.
                 tty: false,
                 memory: None,
+                env_trailer: false,
             })
             .unwrap_err();
         assert!(format!("{e}").contains("no cgroup v2 here"), "{e}");
@@ -2675,6 +2704,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
             env: vec![],
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .expect("a job runs");
         assert!(
@@ -2856,6 +2886,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
                 env: vec![],
                 tty: false,
                 memory: None,
+                env_trailer: false,
             })
             .expect("a cgroup v2 tree was measured above")
         };
@@ -3031,6 +3062,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
                 env: vec![],
                 tty: false,
                 memory: None,
+                env_trailer: false,
             })
             .expect("a cgroup v2 tree was measured above")
         };
@@ -3131,6 +3163,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
                 env: vec![],
                 tty: false,
                 memory: None,
+                env_trailer: false,
             })
             .expect("a cgroup v2 tree was measured above");
         let until = Instant::now() + Duration::from_secs(10);
@@ -3195,6 +3228,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
                 env: vec![],
                 tty: false,
                 memory: None,
+                env_trailer: false,
             })
             .expect("a run starts");
         let token = std::env::temp_dir().join(format!("letibot-joined-{}", id.0));
@@ -3251,6 +3285,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
                 env: vec![],
                 tty: false,
                 memory: None,
+                env_trailer: false,
             })
             .expect("a run starts");
         let _ = h.wait_job(&id, Duration::from_secs(30));
@@ -3385,6 +3420,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
                 env: vec![],
                 tty: false,
                 memory: None,
+                env_trailer: false,
             })
             .expect("a cgroup v2 tree was measured above")
         };
@@ -3449,6 +3485,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
                 // No terminal: the substrate's own test, not an operator's run.
                 tty: false,
                 memory: None,
+                env_trailer: false,
             })
             .unwrap();
         let waited = h.wait_job(&id, std::time::Duration::from_secs(30)).unwrap();
@@ -3517,6 +3554,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
                 env: vec![],
                 tty,
                 memory: None,
+                env_trailer: false,
             })
             .unwrap()
         };
@@ -3804,5 +3842,123 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         let _ = child.kill();
         let _ = child.wait();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One `bash` call's export reaches the next call's environment, through the whole chain:
+    /// the appended trailer reports it, the capture gives the trailer up, `SessionEnv::observe`
+    /// holds it, and the pairs a shell reported are what the next spawn is given. The plain
+    /// tree, because a real one needs a delegated cgroup and this chain is not about that.
+    #[test]
+    fn an_export_in_one_call_reaches_the_next_spawn() {
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a bash with `compgen -e` (the child the one-shot trailer runs)",
+            std::path::Path::new("/bin/bash").exists(),
+        ) else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("letibot-env-chain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a root");
+        let h = HostProcesses::with_tree(&root, PlainTree::over(root.join("tree")));
+        let spawn = |command: &str, env: Vec<(String, String)>, trailer: bool| {
+            h.spawn(&SpawnRequest {
+                command: command.into(),
+                slug: None,
+                cwd: "/".into(),
+                scope: ScopeKind::Session,
+                scope_name: None,
+                background: true,
+                env,
+                tty: false,
+                memory: None,
+                env_trailer: trailer,
+            })
+            .expect("a run starts")
+        };
+
+        // The first call exports, and its trailer reports what it left behind.
+        let first = spawn(
+            "echo before\nexport LT_CHAIN=/w/chain",
+            Vec::new(),
+            true,
+        );
+        let _ = h.wait_job(&first, Duration::from_secs(30));
+        let view = h.job(&first).expect("the row stays");
+        let Some(Ok(report)) = view.env_report.clone() else {
+            panic!("no believable report from the first call: {:?}", view.env_report);
+        };
+        assert!(report.contains("LT_CHAIN=/w/chain;"), "the export: {report}");
+        let window = h.output(&first, 0, usize::MAX).expect("the capture").text();
+        assert_eq!(window, "before\n", "the trailer stayed in the window: {window:?}");
+        assert_eq!(view.produced, 7, "the trailer is not output the command made");
+
+        // The gate's own two steps: observe, then merge what the shell said into the next spawn.
+        let mut session = crate::intent::env::SessionEnv::seeded([(
+            "PATH".to_string(),
+            "/usr/bin:/bin".to_string(),
+        )]);
+        session.observe(&report).expect("a report this build believes");
+        let second = spawn(
+            "test -n \"$LT_CHAIN\" && echo chained",
+            session.shell_pairs(),
+            false,
+        );
+        let _ = h.wait_job(&second, Duration::from_secs(30));
+        let window = h.output(&second, 0, usize::MAX).expect("the capture").text();
+        assert_eq!(window, "chained\n", "the export did not reach the next call: {window:?}");
+        assert!(
+            h.job(&second).expect("the row").env_report.is_none(),
+            "a call nobody armed carries no trailer"
+        );
+
+        // And the record keeps the model's own text: the append is argv, not the row.
+        assert_eq!(
+            h.job(&first).expect("the row").command,
+            "echo before\nexport LT_CHAIN=/w/chain",
+            "the job's row must carry the command as it was adjudicated"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A command that is not a whole program gets no trailer: text appended after an
+    /// unterminated construct would become part of the command, so the honest answer is no
+    /// report rather than a different command. The run is exactly the one the model wrote.
+    #[test]
+    fn a_command_that_is_not_a_whole_program_gets_no_trailer_and_runs_as_written() {
+        let root = std::env::temp_dir().join(format!("letibot-env-partial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a root");
+        let h = HostProcesses::with_tree(&root, PlainTree::over(root.join("tree")));
+        let id = h
+            .spawn(&SpawnRequest {
+                // A dangling pipeline: a syntax error in any shell, and the shape the trailer
+                // must not be appended to.
+                command: "echo hi |".into(),
+                slug: None,
+                cwd: "/".into(),
+                scope: ScopeKind::Session,
+                scope_name: None,
+                background: true,
+                env: vec![],
+                tty: false,
+                memory: None,
+                env_trailer: true,
+            })
+            .expect("a run starts");
+        let waited = h.wait_job(&id, Duration::from_secs(30)).expect("it settles");
+        assert!(
+            matches!(waited, Waited::Happened { state: Some(_), .. }),
+            "a syntax error still settles: {waited:?}"
+        );
+        let view = h.job(&id).expect("the row stays");
+        assert_eq!(
+            view.command, "echo hi |",
+            "the row carries the command as it was written"
+        );
+        assert!(
+            view.env_report.is_none(),
+            "a partial command must not have its text extended by machinery"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

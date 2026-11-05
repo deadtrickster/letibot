@@ -421,6 +421,7 @@ impl Fleet {
             env: leg.env.clone(),
             tty: false,
             memory: None,
+            env_trailer: false,
         };
         let started = Instant::now();
         let job = host

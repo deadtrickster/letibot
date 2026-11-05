@@ -258,6 +258,7 @@ fn a_scope_that_ends_records_what_it_killed_and_the_processes_are_actually_gone(
             // No terminal: these are the substrate's own tests, not an operator's run.
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .expect("spawn");
     }
@@ -828,6 +829,7 @@ fn a_session_that_ends_leaves_no_empty_cgroup_directory_either() {
         // No terminal: these are the substrate's own tests, not an operator's run.
         tty: false,
         memory: None,
+        env_trailer: false,
     })
     .expect("spawn");
 

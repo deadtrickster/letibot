@@ -205,6 +205,7 @@ fn a_command_that_cleared_its_environment_is_ended_with_its_group() {
         env: Vec::new(),
         tty: false,
         memory: None,
+        env_trailer: false,
     })
     .expect("the job starts");
     let cleared_pid = worktree.join("env-cleared.pid");
@@ -312,6 +313,7 @@ fn a_stopped_session_leaves_no_process_of_its_own_running_on_the_host() {
             env: Vec::new(),
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .expect("the job starts");
     let job_pid = host.job(&job).expect("the job is known").pid;
@@ -388,6 +390,7 @@ fn a_stopped_session_leaves_no_process_of_its_own_running_on_the_host() {
             env: Vec::new(),
             tty: false,
             memory: None,
+            env_trailer: false,
         })
         .expect("the job starts");
     let pid = stop
