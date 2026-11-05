@@ -402,10 +402,10 @@ impl App {
     /// they make opens with the same kind. The pane does not keep it: the next round's pane
     /// starts as the rung draws it, and a new turn drops the lift entirely.
     pub(crate) fn carry_live_open(&mut self) {
-        // The VALUE is not this function's business: a round's end moves the ADDRESS, from the pane
-        // to the rows the work became, so the panel does not vanish when it is worth reading. Only a
-        // new turn, in `on_turn_event`, drops the lift.
-        if self.lift.is_none() || self.payload_sel.as_deref() != Some(LIVE_RUN) {
+        // A round's end moves the ADDRESS, from the pane to the rows the work became, so the panel
+        // does not vanish while it is worth reading. `ctrl-v` opens that same address with no kind
+        // lifted, so the address is the test: left on the sentinel it reads as a window on nothing.
+        if self.payload_sel.as_deref() != Some(LIVE_RUN) {
             return;
         }
         match self.newest_run_head() {

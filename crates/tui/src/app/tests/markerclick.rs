@@ -1115,3 +1115,37 @@ fn slash_t_with_no_run_open_is_still_the_whole_fold() {
     a.command("t");
     assert!(a.tools.is_open());
 }
+
+/// `ctrl-v` on the live tail opens the sentinel with no kind lifted. When the round ended nothing
+/// moved the address off it, so `run_is_open` said no for a name that is no row and the bar offered
+/// to page a result there was none of.
+#[test]
+fn ctrl_v_on_the_live_tail_leaves_no_window_on_a_sentinel() {
+    const THOUGHT: &str = "THINK-CTRLV the round's thinking";
+    let mut a = a_live_thought(THOUGHT);
+    a.key(Key::CtrlV);
+    assert_eq!(a.lift, None, "the premise: the chord lifts no kind");
+    assert_eq!(
+        a.payload_sel.as_deref(),
+        Some(crate::app::runclick::LIVE_RUN),
+        "the premise: the chord opened the live tail"
+    );
+    assert!(!a.payload_window_open(), "the premise: it reads as a run");
+    // The round ends, and no run of rows takes the pane's place.
+    a.apply(ServerFrame::Event(env_at(
+        3,
+        1_200,
+        finished_costing("r1", None),
+    )));
+    assert_ne!(
+        a.payload_sel.as_deref(),
+        Some(crate::app::runclick::LIVE_RUN),
+        "the panel was left on a sentinel that names no row"
+    );
+    assert!(!a.payload_window_open(), "a window on nothing is up");
+    let open = frame(&mut a);
+    assert!(
+        !open.contains("page the result"),
+        "a window's keys for a window that is not there:\n{open}"
+    );
+}

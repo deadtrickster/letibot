@@ -304,6 +304,7 @@ impl App {
                 // A terminal state hands the turn's calls back to the transcript, which does not draw
                 // them while the pane is up. The history is cached, so it is invalidated from the first
                 // row the pane owned - the only part that can render differently now.
+                self.carry_live_open();
                 self.invalidate_turn_rows();
                 Disposition::Rendered
             }
@@ -323,6 +324,7 @@ impl App {
                 // A terminal state hands the turn's calls back to the transcript, which does not draw
                 // them while the pane is up. The history is cached, so it is invalidated from the first
                 // row the pane owned - the only part that can render differently now.
+                self.carry_live_open();
                 self.invalidate_turn_rows();
                 Disposition::Rendered
             }
