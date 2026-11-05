@@ -457,6 +457,34 @@ fn a_message_the_writer_did_not_take_is_offered_again() {
 }
 
 #[test]
+fn a_delivered_message_is_acked_so_a_fresh_bridge_does_not_replay_it() {
+    let fake = Fake::start("ack");
+    let first = RoomLink::at(&fake.path);
+    let taken = Arc::new(Mutex::new(Vec::<u64>::new()));
+    let t = taken.clone();
+    first.stream(Arc::new(move |m| {
+        t.lock().unwrap().push(m["seq"].as_u64().unwrap());
+        true
+    }));
+    wait_until(|| first.connected());
+    fake.push("s-a", "session", "host", Some("claude-code"), "one");
+    fake.push("s-a", "session", "host", Some("claude-code"), "two");
+    wait_until(|| taken.lock().unwrap().len() == 2);
+    wait_until(|| *fake.cursor.lock().unwrap() == 2);
+    // A new bridge process starts after the old one: the cursor holds nothing for it.
+    let second = RoomLink::at(&fake.path);
+    let again = Arc::new(Mutex::new(Vec::<u64>::new()));
+    let a = again.clone();
+    second.stream(Arc::new(move |m| {
+        a.lock().unwrap().push(m["seq"].as_u64().unwrap());
+        true
+    }));
+    wait_until(|| second.connected());
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(again.lock().unwrap().is_empty(), "{:?}", again.lock());
+}
+
+#[test]
 fn room_wait_exits_on_a_matching_message_and_not_on_others() {
     let fake = Fake::start("wait");
     let link = RoomLink::at(&fake.path);

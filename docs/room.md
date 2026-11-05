@@ -373,8 +373,10 @@ Tools:
 that passes `to_me` (names the bridge, a DM to it, the operator's unaddressed line) is sent once as
 `notifications/claude/channel` with `content` the message line (`#14 [host] s-a -> cc@app: text`)
 and `meta` `room`, `author`, `kind`, `to`, `seq`, `thread`. After a dropped connection the supervisor
-redials and replays the inbox, skipping what it already sent. Nothing is acked by the stream: ack with
-`room_inbox`.
+redials and replays the inbox, skipping what it already sent. The stream acks the cursor to the newest
+message the writer took (within two seconds), so a fresh bridge resumes after it and does not start a
+turn per old message. The cursor is one number: a lower message that did not pass `to_me` is also
+past it for `room_inbox`.
 
 What Claude Code sees depends on how it was started. Started with the channel flag for this server
 (`--dangerously-load-development-channels server:<name>`, interactive sessions only, TODO.md R117), an

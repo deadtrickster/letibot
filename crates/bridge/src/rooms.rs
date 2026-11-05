@@ -411,6 +411,8 @@ struct Inner {
     ids: AtomicU64,
     /// The newest seq handed to the stream, so a replay never repeats a push.
     delivered: Mutex<u64>,
+    /// The newest seq the coordinator's cursor was acked to, so a reconnect resumes after it.
+    acked: AtomicU64,
     /// The coordinator start the last welcome named. A different one means the log restarted, so
     /// `delivered` no longer orders anything.
     instance: Mutex<Option<u64>>,
@@ -453,6 +455,7 @@ impl RoomLink {
                 generation: AtomicU64::new(0),
                 ids: AtomicU64::new(0),
                 delivered: Mutex::new(0),
+                acked: AtomicU64::new(0),
                 instance: Mutex::new(None),
                 named: Mutex::new(false),
                 share: AtomicBool::new(false),
@@ -545,6 +548,7 @@ impl RoomLink {
                         .delivered
                         .lock()
                         .unwrap_or_else(|e| e.into_inner()) = 0;
+                    self.inner.acked.store(0, Ordering::SeqCst);
                 }
                 *seen = Some(now);
             }
@@ -720,6 +724,19 @@ impl RoomLink {
     pub fn ack(&self, seq: u64) -> Result<Value, String> {
         self.request(&json!({ "type": "ack", "seq": seq }))
     }
+
+    /// Ack the cursor to what the stream handed Claude Code. Off the reader thread: a round trip
+    /// there would wait on its own reply. A failed ack is retried on the next pass.
+    fn ack_delivered(&self) {
+        let upto = *self
+            .inner
+            .delivered
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if upto > self.inner.acked.load(Ordering::SeqCst) && self.ack(upto).is_ok() {
+            self.inner.acked.fetch_max(upto, Ordering::SeqCst);
+        }
+    }
 }
 
 fn supervise(weak: Weak<Inner>, deliver: Deliver) {
@@ -736,6 +753,7 @@ fn supervise(weak: Weak<Inner>, deliver: Deliver) {
                 }
             }
         }
+        link.ack_delivered();
         drop(link);
         std::thread::sleep(REDIAL_EVERY);
     }
