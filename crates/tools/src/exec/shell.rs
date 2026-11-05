@@ -297,6 +297,12 @@ pub fn argv(cfg: &ShellConfig) -> Result<(String, Vec<String>), ShellError> {
     }
 }
 
+/// The bytes a trailer for `mark` opens with, so a stream filter can hold back exactly the
+/// prefix of one that could still arrive, and no more.
+pub fn opening(mark: &str) -> Vec<u8> {
+    format!("{MARK_OPEN}{mark};").into_bytes()
+}
+
 /// Find a trailer in `buf` and take the turn out of it.
 /// `Ok(None)` means *not yet*: no marker, or a marker whose terminator has not arrived - both
 /// are the same instruction, to read more. Pure, so the scan is testable on hand-written bytes.

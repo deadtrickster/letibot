@@ -299,6 +299,105 @@ pub struct Capture {
     /// Secrets taken out where the bytes arrive, so the window and the spill file are the same
     /// bytes. `None` for a session carrying none.
     masker: Option<Masker>,
+    /// The trailer this job's output gives up, when its command was appended one. `None` for
+    /// every job that was not armed.
+    trailer: Option<TrailerTaker>,
+}
+
+/// Takes one job's OSC trailer out of its output as the bytes arrive, and keeps the report
+/// it carried for the harness to observe. Holds back only the suffix that could still grow
+/// into the marker - the same rule the secret [`Masker`] holds its partial token by - so the
+/// window, the spill file and the denominator never carry machinery the command did not print.
+struct TrailerTaker {
+    mark: String,
+    held: Vec<u8>,
+    /// `Some(Ok(pairs))` once a whole trailer was read, `Some(Err)` for one this build refuses
+    /// to believe, `None` while there is neither.
+    report: Option<Result<String, String>>,
+}
+
+impl std::fmt::Debug for TrailerTaker {
+    /// The report may hold a credential, so this says it is there without printing it - the
+    /// same rule `shell::Turn`'s `Debug` keeps for the same reason.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrailerTaker")
+            .field("mark", &self.mark)
+            .field("held", &self.held.len())
+            .field("report", &self.report.is_some())
+            .finish()
+    }
+}
+
+impl TrailerTaker {
+    fn new(mark: &str) -> TrailerTaker {
+        TrailerTaker {
+            mark: mark.to_string(),
+            held: Vec::new(),
+            report: None,
+        }
+    }
+
+    /// What may be published of `bytes` plus whatever was held, the trailer taken out.
+    fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.held.extend_from_slice(bytes);
+        let mut out = Vec::new();
+        loop {
+            match super::shell::take_turn(&mut self.held, &self.mark) {
+                Ok(Some(turn)) => {
+                    out.extend_from_slice(&turn.bytes);
+                    // The first trailer is the report; a second with this mark is a forgery,
+                    // and it is stripped without overwriting what the shell said.
+                    if self.report.is_none() {
+                        self.report = Some(Ok(turn.env));
+                    }
+                }
+                Ok(None) => break,
+                Err(why) => {
+                    // A marker we cannot believe is still machinery: it comes out of the
+                    // stream, and the report says why rather than guessing a value.
+                    match take_marker(&mut self.held, &self.mark) {
+                        Some(before) => {
+                            out.extend_from_slice(&before);
+                            if self.report.is_none() {
+                                self.report = Some(Err(why.to_string()));
+                            }
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+        let publish = self.held.len() - self.carry();
+        out.extend(self.held.drain(..publish));
+        out
+    }
+
+    /// The stream is over, so nothing held can still grow into a marker: it was output that
+    /// merely resembled one, and it goes out.
+    fn finish(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.held)
+    }
+
+    /// How many trailing bytes could still be the start of the marker: the longest suffix of
+    /// the hold that is a proper prefix of it.
+    fn carry(&self) -> usize {
+        let open = super::shell::opening(&self.mark);
+        (1..open.len())
+            .rev()
+            .find(|&k| self.held.ends_with(&open[..k]))
+            .unwrap_or(0)
+    }
+}
+
+/// Take a marker we refuse to parse out of `buf`, through its BEL, and answer with what stood
+/// before it. `None` when even the BEL has not arrived: still reading.
+fn take_marker(buf: &mut Vec<u8>, mark: &str) -> Option<Vec<u8>> {
+    let open = super::shell::opening(mark);
+    let at = buf.windows(open.len()).position(|w| w == open.as_slice())?;
+    let rel = buf[at + open.len()..].iter().position(|b| *b == 0x07)?;
+    let before = buf[..at].to_vec();
+    buf.drain(..at + open.len() + rel + 1);
+    Some(before)
 }
 
 /// Takes secret values out of a stream as it arrives. Bytes a secret could still complete are
@@ -402,7 +501,20 @@ impl Capture {
             last_at: None,
             spill: None,
             masker: None,
+            trailer: None,
         }
+    }
+
+    /// Take this job's own trailer out of everything it writes, from the next byte on. The
+    /// spawn arms this when it appended one, with the mark it minted for this call.
+    pub fn strip_trailer(&mut self, mark: &str) {
+        self.trailer = Some(TrailerTaker::new(mark));
+    }
+
+    /// The report the trailer took: `Some(Ok(pairs))` once a whole trailer arrived, `Some(Err)`
+    /// for one this build refuses to believe, `None` while there is neither.
+    pub fn env_report(&self) -> Option<Result<String, String>> {
+        self.trailer.as_ref().and_then(|t| t.report.clone())
     }
 
     /// Take these values out of everything this job writes, from the next byte on.
@@ -413,14 +525,20 @@ impl Capture {
     }
 
     pub fn push(&mut self, bytes: &[u8]) {
-        // Counted on arrival, not where the masker lets them out: `produced` is the denominator
-        // a reader compares against, and a hold of a few bytes must not read as output lost.
-        self.produced += bytes.len() as u64;
+        // The trailer is taken out first, so the report's values never pass the masker and a
+        // secret the shell exported is masked only where the card shows it, by `intent::env`.
+        let arrived: Vec<u8> = match &mut self.trailer {
+            Some(t) => t.feed(bytes),
+            None => bytes.to_vec(),
+        };
+        // Counted on arrival and without the trailer: that is machinery this harness appended,
+        // not output the command produced, and the denominator must agree with the window.
+        self.produced += arrived.len() as u64;
         self.last_at = Some(SystemTime::now());
         match &mut self.masker {
-            None => self.keep(bytes),
+            None => self.keep(&arrived),
             Some(masker) => {
-                let published = masker.feed(bytes);
+                let published = masker.feed(&arrived);
                 self.keep(&published);
             }
         }
@@ -429,6 +547,18 @@ impl Capture {
     /// The stream is over: what the masker held back goes out, and the window and the file have
     /// the whole of it. Called where the drains have joined, which is the last byte there is.
     pub fn flush_tail(&mut self) {
+        // The trailer's hold first, and through the masker: those bytes were only ever held
+        // back against a marker that never completed, and the masker must see every byte once.
+        let held = self.trailer.as_mut().map(|t| t.finish()).unwrap_or_default();
+        if !held.is_empty() {
+            match &mut self.masker {
+                None => self.keep(&held),
+                Some(masker) => {
+                    let published = masker.feed(&held);
+                    self.keep(&published);
+                }
+            }
+        }
         let Some(masker) = &mut self.masker else {
             return;
         };
@@ -759,6 +889,20 @@ impl Job {
             .collect();
         self.capture.lock().expect("capture").mask(needles);
         self
+    }
+
+    /// The trailer this job's command was appended, so its output gives the trailer up where the
+    /// bytes arrive. `mark` is the nonce the spawn minted for this one call.
+    pub fn with_env_trailer(self, mark: &str) -> Job {
+        self.capture.lock().expect("capture").strip_trailer(mark);
+        self
+    }
+
+    /// The environment report this job's trailer took, for the harness to observe once the job
+    /// has settled. `None` while there is none: a killed run and a call with no `bash` answer
+    /// the same honest nothing.
+    pub fn env_report(&self) -> Option<Result<String, String>> {
+        self.capture.lock().expect("capture").env_report()
     }
 
     /// What the kernel counted for this job's memory - `None` until it settles, and on a tree
@@ -1177,5 +1321,60 @@ mod tests {
             JobState::NotScoped.word(),
             "not run (could not join its scope)"
         );
+    }
+
+    /// A trailer split across reads is taken out whole: the marker held until its BEL, the
+    /// command's own bytes published either side of it, and the report kept for the harness.
+    #[test]
+    fn a_trailer_split_across_reads_is_taken_out_and_its_report_kept() {
+        let mut cap = Capture::new(1024);
+        cap.strip_trailer("m1");
+        let stream = format!(
+            "before\n{}",
+            "\x1b]1337;letibot;m1;3;/a;b/cwd\np=/w;q=/q;\x07"
+        );
+        let bytes = stream.as_bytes();
+        // Three reads, none aligned with anything: 7, then one that ends inside the marker,
+        // then the rest.
+        cap.push(&bytes[..7]);
+        cap.push(&bytes[7..20]);
+        cap.push(&bytes[20..]);
+        let window = String::from_utf8_lossy(&cap.slice(0, usize::MAX).bytes).into_owned();
+        assert_eq!(window, "before\n", "the trailer stayed in: {window:?}");
+        assert_eq!(cap.produced(), 7, "the trailer is not output the command made");
+        assert_eq!(
+            cap.env_report(),
+            Some(Ok("p=/w;q=/q;".to_string())),
+            "the pairs the trailer carried"
+        );
+    }
+
+    /// Output that merely resembles the start of a marker is not lost: it was held against a
+    /// trailer that never came, and the end of the stream publishes it.
+    #[test]
+    fn output_that_resembles_a_marker_goes_out_at_the_end() {
+        let mut cap = Capture::new(1024);
+        cap.strip_trailer("m2");
+        cap.push(b"trailing \x1b]13");
+        assert_eq!(cap.slice(0, usize::MAX).bytes.len(), 9, "the partial marker is held");
+        cap.flush_tail();
+        let window = String::from_utf8_lossy(&cap.slice(0, usize::MAX).bytes).into_owned();
+        assert_eq!(window, "trailing \x1b]13", "held is not lost: {window:?}");
+        assert!(cap.env_report().is_none(), "no trailer ever arrived");
+    }
+
+    /// A marker this build refuses to parse still comes out of the stream, and the report says
+    /// why: a status that is not a number is not a value anybody should splice into a reading.
+    #[test]
+    fn a_marker_this_build_refuses_to_believe_is_stripped_and_named() {
+        let mut cap = Capture::new(1024);
+        cap.strip_trailer("m3");
+        cap.push(b"out\x1b]1337;letibot;m3;zero;/cwd\np=/w;\x07after");
+        let window = String::from_utf8_lossy(&cap.slice(0, usize::MAX).bytes).into_owned();
+        assert_eq!(window, "outafter", "the refused marker stayed in: {window:?}");
+        let Some(Err(why)) = cap.env_report() else {
+            panic!("a refused report, not none: {:?}", cap.env_report());
+        };
+        assert!(why.contains("not a number"), "{why}");
     }
 }
