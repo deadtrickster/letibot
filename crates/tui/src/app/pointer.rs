@@ -213,11 +213,16 @@ impl App {
         let row = usize::from(y);
         match hit.target {
             // A label on either edge is a button, and its hover is exactly the span the frame drew:
-            // the count labels, the queue tab, the git field, the queue's standings. The rectangle
-            // is the drawn one, so a click one cell outside the words is nobody's.
-            Target::CountLabel(_) | Target::GitField | Target::QueueStandings => Some(
-                Hovered::one(row, Some((hit.rect.x, hit.rect.x + hit.rect.w))),
-            ),
+            // the count labels, the queue tab, the git field, the corner's repository, the queue's
+            // standings. The rectangle is the drawn one, so a click one cell outside the words is
+            // nobody's.
+            Target::CountLabel(_)
+            | Target::GitField
+            | Target::HeaderRepo
+            | Target::QueueStandings => Some(Hovered::one(
+                row,
+                Some((hit.rect.x, hit.rect.x + hit.rect.w)),
+            )),
             // A link lights exactly the cells it covers, like the labels above and for the
             // same reason: the rectangle was read off the row the link was drawn on, so the hand
             // appears over the words and nowhere else.

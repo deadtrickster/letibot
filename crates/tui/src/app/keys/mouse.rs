@@ -117,8 +117,12 @@ impl App {
             // The corner's repository is the tree, so a click asks the queue for THAT tree through
             // the verb a person would type (`/queue /PATH`): the pane and the word cannot disagree
             // about what a scope is.
+            // It scopes by `header_workspace()`, the tree the row draws (a pin or the followed
+            // repository when the workspace holds several), not by `wiring.workspace`.
             (Target::HeaderRepo, _) => {
-                let repo = crate::gitfield::repo_dir(&self.wiring.workspace);
+                let Some(repo) = crate::gitfield::repo_of(&self.header_workspace()) else {
+                    return ControlFlow::Break(None);
+                };
                 return ControlFlow::Break(
                     self.queue_in(QueueScope::Path(repo.display().to_string())),
                 );

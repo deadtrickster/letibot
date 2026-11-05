@@ -337,13 +337,23 @@ pub fn todos_path(ws: &str) -> std::path::PathBuf {
 /// repository. Separate from [`project_dir`] because a folder may carry the list and not the code.
 pub fn repo_dir(ws: &str) -> std::path::PathBuf {
     let project = project_dir(ws);
-    let is_repo = |d: &std::path::Path| d.join(".git").exists();
-    // The ordinary layout, a workspace inside a repository, and the nested same-named child: in
-    // all three git walks up from the project directory on its own.
-    if project.ancestors().any(is_repo) {
-        return project;
+    repo_of(&project.display().to_string()).unwrap_or(project)
+}
+
+/// The repository `dir` is or sits inside, or the one repository it holds. `None` for a folder
+/// holding several: the header's queue door scopes by path prefix, so a folder would open an empty
+/// pane, and no door is better than a wrong one.
+pub fn repo_of(dir: &str) -> Option<std::path::PathBuf> {
+    if dir.is_empty() {
+        return None;
     }
-    let repos: Vec<std::path::PathBuf> = project
+    let d = std::path::Path::new(dir);
+    let is_repo = |p: &std::path::Path| p.join(".git").exists();
+    // Git walks up from `d` on its own for a workspace inside a repository.
+    if d.ancestors().any(is_repo) {
+        return Some(d.to_path_buf());
+    }
+    let repos: Vec<std::path::PathBuf> = d
         .read_dir()
         .into_iter()
         .flatten()
@@ -353,8 +363,8 @@ pub fn repo_dir(ws: &str) -> std::path::PathBuf {
         .filter(|p| is_repo(p))
         .collect();
     match repos.as_slice() {
-        [only] => only.clone(),
-        _ => project,
+        [only] => Some(only.clone()),
+        _ => None,
     }
 }
 

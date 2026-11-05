@@ -552,7 +552,10 @@ impl App {
         // The corner's repository, as a target: the span the header drew for the workspace path, on row 0,
         // since that is where the header is inserted. The gutter is added here because `out`'s rows have none
         // yet and a click's `x` is in terminal cells.
-        if let Some((col, cols)) = header_path {
+        // No target when the row names a folder of repositories: the queue door would open empty.
+        if let Some((col, cols)) = header_path
+            && crate::gitfield::repo_of(&self.header_workspace()).is_some()
+        {
             self.hits.push(Hit {
                 rect: Rect {
                     x: col + gutter,

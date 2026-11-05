@@ -347,6 +347,136 @@ fn the_corners_repository_survives_a_todo_md_beside_it() {
     );
 }
 
+/// A project folder carrying `TODO.md`, with the repository one level down under the same name.
+fn project_folder(tag: &str) -> Folder {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root = letibot_sessionlog::testing::scratch_root()
+        .join(format!("letibot-project-{tag}-{}-{n}", std::process::id()))
+        .join("letibot");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("TODO.md"), "# the project's backlog\n").unwrap();
+    std::fs::write(root.join("leticode.toml"), "").unwrap();
+    let repo = root.join("letibot");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/x.rs"), "fn x() {}\n").unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["add", "-A"],
+        &["commit", "-qm", "first"],
+    ] {
+        let ok = letibot_tools::testing::git(&repo)
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+    Folder(root.parent().unwrap().to_path_buf())
+}
+
+/// The git field is the repository one level below a project folder, not the folder itself.
+#[test]
+fn a_project_folder_with_a_todo_md_still_shows_its_repository() {
+    let f = project_folder("corner");
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.wiring.workspace = f.0.join("letibot").display().to_string();
+    let h = header(&mut a);
+    assert!(h.contains("letibot"), "the path is on the row: {h}");
+    assert!(h.contains("(main"), "the corner lost the repository: {h}");
+}
+
+/// A click on the corner's path opens the queue scoped to the repository, as `/queue /PATH` does.
+#[test]
+fn a_click_on_the_corners_path_opens_the_queue_for_that_repository() {
+    let f = project_folder("queue");
+    let repo = f.0.join("letibot").join("letibot");
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.wiring.workspace = f.0.join("letibot").display().to_string();
+    let frame = {
+        header(&mut a);
+        a.screen(160, 30)
+    };
+    let cells: String = crate::app::keyhints::cells(&frame[0]).iter().collect();
+    let at = cells
+        .find("letibot")
+        .unwrap_or_else(|| panic!("the path is not on the header row: {cells:?}"));
+    let x = cells[..at].chars().count() as u16 + 1;
+    let _ = a.key(Key::Click { x, y: 0 });
+    assert!(
+        a.is_open(Surface::Queue),
+        "the click did not open the queue pane"
+    );
+    assert_eq!(
+        a.queue_scope,
+        crate::ui::panes::queue::QueueScope::Path(repo.display().to_string()),
+        "the pane is not scoped to the repository the corner names"
+    );
+}
+
+/// The door names the tree the row draws. A folder of repositories has no such tree, so no door
+/// until a pin makes the row name one.
+#[test]
+fn a_folder_of_repositories_is_no_queue_door_until_one_is_pinned() {
+    let f = folder("many");
+    let mut a = at(&f);
+    let frame = {
+        header(&mut a);
+        a.screen(160, 30)
+    };
+    let row: String = crate::app::keyhints::cells(&frame[0]).iter().collect();
+    assert!(row.contains("(3 repos)"), "the field says how many: {row}");
+    assert!(
+        !a.hits.iter().any(|h| h.target == Target::HeaderRepo),
+        "a folder of repositories is not a tree: {row}"
+    );
+    let at = row
+        .find("stroppy-io")
+        .unwrap_or_else(|| panic!("the path is not on the header row: {row:?}"));
+    let x = row[..at].chars().count() as u16 + 1;
+    let _ = a.key(Key::Click { x, y: 0 });
+    assert!(
+        !a.is_open(Surface::Queue),
+        "a click on the folder opened an empty queue"
+    );
+
+    a.command("repo");
+    a.take_pick("website".into());
+    let frame = {
+        header(&mut a);
+        a.screen(160, 30)
+    };
+    let row: String = crate::app::keyhints::cells(&frame[0]).iter().collect();
+    let at = row
+        .find("website")
+        .unwrap_or_else(|| panic!("the pinned path is not on the header row: {row:?}"));
+    let x = row[..at].chars().count() as u16 + 1;
+    let _ = a.key(Key::Click { x, y: 0 });
+    assert!(
+        a.is_open(Surface::Queue),
+        "the pinned tree is a door: {row}"
+    );
+    assert_eq!(
+        a.queue_scope,
+        crate::ui::panes::queue::QueueScope::Path(
+            f.0.join("stroppy-io").join("website").display().to_string()
+        ),
+        "the pane is scoped to the tree the row draws"
+    );
+}
+
 #[test]
 fn a_call_names_its_path_its_directory_or_where_its_command_goes() {
     use crate::gitfield::call_path;
