@@ -219,8 +219,8 @@ pub fn health(h: &TargetHealth) -> String {
         H::Blocked if h.evidence.starts_with(super::gate::GATE_KILLED) => format!(
             "The merge queue CANNOT JUDGE {at}: {}.\n\n{first}\n\nThis is not the code being red \
              — the gate's step was killed before it judged anything — but nothing lands on `{}` \
-             until it is gated again. If it was the memory cap, that is the operator's \
-             `[memory] gate` in providers.toml; once there is room, gate the tip again. \
+             until it is gated again. If it was the memory cap, that is the operator's to raise: tell them, and \
+             regate once they have. \
              {TOOL_WAYS}",
             h.evidence
                 .lines()
@@ -259,7 +259,8 @@ pub fn health(h: &TargetHealth) -> String {
                  lands on `{target}` until it is green again (only a branch opened to fix it \
                  does), no other review of it starts, and branches already approved go back to \
                  review. The red tip is first in the review queue{review}; a reviewer looks for \
-                 what in `{target}`'s history broke it. {TOOL_WAYS}",
+                 what in `{target}`'s history broke it — a reviewer and a fix branch are automatic, so you need \
+                  do nothing unless you know what broke it. {TOOL_WAYS}",
                 target = h.target,
             )
         }
@@ -301,13 +302,14 @@ pub fn parked(r: &ReviewRow) -> String {
             "The review of `{branch}` (`{id}`), a branch of your tree, is BLOCKED and nothing \
              lands it: {failure}\n\n`queue` with `action: \"restart\"` and `id: \"{id}\"` asks a \
              reviewer again; the operator's `/queue approve {id}` approves it over the reviewer \
-             (the merge gate still runs).",
+             (the merge gate still runs) — that verb is the operator's, not yours.",
             branch = r.branch,
             id = r.id,
         ),
         (ReviewKind::Branch, _) => format!(
             "The reviewer of `{branch}` (`{id}`), a branch of your tree, could not decide: \
-             {reasons}. The operator is asked (`/queue approve {id}` or `/queue veto {id} WHY`). \
+             {reasons}. The operator is asked (`/queue approve {id}` or `/queue veto {id} WHY`, both \
+              theirs, not yours). \
              If you can answer what the reviewer could not tell, do it in the branch: a new head \
              goes back to review by itself.",
             branch = r.branch,
@@ -350,8 +352,7 @@ pub fn refused(r: &ReviewRow, reasons: &[String]) -> String {
     format!(
         "Your branch `{branch}` was REFUSED by the review at {head}, so it does not land. The \
          reviewer's reasons:\n\n{list}\n\nThe branch is still in {wt}. Answer the reasons there \
-         and commit: a new head goes back to review by itself (the verdict is bound to the head it \
-         judged).",
+         and commit: a new head is reviewed again automatically.",
         branch = r.branch,
         head = r.head_sha,
     )

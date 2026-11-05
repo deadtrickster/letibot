@@ -239,9 +239,8 @@ fn overwrite(ctx: &mut InvokeCtx<'_>, path: &str, content: &str, bytes: &[u8]) -
 fn write_failed(ctx: &mut InvokeCtx<'_>, path: &str, e: BackendError) -> Invocation {
     let extra = if !ctx.backend.is_writable() {
         format!(
-            "\n\nThis session's execution backend is read-only ({}). That is a second, \
-             independent gate below §11's adjudication: the adjudicator admitted this \
-             call and the backend is what refused. Nothing on disk changed.",
+            "\n\nThis session's backend is read-only ({}): the adjudicator admitted this call \
+             and the backend is what refused. Nothing on disk changed.",
             ctx.backend.describe()
         )
     } else {

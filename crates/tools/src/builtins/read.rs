@@ -249,11 +249,11 @@ impl Tool for Read {
             ));
         }
         if byte_capped {
+            // The byte cap is the reader's number, not the model's: the offset is the whole of
+            // what it needs to carry on, and a size here invites sizing work by the window.
             notes.push(format!(
-                "stopped before line {}: one read is capped at {} KiB of text; call read \
-                 again with offset={} to continue",
+                "stopped before line {}; call read again with offset={} to continue",
                 end + 1,
-                ctx.limits.max_read_bytes / 1024,
                 end + 1
             ));
         } else if end < total && limit.is_none() {
@@ -574,8 +574,13 @@ mod tests {
         h.write_file("wide.txt", &body);
         let r = h.call("read", r#"{"path":"wide.txt"}"#);
         let notes = r.notes.join(" ");
-        assert!(notes.contains("capped at 32 KiB"), "{notes}");
+        // The byte cap is the reader's own number and stays out of the note: the offset is what
+        // carries the model on.
         assert!(notes.contains("stopped before line"), "{notes}");
+        assert!(
+            !notes.contains("KiB"),
+            "no window size in the note: {notes}"
+        );
         assert!(
             r.payload.len() < 40 * 1024,
             "the call returned {} bytes",

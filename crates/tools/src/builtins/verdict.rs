@@ -242,7 +242,7 @@ impl Tool for ReviewVerdictTool {
                     "verdict": {
                         "type": "string",
                         "enum": ["accept", "reject", "needs_human"],
-                        "description": "accept: the change does what the brief asked without breaking what was there. reject: it does not, and the reasons say why. needs_human: you cannot decide from what you can see, and a person must."
+                        "description": "accept: the change does what the brief asked without breaking what was there — and in a review of a RED tip, whose brief IS the red, it means the code is sound and the red is not in it. reject: it does not, and the reasons say why. needs_human: you cannot decide from what you can see, and a person must."
                     },
                     "reasons": {
                         "type": "array",

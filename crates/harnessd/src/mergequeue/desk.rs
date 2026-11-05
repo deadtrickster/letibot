@@ -38,8 +38,8 @@ pub fn resolve(
                         many.iter().map(|r| format!("`{}`", r.display())).collect();
                     return format!(
                         "the workspace {} is one project of {} repositories — {} — so which one is \
-                         not something this can know; name it (`/queue regate /path/to/repo \
-                         [TARGET]`, or the tool's `repository`)",
+                         not something this can know; name it with the tool's `repository` (or \
+                         `/queue regate /path/to/repo [TARGET]`)",
                         workspace.display(),
                         many.len(),
                         names.join(", ")

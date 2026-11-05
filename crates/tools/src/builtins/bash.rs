@@ -74,9 +74,9 @@ fn default_sentence(p: &MemoryPolicy) -> String {
     )
 }
 
-/// The note a model call's result carries about memory. Every settled run reports its peak - the
-/// model chose the cap and a number it never sees is one it can only guess at next time - and a
-/// kill, a run near its cap or a cap that could not be set says what the number means.
+/// The note a model call's result carries about memory: nothing for a run that finished inside
+/// its cap, and one clause for a kill, a near-cap run or a cap that could not be set. A peak on
+/// every result was a number to size work by, which the model is not given.
 fn memory_note(job: &crate::exec::jobs::Job) -> Option<String> {
     use crate::exec::MemoryCap;
     let used = job.memory_used();
@@ -88,8 +88,7 @@ fn memory_note(job: &crate::exec::jobs::Job) -> Option<String> {
                 .unwrap_or_default()
         )),
         (_, Some(u)) if u.killed_at_cap() => Some(format!(
-            "memory: {}; the kernel killed {} process(es) inside it at the cap",
-            u.clause(),
+            "the kernel killed {} process(es) inside it at the cap",
             u.oom_kills
         )),
         (_, Some(u)) if u.near_its_cap() => Some(format!(
@@ -97,7 +96,6 @@ fn memory_note(job: &crate::exec::jobs::Job) -> Option<String> {
              it needs more.",
             u.clause()
         )),
-        (_, Some(u)) => Some(format!("memory: {}.", u.clause())),
         _ => None,
     }
 }
@@ -138,10 +136,16 @@ impl Bash {
                     MemoryGrant::Refused(why) => Err(Box::new(Invocation::not_run(
                         "the operator refused the memory this call asked for",
                         format!(
-                            "nothing was run. You asked: {}. The operator said no: {why}. \
-                             Ask for {} or less and it starts at once, or make the work smaller.",
-                            q.summary(),
-                            crate::exec::human_bytes(ceiling)
+                            "nothing was run. You asked for {} for `{}`, which is above the {} \
+                             you may take without asking. The operator said no: {why}. Ask for \
+                             {} or less and it starts at once, or make the work smaller.",
+                            match q.bytes {
+                                Some(b) => format!("{} of memory", crate::exec::human_bytes(b)),
+                                None => "no memory cap".to_string(),
+                            },
+                            q.command,
+                            crate::exec::human_bytes(ceiling),
+                            crate::exec::human_bytes(ceiling),
                         ),
                     ))),
                     MemoryGrant::NotAsked => Err(Box::new(Invocation::not_run(
@@ -792,15 +796,13 @@ impl Tool for Bash {
                     format!(
                         "{body}\n\n[the kernel killed `{label}` when it reached its memory cap \
                          — {}]\n  command: {command}\n\nIt did not crash on its own; it ran out \
-                         of the memory this call was given: it {}. Or make the work smaller.",
+                         of the memory this call was given. {} Or make the work smaller.",
                         u.clause(),
                         match u.cap {
-                            Some(cap) => crate::exec::memory::ask_after_kill(
-                                &self.memory,
-                                cap,
-                                Meminfo::read().as_ref()
-                            ),
-                            None => "ran uncapped, so the kill was not a cap's".into(),
+                            Some(cap) => {
+                                crate::exec::memory::ask_after_kill(cap, Meminfo::read().as_ref())
+                            }
+                            None => "It ran uncapped, so the kill was not a cap's.".into(),
                         }
                     ),
                 )
@@ -1420,10 +1422,10 @@ mod tests {
         job
     }
 
-    /// The peak reaches the model on a call that ended nowhere near its cap: it chose the cap, and
-    /// the next ask is a number only if the last one came back.
+    /// A call that ended nowhere near its cap says nothing about memory: a peak on every result is
+    /// a number to size work by, which the model is not given (R93.F1).
     #[test]
-    fn a_finished_call_reports_its_peak() {
+    fn a_finished_call_says_nothing_about_its_peak() {
         use crate::exec::MemoryCap;
         use crate::exec::scope::MemoryUse;
         let job = settled(
@@ -1435,9 +1437,9 @@ mod tests {
             }),
         );
         assert_eq!(
-            memory_note(&job).as_deref(),
-            Some("memory: peak 12 MiB of a 64 MiB cap."),
-            "an ordinary call says what it cost"
+            memory_note(&job),
+            None,
+            "an ordinary call reports no numbers at all"
         );
     }
 

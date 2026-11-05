@@ -747,11 +747,8 @@ fn missing_file(ctx: &mut InvokeCtx<'_>, path: &str) -> Invocation {
 fn write_failed(ctx: &mut InvokeCtx<'_>, path: &str, e: BackendError) -> Invocation {
     let extra = if !ctx.backend.is_writable() {
         format!(
-            "\n\nThis session's execution backend is read-only ({}). That is a second, \
-             independent gate below §11's adjudication: a write reaching the disk needs \
-             both an adjudicator that admitted it and a backend that was opened to be \
-             written to. The adjudicator admitted this call; the backend is what \
-             refused. Nothing on disk changed.",
+            "\n\nThis session's backend is read-only ({}): the adjudicator admitted this call \
+             and the backend is what refused. Nothing on disk changed.",
             ctx.backend.describe()
         )
     } else {
@@ -1046,7 +1043,7 @@ mod tests {
         h.write_file("wall.rs", &body);
         let r = h.call("read", r#"{"path":"wall.rs"}"#);
         assert!(
-            r.notes.iter().any(|n| n.contains("capped at")),
+            r.notes.iter().any(|n| n.contains("stopped before line")),
             "the fixture must hit the byte cap: {:?}",
             r.notes
         );

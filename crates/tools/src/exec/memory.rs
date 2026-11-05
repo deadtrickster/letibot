@@ -146,28 +146,17 @@ pub fn ask_text(bytes: u64) -> String {
 }
 
 /// What a call killed at `cap` should ask for next time, said in the result so the model's
-/// next call is sized by a number and not by a guess. When the step would pass the ceiling,
-/// the ceiling is what is offered and the sentence says what lies beyond it.
-pub fn ask_after_kill(policy: &MemoryPolicy, cap: u64, mem: Option<&Meminfo>) -> String {
-    use super::scope::human_bytes;
+/// next call is sized by a number and not by a guess. `mem` sizes the answer to what the box may
+/// hand over without asking, so the next call starts instead of asking.
+pub fn ask_after_kill(cap: u64, mem: Option<&Meminfo>) -> String {
     const G: u64 = 1 << 30;
     let step = cap.saturating_mul(ASK_STEP).max(ASK_FLOOR).div_ceil(G) * G;
-    let ceiling = mem.map(|m| policy.ceiling.resolve(m.available));
-    let ask = match ceiling {
-        Some(c) if step > c && c > cap => format!(
-            "ask for memory: \"{}\" (the most granted without asking; more is put to the \
-             operator)",
-            ask_text(c)
-        ),
-        _ => format!("ask for memory: \"{}\"", ask_text(step)),
+    // The ceiling is the operator's number and is not named: it sizes the suggestion and no more.
+    let step = match mem {
+        Some(m) => step.min(Amount::Fraction(0.5).resolve(m.available).max(cap)),
+        None => step,
     };
-    format!(
-        "peaked at its {} cap — {ask} next time, or set `[memory] default` in this project's \
-         leticode.toml so every call in it starts there (the default in force is {}, from {})",
-        human_bytes(cap),
-        policy.default,
-        policy.default_from.describe()
-    )
+    format!("Run it again with memory: \"{}\".", ask_text(step))
 }
 
 /// The box's memory, from `/proc/meminfo`, in bytes.
@@ -423,24 +412,22 @@ mod tests {
         assert_eq!(m.swap_free, 228 * 1024);
     }
 
-    /// The note a killed call carries names an ask big enough to matter, and the ceiling
-    /// when the step would pass it.
+    /// A killed call is told the ask that would have been enough, sized by what the box may hand
+    /// over without asking - and nothing else: no cap restated, no config file to edit.
     #[test]
-    fn a_kill_at_the_cap_says_what_to_ask_for_next_and_where_the_default_lives() {
-        let p = MemoryPolicy::default();
-        let note = ask_after_kill(&p, 64 << 20, Some(&mem(100)));
-        assert!(note.contains("peaked at its 64 MiB cap"), "{note}");
+    fn a_kill_at_the_cap_says_one_ask_sized_to_start() {
+        let note = ask_after_kill(64 << 20, Some(&mem(100)));
         assert!(note.contains("memory: \"2G\""), "{note}");
-        assert!(note.contains("this project's leticode.toml"), "{note}");
-        assert!(note.contains("64 MiB, from the built-in default"), "{note}");
-        // 2 GiB killed gives 32 GiB, granted at once on a box with 100 GiB free.
-        assert!(ask_after_kill(&p, 2 * GIB, Some(&mem(100))).contains("\"32G\""));
-        // On a box with 20 GiB free the ceiling is 10 GiB, and that is what is offered.
-        let tight = ask_after_kill(&p, 2 * GIB, Some(&mem(20)));
+        assert!(!note.contains("leticode.toml"), "{note}");
         assert!(
-            tight.contains("\"10G\"") && tight.contains("operator"),
-            "{tight}"
+            !note.contains("cap"),
+            "no second statement of the cap: {note}"
         );
+        // 2 GiB killed gives 32 GiB, granted at once on a box with 100 GiB free.
+        assert!(ask_after_kill(2 * GIB, Some(&mem(100))).contains("\"32G\""));
+        // On a box with 20 GiB free the ceiling is 10 GiB, and that is what is offered.
+        let tight = ask_after_kill(2 * GIB, Some(&mem(20)));
+        assert!(tight.contains("\"10G\""), "{tight}");
         assert_eq!(ask_text(512 << 20), "512M");
         assert_eq!(ask_text(3 * GIB), "3G");
     }

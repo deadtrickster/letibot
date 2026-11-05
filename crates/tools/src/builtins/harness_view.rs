@@ -39,13 +39,20 @@ impl HarnessView {
 
 const MAX_WARNINGS: usize = 20;
 
-/// The warnings whose detail is written for the operator and withheld from the model - a line
-/// that quotes the model's own words or its numbers back. Spelled here because this crate sits
-/// below the daemon that names them.
-const WITHHELD: &[&str] = &["context_claim_repeated"];
+/// The warnings whose detail is written for the operator and withheld from the model: one quotes
+/// the model's own words back, and the rest are the daemon measuring itself - residency, the wall,
+/// a census. Spelled here because this crate sits below the daemon that names them.
+const WITHHELD: &[&str] = &[
+    "context_claim_repeated",
+    "auto_compact",
+    "memory_high",
+    "memory_creep",
+];
 
-/// What the view says in place of a withheld detail: the fact, and the reason there are no words.
-const WITHHELD_SAID: &str = "(withheld: this line quotes you and the fill back)";
+/// What the view says in place of a withheld detail: the fact, and that the numbers are the
+/// harness's own.
+const WITHHELD_SAID: &str =
+    "(withheld: this line carries the harness's own numbers, which are the operator's)";
 
 impl Tool for HarnessView {
     fn schema(&self) -> ToolSchema {

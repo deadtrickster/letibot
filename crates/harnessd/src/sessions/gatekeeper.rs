@@ -83,7 +83,7 @@ names, and that clone is removed when the review ends — so `git diff <base>...
 and nothing but the seat and the permission cards stands between it and this machine: it can run \
 anything the operator can, reach the operator's credentials and the whole filesystem, and a branch \
 under review may carry a test that does something destructive. The seat is read-only and its \
-`bash` calls are cards that come to YOUR head — a card nobody answers times out and the review \
+`bash` calls are cards the operator answers — a card nobody answers times out and the review \
 fails — but that is a boundary on ATTENTION, not a sandbox. `[queue] reviewers = \"vm\"` is the \
 answer for a project that wants the boundary instead.\n"
                 .to_string(),
@@ -94,8 +94,8 @@ Where your reviewers run: **on this machine, NOT in a VM** — this project asks
 the box's answer and not a choice this session can override, because a `firecode` placement this \
 box cannot honour would fail every review in the queue at once: a reviewer that cannot start is \
 written as a FAILED ATTEMPT on the row. So the reviewer runs here, in a checkout of the head it \
-judges, seats `gatekeeper` with `bash`, and its calls are permission cards that come to YOUR head. \
-The operator's remedy is a `firecode` on the daemon's PATH (or `$FIRECODE_BIN`) and a restart.\n"
+judges, seats `gatekeeper` with `bash`, and its calls are permission cards the operator answers, so a stalled review may be waiting on one. \
+A `firecode` on the daemon's PATH (or `$FIRECODE_BIN`) is the operator's remedy, with a restart.\n"
             ),
         }
     }
@@ -157,7 +157,7 @@ and not yours.\n\
 \n\
 If a row's child is gone and no verdict came of it, the row STAYS: the entry is still waiting for \
 a verdict, and the queue's own clock starts a new reviewer for it — so do not start one yourself. \
-Say on your own log what you found and leave the row where it is. `/queue approve`, `/queue veto` \
+Say in your reply what you found and leave the row where it is. `/queue approve`, `/queue veto` \
 and `/queue restart` are the operator's verbs, not yours.\n\
 \n\
 You may hold a plan of your own on this board like any other session — `todo_write` writes your \

@@ -108,9 +108,8 @@ pub(crate) fn killed_at_cap_words(step: &str, clause: &str, how: &str, leftover:
     format!(
         "{GATE_KILLED}: `{step}` was KILLED at the gate's memory cap ({clause}) — {how}.{left} It \
          ran out of the memory the gate gives a step, which says nothing about the code: the tip \
-         is UNJUDGED, not red. The cap is `[memory] gate` in providers.toml (unset, it is half of \
-         what is free when the gate starts); raise it — a size such as `gate = \"40G\"`, or a \
-         larger fraction of what is free — and gate it again"
+         is UNJUDGED, not red. Raising the cap is the operator's call — tell them; gate the tip \
+         again once they have"
     )
 }
 
