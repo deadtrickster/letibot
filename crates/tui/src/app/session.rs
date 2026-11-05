@@ -1211,6 +1211,7 @@ impl Link {
 /// - `closed`: the daemon's socket file is gone.
 /// - `gone`: the process has exited and been collected, by `waitpid(WNOHANG)` for this head's own child and
 ///   by `/proc` otherwise, a zombie counting as gone. The only observation that is *the daemon has gone*.
+///
 /// A bare `fs::metadata("/proc/{pid}")` test would report a stopped daemon as running, since a zombie keeps its
 /// directory until its parent waits. See [`crate::driver::Parentage`].
 #[derive(Debug, Clone, PartialEq, Eq)]

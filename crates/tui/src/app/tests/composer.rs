@@ -1668,8 +1668,8 @@ fn a_prompt_queued_behind_a_reseat_says_so() {
     assert!(!s.contains("queued behind"), "{s}");
 }
 
-/// A prompt typed while the daemon is still starting says it runs once the daemon has started
-/// - the rano "took ages and showed nothing but the queued prompt" report. The boot's
+/// A prompt typed while the daemon is still starting says it runs once the daemon has started,
+/// not "took ages and showed nothing but the queued prompt". The boot's
 /// steps are a line on the tail, never rows; `daemon_started` takes both away.
 #[test]
 fn a_prompt_typed_while_the_daemon_boots_says_it_runs_once_started() {
