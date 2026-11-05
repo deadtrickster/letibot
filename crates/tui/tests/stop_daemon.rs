@@ -7,7 +7,7 @@
 //! let _ = self.client.detach();
 //! ```
 //!
-//! - so whether the frame reached the socket was a race against the head's own shutdown,
+//! So whether the frame reached the socket was a race against the head's own shutdown,
 //! and a request is not an outcome.
 //!
 //! The frame is flushed and acknowledged (the peer hands the test the `stop` it read and answers `Accepted { note: "stopping" }`), or the
