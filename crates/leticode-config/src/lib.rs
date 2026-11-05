@@ -225,6 +225,7 @@
 //! in the `instructions` module and nowhere in `letibot-harnessd`, which is what
 //! keeps letibot a runtime and leticode the thing that reads.
 
+use letibot_tools::exec::boundary::{BoundaryConfig, Entry, Origin};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -477,6 +478,9 @@ pub struct LeticodeConfig {
     /// The `[github]` table - whether the reviewer seat posts, and where its token is. See
     /// [`GithubKeys`].
     pub github: GithubKeys,
+    /// The `[boundary]` table: what a command's view holds beyond the built-in list. Empty is
+    /// today's behaviour. See [`letibot_tools::exec::boundary`].
+    pub boundary: BoundaryConfig,
     /// Where this session goes when its model is out: model names, tried in order.
     /// A higher level's non-empty list replaces the whole list, because a list of models a
     /// session may answer on is one decision and not a set to union.
@@ -547,6 +551,96 @@ fn github_keys(value: &toml::Value) -> Result<GithubKeys, String> {
         post: t.post,
         token_path: t.token_path.as_deref().and_then(non_empty),
     })
+}
+
+/// The first line of `text` holding `needle`, 1-based; the table's own line when it is absent.
+fn line_of(text: &str, needle: &str) -> usize {
+    text.lines()
+        .position(|l| l.contains(needle))
+        .map_or(1, |i| i + 1)
+}
+
+/// `[boundary]` in a `leticode.toml`: four keys, each refused by name when misshapen. A string
+/// list is `grants_ro`, `grants_rw` and `hide`; `env` is a table of constants. Every entry keeps
+/// the file and line it came from, because a refusal later names them.
+fn boundary_keys(
+    value: &toml::Value,
+    path: &Path,
+    text: &str,
+    user: bool,
+) -> Result<BoundaryConfig, String> {
+    let keys = "the keys are `grants_ro`, `grants_rw`, `hide` (lists of paths) and `env` (a table of \
+                constants)";
+    let Some(table) = value.as_table() else {
+        return Err(format!(
+            "{}:{}: [boundary] is a table; {keys}",
+            path.display(),
+            line_of(text, "boundary")
+        ));
+    };
+    let at = |needle: &str| Origin {
+        file: path.to_path_buf(),
+        line: line_of(text, needle),
+        user,
+    };
+    let mut out = BoundaryConfig::default();
+    for (key, v) in table {
+        let list = |what: &str| -> Result<Vec<Entry<String>>, String> {
+            let bad = || {
+                format!(
+                    "{}:{}: [boundary] {what} is a list of path strings",
+                    path.display(),
+                    line_of(text, what)
+                )
+            };
+            v.as_array()
+                .ok_or_else(bad)?
+                .iter()
+                .map(|x| {
+                    let s = x.as_str().ok_or_else(bad)?;
+                    Ok(Entry {
+                        value: s.to_string(),
+                        from: at(&format!("\"{s}\"")),
+                    })
+                })
+                .collect()
+        };
+        match key.as_str() {
+            "grants_ro" => out.grants_ro = list("grants_ro")?,
+            "grants_rw" => out.grants_rw = list("grants_rw")?,
+            "hide" => out.hide = list("hide")?,
+            "env" => {
+                let Some(t) = v.as_table() else {
+                    return Err(format!(
+                        "{}:{}: [boundary] env is a table of NAME = \"value\"",
+                        path.display(),
+                        line_of(text, "env")
+                    ));
+                };
+                for (name, val) in t {
+                    let Some(val) = val.as_str() else {
+                        return Err(format!(
+                            "{}:{}: [boundary] env.{name} is a string",
+                            path.display(),
+                            line_of(text, name)
+                        ));
+                    };
+                    out.env.push(Entry {
+                        value: (name.clone(), val.to_string()),
+                        from: at(name),
+                    });
+                }
+            }
+            other => {
+                return Err(format!(
+                    "{}:{}: [boundary] `{other}` is not a key; {keys}",
+                    path.display(),
+                    line_of(text, other)
+                ));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// `[skills]` in a `leticode.toml`: the skills a session keeps in hand whatever it is
@@ -783,6 +877,10 @@ impl LeticodeConfig {
                 Some(v) => github_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
                 None => GithubKeys::default(),
             },
+            boundary: match &file.boundary {
+                Some(v) => boundary_keys(v, path, &text, level == Level::User)?,
+                None => BoundaryConfig::default(),
+            },
             fallback: match &file.fallback {
                 Some(v) => fallback_list(v).map_err(|why| format!("{}: {why}", path.display()))?,
                 None => Vec::new(),
@@ -885,6 +983,7 @@ impl LeticodeConfig {
             },
             skills: self.skills.overridden_by(&other.skills),
             github: self.github.overridden_by(&other.github),
+            boundary: self.boundary.overridden_by(&other.boundary),
             // Replaced, not joined: a project that names two models must not inherit a third.
             fallback: if other.fallback.is_empty() {
                 self.fallback.clone()
@@ -1048,6 +1147,9 @@ struct LeticodeConfigFile {
     /// for both levels; which level may start it is the merge's own rule, not this reader's.
     #[serde(default)]
     github: Option<toml::Value>,
+    /// The `[boundary]` table, see [`boundary_keys`].
+    #[serde(default)]
+    boundary: Option<toml::Value>,
     /// The fallback list and its budget, see [`fallback_list`] and [`fallback_timeouts`].
     /// Raw here so a value of the wrong shape is refused by name rather than by serde's
     /// message, which names the table and not the key the operator wrote.
@@ -1930,6 +2032,65 @@ mod tests {
         let path = write_file(&dir, "[github]\npostt = true\n");
         let err = LeticodeConfig::load(&path).unwrap_err();
         assert!(err.contains("postt") && err.contains("[github]"), "{err}");
+    }
+
+    /// `[boundary]` is read with the file and line of each entry, a project adds to the user's
+    /// and a misshapen key is refused with its line rather than defaulted.
+    #[test]
+    fn the_boundary_table_keeps_its_lines_and_a_project_adds_to_the_users() {
+        let dir = project_dir("boundary");
+        let path = write_file(
+            &dir,
+            "main_model = \"x\"\n[boundary]\ngrants_ro = [\"~/a\", \"~/b\"]\nhide = [\"~/c\"]\n\
+             [boundary.env]\nRUST_LOG = \"info\"\n",
+        );
+        let user = LeticodeConfig::load_as(&path, Level::User).expect("parses");
+        let ro: Vec<(&str, usize)> = user
+            .boundary
+            .grants_ro
+            .iter()
+            .map(|e| (e.value.as_str(), e.from.line))
+            .collect();
+        assert_eq!(ro, vec![("~/a", 3), ("~/b", 3)]);
+        assert!(user.boundary.grants_ro[0].from.user);
+        assert_eq!(user.boundary.env[0].value.0, "RUST_LOG");
+        assert_eq!(user.boundary.env[0].from.line, 6);
+
+        let dir = project_dir("boundary-project");
+        let path = write_file(&dir, "[boundary]\ngrants_ro = [\"~/b\", \"~/d\"]\n");
+        let project = LeticodeConfig::load(&path).expect("parses");
+        assert!(!project.boundary.grants_ro[0].from.user);
+        let merged = user.overridden_by(&project);
+        let all: Vec<&str> = merged
+            .boundary
+            .grants_ro
+            .iter()
+            .map(|e| e.value.as_str())
+            .collect();
+        assert_eq!(all, vec!["~/a", "~/b", "~/d"]);
+        assert!(LeticodeConfig::default().boundary.is_empty());
+    }
+
+    /// A file that does not parse as a boundary is a refusal with file and line, never an
+    /// empty config: an empty one is today's wide default.
+    #[test]
+    fn a_bad_boundary_table_is_refused_with_its_line() {
+        let dir = project_dir("boundary-bad");
+        for (body, want) in [
+            ("[boundary]\ngrants = [\"~/a\"]\n", "`grants` is not a key"),
+            ("[boundary]\ngrants_ro = \"~/a\"\n", "grants_ro is a list"),
+            ("[boundary]\nhide = [1]\n", "hide is a list"),
+            ("[boundary]\nenv = { A = 1 }\n", "env.A is a string"),
+            ("[boundary\nhide = []\n", "line 1"),
+        ] {
+            let path = write_file(&dir, body);
+            let err = LeticodeConfig::load(&path).unwrap_err();
+            assert!(err.contains(want), "{body:?}: {err}");
+            assert!(err.contains(&path.display().to_string()), "{err}");
+        }
+        let path = write_file(&dir, "[boundary]\nhide = []\ngrants = []\n");
+        let err = LeticodeConfig::load(&path).unwrap_err();
+        assert!(err.contains(":3:"), "{err}");
     }
 
     /// A fallback list is replaced, not grown. A project that names two models must not

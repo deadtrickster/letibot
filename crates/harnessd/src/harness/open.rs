@@ -704,28 +704,39 @@ impl Harness {
     }
 
     /// The view this machine's confined commands are threaded with: the shared builder over what
-    /// exists under the operator's home.
-    fn local_seat(cfg: &Config) -> letibot_tools::exec::seat::SeatView {
+    /// exists under the operator's home, plus `[boundary]`. A config that is refused refuses the
+    /// seat.
+    fn local_seat(cfg: &Config) -> Result<letibot_tools::exec::seat::SeatView, HarnessError> {
         use letibot_tools::exec::seat;
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default();
-        seat::seat_view(
-            &cfg.mode,
-            "this machine",
-            &seat::present_under(&home),
-            &home,
-        )
+        let r = crate::perimeter::resolved(&cfg.workspace, &home).map_err(HarnessError::Setup)?;
+        Ok(letibot_tools::exec::boundary::apply(
+            seat::seat_view(
+                &cfg.mode,
+                "this machine",
+                &seat::present_under(&home),
+                &home,
+            ),
+            &r,
+        ))
     }
 
-    /// The default seat's view: wide for a top-level session, tight for a child. The GitHub token
-    /// is asked for once, here, outside the boundary; a child never asks.
-    fn default_seat(cfg: &Config, hub: &Arc<Hub>) -> letibot_tools::exec::seat::SeatView {
+    /// The default seat's view: wide for a top-level session, tight for a child, with
+    /// `[boundary]` applied. The GitHub token is asked for once, here, outside the boundary; a
+    /// child never asks.
+    fn default_seat(
+        cfg: &Config,
+        hub: &Arc<Hub>,
+    ) -> Result<letibot_tools::exec::seat::SeatView, HarnessError> {
         use letibot_tools::exec::seat;
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default();
         let level = seat::Level::of(cfg.parent_session_id.as_deref());
+        // Refused before the token is asked for: a bad config opens nothing.
+        let r = crate::perimeter::resolved(&cfg.workspace, &home).map_err(HarnessError::Setup)?;
         // Asked once, here, outside the boundary. A child never asks.
         let token = match level {
             seat::Level::Wide => match seat::gh_auth_token() {
@@ -744,14 +755,15 @@ impl Harness {
             },
             seat::Level::Tight => None,
         };
-        seat::seat_for_level(
+        let view = seat::seat_for_level(
             level,
             &cfg.mode,
             "this machine",
             &seat::present_under(&home),
             &home,
             token.as_deref(),
-        )
+        );
+        Ok(letibot_tools::exec::boundary::apply(view, &r))
     }
 
     /// The default local seat for a `leticode` session: commands inside the seat's boundary over
@@ -769,7 +781,7 @@ impl Harness {
             "/",
             &cfg.workspace,
             confined_grants(cfg, cfg.landing_root.as_deref()),
-            Self::default_seat(cfg, hub),
+            Self::default_seat(cfg, hub)?,
         )
         .and_then(|b| b.with_cwd(&cfg.workspace));
         match built {
@@ -871,7 +883,7 @@ impl Harness {
             let built = HostBackend::confined_granting(
                 &cfg.workspace,
                 confined_grants(cfg, cfg.landing_root.as_deref()),
-                Self::local_seat(cfg),
+                Self::local_seat(cfg)?,
             );
             match built {
                 Ok(b) => b,
@@ -4527,5 +4539,41 @@ mod linux_wide_seat_tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `[boundary]` that does not parse, or asks for `~/.ssh`, refuses the session with the
+    /// file and line. It never opens the unconfigured view.
+    #[test]
+    fn a_boundary_config_that_is_refused_refuses_the_seat() {
+        for (n, body, want) in [
+            ("syntax", "[boundary\nhide = []\n", "leticode.toml"),
+            (
+                "ssh",
+                "[boundary]\ngrants_ro = [\"~/.ssh\"]\n",
+                "leticode.toml:2: [boundary] grants_ro",
+            ),
+        ] {
+            let dir = std::env::temp_dir().join(format!(
+                "letibot-boundary-refused-{n}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a fixture workspace");
+            std::fs::write(dir.join("leticode.toml"), body).expect("a config");
+            let mut cfg = Config::for_this_box(&dir);
+            cfg.seat = Seat::Leticode;
+            cfg.unconfined = true;
+            cfg.allow_bash = true;
+            cfg.session_id = format!("boundary-refused-{n}");
+            let hub = Hub::new(&cfg.session_id);
+            let registry = letibot_sessionlog::registry::Registry::new();
+            let placed = Harness::place_the_tools(&mut cfg, &hub, &registry);
+            hub.close();
+            match placed {
+                Ok(_) => panic!("{n}: a refused config opened a session"),
+                Err(e) => assert!(format!("{e}").contains(want), "{n}: {e}"),
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

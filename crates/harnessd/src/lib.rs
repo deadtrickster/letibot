@@ -62,6 +62,7 @@ pub mod notes_scope;
 pub mod offer_rows;
 pub mod operator_ask;
 pub mod oracle;
+pub mod perimeter;
 pub mod plugins;
 pub mod pr_watch;
 pub mod progress;
