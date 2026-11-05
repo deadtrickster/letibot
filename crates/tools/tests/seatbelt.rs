@@ -219,6 +219,35 @@ fn the_deny_list_is_unreadable_even_though_the_home_is_a_writable_part_of_the_vi
     assert_ne!(rc, 0, "the canary was readable");
 }
 
+/// `[boundary] hide` reaches the profile: a path in the view's `masked` list is denied inside a
+/// writable home, and a sibling is not.
+#[test]
+fn a_hidden_path_in_the_view_is_unreadable_and_its_sibling_is_not() {
+    let f = Fixture::new("hide");
+    let hidden = f.home().join("hidden-by-config");
+    let sibling = f.home().join("sibling");
+    for d in [&hidden, &sibling] {
+        std::fs::create_dir_all(d).expect("a fixture directory");
+        std::fs::write(d.join("f"), SECRET).expect("a fixture file");
+    }
+    let view = f.view().masking([hidden.clone()]);
+    let s = match Seatbelt::probe_with(view, Egress::Denied, vec![f.denied()]) {
+        Ok(s) => s,
+        Err(e) => panic!("the macOS boundary did not measure on this box: {e}"),
+    };
+    let (rc, out) = run_in(&s, &f.project(), &format!("cat {}/f", hidden.display()));
+    assert_ne!(rc, 0, "the hidden path was readable: {out}");
+    assert!(
+        !out.contains("letibot-fixture-line"),
+        "a secret got out: {out}"
+    );
+    let (rc, out) = run_in(&s, &f.project(), &format!("cat {}/f", sibling.display()));
+    assert_eq!(
+        rc, 0,
+        "a sibling of the hidden path is still in the view: {out}"
+    );
+}
+
 #[test]
 fn a_write_outside_the_checkout_is_refused() {
     let f = Fixture::new("outside");

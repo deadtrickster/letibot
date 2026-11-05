@@ -49,7 +49,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R74 | What the 2026-10-11 landings left open | Code work | item 20 (the rest of the report sink's sites, 18 of them routed), item 39 (a live gate on lubuntu1/2), item 40 (the inline blocks over 800 lines) |
 | R95 | A variable an earlier command assigned is unread in the next one | Code work, after the release | an `export` in one `bash` call still does not reach the next: the model's command is a one-shot spawn and `SessionEnv::observe` has no production caller; the stateful shell needs the deny-list of section 4j.5 |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | `Hub::turn_in_flight` (`crates/sessionlog/src/hub.rs:1632`) still reads the round, not `ends_turn`; a round with no calls followed by a nudge still says `true`; unclear: leticl's `:turn-finished` arm reading `ends_turn` is in another repo, check there |
-| R121 | What a command boundary holds is hardcoded and invisible | Code work | grants/env/hide as config with documented defaults, one candidate list for Linux and macOS, a `/boundary` view and `letibot boundary`, refusals that name the key, the top-level and default subagent perimeters as config, children narrow and widening is an ask |
+| R121 | What a command boundary holds is hardcoded and invisible | Code work | items 5-8 (perimeters as config, children narrow and widening is an ask, file tools obey the perimeter), item 3's probe line, item 4's tool refusals |
 | R124 | The package waiter exits on every provider stall | Code work | all of it: a `wait` option (or default) that rides over a stall while the request is open and still exits on rate limit, quota and timeout |
 | R105 | The work order after the 2026-11-01 review | Code work | step 4's four live facts on lab2x1, step 6's comment rule (486 blocks over three lines by `scripts/comment-blocks.py count`), step 8's two decisions (JS engine source, JS-side contract), step 9 (the backlog entries in this file) |
 | R114 | Embeddings as the second similarity tier, for every similarity caller | Code work | item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase case scored against the worst measured negative, the per-round cost on lab2x1 |
@@ -650,7 +650,7 @@ turn's end; a quota refusal still exits 40 at once; a test drives both.
 
 ## R121 - What a command boundary holds is hardcoded and invisible
 
-Status: OPEN, filed 2026-11-04 by the operator, parked until after the release. left: all of it.
+Status: OPEN, filed 2026-11-04 by the operator. Items 1 (grants_ro, grants_rw, hide, env), 2 and 3 are built on branch z-r121; 4 is built for paths. left: items 5-8, item 3's probe line, item 4's tool refusals. The macOS seatbelt suite passed on the Mac (22 tests, including the new hide test).
 
 The paths a confined command sees are two constant lists: `GRANT_CANDIDATES` in
 `crates/tools/src/exec/confine.rs` (`~/.cargo`, `~/.rustup`, `~/.local/bin`, mise's data and
@@ -701,6 +701,38 @@ it and cannot see it: the only account of the view is the manifest the model is 
    (they sit before the gate and can pass, rewrite, refuse or answer, and a rewrite is gated),
    so that one was harmless, but a session's file tools should reach its own `sessions/<id>/`
    and nothing else of letibot's store.
+
+Closed on z-r121 (docs/boundary-and-adjudication.md section 4m):
+
+- Item 1: `[boundary] grants_ro, grants_rw, hide, env` at both levels, a project adds to the user's,
+  `hide` is denied after every grant. Parser `boundary_keys` in `crates/leticode-config/src/lib.rs`
+  (test `the_boundary_table_keeps_its_lines_and_a_project_adds_to_the_users`, bad shapes
+  `a_bad_boundary_table_is_refused_with_its_line`), rules in `crates/tools/src/exec/boundary.rs`.
+  Never-grant list: `~/.ssh` and every fenced store, the home, `/` (`ssh_is_never_granted_by_any_spelling`).
+  Env deny-list: `boundary::env_refusal`, the one place (`env_refuses_secrets_and_loader_variables`).
+  Fail closed: `a_boundary_config_that_is_refused_refuses_the_seat` in `crates/harnessd/src/harness/open.rs`.
+  `gh` in the wide seat: `config_grants_and_hides_reach_the_seat_and_gh_stays`. Hide wins over a
+  grant in bwrap: `a_hidden_path_inside_a_grant_is_masked_after_the_bind`.
+- Item 2: `GRANT_CANDIDATES` is the one home-relative list; `TOOLCHAIN_UNDER_HOME` is gone. The Linux
+  view and a remote probe gain `.config/git`, which macOS already had.
+- Item 3: `/boundary` (`Slash::Boundary`) and `letibot boundary` (`crates/letibot/src/boundary.rs`) over
+  `crates/harnessd/src/perimeter.rs` (`the_view_shows_paths_hidden_and_env_without_the_token`).
+- Item 4: the absence note names `[boundary] grants_ro` / `grants_rw`, or says a never-granted path
+  has no key (`an_absence_note_names_the_boundary_key_or_says_none_grants_it`).
+
+Open:
+
+- `grants_rw` is the user file's alone: a project file is editable by a session, and a writable
+  grant is a widening. Operator ruling 2026-11-05: user file only, as built.
+- Item 3: the view does not print what the probe measured; it needs the live session's boundary.
+- Item 4: only a path is refused with the key. A tool outside the view is not.
+- Items 5-8 are untouched. A child reads the same `[boundary]` as its parent and nothing is passed
+  at spawn, so no child can be wider yet; the narrow-only rule and the widening ask have nothing to
+  attach to until perimeters are config. Secrets per perimeter (`GH_TOKEN` and the credential
+  helper) stay coded. Operator ruling 2026-11-05: keep them as coded, top-level only.
+- `load_user` in `leticode-config` reads the user file as `Level::Project`; `perimeter::load` uses
+  `load_as(.., Level::User)` instead. Left alone.
+- The R95 seam: `boundary::env_refusal` is the env deny-list. R95's carry-over should call it.
 
 ---
 

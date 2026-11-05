@@ -857,6 +857,32 @@ probe and never removed
 command can edit is not a policy), and `sandbox-exec` is deprecated - the day it goes, `probe` refuses
 by name and every session is refused with the `boundary_absent` sentence.
 
+## 4m. `[boundary]`: what a view holds, as config
+
+`[boundary]` in `~/.config/letibot/leticode.toml` and the project's `leticode.toml`. Both levels are
+read at every session open and unioned (a project adds to the user's). Nothing set is today's view.
+
+```toml
+[boundary]
+grants_ro = ["~/datasets"]           # a child's view reads it (a top-level seat already reads all)
+grants_rw = ["~/scratch"]            # writable too; the USER file only
+hide = ["~/.local/bin/some-tool"]    # denied after every grant, both seats, both levels
+env = { RUST_LOG = "info" }          # constants handed to every command
+```
+
+- Defaults are `GRANT_CANDIDATES` (`crates/tools/src/exec/confine.rs`): one home-relative list read
+  by the Linux view, the macOS profile and a remote probe. Absent paths are skipped.
+- Never granted, whatever config says: every store the seat fences (`secrets::STORES`, so `~/.ssh`
+  and everything under it), the letibot store and the shell profiles, plus the home itself and `/`.
+  `boundary::resolve` refuses the file with `file:line` and the key. A tight view reaches the home
+  only through a grant, so a grant of an ancestor would carry the stores in.
+- `env` refuses secrets and loader variables by name (`boundary::env_refusal`). Secrets travel by
+  the seat's own injection (`GH_TOKEN` stays top-level only).
+- A config that does not parse, or breaks a rule, refuses the session. It never opens the
+  unconfigured view.
+- `/boundary` in a head and `letibot boundary` draw what a command gets: paths with the key that
+  granted them, network, env (secrets redacted), hidden paths.
+
 ## 4l. The order the gate decides in
 
 `AdjudicatedGate::admit`, in order. Each arm is a rule, not an implementation detail:
