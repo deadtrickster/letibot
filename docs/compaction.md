@@ -232,13 +232,14 @@ prefix for a cold one - the thirteen minutes this document is about. The goal (b
 input) is served at the other end, where `max_inline_bytes` bounds the payload as it is produced, so it
 bounds *every* turn.
 
-### `prune`: ruled, not built
+### `prune`: built as `/prune`
 
-`prune` walks the message list backwards, skips the last two turns, protects the most recent 40,000
-tokens of tool calls, stops at the last summary, and then erases the OUTPUT of older tool calls in
-place, keeping the call and its arguments. It needs no model, so a re-prefill is its entire cost.
-
-Adopt, adapted - it is §4's first rung, not an alternative to it:
+The verb this section ruled on was another system's: walk the message list backwards, skip the last
+two turns, protect the most recent 40,000 tokens of tool calls, stop at the last summary, and erase
+the OUTPUT of older tool calls in place. Adopted, adapted - it is §4's first rung, not an alternative
+to it - and the protections are `evict::reduce`'s rather than a token budget: superseded reads,
+answered subagents and finished calls over `BODY_FLOOR` go as stubs; failures, the exchange in hand
+and anything a plan row names stay.
 
 1. **A fork, not an edit.** The ledger is a hash chain over rendered tokens (`LedgerRow::h_k`, and a
    replay that disagrees is `LedgerError::ChainMismatch`), so an in-place erasure is the thing the ledger
@@ -252,7 +253,10 @@ Adopt, adapted - it is §4's first rung, not an alternative to it:
    path spends two summary turns on: **a session whose prompt fills the window has no room to write a
    summary, and pruning needs no room to write.**
 
-Sized as its own verb (`/prune`) so it can run with no model behind it, and not scheduled.
+`/prune` is its own verb (`Harness::prune`, `crates/harnessd/src/harness/prune.rs`), runs with no
+model behind it, and reports to the wall controller as the fold it is. It refuses when nothing
+would leave, because the fork costs a cold re-prefill and a prune that changed nothing is that cost
+for nothing.
 
 ## 7. What landed, and what is open
 
@@ -295,12 +299,16 @@ Landed (`crates/turn/src/evict.rs` for the units, `crates/tools/src/recall.rs` f
   `crates/tools/src/builtins/recall.rs` (exact body, unknown id, a lost body, the bound following the
   window) and `crates/harnessd/src/harness/tests/recall.rs` (the base carries the map, and `recall`
   opens the body it names).
+- **`/prune` (§6).** `Harness::prune` runs the same evicter over the WHOLE conversation and forks
+  onto the reduced rows: every row carried, the oldest bodies stubbed, the map as the new base's
+  first item, the bodies in the spill store under ids `recall` opens. No summary turn runs, so the
+  verb works with no model behind it and at a wall with no room to write into. Tested in
+  `crates/harnessd/src/harness/tests/prune.rs`.
 
 Still open:
 
 - **Cache cost.** The reduced prompt is no longer a byte prefix of the live stream, so the
   summary turn on a local server reads cold. It is a smaller prompt, not a warm one.
-- **Standalone `prune`** (§6) is not built.
 
 Also open, honestly:
 

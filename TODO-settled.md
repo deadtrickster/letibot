@@ -7573,3 +7573,33 @@ terminal's git; the transcript and the model's view hold no escape codes; a test
 which merely starts with `-` in non-diff output (a `ls -l`, a flag list) is not painted.
 
 ---
+---
+
+## T15 — Replace §10's compaction design with structural eviction — **DONE 2026-11-05: eviction before every summary turn, the addressable map, `recall`, and the standalone `/prune` are all in**
+
+The entry as filed:
+
+`docs/compaction.md`. Compaction today bundles *reducing what is resident* (necessary)
+with *destroying what is recoverable* (an accident). Falsifier B removed the usual
+justification — quality does not degrade with depth — so the trigger is the context
+wall and memory pressure only.
+
+The key constraint that rules out the easy fix: **plain eviction invalidates the
+prefix just as summarisation does**, because the prefix *is* the old turns. Both cost
+a re-prefill, so the question is what to get for it. Answer: replace an evicted span
+with a **structured, addressable map** rather than prose, maintained incrementally so
+there is no stop-the-world summarisation call, with zoom-in appended via `recall`
+rather than rewritten in place.
+
+Depends on nothing. Feeds `docs/memory.md`. Gives `SegmentMark` its missing producer.
+
+Where it stands: structural eviction runs before every summary turn
+(`crates/turn/src/evict.rs`, test `crates/turn/tests/evict_summary.rs`); the new base carries one
+line per unit and `recall id=<id>` returns the body exactly (`crates/tools/src/recall.rs`, end to
+end in `crates/harnessd/src/harness/tests/recall.rs`); and §6's standalone `/prune` is
+`Harness::prune` (`crates/harnessd/src/harness/prune.rs`) behind the daemon's own `/prune` verb —
+the same evicter over the whole conversation, the bodies to the spill store, a fork whose lead
+carries the map, no model behind it. `docs/compaction.md` §7 carries the halves that stay open
+(the cold-cache cost of a reduced prompt, map labelling).
+
+settled: eviction, map and `recall` on main; the standalone `/prune` 8a39bd19 + cc10b3c6

@@ -49,7 +49,6 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R74 | What the 2026-10-11 landings left open | Code work | item 20 (the rest of the report sink's sites, 18 of them routed), item 39 (a live gate on lubuntu1/2), item 40 (the inline blocks over 800 lines) |
 | R95 | A variable an earlier command assigned is unread in the next one | Code work, after the release | an `export` in one `bash` call still does not reach the next: the model's command is a one-shot spawn and `SessionEnv::observe` has no production caller; the stateful shell needs the deny-list of section 4j.5 |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | `Hub::turn_in_flight` (`crates/sessionlog/src/hub.rs:1632`) still reads the round, not `ends_turn`; a round with no calls followed by a nudge still says `true`; unclear: leticl's `:turn-finished` arm reading `ends_turn` is in another repo, check there |
-| T15 | Replace section 10's compaction design with structural eviction | Code work | a standalone `prune` |
 | R121 | What a command boundary holds is hardcoded and invisible | Code work | grants/env/hide as config with documented defaults, one candidate list for Linux and macOS, a `/boundary` view and `letibot boundary`, refusals that name the key, the top-level and default subagent perimeters as config, children narrow and widening is an ask |
 | R124 | The package waiter exits on every provider stall | Code work | all of it: a `wait` option (or default) that rides over a stall while the request is open and still exits on rate limit, quota and timeout |
 | R105 | The work order after the 2026-11-01 review | Code work | step 4's four live facts on lab2x1, step 6's comment rule (486 blocks over three lines by `scripts/comment-blocks.py count`), step 8's two decisions (JS engine source, JS-side contract), step 9 (the backlog entries in this file) |
@@ -629,39 +628,6 @@ Heads: this one reads it in `turn_busy` and the bridge gates `Turn::Idle` on it.
 the guess this row warned about**: a round that proposed NO calls but is followed by a nudge or a
 steering round still says `true`, so the flicker survives there — only a marker at the convergence
 point could remove it. `Hub::turn_in_flight` is unchanged and still reads the round, not the field.
-
----
-
-## T15 - Replace §10's compaction design with structural eviction
-
-**Status:** partly landed - structural eviction of units runs before every summary turn, the addressable map is in the new base, `recall` opens any id it names, and section 10 of the plan reads structural eviction. left: a standalone `prune`.
-
-`docs/compaction.md`. Compaction today bundles *reducing what is resident* (necessary)
-with *destroying what is recoverable* (an accident). Falsifier B removed the usual
-justification — quality does not degrade with depth — so the trigger is the context
-wall and memory pressure only.
-
-The key constraint that rules out the easy fix: **plain eviction invalidates the
-prefix just as summarisation does**, because the prefix *is* the old turns. Both cost
-a re-prefill, so the question is what to get for it. Answer: replace an evicted span
-with a **structured, addressable map** rather than prose, maintained incrementally so
-there is no stop-the-world summarisation call, with zoom-in appended via `recall`
-rather than rewritten in place.
-
-Depends on nothing. Feeds `docs/memory.md`. Gives `SegmentMark` its missing producer.
-
-— PARTLY LANDED: the record is sized by the room and gated on what it kept, and the tail keeps the
-old turns most relevant to the plan (embedding relevance). Structural eviction of units runs before
-every summary turn (`crates/turn/src/evict.rs`, test `crates/turn/tests/evict_summary.rs`):
-superseded reads, settled subagents and finished calls go as stubs, and failures, the exchange in
-hand and anything a plan row names stay. Each unit is kept before it goes, under the id the map
-prints, in the session's spill store; the new base carries one line per unit under the record
-(`evict::map_text`, written by `Harness::fork_onto`), and `recall id=<id>` returns that body
-exactly, bounded to an eighth of the window (`crates/tools/src/recall.rs`, seats on every role that
-can be compacted). An id the map never named is refused by name, listing the ids it does have.
-Tested end to end in `crates/harnessd/src/harness/tests/recall.rs`. §10 of the plan
-(`docs/implementation-plan.md:215-224`) now reads *structural eviction*. OPEN: a standalone `prune`
-(`docs/compaction.md` §6, its own `/prune` verb, no model behind it).
 
 ---
 
