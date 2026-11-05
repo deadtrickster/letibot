@@ -972,7 +972,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 if n == 0 {
                     return Err(
                         "--reviewers-at-once: 0 would claim no review at all, which is a queue \
-                         nobody can tell from a broken one — the smallest number that means \
+                         nobody can tell from a broken one - the smallest number that means \
                          anything is 1"
                             .to_string(),
                     );
@@ -1008,7 +1008,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 }
                 if out.is_empty() {
                     return Err(
-                        "--reviewer-hosts: an empty list — name the machines a reviewer may use \
+                        "--reviewer-hosts: an empty list - name the machines a reviewer may use \
                          (`local` for this one), or leave the flag out for this machine only"
                             .to_string(),
                     );
@@ -3633,6 +3633,15 @@ mod tests {
         let mut asked = Config::for_the_daemon("/tmp");
         asked.allow_vm_reviewers();
         assert_eq!(asked.reviewers, crate::config::Reviewers::Vm);
+    }
+
+    /// Reviewers stay on this machine unless `reviewer_hosts` is set (D18): a fixture and a
+    /// daemon both start with the pool `["local"]`.
+    #[test]
+    fn a_fixture_and_a_daemon_keep_reviewers_on_this_machine_unless_hosts_are_named() {
+        let only = Some(vec!["local".to_string()]);
+        assert_eq!(Config::for_this_box("/tmp").reviewer_hosts, only);
+        assert_eq!(Config::for_the_daemon("/tmp").reviewer_hosts, only);
     }
 
     /// `--reviewers` is parsed, both spellings, and it wins over the file - the flag

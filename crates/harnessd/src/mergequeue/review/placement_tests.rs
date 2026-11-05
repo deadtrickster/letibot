@@ -1,10 +1,6 @@
-//! **Where a reviewer is placed, now that the placement fans out** — a declared host, the per-host
-//! cap, and what happens when a machine refuses.
-//!
-//! Every test here goes through the real [`serve`] with a real store, a real desk and a runner that
-//! records the [`TaskSpec`] it was handed. Nothing is spawned and no machine is touched: the pool's
-//! facts are installed (`ReviewHosts::set_spare`) and `$LETIBOT_HOSTS` names a file of this test's
-//! own, so a test can say *lab2x1 has thirty-one spare cores* without a lab2x1.
+//! Where a reviewer is placed under fan-out: a declared host, the per-host cap, and a refusing
+//! machine. Real `serve`, store and desk; the runner records the `TaskSpec` and the pool's facts
+//! are installed, so no machine is touched.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -50,7 +46,7 @@ impl Started {
     }
 }
 
-/// **A runner that records and answers a handle per start** — and, when `fail_first` is set, whose
+/// **A runner that records and answers a handle per start** - and, when `fail_first` is set, whose
 /// FIRST child dies at its open with the sentence a remote placement gives.
 struct Recorder {
     started: Arc<Started>,
@@ -69,7 +65,7 @@ impl TaskRunner for Recorder {
             return TaskStatus::Failed {
                 why: format!(
                     "placing this session on lab2x1: ssh exited 255, which is a connection or \
-                     authentication failure and never a remote command's own status — \
+                     authentication failure and never a remote command's own status - \
                      ssh: connect to host lab2x1 port 22: No route to host"
                 ),
             };
@@ -125,16 +121,9 @@ fn claimed(dir: &TempDir) -> (Store, std::path::PathBuf, String) {
     (store, repo, head)
 }
 
-/// **A reviewer placed on a declared host is a `where: \"host:NAME\"` child** — the same door a
-/// `task` child takes — and the tree it judges travels with it.
-///
-/// Three assertions, and each fails if the arm goes back to running everything here:
-/// * the spec's placement is `Remote("lab2x1")`, which is what makes the child's whole seat that
-///   machine's (its `bash`, `read`, `grep`, jobs and confinement probe are `SshBackend`'s);
-/// * `vm_source` is the queue's own clone, whose detached HEAD is the row's `head_sha` — so
-///   `SshBackend::place` bundles THAT commit and never the operator's checkout or `main`'s tip;
-/// * there is no `worktree` and the prompt names no path, because on that machine the reviewer's
-///   own workspace IS the checkout and a path from here would name one it does not have.
+/// A reviewer placed on a declared host is a `where: "host:NAME"` child, and the tree it judges
+/// travels with it: placement is `Remote("lab2x1")`, `vm_source` is the queue's own clone at
+/// `head_sha`, and there is no `worktree` and no path in the prompt.
 #[test]
 fn a_reviewer_on_a_declared_host_is_a_remote_child_at_the_head_it_judges() {
     let _hosts = HostsFile::with(&["lab2x1"]);
@@ -182,7 +171,7 @@ fn a_reviewer_on_a_declared_host_is_a_remote_child_at_the_head_it_judges() {
     assert_eq!(
         spec.placement,
         Placement::Remote("lab2x1".into()),
-        "the child's whole seat runs there — the `where: \"host:NAME\"` door, reused"
+        "the child's whole seat runs there - the `where: \"host:NAME\"` door, reused"
     );
     let source = spec
         .vm_source
@@ -212,7 +201,7 @@ fn a_reviewer_on_a_declared_host_is_a_remote_child_at_the_head_it_judges() {
     let prompt = started.prompts().remove(0);
     assert!(
         !prompt.contains(&dir.0.join(CLONES_DIR).display().to_string()),
-        "the prompt names no path — on that machine the reviewer's own workspace IS the checkout: \
+        "the prompt names no path - on that machine the reviewer's own workspace IS the checkout: \
          {prompt}"
     );
     assert!(
@@ -228,12 +217,8 @@ fn a_reviewer_on_a_declared_host_is_a_remote_child_at_the_head_it_judges() {
     );
 }
 
-/// **The per-host cap refuses a second reviewer on the same box, and the row waits rather than
-/// failing** — one reviewer's build must not eat a machine another reviewer needs, and a queue with
-/// no free slot has not tried and failed.
-///
-/// `lab2x1` is given four spare cores, which is room for exactly one reviewer. The first goes
-/// there; the second finds this machine with no spare too (installed as `0.0`) and waits.
+/// The per-host cap refuses a second reviewer on the same box, and the row waits instead of
+/// failing. `lab2x1` has room for exactly one; this machine has no spare, so the second waits.
 #[test]
 fn the_per_host_cap_puts_the_second_reviewer_in_line_instead_of_on_the_same_box() {
     let _hosts = HostsFile::with(&["lab2x1"]);
@@ -317,7 +302,7 @@ fn the_per_host_cap_puts_the_second_reviewer_in_line_instead_of_on_the_same_box(
         two.failure
     );
     assert_eq!(two.attempts, 0, "nothing was tried and failed: {two:?}");
-    // **And the wait is held, not claimed every two seconds** — the queue's own gate on it.
+    // **And the wait is held, not claimed every two seconds** - the queue's own gate on it.
     assert!(
         capacity::held_until(&two.failure, two.deadline_ms, now_ms()),
         "a row waiting for a reviewer slot is not claimed again until its not-before time"
@@ -325,15 +310,8 @@ fn the_per_host_cap_puts_the_second_reviewer_in_line_instead_of_on_the_same_box(
     assert_eq!(started.specs().len(), 1, "one child was started, not two");
 }
 
-/// **A reviewer that handed its verdict in frees the place it held** — the leak this test exists
-/// against, and it was a real one: the first cut freed a place at each place a reviewer ENDED and
-/// missed the one ending EVERY successful review takes (a verdict at the desk), so each completed
-/// review held a place for the life of the daemon and the pool ran down to nothing while the queue
-/// went on claiming. A queue that stops is worse than the one this change set out to speed up.
-///
-/// Nothing here is asserted by hand: `serve` starts the reviewer, the desk takes the verdict the
-/// way a reviewer hands one in, and the next `serve` collects it — and then the pool is asked what
-/// it has room for.
+/// A reviewer that handed its verdict in frees the place it held. `serve` starts it, the desk
+/// takes the verdict, the next `serve` collects it, and then the pool is asked what it has room for.
 #[test]
 fn a_verdict_frees_the_place_the_reviewer_held() {
     use letibot_tools::gatekeeper::{Decision, LookedAt, Submission};
@@ -380,7 +358,7 @@ fn a_verdict_frees_the_place_the_reviewer_held() {
         "the one place is taken while the reviewer is running"
     );
 
-    // **The reviewer hands its verdict in** — the desk is the only door one goes through.
+    // **The reviewer hands its verdict in** - the desk is the only door one goes through.
     desk.submit(
         child,
         Submission {
@@ -405,7 +383,7 @@ fn a_verdict_frees_the_place_the_reviewer_held() {
     assert_eq!(
         machines.capacity(Some(&["lab2x1".to_string()])),
         1,
-        "and the place it held is free again — a second review of a fourteen-row queue must be \
+        "and the place it held is free again - a second review of a fourteen-row queue must be \
          able to go to the same machine"
     );
     assert!(
@@ -414,13 +392,9 @@ fn a_verdict_frees_the_place_the_reviewer_held() {
     );
 }
 
-/// **A host that cannot be reached falls back to this machine, and says so** — the operator's rule:
-/// *"the queue must not go red because a machine was rebooting"*.
-///
-/// The first reviewer is placed on `lab2x1` and dies at its open with the sentence
-/// `SshBackend::place` gives (`placing this session on lab2x1: …`). Nothing is counted against the
-/// row, the host is out for the rest of the pass, and a second reviewer is started HERE with a
-/// `worktree` — and the move, and the warning, name the machine.
+/// A host that cannot be reached falls back to this machine, and says so. The first reviewer
+/// fails at its open on `lab2x1`, nothing is counted against the row, and a second one starts
+/// HERE with a `worktree`. The move and the warning name the machine.
 #[test]
 fn a_host_that_refused_the_placement_is_left_out_and_the_review_runs_here() {
     let _hosts = HostsFile::with(&["lab2x1"]);
@@ -464,10 +438,8 @@ fn a_host_that_refused_the_placement_is_left_out_and_the_review_runs_here() {
         reviewer_hosts: Some(vec!["lab2x1".to_string(), "local".to_string()]),
         slots: &Vec::new,
     };
-    // **One pass does it, and that is the point of the fallback being in the COLLECT half**: the
-    // reviewer that goes to the host is opened at the desk in the same pass, its open fails, and
-    // the review is started again here before the pass ends — so a machine that is down costs one
-    // pass and no attempt, not a wait for a deadline.
+    // One pass does it: the host's reviewer fails at its open and the review starts again here
+    // before the pass ends, so a down machine costs one pass and no attempt.
     let served = serve(&pool).expect("a pass");
     assert_eq!(served.started, 1, "one reviewer was started on the host");
     let row = store.review_row("the-review").unwrap().unwrap();
@@ -522,12 +494,8 @@ fn a_host_that_refused_the_placement_is_left_out_and_the_review_runs_here() {
             .any(|(c, d)| c == "queue_reviewer_fell_back" && d.contains("lab2x1")),
         "the operator is told once, by name: {said:?}"
     );
-    // **And it is a reviewer the queue can HEAR** — the desk still holds it, and a verdict it hands
-    // in is taken. This is the assertion the first cut was missing: the fallback opens its desk entry
-    // from inside the collect loop, AFTER the list of live children was taken, so a fallback left off
-    // that list had its entry closed in the same pass that opened it. It then ran a whole review,
-    // called `review_verdict`, and was refused with *"is not reviewing an entry of the merge queue"*
-    // — a fallback nobody can hear, spending the three attempts and then blocking.
+    // And the fallback is a reviewer the queue can hear: the desk still holds it, and a verdict it
+    // hands in is taken. It is opened from inside the collect loop, after the live list was taken.
     let child = row.reviewer.clone().expect("the row names its reviewer");
     assert!(
         desk.is_open_for("the-review"),
@@ -560,16 +528,58 @@ fn a_host_that_refused_the_placement_is_left_out_and_the_review_runs_here() {
     assert_eq!(
         store.review_row("the-review").unwrap().unwrap().state,
         ReviewState::Approved,
-        "and the review ends on it — the fallback's verdict is the queue's"
+        "and the review ends on it - the fallback's verdict is the queue's"
     );
 
-    // **And the pass that used it is the pass that clears it** — `end_pass` is the queue's promise
-    // that a reboot is minutes, so a host that failed here is tried again next time. That the
-    // FAILURE removes it from the rest of ITS pass is `hosts::tests`'
-    // `a_host_that_said_no_is_skipped_this_pass_and_asked_again_next_one`, which is where a second
-    // row in one pass can be staged.
+    // The pass that used a failed host clears it (`end_pass`). That the failure removes it from the
+    // rest of ITS pass is `hosts::tests`' `a_host_that_said_no_is_skipped_this_pass_and_asked_again_next_one`.
     assert!(
         machines.down(Some("lab2x1")).is_none(),
         "the pass is over, so nothing is held against the machine"
     );
+}
+
+/// Without `reviewer_hosts` the pool is this machine alone: a declared host with all the spare in
+/// the world is never used, and the reviewer works in the clone here (D18).
+#[test]
+fn by_default_a_reviewer_stays_on_this_machine_whatever_hosts_are_declared() {
+    let _hosts = HostsFile::with(&["lab2x1"]);
+    let dir = TempDir::new("review-stays-here");
+    let (store, _repo, _head) = claimed(&dir);
+
+    let machines = ReviewHosts::new();
+    machines.set_spare(Some("lab2x1"), Some(31.9), None);
+    machines.set_spare(None, Some(0.5), None);
+    let started = Arc::new(Started::default());
+    let runner = Recorder {
+        started: started.clone(),
+        fail_first: false,
+    };
+    let desk = ReviewDesk::new();
+    let events = |_: SessionEvent| {};
+    let settings = |_: &Path| Ok(QueueSettings::default());
+    let pool = Pool {
+        store: &store,
+        runner: &runner,
+        desk: &desk,
+        host: HOST,
+        me: ME,
+        placement: ReviewerPlacement::Host,
+        events: &events,
+        warn: &|_: &str, _e| {},
+        deliver: &|_: &str, _: &str| Ok(String::new()),
+        settings: &settings,
+        clones: dir.0.join(CLONES_DIR),
+        live: &|_: &str| true,
+        reviewer_skills: &[],
+        machines,
+        reviewer_hosts: QueueSettings::default().reviewer_hosts,
+        slots: &Vec::new,
+    };
+    assert_eq!(serve(&pool).expect("a pass").started, 1);
+
+    let spec = started.specs().remove(0);
+    assert_ne!(spec.placement, Placement::Remote("lab2x1".into()));
+    assert!(spec.worktree.is_some(), "it works in the clone here");
+    assert!(spec.vm_source.is_none());
 }

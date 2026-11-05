@@ -126,20 +126,20 @@ pub struct QueueEnv {
     pub reviewer_start_grace_ms: u64,
     /// **How long a worker sleeps after a pass with nothing to do.**
     pub idle: Duration,
-    /// **`--reviewers-at-once`, when the daemon's command line named one** — the outermost of the
+    /// **`--reviewers-at-once`, when the daemon's command line named one** - the outermost of the
     /// three places the number comes from (flag, project file, the pool's own capacity).
     pub reviewers_at_once: Option<usize>,
-    /// **What the machines a `host` reviewer may use can take** — this daemon's pool
+    /// **What the machines a `host` reviewer may use can take** - this daemon's pool
     /// (`review::hosts::ReviewHosts`), shared with the review pool so the per-host cap counts every
     /// reviewer this daemon has running. Read from the last probe, never by waiting for one.
     pub hosts: Arc<crate::mergequeue::review::hosts::ReviewHosts>,
-    /// **Which machines that pool is** — [`crate::config::Config::reviewer_hosts`], where `None` is
+    /// **Which machines that pool is** - [`crate::config::Config::reviewer_hosts`], where `None` is
     /// *every host the operator declared, plus this machine*.
     pub reviewer_hosts: Option<Vec<String>>,
 }
 
 impl QueueEnv {
-    /// **How many reviewers the pool can take right now** — the pool's own answer for the machines
+    /// **How many reviewers the pool can take right now** - the pool's own answer for the machines
     /// this daemon may use, and it never touches the network: a snapshot that is stale is refreshed
     /// on another thread.
     pub fn review_capacity(&self) -> usize {
@@ -1071,12 +1071,8 @@ impl RepoQueue {
             .iter()
             .filter(|r| r.state == ReviewState::Reviewing)
             .count();
-        // **How many reviews this queue runs at once, for the placement it runs them in**
-        // ([`super::capacity::review_limit`]): a `vm` queue keeps the box's VM-slot count, and a
-        // `host` queue takes what its machines can take — the project's own number when it named
-        // one, else the pool's. The default used to be `MAX_REVIEWING` for every project, which
-        // was a fact about firecode's taps being asked of a local subagent reading a local clone:
-        // MEASURED 2026-10-29, two reviewers ran and fourteen rows waited.
+        // Reviews this queue runs at once for its placement ([`super::capacity::review_limit`]): `vm`
+        // keeps the VM-slot count, `host` takes the project's number, else the pool's.
         let limit = super::capacity::review_limit(
             settings.reviewers,
             self.env.reviewers_at_once.or(settings.reviewers_at_once),

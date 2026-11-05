@@ -235,24 +235,8 @@ pub(crate) fn env_with_desk(
         settings,
         desk,
         crate::mergequeue::review::hosts::ReviewHosts::new(),
+        Some(vec!["local".to_string()]),
     )
-}
-
-/// The same env with the POOL named, for a test whose answer depends on how many reviewers this
-/// machine can take.
-///
-/// **A test that asserts a number of reviewers must install the facts**, not read the box's: the
-/// local machine's capacity is `min(PER_HOST_MAX, floor(max(cores, 4) / 4))`, which is four on a
-/// sixteen-core box, three on twelve and two on ten. A fixture that said *four* without installing
-/// anything would be asserting what the machine running it happens to have.
-pub(crate) fn env_with_hosts(
-    gate: Arc<dyn GateRunner>,
-    door: Arc<Door>,
-    who: &str,
-    settings: QueueSettings,
-    hosts: Arc<crate::mergequeue::review::hosts::ReviewHosts>,
-) -> Arc<QueueEnv> {
-    env_with_desk_and_hosts(gate, door, who, settings, None, hosts)
 }
 
 /// Both, for a test that needs a desk to ask AND a pool whose facts it installed.
@@ -263,6 +247,7 @@ fn env_with_desk_and_hosts(
     settings: QueueSettings,
     desk: Option<Arc<letibot_tools::builtins::verdict::ReviewDesk>>,
     hosts: Arc<crate::mergequeue::review::hosts::ReviewHosts>,
+    reviewer_hosts: Option<Vec<String>>,
 ) -> Arc<QueueEnv> {
     Arc::new(QueueEnv {
         me: me(who),
@@ -276,7 +261,7 @@ fn env_with_desk_and_hosts(
         reviewer_start_grace_ms: REVIEWER_START_GRACE_MS,
         reviewers_at_once: None,
         hosts,
-        reviewer_hosts: Some(vec!["local".to_string()]),
+        reviewer_hosts,
         idle: Duration::from_millis(50),
     })
 }
@@ -327,18 +312,25 @@ impl World {
         settings: QueueSettings,
         desk: Option<Arc<letibot_tools::builtins::verdict::ReviewDesk>>,
     ) -> RepoQueue {
-        self.worker_in_and_holding(gate, who, settings, desk, crate::mergequeue::review::hosts::ReviewHosts::new())
+        self.worker_in_and_holding(
+            gate,
+            who,
+            settings,
+            desk,
+            crate::mergequeue::review::hosts::ReviewHosts::new(),
+            Some(vec!["local".to_string()]),
+        )
     }
-    /// The same worker, in a pool whose facts the caller installed — for a test that asserts a
-    /// NUMBER of reviewers, which must not be the number the box running it happens to have.
+    /// The same worker, in a pool whose facts and machines the caller named.
     fn worker_in(
         &self,
         gate: Arc<dyn GateRunner>,
         who: &str,
         settings: QueueSettings,
         hosts: Arc<crate::mergequeue::review::hosts::ReviewHosts>,
+        reviewer_hosts: Option<Vec<String>>,
     ) -> RepoQueue {
-        self.worker_in_and_holding(gate, who, settings, None, hosts)
+        self.worker_in_and_holding(gate, who, settings, None, hosts, reviewer_hosts)
     }
     /// Both, for a test that needs a desk to ask AND a pool whose facts it installed.
     fn worker_in_and_holding(
@@ -348,8 +340,17 @@ impl World {
         settings: QueueSettings,
         desk: Option<Arc<letibot_tools::builtins::verdict::ReviewDesk>>,
         hosts: Arc<crate::mergequeue::review::hosts::ReviewHosts>,
+        reviewer_hosts: Option<Vec<String>>,
     ) -> RepoQueue {
-        let env = env_with_desk_and_hosts(gate, self.door.clone(), who, settings, desk, hosts);
+        let env = env_with_desk_and_hosts(
+            gate,
+            self.door.clone(),
+            who,
+            settings,
+            desk,
+            hosts,
+            reviewer_hosts,
+        );
         let store = self.store();
         assert!(matches!(
             store
@@ -427,16 +428,9 @@ fn run(q: &RepoQueue, passes: usize) {
 
 // ===== How many reviewers at once =====
 
-/// **The claim limit belongs to the placement, and the queue obeys the number it is given** — the
-/// defect this is written against: `MAX_REVIEWING` was two for every project, a fact about the
-/// box's firecode taps, so fourteen rows waited behind two readers on a machine with thirty-two
-/// spare cores next door. MEASURED 2026-10-29.
-///
-/// Three assertions, and they are the three ways the number is arrived at
-/// (`capacity::review_limit`): the project's `reviewers_at_once` is honoured; a `vm` queue keeps
-/// the VM-slot count whatever the project says; and a `host` queue with no number of its own
-/// claims what its machines can take, which for a fixture's pool of this machine alone is
-/// `PER_HOST_MAX` rather than two.
+/// The claim limit belongs to the placement: the project's `reviewers_at_once` is honoured, a `vm`
+/// queue keeps the VM-slot count, a `host` queue on this machine alone claims the old fixed number,
+/// and with `reviewer_hosts` set it claims what the declared hosts can take.
 #[test]
 fn a_host_queue_claims_its_own_number_of_reviews_and_a_vm_queue_keeps_the_vm_slots() {
     use crate::mergequeue::settings::Reviewers;
@@ -448,7 +442,7 @@ fn a_host_queue_claims_its_own_number_of_reviews_and_a_vm_queue_keeps_the_vm_slo
         w.enqueue(&name, &wt, &base, &head);
     }
     // **A function and not a closure**: a closure here captured the FIRST world, and the shadowed
-    // `w` below is a different binding — it counted another repository's rows and answered zero.
+    // `w` below is a different binding - it counted another repository's rows and answered zero.
     fn reviewing(w: &World) -> usize {
         w.store()
             .review_rows(Some(&w.key()))
@@ -458,7 +452,7 @@ fn a_host_queue_claims_its_own_number_of_reviews_and_a_vm_queue_keeps_the_vm_slo
             .count()
     }
 
-    // **A number the project named** — three, on a queue that would otherwise take four here.
+    // **A number the project named** - three, on a queue that would otherwise take four here.
     let q = w.worker_with(
         Arc::new(GreenGate),
         "at-once",
@@ -494,11 +488,8 @@ fn a_host_queue_claims_its_own_number_of_reviews_and_a_vm_queue_keeps_the_vm_slo
         "a `vm` queue claims exactly what it always did"
     );
 
-    // **A `host` queue with no number of its own** takes what its machines can take — and the
-    // machine's facts are INSTALLED, because the number this asserts must be the one the pool was
-    // given and not the one the box running the test happens to have. `min(4, floor(16 / 4))` is
-    // four on any machine; reading the real cores would be four only on a sixteen-core box, three
-    // on a twelve-core one and two on a ten-core one — a test asserting the runner, not the change.
+    // A `host` queue on the default pool (this machine alone) claims the old fixed number,
+    // whatever the box's cores: reviewers stay here, unchanged.
     let w = World::new("reviewers-at-once-default");
     for i in 0..5 {
         let name = format!("b{i}");
@@ -512,12 +503,39 @@ fn a_host_queue_claims_its_own_number_of_reviews_and_a_vm_queue_keeps_the_vm_slo
         "at-once-default",
         QueueSettings::default(),
         hosts,
+        Some(vec!["local".to_string()]),
     );
     run(&q, 1);
     assert_eq!(
         reviewing(&w),
-        crate::mergequeue::capacity::PER_HOST_MAX,
-        "the pool's own capacity, not the two a VM queue would take"
+        crate::mergequeue::serve::MAX_REVIEWING,
+        "this machine alone claims what a queue always did"
+    );
+
+    // With `reviewer_hosts` set, the claim is what the declared hosts and this machine can take:
+    // two machines of four places each, so all five rows are claimed.
+    let _file = crate::mergequeue::review::hosts::tests::HostsFile::with(&["lab2x1"]);
+    let w = World::new("reviewers-at-once-fan-out");
+    for i in 0..5 {
+        let name = format!("b{i}");
+        let (wt, base, head) = branch(&w.repo, &name, &format!("{name}.txt"));
+        w.enqueue(&name, &wt, &base, &head);
+    }
+    let hosts = crate::mergequeue::review::hosts::ReviewHosts::new();
+    hosts.set_spare(None, Some(16.0), None);
+    hosts.set_spare(Some("lab2x1"), Some(16.0), None);
+    let q = w.worker_in(
+        Arc::new(GreenGate),
+        "at-once-fan-out",
+        QueueSettings::default(),
+        hosts,
+        Some(vec!["lab2x1".to_string(), "local".to_string()]),
+    );
+    run(&q, 1);
+    assert_eq!(
+        reviewing(&w),
+        5,
+        "more than one machine's four places: the reviewers fan out"
     );
 }
 

@@ -1,8 +1,6 @@
 //! A reviewer that could not be PLACED for want of a free VM slot is not an attempt - and
-//! the words a review that stops for a person says about why.
-//!
-//! The limit belongs to the placement: [`review_limit`] is a `vm` queue's VM slots, exactly as
-//! before, and a `host` queue's own number (`reviewers_at_once`, else what its machines can take).
+//! the words a review that stops for a person says about why. [`review_limit`] is the claim limit
+//! for a placement.
 
 use letibot_tokencore::store::QueueTransition;
 use letibot_transcript::text::clip_chars;

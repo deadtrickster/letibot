@@ -1,20 +1,13 @@
-//! **The pool of machines a reviewer may go to** — what it counts, whom it picks, and what it does
-//! when a machine says no.
-//!
-//! Every test here installs its own snapshot (`ReviewHosts::set_spare`) rather than probing a
-//! machine: the question is what the pool does with an answer, and a test that had to fake a host
-//! to ask it would be measuring the fake.
+//! The pool of machines a reviewer may go to: what it counts, whom it picks, and what it does
+//! when a machine says no. Tests install their own snapshot (`ReviewHosts::set_spare`).
 
 use std::path::PathBuf;
 
 use super::*;
 use crate::mergequeue::capacity;
 
-/// **A `hosts.toml` of this test's own** — `$LETIBOT_HOSTS`, the test door `letibot_tools` already
-/// keeps, restored when the guard drops so two tests in one binary cannot see each other's file.
-///
-/// The lock is held for the guard's whole life because the environment is process-wide and
-/// `letibot_tools::remote::hosts_file` reads it: two of these alive at once would be two pools.
+/// A `hosts.toml` of this test's own via `$LETIBOT_HOSTS`, restored when the guard drops. The
+/// lock is held for the guard's life because the environment is process-wide.
 pub(crate) struct HostsFile {
     path: PathBuf,
     was: Option<std::ffi::OsString>,
@@ -55,7 +48,7 @@ impl HostsFile {
 
 impl Drop for HostsFile {
     fn drop(&mut self) {
-        // SAFETY: as in `with` — this guard is the only holder of the environment lock.
+        // SAFETY: as in `with` - this guard is the only holder of the environment lock.
         unsafe {
             match &self.was {
                 Some(v) => std::env::set_var("LETIBOT_HOSTS", v),
@@ -95,9 +88,8 @@ fn the_pool_offers_this_machine_and_every_declared_one_and_picks_the_most_spare(
         "the most spare wins, and it is not this machine"
     );
 
-    // **And the ordering is SPARE, not *is it a host*** — this machine with more spare than every
-    // host is the one a reviewer goes to. The first cut ranked `(is_remote, spare)`, so any host beat
-    // this machine whatever its load, which is a rule nobody asked for.
+    // The ordering is spare, not whether it is a host: this machine with more spare than every
+    // host is the one a reviewer goes to.
     let hosts = ReviewHosts::new();
     hosts.set_spare(None, Some(40.0), None);
     hosts.set_spare(Some("lab2x1"), Some(12.0), None);
@@ -117,13 +109,13 @@ fn the_pool_offers_this_machine_and_every_declared_one_and_picks_the_most_spare(
     );
 }
 
-/// **The per-host cap refuses a second reviewer past it** — the point of the cap: one reviewer's
+/// **The per-host cap refuses a second reviewer past it** - the point of the cap: one reviewer's
 /// build cannot eat a box another reviewer needs.
 #[test]
 fn a_machine_takes_at_most_its_room_and_then_the_next_goes_somewhere_else() {
     let _file = HostsFile::with(&["lab2x1", "lubuntu2"]);
     let hosts = ReviewHosts::new();
-    // **A machine with 64 spare cores still takes four** — `PER_HOST_MAX`, not the arithmetic.
+    // **A machine with 64 spare cores still takes four** - `PER_HOST_MAX`, not the arithmetic.
     hosts.set_spare(None, Some(0.0), None);
     hosts.set_spare(Some("lab2x1"), Some(64.0), None);
     hosts.set_spare(Some("lubuntu2"), Some(4.0), None);
@@ -146,11 +138,8 @@ fn a_machine_takes_at_most_its_room_and_then_the_next_goes_somewhere_else() {
     );
     assert_eq!(hosts.capacity(None), 0, "and it claims nothing more");
 
-    // **A reviewer that is over frees the room it held** — the desk's list, which is what the pass
-    // hands to `keep`. This is the line the first cut got wrong: the place was freed at each place a
-    // reviewer ENDED and the normal ending (a verdict) was missed, so a pool ran down to nothing.
-    // Two places come back, one on each machine: `child-0` held one of `lab2x1`'s four and
-    // `child-fifth` held `lubuntu2`'s only one.
+    // A reviewer that is over frees the room it held: the desk's list is what the pass hands to
+    // `keep`. Two places come back, one on each machine.
     let live: Vec<String> = (1..capacity::PER_HOST_MAX)
         .map(|n| format!("child-{n}"))
         .collect();
@@ -168,7 +157,7 @@ fn a_machine_takes_at_most_its_room_and_then_the_next_goes_somewhere_else() {
         hosts.where_is("child-1").is_some(),
         "while the reviewers still on the desk are still counted"
     );
-    // **And the machine that was full takes one again** — the queue's claim limit is this number.
+    // **And the machine that was full takes one again** - the queue's claim limit is this number.
     assert_eq!(
         hosts.choose(None).and_then(|m| m.name).as_deref(),
         Some("lab2x1"),
@@ -176,7 +165,7 @@ fn a_machine_takes_at_most_its_room_and_then_the_next_goes_somewhere_else() {
     );
 }
 
-/// **`reserve` is subtracted, and it is what makes a big box small** — the arithmetic the operator
+/// **`reserve` is subtracted, and it is what makes a big box small** - the arithmetic the operator
 /// asked for: `cores − load − reserve`.
 #[test]
 fn reserve_comes_off_the_spare_before_the_cap_is_counted() {
@@ -202,7 +191,7 @@ fn reserve_comes_off_the_spare_before_the_cap_is_counted() {
         1,
         "seven and a half spare cores is one reviewer, not seven"
     );
-    // And the same box unreserved takes four — the cap, not the cores.
+    // And the same box unreserved takes four - the cap, not the cores.
     let spare = host
         .spare_cores(32, "0.5")
         .expect("cores and load both said")
@@ -214,7 +203,7 @@ fn reserve_comes_off_the_spare_before_the_cap_is_counted() {
 }
 
 /// **A host that refused a placement is skipped for the rest of the pass, and tried again next
-/// pass** — fourteen rows must not each pay the same timeout, and a reboot must not park the queue
+/// pass** - fourteen rows must not each pay the same timeout, and a reboot must not park the queue
 /// on this machine for ever.
 #[test]
 fn a_host_that_said_no_is_skipped_this_pass_and_asked_again_next_one() {
@@ -247,7 +236,7 @@ fn a_host_that_said_no_is_skipped_this_pass_and_asked_again_next_one() {
     assert_eq!(hosts.capacity(None), capacity::PER_HOST_MAX * 2);
 }
 
-/// **A pool of this machine alone** — what a fixture gets, and what `["local"]` means: no probe, no
+/// **A pool of this machine alone** - what a fixture gets, and what `["local"]` means: no probe, no
 /// ssh, and a reviewer that runs here.
 #[test]
 fn a_local_pool_has_one_machine_and_never_asks_a_host() {
@@ -260,7 +249,11 @@ fn a_local_pool_has_one_machine_and_never_asks_a_host() {
         1,
         "this machine and nothing else"
     );
-    assert_eq!(hosts.capacity(Some(&only)), capacity::PER_HOST_MAX);
+    assert_eq!(
+        hosts.capacity(Some(&only)),
+        crate::mergequeue::serve::MAX_REVIEWING,
+        "this machine alone keeps the fixed limit, not a spare-core budget"
+    );
     assert_eq!(
         hosts.choose(Some(&only)).map(|m| m.name),
         Some(None),
@@ -269,7 +262,7 @@ fn a_local_pool_has_one_machine_and_never_asks_a_host() {
     assert!(hosts.unknown(Some(&only)).is_empty());
 }
 
-/// **A name nobody declared is reported, and does not empty the pool** — a project that names a
+/// **A name nobody declared is reported, and does not empty the pool** - a project that names a
 /// machine that has been removed runs here and is told, rather than stopping.
 #[test]
 fn a_host_nobody_declared_is_reported_and_the_pool_keeps_this_machine() {
@@ -286,7 +279,7 @@ fn a_host_nobody_declared_is_reported_and_the_pool_keeps_this_machine() {
     );
 }
 
-/// **Before the first snapshot the pool is this machine** — the queue starts here and fans out as
+/// **Before the first snapshot the pool is this machine** - the queue starts here and fans out as
 /// soon as the probe lands, which is what keeps it from stalling on a network.
 #[test]
 fn before_any_probe_the_pool_is_this_machine_and_the_capacity_is_its_own() {
@@ -305,4 +298,23 @@ fn before_any_probe_the_pool_is_this_machine_and_the_capacity_is_its_own() {
         hosts.choose(None).is_some_and(|m| m.name.is_none()),
         "so the first reviewer runs here"
     );
+}
+
+/// A forbidden host is never in the pool, even when `hosts.toml` declares it and the pool is `*`.
+#[test]
+fn a_forbidden_host_is_never_in_the_pool_even_when_declared_and_wildcarded() {
+    let _file = HostsFile::with(&["lab2x1", "lubuntu3"]);
+    let hosts = ReviewHosts::new();
+    let names = |p: Option<&[String]>| -> Vec<Option<String>> {
+        hosts.machines(p).into_iter().map(|m| m.name).collect()
+    };
+    assert_eq!(
+        names(None),
+        vec![None, Some("lab2x1".to_string())],
+        "`*` skips it"
+    );
+    let named = pool(&["lubuntu3", "lab2x1"]);
+    assert_eq!(names(Some(&named)), vec![None, Some("lab2x1".to_string())]);
+    assert_eq!(hosts.unknown(Some(&named)), vec!["lubuntu3".to_string()]);
+    assert!(crate::mergequeue::review::hosts::is_forbidden("lubuntu3"));
 }

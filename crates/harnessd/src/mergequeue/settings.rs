@@ -258,7 +258,7 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
         Some(n) if n >= 1 => Some(n as usize),
         Some(n) => {
             return Err(format!(
-                "{}: [queue] reviewers_at_once = {n} — a queue runs at least one reviewer at a \
+                "{}: [queue] reviewers_at_once = {n} - a queue runs at least one reviewer at a \
                  time, so the smallest number that means anything here is 1 (and leaving the key \
                  out is the placement's own number)",
                 path.display()

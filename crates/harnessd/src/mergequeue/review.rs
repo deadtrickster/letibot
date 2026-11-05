@@ -232,10 +232,9 @@ impl Pool<'_> {
         )
     }
 
-    /// A reviewer whose machine refused it runs on this one instead: same row, new child, and no
-    /// attempt spent. No room here either is a wait. The new child goes on `still`: the pass
-    /// prunes the desk and the pool against that list, so a child opened after it was taken would
-    /// be closed in the pass that opened it.
+    /// A reviewer whose machine refused it runs here instead, with no attempt spent. The new child
+    /// goes on `still`: the pass prunes the desk and pool against that list, so a child opened after
+    /// it was taken would be closed in the pass that opened it.
     fn retry_locally(
         &self,
         r: &ReviewRow,
@@ -403,7 +402,7 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
                 out.moved = true;
             }
             Err(CouldNotStart::Full(why)) => {
-                // **The pool is full, which is a wait** — the row goes back in line with a
+                // **The pool is full, which is a wait** - the row goes back in line with a
                 // not-before time and nothing counted against it.
                 p.wait_for_room(r, why)?;
                 out.moved = true;
@@ -525,10 +524,7 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
                             p.wait_for_slot(&r, &cap)?;
                         }
                         None => {
-                            p.attempt_failed(
-                                &r,
-                                format!("the reviewer `{child}` failed: {why}"),
-                            )?;
+                            p.attempt_failed(&r, format!("the reviewer `{child}` failed: {why}"))?;
                         }
                     },
                 }
@@ -543,24 +539,17 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
         }
     }
     p.desk.keep(p.host, &still);
-    // **And every reviewer that is no longer on the desk has freed its place** — the desk's own list,
-    // the desk's own rule, one line over. A place freed at each place a reviewer ENDS was the first
-    // cut, and it missed the one ending every successful review takes (a verdict handed in), so the
-    // pool ran down to nothing while the queue went on claiming. See [`ReviewHosts::keep`].
+    // Every reviewer no longer on the desk has freed its place. See [`ReviewHosts::keep`].
     p.machines.keep(&still);
-    // **A host that failed this pass is asked again next one** — a reboot is minutes, and a queue
+    // **A host that failed this pass is asked again next one** - a reboot is minutes, and a queue
     // that never retried would run on this machine for ever.
     p.machines.end_pass();
     Ok(out)
 }
 
-/// **Was this failure the MACHINE, rather than the review?**
-///
-/// A remote placement that cannot be made fails the child at its open with
-/// `HarnessError::Setup` around `SshBackend`'s own sentence, which always opens
-/// `placing this session on <host>`. That is the one shape that means *nothing was judged and
-/// nothing should be counted* — a reviewer that got as far as running and then died is a different
-/// thing and stays an attempt.
+/// Was this failure the machine rather than the review? A remote placement that cannot be made
+/// fails at its open with a sentence opening `placing this session on <host>`. Nothing was judged,
+/// so it is not an attempt.
 pub fn placement_refused(why: &str, host: &str) -> bool {
     why.contains(&format!("placing this session on {host}"))
 }
@@ -774,7 +763,11 @@ fn pool_full_sentence(p: &Pool, pool: Option<&[String]>) -> String {
         .iter()
         .map(|m| match (m.spare, &m.why) {
             (Some(spare), _) => format!("{}: {spare:.1} spare core(s)", m.label()),
-            (None, Some(why)) => format!("{}: {}", m.label(), letibot_transcript::text::clip_chars(why, 120)),
+            (None, Some(why)) => format!(
+                "{}: {}",
+                m.label(),
+                letibot_transcript::text::clip_chars(why, 120)
+            ),
             (None, None) => format!("{}: not asked yet", m.label()),
         })
         .collect();
@@ -828,10 +821,9 @@ fn verdict(
     req_cwd: &str,
     said: letibot_tools::gatekeeper::Submission,
 ) -> Result<(), StoreError> {
-    // A verdict about a tree that is not there is not a verdict about the branch. A reviewer
-    // whose clone was removed under it reads a fraction of the artifact, knows it, and answers
-    // `cannot_decide`
-    // An empty cwd is a reviewer on another machine: there is no tree here to have gone away.
+    // A verdict about a tree that is not there is not a verdict about the branch: a reviewer whose
+    // clone was removed under it answers `cannot_decide`. An empty cwd is a reviewer on another
+    // machine, so there is no tree here to have gone away.
     let tree = Path::new(&req_cwd);
     let there = req_cwd.is_empty()
         || (tree.is_dir()
