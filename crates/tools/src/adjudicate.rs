@@ -2492,10 +2492,9 @@ impl Gate for AdjudicatedGate {
     }
 
     fn observes_shell_env(&self) -> bool {
-        // The seed is what makes this true: a session whose environment was seeded is one
-        // whose spawns this daemon composes, so a report from its shell is a fact about
-        // this box. Empty - a remote or guest placement, a seat with no exec - is the honest
-        // no, and nothing is armed there.
+        // The seed is what makes this true: a session whose environment was seeded is one whose
+        // spawns this daemon composes, so a report from its shell is a fact about this box. Empty -
+        // a remote or guest placement, a seat with no exec - is the honest no, armed nowhere.
         !self.surroundings.session.is_empty()
     }
 

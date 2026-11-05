@@ -2090,9 +2090,8 @@ impl TodoWriteTool {
             };
         }
         // The resource bounds are here and not in `upsert_model` because this call is all or
-        // nothing: a list refused after both halves moved would leave them drifted. `before` is
-        // read above the moves; a `job` name and a child's slug are resolved to the ids every
-        // reader keys on.
+        // nothing: a list refused after both halves moved would leave them drifted. `before` is read
+        // above the moves, and a `job` name or a child's slug is resolved to the id readers key on.
         if let Err(inv) = resolve_child_needs(&mut rows, self.children.as_deref(), jobs) {
             return inv;
         }
@@ -2364,11 +2363,9 @@ impl TodoWriteTool {
     }
 }
 
-/// The board's resource bounds, in one place: the check every write of a new row passes. It
-/// bounds what a call writes and never what a row on the board already is, so a row that
-/// predates the bound can still be restated and moved; the whole list is checked before any of
-/// it is written. Nothing here is a UI rule: the pane cuts a row at the terminal's real width
-/// at draw time, and a row under the bounds is stored exactly as written.
+/// The board's resource bounds, in one place: the check every write of a new row passes. It bounds
+/// what a call writes and never what a row already is, so an older row can still be restated and
+/// moved; the whole list is checked before any of it is written.
 fn check_rows(
     existing: &[TodoItem],
     rows: &[(String, TodoStatus, Vec<TodoNeed>)],

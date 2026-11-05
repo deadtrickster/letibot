@@ -204,13 +204,9 @@ impl SessionEnv {
     }
 }
 
-/// The names a shell's report is never carried for (R95's §4j.5 ruling): a value here changes
-/// what a later command does with no text saying so - the loaders' namespace, the files and
-/// options a shell reads unasked, the `PATH` (which file a bare name runs), and the shell's
-/// machinery about itself. The narrowest safe default; widening it is the operator's open
-/// ruling, and one list serves the resolver and the spawn alike. R121's `boundary::env_refusal`
-/// is the sibling rule for CONFIGURED pairs, not this one: a credential is held and masked
-/// (§4j.4) rather than dropped, and `HOME` is a pair the harness wins anyway.
+/// The names a shell's report is never carried for: a value here changes what a later command does
+/// with no text saying so - the loaders' namespace, the files and options a shell reads unasked, the
+/// `PATH`, and the shell's machinery about itself. One list serves the resolver and the spawn alike.
 pub fn denied(name: &str) -> bool {
     matches!(
         name,

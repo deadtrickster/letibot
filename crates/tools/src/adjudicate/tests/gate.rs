@@ -695,11 +695,9 @@ fn the_never_write_list_is_about_paths_and_not_prose() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// The session's shell, observed: a report an earlier call's trailer carried becomes the pairs
-/// the next call's spawn merges, and only where the gate was seeded - an unseeded gate observes
-/// nothing, which is a remote placement's honest answer. A report this build refuses to believe
-/// drops everything the shell said, because the last believable report is not the current
-/// environment.
+/// The session's shell, observed: a report an earlier call's trailer carried becomes the pairs the
+/// next call's spawn merges, and only where the gate was seeded - an unseeded gate observes nothing.
+/// A report this build refuses to believe drops everything the shell said, not just the bad part.
 #[test]
 fn the_gate_observes_the_shells_environment_and_a_refused_report_drops_it() {
     let bare = AdjudicatedGate::closed();

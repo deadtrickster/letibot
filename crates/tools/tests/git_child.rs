@@ -1,7 +1,6 @@
-//! What a confined child may write in the repository it commits to. Read-write on the whole
-//! common dir is what makes a commit possible, and it also let the child move `refs/heads/main`,
-//! create `hooks/` where there was none, and point a checkout at a repository it controls.
-//! Each test drives the write that was allowed, and the commit that must still work.
+//! What a confined child may write in the repository it commits to. Read-write on the whole common
+//! dir is what makes a commit possible, and it also let the child move `refs/heads/main`, create
+//! `hooks/`, and point a checkout at a repository it controls; each test drives one such write.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

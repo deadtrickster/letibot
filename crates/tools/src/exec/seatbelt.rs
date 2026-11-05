@@ -37,11 +37,9 @@ pub const SYSTEM_ROOTS: &[&str] = &[
     "/opt/homebrew",
 ];
 
-/// The mach services a shell, `git`, `cargo`/`rustc`, `python3` and `make` need: a program
-/// wanting one not here fails naming it, and the fix is one line. `com.apple.SecurityServer` is the
-/// keychain service, and it is the top-level seat's alone: `gh` keeps its token in the keychain.
-/// `trustd` and `trustd.agent` evaluate certificate trust (Go and Security.framework TLS); they
-/// answer yes or no about a chain and hold no secret, so both seats have them.
+/// The mach services a shell, `git`, `cargo`/`rustc`, `python3` and `make` need: a program wanting
+/// one not here fails naming it, and the fix is one line. The keychain service is the top-level
+/// seat's alone (`gh` keeps its token there); the trust daemons hold no secret, so both seats have them.
 pub const MACH_SERVICES: &[&str] = &[
     "com.apple.system.logger",
     "com.apple.system.notification_center",

@@ -1465,10 +1465,8 @@ impl ProcessHost for HostProcesses {
         // process which never joined its scope.
         let token_path = token.clone();
         // The environment trailer, appended only where the caller armed one, the run has no
-        // terminal of its own, and the command parses as a WHOLE program: text after an
-        // unterminated heredoc or a dangling `|` becomes part of the command, and the honest
-        // answer for a command like that is no report rather than a different command. The
-        // job's record keeps the model's own text - the append is argv, not the row.
+        // terminal of its own, and the command parses as a WHOLE program: text after a dangling `|`
+        // or an unterminated heredoc would be rewritten by the append, so that command gets no report.
         let whole_program = !letibot_code::shell::normalise(&req.command).partial;
         let trailer = (req.env_trailer && !req.tty && whole_program).then(super::shell::nonce);
         let run_command = match &trailer {
@@ -3844,10 +3842,9 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// One `bash` call's export reaches the next call's environment, through the whole chain:
-    /// the appended trailer reports it, the capture gives the trailer up, `SessionEnv::observe`
-    /// holds it, and the pairs a shell reported are what the next spawn is given. The plain
-    /// tree, because a real one needs a delegated cgroup and this chain is not about that.
+    /// One `bash` call's export reaches the next call's environment: the appended trailer reports it,
+    /// the capture gives the trailer up, `SessionEnv::observe` holds it, and those pairs are what the
+    /// next spawn is given. The plain tree, because this chain is not about the boundary.
     #[test]
     fn an_export_in_one_call_reaches_the_next_spawn() {
         let Some(_) = letibot_tokencore::apparatus::present(

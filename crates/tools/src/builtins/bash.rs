@@ -484,9 +484,8 @@ impl Tool for Bash {
         if ctx.tty {
             env.extend(crate::exec::console::env());
         }
-        // What the session's shell reported an earlier call holds, merged where the gate
-        // observes one, so an `export` in one call is in the next call's environment - the
-        // same list the resolver read when it adjudicated this command. Before
+        // What the session's shell reported an earlier call holds, merged where the gate observes
+        // one, so an `export` in one call is in the next call's environment. Before
         // `LETIBOT_COMMAND`, so the harness's own machinery name cannot be exported over.
         let observes_env = !ctx.tty && ctx.observes_shell_env();
         if observes_env {

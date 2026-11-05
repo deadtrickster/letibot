@@ -565,9 +565,8 @@ impl Protection {
 }
 
 /// The host room coordinator's files (`room-<host key>.sock`, `.lease`, `.restart`, `.token`) in
-/// letibot's data directory, plus `$LETIBOT_ROOM_SOCKET` and its lease and token. Found by
-/// scanning, so no host key is needed. A tool call that could open the socket could post as anyone
-/// in the rooms, and one that could read the token could post as the operator.
+/// letibot's data directory, plus `$LETIBOT_ROOM_SOCKET` and its lease and token. Found by scanning,
+/// so no host key is needed: a call that read the token could post as the operator.
 pub fn room_files() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     let data = std::env::var_os("XDG_DATA_HOME")
@@ -604,10 +603,9 @@ pub fn room_files() -> Vec<PathBuf> {
     out
 }
 
-/// The daemon's control sockets a tight seat must not reach: every socket in the per-user
-/// `letibot` runtime directories (the daemon's own, the ssh control masters) and `$LETIBOT_SOCKET`.
-/// The wide seat keeps them: `sudo -A` reaches the session through that socket, and the daemon
-/// answers a command's tree with that one door only.
+/// The daemon's control sockets a tight seat must not reach: every socket in the per-user `letibot`
+/// runtime directories (the daemon's own, the ssh control masters) and `$LETIBOT_SOCKET`. The wide
+/// seat keeps them, because `sudo -A` reaches the session through that socket.
 pub fn daemon_sockets() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
@@ -1909,11 +1907,9 @@ pub struct HostProbe {
     pub said: String,
 }
 
-/// The paths a view holds read-only by default, relative to the home they sit under: the
-/// toolchain, and the config a commit cannot happen without. None is the home itself, whose mail,
-/// browser profile and `.ssh` are what a boundary exists to leave out. One list for the Linux
-/// view, the macOS profile and a remote host's probe. Read-only, because rewriting `~/.cargo/bin`
-/// is writing the binaries the operator runs, and `.gitconfig` is here or a commit has no author.
+/// The paths a view holds read-only by default, relative to the home they sit under: the toolchain
+/// and the config a commit cannot happen without. None is the home itself, whose mail and `.ssh` are
+/// what a boundary exists to leave out. One list for every view, the macOS profile and a host's probe.
 pub const GRANT_CANDIDATES: &[&str] = &[
     ".cargo",
     ".rustup",
@@ -2400,11 +2396,9 @@ fn pieces_of(
     }
 
     if view.wide {
-        // The machine itself, at its own paths and writable as this user: that is the wide seat, and
-        // the masks below (after the grants) are the only thing it hides. The system roots and the
-        // project are inside this bind, so binding them again would only be two mounts of one tree.
-        // `--dev-bind`: a plain bind leaves every mount under `/` nodev, and `/dev/null` is then
-        // unopenable, which also breaks the file masks bound from it.
+        // The machine itself, at its own paths and writable as this user: the wide seat, whose only
+        // hidden things are the masks below. `--dev-bind`, because a plain bind leaves every mount
+        // under `/` nodev, and `/dev/null` is then unopenable, masks included.
         arg(&mut a, "--dev-bind");
         arg(&mut a, "/");
         arg(&mut a, "/");
@@ -2484,11 +2478,9 @@ fn pieces_of(
         }
     }
 
-    // The seat's fence, after the mounts it has to win over: a wide view reaches every store, and a
-    // tight one reaches the few a grant covers. A store the view does not reach, or that is not on
-    // the disk, gets no mount: bwrap would make the mount point in the operator's own home.
-    // A directory masked as an empty read-only tmpfs holds nothing to hide and nothing to mount
-    // over: bwrap cannot make a mount point in it, so later mounts under it are skipped.
+    // The seat's fence, after the mounts it has to win over. A store the view does not reach, or that
+    // is not on the disk, gets no mount: bwrap would make the mount point in the operator's own home,
+    // and a directory already masked as an empty tmpfs cannot hold one either.
     let mut emptied: Vec<&Path> = Vec::new();
     for p in &view.masked {
         if view.classify(p) != Presence::Inside || emptied.iter().any(|d| p.starts_with(d)) {

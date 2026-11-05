@@ -304,10 +304,9 @@ pub struct Capture {
     trailer: Option<TrailerTaker>,
 }
 
-/// Takes one job's OSC trailer out of its output as the bytes arrive, and keeps the report
-/// it carried for the harness to observe. Holds back only the suffix that could still grow
-/// into the marker - the same rule the secret [`Masker`] holds its partial token by - so the
-/// window, the spill file and the denominator never carry machinery the command did not print.
+/// Takes one job's OSC trailer out of its output as the bytes arrive, and keeps the report it
+/// carried for the harness. Holds back only the suffix that could still grow into the marker, so
+/// the window, the spill file and the denominator carry nothing the command did not print.
 struct TrailerTaker {
     mark: String,
     held: Vec<u8>,
@@ -367,10 +366,9 @@ impl TrailerTaker {
                 }
             }
         }
-        // Not a whole trailer yet: publish what cannot be part of one. Once the opening has
-        // arrived, everything from it is held until its BEL does - a marker is not something
-        // the rest of the stream can dilute - and before that, only the bytes that could
-        // still grow INTO an opening are held.
+        // Not a whole trailer yet: publish what cannot be part of one. Once the opening has arrived,
+        // everything from it is held until its BEL - a marker is not something the rest of the
+        // stream can dilute - and before that, only bytes that could grow INTO an opening are held.
         let open = super::shell::opening(&self.mark);
         let publish = match self
             .held
