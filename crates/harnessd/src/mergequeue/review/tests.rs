@@ -255,8 +255,6 @@ fn judge(
         live: &live,
         settings: &settings,
         clones,
-        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
-        reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
     };
     for _ in 0..passes {
@@ -1187,8 +1185,6 @@ fn a_reject_against_a_tip_the_target_has_moved_past_opens_no_fix_branch() {
         live: &|_: &str| false,
         settings: &settings,
         clones,
-        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
-        reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
     };
     serve(&pool).expect("a pass");

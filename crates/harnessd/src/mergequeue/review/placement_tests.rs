@@ -339,7 +339,7 @@ fn a_verdict_frees_the_place_the_reviewer_held() {
     use letibot_tools::gatekeeper::{Decision, LookedAt, Submission};
     let _hosts = HostsFile::with(&["lab2x1"]);
     let dir = TempDir::new("review-frees-its-place");
-    let (store, _repo, head) = claimed(&dir);
+    let (store, _repo, _head) = claimed(&dir);
 
     let machines = ReviewHosts::new();
     // **Four spare cores: exactly ONE place**, so *freed* and *not freed* are two different answers
