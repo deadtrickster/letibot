@@ -7617,3 +7617,49 @@ settled: B1 `ac7993e6`; item 8 `bf173960`; the F findings in `c1a7a569`, `68b2a4
 The one residue is a platform note and not work: `restart_restore`'s integration tests cannot open a
 harness on a box without `/sys/fs/cgroup`, so the `[restart]` wording is pinned by the unit tests
 and the card fixtures only there.
+---
+
+## T10 — Contract gaps found by W6 — **SETTLED 2026-11-05: item 4 closed, a resumable render state token**
+
+Items 1, 2, 3 and 5 were closed when they landed (R1 to R4 below). Item 4 was the last one open:
+`render_incremental` was handed the whole history for its boundary state, so a session that appended
+one item per batch re-rendered the transcript once per batch - O(n squared) over the session - and
+`Session::append_items` cut a batch at one seam per item by replaying the growing history once per
+item. T1's template-driven renderer has not landed (the renderers are still hand-written), so the seam
+still decides the cost of every append.
+
+The token is `letibot_dialect::RenderState` (`crates/dialect/src/lib.rs:35`): an opaque box a renderer
+fills with its own boundary state, which only that renderer reads back. A foreign or absent token is
+not a guess - the renderer replays the history, which is slower and always right. It is cloneable
+because a round's tail is rendered from a COPY: the tail is committed to nothing, so the state the
+transcript stands at must not move with it.
+
+The seam and the engine:
+
+- `PromptRenderer::render_incremental_from` carries the token in and out
+  (`crates/turn/src/renderer.rs:47`); the default replays, so an implementor that keeps no token is
+  correct and merely as slow as before.
+- `Session` keeps one with the item count it was taken at (`crates/turn/src/engine.rs:415`) and
+  discards it when the count no longer matches: a fold rolls items back and a turn's rows are
+  committed as ids the server streamed, which no render produced. A batch's token is put back only
+  once the whole batch lands (`crates/turn/src/engine.rs:505`), because a batch refused at its first
+  item would otherwise leave a state describing a row the transcript does not hold.
+- Both renderers take a batch in one pass. GLM records the item seams it previously paid a replay per
+  item for (`crates/dialect-glm/src/render.rs:66`); Qwen's existing one-pass render is the same
+  function with a token (`crates/dialect-qwen/src/render.rs:146`).
+
+**Measured**: 24 single-item appends re-read 0 item(s) of history, where the same test on the
+fix-less tree re-read 276 - `n(n-1)/2` for 24. Every engine test below was proved red by reverting
+its half of the fix.
+
+Tests: `crates/turn/tests/render_state.rs` (the count above, one batch equals many appends, a token
+taken before a fold rollback is not trusted, a batch refused at its first item leaves the token where
+the transcript is); `a_carried_token_agrees_where_the_history_is_not_passed_again`,
+`the_seams_cut_the_batch_into_one_piece_per_item` and `another_renderers_token_falls_back_to_the_history`
+(`crates/dialect-glm/tests/invariants.rs`); `a_carried_token_builds_what_the_replays_build` and
+`another_renderers_token_falls_back_to_the_history` (`crates/dialect-qwen/src/render.rs`);
+`a_copied_token_does_not_move_with_the_copy` (`crates/dialect/src/lib.rs`).
+
+settled: item 4 `eff5cb36` (`crates/dialect/src/lib.rs`, `crates/turn/src/renderer.rs`,
+`crates/turn/src/engine.rs`, `crates/dialect-glm/src/render.rs`, `crates/dialect-qwen/src/render.rs`);
+items 1, 2, 3 and 5 `e5a11374`, `5a01de3b`, `e51847ed`, all on main

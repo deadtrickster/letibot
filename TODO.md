@@ -56,7 +56,6 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R116 | Claude Code as a merge-queue reviewer through headless `claude -p` | Code work | all of it - no `claude -p`, `--json-schema` or `structured_output` use exists under `crates/` |
 | R117 | The leticode MCP bridge pushes package and queue events into Claude Code as a channel | Code work | all of it - no `claude/channel` capability exists under `crates/`; Claude Code side is a research preview |
 | T16 | W9's open questions | Code work | item 7 (call ids are positional per turn); unclear: item 6 asked lubuntu3 whether RAGFlow signals "no coverage" in a field, no answer is recorded |
-| T10 | Contract gaps found by W6 | Code work | item 4 - `render_incremental` takes the whole history (`crates/turn/src/renderer.rs:24`), no resumable state token |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
 | R100 | A remote session in a firecode VM: `--host` and `--vm` as one placement | Needs the operator | the live proof on lab2x1: a real `firecode` copy carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, the copy-out's cost |
 | R59 | The context wall's denominator moves a third between firings | Needs the operator | the operator's ruling on smoothing the ratio (the tree keeps it per round, as recommended) |
@@ -939,53 +938,6 @@ From the tool runtime, in descending order of consequence.
    mark repeats across turns. Fine now, wrong once a head correlates across a session.
    — OPEN: still positional — `crates/turn/src/items.rs:175` mints `call_{n}` per round and
    `crates/provider/src/openai.rs:624` mints `call_{i}`, so an id still repeats across turns.
-
----
-
-## T10 - Contract gaps found by W6
-
-**Status:** items 1, 2, 3 and 5 are fixed (TODO-settled.md R1 to R4; 3 and 5 have no test naming them). left: item 4 - `render_incremental` still takes the whole history (`crates/turn/src/renderer.rs:24`) and there is no resumable state token, so one ledger row per item is O(n squared) replays. T1 may delete it.
-
-The turn engine is the first real consumer of the crates below, and it found five
-things. Listed in the order I would fix them.
-
-1. **`TranscriptItem::Assistant` has no `truncated` field**, and both §5.7 and §5.8
-   require one. Currently tracked on the turn record instead, which is why **one
-   piece of steering is unbuilt**. Needs a `transcript` crate change — the only item
-   here that blocks a feature rather than costing elegance.
-   — ✓ fixed in e5a11374, test `truncated_survives_a_round_trip` (and
-   `a_row_written_before_the_field_existed_reads_as_not_truncated`): `Assistant { truncated }`
-   is on the row, `crates/transcript/src/lib.rs:102`.
-2. **`ParsedSpan` carries no token offsets**, so a `Parser` cannot say which ids an
-   item owns. Cost an entire module (`crates/turn/src/items.rs`) to work around
-   without reimplementing the parser. Adding a span to `ParsedSpan` would delete it.
-   — ✓ fixed in 5a01de3b, test `parse_round_trips_reasoning_and_two_tool_calls`: every variant
-   carries its `Range<usize>` of ids (`crates/dialect/src/lib.rs:177`) and the test asserts the
-   spans tile the stream from zero (`crates/dialect-glm/tests/invariants.rs:279-289`).
-3. **`DialectSpec` has no `ReasoningField`** — a per-model fact of exactly the kind
-   that crate exists to model as data. The engine takes it as config rather than
-   guessing, which works but puts a model fact in the wrong place.
-   — fixed in 5a01de3b in code, untested: `DialectSpec.reasoning_field` is data
-   (`crates/dialect/src/lib.rs:266`) and the engine reads it there
-   (`crates/turn/src/engine.rs:665`), but no test asserts the spec's field rather than the
-   transcript's copy.
-4. **`render_incremental(history, new)` replays the whole history** for boundary
-   state, so building one ledger row per item is O(n²) replays. Microseconds today
-   at our sizes; a resumable state token fixes it. Note T1 may delete this entirely
-   when the template-driven renderer lands.
-   — OPEN: still O(n²) by design — `render_incremental` takes the whole history
-   (`crates/turn/src/renderer.rs:24-30`, whose comment says boundary state is not derivable
-   from a `usize`) and there is no resumable state token; `append_items` renders one item at a
-   time (`crates/turn/src/engine.rs:434`).
-5. **`cargo:rustc-link-arg` does not propagate across crates**, so every crate that
-   links `libllama` needs its own `build.rs` to bake the rpath. Without it, test
-   binaries link fine and fail at exec looking like a missing library. Fixed in
-   `crates/turn`; worth a note so the third crate does not rediscover it.
-   — fixed in e51847ed in code, untested: that commit was the last crate to get its own
-   `build.rs`, and every crate that links `libllama` now bakes the rpath through the shared
-   `crates/llama/build-support.rs` (`crates/bridge/build.rs`, `crates/sessionlog/build.rs`,
-   `crates/turn/build.rs`, `crates/harnessd/build.rs`, `crates/letibot/build.rs`), each header
-   saying why. A build script is not testable.
 
 ---
 
