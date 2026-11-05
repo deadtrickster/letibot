@@ -2,7 +2,9 @@
 """The host side of a remote run: run each step in order, write status.json after every change.
 
 Usage: runner.py RUN_DIR STEPS_JSON
+       runner.py --settle RUN_DIR
 RUN_DIR holds the checkout (tree/), the log of each step (step-N.log) and status.json.
+--settle is the unit's ExecStopPost: a run that ended without writing its end is marked "died".
 CARGO_TARGET_DIR is the dir the steps build in and the one the lock is taken on;
 RRUN_CLEAN_TARGET=1 removes that dir when the run ends.
 """
@@ -15,6 +17,48 @@ import signal
 import subprocess
 import sys
 import time
+
+TERMINAL = ("passed", "failed", "stopped", "died")
+
+
+def settle(run_dir):
+    """Mark a run whose runner ended without a terminal state, so no reader polls it forever.
+
+    systemd runs this after the unit stops however it stopped (SIGKILL, OOM, a crash, a full disk),
+    and hands over why in SERVICE_RESULT, EXIT_CODE and EXIT_STATUS.
+    """
+    path = os.path.join(run_dir, "status.json")
+    try:
+        status = json.load(open(path))
+    except (OSError, ValueError):
+        return 0
+    if status.get("state") in TERMINAL:
+        return 0
+    why = "the runner ended without recording an end: service {} ({} {})".format(
+        os.environ.get("SERVICE_RESULT", "?"),
+        os.environ.get("EXIT_CODE", "?"),
+        os.environ.get("EXIT_STATUS", "?"),
+    )
+    try:
+        st = os.statvfs(run_dir)
+        why += ", {} MiB free on the run's disk".format(st.f_bavail * st.f_frsize >> 20)
+    except OSError:
+        pass
+    status["state"] = "died"
+    status["error"] = why
+    status["ended"] = int(time.time())
+    for step in status.get("steps", []):
+        if step.get("state") in ("running", "waiting"):
+            step["state"] = "died"
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(status, f)
+    os.replace(tmp, path)
+    return 0
+
+
+if sys.argv[1] == "--settle":
+    sys.exit(settle(sys.argv[2]))
 
 run_dir = sys.argv[1]
 # The steps: a file's path (rrun ships them as steps.json), or the JSON itself.
@@ -69,9 +113,14 @@ def save():
     status["updated"] = int(time.time())
     status["load"] = load()
     tmp = status_path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(status, f)
-    os.replace(tmp, status_path)
+    # A full disk must not kill the run between steps: the write is retried at the next save, and
+    # the unit's stop hook settles a status that never reached its end.
+    try:
+        with open(tmp, "w") as f:
+            json.dump(status, f)
+        os.replace(tmp, status_path)
+    except OSError as e:
+        print(f"runner: status not written: {e}", file=sys.stderr, flush=True)
 
 
 # A stopped run says so. `systemctl --user stop rrun-NAME` sends SIGTERM, and without this the
@@ -154,3 +203,4 @@ save()
 # another tree would see them unchanged and skip the rebuild. Gone, they rerun; and the dir goes
 # with the tree when this run was told to clean it.
 remove_run_dirs()
+sys.exit(1 if failed else 0)

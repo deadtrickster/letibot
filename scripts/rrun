@@ -2,6 +2,7 @@
 # rrun — run build/test steps for a git worktree on a remote host, and keep a local status file.
 #
 #   rrun NAME WORKTREE [--host H] [--target DIR] [--clean-target] [--gate | -- STEP...]
+#   rrun --poll NAME     (keep NAME's local status fresh until it ends; rrun starts this itself)
 #
 # The branch's HEAD (and main, for check-fmt) goes over as a git bundle; the steps run detached on
 # the host as a transient systemd --user service (`rrun-NAME`; `systemctl --user stop rrun-NAME`
@@ -15,28 +16,116 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 runner="$here/rrun-runner.py"
-name="$1"; wt="$2"; shift 2
+
+# ssh_ for a host: letibot's own key and known_hosts, never ~/.ssh. The address comes from
+# hosts.toml, so a host named only there (an IP) is reachable.
+ssh_for() {
+  local key="$HOME/.config/letibot/keys/$1" addr
+  addr=$(awk -v h="[host.$1]" '$0==h{f=1;next} /^\[/{f=0} f&&$1=="hostname"{gsub(/"/,"",$3);print $3;exit}' "$HOME/.config/letibot/hosts.toml" 2>/dev/null)
+  ssh_=(ssh -F /dev/null -i "$key" -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes
+    -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$HOME/.config/letibot/known_hosts"
+    -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=10
+    -o ServerAliveCountMax=3 "${RRUN_USER:-$USER}@${addr:-$1}")
+}
+
+# The local copy is refreshed until the run ends. A status still "running" on a unit that is gone
+# means the runner died where even its stop hook could not write (or the hook never ran), so it is
+# marked "died" here: a reader must never wait on a run nobody is running.
+poll() {
+  local name="$1" st_file host rdir out st unit gone=0 deadline
+  st_file="$HOME/.local/share/letibot/remote-runs/$name.json"
+  host=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["host"])' "$st_file")
+  ssh_for "$host"
+  rdir="remote-runs/runs/$name"
+  deadline=$(($(date +%s) + 48 * 3600))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    sleep 15
+    out=$("${ssh_[@]}" "cat ~/$rdir/status.json && echo && systemctl --user is-active rrun-$name" 2>/dev/null) || continue
+    unit=$(printf '%s\n' "$out" | tail -n 1)
+    printf '%s\n' "$out" | sed '$d' >"$st_file.tmp"
+    [ -s "$st_file.tmp" ] || continue
+    st=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$st_file.tmp" 2>/dev/null) || continue
+    mv -f "$st_file.tmp" "$st_file"
+    case "$st" in passed | failed | stopped | died) return 0 ;; esac
+    case "$unit" in
+      active | activating | deactivating | reloading) gone=0 ;;
+      # Twice, so a run caught between its unit ending and its last write is not called dead.
+      *) gone=$((gone + 1)) ;;
+    esac
+    if [ "$gone" -ge 2 ]; then
+      python3 - "$st_file" "$unit" <<'PY'
+import json, sys, time
+p, unit = sys.argv[1:]
+s = json.load(open(p))
+s["state"] = "died"
+s["error"] = f"the unit is {unit or 'gone'} and the run never recorded an end"
+s["ended"] = int(time.time())
+for step in s.get("steps", []):
+    if step.get("state") in ("running", "waiting"):
+        step["state"] = "died"
+json.dump(s, open(p, "w"))
+PY
+      return 0
+    fi
+  done
+}
+
+if [ "${1:-}" = --poll ]; then
+  poll "$2"
+  exit 0
+fi
+
+name="$1"
+wt="$2"
+shift 2
 host=lab2x1
 target=remote-runs/target
 clean_target=0
 steps=()
 # A usage error is the command line's, not the script's: without this a missing value is `$2`
 # unbound under `set -u`, which reads as a bug here instead of a flag that was given nothing.
-die() { echo "rrun: $*" >&2; exit 2; }
+die() {
+  echo "rrun: $*" >&2
+  exit 2
+}
 while [ $# -gt 0 ]; do
   case "$1" in
-    --host) [ -n "${2:-}" ] || die "--host needs a host"; host="$2"; shift 2 ;;
-    --target) [ -n "${2:-}" ] || die "--target needs a directory"; target="$2"; shift 2 ;;
-    --clean-target) clean_target=1; shift ;;
-    --gate) steps=("sh scripts/check-fmt.sh main" \
-                   "sh scripts/check-test-attrs.sh" \
-                   "sh scripts/clippy-gate.sh --offline --all-targets" \
-                   "LETIBOT_REQUIRE_APPARATUS=1 cargo test --offline --workspace --no-fail-fast"); shift ;;
-    --) shift; steps=("$@"); break ;;
-    *) echo "rrun: unknown argument $1" >&2; exit 2 ;;
+    --host)
+      [ -n "${2:-}" ] || die "--host needs a host"
+      host="$2"
+      shift 2
+      ;;
+    --target)
+      [ -n "${2:-}" ] || die "--target needs a directory"
+      target="$2"
+      shift 2
+      ;;
+    --clean-target)
+      clean_target=1
+      shift
+      ;;
+    --gate)
+      steps=("sh scripts/check-fmt.sh main"
+        "sh scripts/check-test-attrs.sh"
+        "sh scripts/clippy-gate.sh --offline --all-targets"
+        "LETIBOT_REQUIRE_APPARATUS=1 cargo test --offline --workspace --no-fail-fast")
+      shift
+      ;;
+    --)
+      shift
+      steps=("$@")
+      break
+      ;;
+    *)
+      echo "rrun: unknown argument $1" >&2
+      exit 2
+      ;;
   esac
 done
-[ ${#steps[@]} -gt 0 ] || { echo "rrun: no steps (use --gate or -- STEP...)" >&2; exit 2; }
+[ ${#steps[@]} -gt 0 ] || {
+  echo "rrun: no steps (use --gate or -- STEP...)" >&2
+  exit 2
+}
 # The dir goes into the remote env -i list, where a space would end the assignment, so a path is
 # letters, digits, '.', '_', '/' and '-' and nothing else. An absolute one is the run's own, and a
 # relative one is under the host's home, which that list carries literally.
@@ -48,15 +137,10 @@ esac
 clean_env=""
 if [ "$clean_target" = 1 ]; then clean_env="RRUN_CLEAN_TARGET=1"; fi
 
-state_dir="$HOME/.local/share/letibot/remote-runs"; mkdir -p "$state_dir"
+state_dir="$HOME/.local/share/letibot/remote-runs"
+mkdir -p "$state_dir"
 local_status="$state_dir/$name.json"
-key="$HOME/.config/letibot/keys/$host"
-# The address comes from hosts.toml, so a host named only there (an IP) is reachable.
-addr=$(awk -v h="[host.$host]" '$0==h{f=1;next} /^\[/{f=0} f&&$1=="hostname"{gsub(/"/,"",$3);print $3;exit}' "$HOME/.config/letibot/hosts.toml" 2>/dev/null)
-ssh_=(ssh -F /dev/null -i "$key" -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes
-      -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$HOME/.config/letibot/known_hosts"
-      -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=10
-      -o ServerAliveCountMax=3 "${RRUN_USER:-$USER}@${addr:-$host}")
+ssh_for "$host"
 
 branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD)"
 sha="$(git -C "$wt" rev-parse --short HEAD)"
@@ -78,12 +162,13 @@ rdir="remote-runs/runs/$name"
 "${ssh_[@]}" "mkdir -p ~/$rdir ~/remote-runs/bin && rm -rf ~/$rdir/tree ~/$rdir/step-*.log"
 # A gate must not inherit the host's git config (signing, hooks): one fixed identity, nothing else.
 "${ssh_[@]}" "printf '[user]\\n\\tname = letibot gate\\n\\temail = gate@letibot.invalid\\n[commit]\\n\\tgpgsign = false\\n[tag]\\n\\tgpgsign = false\\n' > ~/remote-runs/gitconfig"
-"${ssh_[@]}" "cat > ~/remote-runs/bin/runner.py" < "$runner"
-"${ssh_[@]}" "cat > ~/$rdir/src.bundle" < "$bundle"; rm -f "$bundle"
+"${ssh_[@]}" "cat > ~/remote-runs/bin/runner.py" <"$runner"
+"${ssh_[@]}" "cat > ~/$rdir/src.bundle" <"$bundle"
+rm -f "$bundle"
 # The checkout: a clone of the bundle (HEAD detached at the branch tip; main for check-fmt).
 "${ssh_[@]}" "cd ~/$rdir && git clone -q src.bundle tree && cd tree && git checkout -q --detach $sha && git branch -f main origin/main 2>/dev/null; git log --oneline -1"
 # The status as it starts.
-"${ssh_[@]}" "cat > ~/$rdir/status.json" < "$local_status"
+"${ssh_[@]}" "cat > ~/$rdir/status.json" <"$local_status"
 # The steps travel as a FILE: inside the remote command line a step with quotes or a pipe broke it.
 printf '%s' "$steps_json" | "${ssh_[@]}" "cat > ~/$rdir/steps.json"
 # A transient user SERVICE, not a scope: systemd-run returns at once and the run is systemd's
@@ -95,6 +180,7 @@ printf '%s' "$steps_json" | "${ssh_[@]}" "cat > ~/$rdir/steps.json"
 # operator's ssh agent socket): a gate's result then depends on what the desktop exported — the
 # first Linux gate's colour test failed on exactly that (2026-10-26), so env -i and a fixed set.
   XDG_RUNTIME_DIR=/run/user/\$(id -u) systemd-run --user --quiet --collect --unit=rrun-$name -p Delegate=yes \
+  -p \"ExecStopPost=/usr/bin/python3 \$HOME/remote-runs/bin/runner.py --settle \$HOME/$rdir\" \
   --working-directory=\$HOME/$rdir -p StandardOutput=file:\$HOME/$rdir/runner.log -p StandardError=file:\$HOME/$rdir/runner.log \
   env -i HOME=\$HOME USER=\$USER LOGNAME=\$USER SHELL=/bin/bash LANG=C.UTF-8 TERM=xterm-256color \
       XDG_RUNTIME_DIR=/run/user/\$(id -u) CARGO_TARGET_DIR=$target_env GIT_CONFIG_GLOBAL=\$HOME/remote-runs/gitconfig $clean_env CARGO_INCREMENTAL=0 \
@@ -102,15 +188,7 @@ printf '%s' "$steps_json" | "${ssh_[@]}" "cat > ~/$rdir/steps.json"
       PATH=\$HOME/.local/bin:\$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin \
   \$HOME/.local/bin/mise exec -C \$HOME/$rdir/tree -- python3 \$HOME/remote-runs/bin/runner.py \$HOME/$rdir \$HOME/$rdir/steps.json && echo started"
 
-# Keep the local copy fresh until the run ends (and once more after).
-(
-  while sleep 15; do
-    if "${ssh_[@]}" "cat ~/$rdir/status.json" > "$local_status.tmp" 2>/dev/null && [ -s "$local_status.tmp" ]; then
-      mv -f "$local_status.tmp" "$local_status"
-      st=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$local_status")
-      case "$st" in passed|failed) exit 0 ;; esac
-    fi
-  done
-) > /dev/null 2>&1 &
-disown
+# The poller gets a session of its own: a caller's shell that ends kills its process group, and a
+# poller killed with it left the local status at "running" for good.
+python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$0" --poll "$name" </dev/null >/dev/null 2>&1 &
 echo "rrun: $name ($branch @ $sha) on $host — status in $local_status"
