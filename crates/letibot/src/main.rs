@@ -45,10 +45,8 @@
 //!
 //! # The symlinks are the interface, so they are load-bearing
 //!
-//! A packaging bug that drops `letibot-askpass` does not produce a missing banner: it
-//! produces `sudo` silently falling back to a terminal that is not there, which is the
-//! failure `SUDO_USE.md` records at length. `install.sh` creates them and verifies
-//! each one lands.
+//! A packaging bug that drops `letibot-askpass` makes `sudo` fall back silently to a
+//! terminal that is not there. `install.sh` creates the symlinks and verifies each one lands.
 
 use std::ffi::OsStr;
 use std::path::Path;

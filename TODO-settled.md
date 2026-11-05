@@ -4021,8 +4021,8 @@ standing CUDA fragility, not anything to do with search. `--provider deepseek
 The operator, 2026-09-14: *"we badly need a list of preapproved globs, like all
 read only git and gh commands, cargo, go, and other tests. and good old Allow
 Always from opencode and Claude Code"*; *"when i do leticode --bash must be a
-default"*; and, from the two transcript scans on this box (`PS_USE.md`: 294
-`ps` pipelines in 22 days; `SUDO_USE.md`: 40 `sudo` attempts, 0 succeeded):
+default"*; and, from the two transcript scans on this box (`docs/evidence/ps-use.md`: 294
+`ps` pipelines in 22 days; `docs/evidence/sudo-use.md`: 40 `sudo` attempts, 0 succeeded):
 *"we need tools/skills for ps - i dont want models to reinvent the same commands
 and i want a solution for sudo"*.
 

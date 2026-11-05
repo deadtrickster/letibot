@@ -1,6 +1,6 @@
 # `sudo` attempts by coding agents on this box
 
-Same scan as `PS_USE.md`, for `sudo`: every bash tool call in the Claude Code
+Same scan as `ps-use.md`, for `sudo`: every bash tool call in the Claude Code
 transcripts (`~/.claude/projects/*/*.jsonl`) and the opencode store
 (`~/.local/share/opencode/opencode.db`, `part` table) containing a line
 starting with `sudo`. Window: 2026-08-23 → 2026-09-14.
