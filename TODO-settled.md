@@ -7603,3 +7603,17 @@ carries the map, no model behind it. `docs/compaction.md` §7 carries the halves
 (the cold-cache cost of a reduced prompt, map labelling).
 
 settled: eviction, map and `recall` on main; the standalone `/prune` 8a39bd19 + cc10b3c6
+---
+
+## R93 — What the model is told: tics, leaked numbers, contradictions, schema mismatches — **SETTLED 2026-11-05**
+
+The entry stays in `TODO.md` with its per-item record and its own status line; the finding list is
+`docs/reviews/2026-10-12-edge-cases.md` §A–G. Every item is closed: A1–A7 and G1–G10 were already
+in, items 1 and 4–6 in R93b, and on 2026-11-05 item 3's last clause (B1, the todo nag on a row the
+model has marked in progress) and item 8 (a fabric memory body no tool reads, and a live fabric
+block whose clock changed the prompt at every open), plus item 7's whole F list.
+
+settled: B1 `ac7993e6`; item 8 `bf173960`; the F findings in `c1a7a569`, `68b2a448` and `719b4d51`.
+The one residue is a platform note and not work: `restart_restore`'s integration tests cannot open a
+harness on a box without `/sys/fs/cgroup`, so the `[restart]` wording is pinned by the unit tests
+and the card fixtures only there.

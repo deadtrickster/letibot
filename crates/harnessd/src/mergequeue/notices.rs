@@ -392,8 +392,8 @@ pub fn refused_to_workspace(
          REFUSED it at {head}, so it does not land. It comes to you because the branch's author \
          could not be told and this session is the live one in {workspace}, a session of {repo}. \
          The reviewer's reasons:\n\n{list}\n\nThe branch is in {wt}. Answer the reasons there \
-         and commit — a new head goes back to review by itself, and the verdict is bound to the \
-         head it judged — or ask the operator for `/queue approve {id}` or `/queue rm {id}`.",
+         and commit — a new head is reviewed again automatically — or ask the operator for \
+         `/queue approve {id}` or `/queue rm {id}`, which are theirs and not yours.",
         branch = r.branch,
         head = r.head_sha,
         why = missed,

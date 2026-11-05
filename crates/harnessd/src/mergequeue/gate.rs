@@ -2322,7 +2322,10 @@ mod tests {
             words.contains("KILLED at the gate's memory cap (peak 24.1 GiB of a 24.9 GiB cap)")
                 && words.contains("128 processes were still running")
                 && words.contains("UNJUDGED, not red")
-                && words.contains("`[memory] gate` in providers.toml"),
+                // The cap is the operator's knob, and no config key is named to a model that
+                // cannot raise it (R93.F9).
+                && words.contains("the operator's call — tell them")
+                && !words.contains("providers.toml"),
             "{words}"
         );
         let line = measured(0)

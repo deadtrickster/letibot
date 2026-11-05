@@ -3,4 +3,4 @@ message from session `s-gatekeeper-0123456789ab`: Your branch `agent/panic-group
   - The panic is gone, but the patch catches it rather than removing its cause: the executor still indexes past a zero-width key, and only the unwrap moved
   - The regression test asserts that nothing panics and nothing about the rows
 
-The branch is still in /home/dead/Projects/pgmem/.worktrees/panic-groupingsets-join. Answer the reasons there and commit: a new head goes back to review by itself (the verdict is bound to the head it judged).
+The branch is still in /home/dead/Projects/pgmem/.worktrees/panic-groupingsets-join. Answer the reasons there and commit: a new head is reviewed again automatically.

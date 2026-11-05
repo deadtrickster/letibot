@@ -2988,7 +2988,9 @@ fn a_target_whose_gate_was_killed_at_its_cap_is_unjudged_not_red() {
     assert!(
         said[0].contains("UNJUDGED, not red")
             && said[0].contains("peak 24.1 GiB of a 24.9 GiB cap")
-            && said[0].contains("[memory] gate"),
+            // The cap is the operator's; no config key is named to a model that cannot raise it.
+            && said[0].contains("the operator's call — tell them")
+            && !said[0].contains("providers.toml"),
         "{}",
         said[0]
     );

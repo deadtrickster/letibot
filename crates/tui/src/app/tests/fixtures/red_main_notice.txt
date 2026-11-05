@@ -35,4 +35,4 @@ test result: FAILED. 96 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out;
 error: test failed, to rerun pass `-p firecode-scene --lib`
 ```
 
-Nothing lands on `main` until it is green again (only a branch opened to fix it does), no other review of it starts, and branches already approved go back to review. The red tip is first in the review queue (`red-main-60bf819c3342`); a reviewer looks for what in `main`'s history broke it. See `queue` action: "status" for both queues and the gate's evidence, and regate once the cause is gone.
+Nothing lands on `main` until it is green again (only a branch opened to fix it does), no other review of it starts, and branches already approved go back to review. The red tip is first in the review queue (`red-main-60bf819c3342`); a reviewer looks for what in `main`'s history broke it — a reviewer and a fix branch are automatic, so you need do nothing unless you know what broke it. See `queue` action: "status" for both queues and the gate's evidence, and regate once the cause is gone.
