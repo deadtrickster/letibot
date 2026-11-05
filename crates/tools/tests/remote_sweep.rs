@@ -237,6 +237,55 @@ fn a_command_that_cleared_its_environment_is_ended_with_its_group() {
     );
 }
 
+/// A foreground command that cleared its environment and is still running when the session stops
+/// has no mark either. Its group file in the ledger finds it, proved by the file's own path.
+#[test]
+fn a_running_foreground_command_that_cleared_its_environment_is_ended_with_its_group() {
+    let fake = Fake::new("fgcleared");
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = SshBackend::place(&spec_for(&repo, &paths, &fake.program))
+        .expect("the placement is arranged");
+    let worktree = PathBuf::from(b.worktree_path());
+    let cleared_pid = worktree.join("fg-cleared.pid");
+    let child = std::thread::scope(|s| {
+        let running = s.spawn(|| {
+            let _ = b.run(&Command {
+                argv: vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "env -i sh -c 'echo $$ > fg-cleared.pid; exec sleep 300'".into(),
+                ],
+                cwd: String::new(),
+                env: Vec::new(),
+            });
+        });
+        let began = Instant::now();
+        while began.elapsed() < Duration::from_secs(20) && !cleared_pid.is_file() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let child = read_pid(&cleared_pid);
+        assert!(alive(child), "the env-cleared child is running: {child}");
+        let said = b.close().expect("a close says what became of the session");
+        let gone = Instant::now();
+        while gone.elapsed() < Duration::from_secs(5) && alive(child) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let ended = !alive(child);
+        if !ended {
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &child.to_string()])
+                .output();
+        }
+        let _ = running.join();
+        assert!(
+            ended,
+            "a foreground env -i child outlived the session: {child} - {said}"
+        );
+        child
+    });
+    assert!(!alive(child));
+}
+
 /// Both doors that end a session: its own close, and the daemon's last act. One test, because the
 /// last act's list is per process and a parallel test's placement would be swept by it.
 #[test]

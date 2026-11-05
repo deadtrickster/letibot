@@ -1086,6 +1086,30 @@ fn grouped(script: &str, file: &str) -> String {
     )
 }
 
+/// The script that ends the group a pgid file names. The pid is a claim read off a file, so the
+/// group is signalled only when that process's arguments carry the file's own path, which only the
+/// wrapper [`grouped`] put there.
+fn cancel_script(file: &str) -> String {
+    format!(
+        "f={f}\n\
+             if [ -f \"$f\" ]; then\n\
+               g=$(cat \"$f\" 2>/dev/null)\n\
+               case \"$(ps -p \"$g\" -o args= 2>/dev/null)\" in *\"$f\"*) ;; \
+                 *) rm -f \"$f\"; exit 0;; esac\n\
+               pg=$(ps -p \"$g\" -o pgid= 2>/dev/null | tr -d ' ')\n\
+               if [ -n \"$g\" ] && [ \"$pg\" = \"$g\" ]; then t=\"-$g\"; else t=\"$g\"; fi\n\
+               if [ -n \"$g\" ]; then\n\
+                 kill -TERM \"$t\" 2>/dev/null\n\
+                 i=0; while [ $i -lt 40 ]; do kill -0 \"$g\" 2>/dev/null || break; \
+                   sleep 0.05; i=$((i+1)); done\n\
+                 kill -KILL \"$t\" 2>/dev/null\n\
+               fi\n\
+               rm -f \"$f\"\n\
+             fi",
+        f = quote(file)
+    )
+}
+
 /// The bound on ending a remote process group: [`Ssh::cancel_group`]'s call. Ten seconds is long
 /// enough to dial a fresh master and signal, short enough that a command which already spent its own
 /// bound is not made to spend a second one twice.
@@ -1129,6 +1153,15 @@ ledger_groups() {
     [ -n "$k" ] || continue
     case "$(ps -p "$k" -o args= 2>/dev/null)" in
       *"${f%.pid}.sh"*) ps -p "$k" -o pgid= 2>/dev/null | tr -d ' ';;
+    esac
+  done
+  # A foreground command's group file, proved by the file's own path in the leader's arguments.
+  for f in "$ledger"/run-*.pgid; do
+    [ -f "$f" ] || continue
+    k=$(tr -d ' ' < "$f" 2>/dev/null)
+    [ -n "$k" ] || continue
+    case "$(ps -p "$k" -o args= 2>/dev/null)" in
+      *"$f"*) ps -p "$k" -o pgid= 2>/dev/null | tr -d ' ';;
     esac
   done
 }
@@ -1705,22 +1738,7 @@ impl Ssh {
     /// call, because the call that timed out had its local ssh killed and sshd's hang-up usually but
     /// not always takes the group with it. The group is signalled only when the pid leads one.
     fn cancel_group(&self, file: &str) {
-        let script = format!(
-            "f={f}\n\
-             if [ -f \"$f\" ]; then\n\
-               g=$(cat \"$f\" 2>/dev/null)\n\
-               pg=$(ps -p \"$g\" -o pgid= 2>/dev/null | tr -d ' ')\n\
-               if [ -n \"$g\" ] && [ \"$pg\" = \"$g\" ]; then t=\"-$g\"; else t=\"$g\"; fi\n\
-               if [ -n \"$g\" ]; then\n\
-                 kill -TERM \"$t\" 2>/dev/null\n\
-                 i=0; while [ $i -lt 40 ]; do kill -0 \"$g\" 2>/dev/null || break; \
-                   sleep 0.05; i=$((i+1)); done\n\
-                 kill -KILL \"$t\" 2>/dev/null\n\
-               fi\n\
-               rm -f \"$f\"\n\
-             fi",
-            f = quote(file)
-        );
+        let script = cancel_script(file);
         let command = match &self.vm {
             // The group is the GUEST's, so the kill has to be a command in the guest too.
             Some(vm) => format!(
@@ -5753,6 +5771,73 @@ impl ProcessHost for RemoteProcesses {
 
 #[cfg(test)]
 mod tests {
+
+    /// A pgid file is a claim: the group it names is signalled only when that process was started
+    /// by [`grouped`] for this very file, so a rewritten file cannot aim the kill at a neighbour.
+    #[test]
+    fn a_pgid_file_naming_someone_elses_process_signals_nothing() {
+        let dir = std::env::temp_dir().join(format!("letibot-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let alive = |pid: u32| {
+            std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .output()
+                .is_ok_and(|o| o.status.success())
+        };
+        let sh = |script: &str| {
+            std::process::Command::new("bash")
+                .arg("-c")
+                .arg(script)
+                .output()
+                .expect("bash")
+        };
+        // A bystander: not started by `grouped`, named by a forged file.
+        let mut bystander = std::process::Command::new("sleep")
+            .arg("300")
+            .spawn()
+            .unwrap();
+        let forged = dir.join("run-forged.pgid");
+        std::fs::write(&forged, format!("{}\n", bystander.id())).unwrap();
+        sh(&cancel_script(&forged.display().to_string()));
+        let kept = alive(bystander.id());
+        let _ = bystander.kill();
+        let _ = bystander.wait();
+        assert!(
+            kept,
+            "the cancel signalled a process that never wrote the file"
+        );
+        assert!(!forged.exists(), "a forged file is removed, not trusted");
+
+        // And the real thing is still ended: the wrapper's own process carries the file path.
+        let real = dir.join("run-real.pgid");
+        let wrapped = grouped("sleep 300", &real.display().to_string());
+        let mut leader = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(&wrapped)
+            .spawn()
+            .unwrap();
+        for _ in 0..100 {
+            if real.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let pid: u32 = std::fs::read_to_string(&real)
+            .expect("the wrapper wrote its group")
+            .trim()
+            .parse()
+            .unwrap();
+        sh(&cancel_script(&real.display().to_string()));
+        let _ = leader.wait();
+        let gone = (0..50).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            !alive(pid)
+        });
+        let _ = sh(&format!("kill -KILL -{pid} 2>/dev/null"));
+        assert!(gone, "the wrapper's own group was not ended");
+        std::fs::remove_dir_all(&dir).ok();
+    }
     use super::*;
 
     const FILE: &str = r#"
