@@ -128,6 +128,44 @@ fn the_operators_own_ls_payload_is_drawn_in_the_palettes_own_roles() {
     }
 }
 
+/// `git show --stat` and `git diff` reach the head as plain stdout; rano paints them, and a
+/// `-` that merely starts a line of other output (`ls -l`, a flag list) stays unpainted.
+#[test]
+fn a_diff_body_is_coloured_and_a_dash_line_of_other_output_is_not() {
+    const DIFF: &str = "commit abc\n\n    - a bullet\n\n src/a.rs | 3 ++-\n 1 file changed, 2 insertions(+), 1 deletion(-)\n\ndiff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,2 +1,3 @@\n keep\n-old\n+new\n+more\n";
+    const FLAGS: &str = "-rw-r--r--  1 dead dead  12 Oct  6 09:46 a\n-h, --help     show help\n-v, --verbose  more\n";
+    let green = rano::style::Palette::Colour.open(Role::Success);
+    let red = rano::style::Palette::Colour.open(Role::Failure);
+    // The rows that carry `needle`, so the spinner's own green is not the thing counted.
+    let row_of = |payload: &str, needle: &str| {
+        let mut a = App::new(RenderConfig {
+            width: 100,
+            color: true,
+            ..RenderConfig::default()
+        });
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        bang_rows(&mut a, 2, "i1", "! git show --stat", payload);
+        a.key(Key::CtrlV);
+        let rows = a.screen(100, 40);
+        rows.into_iter()
+            .find(|r| r.contains(needle))
+            .unwrap_or_else(|| panic!("no row with {needle:?}"))
+    };
+    assert!(!DIFF.contains('\u{1b}'), "the model's copy holds no escape");
+    assert!(row_of(DIFF, "+new").contains(&green));
+    assert!(row_of(DIFF, "-old").contains(&red));
+    let stat = row_of(DIFF, "src/a.rs | 3");
+    assert!(stat.contains(&green) && stat.contains(&red), "{stat:?}");
+    assert!(!row_of(DIFF, "- a bullet").contains(&red));
+    for needle in ["-rw-r--r--", "--help", "--verbose"] {
+        let row = row_of(FLAGS, needle);
+        assert!(
+            !row.contains(&green) && !row.contains(&red),
+            "a dash line of non-diff output was painted: {row:?}"
+        );
+    }
+}
+
 /// An escape at the START of a payload line and one mid-line: the first is `ls`'s shape for a run
 /// of coloured names and the second is `grep --color`'s. Both go through one `item_lines` call
 /// with the fold open, so the body path is the one under test.
