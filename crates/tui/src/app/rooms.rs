@@ -135,6 +135,9 @@ pub(crate) struct RoomsView {
     /// The inbox cursor this head last set.
     pub acked: u64,
     pub said: u64,
+    /// Per-head part of a request id, so two heads' ids never collide in the coordinator's
+    /// replay window. Set on the first send.
+    pub tag: String,
     /// Peers the operator started a DM with that have no message yet.
     pub fresh: BTreeSet<String>,
     /// The scroll limit of the last draw, to tell a view at the tail from one scrolled back.
@@ -545,7 +548,13 @@ impl App {
             return None;
         };
         self.rooms.said += 1;
-        let id = format!("op-{}-{}", self.now_ms, self.rooms.said);
+        if self.rooms.tag.is_empty() {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos());
+            self.rooms.tag = format!("{:x}{nanos:x}", std::process::id());
+        }
+        let id = format!("op-{}-{}-{}", self.rooms.tag, self.now_ms, self.rooms.said);
         self.rooms.sends.push(Send {
             id: id.clone(),
             chan: chan.clone(),
