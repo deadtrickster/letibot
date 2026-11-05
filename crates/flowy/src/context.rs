@@ -48,8 +48,10 @@ pub struct FabricContext {
 pub struct Reach {
     /// The `skill` tool is seated: a shelf skill loads by id or title.
     pub skill: bool,
-    /// `bash` is seated: a memory's body is the `flowy` CLI's `get` away. No tool
-    /// action reads one.
+    /// The `flowy` tool is seated: a memory's body is its `artifact` action away.
+    pub flowy: bool,
+    /// `bash` is seated: the `flowy` CLI's `get` reads a body too, for a seat
+    /// that has no tool action.
     pub bash: bool,
 }
 
@@ -107,7 +109,9 @@ impl FabricContext {
             self.seat, self.project
         ));
         match source {
-            Source::Live => s.push_str(&format!("Read from the node at {}.\n", self.read_at)),
+            // No clock: a live read happened now, and a time here changed the whole system
+            // prompt at every open, which made every seated root read as stale after a restart.
+            Source::Live => s.push_str("Read from the node just now.\n"),
             Source::Cached { read_at, why } => s.push_str(&format!(
                 "THE NODE IS UNREACHABLE ({why}); this is the copy cached at {read_at} and may be \
                  stale. Nothing here can be loaded until the node is back.\n"
@@ -130,7 +134,9 @@ impl FabricContext {
             }
             s.push('\n');
         }
-        let read = if reach.bash {
+        let read = if reach.flowy {
+            "; read one with `flowy`, `action` \"artifact\" and its id"
+        } else if reach.bash {
             "; read one with the `flowy` CLI through `bash`: `flowy get /api/artifact/<id> --jq .body`"
         } else {
             ""
@@ -324,22 +330,39 @@ mod tests {
         };
         let both = Reach {
             skill: true,
+            flowy: true,
             bash: true,
         };
         let live = ctx.render(&Source::Live, both);
-        assert!(live.contains("Read from the node at 2026-09-14T11:00:00Z"));
+        // No clock in a live block: the read happened now, and a time here changed the whole
+        // system prompt at every open (R93 item 8).
+        assert!(live.contains("Read from the node just now."), "{live}");
+        assert!(!live.contains("2026-09-14T11:00:00Z"), "{live}");
         assert!(live.contains("- 01S [shared] cookbook — what to type"));
         assert!(live.contains("- 01M [project] r10 data is invalid"));
         assert!(live.contains("`skill` with `action` \"load\""));
-        assert!(live.contains("`flowy` CLI through `bash`"));
-        // A door the seat lacks is not named: no `skill`, no `bash`.
+        // The seated tool beats the CLI: a seat with `flowy` reads a body without a shell.
+        assert!(
+            live.contains("`flowy`, `action` \"artifact\"") && !live.contains("CLI"),
+            "{live}"
+        );
+        // A door the seat lacks is not named: no `skill`, and no way to read a body.
         let bare = ctx.render(&Source::Live, Reach::default());
         assert!(!bare.contains("`skill`"), "{bare}");
         assert!(
-            !bare.contains("bash") && !bare.contains("flowy get"),
+            !bare.contains("bash") && !bare.contains("flowy get") && !bare.contains("`artifact`"),
             "{bare}"
         );
         assert!(bare.contains("- 01M [project] r10 data is invalid"));
+        // A seat with only `bash` keeps the CLI sentence it had.
+        let shell = ctx.render(
+            &Source::Live,
+            Reach {
+                bash: true,
+                ..Reach::default()
+            },
+        );
+        assert!(shell.contains("`flowy` CLI through `bash`"), "{shell}");
         let cached = ctx.render(
             &Source::Cached {
                 read_at: "2026-09-13T00:00:00Z".into(),
@@ -349,6 +372,24 @@ mod tests {
         );
         assert!(cached.contains("UNREACHABLE (node unreachable: refused); this is the copy cached at 2026-09-13T00:00:00Z"));
         assert!(FabricContext::render_unreachable("seat", "down").contains("no cached copy"));
+    }
+
+    /// The live block is the same string at every open, whatever the clock says: it is part of the
+    /// system prompt, and a session's prompt is compared with the one this daemon composes now.
+    #[test]
+    fn an_open_time_does_not_change_the_live_block() {
+        let at = |t: &str| FabricContext {
+            seat: "seat".into(),
+            project: "Lab".into(),
+            read_at: t.into(),
+            skills: Vec::new(),
+            memories: Vec::new(),
+        };
+        assert_eq!(
+            at("2026-09-14T11:00:00Z").render(&Source::Live, Reach::default()),
+            at("2026-10-12T03:04:05Z").render(&Source::Live, Reach::default()),
+            "a restarted daemon composes the block again, and the two must be one prompt"
+        );
     }
 
     #[test]

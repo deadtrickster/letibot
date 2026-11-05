@@ -22,3 +22,6 @@ libc = "0.2"
 
 [dev-dependencies]
 letibot-tools = { workspace = true, features = ["testing"] }
+# The `ToolCall` `ToolRuntime::invoke` takes, so the artifact door is driven through the
+# runtime a daemon builds rather than called around it.
+letibot-transcript.workspace = true

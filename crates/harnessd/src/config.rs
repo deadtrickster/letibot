@@ -743,6 +743,7 @@ impl SeatFacts {
     pub fn fabric_reach(&self) -> letibot_flowy::FabricReach {
         letibot_flowy::FabricReach {
             skill: self.has("skill"),
+            flowy: self.has("flowy"),
             bash: self.has("bash"),
         }
     }

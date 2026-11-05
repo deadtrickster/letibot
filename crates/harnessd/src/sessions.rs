@@ -1936,7 +1936,7 @@ impl<'a> Sessions<'a> {
                 let line = format!(
                     "{} skill summaries and {} memory titles from the node, read at {}; the \
                      model loads a skill through `skill` and reads a memory with the `flowy` \
-                     CLI, when its seat has those",
+                     tool's `artifact` action or its CLI, when its seat has either",
                     ctx.skills.len(),
                     ctx.memories.len(),
                     ctx.read_at

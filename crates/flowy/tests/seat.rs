@@ -663,3 +663,64 @@ fn the_board_is_sampled_as_a_level_and_delivered_as_edges() {
     let o = st.diff(&owed).expect("answers owed is its own bucket");
     assert!(o.contains("waiting on an answer from you"), "{o}");
 }
+
+/// The memory list in the fabric block is titles, and a seat with no `bash` had no door to the
+/// body behind one: `artifact` is that door, driven here through the tool runtime a daemon builds.
+#[test]
+fn the_artifact_action_reads_a_body_and_cuts_a_long_one_with_the_numbers() {
+    use letibot_tools::runtime::{Registry, ToolRuntime};
+
+    let node = FakeNode::start();
+    let d = tmp("artifact");
+    let seat = Seat::open(creds(&node, None), Some(&d), Some(&d)).unwrap();
+    let cond = seat.attach("s", Attention::default());
+    let mut reg = Registry::new();
+    reg.register(Box::new(letibot_flowy::Flowy::new(seat, cond)))
+        .expect("the flowy tool registers");
+    let root = tmp("artifact-root");
+    let backend = letibot_tools::backend::HostBackend::writable(&root).expect("a fixture root");
+    let rt =
+        ToolRuntime::new(reg, Box::new(backend)).with_gate(letibot_tools::testing::allow_all());
+    let read = |args: &str| {
+        let call = letibot_transcript::ToolCall {
+            id: "call_artifact".into(),
+            name: "flowy".into(),
+            arguments: args.into(),
+        };
+        let mut sink = letibot_tools::RecordingToolSink::new();
+        rt.invoke("turn_1", &call, &mut sink).render()
+    };
+
+    // The row the fake node serves: its body, with what it is, and no offset line.
+    let whole = read(r#"{"action":"artifact","id":"ART"}"#);
+    assert!(whole.contains("`ART` the plan [diagram]"), "{whole}");
+    assert!(whole.contains("v1"), "{whole}");
+    assert!(!whole.contains("continue with offset"), "{whole}");
+
+    // A body past one call's limit is cut at a byte, and the cut carries both numbers and the
+    // offset that continues it - so the rest is reachable and the shortening is not silent.
+    node.state().artifact = json!({
+        "id": "ART", "type": "memory", "kind": "note", "title": "a long memory",
+        "body": "y".repeat(letibot_flowy::tool::MAX_BODY_BYTES + 5), "updated": "t3"
+    });
+    let cut = read(r#"{"action":"artifact","id":"ART"}"#);
+    assert!(
+        cut.contains(&format!(
+            "[stopped at byte {} of {}; continue with offset={}]",
+            letibot_flowy::tool::MAX_BODY_BYTES,
+            letibot_flowy::tool::MAX_BODY_BYTES + 5,
+            letibot_flowy::tool::MAX_BODY_BYTES
+        )),
+        "{cut}"
+    );
+    let rest = read(&format!(
+        r#"{{"action":"artifact","id":"ART","offset":{}}}"#,
+        letibot_flowy::tool::MAX_BODY_BYTES
+    ));
+    assert!(rest.contains("yyyyy"), "the rest is readable: {rest}");
+    assert!(!rest.contains("continue with offset"), "{rest}");
+
+    // And an id it does not name is refused by name, not by a silent empty body.
+    let missing = read(r#"{"action":"artifact"}"#);
+    assert!(missing.contains("artifact needs an `id`"), "{missing}");
+}

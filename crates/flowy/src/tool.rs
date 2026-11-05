@@ -185,6 +185,28 @@ impl SeatView<'_> {
         ))
     }
 
+    /// One artifact's body in full: the door the fabric block's memory list points at. A seat
+    /// with `bash` can reach the same body through the `flowy` CLI, and many seats have no bash.
+    fn artifact(&self, args: &Value) -> Invocation {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|i| !i.is_empty());
+        let Some(id) = id else {
+            return Invocation::failed(
+                "artifact needs an `id`",
+                "`id` is the handle beside the title in the fabric block, for a skill or a \
+                 memory. Nothing was read.",
+            );
+        };
+        let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        match self.seat.node_artifact(id) {
+            Ok(a) => Invocation::ok(artifact_body(&a, offset)),
+            Err(e) => Invocation::failed(format!("could not read `{id}`"), e.to_string()),
+        }
+    }
+
     fn subscribe(&self, args: &Value, on: bool) -> Invocation {
         let kind = args.get("kind").and_then(|v| v.as_str()).unwrap_or("");
         let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -341,6 +363,41 @@ impl SeatView<'_> {
     }
 }
 
+/// How much of an artifact's body one call hands over: a memory is a few paragraphs and a report
+/// is not, so this is the context's limit rather than a tool's convenience. A cut names both
+/// numbers and the offset that continues it, so nothing is dropped silently.
+pub const MAX_BODY_BYTES: usize = 64 * 1024;
+
+/// One artifact as the model reads it: what it is, then its body - whole, or cut at a byte the
+/// caller can carry on from.
+fn artifact_body(a: &crate::client::Artifact, offset: usize) -> String {
+    let bytes = a.body.as_bytes();
+    let start = offset.min(bytes.len());
+    let end = (start + MAX_BODY_BYTES).min(bytes.len());
+    let mut s = format!(
+        "`{}` {} [{}{}], {} byte(s):\n",
+        a.id,
+        match a.title.as_str() {
+            "" => "(untitled)",
+            title => title,
+        },
+        if a.kind.is_empty() { &a.type_ } else { &a.kind },
+        match a.visibility.as_str() {
+            "" => String::new(),
+            v => format!(", {v}"),
+        },
+        bytes.len()
+    );
+    s.push_str(&String::from_utf8_lossy(&bytes[start..end]));
+    if end < bytes.len() {
+        s.push_str(&format!(
+            "\n[stopped at byte {end} of {}; continue with offset={end}]",
+            bytes.len()
+        ));
+    }
+    s
+}
+
 impl Tool for Flowy {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
@@ -359,22 +416,24 @@ impl Tool for Flowy {
              under a message id); \
              `dm` (`to`, `body`); `read` (the `last` N messages of `room`, for the \
              antecedents of a mention); `replay` (the `last` N spooled deliveries, \
-             for what arrived while you could not read). Chat is caveman: a \
-             measurement and a decision, three lines.",
+             for what arrived while you could not read); `artifact` (`id`, plus `offset` to \
+             continue a long body) reads one row's body in full — a memory or a skill. Chat \
+             is caveman: a measurement and a decision, three lines.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "description": "`status`, `attention`, `subscribe`, `unsubscribe`, `say`, `dm`, `read`, `replay`."},
+                    "action": {"type": "string", "description": "`status`, `attention`, `subscribe`, `unsubscribe`, `say`, `dm`, `read`, `replay`, `artifact`."},
                     "room": {"type": "string", "description": "A room name, without the `#`. For `attention`: which room the level is for (omit to set the default). For `say`/`read`: which room; default `general`."},
                     "level": {"type": "string", "description": "For `attention`: `off`, `mentions`, `addressed` or `all`."},
                     "human_broadcast": {"type": "boolean", "description": "For `attention`: inside `addressed`, whether a person's message that names nobody wakes you. Default true."},
                     "focus": {"type": "string", "description": "For `attention`: the project everything is delivered from; elsewhere only what names you. `*` for every project the token reaches."},
                     "kind": {"type": "string", "description": "For `subscribe`/`unsubscribe`: `thread`, `todo` or `artifact`."},
-                    "id": {"type": "string", "description": "For `subscribe`/`unsubscribe`: the message id (thread) or row id (todo, artifact)."},
+                    "id": {"type": "string", "description": "For `subscribe`/`unsubscribe`: the message id (thread) or row id (todo, artifact). For `artifact`: the row's id, as the fabric block lists it."},
                     "body": {"type": "string", "description": "For `say`/`dm`: the text. Prose; backticks are safe here."},
                     "to": {"type": "string", "description": "For `say`: address it to a seat or person by name — or to ONE session of a seat as `seat/session` (the session's id or title; `flowy status` shows this session's own address), which reaches exactly that agent and nobody else on that seat. For `dm`: required."},
                     "thread": {"type": "string", "description": "For `say`/`dm`: reply under this message id."},
-                    "last": {"type": "integer", "description": "For `read`/`replay`: how many, default 20."}
+                    "last": {"type": "integer", "description": "For `read`/`replay`: how many, default 20."},
+                    "offset": {"type": "integer", "description": "For `artifact`: the byte to continue a long body at, as the cut line gives it."}
                 },
                 "required": ["action"]
             }),
@@ -409,13 +468,15 @@ impl Tool for Flowy {
             "say" => view.say(args, false),
             "dm" => view.say(args, true),
             "read" => view.read(args),
+            "artifact" => view.artifact(args),
             "replay" => view.replay(args),
             other => Invocation::failed(
                 format!("`{other}` is not a flowy action"),
-                "there are eight: `status`, `attention`, `subscribe`, `unsubscribe`, `say`, \
-                 `dm`, `read`, `replay`. There is no `wait` — messages arrive as firings of \
-                 the `flowy` monitor — and no `claim`: rows are taken through `flowy todo \
-                 claim --expect`, which is a door with its own refusal. Nothing was done.",
+                "there are nine: `status`, `attention`, `subscribe`, `unsubscribe`, `say`, \
+                 `dm`, `read`, `replay`, `artifact`. There is no `wait` — messages arrive as \
+                 firings of the `flowy` monitor — and no `claim`: rows are taken through \
+                 `flowy todo claim --expect`, which is a door with its own refusal. Nothing \
+                 was done.",
             ),
         }
     }
@@ -434,5 +495,49 @@ mod tests {
                 "{banned} in {names}"
             );
         }
+    }
+
+    /// The block lists memories as titles and nothing else, and a seat with no `bash` had no way
+    /// to read the body behind one: the `artifact` action is that door, and it cuts loudly.
+    #[test]
+    fn an_artifact_body_is_read_whole_and_cut_loudly() {
+        let a = crate::client::Artifact {
+            id: "01M".into(),
+            type_: "memory".into(),
+            kind: "note".into(),
+            title: "r10 data is invalid".into(),
+            body: "the header says v7 and the body is v5".into(),
+            visibility: "project".into(),
+            ..Default::default()
+        };
+        let whole = artifact_body(&a, 0);
+        assert!(
+            whole.contains("`01M` r10 data is invalid [note, project], 37 byte(s):"),
+            "{whole}"
+        );
+        assert!(
+            whole.ends_with("the header says v7 and the body is v5"),
+            "{whole}"
+        );
+        assert!(!whole.contains("offset="), "nothing was cut: {whole}");
+
+        // A body past the limit is cut at a byte, and the line gives the size, where it stopped
+        // and the offset that continues it - the resource and the number.
+        let long = crate::client::Artifact {
+            body: "x".repeat(MAX_BODY_BYTES + 10),
+            ..a.clone()
+        };
+        let cut = artifact_body(&long, 0);
+        assert!(
+            cut.contains(&format!(
+                "[stopped at byte {MAX_BODY_BYTES} of {}; continue with offset={MAX_BODY_BYTES}]",
+                MAX_BODY_BYTES + 10
+            )),
+            "the cut says where it stopped and how to go on"
+        );
+        // And the continuation is the rest, cut again only if there is more.
+        let rest = artifact_body(&long, MAX_BODY_BYTES);
+        assert!(!rest.contains("continue with offset"), "{rest}");
+        assert!(rest.ends_with("xxxxxxxxxx"), "{rest}");
     }
 }
