@@ -881,6 +881,7 @@ fn a_running_jobs_window_follows_its_output() {
         };
     let mut a = App::new(plain_cfg(100));
     a.session_id = "s1".into();
+    a.rooms.next_poll_ms = u64::MAX;
     a.clock(10_000);
     a.apply(jobs_frame(
         "s1",
