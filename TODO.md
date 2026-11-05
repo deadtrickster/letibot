@@ -409,7 +409,7 @@ nothing to design.
 
 ## R55 - A round's end and a turn's end are the same event on the wire
 
-**Status:** `Hub::turn_in_flight` (`crates/sessionlog/src/hub.rs:1787`) reads `TurnState::Finished.ends_turn` (961c7d26, test `a_turn_stays_in_flight_across_rounds_until_the_ending_frame`). left: the producer (`lift`, `ends_turn: !proposed_calls`) still says `true` for a no-call round followed by a nudge, so the hub is right about the frame but the frame is wrong there; leticl is not checked out under ~/Projects, its `:turn-finished` arm is unverified. Earlier: the field is built - `SessionEvent::TurnFinished` carries `ends_turn` (`crates/sessionlog/src/event.rs:12`, test `crates/harnessd/tests/turn_end_marker.rs`) and this head's row holds across rounds (`a_prompt_in_flight_holds_the_row_up_between_its_rounds`). left: `Hub::turn_in_flight` (`crates/sessionlog/src/hub.rs:1632`) still reads the round and not the field; a round with no calls followed by a nudge still says `true`; unclear: leticl's `:turn-finished` arm reading `ends_turn` is in another repo, check there.
+**Status:** closed in this repo. `Hub::turn_in_flight` (`crates/sessionlog/src/hub.rs`) reads `TurnState::Finished.ends_turn` (9bb46f2c7, test `a_turn_stays_in_flight_across_rounds_until_the_ending_frame`). The round loop already decides the ending (`CapturingSink::finish`, `crates/harnessd/src/harness/turns.rs`), so a no-call round that a nudge continues says `false`; asserted without a model file in `crates/harnessd/tests/turn_end_nudge.rs`. A loop that returns after a round that said `false` (a backgrounded job with a queued prompt) now gets its ending from `Hub::end_the_prompt`, called in `one_turn` (`crates/harnessd/src/turn_tail.rs`) before the clock stops (tests `a_prompt_left_between_rounds_is_ended_once`, `an_interrupt_between_rounds_stands_the_turn_down`). Failures publish `TurnFailed` in `settle`, interrupts `TurnInterrupted`, and a restarted daemon's hub starts with no turn. left: leticl's `:turn-finished` arm is not under ~/Projects and is unchecked.
 
 The operator, watching leticl's composer edge during a multi-round turn: *"sometimes 'responding'
 timers flickers to Responded and then back, without time reset. not harmful but annoying"*, and then
@@ -593,10 +593,7 @@ flicker, and no peer is handed a shape it has no arm for. The producer is the en
 `TurnEvent::TurnFinished.proposed_calls` is `!done.tool_calls.is_empty()`, and `lift` translates it to
 `ends_turn: !proposed_calls` — so no second frame is published and no head is billed twice. Frames:
 `crates/harnessd/tests/turn_end_marker.rs` (round one `false`, round two `true`, exactly two frames).
-Heads: this one reads it in `turn_busy` and the bridge gates `Turn::Idle` on it. **Residual, and it is
-the guess this row warned about**: a round that proposed NO calls but is followed by a nudge or a
-steering round still says `true`, so the flicker survives there — only a marker at the convergence
-point could remove it. `Hub::turn_in_flight` is unchanged and still reads the round, not the field.
+Heads: this one reads it in `turn_busy` and the bridge gates `Turn::Idle` on it. (The residual named here, a no-call round followed by a nudge saying `true`, is closed: see Status.)
 
 ---
 
