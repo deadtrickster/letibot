@@ -241,6 +241,8 @@ fn judge(
     let clones = clones_dir.0.join(CLONES_DIR);
     let pool = Pool {
         reviewer_skills: &[],
+        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
         store,
         runner: &Reviewers,
         desk: &desk,
@@ -281,6 +283,8 @@ fn a_pass(
     let clones_dir = TempDir::new("review-a-pass-clones");
     let pool = Pool {
         reviewer_skills: &[],
+        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
         store,
         runner: &Reviewers,
         desk: &desk,
@@ -1168,6 +1172,8 @@ fn a_reject_against_a_tip_the_target_has_moved_past_opens_no_fix_branch() {
     let clones = dir.0.join(CLONES_DIR);
     let pool = Pool {
         reviewer_skills: &[],
+        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
         store: &store,
         runner: &Reviewers,
         desk: &desk,
@@ -1473,6 +1479,8 @@ fn a_project_that_asks_for_vms_gets_its_reviewer_placed_in_one() {
         clones: clones.clone(),
         slots: &Vec::new,
         reviewer_skills: &[],
+        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
     };
     assert_eq!(
         serve(&pool).expect("a pass").started,
@@ -1748,6 +1756,8 @@ fn a_live_rows_trees_are_never_swept_and_a_dead_rows_go_once_they_are_old() {
         live: &|_: &str| true,
         clones: clones.clone(),
         reviewer_skills: &[],
+        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
     };
     // The REAL grace, and every tree YOUNG. Nothing of the dead row's goes yet - a clone may still be
@@ -1892,6 +1902,8 @@ fn the_sweep_does_not_disturb_a_clone_it_meets() {
         live: &|_: &str| true,
         clones: clones.clone(),
         reviewer_skills: &[],
+        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
     };
     let stem = clones.join("review-cloning");
@@ -2027,6 +2039,8 @@ fn a_clone_that_fails_is_a_wait_and_the_next_pass_tries_again() {
         live: &|_: &str| true,
         clones: clones.clone(),
         reviewer_skills: &[],
+        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
     };
     assert_eq!(serve(&pool).expect("a pass").started, 0, "no reviewer");
@@ -2158,6 +2172,8 @@ fn a_verdict_about_a_tree_that_went_away_is_a_wait_and_says_so() {
         live: &|_: &str| true,
         clones: clones.clone(),
         reviewer_skills: &[],
+        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
     };
     assert_eq!(

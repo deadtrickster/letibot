@@ -2107,6 +2107,8 @@ fn served(store: &Store, desk: &ReviewDesk, me: &str) -> crate::mergequeue::revi
     let deliver = |_: &str, _: &str| Err("no session is live in this fixture".to_string());
     let pool = crate::mergequeue::review::Pool {
         reviewer_skills: &[],
+        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
         store,
         runner: &runner,
         desk,

@@ -485,6 +485,8 @@ impl Harness {
             settings: &crate::mergequeue::settings::for_repository,
             // The reviewers' declared skills, from this daemon's project file.
             reviewer_skills: &self.cfg.reviewer_skills,
+            machines: self.cfg.review_hosts.clone(),
+            reviewer_hosts: self.cfg.reviewer_hosts.clone(),
             clones: self.cfg.review_clones.clone().unwrap_or_else(|| {
                 std::env::temp_dir().join(crate::mergequeue::review::CLONES_DIR)
             }),
