@@ -196,6 +196,8 @@ fn one_turn(
         out = settle(h, owner, next);
         compacted = h.transcript_id() != before;
     }
+    // A loop that returned after a round that said the prompt goes on has not ended it on the wire.
+    h.hub().end_the_prompt();
     crate::instruments::turn_ends(h, Some(&out), walls);
     // A start that outlived its turn would be inherited by the next prompt's first round.
     h.end_turn_clock();

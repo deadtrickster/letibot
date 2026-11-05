@@ -1800,6 +1800,41 @@ impl Hub {
         }
     }
 
+    /// Publish the prompt's ending when the last round said the prompt goes on and nothing came
+    /// after it (a loop that returned between rounds). Zero usage, so no head is billed twice.
+    /// Returns whether a frame was published.
+    pub fn end_the_prompt(&self) -> bool {
+        let event = {
+            let g = self.lock();
+            match g.view.turn() {
+                Some(t) => match &t.state {
+                    crate::view::TurnState::Finished {
+                        finish_reason,
+                        ends_turn: false,
+                        ..
+                    } => Some(SessionEvent::TurnFinished {
+                        turn_id: t.turn_id.clone(),
+                        finish_reason: finish_reason.clone(),
+                        usage: Default::default(),
+                        timings: Default::default(),
+                        ends_turn: true,
+                        prefix_check: None,
+                        dialect_template_sha: String::new(),
+                    }),
+                    _ => None,
+                },
+                None => None,
+            }
+        };
+        match event {
+            Some(e) => {
+                self.publish(e);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Take the next thing for the session's single reader. Blocks; `Closed` once the hub is. The
     /// reader is whoever runs this session's turns.
     pub fn take_own_work(&self) -> OwnWork {
@@ -2188,6 +2223,50 @@ mod tests {
         hub.publish(turn_started("t3"));
         hub.publish(turn_finished("t3"));
         assert!(!hub.turn_in_flight(), "the ending frame stands it down");
+    }
+
+    /// An interrupt that lands after a round said the prompt goes on is the prompt's end.
+    #[test]
+    fn an_interrupt_between_rounds_stands_the_turn_down() {
+        let hub = Hub::new("s-flight-interrupt");
+        hub.publish(turn_started("t1"));
+        hub.publish(proposed("t1", "c1", "bash"));
+        hub.publish(turn_finished_round("t1"));
+        assert!(hub.turn_in_flight());
+        hub.publish(SessionEvent::TurnInterrupted {
+            turn_id: "t1".into(),
+            reason: "operator".into(),
+            partial_kept: true,
+        });
+        assert!(!hub.turn_in_flight());
+        assert!(!hub.end_the_prompt(), "nothing left to end");
+    }
+
+    /// A loop that returns after a round that said the prompt goes on gets its ending published
+    /// once, and a prompt that already ended gets none.
+    #[test]
+    fn a_prompt_left_between_rounds_is_ended_once() {
+        let hub = Hub::new("s-flight-end");
+        hub.publish(turn_started("t1"));
+        hub.publish(turn_finished_round("t1"));
+        assert!(hub.turn_in_flight());
+        assert!(hub.end_the_prompt());
+        assert!(!hub.turn_in_flight());
+        assert!(!hub.end_the_prompt(), "exactly once");
+        let endings = hub
+            .retained()
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.event,
+                    SessionEvent::TurnFinished {
+                        ends_turn: true,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(endings, 1);
     }
 
     /// The footprint is the harness's to answer and the hub's to carry. Three shapes are told
