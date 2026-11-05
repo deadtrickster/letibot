@@ -7708,3 +7708,22 @@ the end-to-end chain instead.
 
 settled: deny-list `9d841b26`, trailer `0533ef39`, capture `28ae4cdc`, wiring `3dd2f445`, doc
 `fa2dcd00`, all on branch `remote/80621000`
+
+---
+
+## R124 - The package waiter exits on every provider stall
+
+Status: SETTLED 2026-11-05. `letibot-mcp wait` rides over a `stall` (`Head::wait_with`, `crates/bridge/src/head.rs`); `--exit-on-stall` restores the exit. Rate limit, quota and timeout still exit 40. Test: `crates/bridge/tests/wait_stall.rs`.
+
+The MCP tools never wait (`leticode_status` only reports `last_trouble`), so nothing there changes. A stall that lasts ends as a `timeout` trouble when the 180 s read timeout (`crates/http/src/lib.rs:64`) fires, which exits 40.
+
+`letibot-mcp wait --until attention` exits 40 for any provider trouble, and a stall is one: "this
+round has produced nothing in 15s", with the request still open and nothing restarted. GLM starts
+slowly often, so a caller re-arms the waiter several times per package for no event it can act on.
+
+A stall should not end the wait by default, or there should be an option for it
+(`--exit-on-stall` for the old behaviour). A rate limit, an exhausted quota, a timeout and a stall that the retry ladder
+has given up on still exit 40, so a caller can move the session to another model.
+
+**Done when**: a wait over a session whose provider stalls and then answers exits only at the
+turn's end; a quota refusal still exits 40 at once; a test drives both.

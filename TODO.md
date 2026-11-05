@@ -48,7 +48,6 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement), item 40 (the inline blocks over 800 lines) |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | only leticl's `:turn-finished` arm reading `ends_turn`: that repo is not under ~/Projects, so it is unchecked |
 | R121 | What a command boundary holds is hardcoded and invisible | Code work | items 5-8 (perimeters as config, children narrow and widening is an ask, file tools obey the perimeter), item 3's probe line, item 4's tool refusals |
-| R124 | The package waiter exits on every provider stall | Code work | all of it: a `wait` option (or default) that rides over a stall while the request is open and still exits on rate limit, quota and timeout |
 | R105 | The work order after the 2026-11-01 review | Code work | step 4's four live facts on lab2x1, step 6's comment rule (486 blocks over three lines by `scripts/comment-blocks.py count`), step 8's two decisions (JS engine source, JS-side contract), step 9 (the backlog entries in this file) |
 | R114 | Embeddings as the second similarity tier, for every similarity caller | Code work | item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase case scored against the worst measured negative, the per-round cost on lab2x1 |
 | R118 | A GitHub reviewer seat: `letibot attach github` reviews every PR and answers as @letibot | Code work | the seat in the daemon so the pane has a feed, a mirror per repository, the review panel, R116's verdict, R114's similarity offers |
@@ -594,23 +593,6 @@ flicker, and no peer is handed a shape it has no arm for. The producer is the en
 `ends_turn: !proposed_calls` — so no second frame is published and no head is billed twice. Frames:
 `crates/harnessd/tests/turn_end_marker.rs` (round one `false`, round two `true`, exactly two frames).
 Heads: this one reads it in `turn_busy` and the bridge gates `Turn::Idle` on it. (The residual named here, a no-call round followed by a nudge saying `true`, is closed: see Status.)
-
----
-
-## R124 - The package waiter exits on every provider stall
-
-Status: OPEN, filed 2026-11-05 by the operator. left: all of it.
-
-`letibot-mcp wait --until attention` exits 40 for any provider trouble, and a stall is one: "this
-round has produced nothing in 15s", with the request still open and nothing restarted. GLM starts
-slowly often, so a caller re-arms the waiter several times per package for no event it can act on.
-
-A stall should not end the wait by default, or there should be an option for it
-(`--ignore-stalls`). A rate limit, an exhausted quota, a timeout and a stall that the retry ladder
-has given up on still exit 40, so a caller can move the session to another model.
-
-**Done when**: a wait over a session whose provider stalls and then answers exits only at the
-turn's end; a quota refusal still exits 40 at once; a test drives both.
 
 ---
 
