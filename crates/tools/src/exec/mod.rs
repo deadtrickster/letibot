@@ -3,6 +3,7 @@
 //! and records what it killed. Confinement is here; the transcript edge and adjudicator are not.
 
 pub mod ask;
+pub mod boundary;
 pub mod confine;
 pub mod console;
 #[cfg(target_os = "macos")]

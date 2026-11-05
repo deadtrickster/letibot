@@ -63,22 +63,6 @@ pub fn mach_services(wide: bool) -> Vec<&'static str> {
         .collect()
 }
 
-/// What is put back inside the view read-only out of the operator's own home, since the
-/// session's `$HOME` holds no toolchain. Read-only, because rewriting `~/.cargo/bin` would be
-/// writing the binaries the operator runs; `.gitconfig` is here or a commit has no author.
-pub const TOOLCHAIN_UNDER_HOME: &[&str] = &[
-    ".cargo",
-    ".rustup",
-    ".local/bin",
-    ".local/share/mise",
-    ".local/state/mise",
-    "bin",
-    "Projects/llama.cpp",
-    "models",
-    ".gitconfig",
-    ".config/git",
-];
-
 /// Denied for read and write after every allow, whatever the view grants, and relative to the
 /// operator's home: a deny, because it has to win over a grant of the whole home. The credential
 /// stores are [`crate::secrets::STORES`]; what is here is what only a policy can express.
@@ -192,7 +176,7 @@ impl Layout {
         let mut cargo_home = None;
         let mut rustup_home = None;
         let mut git_config = None;
-        for rel in TOOLCHAIN_UNDER_HOME.iter().filter(|_| !wide) {
+        for rel in super::confine::GRANT_CANDIDATES.iter().filter(|_| !wide) {
             let p = operator_home.join(rel);
             if !p.exists() {
                 continue;
@@ -215,6 +199,9 @@ impl Layout {
         let mut deny: Vec<PathBuf> = deny_under_home(wide)
             .into_iter()
             .map(|rel| operator_home.join(rel))
+            // The view's own `masked` paths (config `hide`) are denied like the stores: a deny
+            // is the one thing the profile lets win over a grant.
+            .chain(view.masked.iter().flat_map(|p| both_spellings(p)))
             .collect();
         deny.sort();
         deny.dedup();

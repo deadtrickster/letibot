@@ -168,7 +168,7 @@ pub fn grants_for<S: AsRef<str>>(present: &[S]) -> Vec<Grant> {
     let rank = |p: &str| {
         GRANT_CANDIDATES
             .iter()
-            .position(|c| p.ends_with(c.trim_start_matches("$HOME")))
+            .position(|c| p.ends_with(&format!("/{c}")))
             .unwrap_or(usize::MAX)
     };
     let mut ordered: Vec<&str> = present.iter().map(AsRef::as_ref).collect();
@@ -395,7 +395,7 @@ pub fn present_under(home: &Path) -> Vec<String> {
     let at = |c: &str| home.join(c.trim_start_matches("$HOME/"));
     let mut out: Vec<String> = GRANT_CANDIDATES
         .iter()
-        .map(|c| at(c))
+        .map(|c| home.join(c))
         .filter(|p| p.exists())
         .map(|p| p.display().to_string())
         .collect();

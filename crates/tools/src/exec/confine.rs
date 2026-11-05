@@ -1880,19 +1880,22 @@ pub struct HostProbe {
     pub said: String,
 }
 
-/// The paths a remote view holds read-only by default: the toolchain, and the one config file
-/// a commit cannot happen without. Each is under that machine's `$HOME` and none is the home
-/// itself, whose mail, browser profile and `.ssh` are what this boundary exists to leave out.
+/// The paths a view holds read-only by default, relative to the home they sit under: the
+/// toolchain, and the config a commit cannot happen without. None is the home itself, whose mail,
+/// browser profile and `.ssh` are what a boundary exists to leave out. One list for the Linux
+/// view, the macOS profile and a remote host's probe. Read-only, because rewriting `~/.cargo/bin`
+/// is writing the binaries the operator runs, and `.gitconfig` is here or a commit has no author.
 pub const GRANT_CANDIDATES: &[&str] = &[
-    "$HOME/.cargo",
-    "$HOME/.rustup",
-    "$HOME/.local/bin",
-    "$HOME/.local/share/mise",
-    "$HOME/.local/state/mise",
-    "$HOME/bin",
-    "$HOME/.gitconfig",
-    "$HOME/Projects/llama.cpp",
-    "$HOME/models",
+    ".cargo",
+    ".rustup",
+    ".local/bin",
+    ".local/share/mise",
+    ".local/state/mise",
+    "bin",
+    ".gitconfig",
+    "Projects/llama.cpp",
+    "models",
+    ".config/git",
 ];
 
 /// The globbed candidate, kept separate because it is one: a fixed prefix and a `*`, never a
@@ -1912,7 +1915,7 @@ pub fn probe_script(view: &ViewSpec, egress: &Egress) -> String {
     s.push_str("echo \"home=$HOME\"\n");
     s.push_str("for d in");
     for c in GRANT_CANDIDATES {
-        s.push_str(&format!(" \"{c}\""));
+        s.push_str(&format!(" \"$HOME/{c}\""));
     }
     s.push_str("; do [ -e \"$d\" ] && echo \"have=$d\"; done\n");
     s.push_str("for d in");
@@ -2305,7 +2308,7 @@ fn build_argv(
 
 /// [`build_argv`], and for a pane the same argv without `--new-session`: see
 /// [`Confinement::wrap_terminal`].
-fn build_argv_with(
+pub(crate) fn build_argv_with(
     helper: &Path,
     view: &ViewSpec,
     egress: &Egress,
