@@ -287,8 +287,8 @@ fn a_named_top_level_session_is_a_member_by_its_slug() {
 
 mod cached {
     use super::*;
-    use letibot_sessionlog::registry::{SessionSource, StoredBrief};
     use letibot_sessionlog::SessionWiring;
+    use letibot_sessionlog::registry::{SessionSource, StoredBrief};
 
     /// A store of rows that counts how often it is listed and takes a rename.
     struct Store {
@@ -298,8 +298,7 @@ mod cached {
 
     impl SessionSource for Store {
         fn list(&self) -> Vec<StoredBrief> {
-            self.lists
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.lists.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.rows.lock().unwrap().clone()
         }
         fn set_title(&self, id: &str, title: &str) -> Result<(), String> {
@@ -343,7 +342,10 @@ mod cached {
 
     fn world(stored: usize) -> World {
         let dir = std::env::temp_dir()
-            .join(format!("letibot-roster-cache-{}-{stored}", std::process::id()))
+            .join(format!(
+                "letibot-roster-cache-{}-{stored}",
+                std::process::id()
+            ))
             .join("proj");
         std::fs::create_dir_all(&dir).expect("a project");
         let dir = dir.display().to_string();
