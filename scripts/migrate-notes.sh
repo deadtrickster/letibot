@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Copy a project's in-tree notes (.letibot/notes/*.md, on disk and tracked at HEAD) into the
-# notes checkout under the project's key, and commit them there. The project tree is not changed.
+# Copy a project's in-tree notes (.letibot/notes/*.md, on disk and committed) into the notes
+# checkout under the project's key, and commit them there. The project tree is not changed.
 #
 #   scripts/migrate-notes.sh PROJECT [--repo DIR] [--remote URL] [--push]
 #
@@ -156,17 +156,29 @@ if [ -d "$src" ]; then
     place "${f##*/}" "$f"
   done
 fi
-# Tracked at HEAD and gone from disk: the committed text is still a note.
+# Committed and gone from disk: the text at HEAD, or, once a commit removed the directory, the
+# text just before that commit. Either way the committed text is still a note.
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
+rev=""
 if git -C "$project" rev-parse -q --verify HEAD >/dev/null 2>&1; then
+  if [ -n "$(git -C "$project" ls-tree --name-only HEAD -- .letibot/notes)" ]; then
+    rev=HEAD
+  else
+    last="$(git -C "$project" rev-list -1 HEAD -- .letibot/notes)"
+    if [ -n "$last" ] && git -C "$project" rev-parse -q --verify "$last^" >/dev/null; then
+      rev="$last^"
+    fi
+  fi
+fi
+if [ -n "$rev" ]; then
   while IFS= read -r path; do
     case "$path" in */*/*/*) continue ;; *.md) ;; *) continue ;; esac
     name="${path##*/}"
     [ -e "$src/$name" ] && continue
-    git -C "$project" show "HEAD:$path" >"$tmp"
+    git -C "$project" show "$rev:$path" >"$tmp"
     place "$name" "$tmp"
-  done < <(git -C "$project" ls-tree -r --name-only HEAD -- .letibot/notes)
+  done < <(git -C "$project" ls-tree -r --name-only "$rev" -- .letibot/notes)
 fi
 
 git -C "$repo" add -A -- "$key"

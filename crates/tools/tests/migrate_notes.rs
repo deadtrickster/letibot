@@ -88,3 +88,33 @@ fn the_migration_copies_tracked_and_untracked_notes_under_the_daemons_key() {
         "the project tree is not touched"
     );
 }
+
+/// Run after the commit that removed `.letibot/notes` from the tree, the migration still finds
+/// the notes that commit removed.
+#[test]
+fn the_migration_finds_notes_a_later_commit_removed() {
+    let root = letibot_tools::backend::tempdir::TempDir::new();
+    let project = root.path().join("proj");
+    let notes = project.join(".letibot/notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    git(&project, &["init", "-q", "-b", "main"]);
+    std::fs::write(notes.join("old.md"), "committed once\n").unwrap();
+    git(&project, &["add", "-A"]);
+    git(&project, &["commit", "-q", "-m", "notes"]);
+    git(&project, &["rm", "-rq", ".letibot"]);
+    git(&project, &["commit", "-q", "-m", "notes out of the tree"]);
+    assert!(!notes.exists());
+
+    let repo = root.path().join("notes");
+    let out = migrate(&project, &repo);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let dest = repo.join(letibot_tools::notes_repo::project_key(&project));
+    assert_eq!(
+        std::fs::read_to_string(dest.join("old.md")).ok().as_deref(),
+        Some("committed once\n")
+    );
+}
