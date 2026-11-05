@@ -45,7 +45,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 
 | id | title | group | left |
 |---|---|---|---|
-| R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement), item 40 (the inline blocks over 800 lines) |
+| R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement) |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | only leticl's `:turn-finished` arm reading `ends_turn`: that repo is not under ~/Projects, so it is unchecked |
 | R121 | What a command boundary holds is hardcoded and invisible | Code work | items 5-8 (perimeters as config, children narrow and widening is an ask, file tools obey the perimeter), item 3's probe line, item 4's tool refusals |
 | R105 | The work order after the 2026-11-01 review | Code work | step 4's four live facts on lab2x1, step 6's comment rule (486 blocks over three lines by `scripts/comment-blocks.py count`), step 8's two decisions (JS engine source, JS-side contract), step 9 (the backlog entries in this file) |
@@ -124,7 +124,7 @@ own right**, addressed as R93.<id>; the list below groups them by what to fix fi
 
 ## R74 - What the 2026-10-11 landings left open
 
-**Status:** audited 2026-11 (nine fixed, seven already done, six not a session's to settle, 37 since settled), then worked (4, 11, 12, 16, 20, 23, 25 and 33 closed). left: item 39 (a live gate on lubuntu1/2 - the seam and the rows' naming are held by tests, and the operator's fleet key is not in this placement), item 40 (the inline blocks over 800 lines).
+**Status:** audited 2026-11 (nine fixed, seven already done, six not a session's to settle, 37 since settled), then worked (4, 11, 12, 16, 20, 23, 25, 33 and 40 closed). left: item 39 (a live gate on lubuntu1/2 - the seam and the rows' naming are held by tests, and the operator's fleet key is not in this placement).
 
 Everything merged on 2026-10-11 (main `cf47e65`: R61, R64, R65, R66 instrumentation, R67, R68, R69,
 R71, R72 + follow-up, R73, the no-llama build), and the gaps each landing reported or a check
@@ -267,11 +267,13 @@ nothing to design.
   the project's `leticode.toml`, a daemon over that project, and a branch through `/queue` — the
   merge row must say `lubuntu1 gate`, as must the target's `gating` and green evidence. The fleet's
   `~/.actrc` is item 27's, and `act` is in no gate here.
-- 40 **CHORE** — R70 is partly done (`harness.rs`, `adjudicate.rs`, `todo.rs` and `sessions/` moved
-  their blocks out). Nine inline blocks are still over ~800 lines; `harnessd/src/plugins.rs` is the
-  largest at 3 320 lines and the one to move first. Not attempted: moving a 2 469-line block means
-  reproducing every line of it, which is a job for a session that can cut and paste, not for one
-  whose only write is a retyped file.
+- 40 **DONE** — the largest inline block moved: `harnessd/src/plugins.rs`'s 3 404-line `mod tests`
+  is `crates/harnessd/src/plugins/tests.rs`, declared `#[cfg(test)] mod tests;` as harnessd's other
+  moved blocks are, and `--lib -- --list` names the same 1 201 tests before and after. Nothing was
+  edited, renamed or dropped; the move cost the block its four columns of indent, which let rustfmt
+  rejoin nine wrapped calls. What R70 still has: fifteen inline `mod tests` blocks over 800 lines,
+  largest `tools/src/exec/host.rs` (1 466) then `harnessd/src/mergequeue/gate.rs` (1 458), counted
+  by walking `mod tests {` to the closing brace at the same indent.
 - 41 **DONE** — R60's three: scrollback (`vt::Screen::HISTORY_ROWS`/`view`), panes numbered on the
   wire, and a confined pane (`wrap_terminal`, no `--new-session`), each with a test.
 
