@@ -580,7 +580,7 @@ pub const COUNTED_AS: &[(&str, &str)] = &[
     ("restart_restored", "restarts that brought work back"),
     ("restart_reminded", "restarts that reminded the model"),
     ("workspace_gone", "sessions whose workspace is gone"),
-    ("boundary_absent", "sessions that opened unconfined"),
+    ("boundary_absent", "sessions refused for want of a boundary"),
     // A refusal's code carries its request id (`denied:<id>`); the family is what a count of them
     // is counted in, and each member's own id is on its line in the popup.
     ("denied", "calls the gate refused"),

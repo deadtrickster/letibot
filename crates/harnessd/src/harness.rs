@@ -141,9 +141,17 @@ pub(crate) const SKILLS_PIN: &str = "skills_pin";
 /// session. Routine: a disclosure.
 const UNCONFINED_SESSION: &str = "unconfined_session";
 
-/// The warning code for a boundary that was asked for and could not be built: on a Mac the session
-/// fell back to the whole host, on Linux it was refused. Both say it before anything runs.
+/// The warning code for a boundary that was asked for and could not be built. The session is
+/// refused on every platform, and says so before anything runs.
 const BOUNDARY_ABSENT: &str = "boundary_absent";
+
+/// What a boundary needs on this platform, for a refusal that names it.
+#[cfg(target_os = "macos")]
+const BOUNDARY_NEEDS: &str = "a sandbox-exec profile the startup probe measures refusing a \
+    read of a canary, a write outside the checkout and the network.";
+#[cfg(not(target_os = "macos"))]
+const BOUNDARY_NEEDS: &str = "a delegated cgroup v2 subtree and a usable unprivileged namespace \
+    boundary (bwrap: `apt install bubblewrap`, or point `LETIBOT_BWRAP` at it).";
 
 /// The warning code for a session whose tools run on another machine - where its tree is,
 /// the branch that comes back, and what stayed here (`docs/remote-hosts.md`).

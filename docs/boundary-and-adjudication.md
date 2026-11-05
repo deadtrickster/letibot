@@ -793,9 +793,8 @@ dependency cannot fetch it into the registry from inside the boundary and fails 
 session gets the policy boundary and `backend_confined` is true - which is what makes `allow-all`
 available on a Mac at all (`Prereq::Confinement`). The default local seat (`leticode`) with `bash` on
 runs its commands in the same boundary, over the checkout, while its file tools stay rooted at `/`
-(`HostBackend::confined_over`, chosen in `Harness::place_the_tools`); a Mac whose probe refuses
-leaves it unconfined with `boundary_absent`, exactly as below, and on Linux the same call builds the
-wide view and a refused probe leaves no session at all. Every widening re-probes through the same dispatch (`with_session_tmp`,
+(`HostBackend::confined_over`, chosen in `Harness::place_the_tools`); a refused probe leaves no
+session at all on either platform, with `boundary_absent` and the refusal's words. Every widening re-probes through the same dispatch (`with_session_tmp`,
 `grant_into_view_impl`), so what is described is what runs. `bash`, background jobs and the persistent
 shell all go through `Confinement::wrap`, which for this mechanism is `sandbox-exec -f <profile>
 /bin/sh -c 'export HOME=… TMPDIR=…; exec "$@"'` - the shim exists because a profile cannot set an
@@ -848,17 +847,15 @@ place the default seat on this Mac and find the boundary built, no warning, a co
 checkout and the same command refused a write outside it. What is not measured here is the live card:
 that needs a built daemon, see R98 in TODO.md for the step.
 
-If `sandbox-exec` is missing or the probe refuses, the daemon **seats an unconfined whole-host session,
-says so on the session's log as `boundary_absent`, and prints the refusal's own words**. On Linux
-nothing falls back: a `leticode` session that seats a shell asks for the wide seat, and a machine
-that cannot build one (no `bwrap`, no delegated cgroup) is refused with `boundary_absent` and the
-same words, because `bwrap` and a cgroup are things a host can be given. A `leticode` session that
-seats no shell has no command for a boundary to go in front of, and that one is the whole-host
+If `sandbox-exec` is missing or the probe refuses, the session is **refused**, with `boundary_absent`
+and the refusal's own words, as on Linux (no `bwrap`, no delegated cgroup). Nothing falls back to the
+whole host. A `leticode` session that seats no shell has no command for a boundary to go in front of,
+and that one is the whole-host
 session `unconfined_session` is about. Two things are deliberately left: the profile is written per
 probe and never removed
 (`$TMPDIR/letibot-seatbelt-<pid>/profile-<n>.sb`, outside every checkout on purpose, since a policy the
 command can edit is not a policy), and `sandbox-exec` is deprecated - the day it goes, `probe` refuses
-by name and every session falls back to the `boundary_absent` sentence.
+by name and every session is refused with the `boundary_absent` sentence.
 
 ## 4l. The order the gate decides in
 

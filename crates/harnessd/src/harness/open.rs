@@ -682,40 +682,17 @@ impl Harness {
         });
     }
 
-    /// A Mac whose boundary could not be built is unconfined and says so, on the session's hub
-    /// and in the daemon's log.
-    #[cfg(target_os = "macos")]
-    fn say_boundary_absent(hub: &Arc<Hub>, e: &dyn std::fmt::Display) {
-        let said = format!(
-            "this session is UNCONFINED, and its commands run with this user's \
-             rights over this whole host. A macOS boundary was asked for and could \
-             not be built: {e}\n\nWhat that means here, in the words the gate uses: \
-             a command that runs code (a test runner, a build) is decided per \
-             command by the operator, because nothing else is stopping what that \
-             code can read. `docs/boundary-and-adjudication.md` §4k says what the \
-             boundary would have given and why the probe refused."
-        );
-        eprintln!("letibot: {said}");
-        hub.publish(SessionEvent::Warning {
-            code: BOUNDARY_ABSENT.into(),
-            detail: said,
-            compaction: None,
-        });
-    }
-
-    /// A Linux wide seat that could not be built is a REFUSAL, not a fallback: the same failure
-    /// on a Mac would leave the session unconfined and say so, and here the alternative is the
-    /// whole host with the operator's keys readable. Says it, then hands back the sentence.
-    #[cfg(not(target_os = "macos"))]
+    /// A wide seat that could not be built is a REFUSAL, not a fallback, on every platform: the
+    /// alternative is the whole host with the operator's keys readable. Says it, then hands back
+    /// the sentence.
     fn say_wide_seat_refused(hub: &Arc<Hub>, e: &dyn std::fmt::Display) -> String {
         let said = format!(
             "this session asks for the wide seat and no boundary could be built for it: {e}\n\n\
              It is refused rather than opened UNCONFINED, which would give a command this user's \
              rights over the whole host with the operator's keys readable. The wide seat is \
              bubblewrap around this machine's own filesystem with the credential stores masked, \
-             and it needs bwrap and a delegated cgroup v2 subtree. Install bubblewrap \
-             (`apt install bubblewrap`) or point `LETIBOT_BWRAP` at it; a session that seats no \
-             shell needs no boundary at all."
+             and it needs {BOUNDARY_NEEDS} A session that seats no shell needs no boundary at \
+             all."
         );
         eprintln!("letibot: {said}");
         hub.publish(SessionEvent::Warning {
@@ -797,12 +774,6 @@ impl Harness {
         .and_then(|b| b.with_cwd(&cfg.workspace));
         match built {
             Ok(b) => Ok(Some(b)),
-            #[cfg(target_os = "macos")]
-            Err(e) => {
-                Self::say_boundary_absent(hub, &e);
-                Ok(None)
-            }
-            #[cfg(not(target_os = "macos"))]
             Err(e) => Err(HarnessError::Setup(Self::say_wide_seat_refused(hub, &e))),
         }
     }
@@ -904,34 +875,15 @@ impl Harness {
             );
             match built {
                 Ok(b) => b,
-                // A Mac whose boundary could not be built is unconfined and says so, on the
-                // session's hub and in the daemon's log. On Linux this arm stays a refusal: bwrap
-                // and a delegated cgroup are things a host can be fixed to have.
-                #[cfg(target_os = "macos")]
                 Err(e) => {
-                    Self::say_boundary_absent(hub, &e);
-                    whole_host = true;
-                    let b = if cfg.allow_bash {
-                        HostBackend::executable("/")
-                    } else {
-                        HostBackend::writable("/")
-                    }
-                    .map_err(|e| HarnessError::Setup(format!("whole-host backend: {e}")))?;
-                    b.with_cwd(&cfg.workspace).map_err(|e| {
-                        HarnessError::Setup(format!("workspace {:?} as cwd: {e}", cfg.workspace))
-                    })?
-                }
-                #[cfg(not(target_os = "macos"))]
-                Err(e) => {
-                    return Err(HarnessError::Setup(format!(
+                    let said = format!(
                         "the `{}` role needs a confined execution backend and one could not be \
                      built over {:?}: {e}.\n\nThis is a refusal, not a degradation: the \
                      alternative is `HostBackend::executable`, which gives a process the \
                      cgroup that bounds its lifetime and NO boundary on what it can read \
                      — the operator's whole filesystem, with a banner that would have to \
-                     say so. Two things it needs and the error above says which is \
-                     missing: a delegated cgroup v2 subtree, and a usable unprivileged \
-                     namespace boundary (bwrap). A third thing the message above may \
+                     say so. It needs {BOUNDARY_NEEDS} The error above says which is \
+                     missing. Another thing the message above may \
                      name instead: the project root itself. Both `runner` and `coder` \
                      root their view at the workspace, so a workspace that is a file, \
                      a dangling symlink or absent fails here and no boundary is the \
@@ -939,7 +891,14 @@ impl Harness {
                      with no exec path at all.",
                         cfg.seat.as_str(),
                         cfg.workspace
-                    )));
+                    );
+                    eprintln!("letibot: {said}");
+                    hub.publish(SessionEvent::Warning {
+                        code: BOUNDARY_ABSENT.into(),
+                        detail: said.clone(),
+                        compaction: None,
+                    });
+                    return Err(HarnessError::Setup(said));
                 }
             }
         } else if cfg.seat.needs_writable_backend() && may_write {
