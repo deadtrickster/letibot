@@ -76,6 +76,10 @@ fn a_daemon_the_bridge_started_is_listed_by_the_launcher() {
     }
     let harnessd = bin.join("harnessd");
     fake_daemon(&harnessd);
+    // `ensure` runs `letibot --room` first. Unstubbed, that is whatever `letibot` is on `PATH`,
+    // which starts a coordinator nothing here stops.
+    let room = bin.join("room");
+    letibot_tools::testing::write_stub(&room, "#!/bin/sh\nexit 0\n");
 
     // SAFETY (Rust 2024's `unsafe` on `set_var`): this binary holds one test and no thread that
     // reads the environment has started. Every one of these is a path in the fixture - `$HOME`
@@ -84,6 +88,7 @@ fn a_daemon_the_bridge_started_is_listed_by_the_launcher() {
         std::env::set_var("HOME", &home);
         std::env::set_var("XDG_RUNTIME_DIR", &rundir);
         std::env::set_var("LETIBOT_BIN", &bin);
+        std::env::set_var("LETIBOT_ROOM_SUPERVISOR", &room);
         std::env::remove_var("LETIBOT_SOCKET");
         std::env::remove_var("LETIBOT_LOG");
         std::env::remove_var("LETIBOT_STORE");
