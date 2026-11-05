@@ -176,8 +176,7 @@ fn one_batch_and_many_appends_build_the_same_prompt() {
 
 /// A fold rolls items back, and the token taken before the rollback describes a transcript that is
 /// no longer this one. Trusting it would leave a turn open that the replay closes, so the length it
-/// was taken at is checked and a mismatch replays: the ledger must equal the one a session that
-/// never folded holds.
+/// was taken at is checked and a mismatch replays.
 #[test]
 fn a_token_taken_before_a_rollback_is_not_trusted() {
     let renderer = ChatMlRenderer::default();

@@ -902,9 +902,8 @@ mod tests {
     }
 
     /// The token a caller carries, with the history given to the first call only: three appends
-    /// must build what three replays build. The splits land inside a run of tool results, which is
-    /// the state a `usize` cannot carry - `tool_turn_open` is what decides whether the second call
-    /// may write the run's `<|im_end|>`.
+    /// must build what three replays build. The splits land inside a run of tool results, whose
+    /// `tool_turn_open` decides where the run's `<|im_end|>` goes.
     #[test]
     fn a_carried_token_builds_what_the_replays_build() {
         let items = [
