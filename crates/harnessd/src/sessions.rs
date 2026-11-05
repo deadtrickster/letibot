@@ -1427,6 +1427,29 @@ impl<'a> Sessions<'a> {
                     },
                 }
             }
+            // §6's standalone prune: no summary turn, so the verb runs with no model behind it -
+            // the one reduction that works at a wall with no room to write into.
+            Slash::Prune => {
+                let h = match self.harness(session_id) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        return SlashReply {
+                            lines: vec![e.to_string()],
+                            ok: false,
+                        };
+                    }
+                };
+                match h.prune() {
+                    Ok(r) => SlashReply {
+                        lines: vec![crate::harness::prune_reply(&r)],
+                        ok: true,
+                    },
+                    Err(e) => SlashReply {
+                        lines: vec![e.to_string()],
+                        ok: false,
+                    },
+                }
+            }
             // The merge queue's person-verbs.
             parsed @ (Slash::Queue(_) | Slash::QueueIn { .. }) => {
                 use crate::slash::{QueueScope, QueueVerb};
@@ -4434,7 +4457,9 @@ impl<'a> Sessions<'a> {
                 // rule and door.
                 if matches!(
                     crate::slash::Slash::parse(line),
-                    crate::slash::Slash::Clear { .. } | crate::slash::Slash::Nag(_)
+                    crate::slash::Slash::Clear { .. }
+                        | crate::slash::Slash::Prune
+                        | crate::slash::Slash::Nag(_)
                 ) && let Some(hub) = &hub
                     && hub.owner() == Owner::OwnThread
                     && hub.give_back_to_its_own_reader(cmd.clone())

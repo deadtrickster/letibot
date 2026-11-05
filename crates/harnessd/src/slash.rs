@@ -35,6 +35,7 @@ pub const VERBS: &[&str] = &[
     "models",
     "monitor",
     "nag",
+    "prune",
     "queue",
     "supervise",
     "tools",
@@ -60,6 +61,10 @@ pub enum Slash {
         /// bare `/clear`.
         next: Option<String>,
     },
+    /// `/prune` - the oldest tool-call bodies leave this conversation as stubs, each kept in
+    /// the spill store under an id `recall` opens. No summary runs, so the verb works with no
+    /// model behind it. See `harness/prune.rs`.
+    Prune,
     /// `/job` lists this session's background jobs; `/job ID` reads what one
     /// wrote. The pane counted those bytes and could not show them.
     Job {
@@ -251,6 +256,7 @@ impl Slash {
                     .filter(|t| !t.is_empty())
                     .map(str::to_string),
             },
+            Some("prune") => Slash::Prune,
             Some("tools") => Slash::Tools,
             // `off` and `on` are kept as the same verbs, because they are what somebody reaches
             // for first; the replies use `pause` and `resume`.
@@ -1706,5 +1712,18 @@ mod the_verb_table_is_the_parser {
                  `is not a daemon verb` about a verb the head just completed"
             );
         }
+    }
+
+    /// `/prune` is one word, no arguments, and it lands on the session in front of you - the
+    /// same shape `/clear` has, so anything after the verb is not part of it.
+    #[test]
+    fn prune_is_its_own_verb() {
+        assert_eq!(Slash::parse("prune"), Slash::Prune);
+        assert_eq!(Slash::parse("prune now"), Slash::Prune);
+        assert_ne!(
+            Slash::parse("pruned"),
+            Slash::Prune,
+            "a longer word is not the verb"
+        );
     }
 }
