@@ -522,7 +522,7 @@ fn a_census_and_a_plan_check_do_not_postpone_each_other() {
             &id,
             &[TodoItem {
                 content: "finish the migration".into(),
-                status: TodoStatus::InProgress,
+                status: TodoStatus::Pending,
                 by: TodoBy::Model,
                 when: None,
                 needs: Vec::new(),

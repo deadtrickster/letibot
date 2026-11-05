@@ -99,7 +99,7 @@ fn seed(path: &std::path::Path, session_id: &str) {
         &[
             TodoItem {
                 content: "finish the migration".into(),
-                status: TodoStatus::InProgress,
+                status: TodoStatus::Pending,
                 by: TodoBy::Model,
                 when: None,
                 needs: Vec::new(),
