@@ -1,6 +1,10 @@
 //! Every warning code named in this tree has a severity, and this test keeps the table from
 //! rotting: it reads the tree, finds each code named at its emission site and fails until it has a
 //! row. A code reaching the wire through a variable is invisible, so only one direction is asserted.
+//!
+//! Four shapes carry a code: `Warning { code: … }` and `Warned { … }` (the variant built by hand),
+//! `import_note("code", …)` (the import's writer), and the doors `warn`/`warn_with`/`warning`/
+//! `warning_with`, whose FIRST argument is the code.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -120,6 +124,54 @@ fn codes_in_literal(src: &str, open: usize) -> Vec<String> {
     out
 }
 
+/// The warning codes a door is handed - `.warn("code", ...)`, `.warn_with(...)`,
+/// `::warning(...)`, `::warning_with(...)`. The first TWO arguments are read, because
+/// `Sessions::warn` names the session before the code; the second top-level comma ends it, so an
+/// `if`/`else` is one argument and both its strings are codes, while a sentence after them is not
+/// (`looks_like_a_code` refuses one with a space in it).
+fn codes_in_call(src: &str, open: usize) -> Vec<String> {
+    let b = src.as_bytes();
+    let mut out = Vec::new();
+    let mut i = open;
+    let mut depth: i32 = 0;
+    let mut commas = 0;
+    while i < b.len() {
+        if let Some(next) = past_comment(b, i) {
+            i = next;
+            continue;
+        }
+        match b[i] {
+            b'"' | b'\'' => {
+                let end = past_string(b, i);
+                if b[i] == b'"'
+                    && let Ok(text) = std::str::from_utf8(&b[i + 1..end - 1])
+                    && looks_like_a_code(text)
+                {
+                    out.push(text.to_string());
+                }
+                i = end;
+                continue;
+            }
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => {
+                depth -= 1;
+                if depth <= 0 {
+                    return out;
+                }
+            }
+            b',' if depth == 1 => {
+                commas += 1;
+                if commas == 2 {
+                    return out;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Every warning code in one file's source; the module doc names the two shapes.
 fn codes_in(src: &str) -> Vec<String> {
     let b = src.as_bytes();
@@ -143,6 +195,36 @@ fn codes_in(src: &str) -> Vec<String> {
             continue;
         }
         let rest = &b[i..];
+        // The call-shaped doors first, longest name first: `warn` is a prefix of `warn_with`. A
+        // METHOD (`.warn(`) or the constructor (`::warning(`) and never a bare call: `testing::warn`
+        // is a fixture whose argument is a detail, and `warn("a")` in this crate's own tests is
+        // one too.
+        let mut matched = false;
+        for (kw, lead) in [
+            (&b"warning_with"[..], b':'),
+            (&b"warn_with"[..], b'.'),
+            (&b"warning"[..], b':'),
+            (&b"warn"[..], b'.'),
+        ] {
+            let Some(tail) = rest.strip_prefix(kw) else {
+                continue;
+            };
+            if prev != lead {
+                continue;
+            }
+            let skip = |s: &[u8]| s.iter().position(|c| !matches!(c, b' ' | b'\t' | b'\n'));
+            let Some(at) = skip(tail) else { continue };
+            if tail[at..].first() != Some(&b'(') {
+                continue;
+            }
+            out.extend(codes_in_call(src, i + kw.len() + at));
+            matched = true;
+            break;
+        }
+        if matched {
+            i += 1;
+            continue;
+        }
         for kw in [&b"Warning"[..], &b"Warned"[..], &b"import_note"[..]] {
             let Some(tail) = rest.strip_prefix(kw) else {
                 continue;

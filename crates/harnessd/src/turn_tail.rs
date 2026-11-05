@@ -179,16 +179,15 @@ fn one_turn(
                 break;
             }
             WallNext::GoesOn => {
-                h.hub().publish(SessionEvent::Warning {
-                    code: "context_wall_continued".into(),
-                    detail: format!(
+                h.hub().warn(
+                    "context_wall_continued",
+                    format!(
                         "the turn reached the context wall, was compacted, and goes on from \
                          the summary ({} of at most {})",
                         walls + 1,
                         crate::sessions::WALL_CONTINUES
                     ),
-                    compaction: None,
-                });
+                );
             }
         }
         walls += 1;
@@ -247,11 +246,7 @@ fn settle(
         // A switch that fails says how to go back - the operator's session was switched to a model
         // whose every request was refused, and the screen named the refusal and nothing else.
         if let Some(said) = h.switch_back_notice(e) {
-            h.hub().publish(SessionEvent::Warning {
-                code: "model_switch_refused".into(),
-                detail: said,
-                compaction: None,
-            });
+            h.hub().warn("model_switch_refused", said);
         }
     }
     // The wall is the one failure that must still compact, and the two outcomes take two
@@ -276,14 +271,13 @@ fn settle(
         } else {
             "automatic compaction is off for this session"
         };
-        h.hub().publish(SessionEvent::Warning {
-            code: "auto_compact_skipped".into(),
-            detail: format!(
+        h.hub().warn(
+            "auto_compact_skipped",
+            format!(
                 "the turn stopped at the context wall and nothing was compacted: {why}. \
                  `/compact` does it by hand."
             ),
-            compaction: None,
-        });
+        );
     }
     out
 }
@@ -300,11 +294,7 @@ pub(crate) fn publish_failure(hub: &Arc<Hub>, turn_id: &str, e: &HarnessError) {
         // looking like this.
         partial_kept: false,
     });
-    hub.publish(SessionEvent::Warning {
-        code: "turn_failed".into(),
-        detail: e.to_string(),
-        compaction: None,
-    });
+    hub.warn("turn_failed", e.to_string());
 }
 
 /// What a batch of firings earns: whether the bell rings, and the monitors that rang (the ones the

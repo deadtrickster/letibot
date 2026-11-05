@@ -185,11 +185,7 @@ impl SteeringSource for HubSteering {
                     }
                     let (extra, refused) = crate::attachments::parts(&attachments);
                     for said in &refused {
-                        self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                            code: "attachment_refused".into(),
-                            detail: said.clone(),
-                            compaction: None,
-                        });
+                        self.hub.warn("attachment_refused", said.clone());
                     }
                     Some(SteeringMessage::operator_with(text, extra))
                 }
@@ -235,14 +231,10 @@ impl SteeringSource for HubSteering {
                             Some(SteeringMessage::normal(line))
                         }
                         Err(why) => {
-                            self.hub.publish(SessionEvent::Warning {
-                                code: "todo_answer_refused".into(),
-                                detail: format!(
-                                    "your answer on `{}` was not taken: {why}",
-                                    content.trim()
-                                ),
-                                compaction: None,
-                            });
+                            self.hub.warn(
+                                "todo_answer_refused",
+                                format!("your answer on `{}` was not taken: {why}", content.trim()),
+                            );
                             self.try_next()
                         }
                     }

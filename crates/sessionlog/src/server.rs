@@ -713,16 +713,14 @@ pub fn serve_conn_rooted(
                 // A head's answer. Not a command: it is never queued, announced or
                 // logged with its payload. `give_secret` publishes the settlement.
                 if !seat.hub.give_secret(&req_id, secret, &identity) {
-                    seat.hub.publish(crate::event::SessionEvent::Warning {
-                        code: "secret_late".into(),
-                        detail: format!(
+                    seat.hub.warn(
+                        "secret_late",
+                        format!(
                             "{}: nothing was waiting on {req_id} — the helper had given up, \
                              or another head answered first",
                             identity
                         ),
-
-                        compaction: None,
-                    });
+                    );
                 }
             }
             Ok(ClientFrame::Screen {
@@ -742,15 +740,14 @@ pub fn serve_conn_rooted(
                 let session = seat.hub.session_id().to_string();
                 match registry.prompt(&session) {
                     None => {
-                        seat.hub.publish(crate::event::SessionEvent::Warning {
-                            code: "nothing_to_send_to".into(),
-                            detail: format!(
+                        seat.hub.warn(
+                            "nothing_to_send_to",
+                            format!(
                                 "{identity}: this daemon has no way to reach a running \
                                  command's stdin, so `{line}` was not sent. Nothing of yours \
                                  is running."
                             ),
-                            compaction: None,
-                        });
+                        );
                     }
                     Some(driver) => match driver.send(&session, Some(&req_id), &line) {
                         // A card was up and this settled it. The line is nowhere on the log -
@@ -769,11 +766,7 @@ pub fn serve_conn_rooted(
                         // head answered first, so nothing was written. Worth a red line - the
                         // person typed an answer and the command did not get it.
                         Err(why) => {
-                            seat.hub.publish(crate::event::SessionEvent::Warning {
-                                code: "prompt_late".into(),
-                                detail: format!("{identity}: {why}"),
-                                compaction: None,
-                            });
+                            seat.hub.warn("prompt_late", format!("{identity}: {why}"));
                         }
                     },
                 }
@@ -785,14 +778,13 @@ pub fn serve_conn_rooted(
                 let session = seat.hub.session_id().to_string();
                 match registry.prompt(&session) {
                     None => {
-                        seat.hub.publish(crate::event::SessionEvent::Warning {
-                            code: "nothing_to_send_to".into(),
-                            detail: format!(
+                        seat.hub.warn(
+                            "nothing_to_send_to",
+                            format!(
                                 "{identity}: this daemon has no way to reach a running \
                                  command's stdin, so `{line}` was not sent."
                             ),
-                            compaction: None,
-                        });
+                        );
                     }
                     Some(driver) => match driver.send(&session, None, &line) {
                         Ok(settled) => {
@@ -810,11 +802,8 @@ pub fn serve_conn_rooted(
                         // Nothing of yours is running, or its stdin is gone. A refusal and not
                         // a failure: the act had nothing to act on.
                         Err(why) => {
-                            seat.hub.publish(crate::event::SessionEvent::Warning {
-                                code: "nothing_to_send_to".into(),
-                                detail: format!("{identity}: {why}"),
-                                compaction: None,
-                            });
+                            seat.hub
+                                .warn("nothing_to_send_to", format!("{identity}: {why}"));
                         }
                     },
                 }
@@ -1542,17 +1531,16 @@ pub fn serve_conn_rooted(
                     "" => String::new(),
                     words => format!(" because {words}"),
                 };
-                seat.hub.publish(crate::event::SessionEvent::Warning {
-                    code: "session_closed".into(),
-                    detail: format!(
+                seat.hub.warn(
+                    "session_closed",
+                    format!(
                         "`{who}` closed this session{why}. Nothing here is deleted: the rows stay \
                          in the store, so `letibot --session <id>` reopens it, and what a \
                          placement committed comes home as its branch. A head left attached is \
                          detached — a conversation that has moved on is not one to keep typing \
                          into."
                     ),
-                    compaction: None,
-                });
+                );
                 // Closed before it is acked: `--migrate` copies the session the moment it reads
                 // `Accepted`, so the answer has to mean the rows are already written.
                 let seq = seat.hub.head_seq();
@@ -1573,9 +1561,9 @@ pub fn serve_conn_rooted(
             }) => {
                 for brief in registry.list() {
                     if let Some(hub) = registry.get(&brief.session_id) {
-                        hub.publish(crate::event::SessionEvent::Warning {
-                            code: "daemon_stopping".into(),
-                            detail: format!(
+                        hub.warn(
+                            "daemon_stopping",
+                            format!(
                                 "`{who}` asked this daemon to stop. Every head detaches, \
                                  the socket goes, and the session is on disk — `letibot \
                                  --continue` reopens it. A turn already generating is \
@@ -1583,9 +1571,7 @@ pub fn serve_conn_rooted(
                                  token, its partial output is kept, and nothing new is \
                                  started."
                             ),
-
-                            compaction: None,
-                        });
+                        );
                     }
                 }
                 // What this stop is about to end is SAID FIRST, before the ack: the sentence a head
@@ -1885,20 +1871,12 @@ fn seat_in(
     // What this session's harness found about its frozen prefix, said NOW: the comparison is
     // made when the harness opens, and this is the one moment to say it.
     if let Some(said) = registry.stale_prefix(&session_id) {
-        hub.publish(SessionEvent::Warning {
-            code: "prefix_stale".into(),
-            detail: said,
-            compaction: None,
-        });
+        hub.warn("prefix_stale", said);
     }
     // And that this daemon's binary is older than the store it is serving. The store's floor is
     // the other half of that, said at the door.
     if let Some(said) = registry.store_older() {
-        hub.publish(SessionEvent::Warning {
-            code: "store_newer".into(),
-            detail: said,
-            compaction: None,
-        });
+        hub.warn("store_newer", said);
     }
     {
         let mut w = writer.lock().unwrap();

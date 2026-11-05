@@ -156,11 +156,10 @@ pub fn propose_target(
          then gates the new target's tip.",
         file.display()
     );
-    events(SessionEvent::Warning {
-        code: "queue_target_proposed".into(),
-        detail: detail.clone(),
-        compaction: None,
-    });
+    events(SessionEvent::warning(
+        "queue_target_proposed",
+        detail.clone(),
+    ));
     store
         .record_transition(
             "target",

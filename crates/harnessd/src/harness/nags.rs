@@ -322,11 +322,7 @@ impl Harness {
         if let Err(why) = &stored {
             detail.push_str(&format!(". {why}"));
         }
-        self.hub.publish(SessionEvent::Warning {
-            code: "nags_paused".into(),
-            detail,
-            compaction: None,
-        });
+        self.hub.warn("nags_paused", detail);
         self.publish_settings();
         stored
     }
@@ -343,11 +339,7 @@ impl Harness {
         if let Err(why) = &stored {
             detail.push_str(&format!(". {why}"));
         }
-        self.hub.publish(SessionEvent::Warning {
-            code: "nags_resumed".into(),
-            detail,
-            compaction: None,
-        });
+        self.hub.warn("nags_resumed", detail);
         self.publish_settings();
         stored
     }

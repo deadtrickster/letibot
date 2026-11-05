@@ -1269,15 +1269,14 @@ impl JobRecorder {
             self.session_id
         );
         if let Some(hub) = self.hub.upgrade() {
-            hub.publish(SessionEvent::Warning {
-                code: "job_not_recorded".into(),
-                detail: format!(
+            hub.warn(
+                "job_not_recorded",
+                format!(
                     "background job `{handle}`: {what} could not be written to the store ({why}). \
                      The job itself is unaffected; what is missing is its row in the jobs \
                      history, and a todo row waiting on it may not be released after a restart."
                 ),
-                compaction: None,
-            });
+            );
         }
     }
 

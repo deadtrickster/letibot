@@ -505,11 +505,7 @@ impl Questioner for HeadQuestioner {
     fn defaulted(&self, q: &Question, waited: Duration) -> Option<String> {
         let ws = self.workspace.as_deref()?;
         let said = auto_decision(ws, &self.hub.session_id(), q, waited, unix_millis());
-        self.hub.publish(SessionEvent::Warning {
-            code: "auto_decision".into(),
-            detail: said.clone(),
-            compaction: None,
-        });
+        self.hub.warn("auto_decision", said.clone());
         Some(said)
     }
 }

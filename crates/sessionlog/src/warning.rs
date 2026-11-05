@@ -385,6 +385,9 @@ pub const TABLE: &[(&str, Class)] = &[
     // A written `[embeddings]` section produced no embedder (fetch failed, bad key): scores
     // are lexical until the operator fixes it.
     ("embedder_unavailable", Class::Failure),
+    // A tier that stopped answering MID-session - the same loss as the row above and a different
+    // cause, which `docs/embeddings.md` spells with this code.
+    ("embeddings_unavailable", Class::Failure),
     ("context_wall", Class::Failure),
     // *At* the wall, and nothing was compacted because automatic compaction is off for
     // this session. Exactly the sentence an operator has to read: `/compact` does it by
@@ -532,6 +535,9 @@ pub const TABLE: &[(&str, Class)] = &[
     // daemon holds, a daemon that keeps growing is killed by the kernel with all of them, and
     // restarting it is the remedy.
     ("memory_high", Class::Failure),
+    // A bound the daemon relies on to keep its memory flat did not hold. The same shape as
+    // `memory_high` and reported beside it: the harness, not the session, is what is failing.
+    ("memory_bound_broken", Class::Failure),
     // A tool call somebody DECIDED to refuse - the head's `denied:<request id>` note, looked
     // up under `denied` for every id. The call did not happen and only the operator can lift it.
     ("denied", Class::Failure),
@@ -771,15 +777,15 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_41_routine_11_refused_and_64_failures() {
+    fn the_table_is_75_routine_15_refused_and_95_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 183, "the table's size");
+        assert_eq!(TABLE.len(), 185, "the table's size");
         assert_eq!(count(Class::Routine), 75);
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 93);
+        assert_eq!(count(Class::Failure), 95);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);

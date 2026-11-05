@@ -185,7 +185,7 @@ fn watch(registry: Arc<Registry>, every: Duration, leaf: Option<PathBuf>) {
                     human_bytes(live as u64),
                     human_bytes(rss)
                 );
-                registry.broadcast(warning(
+                registry.broadcast(SessionEvent::warning(
                     "memory_creep",
                     format!(
                         "this daemon's resident memory has grown on {creeping} readings running \
@@ -210,13 +210,13 @@ fn watch(registry: Arc<Registry>, every: Duration, leaf: Option<PathBuf>) {
                 if said.insert((c.session_id.clone(), kind)) {
                     eprintln!("memwatch: BOUND BROKEN in {}: {broken}", c.session_id);
                     if let Some(h) = registry.get(&c.session_id) {
-                        h.publish(warning(
+                        h.warn(
                             "memory_bound_broken",
                             format!(
                                 "this session's {broken}. A bound the daemon relies on to keep \
                                  its memory flat did not hold; the daemon's log has the census."
                             ),
-                        ));
+                        );
                     }
                 }
             }
@@ -241,7 +241,7 @@ fn watch(registry: Arc<Registry>, every: Duration, leaf: Option<PathBuf>) {
             }
             let report = full_census(rss, live, peak, &census, &threads);
             eprintln!("memwatch: CENSUS at {}\n{report}", human_bytes(rss));
-            registry.broadcast(warning(
+            registry.broadcast(SessionEvent::warning(
                 "memory_high",
                 format!(
                     "the daemon now holds {} resident (heap {}). That is not normal for a \
@@ -252,14 +252,6 @@ fn watch(registry: Arc<Registry>, every: Duration, leaf: Option<PathBuf>) {
                 ),
             ));
         }
-    }
-}
-
-fn warning(code: &str, detail: String) -> SessionEvent {
-    SessionEvent::Warning {
-        code: code.into(),
-        detail,
-        compaction: None,
     }
 }
 

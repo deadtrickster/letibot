@@ -367,11 +367,6 @@ impl Harness {
 
     /// A warning on this session's log - the one place an import reports itself.
     pub(crate) fn import_note(&self, code: &str, detail: String) {
-        self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
-            code: code.to_string(),
-            detail,
-
-            compaction: None,
-        });
+        self.warn(code, detail);
     }
 }

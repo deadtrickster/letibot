@@ -708,11 +708,7 @@ pub(crate) fn stop_children_first(
 ) -> Option<String> {
     let runner = runner?;
     let said = children_stopped_notice(&runner.stop_all())?;
-    hub.publish(letibot_sessionlog::SessionEvent::Warning {
-        code: "subagents_stopped".into(),
-        detail: said.clone(),
-        compaction: None,
-    });
+    hub.warn("subagents_stopped", said.clone());
     Some(said)
 }
 
@@ -722,11 +718,10 @@ pub(crate) fn say_a_childs_estate(hub: Option<Arc<Hub>>, sub_id: &str, said: &st
     let Some(hub) = hub else {
         return;
     };
-    hub.publish(letibot_sessionlog::SessionEvent::Warning {
-        code: "subagent_left_over".into(),
-        detail: format!("what `{sub_id}` left when it ended: {said}"),
-        compaction: None,
-    });
+    hub.warn(
+        "subagent_left_over",
+        format!("what `{sub_id}` left when it ended: {said}"),
+    );
 }
 
 /// A child that ends while its own children are still on their task stops them; `None`, and nothing is
@@ -928,14 +923,13 @@ impl crate::turn_tail::TurnOwner for ChildTurns {
         ) {
             Ok(armed) => self.wake_armed = armed,
             Err(e) => {
-                h.hub().publish(letibot_sessionlog::SessionEvent::Warning {
-                    code: "monitor_wake_not_armed".into(),
-                    detail: format!(
+                h.hub().warn(
+                    "monitor_wake_not_armed",
+                    format!(
                         "this session's monitors will be POLLED, not woken: the waiter thread \
                          could not be started ({e})."
                     ),
-                    compaction: None,
-                });
+                );
             }
         }
     }
@@ -1078,14 +1072,10 @@ pub(crate) fn serve_child_with(
                         later_turn(sub, turns, Door::Prompt, |h| h.submit(&line).map(Some));
                     }
                     Err(why) => {
-                        hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                            code: "todo_answer_refused".into(),
-                            detail: format!(
-                                "your answer on `{}` was not taken: {why}",
-                                content.trim()
-                            ),
-                            compaction: None,
-                        });
+                        hub.warn(
+                            "todo_answer_refused",
+                            format!("your answer on `{}` was not taken: {why}", content.trim()),
+                        );
                         turns.rearm(sub, false);
                     }
                 }
@@ -1142,11 +1132,7 @@ pub(crate) fn serve_child_with(
                     }
                     Err(e) => ("slash_refused", format!("/clear\n{e}")),
                 };
-                hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                    code: code.into(),
-                    detail,
-                    compaction: None,
-                });
+                hub.warn(code, detail);
                 // No turn ran and the board did not move - `Leave`'s reading of the clock.
                 turns.rearm(sub, false);
             }
@@ -1162,15 +1148,10 @@ pub(crate) fn serve_child_with(
                     crate::slash::Slash::Nag(verb) => sub.nag_verb(verb),
                     _ => unreachable!("`child_command` matched this line as `/nag`"),
                 };
-                hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                    code: if reply.ok {
-                        "slash".into()
-                    } else {
-                        "slash_refused".into()
-                    },
-                    detail: format!("/{line}\n{}", reply.lines.join("\n")),
-                    compaction: None,
-                });
+                hub.warn(
+                    if reply.ok { "slash" } else { "slash_refused" },
+                    format!("/{line}\n{}", reply.lines.join("\n")),
+                );
                 turns.rearm(sub, true);
             }
             ChildCommand::Leave(why) => {
@@ -1179,11 +1160,7 @@ pub(crate) fn serve_child_with(
                      machinery is its parent's, so nothing was run."
                 );
                 // And the head that sent it is told.
-                hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                    code: "child_door_refused".into(),
-                    detail: child_leave_said(sub_id, &kind, why),
-                    compaction: None,
-                });
+                hub.warn("child_door_refused", child_leave_said(sub_id, &kind, why));
                 // Nothing ran and nothing moved, so the clock keeps its own anchor.
                 turns.rearm(sub, false);
             }
@@ -3111,16 +3088,15 @@ impl HarnessTaskRunner {
                     });
                 // The person's sentence, for this conversation only.
                 if let Some(hub) = self.registry.get(&self.base.session_id) {
-                    hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                        code: "merge_queued".into(),
-                        detail: format!(
+                    hub.warn(
+                        "merge_queued",
+                        format!(
                             "`{}` is in the review queue as `{}` — a reviewer judges its head \
                              against the brief the child was given; once approved, the merge queue \
                              rebases it onto `{}`'s tip, runs the gate and lands it.",
                             entry.branch, entry.id, entry.target
                         ),
-                        compaction: None,
-                    });
+                    );
                 }
             }
             // The ordinary case for a plain `task`, and it says nothing. A child that works
@@ -3129,15 +3105,14 @@ impl HarnessTaskRunner {
             Ok(_) => {}
             Err(why) => {
                 if let Some(hub) = self.registry.get(&self.base.session_id) {
-                    hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                        code: "merge_not_queued".into(),
-                        detail: format!(
+                    hub.warn(
+                        "merge_not_queued",
+                        format!(
                             "the branch of `{sub_id}` was NOT enqueued: {why} Its worktree \
                              and branch are untouched — nothing has been deleted — but nothing \
                              will land it until it is enqueued."
                         ),
-                        compaction: None,
-                    });
+                    );
                 }
             }
         }

@@ -1611,18 +1611,16 @@ impl Harness {
                 } else {
                     String::new()
                 };
-                self.hub.publish(SessionEvent::Warning {
-                    code: "context_wall".into(),
-                    detail: format!(
+                self.hub.warn(
+                    "context_wall",
+                    format!(
                         "stopping this turn after {round} round(s): {r} of {w} \
                              {unit} are resident and the next round needs {h} free{also}. \
                              Everything so far is committed, and the session compacts \
                              before the next turn — this is the wall, not a failure of \
                              the work."
                     ),
-
-                    compaction: None,
-                });
+                );
                 // And it names the session, for the reason the `compacting:` line does: one log file that every
                 // daemon appends to, so without an id *which* session met the wall is unreadable. Fourteen bytes
                 // make the pair a measurement rather than an adjacency.
@@ -1874,14 +1872,13 @@ impl Harness {
             // next round writes a fresh one.
             if !context_carried && let Err(e) = self.persist_context(&ok.metrics, rendered_at) {
                 eprintln!("  store: {e}");
-                self.hub.publish(SessionEvent::Warning {
-                    code: "context_not_stored".into(),
-                    detail: format!(
+                self.hub.warn(
+                    "context_not_stored",
+                    format!(
                         "this round's context size was not written to the session row: {e}. \
                          The turn goes on; the next round's measurement replaces it."
                     ),
-                    compaction: None,
-                });
+                );
             }
             truncated |= ok.truncated;
             // A steering message injected at the step boundary is already in the
@@ -2284,9 +2281,9 @@ impl Harness {
                     } else {
                         ""
                     };
-                    self.hub.publish(SessionEvent::Warning {
-                        code: "context_wall".into(),
-                        detail: format!(
+                    self.hub.warn(
+                        "context_wall",
+                        format!(
                             "stopping this turn after {round} round(s): the PROVIDER \
                              refused the prompt for length. This box counts {r} \
                              of {w} {unit} resident with {h} reserved for the next \
@@ -2294,8 +2291,7 @@ impl Harness {
                              committed, and the session compacts before the next turn \
                              — this is the wall, not a failure of the work.",
                         ),
-                        compaction: None,
-                    });
+                    );
                     eprintln!(
                         "  {}: context wall: the provider refused the prompt for \
                          length after {round} round(s) at {r} of {w} {unit} ({resident} \
@@ -2463,12 +2459,10 @@ impl Harness {
                         let line = format!("{}, and the session moves to {next}", o.gave_up());
                         self.publish_series(o, Some(line));
                     }
-                    self.hub.publish(SessionEvent::Warning {
-                        code: "model_endpoint_retry".into(),
-                        detail: fallback_notice(&was, &next, &e, opens_a_turn, outage.as_ref()),
-
-                        compaction: None,
-                    });
+                    self.hub.warn(
+                        "model_endpoint_retry",
+                        fallback_notice(&was, &next, &e, opens_a_turn, outage.as_ref()),
+                    );
                 }
                 break Err(TurnFailure::Http(e));
             };
@@ -2577,12 +2571,7 @@ impl Harness {
         let mode = match letibot_tools::mode::Mode::parse(name) {
             Ok(m) => m,
             Err(e) => {
-                self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                    code: "mode_unknown".into(),
-                    detail: e,
-
-                    compaction: None,
-                });
+                self.hub.warn("mode_unknown", e);
                 return;
             }
         };
@@ -2602,33 +2591,26 @@ impl Harness {
             consented,
             moved.is_ok(),
         ) {
-            self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                code: "mode_unpersisted".into(),
-                detail: format!(
+            self.hub.warn(
+                "mode_unpersisted",
+                format!(
                     "`{}` applies to this session now, but could not be recorded, so a restart \
                      will not bring it back: {e}",
                     mode.name
                 ),
-                compaction: None,
-            });
+            );
         }
         match moved {
             Ok(said) => {
                 let applied = self.cfg.mode;
-                self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                    code: "mode_set".into(),
-                    detail: format!("{said}. {}", applied.summary),
-
-                    compaction: None,
-                });
+                self.hub
+                    .warn("mode_set", format!("{said}. {}", applied.summary));
             }
             Err(why) => {
-                self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                    code: "mode_set_refused".into(),
-                    detail: format!("this session stays at `{}`: {why}", self.cfg.mode.name),
-
-                    compaction: None,
-                });
+                self.hub.warn(
+                    "mode_set_refused",
+                    format!("this session stays at `{}`: {why}", self.cfg.mode.name),
+                );
             }
         }
     }
@@ -2669,16 +2651,10 @@ impl Harness {
             // The reply the worker would have published - the same two codes and
             // the same body, so "what did my switch do" does not depend on which thread
             // happened to apply it. `apply_queued_mode`'s rule, one verb along.
-            self.hub.publish(SessionEvent::Warning {
-                code: if reply.ok {
-                    "slash".into()
-                } else {
-                    "slash_refused".into()
-                },
-                detail: format!("/{line}\n{}", reply.lines.join("\n")),
-
-                compaction: None,
-            });
+            self.hub.warn(
+                if reply.ok { "slash" } else { "slash_refused" },
+                format!("/{line}\n{}", reply.lines.join("\n")),
+            );
         }
     }
 
@@ -2767,11 +2743,8 @@ impl Harness {
             if outage.attempts >= 2 {
                 self.publish_series(&outage, Some(outage.settled_well(now)));
             }
-            self.hub.publish(SessionEvent::Warning {
-                code: "model_endpoint_answered".into(),
-                detail: outage.answered(now),
-                compaction: None,
-            });
+            self.hub
+                .warn("model_endpoint_answered", outage.answered(now));
             return;
         }
         // A failure the ladder never retried (`http_retries = 0`) is not an outage: `turn_failed` is the whole news,
@@ -2780,11 +2753,8 @@ impl Harness {
             return;
         }
         self.publish_series(&outage, Some(outage.gave_up()));
-        self.hub.publish(SessionEvent::Warning {
-            code: "model_endpoint_retry".into(),
-            detail: outage.did_not_answer(),
-            compaction: None,
-        });
+        self.hub
+            .warn("model_endpoint_retry", outage.did_not_answer());
     }
 
     /// The provider's trouble, as the type an automation branches on. Called where the daemon knows
@@ -2900,15 +2870,13 @@ impl Harness {
     /// is part of - the round is still being taken again, and what this adds is why it
     /// is not going *there*.
     fn fallback_skip(&self, name: &str, why: &str) {
-        self.hub.publish(SessionEvent::Warning {
-            code: "model_endpoint_retry".into(),
-            detail: format!(
+        self.hub.warn(
+            "model_endpoint_retry",
+            format!(
                 "`[fallback]` names `{name}` and this session cannot take it: {why}. \
                  Trying the next name."
             ),
-
-            compaction: None,
-        });
+        );
     }
 
     pub(crate) fn steering(&self) -> HubSteering {
@@ -2989,11 +2957,7 @@ impl Harness {
         match finding.verdict {
             Verdict::Slap(line) => Some(line),
             Verdict::Repeated(detail) => {
-                self.hub.publish(SessionEvent::Warning {
-                    code: REPEATED.into(),
-                    detail,
-                    compaction: None,
-                });
+                self.hub.warn(REPEATED, detail);
                 None
             }
             Verdict::Quiet => None,
@@ -3260,21 +3224,19 @@ impl Harness {
         let waiting = crate::operator_ask::waiting(&items);
         if waiting != self.asks_said {
             for (row, question) in waiting.iter().filter(|w| !self.asks_said.contains(w)) {
-                self.hub.publish(SessionEvent::Warning {
-                    code: "waiting_on_operator".into(),
-                    detail: crate::operator_ask::asked_words(row, question),
-                    compaction: None,
-                });
+                self.hub.warn(
+                    "waiting_on_operator",
+                    crate::operator_ask::asked_words(row, question),
+                );
             }
             for (row, question) in self.asks_said.iter().filter(|w| !waiting.contains(w)) {
-                self.hub.publish(SessionEvent::Warning {
-                    code: "operator_question_settled".into(),
+                self.hub.warn(
+                    "operator_question_settled",
                     // And WHY it stopped - an answer, a take-back and a row that closed are
                     // three different facts, and the person who was asked can only tell their own
                     // answer landed if the notice says so. See `operator_ask::settled_words`.
-                    detail: crate::operator_ask::settled_words(&items, row, question),
-                    compaction: None,
-                });
+                    crate::operator_ask::settled_words(&items, row, question),
+                );
             }
             self.asks_said = waiting;
             self.publish_settings();
@@ -3401,11 +3363,7 @@ impl Harness {
     /// worker runs one turn at a time, so the others' commands queue behind this write and their
     /// heads would show `queued` with no reason at all.
     fn say_the_store_is_busy(&self, detail: String) {
-        self.hub.publish(SessionEvent::Warning {
-            code: "store_busy_wait".into(),
-            detail: detail.clone(),
-            compaction: None,
-        });
+        self.hub.warn("store_busy_wait", detail.clone());
         for id in self.session_registry.held_ids() {
             if id == self.cfg.session_id {
                 continue;
@@ -3413,15 +3371,14 @@ impl Harness {
             let Some(hub) = self.session_registry.get(&id) else {
                 continue;
             };
-            hub.publish(SessionEvent::Warning {
-                code: "store_busy_queue".into(),
-                detail: format!(
+            hub.warn(
+                "store_busy_queue",
+                format!(
                     "this daemon serves one turn at a time, and `{}` is waiting on the session \
                      store — your next command waits behind that write. {detail}",
                     self.cfg.session_id
                 ),
-                compaction: None,
-            });
+            );
         }
     }
 
@@ -4064,11 +4021,7 @@ impl SilenceWatch {
                 let silent = started.elapsed();
                 if let Some(detail) = silence_notice(&host, silent, threshold) {
                     was.store(true, Ordering::SeqCst);
-                    hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                        code: "model_slow_first_byte".into(),
-                        detail: detail.clone(),
-                        compaction: None,
-                    });
+                    hub.warn("model_slow_first_byte", detail.clone());
                     // The same fact as a type, which is what an automation can branch on: the prose
                     // above is for the person watching the turn.
                     hub.publish(letibot_sessionlog::SessionEvent::ProviderTrouble {

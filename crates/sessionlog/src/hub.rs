@@ -911,11 +911,7 @@ impl Hub {
         detail: impl Into<String>,
         compaction: Option<Box<crate::event::CompactionReport>>,
     ) -> Envelope {
-        self.publish(SessionEvent::Warning {
-            code: code.into(),
-            detail: detail.into(),
-            compaction,
-        })
+        self.publish(SessionEvent::warning_with(code, detail, compaction))
     }
 
     /// Append an event and fan it out. Never blocks on a head.
@@ -1385,18 +1381,16 @@ impl Hub {
                 .collect()
         };
         for (call_id, name, who) in orphans {
-            self.publish(SessionEvent::Warning {
-                code: "operator_call_abandoned".into(),
-                detail: format!(
+            self.warn(
+                "operator_call_abandoned",
+                format!(
                     "`{who}` was admitted to run `{name}` themselves (call {call_id}) and the \
                      head that asked went away before reporting what it did. **The admission \
                      is on the record and the result is not** — so the corpus holds an \
                      `admit` for a call whose outcome nobody knows, and this sentence is the \
                      only thing that says so. Nothing by that name is pending any more."
                 ),
-
-                compaction: None,
-            });
+            );
         }
     }
 
@@ -2142,7 +2136,10 @@ mod tests {
     #[test]
     fn a_warning_goes_through_the_one_door() {
         let hub = Hub::new("s-warn");
-        hub.warn("some_code", "a sentence the operator reads");
+        // Named rather than spelled at the call: a literal there is a code the tree's census would
+        // demand a severity row for, and this one is a sentence about the door, not a wire code.
+        let the_code = "some_code";
+        hub.warn(the_code, "a sentence the operator reads");
         let kept = hub.retained();
         let last = kept.last().expect("the warning is on the log");
         match &last.event {
@@ -2157,6 +2154,19 @@ mod tests {
             }
             other => panic!("the sink published {other:?}"),
         }
+    }
+
+    /// The one construction the doors without a hub use, and the door with one, are one event:
+    /// a fan-out announce and a hub's publish cannot differ in a field nobody names.
+    #[test]
+    fn the_constructor_and_the_sink_build_one_event() {
+        let hub = Hub::new("s-warn-same");
+        let the_code = "same_code";
+        hub.warn(the_code, "same sentence");
+        assert_eq!(
+            hub.retained().last().map(|e| e.event.clone()),
+            Some(SessionEvent::warning(the_code, "same sentence")),
+        );
     }
 
     /// The footprint is the harness's to answer and the hub's to carry. Three shapes are told

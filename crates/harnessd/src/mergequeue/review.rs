@@ -75,14 +75,7 @@ impl Pool<'_> {
 
     fn raise(&self, repository: &str, code: &str, detail: String) {
         eprintln!("  review queue: {code}: {detail}");
-        (self.warn)(
-            repository,
-            SessionEvent::Warning {
-                code: code.into(),
-                detail,
-                compaction: None,
-            },
-        );
+        (self.warn)(repository, SessionEvent::warning(code, detail));
     }
 
     fn mv(&self, r: &ReviewRow, to: ReviewState, mv: Move) -> Result<bool, StoreError> {

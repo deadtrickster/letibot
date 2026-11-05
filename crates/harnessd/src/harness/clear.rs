@@ -4,7 +4,6 @@
 
 use std::time::Duration;
 
-use letibot_sessionlog::SessionEvent;
 use letibot_transcript::{Speaker, TranscriptItem, UserPart};
 use letibot_turn::CompactionOutcome;
 
@@ -106,11 +105,7 @@ impl Harness {
         if !r.lost.is_empty() {
             said.push_str(&format!(" It has lost: {}.", r.lost.join(", ")));
         }
-        self.hub.publish(SessionEvent::Warning {
-            code: "cleared".into(),
-            detail: said,
-            compaction: None,
-        });
+        self.hub.warn("cleared", said);
     }
 
     /// The orientation: the session's state as facts, and no prose from the old conversation. Each section is read at

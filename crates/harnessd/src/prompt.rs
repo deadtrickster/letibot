@@ -164,9 +164,9 @@ impl Prompts {
             " It is working, or it is blocked with something still drawing: from here those are \
              the same picture, and none of the command's own output reaches you until it ends."
         };
-        self.hub.publish(SessionEvent::Warning {
-            code: "operator_run_unreadable".to_string(),
-            detail: format!(
+        self.hub.warn(
+            "operator_run_unreadable",
+            format!(
                 "{lead}: one of its processes belongs to another user, so `/proc` refuses for \
                  it.{working} If it is waiting — `sudo` reaching `apt`'s `Continue? [Y/n]` is the \
                  case this was measured on — the way in is `!send <line>`, which needs no card. \
@@ -174,9 +174,7 @@ impl Prompts {
                  runs on, and another `!` line of yours waits for this one rather than \
                  overlapping it."
             ),
-
-            compaction: None,
-        });
+        );
         // And the offer, beside the sentence - after it, because the disclosure is what the offer
         // stands on. `offer` declines if a card is already up, so this cannot double-card a run.
         self.offer(job, None, PromptReading::Unreadable);

@@ -61,11 +61,7 @@ impl Boot {
 
     fn say(&self, code: &str, detail: String) {
         if let Some(h) = &self.hub {
-            h.publish(letibot_sessionlog::SessionEvent::Warning {
-                code: code.into(),
-                detail,
-                compaction: None,
-            });
+            h.warn(code, detail);
         }
     }
 

@@ -1545,11 +1545,7 @@ impl Registry {
         if hub.attached_heads() == 0 {
             return;
         }
-        hub.publish(crate::SessionEvent::Warning {
-            code: crate::protocol::MODEL_SET.into(),
-            detail: moved,
-            compaction: None,
-        });
+        hub.warn(crate::protocol::MODEL_SET, moved);
     }
 
     /// Publish what this session's harness found about its frozen prefix: the sentence an
@@ -1577,18 +1573,10 @@ impl Registry {
         }
         match (said, was) {
             (Some(said), _) => {
-                hub.publish(crate::SessionEvent::Warning {
-                    code: "prefix_stale".into(),
-                    detail: said,
-                    compaction: None,
-                });
+                hub.warn("prefix_stale", said);
             }
             (None, Some(_)) => {
-                hub.publish(crate::SessionEvent::Warning {
-                    code: "prefix_current".into(),
-                    detail: PREFIX_CURRENT.into(),
-                    compaction: None,
-                });
+                hub.warn("prefix_current", PREFIX_CURRENT);
             }
             (None, None) => {}
         }
@@ -2093,14 +2081,13 @@ impl Registry {
             .collect();
         for hub in &hubs {
             for name in &named {
-                hub.publish(crate::event::SessionEvent::Warning {
-                    code: "daemon_stopping_runs".into(),
-                    detail: format!(
+                hub.warn(
+                    "daemon_stopping_runs",
+                    format!(
                         "the daemon was asked to stop while {name} was running, so it is being \
                          ended with it"
                     ),
-                    compaction: None,
-                });
+                );
             }
         }
         true

@@ -904,11 +904,7 @@ impl Harness {
     }
 
     fn warn_mode(&self, code: &str, detail: String) {
-        self.hub.publish(SessionEvent::Warning {
-            code: code.to_string(),
-            detail,
-            compaction: None,
-        });
+        self.warn(code, detail);
     }
 
     /// Push the settings this session runs under to the registry, where the server answers a

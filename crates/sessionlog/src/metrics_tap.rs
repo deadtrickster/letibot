@@ -247,11 +247,7 @@ pub fn mark(
          providers.toml)"
             .to_string()
     };
-    hub.publish(SessionEvent::Warning {
-        code: FEEDBACK_CODE.into(),
-        detail: said.clone(),
-        compaction: None,
-    });
+    hub.warn(FEEDBACK_CODE, said.clone());
     said
 }
 

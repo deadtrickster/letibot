@@ -675,11 +675,7 @@ impl Harness {
                     `docs/boundary-and-adjudication.md` §4k has the long form."
             .to_string();
         eprintln!("letibot: {said}");
-        hub.publish(SessionEvent::Warning {
-            code: UNCONFINED_SESSION.into(),
-            detail: said,
-            compaction: None,
-        });
+        hub.warn(UNCONFINED_SESSION, said);
     }
 
     /// A wide seat that could not be built is a REFUSAL, not a fallback, on every platform: the
@@ -695,11 +691,7 @@ impl Harness {
              all."
         );
         eprintln!("letibot: {said}");
-        hub.publish(SessionEvent::Warning {
-            code: BOUNDARY_ABSENT.into(),
-            detail: said.clone(),
-            compaction: None,
-        });
+        hub.warn(BOUNDARY_ABSENT, said.clone());
         said
     }
 
@@ -742,14 +734,13 @@ impl Harness {
             seat::Level::Wide => match seat::gh_auth_token() {
                 Ok(t) => Some(t),
                 Err(why) => {
-                    hub.publish(SessionEvent::Warning {
-                        code: "gh_token_absent".into(),
-                        detail: format!(
+                    hub.warn(
+                        "gh_token_absent",
+                        format!(
                             "this session opens without a GitHub token, so `git push` and `gh` \
                              will not authenticate: {why}"
                         ),
-                        compaction: None,
-                    });
+                    );
                     None
                 }
             },
@@ -833,11 +824,7 @@ impl Harness {
         // blaming the cgroup and bwrap first.
         if !cfg.workspace.is_dir() {
             let said = workspace_gone(&cfg.workspace);
-            hub.publish(SessionEvent::Warning {
-                code: WORKSPACE_GONE.into(),
-                detail: said.clone(),
-                compaction: None,
-            });
+            hub.warn(WORKSPACE_GONE, said.clone());
             return Err(HarnessError::Setup(said));
         }
         // `backend_confined` is the VM's and nothing else here, and it stops being a guess the line
@@ -905,11 +892,7 @@ impl Harness {
                         cfg.workspace
                     );
                     eprintln!("letibot: {said}");
-                    hub.publish(SessionEvent::Warning {
-                        code: BOUNDARY_ABSENT.into(),
-                        detail: said.clone(),
-                        compaction: None,
-                    });
+                    hub.warn(BOUNDARY_ABSENT, said.clone());
                     return Err(HarnessError::Setup(said));
                 }
             }
@@ -1057,11 +1040,7 @@ impl Harness {
             // logged: a tree the operator is not looking at has to say so on the surface
             // they read, including the local edits that were NOT carried.
             for note in sb.placement_notes() {
-                hub.publish(SessionEvent::Warning {
-                    code: REMOTE_PLACEMENT.into(),
-                    detail: note.clone(),
-                    compaction: None,
-                });
+                hub.warn(REMOTE_PLACEMENT, note.clone());
             }
             let described = sb.describe();
             let writable = sb.is_writable();
@@ -2119,12 +2098,7 @@ impl Harness {
                             // open is worth saying out loud once; the tool then
                             // refuses by name rather than reporting no history.
                             Err(e) => {
-                                hub.publish(SessionEvent::Warning {
-                                    code: "transcript_store".into(),
-                                    detail: e,
-
-                                    compaction: None,
-                                });
+                                hub.warn("transcript_store", e);
                                 Arc::new(letibot_tools::builtins::transcript::NoTranscript)
                             }
                         }
@@ -2144,12 +2118,7 @@ impl Harness {
                     ) {
                         Ok(s) => Arc::new(s),
                         Err(e) => {
-                            hub.publish(SessionEvent::Warning {
-                                code: "decision_corpus".into(),
-                                detail: e,
-
-                                compaction: None,
-                            });
+                            hub.warn("decision_corpus", e);
                             Arc::new(letibot_tools::builtins::decisions::NoDecisions)
                         }
                     },
@@ -2266,15 +2235,14 @@ impl Harness {
             plugin_tools += 1;
         }
         if !not_seated.is_empty() {
-            hub.publish(SessionEvent::Warning {
-                code: "plugin_layer".into(),
-                detail: format!(
+            hub.warn(
+                "plugin_layer",
+                format!(
                     "a layer declares a tool this session did not seat: {}. The layer is still \
                      loaded; `plugin {{\"action\":\"stack\"}}` lists what is in force.",
                     not_seated.join("; ")
                 ),
-                compaction: None,
-            });
+            );
         }
         let schemas = registry.schemas();
         let seated: Vec<String> = schemas.iter().map(|s| s.name.clone()).collect();
@@ -2816,9 +2784,9 @@ impl Harness {
         // A pin that answers to nothing is the operator's typo: said once, with the name typed.
         let unknown = parts.skills.unknown_pins();
         if !unknown.is_empty() {
-            hub.publish(SessionEvent::Warning {
-                code: SKILLS_PIN.into(),
-                detail: format!(
+            hub.warn(
+                SKILLS_PIN,
+                format!(
                     "a pinned skill nothing on this box answers to: {}. `[skills] pin` takes the \
                      names `skill list` reports; the rest of the pins are in force.",
                     unknown
@@ -2827,8 +2795,7 @@ impl Harness {
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
-                compaction: None,
-            });
+            );
         }
         let declared = crate::standing_notes::preloaded(parts.skills.as_ref(), &cfg.skills);
         // Through the backend the session's tools use: a placed session's notes are on that host,
@@ -3623,11 +3590,7 @@ pub(crate) fn provider_notes(
 ) -> letibot_provider::openai::Notes {
     let hub = hub.clone();
     std::sync::Arc::new(move |said: String| {
-        hub.publish(letibot_sessionlog::SessionEvent::Warning {
-            code: "model_refused_images".into(),
-            detail: said,
-            compaction: None,
-        });
+        hub.warn("model_refused_images", said);
     })
 }
 

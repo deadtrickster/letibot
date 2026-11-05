@@ -144,12 +144,7 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
             reason,
             partial_kept,
         },
-        TurnEvent::Warning { code, detail } => SessionEvent::Warning {
-            code: code.to_string(),
-            detail,
-
-            compaction: None,
-        },
+        TurnEvent::Warning { code, detail } => SessionEvent::warning(code.to_string(), detail),
     }
 }
 

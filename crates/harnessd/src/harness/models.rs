@@ -461,9 +461,9 @@ impl Harness {
             }
             self.key_wanted = None;
             self.set_provider(Some(pc.clone()))?;
-            self.hub.publish(SessionEvent::Warning {
-                code: "provider_key_saved".into(),
-                detail: format!(
+            self.hub.warn(
+                "provider_key_saved",
+                format!(
                     "the key for {name} is saved in {file}{default}; this session's turns go to \
                      {name}",
                     name = pc.name,
@@ -474,8 +474,7 @@ impl Harness {
                         String::new()
                     },
                 ),
-                compaction: None,
-            });
+            );
             return Ok(());
         }
         Err(HarnessError::Setup(format!(
@@ -515,11 +514,7 @@ impl Harness {
             choice,
             model: target,
         });
-        self.hub.publish(SessionEvent::Warning {
-            code: "model_switch_pending".into(),
-            detail: said.clone(),
-            compaction: None,
-        });
+        self.hub.warn("model_switch_pending", said.clone());
         said
     }
 
@@ -941,30 +936,25 @@ impl Harness {
                 // restart resumes on, and a deferred switch that only reached this process would
                 // expire with it.
                 if let Err(why) = self.persist_provider_choice() {
-                    self.hub.publish(SessionEvent::Warning {
-                        code: "model_switch_applied".into(),
-                        detail: format!("{line}. {why}"),
-                        compaction: None,
-                    });
+                    self.hub
+                        .warn("model_switch_applied", format!("{line}. {why}"));
                     return;
                 }
-                self.hub.publish(SessionEvent::Warning {
-                    code: "model_switch_applied".into(),
-                    detail: format!("the turn has ended, so the switch stands: {line}"),
-                    compaction: None,
-                });
+                self.hub.warn(
+                    "model_switch_applied",
+                    format!("the turn has ended, so the switch stands: {line}"),
+                );
             }
             Err(e) => {
-                self.hub.publish(SessionEvent::Warning {
-                    code: "model_switch_not_applied".into(),
-                    detail: format!(
+                self.hub.warn(
+                    "model_switch_not_applied",
+                    format!(
                         "the switch to `{}` was waiting for this turn to end and could not be \
                          made: {e}. This session stays on `{}`.",
                         pending.model,
                         self.model_name()
                     ),
-                    compaction: None,
-                });
+                );
             }
         }
     }

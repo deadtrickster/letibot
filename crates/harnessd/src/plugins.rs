@@ -438,15 +438,14 @@ impl PluginHost {
             }
             inner.notices.push(said.clone());
         }
-        hub.publish(SessionEvent::Warning {
-            code: "plugin_layer".into(),
-            detail: if layer.is_empty() {
+        hub.warn(
+            "plugin_layer",
+            if layer.is_empty() {
                 said
             } else {
                 format!("{layer}: {said}")
             },
-            compaction: None,
-        });
+        );
     }
 
     /// The pane ids this session's layers export: `<manifest name>/<hook name>`, read from the
@@ -595,11 +594,7 @@ impl PluginHost {
             }
             inner.notices.push(said.clone());
         }
-        hub.publish(SessionEvent::Warning {
-            code: "plugin_untrusted".into(),
-            detail: said,
-            compaction: None,
-        });
+        hub.warn("plugin_untrusted", said);
     }
 
     /// A candidate was refused: the old layer stays, and both the model (which can fix it) and the
@@ -616,11 +611,7 @@ impl PluginHost {
             }
             inner.notices.push(said.clone());
         }
-        hub.publish(SessionEvent::Warning {
-            code: "plugin_refused".into(),
-            detail: said,
-            compaction: None,
-        });
+        hub.warn("plugin_refused", said);
     }
 
     /// The stack changed: bring every screen into line with it. A pane still there is asked again
@@ -845,11 +836,7 @@ impl PluginHost {
                 Err(why) => {
                     let said = format!("`{pane}`: {why}");
                     if interior.said.insert(said.clone()) {
-                        hub.publish(SessionEvent::Warning {
-                            code: "plugin_view_refused".into(),
-                            detail: said,
-                            compaction: None,
-                        });
+                        hub.warn("plugin_view_refused", said);
                         interior.notices.push(format!(
                             "the plugin pane `{pane}` (layer `{by}`) answered something the \
                              host's pane contract refuses, so the pane says why instead of \
@@ -1749,14 +1736,11 @@ impl PaneDriver for PluginHost {
                 // overran its minute would leave the person's prompts and keys queued behind it.
                 match crate::room::supervise::InFlight::take() {
                     None => {
-                        let _ = hub.publish(SessionEvent::Warning {
-                            code: "room_restart_refused".into(),
-                            detail: "the room was not restarted: a restart is already running \
-                                     here — a box has one room, and two stops and two starts is \
-                                     not a restart"
-                                .into(),
-                            compaction: None,
-                        });
+                        let _ = hub.warn(
+                            "room_restart_refused",
+                            "the room was not restarted: a restart is already running here — a box \
+                             has one room, and two stops and two starts is not a restart",
+                        );
                     }
                     Some(running) => {
                         let room = Arc::clone(room);
@@ -1765,23 +1749,17 @@ impl PaneDriver for PluginHost {
                             .name("room-restart".to_string())
                             .spawn(move || {
                                 let _running = running;
-                                // Two literal codes, not one variable: a warning-code guard scans
-                                // this tree for `Warning { code: "…" }` literals, and a code that
-                                // arrives through a variable is one it cannot see.
+                                // Two literal codes, not one variable: a code that arrives
+                                // through a variable is one no reader's table can check.
                                 match room.restart() {
                                     Ok(said) => {
-                                        let _ = hub.publish(SessionEvent::Warning {
-                                            code: "room_restarted".into(),
-                                            detail: said,
-                                            compaction: None,
-                                        });
+                                        let _ = hub.warn("room_restarted", said);
                                     }
                                     Err(why) => {
-                                        let _ = hub.publish(SessionEvent::Warning {
-                                            code: "room_restart_refused".into(),
-                                            detail: format!("the room was not restarted: {why}"),
-                                            compaction: None,
-                                        });
+                                        let _ = hub.warn(
+                                            "room_restart_refused",
+                                            format!("the room was not restarted: {why}"),
+                                        );
                                     }
                                 }
                             });
@@ -1790,11 +1768,7 @@ impl PaneDriver for PluginHost {
             } else if let Err(why) = room.act(item, action) {
                 // A refusal is said, not swallowed: a key that does nothing is indistinguishable
                 // from a key nobody pressed, and the room's sentence names who holds the tag.
-                hub.publish(SessionEvent::Warning {
-                    code: "room_act_refused".into(),
-                    detail: format!("`{action}` on `{item}`: {why}"),
-                    compaction: None,
-                });
+                hub.warn("room_act_refused", format!("`{action}` on `{item}`: {why}"));
             }
         }
         self.render(
@@ -1921,11 +1895,7 @@ fn say_failures(hub: &Arc<Hub>, inner: &mut Inner, failures: &[Failure]) {
         inner.notices.push(format!(
             "a plugin layer failed and the layer below it answered: {said}"
         ));
-        hub.publish(SessionEvent::Warning {
-            code: "plugin_layer".into(),
-            detail: said,
-            compaction: None,
-        });
+        hub.warn("plugin_layer", said);
     }
 }
 
@@ -2055,11 +2025,7 @@ impl PluginHost {
             }
             inner.notices.push(said.clone());
         }
-        hub.publish(SessionEvent::Warning {
-            code: "plugin_look".into(),
-            detail: said,
-            compaction: None,
-        });
+        hub.warn("plugin_look", said);
     }
 
     /// The last inputs this session's host asked `hook` with, newest last - what the gate's replay

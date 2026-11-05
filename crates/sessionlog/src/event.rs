@@ -1546,6 +1546,25 @@ fn an_ending() -> bool {
 }
 
 impl SessionEvent {
+    /// The one construction of a warning: `(code, detail)` and nothing else, so a door that takes
+    /// an event and not a hub (a fan-out announce, a head's answer) says what `Hub::warn` says.
+    pub fn warning(code: impl Into<String>, detail: impl Into<String>) -> SessionEvent {
+        SessionEvent::warning_with(code, detail, None)
+    }
+
+    /// [`SessionEvent::warning`] for the few that carry what a compaction did.
+    pub fn warning_with(
+        code: impl Into<String>,
+        detail: impl Into<String>,
+        compaction: Option<Box<CompactionReport>>,
+    ) -> SessionEvent {
+        SessionEvent::Warning {
+            code: code.into(),
+            detail: detail.into(),
+            compaction,
+        }
+    }
+
     /// Could publishing this have moved what the session is waiting on? The set `Hub::publish`
     /// re-derives on, so an event that cannot move it costs nothing.
     pub fn touches_activity(&self) -> bool {

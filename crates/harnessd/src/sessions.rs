@@ -17,7 +17,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::{CommandKind, Owner, QueuedCommand};
 use letibot_sessionlog::origin::SessionOrigin;
 use letibot_sessionlog::registry::{Registry, SessionSource, SessionWiring, StoredBrief};
@@ -2028,17 +2027,15 @@ impl<'a> Sessions<'a> {
         };
         let (Some(monitors), Some(owner)) = (h.monitors().cloned(), h.session_scope()) else {
             if let Some(hub) = self.registry.get(session_id) {
-                hub.publish(SessionEvent::Warning {
-                    code: "flowy_not_seated".into(),
-                    detail: format!(
+                hub.warn(
+                    "flowy_not_seated",
+                    format!(
                         "seat `{}` is attached to this session but its backend cannot hold \
                          a monitor, so nothing said on the fabric can wake it. The `flowy` \
                          tool still speaks; `flowy status` shows what is pending.",
                         seat.name()
                     ),
-
-                    compaction: None,
-                });
+                );
             }
             return;
         };
@@ -2058,12 +2055,10 @@ impl<'a> Sessions<'a> {
             }
             Err(e) => {
                 if let Some(hub) = self.registry.get(session_id) {
-                    hub.publish(SessionEvent::Warning {
-                        code: "flowy_not_seated".into(),
-                        detail: format!("the `flowy` monitor could not be declared: {e}"),
-
-                        compaction: None,
-                    });
+                    hub.warn(
+                        "flowy_not_seated",
+                        format!("the `flowy` monitor could not be declared: {e}"),
+                    );
                 }
             }
         }
@@ -2123,23 +2118,13 @@ impl<'a> Sessions<'a> {
                     let r = r.clone();
                     if let Some(hub) = &hub {
                         for note in &r.notes {
-                            hub.publish(SessionEvent::Warning {
-                                code: "resume_note".into(),
-                                detail: note.clone(),
-
-                                compaction: None,
-                            });
+                            hub.warn("resume_note", note.clone());
                         }
                     }
                 }
                 if let Some(hub) = &hub {
                     for note in h.open_notes() {
-                        hub.publish(SessionEvent::Warning {
-                            code: "open_note".into(),
-                            detail: note.clone(),
-
-                            compaction: None,
-                        });
+                        hub.warn("open_note", note.clone());
                     }
                 }
                 self.publish_title(session_id);
@@ -2165,12 +2150,7 @@ impl<'a> Sessions<'a> {
             }
             Err(e) => {
                 if let Some(hub) = &hub {
-                    hub.publish(SessionEvent::Warning {
-                        code: "resume_failed".into(),
-                        detail: e.to_string(),
-
-                        compaction: None,
-                    });
+                    hub.warn("resume_failed", e.to_string());
                 }
                 Err(e)
             }
@@ -3458,12 +3438,7 @@ impl<'a> Sessions<'a> {
                 if let Err(e) = self.refresh_fabric(session_id)
                     && let Some(hub) = &hub
                 {
-                    hub.publish(SessionEvent::Warning {
-                        code: "fabric_refresh_failed".into(),
-                        detail: e.to_string(),
-
-                        compaction: None,
-                    });
+                    hub.warn("fabric_refresh_failed", e.to_string());
                 }
                 Ok(r)
             }
@@ -3812,12 +3787,7 @@ impl<'a> Sessions<'a> {
                                 ". `/reseat` would have cost a second summary turn and a second \
                              cold prefill; this one is already paid for.",
                             );
-                            hub.publish(SessionEvent::Warning {
-                                code: "reseated".into(),
-                                detail: said,
-
-                                compaction: None,
-                            });
+                            hub.warn("reseated", said);
                         }
                         let base = self
                             .open
@@ -3841,10 +3811,10 @@ impl<'a> Sessions<'a> {
                                     *metered && b.measured.is_none()
                                 }),
                             };
-                            hub.publish(SessionEvent::Warning {
-                                code: "compacted".into(),
-                                detail: compaction_said(&r, scales.clone()),
-                                compaction: Some(Box::new(compaction_wire(
+                            hub.warn_with(
+                                "compacted",
+                                compaction_said(&r, scales.clone()),
+                                Some(Box::new(compaction_wire(
                                     &r,
                                     "compacted",
                                     scales,
@@ -3852,7 +3822,7 @@ impl<'a> Sessions<'a> {
                                     window,
                                     headroom,
                                 ))),
-                            });
+                            );
                         }
                         Outcome::Compacted(Box::new(r))
                     }
@@ -3952,11 +3922,7 @@ impl<'a> Sessions<'a> {
                                     record_wall(&c).1,
                                 ))
                             });
-                            hub.publish(SessionEvent::Warning {
-                                code: "reseated".into(),
-                                detail: said,
-                                compaction,
-                            });
+                            hub.warn_with("reseated", said, compaction);
                         }
                         // And the model is told, in a turn of its own: the person's act reached only the head, and
                         // the operator asked for the symmetric half - *"that reseat happened shall reach the model
@@ -3980,12 +3946,7 @@ impl<'a> Sessions<'a> {
                     }
                     Err(e) => {
                         if let Some(hub) = &hub {
-                            hub.publish(SessionEvent::Warning {
-                                code: "reseat_refused".into(),
-                                detail: e.to_string(),
-
-                                compaction: None,
-                            });
+                            hub.warn("reseat_refused", e.to_string());
                         }
                         Outcome::Failed(e.to_string())
                     }
@@ -4004,14 +3965,12 @@ impl<'a> Sessions<'a> {
                     h.stop_children();
                 }
                 if let Some(hub) = &hub {
-                    hub.publish(SessionEvent::Warning {
-                        code: "interrupt_idle".into(),
-                        detail: format!(
+                    hub.warn(
+                        "interrupt_idle",
+                        format!(
                             "interrupt ({reason}) arrived between turns; nothing was generating"
                         ),
-
-                        compaction: None,
-                    });
+                    );
                 }
                 Outcome::Ignored
             }
@@ -4415,16 +4374,15 @@ impl<'a> Sessions<'a> {
                         true => format!("{}…", text.chars().take(200).collect::<String>()),
                         false => text.clone(),
                     };
-                    hub.publish(SessionEvent::Warning {
-                        code: "message_idle".into(),
-                        detail: format!(
+                    hub.warn(
+                        "message_idle",
+                        format!(
                             "a message from `{from}` could not be delivered: `{session_id}` is \
                              gone, so nothing will read it — the daemon holds no session of that \
                              id and the hub it had is closed: {said}. The sender's `task_message` \
                              was accepted and did not land."
                         ),
-                        compaction: None,
-                    });
+                    );
                 }
                 Outcome::Ignored
             }
@@ -4434,29 +4392,21 @@ impl<'a> Sessions<'a> {
                     // thread's `bash` wait loop is the designed consumer of the promote flag - it knows the
                     // job id and can move the cgroup.
                     if self.bang_run_in_flight(session_id) {
-                        hub.publish(SessionEvent::Warning {
-                            code: "promote_in_flight".into(),
-                            detail: "a background request arrived while the operator's \
-                                     run is in flight on its own thread; its wait loop \
-                                     takes it and moves the run"
-                                .into(),
-
-                            compaction: None,
-                        });
+                        hub.warn(
+                            "promote_in_flight",
+                            "a background request arrived while the operator's run is in \
+                             flight on its own thread; its wait loop takes it and moves the run",
+                        );
                         return Outcome::Ignored;
                     }
                     // `None` means a wait loop already honoured it. A promote sent during a turn is taken by
                     // that turn's own `bash` wait loop, which promotes the call and settles it as
                     // `Backgrounded`; this command then reaches the worker only after the turn has ended.
                     if hub.take_promote_request().is_some() {
-                        hub.publish(SessionEvent::Warning {
-                            code: "promote_idle".into(),
-                            detail: "a background request arrived between turns; nothing \
-                                     was running to move"
-                                .into(),
-
-                            compaction: None,
-                        });
+                        hub.warn(
+                            "promote_idle",
+                            "a background request arrived between turns; nothing was running to move",
+                        );
                     }
                 }
                 Outcome::Ignored
@@ -4479,12 +4429,7 @@ impl<'a> Sessions<'a> {
                              (clause 4). Nothing was waiting for it and nothing was run."
                         ),
                     };
-                    hub.publish(SessionEvent::Warning {
-                        code: "answer_unclaimed".into(),
-                        detail,
-
-                        compaction: None,
-                    });
+                    hub.warn("answer_unclaimed", detail);
                 }
                 Outcome::Ignored
             }
@@ -4505,16 +4450,10 @@ impl<'a> Sessions<'a> {
                 let line = line.clone();
                 let reply = self.slash(session_id, &line);
                 if let Some(hub) = &hub {
-                    hub.publish(SessionEvent::Warning {
-                        code: if reply.ok {
-                            "slash".into()
-                        } else {
-                            "slash_refused".into()
-                        },
-                        detail: format!("/{line}\n{}", reply.lines.join("\n")),
-
-                        compaction: None,
-                    });
+                    hub.warn(
+                        if reply.ok { "slash" } else { "slash_refused" },
+                        format!("/{line}\n{}", reply.lines.join("\n")),
+                    );
                 }
                 if reply.ok {
                     Outcome::Ignored
@@ -4538,12 +4477,7 @@ impl<'a> Sessions<'a> {
                         // A refused read is a `Warning`, the same as a refused slash
                         // and the code says which read it was: the pane renders it as
                         // a line rather than a window.
-                        Err(e) => hub.publish(SessionEvent::Warning {
-                            code: "job_output_refused".into(),
-                            detail: e,
-
-                            compaction: None,
-                        }),
+                        Err(e) => hub.warn("job_output_refused", e),
                     };
                 }
                 Outcome::Ignored
@@ -4611,12 +4545,7 @@ impl<'a> Sessions<'a> {
                     Ok(m) => m,
                     Err(e) => {
                         if let Some(hub) = &hub {
-                            hub.publish(SessionEvent::Warning {
-                                code: "mode_unknown".into(),
-                                detail: e,
-
-                                compaction: None,
-                            });
+                            hub.warn("mode_unknown", e);
                         }
                         return Outcome::Failed("unknown mode".into());
                     }
@@ -4645,16 +4574,14 @@ impl<'a> Sessions<'a> {
                     Ok(())
                 })() {
                     if let Some(hub) = &hub {
-                        hub.publish(SessionEvent::Warning {
-                            code: "mode_unpersisted".into(),
-                            detail: format!(
+                        hub.warn(
+                            "mode_unpersisted",
+                            format!(
                                 "could not record `{}` for {}: {e}",
                                 mode.name,
                                 workspace.display()
                             ),
-
-                            compaction: None,
-                        });
+                        );
                     }
                     return Outcome::Failed(format!("persisting mode: {e}"));
                 }
@@ -4678,23 +4605,19 @@ impl<'a> Sessions<'a> {
                     if let Err(e) = store.set_session(session_id, mode, when.as_deref())
                         && let Some(hub) = &hub
                     {
-                        hub.publish(SessionEvent::Warning {
-                            code: "mode_unpersisted".into(),
-                            detail: format!(
-                                "could not record `{}` for this session: {e}",
-                                mode.name
-                            ),
-                            compaction: None,
-                        });
+                        hub.warn(
+                            "mode_unpersisted",
+                            format!("could not record `{}` for this session: {e}", mode.name),
+                        );
                     }
                 }
                 if let Some(hub) = &hub {
                     let _ = match moved {
-                        Ok((said, applied)) => hub.publish(SessionEvent::Warning {
-                            code: "mode_set".into(),
+                        Ok((said, applied)) => hub.warn(
+                            "mode_set",
                             // Say what is true of the project separately from what is true of this session, because
                             // they can differ: a point the row carries may still be one this session cannot move to.
-                            detail: {
+                            {
                                 let row = self
                                     .parts
                                     .mode_store
@@ -4708,21 +4631,17 @@ impl<'a> Sessions<'a> {
                                     applied.summary
                                 )
                             },
-
-                            compaction: None,
-                        }),
-                        Err(why) => hub.publish(SessionEvent::Warning {
-                            code: "mode_set_next_session_only".into(),
-                            detail: format!(
+                        ),
+                        Err(why) => hub.warn(
+                            "mode_set_next_session_only",
+                            format!(
                                 "{} is set to `{}` for every LATER session in this \
                                  project; this one stays where it opened, because it \
                                  cannot carry that point: {why}",
                                 workspace.display(),
                                 mode.name
                             ),
-
-                            compaction: None,
-                        }),
+                        ),
                     };
                 }
                 Outcome::Ignored
@@ -6259,7 +6178,7 @@ mod operator_run_failures {
             .retained()
             .iter()
             .filter_map(|e| match &e.event {
-                SessionEvent::Warning { code, .. } => Some(code.clone()),
+                letibot_sessionlog::SessionEvent::Warning { code, .. } => Some(code.clone()),
                 _ => None,
             })
             .collect();

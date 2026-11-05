@@ -258,11 +258,7 @@ pub(crate) fn live_job_output(
         Ok(slice) => {
             job_window_for(&view.command, &view.state, &slice, offset, limit).into_event(job)
         }
-        Err(e) => SessionEvent::Warning {
-            code: "job_output_refused".into(),
-            detail: e.to_string(),
-            compaction: None,
-        },
+        Err(e) => SessionEvent::warning("job_output_refused", e.to_string()),
     })
 }
 

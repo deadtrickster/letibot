@@ -119,16 +119,15 @@ impl StoreTrouble {
             wait.as_secs()
         );
         if self.said.as_deref() != Some(why.as_str()) {
-            door.announce(SessionEvent::Warning {
-                code: "merge_queue_store_error".into(),
-                detail: format!(
+            door.announce(SessionEvent::warning(
+                "merge_queue_store_error",
+                format!(
                     "the queues could not read or write their store while {doing}: {why}. Nothing \
                      moved; they keep trying (the wait doubles up to {}s) and say so when they are \
                      serving again.",
                     STORE_RETRY_CAP.as_secs()
                 ),
-                compaction: None,
-            });
+            ));
             self.said = Some(why);
         }
         wait
@@ -136,14 +135,13 @@ impl StoreTrouble {
 
     pub(crate) fn passed(&mut self, door: &dyn serve::QueueDoor) {
         if self.said.take().is_some() {
-            door.announce(SessionEvent::Warning {
-                code: "merge_queue_recovered".into(),
-                detail: format!(
+            door.announce(SessionEvent::warning(
+                "merge_queue_recovered",
+                format!(
                     "the queues are serving again, after {} failed attempt(s) to reach their store.",
                     self.failures
                 ),
-                compaction: None,
-            });
+            ));
         }
         self.failures = 0;
     }
