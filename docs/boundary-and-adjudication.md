@@ -551,24 +551,30 @@ The counts in §4i.7 are the ones taken before this and are not re-measured here
 
 ## 4j. The session's environment, as it is observed
 
-`ShellSession` (`crates/tools/src/exec/shell.rs`) is the only thing in the tree with a trailer, and
-**no production code constructs one**: `grep -rn "ShellSession::open" crates/` answers its own tests
-and nothing else. The model's `bash` tool opens no shell: every call is a fresh process
+The model's `bash` tool opens no shell process: every call is a fresh process
 (`exec/host.rs::spawn`) - `/bin/sh -c <command>`, `env_clear()`ed, then given the pinned `PATH`, the
 daemon's `standing_env` (`HOME`, `LETIBOT_SOCKET`, `LETIBOT_SESSION`, `SUDO_ASKPASS`,
-`Config::build_env`) and the request's own pairs. So a variable an earlier `bash` call exported is not
-in the next call's environment, whatever the transcript looks like.
+`Config::build_env`) and the request's own pairs. What makes it one shell anyway is the trailer
+(§4j.2): a call the gate observes is appended one on its way out, its report is observed into the
+session's environment, and the pairs a shell reported are merged into the next call's spawn - so
+an `export` in one `bash` call **is** in the next call's environment, and so is the `unset`. The
+cwd does not persist: every spawn starts at the cwd the call named, because a drifting cwd sends
+a relative `rm` or `git` to the wrong tree, and `cd x && ...` inside one command is still resolved
+by the gate. Ruled 2026-11-04.
 
-What the next call will really see is exactly the pairs the harness sets, which the daemon knows before
-it spawns - so a tracked environment *seeded from those pairs* is true by construction
-(`harness::surroundings_for`): the pinned `PATH`, `HOME` and `Config::build_env`, and the keep-list a
-boundary passes through (`exec::confine::KEEP_ENV`), which is `--clearenv`'d and re-`--setenv`'d from
-*this* process's environment. All of it is seeded for `Placement::Host` and for nothing else: a remote
-host's and a guest's spawn export the **call's** own pairs into their own shell (`SshBackend`'s launcher
-gets `export NAME=value` lines, a firecode guest its own), so a seed built here would read a command as
-placed on a machine it is not on - the over-claim direction - and the honest answer there is the unread
-one. Nothing observes a call's own final environment or carries it forward: doing either makes the shell
-stateful, which is the class of change `sets_state_for_later` exists to refuse a durable rule over.
+What the next call will really see is the pairs the harness sets plus what the last observed call
+reported, minus the deny-list (§4j.5). The seed is *true by construction* (`harness::surroundings_for`):
+the pinned `PATH`, `HOME` and `Config::build_env`, and the keep-list a boundary passes through
+(`exec::confine::KEEP_ENV`), which is `--clearenv`'d and re-`--setenv`'d from *this* process's
+environment. All of it is seeded for `Placement::Host` and for nothing else: a remote host's and a
+guest's spawn export the **call's** own pairs into their own shell (`SshBackend`'s launcher gets
+`export NAME=value` lines, a firecode guest its own), so a seed built here would read a command as
+placed on a machine it is not on - the over-claim direction - and the honest answer there is the
+unread one. The same condition arms the trailer: `Gate::observes_shell_env` is true exactly where
+the seed is, so a remote or guest session runs no trailer and claims nothing. A command that
+does not parse as a whole program gets no trailer either - text appended after an unterminated
+heredoc or a dangling `|` would become part of the command - and the job's row keeps the model's
+own text, because the append is argv and not the adjudicated command.
 
 ### 4j.2 Where it is observed: the trailer
 
@@ -606,6 +612,32 @@ report for the same name**, because they are what the next `bash` call really ge
 entries go with it, a restart re-seeds from the same pairs, and a migrated session carries no
 environment at all. A confined or remote shell reports on its own side, so the values are the
 boundary's or the far box's.
+
+### 4j.3 The one-shot call's trailer, and the deny-list
+
+A `bash` call is not a line typed at a shell, so its trailer is not a line either:
+`exec::shell::oneshot_trailer` is appended to the command the spawn runs. The parent is `/bin/sh`, so
+the dump runs in a child `bash -c` that inherits exactly what the command exported; the command's
+`$?` is saved before anything of ours runs and the last line exits with it, so the call's answer
+stays the command's own; and a `bash` that is not on the pinned `PATH` prints nothing, so the
+command's output and status are exactly what they would have been without the append. The dump body
+is the one function the `!` shell's trailer uses, so the two filters cannot drift.
+
+The report comes back out of the stream where the bytes arrive (`exec::jobs::Capture`), before the
+secret masker, so the window, the spill file and the `produced` count never carry machinery the
+command did not print and a value the shell exported is masked only where the card shows it. A
+marker this build refuses to believe is stripped and **drops everything the shell said** - the last
+believable report is not the current environment, and a stale value spliced into a next reading is
+the lie that refuses. An empty report keeps the last one, as `ShellSession::take_env` keeps it. The
+gate observes a settled call's report (`bash`, after its wait) and the wait that ends a backgrounded
+run (`job_wait`); a promoted run reports when the wait that ends it does.
+
+What a report may never carry is the deny-list (`intent::env::denied`, §4j.5's ruling): the loaders'
+namespace (`LD_*`, `DYLD_*`), the files and options a shell reads unasked (`BASH_ENV`, `ENV`,
+`SHELLOPTS`, `BASHOPTS`), the `PATH` (which file a bare name runs), and the shell's own machinery
+(`PWD`, `OLDPWD`, `SHLVL`, `_`). A denied name is dropped, never held and never carried: the
+resolver reads it as unread and the next spawn does not receive it. One list serves both sides, so
+what resolves and what runs cannot disagree.
 
 ### 4j.4 What the card shows, and what it refuses to show
 
@@ -669,12 +701,18 @@ Three outcomes, and the third is the safety property:
    the bare name it always had, because refusing there would make a *working* command unread.
    `parameters::Fixed::path` says which of the two it is.
 
-What this does not do: it does not make the shell stateful. Adding the tracked environment to
-`standing_env` after each call would make `export PATH=/tmp/x:$PATH` in one call pick the binary for
-the next, `LD_PRELOAD` a name carried into every later command, and the operator asked once for the
-first and never for the rest; that needs its own decision and a deny-list of names that change what a
-program does without appearing in any text. And it does not read an environment off disk - no
-`~/.bashrc`, no `environ` of a dying process, no store column: observed means the shell said so.
+What this does not do: it does not widen the deny-list. The shell is stateful now (§4j.3, ruled
+2026-11-04) and the deny-list is what keeps the state honest - `LD_PRELOAD` is not a name carried
+into every later command, and `PATH` is not a value one call picks the next call's binary with.
+Both halves are one list (`intent::env::denied`): a denied name is never resolved and never
+spawned, so a grant given for one command cannot settle another that runs differently because of
+a variable nobody's text names - the same refusal `sets_state_for_later` makes of a durable rule
+over `export*`. The list as built is the narrowest safe default - the loaders' namespace, the
+files and options a shell reads unasked, the `PATH`, and the shell's own machinery - and widening
+it is the operator's open ruling: whether `PATH` may be carried with the file-naming above as the
+honesty mechanism, and which further names (`GIT_CONFIG_GLOBAL`, `CDPATH`, …) belong on either
+side. And nothing reads an environment off disk - no `~/.bashrc`, no `environ` of a dying process,
+no store column: observed means the shell said so.
 
 ### The room coordinator is outside the view
 
