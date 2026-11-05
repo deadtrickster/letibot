@@ -231,7 +231,11 @@ impl App {
         let Some(card) = self.note_cards.get(i) else {
             return;
         };
-        let text = card.text.clone();
+        let mut text = card.text.clone();
+        if let Some(key) = crate::ui::transcript::red_card::killed_cap_key(&text) {
+            text.push_str("\n\n");
+            text.push_str(key);
+        }
         let title = Some(card.title.clone());
         self.open_popup(PopupBody::Notice {
             text,

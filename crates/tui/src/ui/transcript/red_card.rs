@@ -294,6 +294,14 @@ pub(crate) fn unjudged_warning_tip(detail: &str) -> Option<RedTip> {
     Some(tip)
 }
 
+/// The line a killed-gate popup adds under the daemon's text. The daemon words the warning for a
+/// model that cannot raise the cap, so the operator's own key is named here.
+pub(crate) fn killed_cap_key(detail: &str) -> Option<&'static str> {
+    let tip = unjudged_warning_tip(detail)?;
+    (tip.trouble == Trouble::Killed)
+        .then_some("The cap is `[memory] gate` in providers.toml (unset, it is half of what is free when the gate starts).")
+}
+
 /// A session notice, read - the opening, and from anywhere in it the failing step
 /// (`The failing step is 1 of 1, `bin/firecode test`.`) and the red tip's review
 /// (`` first in the review queue (`red-main-…`) ``).
