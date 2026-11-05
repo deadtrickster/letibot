@@ -122,7 +122,9 @@ fn a_stall_is_ridden_out_and_a_quota_ends_the_wait() {
     assert!(began.elapsed() >= Duration::from_millis(1500));
 
     // The same stall with the flag: exit 40 at once, naming the stall.
-    let h = waiting(&wt, &hub, true, |hub| hub.publish(trouble("stall")));
+    let h = waiting(&wt, &hub, true, |hub| {
+        hub.publish(trouble("stall"));
+    });
     let (code, said) = h.join().expect("the wait thread");
     assert_eq!(code, 40, "--exit-on-stall exits on a stall: {said}");
     assert!(said.contains("\"stall\""), "{said}");
@@ -138,7 +140,9 @@ fn a_stall_is_ridden_out_and_a_quota_ends_the_wait() {
     assert!(said.contains("\"quota\""), "{said}");
 
     // A timeout (a stall the transport gave up on) ends it too.
-    let h = waiting(&wt, &hub, false, |hub| hub.publish(trouble("timeout")));
+    let h = waiting(&wt, &hub, false, |hub| {
+        hub.publish(trouble("timeout"));
+    });
     let (code, said) = h.join().expect("the wait thread");
     assert_eq!(code, 40, "{said}");
     assert!(said.contains("\"timeout\""), "{said}");
