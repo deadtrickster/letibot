@@ -95,6 +95,13 @@ pub const SEAT_UNDER_HOME: &[&str] = &[
     ".bash_profile",
     ".profile",
     ".config/fish",
+    // Files the operator's next login or shell start runs, so a write is code outside the seat.
+    ".zlogin",
+    ".oh-my-zsh/custom",
+    "Library/LaunchAgents",
+    // What the operator typed, secrets included.
+    ".zsh_history",
+    ".bash_history",
 ];
 
 /// What a seat's profile denies, rel-to-home: the stores the gate knows, then this side's own.

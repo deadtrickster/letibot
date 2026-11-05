@@ -726,6 +726,41 @@ fn a_child_commits_in_a_worktree_with_the_operators_identity_and_has_no_credenti
     assert!(!out.contains("password="), "{out}");
 }
 
+/// The top-level seat: persistence paths and history are denied, the global git config is read
+/// and not written.
+#[test]
+fn a_wide_seat_cannot_persist_or_read_history_and_only_reads_the_git_config() {
+    let f = Fixture::new("persist");
+    let op = f.root.join("operator");
+    std::fs::create_dir_all(op.join("Library/LaunchAgents")).unwrap();
+    std::fs::write(op.join(".zsh_history"), SECRET).unwrap();
+    std::fs::write(op.join(".gitconfig"), "[user]\n\tname = Op\n").unwrap();
+    let mut view = ViewSpec::project_only(f.project())
+        .with_home(HomeView::Dir(op.clone()))
+        .with_tmp(TmpView::Session(f.root.join("tmp")));
+    for p in letibot_tools::exec::seat::wide_protected(&op) {
+        view = view.protecting(p);
+    }
+    let s = Seatbelt::probe_as(view, Egress::Denied, vec![], op.clone())
+        .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+    let cwd = f.project();
+    for write in [
+        "echo x > \"$HOME/Library/LaunchAgents/a.plist\"",
+        "echo x > \"$HOME/.zlogin\"",
+        "echo x > \"$HOME/.zprofile\"",
+        "echo x >> \"$HOME/.gitconfig\"",
+    ] {
+        let (rc, out) = run_in(&s, &cwd, write);
+        assert_ne!(rc, 0, "{write} succeeded: {out}");
+    }
+    let (rc, out) = run_in(&s, &cwd, "cat \"$HOME/.zsh_history\"");
+    assert_ne!(rc, 0, "{out}");
+    assert!(!out.contains(SECRET), "history was read: {out}");
+    let (rc, out) = run_in(&s, &cwd, "cat \"$HOME/.gitconfig\"");
+    assert_eq!(rc, 0, "a commit needs the identity: {out}");
+    assert!(out.contains("name = Op"), "{out}");
+}
+
 /// `main` kept only in `packed-refs` has no ref file; a child must not be able to create the loose
 /// one, and must still commit on its own branch.
 #[test]

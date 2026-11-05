@@ -3071,6 +3071,88 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// The wide seat's persistence, history and git-config rules, read from the same lists by both
+    /// renderings: denied outright on the macOS profile and masked here, and the read-only files
+    /// written nowhere in either.
+    #[test]
+    fn the_wide_seats_persistence_and_history_rules_hold_in_both_renderings() {
+        use crate::exec::{seat, seatbelt};
+        let dir = std::env::temp_dir().join(format!("letibot-persist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let home = dir.join("operator");
+        std::fs::create_dir_all(home.join(".config/git")).expect("a fake home");
+        std::fs::create_dir_all(dir.join("project")).expect("a project");
+        std::fs::write(home.join(".gitconfig"), "[user]\n").unwrap();
+        std::fs::write(home.join(".config/git/config"), "").unwrap();
+        let denied = [
+            "Library/LaunchAgents",
+            ".zlogin",
+            ".zprofile",
+            ".bash_profile",
+            ".profile",
+            ".oh-my-zsh/custom",
+            ".zsh_history",
+            ".bash_history",
+        ];
+        let deny = seatbelt::deny_under_home(true);
+        for d in denied {
+            assert!(deny.contains(&d), "{d} is not on the seat's deny list");
+        }
+        let mut view = ViewSpec::project_only(dir.join("project"))
+            .with_home(HomeView::Dir(home.clone()))
+            .wide();
+        let wide = seat::seat_for_level(
+            seat::Level::Wide,
+            &crate::mode::Mode::WRITES_ALLOWED,
+            "this machine",
+            &[] as &[&str],
+            &home,
+            None,
+        );
+        assert!(
+            !deny.contains(&".config/gh") && !wide.masked.iter().any(|p| p.ends_with(".config/gh")),
+            "gh stays readable in the top-level seat"
+        );
+        view = view.masking(wide.masked.iter().cloned());
+        for p in seat::wide_protected(&home) {
+            view = view.protecting(p);
+        }
+        let argv = build_argv_with(
+            Path::new("/usr/bin/bwrap"),
+            &view,
+            &Egress::Denied,
+            &ConfinePlan {
+                cwd: &dir,
+                env: &[],
+            },
+            Session::Detached,
+        )
+        .join(" ");
+        for rel in crate::secrets::SEAT_READ_ONLY {
+            let p = home.join(rel);
+            if p.exists() {
+                let p = p.display().to_string();
+                assert!(argv.contains(&format!("--ro-bind {p} {p}")), "{p}: {argv}");
+            }
+        }
+        let layout = seatbelt::Layout::of(&view, &home, &dir);
+        let profile = seatbelt::render_profile(&view, &Egress::Denied, &layout);
+        for rel in crate::secrets::SEAT_READ_ONLY {
+            let p = home.join(rel);
+            assert!(
+                profile.contains(&format!("(subpath \"{}\")", p.display())),
+                "{rel} is writable on macOS: {profile}"
+            );
+        }
+        for d in denied {
+            assert!(
+                layout.deny.contains(&home.join(d)),
+                "{d} is not denied on macOS"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// A tight view reaches the operator's home only through a grant, and a grant of a toolchain
     /// directory carries a credential store with it: the store is masked, the toolchain is not, and a
     /// store the view does not reach gets no mount at all.

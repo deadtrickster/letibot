@@ -212,6 +212,15 @@ pub fn worktree_git_grants(project: &Path) -> Vec<Grant> {
     }]
 }
 
+/// What the top-level seat reads and may not write, under the operator's home. Absent entries are
+/// still named, so the file cannot be created either.
+pub fn wide_protected(home: &Path) -> Vec<Protection> {
+    crate::secrets::SEAT_READ_ONLY
+        .iter()
+        .map(|rel| Protection::file(home.join(rel)))
+        .collect()
+}
+
 /// A checkout's two git directories, and the branch it has out. Read off the disk, because the
 /// answer to `what may a child write in here` is different for a commit than for the tree.
 struct GitDirs {

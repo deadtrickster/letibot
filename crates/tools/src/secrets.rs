@@ -88,6 +88,16 @@ pub fn seat_denied(wide: bool) -> Vec<&'static str> {
         .collect()
 }
 
+/// Home-relative files the top-level seat reads and may not write: a commit needs the identity,
+/// and a rewritten global git config runs a helper or hook in the operator's own git later.
+/// The directory is listed by file so a store inside it stays masked.
+pub const SEAT_READ_ONLY: &[&str] = &[
+    ".gitconfig",
+    ".config/git/config",
+    ".config/git/ignore",
+    ".config/git/attributes",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;

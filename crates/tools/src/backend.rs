@@ -455,6 +455,11 @@ impl HostBackend {
         // whatever a grant lets in — the renderer masks the stores its own view reaches.
         view = view.masking(seat.masked.iter().cloned());
         if let Some(h) = &seat.home {
+            for p in crate::exec::seat::wide_protected(h) {
+                view = view.protecting(p);
+            }
+        }
+        if let Some(h) = &seat.home {
             // The operator's own home makes this the wide seat: the whole machine, at its own paths.
             view = view
                 .with_home(crate::exec::confine::HomeView::Dir(h.clone()))
