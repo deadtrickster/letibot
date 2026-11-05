@@ -702,7 +702,7 @@ fn a_path_outside_the_view_produces_a_boundary_note_and_not_a_bare_enoent() {
         "the ENOENT must be explained as the boundary: {all}"
     );
     assert!(
-        all.contains("another spelling"),
+        all.contains("no other spelling"),
         "and the note must close the retry loop: {all}"
     );
 }
