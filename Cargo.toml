@@ -125,7 +125,7 @@ exclude = ["plugins"]
 #
 # **0.5.1**: the `v0.5.0` tag was pushed before the release workflow could build the
 # built-in plugins on a fresh runner, so it has no release behind it; same protocol (54).
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"
