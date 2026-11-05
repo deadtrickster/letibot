@@ -104,6 +104,7 @@ fn a_second_rooms_closes_the_view() {
 #[test]
 fn a_closed_view_polls_only_the_room_list_and_an_open_one_polls_everything() {
     let mut a = app();
+    a.rooms.next_poll_ms = 0;
     a.clock(1_000);
     assert_eq!(types(&ops(&mut a)), ["rooms"]);
     a.clock(5_000);

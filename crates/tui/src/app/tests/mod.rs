@@ -37,11 +37,15 @@ use rano::agent::header as progress;
 use rano::width::text as width;
 
 pub(crate) fn app() -> App {
-    App::new(RenderConfig {
+    let mut a = App::new(RenderConfig {
         width: 80,
         color: false,
         ..RenderConfig::default()
-    })
+    });
+    // The closed room-list poll is the rooms tests' business: it would answer every clock
+    // tick a test asserts is quiet.
+    a.rooms.next_poll_ms = u64::MAX;
+    a
 }
 
 /// The newest notice, read whole - every notice is one line now, so a test that reads
