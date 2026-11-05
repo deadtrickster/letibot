@@ -146,8 +146,13 @@ pub enum StreamFlow {
 
 #[derive(Debug)]
 pub enum BackendError {
-    /// The provider could not be reached, or the connection died mid-answer.
-    Unreachable(String),
+    /// The provider could not be reached, or the connection died mid-answer. `kind` is the io
+    /// failure underneath when there was one, so a deadline stays a deadline for the caller's retry
+    /// rule instead of being read back out of the sentence.
+    Unreachable {
+        message: String,
+        kind: Option<std::io::ErrorKind>,
+    },
     /// The provider answered and said no: a bad key, a bad model, a quota.
     Refused {
         status: u16,
@@ -162,10 +167,33 @@ pub enum BackendError {
     Aborted,
 }
 
+impl BackendError {
+    /// A transport failure, with the io kind under it when there is one.
+    pub fn unreachable(message: impl Into<String>, kind: Option<std::io::ErrorKind>) -> Self {
+        BackendError::Unreachable {
+            message: message.into(),
+            kind,
+        }
+    }
+
+    /// Whether this was a deadline rather than a reset: one `io::ErrorKind`, never a substring.
+    pub fn timed_out(&self) -> bool {
+        matches!(
+            self,
+            BackendError::Unreachable {
+                kind: Some(std::io::ErrorKind::TimedOut),
+                ..
+            }
+        )
+    }
+}
+
 impl std::fmt::Display for BackendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BackendError::Unreachable(m) => write!(f, "provider unreachable: {m}"),
+            BackendError::Unreachable { message, .. } => {
+                write!(f, "provider unreachable: {message}")
+            }
             BackendError::Refused { status, body, .. } => {
                 write!(f, "provider refused ({status}): {body}")
             }

@@ -204,6 +204,16 @@ fn shape(body: &Value, bytes: usize) -> String {
     out
 }
 
+/// The io failure under a transport error, when there is one: a deadline must stay a deadline for
+/// a caller that branches on it, and a sentence is what it must not have to read.
+fn io_kind(err: &ureq::Error) -> Option<std::io::ErrorKind> {
+    match err {
+        ureq::Error::Timeout(_) => Some(std::io::ErrorKind::TimedOut),
+        ureq::Error::Io(e) => Some(e.kind()),
+        _ => None,
+    }
+}
+
 /// Whether an interrupted send is asked again. One retry covers the daemon's own Ctrl-C, and
 /// a loop that never gives up re-posts the whole history once per interruption: billed, and none
 /// of those streams is ever read, because the first answer ends the loop.
@@ -435,7 +445,9 @@ impl OpenAiProvider {
             {
                 Ok(resp) => break resp,
                 Err(e) if ask_again(&e, &mut retried) => {}
-                Err(e) => return Err(BackendError::Unreachable(e.to_string())),
+                Err(e) => {
+                    return Err(BackendError::unreachable(e.to_string(), io_kind(&e)));
+                }
             }
         };
         let status = resp.status().as_u16();
@@ -492,7 +504,9 @@ impl OpenAiProvider {
         // answer looks exactly like a finished one, so the absence of this has to be a failure.
         let mut ended = false;
         for line in reader.lines() {
-            let line = line.map_err(|e| BackendError::Unreachable(format!("mid-stream: {e}")))?;
+            let line = line.map_err(|e| {
+                BackendError::unreachable(format!("mid-stream: {e}"), Some(e.kind()))
+            })?;
             let Some(data) = line.strip_prefix("data:") else {
                 continue;
             };
@@ -524,12 +538,15 @@ impl OpenAiProvider {
         if !ended && acc.finish.is_none() {
             // A half answer is not an answer: recorded as `Stop` with zero usage it was billed as
             // nothing and shown as if the model had finished the thought.
-            return Err(BackendError::Unreachable(format!(
-                "the stream closed without `[DONE]` or a finish_reason after {} character(s) of \
-                 answer and {} tool call(s), so what arrived is a fragment",
-                acc.text.chars().count() + acc.reasoning.chars().count(),
-                acc.calls.len()
-            )));
+            return Err(BackendError::unreachable(
+                format!(
+                    "the stream closed without `[DONE]` or a finish_reason after {} character(s) of \
+                     answer and {} tool call(s), so what arrived is a fragment",
+                    acc.text.chars().count() + acc.reasoning.chars().count(),
+                    acc.calls.len()
+                ),
+                None,
+            ));
         }
         let wall_ms = started.elapsed().as_millis() as u64;
         Ok(acc.finish(

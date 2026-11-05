@@ -1241,22 +1241,15 @@ impl TurnEngine {
             // An unreachable provider is not a malformed answer, and telling a reader it is
             // sends them to debug the wrong end. `HttpError::Io` is true of it - the transport
             // failed - and the retry policy takes the round again for it.
-            Err(letibot_backend::BackendError::Unreachable(m)) => {
+            Err(letibot_backend::BackendError::Unreachable { message, kind }) => {
                 // A failed turn commits nothing; the operator's words are
                 // input, not output, and `absorb` already took them out of the source,
                 // so they go back rather than being appended.
                 pending.give_back(steering);
-                // A timeout keeps its kind. A provider wraps its own io error into a string, so
-                // `TimedOut` would otherwise be lost and a model API timeout would read as just
-                // another transport failure - the one thing an automation must be able to tell.
-                let said = format!("provider unreachable: {m}");
-                let timed_out = said.to_ascii_lowercase().contains("timed out")
-                    || said.to_ascii_lowercase().contains("timeout");
-                let kind = if timed_out {
-                    std::io::ErrorKind::TimedOut
-                } else {
-                    std::io::ErrorKind::Other
-                };
+                // The kind is the provider's own, not a reading of its sentence: a model API
+                // timeout is the one thing an automation has to tell from another transport
+                // failure, and prose is not where that fact lives.
+                let kind = kind.unwrap_or(std::io::ErrorKind::Other);
                 self.end_a_failed_attempt(
                     sink,
                     &turn_id,
@@ -1266,7 +1259,8 @@ impl TurnEngine {
                     backend,
                 );
                 return Err(TurnFailure::Http(HttpError::Io(std::io::Error::new(
-                    kind, said,
+                    kind,
+                    format!("provider unreachable: {message}"),
                 ))));
             }
             Err(e) => {

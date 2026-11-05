@@ -809,7 +809,11 @@ fn a_provider_that_never_answers_times_out_at_the_deadline_it_was_given() {
         said.contains("timed out") || said.contains("timeout"),
         "and the failure says it was a timeout, because that is what an automation branches on: {e}"
     );
-    assert!(matches!(e, BackendError::Unreachable(_)), "{e:?}");
+    assert!(matches!(e, BackendError::Unreachable { .. }), "{e:?}");
+    assert!(
+        e.timed_out(),
+        "the deadline is the kind, not a reading of the words: {e}"
+    );
 }
 
 /// Half a stream is not an answer: a socket that closes cleanly is indistinguishable from a finished
@@ -822,7 +826,7 @@ fn a_stream_that_closes_without_an_ending_is_a_fragment_and_not_an_answer() {
     let p = provider(&f.url);
     let (deltas, out) = bare_with_deltas(&p);
     let err = out.expect_err("a stream with no ending is not a finished answer");
-    assert!(matches!(err, BackendError::Unreachable(_)), "{err:?}");
+    assert!(matches!(err, BackendError::Unreachable { .. }), "{err:?}");
     let said = format!("{err}");
     assert!(
         said.contains("[DONE]") && said.contains("finish_reason"),

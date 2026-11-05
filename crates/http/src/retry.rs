@@ -163,15 +163,11 @@ impl Policy {
                     None
                 }
             }
-            // A transport timeout is the model's own API not answering in time. `TimedOut` is the
-            // kind; the text is the fallback, because a provider wraps its own io error one layer up
-            // and the kind does not always survive the trip.
+            // A transport timeout is the model's own API not answering in time, and the kind is the
+            // whole instrument: a sentence that says "timed out" about a request the peer reset made
+            // an outage of it, and a fallback moved a session over one.
             HttpError::Io(err) => {
-                let said = err.to_string().to_ascii_lowercase();
-                (err.kind() == std::io::ErrorKind::TimedOut
-                    || said.contains("timed out")
-                    || said.contains("timeout"))
-                .then_some(Trouble::Timeout)
+                (err.kind() == std::io::ErrorKind::TimedOut).then_some(Trouble::Timeout)
             }
             HttpError::Malformed(_) => None,
         }
@@ -432,7 +428,8 @@ mod tests {
             Some(Trouble::Quota),
             "the provider's own words decide it, not the status"
         );
-        // A timeout is the model's API not answering, by kind or by the words a provider wraps it in.
+        // A timeout is the model's API not answering, and the KIND is the whole of it: a sentence
+        // about timing is not an instrument a fallback may move a session over.
         assert_eq!(
             Policy::trouble(&HttpError::Io(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
@@ -444,8 +441,8 @@ mod tests {
             Policy::trouble(&HttpError::Io(std::io::Error::other(
                 "provider unreachable: error sending request: timed out reading response body"
             ))),
-            Some(Trouble::Timeout),
-            "a provider wraps its own io error, and the kind does not survive the trip"
+            None,
+            "the words say timeout and the kind does not: the kind is the instrument"
         );
         // And everything else is not a trouble: the turn's own failure is enough for these.
         assert_eq!(Policy::trouble(&status(500)), None);

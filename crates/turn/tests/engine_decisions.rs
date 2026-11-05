@@ -1746,7 +1746,7 @@ impl letibot_backend::MessagesBackend for NeverReached {
         _req: &letibot_backend::TurnRequest<'_>,
         _on_delta: &mut dyn FnMut(&letibot_backend::Delta) -> letibot_backend::StreamFlow,
     ) -> Result<letibot_backend::Completion, letibot_backend::BackendError> {
-        Err(letibot_backend::BackendError::Unreachable(self.0.into()))
+        Err(letibot_backend::BackendError::unreachable(self.0, None))
     }
 }
 
@@ -1837,7 +1837,10 @@ impl letibot_backend::MessagesBackend for Failing {
                 body: "slow down".into(),
                 retry_after: None,
             },
-            "unreachable" => BackendError::Unreachable("connection reset by the peer".into()),
+            "unreachable" => BackendError::unreachable(
+                "connection reset by the peer",
+                Some(std::io::ErrorKind::ConnectionReset),
+            ),
             _ => BackendError::Malformed("the stream stopped mid-chunk".into()),
         })
     }
@@ -1906,6 +1909,91 @@ fn every_failed_attempt_ends_its_turn() {
             *finished[0].1,
             letibot_turn::FinishReason::Aborted,
             "{kind}: the model gave no finish reason, so it must not read as a clean ending"
+        );
+    }
+}
+
+/// A provider whose transport failure carries an io kind, and a message that says the other thing:
+/// the kind is what a reader must branch on.
+struct Typed {
+    message: &'static str,
+    kind: std::io::ErrorKind,
+}
+
+impl letibot_backend::MessagesBackend for Typed {
+    fn caps(&self) -> BackendCaps {
+        BackendCaps::METERED_API
+    }
+    fn name(&self) -> &str {
+        "deepseek"
+    }
+    fn model(&self) -> &str {
+        "deepseek-flash"
+    }
+    fn authority(&self) -> String {
+        "api.deepseek.com".into()
+    }
+    fn complete(
+        &self,
+        _req: &letibot_backend::TurnRequest<'_>,
+        _on_delta: &mut dyn FnMut(&letibot_backend::Delta) -> letibot_backend::StreamFlow,
+    ) -> Result<letibot_backend::Completion, letibot_backend::BackendError> {
+        Err(letibot_backend::BackendError::unreachable(
+            self.message,
+            Some(self.kind),
+        ))
+    }
+}
+
+/// The timeout class comes from the kind the provider carried and never from its sentence: a reset
+/// whose words happen to name a timeout moved the session to the fallback model.
+#[test]
+fn a_timeout_is_the_kind_and_not_the_words() {
+    let _lock = serial();
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
+        eprintln!("SKIPPED: no vocabulary GGUF, so the engine cannot open a session");
+        return;
+    };
+    let idle = Canned::serve(Vec::new(), 0);
+    let mut engine = engine(idle.endpoint.clone());
+    for (n, (message, kind, want)) in [
+        (
+            "connection reset by the peer",
+            std::io::ErrorKind::TimedOut,
+            true,
+        ),
+        (
+            "timed out reading the response",
+            std::io::ErrorKind::ConnectionReset,
+            false,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut session = session(&engine, &format!("typed-{n}"));
+        let mut sink = RecordingSink::new();
+        session
+            .append_items(&engine, &[user("hello")], &mut sink)
+            .unwrap();
+        let err = engine
+            .run_turn_messages(
+                &mut session,
+                &mut sink,
+                &mut NoSteering,
+                &Typed { message, kind },
+                "be terse",
+                &[],
+                None,
+            )
+            .expect_err("a failed round is a failed turn");
+        let TurnFailure::Http(http) = err else {
+            panic!("a transport failure arrives as TurnFailure::Http, got {err:?}")
+        };
+        assert_eq!(
+            letibot_http::retry::Policy::trouble(&http),
+            want.then_some(letibot_http::retry::Trouble::Timeout),
+            "`{message}` with kind {kind:?}"
         );
     }
 }
