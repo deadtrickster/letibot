@@ -2503,22 +2503,48 @@ fn a_stale_prefix_is_drawn_as_a_note_row_and_not_as_a_failure() {
 
 // ─────────────── a dismissed notice stays dismissed in every view ───────────────
 
-/// A run folded into one counter, with notices filed at the end of the conversation - the
+/// A run folded into one counter, at the end of a conversation too long to walk whole - the
 /// operator's frame: `[2 tool calls]` above the composer edge, and the notices he cleared above
-/// the live pane. The counter is what he clicked.
+/// the live pane. The filler is load-bearing: a short conversation never enters the tail walk
+/// (`hist_floor` stays 0), so a test built on one pins nothing.
 fn a_run_with_notices() -> App {
     let mut a = app();
+    a.walk_limit = 1;
     a.apply(hello(
         "s",
         vec![brief("s", "one", false)],
         Hub::new("s").snapshot(),
     ));
+    let mut seq = 0u64;
+    // Longer than `room + TAIL_SLACK`, so the window really does start mid-conversation.
+    for i in 0..120u64 {
+        seq += 1;
+        let id = format!("s.f{i}");
+        a.apply(ServerFrame::Event(env(
+            seq,
+            testing::appended(&id, "assistant"),
+        )));
+        seq += 1;
+        a.apply(ServerFrame::Event(env(
+            seq,
+            SessionEvent::TranscriptContent {
+                item_id: id.clone(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: format!("earlier reply {i}"),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+    }
+    seq += 1;
     a.apply(ServerFrame::Event(env(
-        1,
+        seq,
         testing::appended("s.0", "assistant"),
     )));
+    seq += 1;
     a.apply(ServerFrame::Event(env(
-        2,
+        seq,
         SessionEvent::TranscriptContent {
             item_id: "s.0".into(),
             item: Box::new(TranscriptItem::Assistant {
@@ -2543,12 +2569,14 @@ fn a_run_with_notices() -> App {
         .into_iter()
         .enumerate()
     {
+        seq += 1;
         a.apply(ServerFrame::Event(env(
-            (i as u64) * 2 + 3,
+            seq,
             testing::appended(id, "tool_result"),
         )));
+        seq += 1;
         a.apply(ServerFrame::Event(env(
-            (i as u64) * 2 + 4,
+            seq,
             SessionEvent::TranscriptContent {
                 item_id: id.into(),
                 item: Box::new(TranscriptItem::ToolResult {
@@ -2566,8 +2594,9 @@ fn a_run_with_notices() -> App {
     // The notices, at three instants - explicit stamps, because a mark is an ORDER and two
     // publishes are not guaranteed to land in different milliseconds.
     for (i, ts) in [(1u64, 1_000u64), (2, 2_000), (3, 3_000)] {
+        seq += 1;
         a.apply(ServerFrame::Event(env_at(
-            0,
+            seq,
             ts,
             SessionEvent::Warning {
                 code: "model_endpoint_retry".into(),
@@ -2577,6 +2606,9 @@ fn a_run_with_notices() -> App {
         )));
     }
     a.visibility = Visibility::of(Profile::CONVERSATION);
+    // One frame first: it settles `marker_facts`, whose change invalidates the history and would
+    // drop the tail back to a forward walk with no floor.
+    a.screen(200, 40);
     a.invalidate_history();
     a
 }
@@ -2641,7 +2673,7 @@ fn a_notice_whose_row_is_above_the_window_is_not_drawn() {
     let screen = a.screen(120, 40).join("\n");
     assert!(
         a.hist_floor > 0,
-        "the premise — a tail walk, not a whole one (floor {}, upto {})",
+        "the premise, a tail walk, not a whole one (floor {}, upto {})",
         a.hist_floor,
         a.hist_upto
     );
@@ -2651,6 +2683,18 @@ fn a_notice_whose_row_is_above_the_window_is_not_drawn() {
     );
     // Held, not dropped, and not retired: it is out of this window, which is a third answer.
     assert_eq!(a.notes.len(), 1, "the note is gone, not out of the window");
+    assert!(
+        !a.is_retired(&a.notes[0].1),
+        "the fixture retired the note, so it proves nothing"
+    );
+    // A note the walk steps over is hidden by the window, so `/status` must count it.
+    assert_eq!(
+        a.notes_before(),
+        1,
+        "a note above the window is counted as live: {} held, {} retired",
+        a.notes.len(),
+        a.retired_notes()
+    );
 
     // And a notice at the END of the conversation is drawn - the rule is the seam, not the
     // silence: a note whose row IS in the window still arrives.
@@ -2668,6 +2712,12 @@ fn a_notice_whose_row_is_above_the_window_is_not_drawn() {
         screen.contains("target_green at 294af894"),
         "the notice filed at the end of the conversation is not on the screen:\n{screen}"
     );
+    // The one in the window is not counted.
+    assert_eq!(
+        a.notes_before(),
+        1,
+        "a note that IS in the window is counted as out of it"
+    );
 }
 
 /// `ctrl-n`, then the counter's expansion: the notices stay hidden and stay hidden the second time. The click
@@ -2676,10 +2726,18 @@ fn a_notice_whose_row_is_above_the_window_is_not_drawn() {
 #[test]
 fn ctrl_n_then_the_counters_expansion_draws_no_notice() {
     let mut a = a_run_with_notices();
-    // The premise: one counted row, and the counter this test clicks.
+    // Premise: one counted row, and a tail window. The first frame carries the marker-facts
+    // rebuild, so the second is the steady one every door below starts from.
+    a.screen(200, 40);
     let before = a.screen(200, 40).join("\n");
     assert!(before.contains("model_endpoint_retry"), "{before}");
     assert!(before.contains("2 tool calls"), "{before}");
+    assert!(
+        a.hist_floor > 0,
+        "the premise, a tail walk (floor {}, upto {})",
+        a.hist_floor,
+        a.hist_upto
+    );
 
     a.key(Key::CtrlN);
     assert_eq!(a.read_upto("model_endpoint_retry"), Some(3_000));
@@ -2727,6 +2785,21 @@ fn ctrl_n_then_the_counters_expansion_draws_no_notice() {
 #[test]
 fn ctrl_n_then_a_queued_row_draws_no_notice() {
     let mut a = a_run_with_notices();
+    // Two frames for the reason the counter's test gives: the first carries the marker-facts
+    // rebuild, the second is the steady one.
+    a.screen(200, 40);
+    assert!(
+        a.screen(200, 40)
+            .join("\n")
+            .contains("model_endpoint_retry"),
+        "the fixture's notices are not on the frame"
+    );
+    assert!(
+        a.hist_floor > 0,
+        "the premise, a tail walk (floor {}, upto {})",
+        a.hist_floor,
+        a.hist_upto
+    );
     a.key(Key::CtrlN);
     assert_eq!(
         a.screen(200, 40)

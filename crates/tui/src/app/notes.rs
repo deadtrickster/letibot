@@ -167,10 +167,15 @@ impl App {
     /// How many notes this head holds and is not drawing: they are older than the conversation it shows, or they were
     /// filed beside it on purpose. The number `/status` shows beside the count, and the three are different reasons
     /// for a line being absent: one the reader chose, one the window decided, one the placement decided.
+    ///
+    /// A seam below `hist_floor` counts too: the tail walk steps over it just as it does `Before`.
     pub(crate) fn notes_before(&self) -> usize {
         self.notes
             .iter()
-            .filter(|(place, _)| matches!(place, Placed::Before))
+            .filter(|(place, _)| match place {
+                Placed::Before => true,
+                Placed::Seam(at) => *at < self.hist_floor,
+            })
             .count()
     }
 
