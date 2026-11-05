@@ -359,18 +359,23 @@ fn a_step_that_outlives_the_deadline_is_killed_on_the_host() {
     let run = within(
         "the gate never returned from a step that only its deadline could end: the step is still \
          running and its own end is 120 s away, so the gate is waiting for the far side",
-        || rig.gate(&[step], 15),
+        // **Ninety seconds, and the deadline covers the TRANSFER too.** At 15 s the gate gave up
+        // getting the tree onto the host - `NotRun` and `Infra`, "the gate's deadline passed before
+        // the tree was on the host" - measured on the merge gate, which is a loaded box. The step
+        // still runs its own 120 s, so a step killed at 90 is still killed at the GATE's clock and
+        // not at the far side's, which is the whole of what this asserts.
+        || rig.gate(&[step], 90),
     );
     assert!(matches!(run.verdict, GateVerdict::TimedOut(_)), "{run:#?}");
     assert_eq!(run.steps[0].outcome, MergeGateOutcome::TimedOut);
-    // The sentence names the step's own bound - the gate's deadline, here fifteen seconds, and
+    // The sentence names the step's own bound - the gate's deadline, here ninety seconds, and
     // not any poll's: a step is minutes and a question about the host is seconds, and a verdict
     // that does not say which clock ran out cannot be acted on.
     let GateVerdict::TimedOut(why) = &run.verdict else {
         unreachable!()
     };
     assert!(
-        why.contains("the gate's own deadline passed (15 s)"),
+        why.contains("the gate's own deadline passed (90 s)"),
         "{why}"
     );
     let out = &run.steps[0].output;
@@ -390,10 +395,14 @@ fn a_step_that_outlives_the_deadline_is_killed_on_the_host() {
         .filter_map(|n| n.trim().parse::<u32>().ok())
         .max()
         .unwrap_or(0);
+    // **The number that made this pass at a 2 s deadline was `< 20`, and at ninety it would fail
+    // for the wrong reason:** the step lives as long as the deadline allows and prints one `beat N` a
+    // second, so a healthy run prints about ninety of them. What the count proves is that the step
+    // did NOT reach its own 120 s - which is the distinction this test exists for.
     assert!(
-        beats < 20,
-        "the step ran {beats} of its own seconds before the gate ended it, and the gate's deadline \
-         is 2 s: something other than the deadline ended this step (a poll's bound is 30 s): {out}"
+        beats < 110,
+        "the step ran {beats} of its own seconds before the gate ended it, and the step's own end is \
+         120 s: something other than the gate's deadline ended this step: {out}"
     );
     // The far side's group was killed, and this waits for that fact rather than assuming it: a
     // killed group takes a moment to be reaped.
