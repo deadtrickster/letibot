@@ -209,6 +209,24 @@ pub(crate) fn the_plan_as_checked(
         .collect()
 }
 
+/// Is the row the check would name one the model itself has marked in progress? Read through the
+/// same two doors the arming takes, so the clock paces exactly the notice the turn would send.
+fn the_named_row_is_in_progress(
+    todos: &[TodoItem],
+    children: &ChildSessions,
+    jobs: &RunningJobs,
+) -> bool {
+    let askable = the_plan_as_checked(todos, children, jobs);
+    let Some((_, named)) =
+        letibot_tools::builtins::todo::unfinished_plan_for(&askable, todos, None, children, jobs)
+    else {
+        return false;
+    };
+    todos
+        .iter()
+        .any(|row| row.content == named && row.status == TodoStatus::InProgress)
+}
+
 /// Should the idle check be armed for a plan of these ROWS, given what it was last NAGGED
 /// with? The `moved` half of the schedule, as one predicate, so the rule can be tested
 /// without a daemon
@@ -355,8 +373,16 @@ impl TodoNagClock {
             self.arm_census(now);
             return;
         }
+        // A row the model has already moved to in progress is not asked about again until the
+        // session has been idle for the longest interval the ladder reaches: the check that
+        // restated *in progress* one window after the model wrote it got a restatement back.
+        let floor = if the_named_row_is_in_progress(todos, children, jobs) {
+            NAG_REPEAT_CAP
+        } else {
+            self.window
+        };
         self.due = if nag_should_arm(todos, self.nagged.as_deref(), children, jobs) {
-            Some(now + self.window)
+            Some(now + floor)
         } else if unfinished_plan(
             &the_plan_as_checked(todos, children, jobs),
             todos,
@@ -368,7 +394,7 @@ impl TodoNagClock {
             // `nagged_at` is written with `nagged` and cleared with it, and this arm is reached only
             // with a notice outstanding - so the anchor is there, and a missing one would be a
             // clock that armed nothing rather than one that fired at the wrong moment.
-            self.nagged_at.map(|at| at + self.interval())
+            self.nagged_at.map(|at| at + self.interval().max(floor))
         } else {
             // The young child's deadline, or the end of an ending's grace, whichever is first. A grace
             // normally ends at a turn end, which re-arms this clock by itself; the deadline is for the
