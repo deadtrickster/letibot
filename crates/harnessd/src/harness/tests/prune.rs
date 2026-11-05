@@ -1,7 +1,6 @@
-//! `/prune` end to end: the fork carries every row with the oldest bodies stubbed, the base's
-//! lead names every id, `recall` opens each one, and the old transcript still holds the bodies.
-//! The join is the point, as it is for a compaction's map (`tests/recall.rs`): a prune whose ids
-//! the base prints and nothing can open is a page of dead ends.
+//! `/prune` end to end: the fork carries every row with the oldest bodies stubbed, the lead names
+//! every id, `recall` opens each one, and the old transcript still holds the bodies - a prune whose
+//! ids the base prints and nothing can open is a page of dead ends (`tests/recall.rs`).
 
 use super::*;
 use crate::harness::PruneReport;

@@ -1,7 +1,6 @@
-//! `/prune`: structural eviction on its own, §4's first rung with no summary above it. The oldest
-//! tool-call bodies leave the conversation as stubs, every row is carried, and each body is kept in
-//! the spill store under the id `recall` opens. No model anywhere: a re-prefill is its entire cost
-//! (`docs/compaction.md` §6).
+//! `/prune`: §4's first rung on its own. The oldest tool-call bodies leave the conversation as
+//! stubs, every row is carried, and each body is kept in the spill store under the id `recall`
+//! opens - no model anywhere, so a re-prefill is its entire cost (`docs/compaction.md` §6).
 
 use letibot_transcript::{SystemOrigin, TranscriptItem};
 use letibot_turn::CompactionOutcome;
@@ -20,10 +19,9 @@ pub struct PruneReport {
 }
 
 impl Harness {
-    /// Prune the conversation: reduce it with the same evicter a summary turn uses, then fork onto
-    /// the reduced rows - a fork, not an edit, so the ledger's hash chain is never broken and the
-    /// old transcript stays whole in the store. Refuses when nothing would leave, because the fork
-    /// costs a cold re-prefill and a prune that changed nothing is that cost for nothing.
+    /// Prune the conversation: the same evicter a summary turn uses, then a fork onto the reduced
+    /// rows - not an edit, so the ledger's chain is never broken and the old transcript stays
+    /// whole. Refuses when nothing would leave, since the fork costs a cold re-prefill.
     pub fn prune(&mut self) -> Result<PruneReport, HarnessError> {
         if self.store.is_none() {
             return Err(HarnessError::Setup(
