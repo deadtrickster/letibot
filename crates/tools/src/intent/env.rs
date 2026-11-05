@@ -124,6 +124,7 @@ impl SessionEnv {
             .map(|(k, e)| (k.clone(), e.clone()))
             .collect();
         let mut reported = 0usize;
+        let mut held = 0usize;
         let mut value_bytes = 0usize;
         for pair in report.split(';') {
             if pair.is_empty() {
@@ -138,14 +139,20 @@ impl SessionEnv {
             if !is_plain(value) {
                 return Err(format!("`{name}` is not one plain word"));
             }
+            reported += 1;
+            // Denied: reported and believable, never carried. Counting it keeps a report
+            // of nothing but denied names from reading as an empty one.
+            if denied(name) {
+                continue;
+            }
             // Too big, or the budget is spent: not held.
-            if value.len() > ENV_VALUE || reported >= ENV_PAIRS {
+            if value.len() > ENV_VALUE || held >= ENV_PAIRS {
                 continue;
             }
             if value_bytes + value.len() > ENV_BYTES {
                 continue;
             }
-            reported += 1;
+            held += 1;
             value_bytes += value.len();
             // The harness's pair wins.
             if values.get(name).is_some_and(|e| e.from == From::Harness) {
@@ -184,6 +191,38 @@ impl SessionEnv {
     pub fn is_secret(&self, name: &str) -> bool {
         self.get(name).is_some_and(|e| is_secret(name, &e.value))
     }
+
+    /// The pairs a shell reported and nothing else, in name order: what the next call's
+    /// spawn is given on top of the pairs the harness always gives. The harness's own
+    /// names are absent on purpose, so the two sources cannot disagree on a value.
+    pub fn shell_pairs(&self) -> Vec<(String, String)> {
+        self.values
+            .iter()
+            .filter(|(_, e)| e.from == From::Shell)
+            .map(|(k, e)| (k.clone(), e.value.clone()))
+            .collect()
+    }
+}
+
+/// The names a shell's report is never carried for, because a value here changes what a
+/// later command does with no text saying so (§4j.5): the loaders' own namespace, the files
+/// and options a shell reads unasked, the `PATH` (which file a bare name runs), and the
+/// shell's machinery about itself. The narrowest safe default; widening it is the
+/// operator's open ruling, and one list serves the resolver and the spawn alike.
+pub fn denied(name: &str) -> bool {
+    matches!(
+        name,
+        "PATH"
+            | "BASH_ENV"
+            | "ENV"
+            | "SHELLOPTS"
+            | "BASHOPTS"
+            | "PWD"
+            | "OLDPWD"
+            | "SHLVL"
+            | "_"
+    ) || name.starts_with("LD_")
+        || name.starts_with("DYLD_")
 }
 
 /// Whether a name is a shell variable name: `[A-Za-z_][A-Za-z0-9_]*`, the trailer's
@@ -279,6 +318,53 @@ mod tests {
             Some(From::Harness)
         );
         assert!(e.get("NOPE").is_none());
+    }
+
+    #[test]
+    fn a_report_drops_the_names_the_deny_list_refuses() {
+        let mut e = seeded();
+        e.observe(
+            "PATH=/tmp/x:/bin;LD_PRELOAD=/tmp/evil.so;LD_LIBRARY_PATH=/tmp;DYLD_INSERT_LIBRARIES=/l;\
+             BASH_ENV=/tmp/rc;ENV=/tmp/rc;SHELLOPTS=xtrace;BASHOPTS=x;PWD=/elsewhere;OLDPWD=/gone;SHLVL=9;_=x;",
+        )
+        .expect("a clean report");
+        for name in [
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "DYLD_INSERT_LIBRARIES",
+            "BASH_ENV",
+            "ENV",
+            "SHELLOPTS",
+            "BASHOPTS",
+            "PWD",
+            "OLDPWD",
+            "SHLVL",
+            "_",
+        ] {
+            assert!(e.get(name).is_none(), "{name} must not be held");
+        }
+        // `PATH` the harness did not seed here: dropped, not remembered as the shell's own.
+        assert!(e.get("PATH").is_none(), "a denied name is never held");
+    }
+
+    #[test]
+    fn a_report_of_nothing_but_denied_names_is_believed() {
+        let mut e = seeded();
+        e.observe("PATH=/tmp/x:/bin;SHLVL=2;").expect("a real report");
+        assert_eq!(e.len(), 2, "the seed is untouched: {:?}", e);
+        assert_eq!(e.shell_pairs(), Vec::<(String, String)>::new());
+    }
+
+    #[test]
+    fn shell_pairs_carry_only_what_the_shell_said() {
+        let mut e = seeded();
+        e.observe("p=/w;q=/q;HOME=/elsewhere;").expect("a report");
+        assert_eq!(
+            e.shell_pairs(),
+            vec![("p".to_string(), "/w".to_string()), ("q".to_string(), "/q".to_string())],
+            "harness pairs stay off the carry: {:?}",
+            e
+        );
     }
 
     #[test]
