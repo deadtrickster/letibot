@@ -5992,6 +5992,17 @@ mod a_childs_state_is_read_from_the_right_facts {
             repairs: 0,
             edit: None,
         });
+        // The answering round is the one that ends the prompt.
+        a_round_opens(&hub, "t2");
+        hub.publish(SessionEvent::TurnFinished {
+            turn_id: "t2".into(),
+            finish_reason: FinishReason::Eos,
+            usage: Usage::default(),
+            timings: Timings::default(),
+            ends_turn: true,
+            prefix_check: None,
+            dialect_template_sha: String::new(),
+        });
 
         let now = letibot_sessionlog::registry::now_ms();
         let reading = child_reading(&r, "s-1-sub-2", false, now);
