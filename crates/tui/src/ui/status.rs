@@ -326,6 +326,15 @@ impl App {
                  resume` ends it.",
             );
         }
+        let unread = self.rooms.unread_total();
+        if unread > 0 {
+            row(
+                "rooms",
+                format!("{unread} unread"),
+                "Messages in the chat rooms after this head's last look, from the room list it \
+                 asks for every ten seconds while /rooms is closed.",
+            );
+        }
         row(
             "seq",
             format!("{} · {} rendered", self.seq, self.rendered),

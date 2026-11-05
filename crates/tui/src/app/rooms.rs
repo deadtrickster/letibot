@@ -12,6 +12,8 @@ use crate::app::*;
 
 /// How often the open view asks for new messages and counts.
 pub(crate) const POLL_MS: u64 = 2_000;
+/// While the view is closed only the room list is asked for: counts, no history.
+pub(crate) const CLOSED_POLL_MS: u64 = 10_000;
 
 /// The coordinator's ring size per room. This head keeps up to four rings of one room.
 const KEEP: usize = 500;
@@ -225,6 +227,14 @@ impl RoomsView {
         }
     }
 
+    /// Unread messages across the rooms the coordinator listed, from the last room list.
+    pub(crate) fn unread_total(&self) -> u64 {
+        self.rows
+            .iter()
+            .map(|r| self.unread(&Chan::Room(r.id.clone())))
+            .sum()
+    }
+
     /// A send of ours failed: keep the line and put the reason on it. `false` when no send of
     /// this id is waiting, so the caller can treat the reply as its own trouble instead.
     fn send_failed(&mut self, id: &str, why: String) -> bool {
@@ -396,9 +406,18 @@ impl App {
         })
     }
 
-    /// Ask again when the interval is up. Only a view on the stack asks.
+    /// Ask again when the interval is up. An open view asks for everything it draws. A closed
+    /// one asks for the room list alone, so the unread count stays current.
     pub(crate) fn rooms_poll(&mut self) {
-        if !self.is_open(Surface::Rooms) || self.now_ms < self.rooms.next_poll_ms {
+        if self.now_ms < self.rooms.next_poll_ms {
+            return;
+        }
+        if !self.is_open(Surface::Rooms) {
+            self.rooms.next_poll_ms = self.now_ms.saturating_add(CLOSED_POLL_MS);
+            self.queued.push(Action::RoomChat {
+                op: json!({"type": "rooms"}),
+                id: None,
+            });
             return;
         }
         self.rooms.next_poll_ms = self.now_ms.saturating_add(POLL_MS);

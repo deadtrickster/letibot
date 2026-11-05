@@ -102,24 +102,44 @@ fn a_second_rooms_closes_the_view() {
 }
 
 #[test]
-fn the_view_polls_only_while_it_is_open() {
+fn a_closed_view_polls_only_the_room_list_and_an_open_one_polls_everything() {
     let mut a = app();
     a.clock(1_000);
-    a.clock(10_000);
-    assert!(ops(&mut a).is_empty(), "closed view polled");
+    assert_eq!(types(&ops(&mut a)), ["rooms"]);
+    a.clock(5_000);
+    assert!(
+        ops(&mut a).is_empty(),
+        "closed view polled before its interval"
+    );
+    a.clock(11_100);
+    assert_eq!(types(&ops(&mut a)), ["rooms"], "closed: counts only");
 
     a.command("rooms");
     a.take_actions();
     a.clock(11_500);
     assert!(ops(&mut a).is_empty(), "polled before the interval");
-    a.clock(12_100);
+    a.clock(13_200);
     assert_eq!(types(&ops(&mut a)), ["rooms", "read", "read", "roster"]);
-    a.clock(12_200);
+    a.clock(13_300);
     assert!(ops(&mut a).is_empty(), "polled twice in one interval");
 
     a.pop_surface();
     a.clock(60_000);
-    assert!(ops(&mut a).is_empty(), "closed view kept polling");
+    assert_eq!(types(&ops(&mut a)), ["rooms"], "closed view reads history");
+}
+
+/// The room list a closed view polled becomes an unread count `/status` can show.
+#[test]
+fn a_closed_view_keeps_the_unread_count() {
+    let mut a = app();
+    a.clock(1_000);
+    a.take_actions();
+    reply(
+        &mut a,
+        rooms_reply(&[("host", 2, 5, 3), (PROJECT, 2, 9, 4)]),
+    );
+    assert_eq!(a.rooms.unread_total(), 7);
+    assert!(!a.is_open(Surface::Rooms));
 }
 
 #[test]
