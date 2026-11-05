@@ -45,7 +45,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 
 | id | title | group | left |
 |---|---|---|---|
-| R74 | What the 2026-10-11 landings left open | Code work | item 20 (the rest of the report sink's sites, 18 of them routed), item 39 (a live gate on lubuntu1/2), item 40 (the inline blocks over 800 lines) |
+| R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement), item 40 (the inline blocks over 800 lines) |
 | R95 | A variable an earlier command assigned is unread in the next one | Code work, after the release | an `export` in one `bash` call still does not reach the next: the model's command is a one-shot spawn and `SessionEnv::observe` has no production caller; the stateful shell needs the deny-list of section 4j.5 |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | `Hub::turn_in_flight` (`crates/sessionlog/src/hub.rs:1632`) still reads the round, not `ends_turn`; a round with no calls followed by a nudge still says `true`; unclear: leticl's `:turn-finished` arm reading `ends_turn` is in another repo, check there |
 | R121 | What a command boundary holds is hardcoded and invisible | Code work | items 5-8 (perimeters as config, children narrow and widening is an ask, file tools obey the perimeter), item 3's probe line, item 4's tool refusals |
@@ -127,7 +127,7 @@ own right**, addressed as R93.<id>; the list below groups them by what to fix fi
 
 ## R74 - What the 2026-10-11 landings left open
 
-**Status:** audited 2026-11 (nine fixed, seven already done, six not a session's to settle, 37 since settled), then worked (4, 11, 12, 16, 23, 25 and 33 closed). left: item 20 (the rest of the report sink's sites - the sink is built and 18 of them are routed), item 39 (a live gate on lubuntu1/2), item 40 (the inline blocks over 800 lines).
+**Status:** audited 2026-11 (nine fixed, seven already done, six not a session's to settle, 37 since settled), then worked (4, 11, 12, 16, 20, 23, 25 and 33 closed). left: item 39 (a live gate on lubuntu1/2 - the seam and the rows' naming are held by tests, and the operator's fleet key is not in this placement), item 40 (the inline blocks over 800 lines).
 
 Everything merged on 2026-10-11 (main `cf47e65`: R61, R64, R65, R66 instrumentation, R67, R68, R69,
 R71, R72 + follow-up, R73, the no-llama build), and the gaps each landing reported or a check
@@ -191,12 +191,24 @@ nothing to design.
   daemon until it stops (`court_refusal`'s monitor arm). Not a defect in the close path; a policy.
 - 19 **FIXED** — `RECORD_LIMIT` and `bound_records` in `exec/host.rs`: `reaps`, `promotions` and
   `Deadlines.fired` drop the oldest instead of growing for the life of the daemon.
-- 20 **PARTLY** — the sink exists: `Hub::warn(code, detail)` and `Hub::warn_with(.., compaction)` in
-  `crates/sessionlog/src/hub.rs`, one construction of the variant, with a test. `Harness::warn` and
-  `Sessions::warn` go through it, and all of `harness/wall.rs`'s twelve sites and six of
-  `harness/turns.rs`'s — 18 of about 114 in `harnessd/src`. The rest still build
-  `SessionEvent::Warning` inline, so the tree has two idioms until each is routed; the sites are
-  listed by `grep -rn 'SessionEvent::Warning {' crates/harnessd/src`.
+- 20 **FIXED** (`52ce9b63`) — one construction of the variant and one idiom at every site.
+  `SessionEvent::warning`/`warning_with` (`crates/sessionlog/src/event.rs`) build it, `Hub::warn`,
+  `Harness::warn` and `Sessions::warn` publish it, and the doors that take an event rather than a
+  hub (a queue's `announce`/`announce_to`, memwatch's `Registry::broadcast`, a head's refused job
+  read) are handed the constructor. Every site in `crates/harnessd/src` and in sessionlog itself is
+  routed, `#[cfg(test)]` fixtures included.
+  `crates/harnessd/tests/one_warning_door.rs` holds it: `no_site_builds_a_warning_by_hand` reads
+  the crate's sources and names any site that spells the variant's third field (`compaction:`, which
+  a pattern reaches only through `..`), `the_scan_tells_a_construction_from_a_pattern` proves the
+  scan has teeth, and `the_constructor_and_the_sink_agree` proves the two build one event. The
+  routing also put every code where the tree's census reads it: `warning_codes.rs` learned the
+  doors' argument shape, which found two codes with no severity row — `embeddings_unavailable`
+  (`docs/embeddings.md`'s spelling, beside `embedder_unavailable`) and `memory_bound_broken`, both
+  now rows in `TABLE`'s failure register (`TABLE` is 185, 75/15/95). What is NOT routed is the
+  head's own fixtures: `crates/tui/src/app/tests/` builds the variant by hand in about seventy
+  places, to hand a head the event it is being tested on, and `crates/tui/src/head.rs`'s stub hub
+  with them. That is a fixture's business rather than a report site, and the item was scoped to
+  `harnessd/src`.
 - 21 **DONE** — the gatekeeper retry exists and cannot storm: one attempt per 30 s pass, one warning
   per distinct reason.
 - 22 **DONE** on `r60-term` — `letibot_vt::Screen::mouse` and the pane's own translation.
@@ -245,8 +257,19 @@ nothing to design.
 - 38 **DONE** — R63: `sessions::Court`, one thread per session, armed by `Daemon::run`;
   `tests/thread_per_session.rs` is its done-when.
 - 39 **PARTLY** — R62's seam is built and tested against a fake ssh (`GateRunner`/`HostGate`,
-  `mergequeue/gate_host.rs`); its done-when — a landing gated on lubuntu1/2 with the row naming the
-  host — is a live run, and the fleet's `~/.actrc` is item 27's.
+  `mergequeue/gate_host.rs`), and the readable half of its done-when is now held by a test: a
+  landing's merge row, the transition a pane reads while the gate runs, and the green tip's health
+  row all carry `(<host> gate)` from `GateRunner::name` (`2aac5991`). Before it, a gate on lubuntu1
+  and a gate on this box read alike on the row a person looks at last.
+  **Left, and not runnable from this placement:** the live half — a branch landing with its gate on
+  lubuntu1/2. It needs `~/.config/letibot/hosts.toml` and the per-host fleet key
+  `~/.config/letibot/keys/<host>` that `Hosts::load` and `scripts/rrun` read, and a session's own
+  `$HOME` has neither: they are the operator's, on the Mac, and a plain `ssh dead@lubuntu1` from
+  this box answers `Permission denied (publickey)` while `~/.ssh` is refused to a command here by
+  the boundary. To run it on a box that holds those two files: `[queue] gate_host = "lubuntu1"` in
+  the project's `leticode.toml`, a daemon over that project, and a branch through `/queue` — the
+  merge row must say `lubuntu1 gate`, as must the target's `gating` and green evidence. The fleet's
+  `~/.actrc` is item 27's, and `act` is in no gate here.
 - 40 **CHORE** — R70 is partly done (`harness.rs`, `adjudicate.rs`, `todo.rs` and `sessions/` moved
   their blocks out). Nine inline blocks are still over ~800 lines; `harnessd/src/plugins.rs` is the
   largest at 3 320 lines and the one to move first. Not attempted: moving a 2 469-line block means
@@ -376,7 +399,8 @@ nothing to design.
 38. R63 — a thread per root session (unblocked by R68).
     — ✓ fixed in f68c90b0, test a_held_turn_in_one_session_does_not_delay_another
 39. R62 — the gate on lubuntu1/2; R61's `GateRunner` is the seam.
-    — ✓ fixed in 5d3b2f05, test the_tree_and_the_repository_arrive_and_the_steps_run_there
+    — ✓ fixed in 5d3b2f05, test the_tree_and_the_repository_arrive_and_the_steps_run_there; the
+    live landing itself is still open — see the audit's item 39 above.
 40. R70 — move the largest inline test blocks into sibling files (unblocked now the big edits have
     landed).
     — OPEN: only part done — `crates/harnessd/src/plugins.rs:2226` still carries a 2,469-line inline test block (`TODO-settled.md:1500`).
