@@ -702,7 +702,7 @@ fn the_never_write_list_is_about_paths_and_not_prose() {
 /// environment.
 #[test]
 fn the_gate_observes_the_shells_environment_and_a_refused_report_drops_it() {
-    let mut bare = AdjudicatedGate::closed();
+    let bare = AdjudicatedGate::closed();
     assert!(
         !bare.observes_shell_env(),
         "a gate nobody seeded has no shell to observe, so nothing is armed"
@@ -710,10 +710,7 @@ fn the_gate_observes_the_shells_environment_and_a_refused_report_drops_it() {
     assert!(bare.shell_env_pairs().is_empty());
 
     let seeded = crate::intent::Surroundings::from_env("/w").with_session(
-        crate::intent::env::SessionEnv::seeded([(
-            "PATH".to_string(),
-            "/usr/bin:/bin".to_string(),
-        )]),
+        crate::intent::env::SessionEnv::seeded([("PATH".to_string(), "/usr/bin:/bin".to_string())]),
     );
     let mut g = AdjudicatedGate::closed().with_surroundings(seeded);
     assert!(

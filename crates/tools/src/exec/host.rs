@@ -3877,35 +3877,51 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         };
 
         // The first call exports, and its trailer reports what it left behind.
-        let first = spawn(
-            "echo before\nexport LT_CHAIN=/w/chain",
-            Vec::new(),
-            true,
-        );
+        let first = spawn("echo before\nexport LT_CHAIN=/w/chain", Vec::new(), true);
         let _ = h.wait_job(&first, Duration::from_secs(30));
         let view = h.job(&first).expect("the row stays");
         let Some(Ok(report)) = view.env_report.clone() else {
-            panic!("no believable report from the first call: {:?}", view.env_report);
+            panic!(
+                "no believable report from the first call: {:?}",
+                view.env_report
+            );
         };
-        assert!(report.contains("LT_CHAIN=/w/chain;"), "the export: {report}");
+        assert!(
+            report.contains("LT_CHAIN=/w/chain;"),
+            "the export: {report}"
+        );
         let window = h.output(&first, 0, usize::MAX).expect("the capture").text();
-        assert_eq!(window, "before\n", "the trailer stayed in the window: {window:?}");
-        assert_eq!(view.produced, 7, "the trailer is not output the command made");
+        assert_eq!(
+            window, "before\n",
+            "the trailer stayed in the window: {window:?}"
+        );
+        assert_eq!(
+            view.produced, 7,
+            "the trailer is not output the command made"
+        );
 
         // The gate's own two steps: observe, then merge what the shell said into the next spawn.
         let mut session = crate::intent::env::SessionEnv::seeded([(
             "PATH".to_string(),
             "/usr/bin:/bin".to_string(),
         )]);
-        session.observe(&report).expect("a report this build believes");
+        session
+            .observe(&report)
+            .expect("a report this build believes");
         let second = spawn(
             "test -n \"$LT_CHAIN\" && echo chained",
             session.shell_pairs(),
             false,
         );
         let _ = h.wait_job(&second, Duration::from_secs(30));
-        let window = h.output(&second, 0, usize::MAX).expect("the capture").text();
-        assert_eq!(window, "chained\n", "the export did not reach the next call: {window:?}");
+        let window = h
+            .output(&second, 0, usize::MAX)
+            .expect("the capture")
+            .text();
+        assert_eq!(
+            window, "chained\n",
+            "the export did not reach the next call: {window:?}"
+        );
         assert!(
             h.job(&second).expect("the row").env_report.is_none(),
             "a call nobody armed carries no trailer"
@@ -3945,7 +3961,9 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
                 env_trailer: true,
             })
             .expect("a run starts");
-        let waited = h.wait_job(&id, Duration::from_secs(30)).expect("it settles");
+        let waited = h
+            .wait_job(&id, Duration::from_secs(30))
+            .expect("it settles");
         assert!(
             matches!(waited, Waited::Happened { state: Some(_), .. }),
             "a syntax error still settles: {waited:?}"

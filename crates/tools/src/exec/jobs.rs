@@ -372,7 +372,11 @@ impl TrailerTaker {
         // the rest of the stream can dilute - and before that, only the bytes that could
         // still grow INTO an opening are held.
         let open = super::shell::opening(&self.mark);
-        let publish = match self.held.windows(open.len()).position(|w| w == open.as_slice()) {
+        let publish = match self
+            .held
+            .windows(open.len())
+            .position(|w| w == open.as_slice())
+        {
             Some(at) => at,
             None => self.held.len() - self.carry(),
         };
@@ -557,7 +561,11 @@ impl Capture {
     pub fn flush_tail(&mut self) {
         // The trailer's hold first, and through the masker: those bytes were only ever held
         // back against a marker that never completed, and the masker must see every byte once.
-        let held = self.trailer.as_mut().map(|t| t.finish()).unwrap_or_default();
+        let held = self
+            .trailer
+            .as_mut()
+            .map(|t| t.finish())
+            .unwrap_or_default();
         if !held.is_empty() {
             match &mut self.masker {
                 None => self.keep(&held),
@@ -1349,7 +1357,11 @@ mod tests {
         cap.push(&bytes[20..]);
         let window = String::from_utf8_lossy(&cap.slice(0, usize::MAX).bytes).into_owned();
         assert_eq!(window, "before\n", "the trailer stayed in: {window:?}");
-        assert_eq!(cap.produced(), 7, "the trailer is not output the command made");
+        assert_eq!(
+            cap.produced(),
+            7,
+            "the trailer is not output the command made"
+        );
         assert_eq!(
             cap.env_report(),
             Some(Ok("p=/w;q=/q;".to_string())),
@@ -1364,7 +1376,11 @@ mod tests {
         let mut cap = Capture::new(1024);
         cap.strip_trailer("m2");
         cap.push(b"trailing \x1b]13");
-        assert_eq!(cap.slice(0, usize::MAX).bytes.len(), 9, "the partial marker is held");
+        assert_eq!(
+            cap.slice(0, usize::MAX).bytes.len(),
+            9,
+            "the partial marker is held"
+        );
         cap.flush_tail();
         let window = String::from_utf8_lossy(&cap.slice(0, usize::MAX).bytes).into_owned();
         assert_eq!(window, "trailing \x1b]13", "held is not lost: {window:?}");
@@ -1379,7 +1395,10 @@ mod tests {
         cap.strip_trailer("m3");
         cap.push(b"out\x1b]1337;letibot;m3;zero;/cwd\np=/w;\x07after");
         let window = String::from_utf8_lossy(&cap.slice(0, usize::MAX).bytes).into_owned();
-        assert_eq!(window, "outafter", "the refused marker stayed in: {window:?}");
+        assert_eq!(
+            window, "outafter",
+            "the refused marker stayed in: {window:?}"
+        );
         let Some(Err(why)) = cap.env_report() else {
             panic!("a refused report, not none: {:?}", cap.env_report());
         };

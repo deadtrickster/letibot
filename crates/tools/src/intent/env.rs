@@ -204,23 +204,15 @@ impl SessionEnv {
     }
 }
 
-/// The names a shell's report is never carried for, because a value here changes what a
-/// later command does with no text saying so (§4j.5): the loaders' own namespace, the files
-/// and options a shell reads unasked, the `PATH` (which file a bare name runs), and the
-/// shell's machinery about itself. The narrowest safe default; widening it is the
-/// operator's open ruling, and one list serves the resolver and the spawn alike.
+/// The names a shell's report is never carried for (R95's §4j.5 ruling): a value here changes
+/// what a later command does with no text saying so - the loaders' namespace, the files and
+/// options a shell reads unasked, the `PATH` (which file a bare name runs), and the shell's
+/// machinery about itself. The narrowest safe default; widening it is the operator's open
+/// ruling, and one list serves the resolver and the spawn alike.
 pub fn denied(name: &str) -> bool {
     matches!(
         name,
-        "PATH"
-            | "BASH_ENV"
-            | "ENV"
-            | "SHELLOPTS"
-            | "BASHOPTS"
-            | "PWD"
-            | "OLDPWD"
-            | "SHLVL"
-            | "_"
+        "PATH" | "BASH_ENV" | "ENV" | "SHELLOPTS" | "BASHOPTS" | "PWD" | "OLDPWD" | "SHLVL" | "_"
     ) || name.starts_with("LD_")
         || name.starts_with("DYLD_")
 }
@@ -350,7 +342,8 @@ mod tests {
     #[test]
     fn a_report_of_nothing_but_denied_names_is_believed() {
         let mut e = seeded();
-        e.observe("PATH=/tmp/x:/bin;SHLVL=2;").expect("a real report");
+        e.observe("PATH=/tmp/x:/bin;SHLVL=2;")
+            .expect("a real report");
         assert_eq!(e.len(), 2, "the seed is untouched: {:?}", e);
         assert_eq!(e.shell_pairs(), Vec::<(String, String)>::new());
     }
@@ -361,7 +354,10 @@ mod tests {
         e.observe("p=/w;q=/q;HOME=/elsewhere;").expect("a report");
         assert_eq!(
             e.shell_pairs(),
-            vec![("p".to_string(), "/w".to_string()), ("q".to_string(), "/q".to_string())],
+            vec![
+                ("p".to_string(), "/w".to_string()),
+                ("q".to_string(), "/q".to_string())
+            ],
             "harness pairs stay off the carry: {:?}",
             e
         );

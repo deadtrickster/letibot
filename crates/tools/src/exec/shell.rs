@@ -242,13 +242,13 @@ pub fn trailer_definition(fn_name: &str) -> String {
     )
 }
 
-/// The lines appended to a one-shot `bash` call so it reports its own environment on the way
-/// out. The model's command is a fresh `/bin/sh -c`, so the dump runs in a child `bash` that
-/// inherits exactly what the command exported. The command's `$?` is saved before anything of
-/// ours runs and the last line exits with it, so the call's answer stays the command's own; a
-/// `bash` that is not on the pinned `PATH` prints nothing, and a call this is appended to must
-/// parse as a whole program, which is the caller's guard. `mark` is this call's nonce, so only
-/// this call's trailer is taken back out of its output.
+/// The lines appended to a one-shot `bash` call (R95) so it reports its own environment on
+/// the way out. The model's command is a fresh `/bin/sh -c`, so the dump runs in a child
+/// `bash` that inherits exactly what the command exported. The command's `$?` is saved before
+/// anything of ours runs and the last line exits with it, so the call's answer stays the
+/// command's own; a `bash` that is not on the pinned `PATH` prints nothing, and a call this is
+/// appended to must parse as a whole program, which is the caller's guard. `mark` is this
+/// call's nonce, so only this call's trailer is taken back out of its output.
 pub fn oneshot_trailer(mark: &str) -> String {
     let saved = format!("__lt_s_{mark}");
     let dump = env_dump_fn(&format!("__lt_dump_{mark}"));
@@ -1167,16 +1167,33 @@ mod tests {
         );
         let mark = trailer_mark_of(&stdout);
         let mut buf = stdout.clone();
-        let turn = take_turn(&mut buf, &mark).expect("a whole trailer").expect("it arrived");
+        let turn = take_turn(&mut buf, &mark)
+            .expect("a whole trailer")
+            .expect("it arrived");
         assert_eq!(turn.status, 1, "the failed command's own status");
         assert!(turn.cwd == "/", "the cwd the shell reported: {}", turn.cwd);
         assert!(turn.env.contains("LT_ONE=/x;"), "the export: {}", turn.env);
-        assert!(turn.env.contains("LT_SEED=/s;"), "the inherited pair: {}", turn.env);
-        assert!(!turn.env.contains("LT_TWO"), "an unexported assignment: {}", turn.env);
+        assert!(
+            turn.env.contains("LT_SEED=/s;"),
+            "the inherited pair: {}",
+            turn.env
+        );
+        assert!(
+            !turn.env.contains("LT_TWO"),
+            "an unexported assignment: {}",
+            turn.env
+        );
         assert!(text(&turn).contains("before"), "the command's own output");
-        assert!(!text(&turn).contains("1337"), "no trailer bytes in the output");
+        assert!(
+            !text(&turn).contains("1337"),
+            "no trailer bytes in the output"
+        );
         assert!(buf.is_empty(), "nothing follows the trailer: {buf:?}");
-        assert_eq!(code, Some(1), "the run answers with the command's status, not ours");
+        assert_eq!(
+            code,
+            Some(1),
+            "the run answers with the command's status, not ours"
+        );
     }
 
     /// No bash on the `PATH`, no trailer and no noise: the command's output and status are
@@ -1220,7 +1237,10 @@ mod tests {
         ] {
             assert!(persistent.contains(fragment), "persistent lost {fragment}");
             assert!(oneshot.contains(fragment), "oneshot lost {fragment}");
-            assert!(shell_body.contains(fragment), "the shared body lost {fragment}");
+            assert!(
+                shell_body.contains(fragment),
+                "the shared body lost {fragment}"
+            );
         }
     }
 
