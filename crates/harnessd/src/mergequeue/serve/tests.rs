@@ -2189,8 +2189,6 @@ fn served(store: &Store, desk: &ReviewDesk, me: &str) -> crate::mergequeue::revi
         settings: &settings,
         live: &|_: &str| true,
         clones: std::env::temp_dir(),
-        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
-        reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
     };
     crate::mergequeue::review::serve(&pool).expect("a pass of the reviewers' host")

@@ -774,7 +774,7 @@ fn pool_full_sentence(p: &Pool, pool: Option<&[String]>) -> String {
         .iter()
         .map(|m| match (m.spare, &m.why) {
             (Some(spare), _) => format!("{}: {spare:.1} spare core(s)", m.label()),
-            (None, Some(why)) => format!("{}: {}", m.label(), capacity::clip(why, 120)),
+            (None, Some(why)) => format!("{}: {}", m.label(), letibot_transcript::text::clip_chars(why, 120)),
             (None, None) => format!("{}: not asked yet", m.label()),
         })
         .collect();
