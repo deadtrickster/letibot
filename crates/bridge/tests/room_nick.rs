@@ -75,8 +75,14 @@ fn a_nick_changes_the_handle_survives_a_reconnect_and_is_refused_when_taken() {
     let done = rooms::call(&link, "room_nick", &json!({"nick": "conformity"})).unwrap();
     assert_eq!(done["handle"], "cc@stroppy-io:conformity");
     assert_eq!(rooms::handle(), "cc@stroppy-io:conformity");
-    // Unique, so the room shows the short form.
-    assert_eq!(roster(&server, &asker), vec!["cc@conformity".to_string()]);
+    // Unique, so the room shows the short form, once the dropped holder's close is seen.
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut seen = roster(&server, &asker);
+    while seen != vec!["cc@conformity".to_string()] && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        seen = roster(&server, &asker);
+    }
+    assert_eq!(seen, vec!["cc@conformity".to_string()]);
 
     drop(link);
     let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
