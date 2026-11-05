@@ -532,6 +532,9 @@ struct Inner {
     /// Not entries: a spawning session has no hub, so nothing can attach to it and no command can
     /// reach it; the only question it answers is *is this one alive or has it gone*.
     spawning: HashSet<String>,
+    /// Bumped by every change a roster is cut from: a session added, removed, renamed or given
+    /// an origin. A cache keyed on it is rebuilt only when the tree can have moved.
+    roster_changes: u64,
 }
 
 /// Where a registry can read one row's body without holding it. The other half of
@@ -828,6 +831,7 @@ impl Inner {
         letibot_metrics::session_parent(&id, entry.parent_session_id.as_deref());
         // The announcement is spent here: a session with an entry is one `get` answers for.
         self.spawning.remove(&id);
+        self.roster_changes += 1;
         self.index.insert(id.clone(), self.entries.len());
         self.entries.push((id, entry));
     }
@@ -836,6 +840,7 @@ impl Inner {
     /// and not `swap_remove`, because the ordinal a head was given must keep its place.
     fn take(&mut self, id: &str) -> Option<Entry> {
         let at = self.index.remove(id)?;
+        self.roster_changes += 1;
         let (_, entry) = self.entries.remove(at);
         for (i, (later, _)) in self.entries.iter().enumerate().skip(at) {
             self.index.insert(later.clone(), i);
@@ -867,6 +872,7 @@ impl Registry {
                 log_bounds,
                 view_bounds,
                 spawning: HashSet::new(),
+                roster_changes: 0,
             }),
             bell: Bell::new(),
             runs: Mutex::new(std::collections::HashMap::new()),
@@ -1413,6 +1419,7 @@ impl Registry {
     pub fn record_origin(&self, session_id: &str, origin: SessionOrigin) {
         {
             let mut g = self.lock();
+            g.roster_changes += 1;
             if let Some(e) = g.entry_mut(session_id) {
                 e.origin = origin;
             }
@@ -1734,9 +1741,17 @@ impl Registry {
     /// the honest fallback.
     pub fn set_title(&self, session_id: &str, title: impl Into<String>) {
         let mut g = self.lock();
+        // Counted even when no entry is live: a stored session's name changed too.
+        g.roster_changes += 1;
         if let Some(e) = g.entry_mut(session_id) {
             e.title = title.into();
         }
+    }
+
+    /// A number that moves whenever a session is added, removed, renamed or re-originated here.
+    /// Changes made to the shared store by another daemon do not move it.
+    pub fn roster_version(&self) -> u64 {
+        self.lock().roster_changes
     }
 
     /// Name a session and make it durable, through the source: both halves or neither, because
@@ -1852,11 +1867,15 @@ impl Registry {
     /// Join live rows with the stored rows read for them, then append the stored rows no live
     /// entry holds.
     fn assemble(&self, rows: Vec<LiveRow>, stored: Vec<StoredBrief>) -> Vec<SessionBrief> {
+        // Keyed once: a scan per row is quadratic in the store's size.
+        let by_id: HashMap<&str, &StoredBrief> =
+            stored.iter().map(|d| (d.session_id.as_str(), d)).collect();
+        let live_ids: HashSet<String> = rows.iter().map(|r| r.0.clone()).collect();
         let mut out: Vec<SessionBrief> = rows
             .into_iter()
             .map(
                 |(session_id, title, created_ms, hub, wiring, parent, origin)| {
-                    let on_disk = stored.iter().find(|d| d.session_id == session_id);
+                    let on_disk = by_id.get(session_id.as_str()).copied();
                     SessionBrief {
                         // A daemon started with `--title` and a store that already names the session must
                         // not disagree with itself: the store wins for a session it already has.
@@ -1904,7 +1923,7 @@ impl Registry {
         // Then everything on disk this daemon is not holding, appended rather than interleaved by
         // time: the live ones are the ones a switch should reach first.
         for d in stored {
-            if out.iter().any(|b| b.session_id == d.session_id) {
+            if live_ids.contains(&d.session_id) {
                 continue;
             }
             out.push(SessionBrief {

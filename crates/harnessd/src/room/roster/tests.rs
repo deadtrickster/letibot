@@ -284,3 +284,185 @@ fn a_named_top_level_session_is_a_member_by_its_slug() {
     assert_eq!(handle("s-f"), "");
     assert_eq!(handle("s-a-sub"), "", "a subagent is not addressed by name");
 }
+
+mod cached {
+    use super::*;
+    use letibot_sessionlog::registry::{SessionSource, StoredBrief};
+    use letibot_sessionlog::SessionWiring;
+
+    /// A store of rows that counts how often it is listed and takes a rename.
+    struct Store {
+        rows: Mutex<Vec<StoredBrief>>,
+        lists: std::sync::atomic::AtomicUsize,
+    }
+
+    impl SessionSource for Store {
+        fn list(&self) -> Vec<StoredBrief> {
+            self.lists
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.rows.lock().unwrap().clone()
+        }
+        fn set_title(&self, id: &str, title: &str) -> Result<(), String> {
+            for r in self.rows.lock().unwrap().iter_mut() {
+                if r.session_id == id {
+                    r.title = title.to_string();
+                }
+            }
+            Ok(())
+        }
+    }
+
+    fn brief(id: &str, title: &str, workspace: &str) -> StoredBrief {
+        StoredBrief {
+            session_id: id.into(),
+            title: title.into(),
+            items: 0,
+            last_activity_ms: 0,
+            wiring: SessionWiring {
+                workspace: workspace.into(),
+                ..Default::default()
+            },
+            parent_session_id: None,
+            context_tokens: None,
+            context_cached: None,
+            stored_end: None,
+            nags_paused: None,
+            waits_on_operator: 0,
+            slug: String::new(),
+            origin: Default::default(),
+        }
+    }
+
+    struct World {
+        roster: Arc<Roster>,
+        registry: Arc<Registry>,
+        store: Arc<Store>,
+        key: String,
+        dir: String,
+    }
+
+    fn world(stored: usize) -> World {
+        let dir = std::env::temp_dir()
+            .join(format!("letibot-roster-cache-{}-{stored}", std::process::id()))
+            .join("proj");
+        std::fs::create_dir_all(&dir).expect("a project");
+        let dir = dir.display().to_string();
+        let other = std::env::temp_dir().display().to_string();
+        let mut rows: Vec<StoredBrief> = (0..stored)
+            .map(|i| brief(&format!("s-old-{i}"), "", &other))
+            .collect();
+        rows.push(brief("s-mine", "mine", &dir));
+        let store = Arc::new(Store {
+            rows: Mutex::new(rows),
+            lists: Default::default(),
+        });
+        let registry = Registry::new();
+        registry.set_source(store.clone());
+        let roster = Roster::new(registry.clone());
+        let canon = std::fs::canonicalize(&dir).unwrap().display().to_string();
+        World {
+            key: letibot_room::project_key(&canon),
+            roster,
+            registry,
+            store,
+            dir,
+        }
+    }
+
+    fn ids(w: &World) -> Vec<String> {
+        w.roster
+            .members(&w.key)
+            .into_iter()
+            .map(|m| m.session)
+            .collect()
+    }
+
+    fn lists(w: &World) -> usize {
+        w.store.lists.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[test]
+    fn asking_again_does_not_list_the_store() {
+        let w = world(300);
+        assert_eq!(ids(&w), ["s-mine"]);
+        for _ in 0..50 {
+            w.roster.members(&w.key);
+            w.roster.root(&w.key);
+        }
+        assert_eq!(lists(&w), 1, "one listing served every ask");
+    }
+
+    #[test]
+    fn a_new_session_appears() {
+        let w = world(50);
+        assert_eq!(ids(&w), ["s-mine"]);
+        w.registry
+            .create_under(
+                "s-new",
+                "fresh",
+                SessionWiring {
+                    workspace: w.dir.clone(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        assert!(ids(&w).contains(&"s-new".to_string()));
+    }
+
+    #[test]
+    fn a_rename_shows() {
+        let w = world(50);
+        assert_eq!(w.roster.members(&w.key)[0].label, "mine");
+        w.registry.rename("s-mine", "renamed").unwrap();
+        assert_eq!(w.roster.members(&w.key)[0].label, "renamed");
+    }
+
+    #[test]
+    fn a_close_leaves_the_live_mark() {
+        let w = world(50);
+        w.registry
+            .create_under(
+                "s-live",
+                "live",
+                SessionWiring {
+                    workspace: w.dir.clone(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        let live = |w: &World| {
+            w.roster
+                .members(&w.key)
+                .into_iter()
+                .find(|m| m.session == "s-live")
+                .map(|m| m.live)
+        };
+        assert_eq!(live(&w), Some(true));
+        w.registry.remove("s-live");
+        assert_ne!(live(&w), Some(true), "a closed session is not live");
+    }
+
+    /// Prints the cost of 30 polls (one minute of a 2 s head) before and after caching.
+    #[test]
+    fn measure_two_thousand_sessions() {
+        let w = world(2000);
+        let t = std::time::Instant::now();
+        for _ in 0..30 {
+            w.registry.list();
+        }
+        let before = t.elapsed();
+        let t = std::time::Instant::now();
+        for _ in 0..30 {
+            w.roster.members(&w.key);
+            w.roster.root(&w.key);
+        }
+        let after = t.elapsed();
+        eprintln!(
+            "roster polls x30: uncached (2 lists each would be double) {before:?}, cached {after:?}; store rows read: {} vs {}",
+            30 * 2001 * 2,
+            lists(&w) * 2001
+        );
+    }
+}

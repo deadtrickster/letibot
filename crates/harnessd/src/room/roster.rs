@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use letibot_room::{Group, Member};
-use letibot_sessionlog::registry::Registry;
+use letibot_sessionlog::registry::{Registry, SessionBrief};
 
 /// Where a room's membership comes from. One implementation in the daemon (the registry); a
 /// test stands in its own, which is what makes a link testable without a store.
@@ -27,6 +27,22 @@ pub struct Roster {
     /// second would be a process per row per frame, and a workspace's repository does not move
     /// while a daemon runs. `""` is cached too, so a folder outside any repository costs one call.
     projects: Mutex<HashMap<String, String>>,
+    /// The listing and each project's answer, cut once per registry change. Every room link asks
+    /// every second; a full-store listing per ask is the daemon's whole idle load.
+    cache: Mutex<Option<Snapshot>>,
+    /// How many times the store was listed, for the tests and the measurement.
+    lists: std::sync::atomic::AtomicU64,
+}
+
+/// A listing is also dropped after this long, because another daemon writes the shared store and
+/// the registry's change count cannot see it.
+const SNAPSHOT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(10);
+
+struct Snapshot {
+    version: u64,
+    at: std::time::Instant,
+    briefs: Arc<Vec<SessionBrief>>,
+    answers: HashMap<String, (Vec<Member>, String)>,
 }
 
 impl Roster {
@@ -34,6 +50,69 @@ impl Roster {
         Arc::new(Roster {
             registry,
             projects: Mutex::new(HashMap::new()),
+            cache: Mutex::new(None),
+            lists: std::sync::atomic::AtomicU64::new(0),
+        })
+    }
+
+    /// How many full listings of the store this roster has made.
+    pub fn lists(&self) -> u64 {
+        self.lists.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The listing, fresh when the registry has changed or the snapshot is old. The cache lock is
+    /// held across the rebuild so concurrent links wait for one listing instead of making many.
+    fn with_snapshot<T>(&self, f: impl FnOnce(&mut Snapshot) -> T) -> T {
+        let mut g = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let version = self.registry.roster_version();
+        let stale = match g.as_ref() {
+            Some(s) => s.version != version || s.at.elapsed() >= SNAPSHOT_MAX_AGE,
+            None => true,
+        };
+        if stale {
+            self.lists
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            *g = Some(Snapshot {
+                version,
+                at: std::time::Instant::now(),
+                briefs: Arc::new(self.registry.list()),
+                answers: HashMap::new(),
+            });
+        }
+        f(g.as_mut().expect("snapshot was just filled"))
+    }
+
+    fn rows_of(briefs: &[SessionBrief]) -> Vec<Row<'_>> {
+        briefs
+            .iter()
+            .map(|b| Row {
+                session: &b.session_id,
+                title: &b.title,
+                parent: b.parent_session_id.as_deref(),
+                workspace: &b.wiring.workspace,
+                origin: b.origin,
+                live: b.live,
+            })
+            .collect()
+    }
+
+    fn answer(&self, project: &str) -> (Vec<Member>, String) {
+        self.with_snapshot(|snap| {
+            if let Some(found) = snap.answers.get(project) {
+                return found.clone();
+            }
+            let rows = Self::rows_of(&snap.briefs);
+            let members = members_of(&rows, project, |w| self.project_of(w));
+            let root = snap
+                .briefs
+                .iter()
+                .filter(|b| b.parent_session_id.is_none())
+                .map(|b| self.project_of(&b.wiring.workspace))
+                .find(|root| !root.is_empty() && letibot_room::project_key(root) == project)
+                .unwrap_or_default();
+            snap.answers
+                .insert(project.to_string(), (members.clone(), root.clone()));
+            (members, root)
         })
     }
 
@@ -102,18 +181,8 @@ impl Roster {
         {
             return key.to_string();
         }
-        let briefs = self.registry.list();
-        let mut rows: Vec<Row<'_>> = briefs
-            .iter()
-            .map(|b| Row {
-                session: &b.session_id,
-                title: &b.title,
-                parent: b.parent_session_id.as_deref(),
-                workspace: &b.wiring.workspace,
-                origin: b.origin,
-                live: b.live,
-            })
-            .collect();
+        let briefs = self.with_snapshot(|s| s.briefs.clone());
+        let mut rows = Self::rows_of(&briefs);
         if !rows.iter().any(|r| r.session == id) {
             rows.push(Row {
                 session: id,
@@ -135,29 +204,11 @@ impl Roster {
 
 impl RosterSource for Roster {
     fn root(&self, project: &str) -> String {
-        self.registry
-            .list()
-            .iter()
-            .filter(|b| b.parent_session_id.is_none())
-            .map(|b| self.project_of(&b.wiring.workspace))
-            .find(|root| !root.is_empty() && letibot_room::project_key(root) == project)
-            .unwrap_or_default()
+        self.answer(project).1
     }
 
     fn members(&self, project: &str) -> Vec<Member> {
-        let briefs = self.registry.list();
-        let rows: Vec<Row> = briefs
-            .iter()
-            .map(|b| Row {
-                session: &b.session_id,
-                title: &b.title,
-                parent: b.parent_session_id.as_deref(),
-                workspace: &b.wiring.workspace,
-                origin: b.origin,
-                live: b.live,
-            })
-            .collect();
-        members_of(&rows, project, |w| self.project_of(w))
+        self.answer(project).0
     }
 }
 
