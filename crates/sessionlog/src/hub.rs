@@ -1810,13 +1810,19 @@ impl Hub {
                 Some(t) => match &t.state {
                     crate::view::TurnState::Finished {
                         finish_reason,
+                        usage,
+                        timings,
                         ends_turn: false,
-                        ..
                     } => Some(SessionEvent::TurnFinished {
                         turn_id: t.turn_id.clone(),
                         finish_reason: finish_reason.clone(),
-                        usage: Default::default(),
-                        timings: Default::default(),
+                        // The last round's numbers, so a head's context meter does not read zero;
+                        // no cost, because that round's ending already billed it.
+                        usage: crate::event::Usage {
+                            cost_micros_usd: None,
+                            ..*usage
+                        },
+                        timings: *timings,
                         ends_turn: true,
                         prefix_check: None,
                         dialect_template_sha: String::new(),
@@ -2248,25 +2254,32 @@ mod tests {
     fn a_prompt_left_between_rounds_is_ended_once() {
         let hub = Hub::new("s-flight-end");
         hub.publish(turn_started("t1"));
-        hub.publish(turn_finished_round("t1"));
+        let mut round = turn_finished_round("t1");
+        if let SessionEvent::TurnFinished { usage, .. } = &mut round {
+            usage.prompt_tokens = 1234;
+            usage.cost_micros_usd = Some(5);
+        }
+        hub.publish(round);
         assert!(hub.turn_in_flight());
         assert!(hub.end_the_prompt());
         assert!(!hub.turn_in_flight());
         assert!(!hub.end_the_prompt(), "exactly once");
-        let endings = hub
+        let endings: Vec<_> = hub
             .retained()
             .iter()
-            .filter(|e| {
-                matches!(
-                    e.event,
-                    SessionEvent::TurnFinished {
-                        ends_turn: true,
-                        ..
-                    }
-                )
+            .filter_map(|e| match &e.event {
+                SessionEvent::TurnFinished {
+                    ends_turn: true,
+                    usage,
+                    ..
+                } => Some(*usage),
+                _ => None,
             })
-            .count();
-        assert_eq!(endings, 1);
+            .collect();
+        assert_eq!(endings.len(), 1);
+        // The head's context meter keeps the last round's number, and the cost is not billed twice.
+        assert_eq!(endings[0].prompt_tokens, 1234);
+        assert_eq!(endings[0].cost_micros_usd, None);
     }
 
     /// The footprint is the harness's to answer and the hub's to carry. Three shapes are told
