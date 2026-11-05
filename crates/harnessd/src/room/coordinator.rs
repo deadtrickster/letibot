@@ -1,7 +1,6 @@
-//! The coordinator: a whole `harnessd` whose only job is the room - its own socket, no project,
-//! no session store; the queues and the chat live in files beside the socket. Lease, then bind,
-//! then refuse if no model can arbitrate: that order is the point, and
-//! a room nobody arbitrates is a queue that freezes. `docs/room.md` holds the argument.
+//! The coordinator: a whole `harnessd` whose only job is the room - its own socket, no project, no
+//! session store. Lease, then bind, then refuse if no model can arbitrate: a room nobody arbitrates
+//! is a queue that freezes, and `docs/room.md` holds the argument.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;

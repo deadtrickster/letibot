@@ -1419,11 +1419,9 @@ fn a_turn_that_proposes_a_call(
     frames
 }
 
-/// A summary that proposes work instead of writing a record is refused, and the refusal may not
-/// cost the conversation anything: the wall is where the prompt is already short, so each retry
-/// that still carried its predecessor's instruction and answer would spend the room it is there to
-/// find. The operator is told, in one row, because a refusal that was taken back silently is
-/// indistinguishable from a compaction that never ran.
+/// A summary that proposes work instead of writing a record is refused, and the refusal may not cost
+/// the conversation anything: the wall is where the prompt is already short, so a retry carrying its
+/// predecessor's instruction would spend the room it is there to find. The operator is told, in one row.
 #[test]
 fn a_refused_summary_is_taken_back_so_the_retry_starts_where_it_did() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

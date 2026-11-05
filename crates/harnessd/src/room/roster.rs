@@ -118,8 +118,7 @@ impl Roster {
 
     /// The project root `workspace` belongs to - the repository's own folder, so a session in a
     /// worktree or a review clone hangs under the project it was cut from. A folder outside any
-    /// repository is its own project; only a missing or empty workspace answers empty (the box's
-    /// own room).
+    /// repository is its own project; only a missing or empty workspace answers empty.
     pub fn project_of(&self, workspace: &str) -> String {
         if workspace.trim().is_empty() {
             return String::new();
@@ -169,9 +168,8 @@ impl Roster {
 
 impl Roster {
     /// The room key a session joins: a queue reviewer's is the key its id carries, any other
-    /// session's is its chain root's project (the `App::placements` rule), so a child or a clone
-    /// under a temp dir is in its parent's room. `parent` and `workspace` stand in for a session
-    /// the registry does not hold yet. Empty is the host room.
+    /// session's is its chain root's project, so a child or a clone under a temp dir is in its
+    /// parent's room. `parent` and `workspace` stand in for a session the registry has not got yet.
     pub fn room_key_of(&self, id: &str, parent: Option<&str>, workspace: &str) -> String {
         if letibot_sessionlog::is_gatekeeper_session(id)
             && let Some(key) = id

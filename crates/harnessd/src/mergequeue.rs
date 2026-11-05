@@ -39,10 +39,8 @@ pub const WAITING_FOR_GATE: &str = "waiting for a merge gate";
 /// session; read off the row so the project is told once.
 pub const HANDED_TO_PROJECT: &str = "handed to the project's main session";
 
-/// The root of the session tree `session` is in: the project's main session, which a refusal
-/// falls back to and a blocked review is handed to.
-/// The repository of the review or merge row `id` in the store at `path`, `None` when no row
-/// has that id.
+/// The repository of the review or merge row `id` in the store at `path`, `None` when no row has
+/// that id.
 pub fn repository_of_row(path: &Path, id: &str) -> Option<String> {
     let store = Store::open(path).ok()?;
     if let Some(r) = store

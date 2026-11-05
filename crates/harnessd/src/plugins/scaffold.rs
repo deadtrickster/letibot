@@ -1,10 +1,6 @@
-//! `plugin scaffold`: a pane plugin's source, written by the session that will use it.
-//!
-//! Three files: `Cargo.toml` (cdylib for the host, rlib for tests, rano SDK by path), `plugin.toml` (the manifest) and `src/lib.rs` (pane hook, one pure `view`, a native test of it).
-//!
-//! The native test is why hooks are pure (`docs/plugins-plan.md` §1): the logic can be asserted without a wasm host, and a pane that only ran inside wasm cannot be checked before loading.
-//!
-//! The template uses no clock (`SystemTime::now()` panics on wasm32, which traps; the look hands time in) and no I/O (the host runs a declared `look`).
+//! `plugin scaffold`: a pane plugin's source, written by the session that will use it - `Cargo.toml`,
+//! `plugin.toml` and one pure `view` in `src/lib.rs`. Hooks are pure so a native test asserts the
+//! logic without a wasm host, and the template takes no clock: `SystemTime::now()` traps on wasm32.
 
 use std::path::{Path, PathBuf};
 

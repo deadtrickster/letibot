@@ -1,15 +1,6 @@
-//! A warning is BUILT in one place, and this is the test for it.
-//!
-//! `SessionEvent::warning` (and `warning_with`, for the few that carry a compaction report) is the
-//! crate's only construction of the variant, and every site that reports one says `hub.warn(..)`,
-//! `Harness::warn`, `Sessions::warn` or hands the constructor to a door that takes an event. The
-//! defect this holds shut is two idioms for one fact: a head's card, the store's line and the
-//! daemon's log wording the same thing two ways because two sites filled the fields in two orders.
-//!
-//! The scan is the test because the shape IS the source: a compiler cannot see `code: x, detail: y`
-//! spelled by hand in a crate that also has the constructor. The field it looks for is
-//! `compaction:`, which only a hand-built `SessionEvent::Warning` names - a pattern reaches it
-//! through `..`, and every door fills it from the constructor's argument.
+//! A warning is BUILT in one place: `SessionEvent::warning` is the crate's only construction of the
+//! variant, and every site reports one through `hub.warn`/`Harness::warn`/`Sessions::warn`. The scan
+//! is the test, because no compiler sees a `code:`/`detail:` filled in by hand beside it.
 
 use std::path::{Path, PathBuf};
 

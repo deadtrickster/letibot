@@ -1910,10 +1910,9 @@ impl Server {
                     }
                 }
 
-                // The close is a fact - the daemon exited, restarted or was stopped - so every
-                // claim goes back to the queue now rather than ninety seconds from now. One close
-                // is not that fact: a stopping coordinator shut this socket itself, and the lease,
-                // not the coordinator's exit, decides whether the claim is still alive.
+                // The close is a fact - the daemon exited, restarted or was stopped - so every claim
+                // goes back to the queue now, not ninety seconds from now. One close is not that fact:
+                // a stopping coordinator shut this socket itself, so the lease decides.
                 me.inner
                     .chat
                     .lock()

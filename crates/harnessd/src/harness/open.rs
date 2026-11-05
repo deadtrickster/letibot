@@ -1867,11 +1867,9 @@ impl Harness {
                     crate::room::supervise::Launcher::found()
                         .filter(|_| cfg.restart_room)
                         .map(|l| std::sync::Arc::new(l) as _);
-                // Which room this session is in: the project its chain hangs from, keyed the way
-                // the rest of the tree keys a folder. A session the daemon cannot place is in the
-                // box's own room, which is [`letibot_room::DEFAULT_PROJECT`].
-                // The coordinator's own sessions (the arbiter, the tag agents) serve every
-                // project, so they are in the host room only.
+                // Which room this session is in: the project its chain hangs from, keyed the way the
+                // rest of the tree keys a folder, and the box's own room for one it cannot place. The
+                // coordinator's own sessions serve every project, so they are in the host room only.
                 let project = if cfg.room {
                     String::new()
                 } else {

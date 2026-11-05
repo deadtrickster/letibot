@@ -94,10 +94,9 @@ fn links() -> &'static Mutex<std::collections::BTreeMap<String, Weak<SessionRoom
     LINKS.get_or_init(Default::default)
 }
 
-/// A merge-queue or review-queue row moved: say so in the room of the row's repository, or the
-/// host room when no session of that project is here or the repository is unknown. The move is
-/// broadcast to every session, so one live link reports it and the coordinator drops a repeat of
-/// the same request id.
+/// A merge-queue or review-queue row moved: say so in the room of the row's repository, or the host
+/// room when no session of that project is here. Every session hears a move, so one live link
+/// reports it and the coordinator drops a repeat of the same request id.
 pub fn report_queue_move(queue: &str, id: &str, to: &str, why: &str, repository: Option<&str>) {
     let key = repository
         .filter(|r| !r.trim().is_empty())

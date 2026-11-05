@@ -223,10 +223,9 @@ fn a_room_event_starts_a_turn_in_a_session_nobody_typed_into() {
         harness.runtime_handle().registry.names()
     );
 
-    // Another session's work, and this session becomes a member of the tag by claiming it -
-    // the production door, through the tool the model would call.
-    // In the harness session's own project room: queues are per room, and the session's folder
-    // is its own project, so a post is claimable only by a session of that project.
+    // Another session's work, and this session becomes a member of the tag by claiming it - the
+    // production door, through the tool the model would call. In the harness session's own project
+    // room: queues are per room, and a post is claimable only by a session of that project.
     let project = letibot_room::project_key(&cfg.workspace.display().to_string());
     let elsewhere = Client::connect_named(
         &socket,

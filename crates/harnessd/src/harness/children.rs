@@ -44,9 +44,8 @@ impl Harness {
 }
 
 /// A session's default name from its first message: the first five words of the first line, as a
-/// slug (`fix-the-parser-bug`). Deterministic and no model call, because a name is an ADDRESS a
-/// person types a week later. Empty for a message with no words; the caller then leaves the
-/// session unnamed. The 48-character bound is the address's, not a terminal's.
+/// slug (`fix-the-parser-bug`). Deterministic and no model call, because a name is an ADDRESS a person
+/// types a week later. Empty for a message with no words, and the caller then leaves it unnamed.
 pub fn derive_title(text: &str) -> String {
     const WORDS: usize = 5;
     const MAX: usize = 48;

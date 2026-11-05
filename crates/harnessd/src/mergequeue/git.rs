@@ -817,9 +817,8 @@ fn overlap(wt: &Path, old: &str, new: &str) -> Result<Vec<String>, String> {
 }
 
 /// Bring every checkout of `target` from `old` to `new` the way a fast-forward would -
-/// `read-tree -m -u old new`, which refuses when a local change overlaps the landing. Every
-/// checkout is checked first and none moves unless all can; one that fails anyway puts the
-/// ones already moved back.
+/// `read-tree -m -u old new`, which refuses when a local change overlaps the landing. None moves
+/// unless all can, and one that fails anyway puts the ones already moved back.
 pub fn follow_checkouts(repo: &Path, target: &str, old: &str, new: &str) -> Result<(), String> {
     let wts = checkouts_of(repo, target);
     for wt in &wts {

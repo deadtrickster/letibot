@@ -267,10 +267,9 @@ struct Up {
 }
 
 impl Up {
-    /// Queue settlements at the first level up that has not stopped, or at the top of the tree.
-    /// The flag is read under the target queue's lock: `stop` sets it before taking that lock to
-    /// drain, so a push that sees it clear lands before the drain and one that sees it set moves on.
-    /// Returns the session the settlements went to.
+    /// Queue settlements at the first level up that has not stopped, or at the top of the tree. The
+    /// flag is read under the target queue's lock, so a push that sees it clear lands before `stop`'s
+    /// drain and one that sees it set moves on. Returns the session the settlements went to.
     fn deliver(&self, items: impl IntoIterator<Item = JobCompletion>) -> String {
         let mut items: Vec<JobCompletion> = items.into_iter().collect();
         let mut here = self;

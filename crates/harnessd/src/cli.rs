@@ -787,10 +787,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             // The four flags that make anything reachable, and all four are
             // opt-in. Nothing here changes what an invocation without them gets.
             "--role" => cfg.seat = Seat::parse(&next()?)?,
-            // The approval policy, separate from the role. `Config::mode` has existed and been
-            // disclosed at startup since roles and policy were split -- its own doc says `--role
-            // coder` means both -- but nothing sets it, so every session runs at
-            // `UNSEEN_PROJECT`.
+            // The approval policy, separate from the role. `Config::mode` has existed since the two
+            // were split, but nothing set it, so every session ran at `UNSEEN_PROJECT`.
             "--mode" => cfg.mode = letibot_tools::mode::Mode::parse(&next()?)?,
             // Bind one path read-only into the confined view. Repeatable. The boundary is hermetic
             // `$HOME` inside is a fresh tmpfs, so `~/.cargo` and `~/.rustup` are absent and `cargo`
@@ -820,10 +818,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 let secs: u64 = next()?.parse().map_err(|e| format!("--idle-exit: {e}"))?;
                 cfg.idle_exit_after = (secs > 0).then(|| std::time::Duration::from_secs(secs));
             }
-            // A daemon that serves no queue. The merge and review queues belong to the
-            // repository's session daemons, which means a daemon the Claude Code bridge starts in a
-            // package's worktree is one of them by construction - so a daemon started there must be
-            // able to opt out.
+            // A daemon that serves no queue. The merge and review queues belong to the repository's
+            // session daemons, so a daemon the Claude Code bridge starts in a package's worktree is
+            // one of them by construction, and a daemon started there must be able to opt out.
             "--no-queue" => cfg.serve_queues = false,
             // The box's room coordinator (the room's slice 2). A whole daemon whose only job is
             // the room: its own socket, no store, no project, and one session of its own that

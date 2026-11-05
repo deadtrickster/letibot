@@ -1,7 +1,6 @@
 //! The memory card above the ceiling, answered by a real head over the session socket.
-//!
-//! `AdjudicatedGate::grant_memory` poses the ask on one thread, answered on another through
-//! `ClientFrame::Answer`. It reads `/proc/meminfo`; `apparatus::applies` covers platforms without it.
+//! `AdjudicatedGate::grant_memory` poses the ask on one thread and `ClientFrame::Answer` settles it on
+//! another; it reads `/proc/meminfo`, and `apparatus::applies` covers a platform without it.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
