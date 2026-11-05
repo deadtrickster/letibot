@@ -46,7 +46,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | id | title | group | left |
 |---|---|---|---|
 | R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement), item 40 (the inline blocks over 800 lines) |
-| R55 | A round's end and a turn's end are the same event on the wire | Code work | `Hub::turn_in_flight` (`crates/sessionlog/src/hub.rs:1632`) still reads the round, not `ends_turn`; a round with no calls followed by a nudge still says `true`; unclear: leticl's `:turn-finished` arm reading `ends_turn` is in another repo, check there |
+| R55 | A round's end and a turn's end are the same event on the wire | Code work | only leticl's `:turn-finished` arm reading `ends_turn`: that repo is not under ~/Projects, so it is unchecked |
 | R121 | What a command boundary holds is hardcoded and invisible | Code work | items 5-8 (perimeters as config, children narrow and widening is an ask, file tools obey the perimeter), item 3's probe line, item 4's tool refusals |
 | R124 | The package waiter exits on every provider stall | Code work | all of it: a `wait` option (or default) that rides over a stall while the request is open and still exits on rate limit, quota and timeout |
 | R105 | The work order after the 2026-11-01 review | Code work | step 4's four live facts on lab2x1, step 6's comment rule (486 blocks over three lines by `scripts/comment-blocks.py count`), step 8's two decisions (JS engine source, JS-side contract), step 9 (the backlog entries in this file) |
