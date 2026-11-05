@@ -15,12 +15,9 @@ pub const DEFAULT_PROJECT: &str = "";
 /// cuts and what `s-gatekeeper-<key>` carries.
 pub const PROJECT_KEY_LEN: usize = 12;
 
-/// The project a workspace root belongs to, as the key the rest of the tree already uses. The path is
-/// canonicalised first, because `/var/folders` and `/private/var/folders` are one directory and two
-/// strings, and two strings are two rooms; one that cannot be is hashed as given.
-/// A label for each project folder: its own name, `~` for the home folder, and for two folders
-/// of one name a suffix of the parent folder (then the key) so they stay apart. `rows` is
-/// `(key, root)`. A key with no known root is labelled by its first eight characters.
+/// A label for each project folder: its own name, `~` for the home folder, and for two folders of
+/// one name a suffix of the parent folder (then the key) so they stay apart. `rows` is
+/// `(key, root)`; a key with no known root is labelled by its first eight characters.
 pub fn project_labels(
     rows: &[(String, String)],
     home: &str,
@@ -67,6 +64,9 @@ pub fn project_labels(
     out
 }
 
+/// The project a workspace root belongs to. The path is canonicalised first, because
+/// `/var/folders` and `/private/var/folders` are one directory and two strings, and two strings are
+/// two rooms; one that cannot be canonicalised is hashed as given.
 pub fn project_key(root: &str) -> String {
     use sha2::Digest;
     let path = std::fs::canonicalize(root).unwrap_or_else(|_| std::path::PathBuf::from(root));

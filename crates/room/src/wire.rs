@@ -73,10 +73,9 @@ pub enum Request {
         /// Who is connecting: a session (the default), the operator, or a named external.
         #[serde(default)]
         seat: crate::chat::Seat,
-        /// The coordinator's operator token, for a connection asking for the operator's seat. It is
-        /// a file's contents, not a secret in the frame: the room writes `<socket>.token` at its
-        /// start (mode 0600, and hidden from a confined tool), so only a process that can read the
-        /// coordinator's own runtime directory can be the person.
+        /// The coordinator's operator token, for a connection asking for the operator's seat: a
+        /// file's contents, not a secret in the frame. The room writes `<socket>.token` at its start
+        /// (mode 0600, hidden from a confined tool), so only that file's reader can be the person.
         #[serde(default)]
         token: Option<String>,
         /// An external asking to be one more connection of a name that is already connected (a
@@ -177,10 +176,9 @@ pub enum Request {
         #[serde(default)]
         project: Option<String>,
     },
-    /// The project's tree, as the daemon holding it sees it - who is in this room. The room cannot work
-    /// this out: it keeps no tree, and a subagent never opens a connection, so the connections are not the
-    /// membership either. A replacement and not a merge, because a merge would keep a session closed since.
-    /// `root` is the project's folder, which the room names the channel from.
+    /// The project's tree, as the daemon holding it sees it - who is in this room. The room cannot
+    /// work this out: it keeps no tree and a subagent never opens a connection. A replacement and
+    /// not a merge, because a merge would keep a session closed since.
     Members {
         rows: Vec<crate::tree::Member>,
         #[serde(default)]
@@ -324,10 +322,9 @@ pub enum Response {
     /// SERVER's, not the room's: the state machine cannot say what a process is, who arbitrates it or who
     /// is connected to it, and [`crate::Server`]'s dispatch fills them in one place.
     Room {
-        /// `Server::identity()`: *started T ago and holding N item(s)*, and the sentence saying
-        /// whether the room keeps a store. With a store this is the field that says the queues came
-        /// back; without one it is what makes *restarted clean* and *restarted empty* two readings,
-        /// because an in-memory room is empty at every start.
+        /// `Server::identity()`: *started T ago and holding N item(s)*, and whether the room keeps a
+        /// store. That second half is what makes *restarted clean* and *restarted empty* two
+        /// readings, since an in-memory room is empty at every start.
         identity: String,
         /// The session that arbitrates this room, when one is named.
         arbiter: Option<String>,

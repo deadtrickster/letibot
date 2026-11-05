@@ -11,10 +11,9 @@ use serde::{Deserialize, Serialize};
 use crate::item::Item;
 use crate::room::Question;
 
-/// Rows kept per project, items and questions each, oldest id first out. The store is replayed
-/// into memory at every start, so this bounds disk and the coordinator's heap together: a row
-/// nobody finished, dropped or answered is history, and a queue deeper than this has a problem
-/// the cap only makes visible.
+/// Rows kept per project, items and questions each, oldest id first out: the store is replayed into
+/// memory at every start, so this bounds disk and heap together, and a queue deeper than this has a
+/// problem the cap only makes visible.
 pub const RING: usize = 500;
 
 /// One line of the store. Appending the whole item on every change - a claim, a beat, a ruling -
@@ -28,9 +27,8 @@ enum Record {
 }
 
 /// One store per host, shared by every project's room so all append to one file and a compaction
-/// cannot drop a sibling project's rows. The shadow - the last version of each id - is what the
-/// file is rewritten from, so it is kept true on every put and a failed write is healed by the
-/// next compaction rather than by a rebuild.
+/// cannot drop a sibling project's rows. The shadow - the last version of each id - is kept true on
+/// every put, so a failed write is healed by the next compaction rather than by a rebuild.
 pub struct Store {
     path: PathBuf,
     bytes: u64,
@@ -182,9 +180,8 @@ impl Store {
     }
 
     /// Rewrite the file from the shadow once it holds several times the live rows, so superseded
-    /// versions and trimmed history do not grow it without bound. The 512 bytes a row is a floor,
-    /// not a measure: it only decides when to rewrite, and the floor keeps a small room from
-    /// compacting on every beat.
+    /// versions and trimmed history do not grow it without bound. The 512 bytes a row is a floor, not
+    /// a measure: it only keeps a small room from compacting on every beat.
     fn compact(&mut self) {
         let rows = self.items.values().map(BTreeMap::len).sum::<usize>()
             + self.questions.values().map(BTreeMap::len).sum::<usize>();

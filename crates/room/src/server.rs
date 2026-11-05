@@ -1,7 +1,6 @@
-//! The coordinator's socket: accept loop, a read loop per connection, the [`Room`] behind one lock, bell routing.
-//! A close is the daemon's liveness and a beat is the work's; they are kept apart.
-//! Durability is the caller's: [`Server::with_item_store`] keeps the queues across a restart, and
-//! [`Server::identity`] says which of the two rooms this one is.
+//! The coordinator's socket: accept loop, a read loop per connection, the [`Room`] behind one
+//! lock, bell routing. A close is the daemon's liveness and a beat is the work's, so they are kept
+//! apart; durability is the caller's, through [`Server::with_item_store`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
@@ -22,10 +21,9 @@ use crate::wire::{Answer, ROOM_PROTOCOL_VERSION, Request, Response};
 /// beat stopped is taken back promptly and a beat that is one pass late is not mistaken for death.
 pub const DEFAULT_SWEEP_EVERY_MS: u64 = 5_000;
 
-/// How many frames one connection may have waiting for its writer thread. A frame is at most a
-/// chat message's 4 000 bytes plus its envelope, so this is roughly a megabyte of memory per
-/// connection - the slack a reader is allowed to fall behind by, and the point at which it is
-/// not reading any more.
+/// How many frames one connection may have waiting for its writer thread: roughly a megabyte at a
+/// chat message's 4 000 bytes each. That is the slack a reader may fall behind by, and past it the
+/// connection is not reading any more.
 pub const OUTBOX: usize = 256;
 
 /// How long one frame may take to reach a reader before its connection is ended. A local socket
@@ -33,16 +31,14 @@ pub const OUTBOX: usize = 256;
 /// the room's own writer threads pile up behind it.
 pub const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// How long one frame may be, in bytes: one line of JSON. The frames a client sends are a `hello`,
-/// a chat message of at most `MAX_TEXT` bytes and the project's tree, which is a few hundred bytes
-/// a session - 1 MiB holds a project of several thousand sessions. Past it the line is a peer
-/// holding the room's memory, not a request, and the connection is closed.
+/// How long one frame may be, in bytes: one line of JSON. A project's tree is a few hundred bytes a
+/// session, so 1 MiB holds several thousand of them; past it the line is a peer holding the room's
+/// memory, not a request, and the connection is closed.
 pub const MAX_FRAME_BYTES: usize = 1 << 20;
 
-/// How many principals one coordinator tracks per-principal state for - an inbox cursor and a
-/// count of what it missed. A cursor is eight bytes and a name, and a box has tens of sessions;
-/// the bound is here because a connection may name itself anything and a fresh name each time
-/// would otherwise grow two maps without end. Past it the room says so rather than growing.
+/// How many principals one coordinator keeps an inbox cursor for. A connection may name itself
+/// anything, so a bound is what stops a fresh name each time growing two maps without end; past it
+/// the room says so rather than growing.
 pub const MAX_PRINCIPALS: usize = 4_096;
 
 /// How many chat messages one member's inbox keeps while it is away. A message is at most
@@ -1149,10 +1145,9 @@ impl Server {
         }
     }
 
-    /// Tell a connection what its principal missed, once: what names it verbatim, and one digest
-    /// per room for the rest. The log is the record, so the per-member backlog is dropped here.
-    /// A member never seen before is told about the last hour; one seen before, about what
-    /// followed its last mark.
+    /// Tell a connection what its principal missed, once: what names it verbatim and one digest per
+    /// room for the rest. The log is the record, so the per-member backlog is dropped here, and a
+    /// member seen before is told only what followed its last mark.
     fn deliver_pending(&self, conn: &Conn, session: &str) {
         self.inner
             .pending
@@ -1287,10 +1282,9 @@ impl Server {
         self.may_see(seat, project, &m.room)
     }
 
-    /// Does anybody on this host answer to `name`? An external that has connected, a session with a
-    /// connection, or a top-level session in a project's tree. A session the room has merely seen
-    /// before is NOT here - that would accept a message to nobody - and it is
-    /// [`Server::remember_for_absent`] that keeps such a session's chat for it.
+    /// Does anybody on this host answer to `name`? A session the room has merely seen before is NOT
+    /// here - that would accept a message to nobody - and [`Server::remember_for_absent`] is what
+    /// keeps such a session's chat for it.
     fn is_known(&self, name: &str) -> bool {
         if name == chat::OPERATOR
             || self
@@ -1916,12 +1910,10 @@ impl Server {
                     }
                 }
 
-                // The close is a fact. This session's daemon is not there any more - it
-                // exited, restarted, or was stopped - so every claim it holds goes back to the
-                // queue NOW, rather than ninety seconds from now. One close is not that fact: a
-                // stopping coordinator shut this socket itself, and the session's daemon keeps
-                // running and redials the next one. Its claim rides the store, and the lease -
-                // not the coordinator's own exit - decides whether it is still alive.
+                // The close is a fact - the daemon exited, restarted or was stopped - so every
+                // claim goes back to the queue now rather than ninety seconds from now. One close
+                // is not that fact: a stopping coordinator shut this socket itself, and the lease,
+                // not the coordinator's exit, decides whether the claim is still alive.
                 me.inner
                     .chat
                     .lock()

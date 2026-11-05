@@ -584,11 +584,9 @@ impl Room {
         self.lease_ms
     }
 
-    /// Load this project's rows from the store and keep the store from now on. A claim whose beat
-    /// stopped while the coordinator was down is taken back by the same [`Room::sweep`] the clock
-    /// runs, so the count, the reason and any raise are the live ones and the take-back is
-    /// recorded. The sweep's events are the caller's to say: at a reload no connection exists to
-    /// route them to.
+    /// Load this project's rows from the store and keep the store from now on. The same
+    /// [`Room::sweep`] the clock runs takes back a claim whose beat stopped while the coordinator
+    /// was down, and a reload has no connection to route the events to, so they are the caller's.
     pub fn load(&mut self, store: &Arc<Mutex<Store>>, project: &str, now: u64) -> Vec<Event> {
         self.project = project.to_string();
         {
