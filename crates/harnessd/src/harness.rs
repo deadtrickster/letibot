@@ -1572,6 +1572,10 @@ mod queue;
 mod room;
 mod trail;
 mod turns;
+// `/prune`: the fork that carries every row with the oldest bodies stubbed - the one fork with
+// no model behind it. See the module's header for §6's three rulings it keeps.
+mod prune;
+pub use prune::{PruneReport, prune_reply};
 mod wall;
 #[cfg(test)]
 pub(crate) use children::steer_for_turn;

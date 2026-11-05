@@ -634,7 +634,7 @@ impl Harness {
 
     /// The controller's `Stuck` on the session row, or its absence - the v19 pair is
     /// the durable half, so a restart comes back stuck exactly when the controller was.
-    fn persist_stuck(&mut self) {
+    pub(crate) fn persist_stuck(&mut self) {
         let pair = self.cfg.wall.stuck_pair();
         if let Some(store) = &self.store
             && let Err(e) = store.set_auto_compact_stood_down(&self.cfg.session_id, pair)
@@ -1037,7 +1037,7 @@ impl Harness {
     }
 
     /// The rows still owed, as text: what an eviction may not take a body from.
-    fn plan_rows(&self) -> Vec<String> {
+    pub(crate) fn plan_rows(&self) -> Vec<String> {
         self.todos
             .snapshot()
             .iter()
@@ -1587,6 +1587,9 @@ impl Harness {
         } else {
             format!("\n\n{map}")
         };
+        // Said before the match below takes `lead`: a prune is the one fork that carries every
+        // row AND opens with its own item, which is what picks its progress labels further down.
+        let pruned = lead.is_some() && tail_items.len() == self.session.items.len();
         let note: TranscriptItem = match lead {
             Some(item) => item,
             None => TranscriptItem::System {
@@ -1625,6 +1628,13 @@ impl Harness {
             (
                 "re-seating: rendering the conversation onto the new prompt",
                 "re-seating: writing the carried conversation",
+            )
+        } else if pruned {
+            // A prune: every row carried with the oldest bodies stubbed. Not "compacting", which
+            // would read as a summary turn that never ran.
+            (
+                "pruning: rendering the pruned conversation",
+                "pruning: writing the pruned conversation",
             )
         } else {
             (
