@@ -368,6 +368,10 @@ impl Bridge {
             // see the refusal would keep believing it answered.
             "last_rejection": s.rejection,
             "seq": s.seq,
+            // Non-null when the daemon is another build than this bridge, and says which is older.
+            "protocol_skew": s.skew,
+            // Lines from the daemon this build could not read and skipped.
+            "unreadable_frames": s.unreadable,
         });
         // What the last ending measured, which is the question: `prefix_check` says whether
         // zero reuse was a slot that did not hold the history or a prompt that diverged, and the

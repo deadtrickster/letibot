@@ -535,6 +535,11 @@ pub struct State {
     /// How many such events have landed since this head attached - `wait`'s baseline, so a wait is
     /// answered by the trouble it saw rather than by one that was already true.
     pub troubles: u64,
+    /// The sentence for a daemon on another protocol number than this build, naming the older
+    /// side and the restart command. `None` when they match.
+    pub skew: Option<String>,
+    /// Lines from the daemon this build could not read. Skipped, never silent.
+    pub unreadable: u64,
 }
 
 /// The word a provider trouble is filed under - this file's closed vocabulary, so a head that asks
@@ -672,8 +677,16 @@ impl State {
             ServerFrame::Hello {
                 session_id,
                 snapshot,
+                protocol_version,
                 ..
             } => {
+                self.skew = letibot_sessionlog::protocol_skew(
+                    protocol_version,
+                    letibot_sessionlog::protocol::PROTOCOL_VERSION,
+                )
+                .map(|s| {
+                    format!("{s} Run `letibot --stop` in the daemon's folder, then start again.")
+                });
                 self.session = session_id;
                 if let Some(snap) = snapshot {
                     self.seed(&snap);
@@ -1518,6 +1531,8 @@ impl Head {
             model: g.model.clone(),
             last_trouble: g.last_trouble.clone(),
             troubles: g.troubles,
+            skew: g.skew.clone(),
+            unreadable: g.unreadable,
         }
     }
 
@@ -2027,10 +2042,13 @@ fn collect(
                         shared.bell.notify_all();
                         seq
                     }
-                    // A line this build cannot read. The connection is still up and the
-                    // next frame is very likely readable, so it is counted nowhere and
-                    // nothing else happens.
-                    Inbound::Unreadable(_) => None,
+                    // The connection stays up and the next frame is very likely readable, so
+                    // the line is skipped and counted for `leticode_status`.
+                    Inbound::Unreadable(_) => {
+                        let mut g = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+                        g.unreadable += 1;
+                        None
+                    }
                 };
                 if let Some(seq) = ack {
                     let mut c = client.lock().unwrap_or_else(|e| e.into_inner());
@@ -2149,6 +2167,67 @@ pub fn create_session_in(d: &Daemon, title: &str, workspace: &str) -> Result<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A daemon on an older protocol number is named in the status, and a line this build cannot
+    /// read is counted there instead of vanishing.
+    #[test]
+    fn skew_and_unreadable_lines_reach_the_status() {
+        use std::io::{BufRead, BufReader, Write};
+        let socket = letibot_sessionlog::testing::scratch_root()
+            .join(format!("bridge-skew-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut lines = BufReader::new(stream.try_clone().expect("clone")).lines();
+            let _attach = lines.next();
+            let hello = ServerFrame::Hello {
+                protocol_version: letibot_sessionlog::protocol::PROTOCOL_VERSION - 1,
+                session_id: "s".into(),
+                head_id: "h1".into(),
+                dropped: 0,
+                snapshot: Some(Box::new(
+                    letibot_sessionlog::view::SessionView::new(
+                        "s",
+                        letibot_sessionlog::view::ViewBounds::default(),
+                    )
+                    .snapshot(0, 0),
+                )),
+                resumed_from: None,
+                scrubbed: letibot_sessionlog::ScrubReport::default(),
+                wiring: letibot_sessionlog::SessionWiring::default(),
+                sessions: Vec::new(),
+            };
+            let _ = writeln!(stream, "{}", serde_json::to_string(&hello).unwrap());
+            let _ = writeln!(stream, "{{\"frame\":\"from_the_future\"}}");
+            for _ in lines {}
+        });
+        let d = crate::daemon::Daemon {
+            workspace: socket.clone(),
+            key: "k".into(),
+            socket,
+            log: Default::default(),
+            store: Default::default(),
+            placement: None,
+            started: false,
+        };
+        let h = Head::attach(&d, "s").expect("attach");
+        let end = Instant::now() + Duration::from_secs(10);
+        while h.snapshot().unreadable == 0 {
+            assert!(
+                Instant::now() < end,
+                "the unreadable line was never counted"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let s = h.snapshot();
+        assert_eq!(s.unreadable, 1);
+        let skew = s.skew.expect("a daemon one protocol behind is named");
+        assert!(
+            skew.contains("OLDER") && skew.contains("letibot --stop"),
+            "{skew}"
+        );
+    }
 
     /// A close the daemon never acks is reported with the wait, not as a closed session.
     #[test]
