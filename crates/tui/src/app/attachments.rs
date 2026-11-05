@@ -213,20 +213,38 @@ enum Missing {
     Other(String),
 }
 
+/// How long a clipboard reader may take. It runs on the head's event loop, and a reader whose
+/// clipboard owner never answers would otherwise freeze the head, keys included.
+const CLIPBOARD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Run a program and take its stdout, or say which of the two failures it was.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 fn run(program: &str, args: &[&str]) -> Result<Option<Vec<u8>>, Missing> {
-    let out = Command::new(program).args(args).output().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            Missing::Tool
-        } else {
-            Missing::Other(format!("the clipboard could not be read: {e}"))
-        }
-    })?;
-    if !out.status.success() || out.stdout.is_empty() {
-        return Ok(None);
+    run_within(program, args, CLIPBOARD_DEADLINE)
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn run_within(
+    program: &str,
+    args: &[&str],
+    limit: std::time::Duration,
+) -> Result<Option<Vec<u8>>, Missing> {
+    use crate::gitfield::Ran;
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    match crate::gitfield::run_until(cmd, limit) {
+        Ran::Ok(out) if !out.is_empty() => Ok(Some(out)),
+        Ran::Ok(_) | Ran::Failed => Ok(None),
+        Ran::NotStarted(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Missing::Tool),
+        Ran::NotStarted(e) => Err(Missing::Other(format!(
+            "the clipboard could not be read: {e}"
+        ))),
+        Ran::TimedOut => Err(Missing::Other(format!(
+            "`{program}` did not answer within {}s, so nothing was pasted - the program that \
+             owns the clipboard may be stuck",
+            limit.as_secs()
+        ))),
     }
-    Ok(Some(out.stdout))
 }
 
 /// The files a paste names - one path, several, quoted, or with their spaces escaped. `[]` for a
@@ -639,6 +657,28 @@ impl crate::app::App {
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_clipboard_reader_that_never_answers_is_cut_off() {
+        let began = std::time::Instant::now();
+        let r = run_within("sleep", &["30"], std::time::Duration::from_millis(300));
+        assert!(began.elapsed() < std::time::Duration::from_secs(5));
+        assert!(matches!(r, Err(Missing::Other(ref e)) if e.contains("did not answer")));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_missing_reader_is_missing_and_an_empty_one_is_no_picture() {
+        let limit = std::time::Duration::from_secs(5);
+        assert!(matches!(
+            run_within("letibot-no-such-clipboard-tool", &[], limit),
+            Err(Missing::Tool)
+        ));
+        assert!(matches!(run_within("true", &[], limit), Ok(None)));
+        assert!(matches!(run_within("false", &[], limit), Ok(None)));
+        assert!(matches!(run_within("echo", &["x"], limit), Ok(Some(ref b)) if b == b"x\n"));
+    }
     use super::*;
 
     fn dir(tag: &str) -> PathBuf {

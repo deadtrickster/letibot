@@ -438,15 +438,43 @@ pub fn read_state_at(dir: &std::path::Path) -> Option<GitState> {
 /// A command's stdout if it succeeds within `limit`, else `None` - and a command past its limit is
 /// killed, not waited for. The output is drained on a thread so a reading larger than the pipe
 /// cannot stall the child while the deadline is watched.
-pub fn run_with_deadline(mut cmd: Command, limit: std::time::Duration) -> Option<Vec<u8>> {
+pub fn run_with_deadline(cmd: Command, limit: std::time::Duration) -> Option<Vec<u8>> {
+    match run_until(cmd, limit) {
+        Ran::Ok(out) => Some(out),
+        _ => None,
+    }
+}
+
+/// How a command run under a deadline ended.
+#[derive(Debug)]
+pub enum Ran {
+    /// It exited 0, with this stdout.
+    Ok(Vec<u8>),
+    /// It exited non-zero.
+    Failed,
+    /// It could not be started.
+    NotStarted(std::io::Error),
+    /// It was still running at the deadline and was killed.
+    TimedOut,
+}
+
+/// [`run_with_deadline`], saying which way it ended.
+pub fn run_until(mut cmd: Command, limit: std::time::Duration) -> Ran {
     use std::io::Read;
-    let mut child = cmd
+    let mut child = match cmd
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .ok()?;
-    let mut pipe = child.stdout.take()?;
+    {
+        Ok(c) => c,
+        Err(e) => return Ran::NotStarted(e),
+    };
+    let Some(mut pipe) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Ran::Failed;
+    };
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = pipe.read_to_end(&mut buf);
@@ -455,7 +483,7 @@ pub fn run_with_deadline(mut cmd: Command, limit: std::time::Duration) -> Option
     let until = std::time::Instant::now() + limit;
     let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
+            Ok(Some(status)) => break status,
             Ok(None) if std::time::Instant::now() < until => {
                 std::thread::sleep(std::time::Duration::from_millis(10))
             }
@@ -465,12 +493,14 @@ pub fn run_with_deadline(mut cmd: Command, limit: std::time::Duration) -> Option
                 // very wait the deadline exists to bound. The thread ends when the pipe does.
                 let _ = child.kill();
                 let _ = child.wait();
-                return None;
+                return Ran::TimedOut;
             }
         }
     };
-    let out = reader.join().ok()?;
-    status.filter(|s| s.success()).map(|_| out)
+    match reader.join() {
+        Ok(out) if status.success() => Ran::Ok(out),
+        _ => Ran::Failed,
+    }
 }
 
 #[cfg(test)]
