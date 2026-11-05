@@ -211,14 +211,21 @@ pub const ENV_BYTES: usize = 16384;
 /// The function body that dumps the exported environment, shared by the persistent shell's
 /// trailer and the one-shot call's so the two filters are one list: the `compgen` guard, the
 /// plain-word case and the three caps are written once here.
-fn env_dump_fn(env_fn: &str) -> String {
+///
+/// Two passes: first what differs from `base` (the session's own exports), then the rest, so
+/// a large inherited environment cannot spend the caps before the session's own names. With no
+/// `base` array declared every name is in the first pass.
+fn env_dump_fn(env_fn: &str, base: &str) -> String {
     format!(
-        "{env_fn}() {{ command -v compgen >/dev/null 2>&1 || return; local n v c=0 b=0; \
-         for n in $(compgen -e); do \
+        "{env_fn}() {{ command -v compgen >/dev/null 2>&1 || return; local n v p h=0 c=0 b=0; \
+         case \"$(declare -p {base} 2>/dev/null)\" in \"declare -A\"*) h=1;; esac; \
+         for p in 1 2; do for n in $(compgen -e); do \
          case \"${{!n}}\" in \"\"|*[!{plain}]*) continue;; esac; v=${{!n}}; \
          [ ${{#v}} -gt {value} ] && continue; \
+         if [ $h = 1 ] && [ \"${{{base}[$n]+x}}\" ] && [ \"${{{base}[$n]}}\" = \"$v\" ]; \
+         then [ $p = 1 ] && continue; else [ $p = 2 ] && continue; fi; \
          printf \"%s=%s;\" \"$n\" \"$v\"; c=$((c+1)); b=$((b+${{#n}}+${{#v}}+2)); \
-         [ $c -ge {pairs} ] && return; [ $b -ge {bytes} ] && return; done; }}",
+         [ $c -ge {pairs} ] && return; [ $b -ge {bytes} ] && return; done; done; }}",
         plain = PLAIN,
         pairs = ENV_PAIRS,
         bytes = ENV_BYTES,
@@ -233,11 +240,15 @@ fn env_dump_fn(env_fn: &str) -> String {
 /// call. The environment half prints only a value that is already one plain word ([`PLAIN`]).
 pub fn trailer_definition(fn_name: &str) -> String {
     let env_fn = format!("{fn_name}_env");
+    let base = format!("{fn_name}_base");
+    // The environment the session started with, so the dump can tell its own exports apart.
     format!(
-        "{}\n\
+        "declare -gA {base}=() 2>/dev/null && for __lt_n in $(compgen -e); do \
+         {base}[$__lt_n]=${{!__lt_n}}; done; unset __lt_n\n\
+         {}\n\
          {fn_name}() {{ printf '\\033]1337;letibot;%s;%s;%s\n' \"$LETIBOT_MARK\" \"$?\" \"$PWD\"; \
          {env_fn}; printf '\\007'; }}",
-        env_dump_fn(&env_fn)
+        env_dump_fn(&env_fn, &base)
     )
 }
 
@@ -246,7 +257,7 @@ pub fn trailer_definition(fn_name: &str) -> String {
 /// `$?` is saved and the last line exits with it, and `mark` is the nonce that takes it back out.
 pub fn oneshot_trailer(mark: &str) -> String {
     let saved = format!("__lt_s_{mark}");
-    let dump = env_dump_fn(&format!("__lt_dump_{mark}"));
+    let dump = env_dump_fn(&format!("__lt_dump_{mark}"), &format!("__lt_base_{mark}"));
     format!(
         "{saved}=$?\n\
          command -v bash >/dev/null 2>&1 && bash -c '{dump}; \
@@ -910,10 +921,11 @@ mod tests {
         let dir = tmp("xtrace");
         let mut cfg = config(&dir);
         cfg.env.push(("SHELLOPTS".into(), "xtrace".into()));
-        cfg.env.push(("LT_PLAIN".into(), "plain".into()));
         let mut s = ShellSession::open(&cfg).expect("a shell session");
 
-        let t = s.run("printf 'ok'", LONG).expect("a turn");
+        let t = s
+            .run("export LT_PLAIN=plain; printf 'ok'", LONG)
+            .expect("a turn");
         assert!(!text(&t).contains("+ printf"), "traced: {:?}", text(&t));
         let report = s.env().expect("a report");
         assert!(
@@ -1215,13 +1227,33 @@ mod tests {
         s[at..].split(';').next().unwrap_or_default().to_string()
     }
 
+    /// The session's own export is reported even when the inherited environment alone would fill
+    /// the caps: it comes before every name the session started with.
+    #[test]
+    fn a_large_inherited_environment_does_not_crowd_out_the_sessions_exports() {
+        let dir = tmp("crowd");
+        let mut cfg = config(&dir);
+        for i in 0..(ENV_PAIRS + 8) {
+            cfg.env
+                .push((format!("AA_INHERITED_{i:03}"), "x".repeat(300)));
+        }
+        let mut s = ShellSession::open(&cfg).expect("a shell session");
+        s.run("export ZZ_MINE=/from/the/session", LONG)
+            .expect("a turn");
+        let report = s.env().expect("a report").to_string();
+        assert!(
+            report.split(';').any(|p| p == "ZZ_MINE=/from/the/session"),
+            "the session's export was crowded out: {report}"
+        );
+    }
+
     /// The two spellings of the trailer share one filter: a value the dump drops is dropped
     /// by both, because the dump body is written once.
     #[test]
     fn the_two_trailers_share_one_dump_body() {
         let persistent = trailer_definition("__lt_end_x");
         let oneshot = oneshot_trailer("x");
-        let body = env_dump_fn("SHARED");
+        let body = env_dump_fn("SHARED", "SHARED_base");
         let shell_body = body.replace("SHARED", "");
         for fragment in [
             "compgen -e",
