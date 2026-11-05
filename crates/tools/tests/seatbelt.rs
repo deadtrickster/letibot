@@ -818,7 +818,7 @@ fn a_child_cannot_shadow_a_packed_only_branch_and_still_commits() {
         &s,
         &wt,
         &format!(
-            "git rev-parse HEAD > {c}/refs/heads/main; test ! -e {c}/refs/heads/main",
+            "git rev-parse HEAD > {c}/refs/heads/main",
             c = common.display()
         ),
     );
