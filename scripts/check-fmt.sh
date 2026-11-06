@@ -48,6 +48,18 @@ if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Shell scripts are checked whole, not by touched file: every tracked one is shfmt-clean and the
+# check is cheap. A missing shfmt fails, because a skipped check reads as a pass.
+if ! command -v shfmt >/dev/null 2>&1; then
+  echo "check-fmt: shfmt not found; install it (mise use shfmt)" >&2
+  exit 1
+fi
+if ! shfmt -i 2 -ci -d scripts/*.sh scripts/letibot scripts/leticode scripts/rrun scripts/etalon-snapshot; then
+  echo "check-fmt: shell scripts are not shfmt-clean; run: shfmt -i 2 -ci -w scripts/*.sh scripts/letibot scripts/leticode scripts/rrun scripts/etalon-snapshot" >&2
+  exit 1
+fi
+echo "check-fmt: shell scripts formatted"
+
 # Added, Copied, Modified or Renamed, never Deleted — rustfmt cannot read a file that
 # is gone, and `--diff-filter` is what makes a deletion not a crash.
 # **Committed changes, PLUS the working tree.**
