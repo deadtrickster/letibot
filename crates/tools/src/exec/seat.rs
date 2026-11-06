@@ -279,13 +279,21 @@ pub fn git_dir_protected(project: &Path) -> Vec<Protection> {
         .into_iter()
         .map(|(_, n)| n)
         .collect();
-    names.extend(packed_branches(common));
+    let packed = packed_shas(common);
+    names.extend(packed.keys().cloned());
     names.extend(worktree_head_branches(common));
     names.sort();
     names.dedup();
     let own = dirs.own_ref.as_deref();
     for name in names.iter().filter(|n| Some(n.as_str()) != own) {
         let at = common.join(name);
+        // A placeholder mounted over a packed-only ref leaves an empty file in the real refs/heads
+        // that shadows the packed value and breaks git. The loose copy is the same ref, and real.
+        if !at.exists() && at.parent().is_some_and(Path::exists) {
+            if let Some(sha) = packed.get(name.as_str()) {
+                write_loose_ref(&at, sha);
+            }
+        }
         if at.exists() || at.parent().is_some_and(Path::exists) {
             out.push(Protection::file(at));
             continue;
@@ -328,16 +336,26 @@ pub fn git_dir_protected(project: &Path) -> Vec<Protection> {
     out
 }
 
-/// Branch names (`refs/heads/x`) listed in `packed-refs`; a ref git has packed has no file to
-/// protect, and creating the loose one shadows it.
-fn packed_branches(common: &Path) -> Vec<String> {
+/// Branches (`refs/heads/x`) listed in `packed-refs`, with the commit each names.
+fn packed_shas(common: &Path) -> std::collections::BTreeMap<String, String> {
     std::fs::read_to_string(common.join("packed-refs"))
         .unwrap_or_default()
         .lines()
         .filter(|l| !l.starts_with(['#', '^']))
-        .filter_map(|l| l.split_once(' ').map(|(_, n)| n.trim().to_string()))
-        .filter(|n| n.starts_with("refs/heads/"))
+        .filter_map(|l| l.split_once(' '))
+        .map(|(sha, n)| (n.trim().to_string(), sha.trim().to_string()))
+        .filter(|(n, _)| n.starts_with("refs/heads/"))
         .collect()
+}
+
+/// Writes `sha` as the loose ref at `at`, never over one git wrote meanwhile: a hard link fails
+/// when the name exists. Best effort; a failure leaves the ref packed-only.
+fn write_loose_ref(at: &Path, sha: &str) {
+    let tmp = at.with_extension(format!("letibot-{}.tmp", std::process::id()));
+    if std::fs::write(&tmp, format!("{sha}\n")).is_ok() {
+        let _ = std::fs::hard_link(&tmp, at);
+    }
+    let _ = std::fs::remove_file(&tmp);
 }
 
 /// The branches other worktrees have out, including ones not yet born.
@@ -678,6 +696,11 @@ mod tests {
             "absent parent held as a dir: {prot:?}"
         );
         assert!(!has(c.join("refs/heads/agent/child")), "{prot:?}");
+        assert_eq!(
+            std::fs::read_to_string(common.join("refs/heads/main")).unwrap(),
+            format!("{}\n", "0".repeat(40)),
+            "the placeholder is the packed value, so git still reads the branch"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

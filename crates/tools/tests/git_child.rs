@@ -269,8 +269,8 @@ fn a_child_cannot_shadow_a_branch_kept_only_in_packed_refs() {
     let Some(f) = Fixture::build("packed", true) else {
         return;
     };
-    // The probe leaves an empty mountpoint at the protected name, so "packed only" is read from
-    // packed-refs, and the loose name must stay empty.
+    // The protection writes the packed value out as the loose ref, so git reads the same branch
+    // through either.
     let packed = std::fs::read_to_string(f.common.join("packed-refs")).expect("packed-refs");
     let main_before = packed
         .lines()
@@ -291,8 +291,8 @@ fn a_child_cannot_shadow_a_branch_kept_only_in_packed_refs() {
     assert!(!out.contains("UPDATED"), "the child shadowed main: {out}");
     assert_eq!(
         std::fs::read_to_string(&loose).unwrap_or_default(),
-        "",
-        "the loose name must hold nothing"
+        format!("{main_before}\n"),
+        "the loose ref holds the packed value, never the child's commit or nothing"
     );
     let after = std::fs::read_to_string(f.common.join("packed-refs")).unwrap();
     assert!(after.contains(&format!("{main_before} refs/heads/main")));
