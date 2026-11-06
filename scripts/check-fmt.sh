@@ -49,9 +49,13 @@ if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1; then
 fi
 
 # Shell scripts are checked whole, not by touched file: every tracked one is shfmt-clean and the
-# check is cheap. A missing shfmt fails, because a skipped check reads as a pass.
-if ! command -v shfmt >/dev/null 2>&1; then
-  echo "check-fmt: shfmt not found; install it (mise use shfmt)" >&2
+# check is cheap. One pinned version through mise, so every host formats alike; a missing one fails,
+# because a skipped check reads as a pass.
+SHFMT_VERSION=3.14.1
+if command -v mise >/dev/null 2>&1; then
+  shfmt() { mise exec "shfmt@$SHFMT_VERSION" -- shfmt "$@"; }
+elif ! command -v shfmt >/dev/null 2>&1; then
+  echo "check-fmt: neither mise nor shfmt found; install shfmt $SHFMT_VERSION" >&2
   exit 1
 fi
 if ! shfmt -i 2 -ci -d scripts/*.sh scripts/letibot scripts/leticode scripts/rrun scripts/etalon-snapshot; then
