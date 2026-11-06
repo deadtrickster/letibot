@@ -636,6 +636,35 @@ fn a_session_stopped_on_a_card_is_refused_and_nothing_moves() {
     server.shutdown();
 }
 
+/// A daemon that takes the connection and never says what the session is doing is not a session
+/// at rest. Silence is refused once the patience runs out, and nothing moves.
+#[test]
+fn a_daemon_that_never_answers_is_not_read_as_at_rest() {
+    let f = Fixture::new("silent");
+    let rundir = f.run.join("letibot");
+    std::fs::create_dir_all(&rundir).unwrap();
+    let socket = rundir.join(format!("{}.sock", key12(&f.checkout)));
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+    let held = std::thread::spawn(move || {
+        let mut kept = Vec::new();
+        for c in listener.incoming().take(4).flatten() {
+            kept.push(c);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(10));
+    });
+
+    let out = f.migrate(&[SESSION, "--to", "lab2x1", "--patience", "1"]);
+    let text = said(&out);
+    assert!(!out.status.success(), "silence is not rest: {text}");
+    assert!(
+        text.contains("is not known"),
+        "the refusal says the state was never heard: {text}"
+    );
+    assert_eq!(f.local_lives_on(), None, "nothing was marked: {text}");
+    assert!(f.remote_lives_on("lab2x1").is_none(), "{text}");
+    drop(held);
+}
+
 /// A host with no provider keys is refused before a byte moves, and `--copy-keys` is the way
 /// to give it some - copied, mode 600, never printed.
 #[test]

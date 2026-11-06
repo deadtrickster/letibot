@@ -1500,6 +1500,9 @@ fn quiesce(
 
     let deadline = Instant::now() + patience;
     let mut activity = Activity::Quiet;
+    // `Quiet` above is a default, not an answer: nothing is decided until the daemon has said
+    // what the session is doing.
+    let mut heard = false;
     let mut said: Vec<String> = Vec::new();
     loop {
         // A frame that changes the answer, or 250 ms - whichever comes first. The timeout is not
@@ -1508,9 +1511,13 @@ fn quiesce(
             Ok(ServerFrame::Hello { snapshot, .. }) => {
                 if let Some(snap) = snapshot {
                     activity = snap.activity;
+                    heard = true;
                 }
             }
-            Ok(ServerFrame::Resync { snapshot, .. }) => activity = snapshot.activity,
+            Ok(ServerFrame::Resync { snapshot, .. }) => {
+                activity = snapshot.activity;
+                heard = true;
+            }
             Ok(ServerFrame::Event(envelope)) => {
                 if let letibot_sessionlog::SessionEvent::ActivityChanged { activity: a } =
                     envelope.event
@@ -1534,6 +1541,17 @@ fn quiesce(
                     session
                 ));
             }
+        }
+        if !heard {
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "the daemon did not say what {} is doing within {}s, so whether it is at rest \
+                     is not known. Nothing was moved.",
+                    session,
+                    patience.as_secs()
+                ));
+            }
+            continue;
         }
         if let Some(card) = activity.ask() {
             return Err(format!(
@@ -1604,7 +1622,8 @@ fn close_session(
                 return Err(format!("the daemon refused to close {session}: {reason}"));
             }
             Ok(_) => continue,
-            Err(_) => {
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
                 // The session's hub closes as part of the close, so the connection ending IS the
                 // answer for a session this daemon held - the frame's own doc says so.
                 say(&format!(
@@ -1640,7 +1659,8 @@ fn stop_daemon(
         match frames.recv_timeout(left) {
             Ok(ServerFrame::Accepted { .. }) => break,
             // The socket going is the stop, and it is the ordinary ending.
-            Err(_) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Ok(_) => continue,
         }
     }
