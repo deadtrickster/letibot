@@ -109,7 +109,7 @@ raise_open_files() { # raise_open_files ASKED
   esac
   soft="$(ulimit -Sn 2>/dev/null || true)"
   case "$soft" in
-    '' ) : ;;
+    '') : ;;
     # Already unlimited, or already above the request: **never lower one**, and say nothing —
     # a person who started this from a shell with `ulimit -n 20000` meant it.
     *[!0-9]*) return 0 ;;
@@ -232,7 +232,7 @@ pid_argv() { # pid_argv PID
     ps -ww -o args= -p "$1" 2>/dev/null | tr ' ' '\n'
     return 0
   fi
-  tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null
+  tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null
 }
 # The pids listening on a unix socket, by its bound path — which both `ss` and `lsof`
 # still report after the file has been unlinked, the case `live` below is written for.
@@ -241,9 +241,9 @@ socket_pids() { # socket_pids PATH
   local listing
   if [ "$HOST_OS" = Darwin ]; then
     listing="$(lsof -nP -U -a -F pn 2>/dev/null || true)"
-    printf '%s\n' "$listing" \
-      | awk -v s="$1" '/^p/ { p = substr($0, 2) } /^n/ && substr($0, 2) == s { print p }' \
-      | sort -u
+    printf '%s\n' "$listing" |
+      awk -v s="$1" '/^p/ { p = substr($0, 2) } /^n/ && substr($0, 2) == s { print p }' |
+      sort -u
     return 0
   fi
   listing="$(ss -lxpH 2>/dev/null || true)"
@@ -286,7 +286,7 @@ pid_started() { # pid_started PID
   # a few minutes rather than a wrong day.
   hz="$(getconf CLK_TCK 2>/dev/null || echo 100)"
   case "$hz" in '' | *[!0-9]* | 0) hz=100 ;; esac
-  echo $(( bt + st / hz ))
+  echo $((bt + st / hz))
 }
 file_mtime() { # file_mtime PATH
   if [ "$HOST_OS" = Darwin ]; then stat -f %m "$1" 2>/dev/null || true; else stat -c %Y "$1" 2>/dev/null || true; fi
@@ -315,8 +315,8 @@ epoch_fmt() { # epoch_fmt SECONDS FORMAT
 # made, `scope_ok` says so once, and the daemon starts the old way — it then reports its
 # tool calls as UNCAPPED itself, so the fallback is never silent.
 scope_ok() {
-  [ "$HOST_OS" != Darwin ] && command -v systemd-run >/dev/null 2>&1 \
-    && systemd-run --user --scope --quiet --collect --expand-environment=no true >/dev/null 2>&1
+  [ "$HOST_OS" != Darwin ] && command -v systemd-run >/dev/null 2>&1 &&
+    systemd-run --user --scope --quiet --collect --expand-environment=no true >/dev/null 2>&1
 }
 # Sets SCOPE_RUN to the words that start a command in such a scope, or to nothing.
 DETACHES=0
@@ -397,7 +397,10 @@ LOG="${LETIBOT_LOG:-$HOME/logs/harnessd-$KEY.log}"
 # want a GPU must not inherit a blindfold from a line about the tokenizer.
 NOGPU=(env CUDA_VISIBLE_DEVICES=)
 
-die() { echo "letibot: $*" >&2; exit 1; }
+die() {
+  echo "letibot: $*" >&2
+  exit 1
+}
 
 # **THE COMMAND THE PERSON ACTUALLY TYPED**, for every sentence that hands one back.
 #
@@ -440,7 +443,8 @@ need() { # need WHAT VERB
 # was: a person asking about `--delete` read twenty commands to find the one they typed.
 verb_help() { # verb_help VERB
   case "$1" in
-    --continue|-c) cat <<'EOF'
+    --continue | -c)
+      cat <<'EOF'
 letibot --continue
   Reopen the newest session in THIS workspace. The only verb that reopens anything
   without being asked which; it takes no argument.
@@ -452,7 +456,8 @@ letibot --continue
     letibot --continue
 EOF
       ;;
-    --session|-s) cat <<'EOF'
+    --session | -s)
+      cat <<'EOF'
 letibot --session ID|NAME
   Reopen one stored session, starting this folder's daemon if none is up.
 
@@ -464,7 +469,8 @@ letibot --session ID|NAME
     letibot --session s-1789919514688401228
 EOF
       ;;
-    --sessions) cat <<'EOF'
+    --sessions)
+      cat <<'EOF'
 letibot --sessions
   What is on disk, grouped: your conversations first, then the harness's own work
   (subagents, the review queue, packages, one-shots), one line each with a count.
@@ -475,7 +481,8 @@ letibot --sessions
     letibot --sessions
 EOF
       ;;
-    --new|-n) cat <<'EOF'
+    --new | -n)
+      cat <<'EOF'
 letibot --new [TITLE]
   Start a fresh session in the running daemon. With none up, the session the plain
   start opens IS this fresh one.
@@ -486,7 +493,8 @@ letibot --new [TITLE]
     letibot --new 'the queue wedge'
 EOF
       ;;
-    --rename) cat <<'EOF'
+    --rename)
+      cat <<'EOF'
 letibot --rename ID [TITLE]
   Name a stored session.
 
@@ -497,7 +505,8 @@ letibot --rename ID [TITLE]
     letibot --rename s-1789919514688401228 'gate red'
 EOF
       ;;
-    --delete) cat <<'EOF'
+    --delete)
+      cat <<'EOF'
 letibot --delete ID
   Remove a stored session that has no rows. A session with rows is refused by name,
   never deleted.
@@ -508,7 +517,8 @@ letibot --delete ID
     letibot --delete s-1789919514688401228
 EOF
       ;;
-    --migrate) cat <<'EOF'
+    --migrate)
+      cat <<'EOF'
 letibot --migrate SESSION --to HOST [--copy-keys]
   Move a session's whole daemon - its rows, its checkout and a harnessd - to a host,
   and leave a marked copy here. `--to local` brings it back.
@@ -522,7 +532,8 @@ letibot --migrate SESSION --to HOST [--copy-keys]
                                                             has every flag)
 EOF
       ;;
-    --reattach) cat <<'EOF'
+    --reattach)
+      cat <<'EOF'
 letibot --reattach SESSION
   Re-establish a moved session's daemon and its forwarded socket, when a head
   cannot reach it. `--migrate SESSION --to local` brings the session back instead.
@@ -533,7 +544,8 @@ letibot --reattach SESSION
     letibot --reattach s-1789919514688401228
 EOF
       ;;
-    attach-github|attach) cat <<'EOF'
+    attach-github | attach)
+      cat <<'EOF'
 letibot attach github <org|owner/repo>
   The GitHub reviewer seat: poll the scope's open pull requests, one session per
   pull request, one review per push. Drafts until `[github] post` and a token are set.
@@ -544,7 +556,8 @@ letibot attach github <org|owner/repo>
     letibot attach github stroppy-io/letibot
 EOF
       ;;
-    --stop) cat <<'EOF'
+    --stop)
+      cat <<'EOF'
 letibot --stop [N|DIR] [--all] [--force]
   Interrupt this folder's daemon's turns, then stop it.
 
@@ -557,7 +570,8 @@ letibot --stop [N|DIR] [--all] [--force]
     letibot --stop
 EOF
       ;;
-    --room) cat <<'EOF'
+    --room)
+      cat <<'EOF'
 letibot --room [--stop [--force]]
   The BOX'S ROOM: one coordinator per machine, shared by every folder, where tags and
   the queue's asks are arbitrated. Bare, it makes sure one is serving and says what it is.
@@ -568,7 +582,8 @@ letibot --room [--stop [--force]]
     letibot --room
 EOF
       ;;
-    --status) cat <<'EOF'
+    --status)
+      cat <<'EOF'
 letibot --status
   Is this folder's daemon up, on what model, and which binary it was started from.
 
@@ -578,7 +593,8 @@ letibot --status
     letibot --status
 EOF
       ;;
-    --ls|--list-all) cat <<'EOF'
+    --ls | --list-all)
+      cat <<'EOF'
 letibot --ls
   Every folder's daemon and the live sessions inside it, numbered: the number is what
   `letibot --stop N` and `letibot --attach N` take.
@@ -589,7 +605,8 @@ letibot --ls
     letibot --ls
 EOF
       ;;
-    --daemons) cat <<'EOF'
+    --daemons)
+      cat <<'EOF'
 letibot --daemons
   Which folders have a daemon on this box, and whether anything is listening on each
   one's socket — the one-line answer to "what is running here".
@@ -600,7 +617,8 @@ letibot --daemons
     letibot --daemons
 EOF
       ;;
-    --attach) cat <<'EOF'
+    --attach)
+      cat <<'EOF'
 letibot --attach [N|DIR]
   Connect to a daemon that is already up, and never start one: bare `letibot` starts a
   daemon when nothing is there, and this refuses instead.
@@ -612,7 +630,8 @@ letibot --attach [N|DIR]
     letibot --attach
 EOF
       ;;
-    --list-claude|--claude-sessions) cat <<'EOF'
+    --list-claude | --claude-sessions)
+      cat <<'EOF'
 letibot --list-claude
   What Claude Code has on this box: the id `letibot --session cc-<id>` takes, its model,
   its directory and its first line. Reading one in makes it an ordinary session.
@@ -623,7 +642,8 @@ letibot --list-claude
     letibot --list-claude
 EOF
       ;;
-    --handover) cat <<'EOF'
+    --handover)
+      cat <<'EOF'
 letibot --handover SESSION DIR
   Write a letibot session out as a transcript `claude --resume <path>` opens, plus a
   Markdown copy a person can read.
@@ -635,7 +655,8 @@ letibot --handover SESSION DIR
     letibot --handover s-1789919514688401228 ~/tmp/handover
 EOF
       ;;
-    --note) cat <<'EOF'
+    --note)
+      cat <<'EOF'
 letibot --note TRANSCRIPT TEXT
   Append one line to a Claude Code transcript, after a backup of it.
 
@@ -646,7 +667,8 @@ letibot --note TRANSCRIPT TEXT
     letibot --note ~/.claude/projects/x/abc.jsonl 'moved to letibot'
 EOF
       ;;
-    --note-continued) cat <<'EOF'
+    --note-continued)
+      cat <<'EOF'
 letibot --note-continued SESSION TRANSCRIPT [DIR]
   The same line, composed: where the session continued, its git branch and sha. It also
   writes the handover it names.
@@ -659,7 +681,8 @@ letibot --note-continued SESSION TRANSCRIPT [DIR]
     letibot --note-continued s-1789919514688401228 ~/.claude/projects/x/abc.jsonl
 EOF
       ;;
-    --revert) cat <<'EOF'
+    --revert)
+      cat <<'EOF'
 letibot --revert TRANSCRIPT BACKUP
   Put a transcript back from the backup `--note` took, byte for byte.
 
@@ -818,42 +841,55 @@ EOF
 # run*, and a person who typed `--delete --help` asked a narrower question. Only a first word that
 # IS a verb is read this way, so `letibot 'x' --help` still runs the prompt.
 case "${1:-}" in
-  --help|-h|help) usage; exit 0 ;;
-  --*|-c|-s|-n|attach)
+  --help | -h | help)
+    usage
+    exit 0
+    ;;
+  --* | -c | -s | -n | attach)
     if [ $# -ge 2 ]; then
       for a in "${@:2}"; do
         case "$a" in
-          --help|-h) verb_help "$1"; exit 0 ;;
+          --help | -h)
+            verb_help "$1"
+            exit 0
+            ;;
           --*) : ;;
           *) break ;; # the verb's own argument has started; nothing after it asks for help
         esac
       done
-    fi ;;
+    fi
+    ;;
 esac
 
 for a in "$@"; do
   case "$a" in
-    --help|-h|help) usage; exit 0 ;;
+    --help | -h | help)
+      usage
+      exit 0
+      ;;
     --*) : ;;
-    *) break ;;  # the prompt starts here; nothing after it is a flag
+    *) break ;; # the prompt starts here; nothing after it is a flag
   esac
 done
 skip=0
 for a in "$@"; do
   # The value after a value-taking flag is not a flag, whatever it looks like:
   # `--vm-arg --mem` hands `--mem` to firecode.
-  if [ "$skip" = 1 ]; then skip=0; continue; fi
+  if [ "$skip" = 1 ]; then
+    skip=0
+    continue
+  fi
   case "$a" in
-    --vm-arg|--host|--provider|--model|--mode|--session|-s|--rename|--delete|--to|\
-    --web-search|--brave-key|--oracle|--oracle-budget-ms) skip=1 ;;
+    --vm-arg | --host | --provider | --model | --mode | --session | -s | --rename | --delete | --to | \
+      --web-search | --brave-key | --oracle | --oracle-budget-ms) skip=1 ;;
   esac
   case "$a" in
-    --help|-h|help|--read-only|--writes|--bash|--no-bash|--ask|--supervise|--glm|--flash|--dense|--attach|--daemons|--all|\
-    --sessions|--list|--stop|--status|--continue|-c|--new|-n|--session|-s|\
-    --rename|--delete|--mode|--force|--vm|--vm-arg|--host|--provider|--model|\
-    --migrate|--reattach|--to|--copy-keys|--room|\
-    --list-claude|--claude-sessions|--handover|--note|--note-continued|--revert|--tsv|\
-    --web-search|--brave-key|--oracle|--oracle-budget-ms|--ls|--list-all) ;;
+    --help | -h | help | --read-only | --writes | --bash | --no-bash | --ask | --supervise | --glm | --flash | --dense | --attach | --daemons | --all | \
+      --sessions | --list | --stop | --status | --continue | -c | --new | -n | --session | -s | \
+      --rename | --delete | --mode | --force | --vm | --vm-arg | --host | --provider | --model | \
+      --migrate | --reattach | --to | --copy-keys | --room | \
+      --list-claude | --claude-sessions | --handover | --note | --note-continued | --revert | --tsv | \
+      --web-search | --brave-key | --oracle | --oracle-budget-ms | --ls | --list-all) ;;
     --*) die "unknown flag: $a
          ('$ME --help' lists the flags; a bare prompt needs no flag)" ;;
     *) break ;;
@@ -1085,12 +1121,15 @@ model_home() { # model_home ALIAS — matching blocks, `name<TAB>host:port` each
 model_by_path() {
   # $1 = model_path from /props -> "dialect|alias|vocab", or empty if unrecognised
   case "$1" in
-    *glm-5.3-flash*|*GLM-5.3-Flash*)
-      echo "glm|glm-5.3-flash|$HOME/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf" ;;
-    *Flash-Next*|*flash-next*)
-      echo "qwen|qwen-3.8-flash-next|$HOME/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf" ;;
+    *glm-5.3-flash* | *GLM-5.3-Flash*)
+      echo "glm|glm-5.3-flash|$HOME/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf"
+      ;;
+    *Flash-Next* | *flash-next*)
+      echo "qwen|qwen-3.8-flash-next|$HOME/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf"
+      ;;
     *Qwen3.8-27B*)
-      echo "qwen|qwen-3.8-27b|$HOME/models/Qwen3.8-27B-UD-Q6_K_XL.gguf" ;;
+      echo "qwen|qwen-3.8-27b|$HOME/models/Qwen3.8-27B-UD-Q6_K_XL.gguf"
+      ;;
     *) echo "" ;;
   esac
 }
@@ -1138,50 +1177,83 @@ PROVIDER_NAME=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --read-only)
-      ROLE=orchestrator; ADJ=""; shift ;;
+      ROLE=orchestrator
+      ADJ=""
+      shift
+      ;;
     --writes)
-      MODE=writes-allowed; shift ;;
+      MODE=writes-allowed
+      shift
+      ;;
     --bash)
-      BASH_ON=1; shift ;;
+      BASH_ON=1
+      shift
+      ;;
     --no-bash)
-      BASH_ON=""; shift ;;
+      BASH_ON=""
+      shift
+      ;;
     --ask)
-      MODE=always-ask; shift ;;
+      MODE=always-ask
+      shift
+      ;;
     --mode)
       [ $# -ge 2 ] || die "--mode NAME   (read-only, always-ask, writes-allowed, automode, automode-edits, allow-all)"
-      MODE="$2"; shift 2 ;;
+      MODE="$2"
+      shift 2
+      ;;
     --supervise)
       # Start supervised. `/supervise` inside the session does the same thing and is
       # the one people will use -- this exists so a script does not have to type into
       # a TUI. Not a mode: supervision moves at run time and a mode does not.
-      SUPERVISE=1; shift ;;
+      SUPERVISE=1
+      shift
+      ;;
     --oracle)
       [ $# -ge 2 ] || die "--oracle HOST:PORT   the guard model for --mode supervised / automode"
-      ORACLE="$2"; shift 2 ;;
+      ORACLE="$2"
+      shift 2
+      ;;
     --oracle-budget-ms)
       [ $# -ge 2 ] || die "--oracle-budget-ms N   how long the gate waits before failing closed"
-      ORACLE_BUDGET="$2"; shift 2 ;;
+      ORACLE_BUDGET="$2"
+      shift 2
+      ;;
     # A VM placement, and what to tell firecode. Forwarded verbatim; harnessd
     # owns the meaning (see `harnessd --help`).
     --vm)
-      EXTRA_ARGS+=(--where firecode); shift ;;
+      EXTRA_ARGS+=(--where firecode)
+      shift
+      ;;
     --vm-copy)
-      EXTRA_ARGS+=(--vm-copy); shift ;;
+      EXTRA_ARGS+=(--vm-copy)
+      shift
+      ;;
     --vm-arg)
       [ $# -ge 2 ] || die "--vm-arg ARG"
-      EXTRA_ARGS+=(--vm-arg "$2"); shift 2 ;;
+      EXTRA_ARGS+=(--vm-arg "$2")
+      shift 2
+      ;;
     # **Tools on another machine** (`docs/remote-hosts.md`). Forwarded verbatim;
     # harnessd owns the meaning and refuses a name that is not in the file, so this
     # line does not have to know what a host is.
     --host)
       [ $# -ge 2 ] || die "--host NAME   (a [host.NAME] in ~/.config/letibot/hosts.toml)"
-      EXTRA_ARGS+=(--host "$2"); shift 2 ;;
+      EXTRA_ARGS+=(--host "$2")
+      shift 2
+      ;;
     --provider)
       [ $# -ge 2 ] || die "--provider NAME   (deepseek, glm, grok)"
-      EXTRA_ARGS+=(--provider "$2"); PROVIDER_SET=1; PROVIDER_NAME="$2"; shift 2 ;;
+      EXTRA_ARGS+=(--provider "$2")
+      PROVIDER_SET=1
+      PROVIDER_NAME="$2"
+      shift 2
+      ;;
     --web-search)
       [ $# -ge 2 ] || die "--web-search NAME   (brave)"
-      EXTRA_ARGS+=(--web-search "$2"); shift 2 ;;
+      EXTRA_ARGS+=(--web-search "$2")
+      shift 2
+      ;;
     # `web_fetch`: curl egress behind the tool, reader-mode extracted and
     # rendered as markdown before it reaches the model. Off unless asked for --
     # the tool is not even SEATED without it, so a session started without this
@@ -1189,9 +1261,13 @@ while [ $# -gt 0 ]; do
     # in a session started without it correctly reported "nothing to re-seat",
     # because there was nothing seated to change.
     --web-fetch)
-      WEB_FETCH=1; shift ;;
+      WEB_FETCH=1
+      shift
+      ;;
     --no-web-fetch)
-      WEB_FETCH=""; shift ;;
+      WEB_FETCH=""
+      shift
+      ;;
     # GLM's own reasoning dial: low | high | max. ABSENT RENDERS MAX -- the
     # template's `effective_reasoning_effort` is only honoured for low and high
     # -- so every session ever run here has been at maximum effort. It renders
@@ -1200,13 +1276,19 @@ while [ $# -gt 0 ]; do
     # path says so rather than rewriting message 0.
     --effort)
       [ $# -ge 2 ] || die "--effort LEVEL   (low, high, max)"
-      EXTRA_ARGS+=(--effort "$2"); shift 2 ;;
+      EXTRA_ARGS+=(--effort "$2")
+      shift 2
+      ;;
     --brave-key)
       [ $# -ge 2 ] || die "--brave-key KEY"
-      EXTRA_ARGS+=(--brave-key "$2"); shift 2 ;;
+      EXTRA_ARGS+=(--brave-key "$2")
+      shift 2
+      ;;
     --model)
       [ $# -ge 2 ] || die "--model NAME"
-      MODEL_OVERRIDE="$2"; shift 2 ;;
+      MODEL_OVERRIDE="$2"
+      shift 2
+      ;;
     # Explicit model overrides. Each names one of the three singleton servers;
     # they do not START it -- `model glm` / `systemctl --user start glm` does.
     # The flag also settles the model question (MODEL_FLAG, so /props detection
@@ -1214,20 +1296,29 @@ while [ $# -gt 0 ]; do
     # whose model has no home in providers.toml is refused BY FLAG NAME below,
     # not silently pointed somewhere else.
     --glm)
-      DIALECT=glm; MODEL=glm-5.3-flash
+      DIALECT=glm
+      MODEL=glm-5.3-flash
       VOCAB="$HOME/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf"
-      MODEL_FLAG="--glm"; MODEL_FROM="--glm"
-      shift ;;
+      MODEL_FLAG="--glm"
+      MODEL_FROM="--glm"
+      shift
+      ;;
     --flash)
-      DIALECT=qwen; MODEL=qwen-3.8-flash-next
+      DIALECT=qwen
+      MODEL=qwen-3.8-flash-next
       VOCAB="$HOME/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf"
-      MODEL_FLAG="--flash"; MODEL_FROM="--flash"
-      shift ;;
+      MODEL_FLAG="--flash"
+      MODEL_FROM="--flash"
+      shift
+      ;;
     --dense)
-      DIALECT=qwen; MODEL=qwen-3.8-27b
+      DIALECT=qwen
+      MODEL=qwen-3.8-27b
       VOCAB="$HOME/models/Qwen3.8-27B-UD-Q6_K_XL.gguf"
-      MODEL_FLAG="--dense"; MODEL_FROM="--dense"
-      shift ;;
+      MODEL_FLAG="--dense"
+      MODEL_FROM="--dense"
+      shift
+      ;;
     *) break ;;
   esac
 done
@@ -1283,17 +1374,21 @@ if [ -z "$ENDPOINT" ]; then
     if [ -z "$homes" ]; then
       PROV_MISSING="entry"
     else
-      listed=""; onbox=""; n_all=0; n_onbox=0
+      listed=""
+      onbox=""
+      n_all=0
+      n_onbox=0
       while IFS=$'\t' read -r n a; do
         [ -n "$n" ] || continue
         n_all=$((n_all + 1))
         listed="${listed:+$listed, }$n ($a)"
         case "$a" in
-          127.*|localhost:*|::1:*|\[::1\]:*)
+          127.* | localhost:* | ::1:* | \[::1\]:*)
             n_onbox=$((n_onbox + 1))
-            [ -n "$onbox" ] || onbox="$n"$'\t'"$a" ;;
+            [ -n "$onbox" ] || onbox="$n"$'\t'"$a"
+            ;;
         esac
-      done <<< "$homes"
+      done <<<"$homes"
       PROV_LISTED="$listed"
       if [ "$n_onbox" -eq 1 ]; then
         ENDPOINT="${onbox#*$'\t'}"
@@ -1303,7 +1398,10 @@ if [ -z "$ENDPOINT" ]; then
           echo "         --glm/--flash/--dense and the default name." >&2
         fi
       elif [ "$n_onbox" -eq 0 ] && [ "$n_all" -eq 1 ]; then
-        while IFS=$'\t' read -r n a; do [ -n "$n" ] && { ENDPOINT="$a"; break; } done <<< "$homes"
+        while IFS=$'\t' read -r n a; do [ -n "$n" ] && {
+          ENDPOINT="$a"
+          break
+        }; done <<<"$homes"
       else
         PROV_MISSING="ambiguous"
       fi
@@ -1379,8 +1477,8 @@ DETECTED=""
 if [ -z "${LETIBOT_DIALECT:-}${LETIBOT_MODEL:-}${LETIBOT_VOCAB:-}" ] && [ -z "$MODEL_FLAG" ] && [ -n "$ENDPOINT" ]; then
   # One `curl` and a `sed`, not a `curl` piped into an interpreter: this is on the
   # path that runs before the screen exists.
-  DETECTED="$(model_by_path "$(curl -sf -m 2 "http://$ENDPOINT/props" 2>/dev/null \
-    | sed -n 's/.*"model_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)")"
+  DETECTED="$(model_by_path "$(curl -sf -m 2 "http://$ENDPOINT/props" 2>/dev/null |
+    sed -n 's/.*"model_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)")"
 fi
 
 if [ -n "$DETECTED" ]; then
@@ -1438,7 +1536,10 @@ answers_now() {
     m="$MODEL_OVERRIDE"
     [ -n "$m" ] || [ -z "$p" ] || m="$(default_provider model)"
   fi
-  [ -n "$p" ] || { printf '%s' "$MODEL"; return 0; }
+  [ -n "$p" ] || {
+    printf '%s' "$MODEL"
+    return 0
+  }
   [ -n "$m" ] && printf '%s/%s' "$p" "$m" || printf '%s' "$p"
 }
 
@@ -1573,8 +1674,8 @@ up() {
   # probe. `--probe` attaches past the end so the daemon sends no history at all,
   # and prints the same refusal line on stderr, which is what this variable is read
   # for below.
-  PROBE="$("$BIN/letibot-tui" --socket "$SOCKET" --probe </dev/null 2>&1 >/dev/null)" \
-    && return 0
+  PROBE="$("$BIN/letibot-tui" --socket "$SOCKET" --probe </dev/null 2>&1 >/dev/null)" &&
+    return 0
   return 1
 }
 
@@ -1590,7 +1691,8 @@ version_skew_or_continue() {
       echo "         over it. Stop it when you are ready (letibot --stop) and run this" >&2
       echo "         again; every transcript is on disk and letibot --continue reopens" >&2
       echo "         the newest one in this workspace." >&2
-      exit 1 ;;
+      exit 1
+      ;;
   esac
 }
 
@@ -1633,7 +1735,10 @@ json_num() { # json_num KEY FILE
 json_field() { # json_field KEY FILE
   local v
   v="$(json_str "$1" "$2")"
-  [ -n "$v" ] && { printf '%s' "$v"; return 0; }
+  [ -n "$v" ] && {
+    printf '%s' "$v"
+    return 0
+  }
   json_num "$1" "$2"
 }
 record_field() { json_field "$1" "$RECORD"; }
@@ -1650,7 +1755,7 @@ record_field_of() { json_field "$2" "$1"; }
 retarget() {
   local want="$1" n=0 r ws sock rec
   case "$want" in
-    ''|.) return 0 ;;
+    '' | .) return 0 ;;
     *[!0-9]*)
       # `cd`'s own message names a shell and a line number, so it is suppressed: the next two lines
       # are the mistake and where the numbers come from.
@@ -1661,7 +1766,7 @@ retarget() {
     *)
       for r in "$RUNDIR"/*.json; do
         [ -f "$r" ] || continue
-        n=$((n+1))
+        n=$((n + 1))
         [ "$n" = "$want" ] || continue
         ws="$(record_field_of "$r" workspace)"
         WORKSPACE="$ws"
@@ -1720,8 +1825,11 @@ FORCE_TENTHS=10
 # log_at LOG -- how many bytes the log holds now, 0 when there is none. A stop reads what the
 # daemon wrote AFTER this point, so the step a PREVIOUS run last said is never read as this one's.
 log_at() {
-  [ -f "$1" ] || { echo 0; return 0; }
-  wc -c < "$1" 2>/dev/null | tr -d ' \n' || echo 0
+  [ -f "$1" ] || {
+    echo 0
+    return 0
+  }
+  wc -c <"$1" 2>/dev/null | tr -d ' \n' || echo 0
 }
 
 # stop_step LOG FROM -- the last step of the daemon's orderly stop that it wrote since FROM.
@@ -1729,8 +1837,8 @@ log_at() {
 # daemon's own answer to "what is it waiting for" — the only true one there is.
 stop_step() {
   [ -f "$1" ] || return 1
-  tail -c +"$(( $2 + 1 ))" "$1" 2>/dev/null | tr -d '\r' \
-    | grep -E '^  stopping: ' | tail -1
+  tail -c +"$(($2 + 1))" "$1" 2>/dev/null | tr -d '\r' |
+    grep -E '^  stopping: ' | tail -1
 }
 
 # stop_wait LINE PID LOG FROM [TENTHS] -- wait for the process to go, saying what IT says it is
@@ -1762,7 +1870,10 @@ daemon_pid() {
   # substitution in an assignment aborts the script under `set -e` — from a helper
   # whose whole job is to be a fallback.
   p="$(socket_pids "$SOCKET" | head -1 || true)"
-  [ -n "$p" ] && { echo "$p"; return 0; }
+  [ -n "$p" ] && {
+    echo "$p"
+    return 0
+  }
   # **Then the lock, and only then the record.** The lock is the claim harnessd itself
   # refuses a second daemon on, and the daemon writes its OWN pid into it
   # (`FolderClaim::write_pid`), so it is the folder's answer about the folder. The record
@@ -1778,9 +1889,15 @@ daemon_pid() {
   # on a cause: whatever wrote the wrong number, the lock is the one that cannot be wrong
   # about who holds the lock.
   p="$(folder_lock_pid || true)"
-  [ -n "$p" ] && pid_alive "$p" && { echo "$p"; return 0; }
+  [ -n "$p" ] && pid_alive "$p" && {
+    echo "$p"
+    return 0
+  }
   p="$(record_field pid)"
-  [ -n "$p" ] && pid_alive "$p" && { echo "$p"; return 0; }
+  [ -n "$p" ] && pid_alive "$p" && {
+    echo "$p"
+    return 0
+  }
   return 1
 }
 
@@ -1991,8 +2108,8 @@ warn_swallowed_flags() {
       # model flag on the one daemon it had to speak about.
       dpid="$(daemon_pid 2>/dev/null || true)"
       have_model=""
-      [ -n "$dpid" ] && have_model="$(pid_argv "$dpid" \
-        | awk '/^--model$/{getline; print; exit}')"
+      [ -n "$dpid" ] && have_model="$(pid_argv "$dpid" |
+        awk '/^--model$/{getline; print; exit}')"
       [ -n "$have_model" ] || have_model="$(record_field model 2>/dev/null || true)"
       if [ -n "$have_model" ] && [ "$have_model" != "$want_model" ]; then
         echo "letibot: you asked for \`$want_model\` ($MODEL_FLAG), but this folder's daemon is already running as \`$have_model\` (pid ${dpid:-?})."
@@ -2026,8 +2143,11 @@ daemon_line() {
   # being announced as qwen on every attach — the operator: *"so - qwen again"*. The two
   # are both recorded, because they are both true; only one answers the turns.
   local p started role model answers who
-  p="$(daemon_pid || true)"; started="$(record_field started)"; role="$(record_field role)"
-  model="$(record_field model)"; answers="$(record_field answers)"
+  p="$(daemon_pid || true)"
+  started="$(record_field started)"
+  role="$(record_field role)"
+  model="$(record_field model)"
+  answers="$(record_field answers)"
   # The box's room is one of the records `--ls` numbers, and it is not a folder's daemon.
   if [ "$role" = room ]; then
     echo "the box's room${p:+ (pid $p)}${started:+, up since $started}"
@@ -2134,23 +2254,27 @@ room_stale_line() {
 # answered before any of that is checked, so `letibot --sessions` still works on a
 # box whose model server is down -- which is exactly when you want to look.
 case "${1:-}" in
-  --sessions|--list)
-    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --list-sessions ;;
+  --sessions | --list)
+    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --list-sessions
+    ;;
   # **What Claude Code has on this box** (Package H): the ids `letibot --session cc-<id>`
   # takes, so a person can find a uuid without opening the JSONL. No store, no socket.
-  --list-claude|--claude-sessions)
+  --list-claude | --claude-sessions)
     shift
-    exec "${NOGPU[@]}" "$BIN/harnessd" --list-claude "$@" ;;
+    exec "${NOGPU[@]}" "$BIN/harnessd" --list-claude "$@"
+    ;;
   # **The return trip**, and the one write this launcher offers into a file another program
   # owns. `--handover SESSION DIR` writes a transcript `claude --resume <path>` opens;
   # `--note TRANSCRIPT TEXT` appends one line after taking a proven backup;
   # `--revert TRANSCRIPT BACKUP` puts it back, byte for byte.
   --handover)
     [ $# -ge 3 ] || need "SESSION DIR" --handover
-    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --handover "$2" "$3" ;;
+    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --handover "$2" "$3"
+    ;;
   --note)
     [ $# -ge 3 ] || need "TRANSCRIPT TEXT" --note
-    exec "${NOGPU[@]}" "$BIN/harnessd" --note "$2" "$3" ;;
+    exec "${NOGPU[@]}" "$BIN/harnessd" --note "$2" "$3"
+    ;;
   --note-continued)
     [ $# -ge 3 ] || need "SESSION TRANSCRIPT" --note-continued
     # No empty trailing argument: an empty DIR is a path that is not there, not "the
@@ -2159,23 +2283,28 @@ case "${1:-}" in
       exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --note-continued "$2" "$3" "$4"
     else
       exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --note-continued "$2" "$3"
-    fi ;;
+    fi
+    ;;
   --revert)
     [ $# -ge 3 ] || need "TRANSCRIPT BACKUP" --revert
-    exec "${NOGPU[@]}" "$BIN/harnessd" --revert "$2" "$3" ;;
+    exec "${NOGPU[@]}" "$BIN/harnessd" --revert "$2" "$3"
+    ;;
   --rename)
     [ $# -ge 2 ] || need "ID [TITLE]" --rename
-    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --rename "$2" "${3:-}" ;;
+    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --rename "$2" "${3:-}"
+    ;;
   --delete)
     [ $# -ge 2 ] || need "ID" --delete
-    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --delete "$2" ;;
+    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --delete "$2"
+    ;;
   --migrate)
     # **The whole daemon, on a host and back** (`docs/remote-hosts.md` RH4). A verb and not a
     # role: it is one act, it needs the store and the rundir this script already knows, and
     # nothing invokes it by a program name.
     [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the migration verb lives there)"
     shift
-    exec "$BIN/letibot" migrate "$@" --store "$STORE" ;;
+    exec "$BIN/letibot" migrate "$@" --store "$STORE"
+    ;;
   --reattach)
     # What this script runs when a moved session's forward has dropped, here so an operator can ask
     # for it by hand. **The argument comes first**: a missing ID is a mistake about this line, where
@@ -2183,8 +2312,9 @@ case "${1:-}" in
     [ $# -ge 2 ] || need "ID" --reattach
     [ -x "$BIN/letibot" ] || die "no letibot at $BIN"
     shift
-    exec "$BIN/letibot" migrate --reattach "$1" --store "$STORE" ;;
-  --ls|--list-all)
+    exec "$BIN/letibot" migrate --reattach "$1" --store "$STORE"
+    ;;
+  --ls | --list-all)
     # **The byobu view: every folder's daemon, and what is live inside it.**
     #
     # `--daemons` answers "which folders have one"; `--sessions` answers "what is
@@ -2204,7 +2334,7 @@ case "${1:-}" in
       pid="$(record_field_of "$r" pid)"
       if socket_is_listening "$sock"; then state=up; else state=STALE; fi
       found=1
-      i=$((i+1))
+      i=$((i + 1))
       # **The box's room is one of these daemons and none of these folders.** Its record says
       # `role: room`; its "workspace" is a directory of its own under the data directory, which
       # is true and is not a folder anybody works in.
@@ -2219,7 +2349,7 @@ case "${1:-}" in
       while IFS=$'\t' read -r id title live running heads rows model; do
         [ -n "$id" ] || continue
         [ "$live" = true ] || continue
-        live_n=$((live_n+1))
+        live_n=$((live_n + 1))
         note=""
         [ "$running" = true ] && note="RUNNING"
         [ "${heads:-0}" != 0 ] && note="$note ${heads} head(s)"
@@ -2237,7 +2367,8 @@ SESSIONS_EOF
     else
       echo "no daemons recorded under $RUNDIR"
     fi
-    exit 0 ;;
+    exit 0
+    ;;
   --daemons)
     # Every folder's daemon: the records, each checked against a live listener.
     found=0
@@ -2256,7 +2387,8 @@ SESSIONS_EOF
       fi
     done
     [ "$found" = 1 ] || echo "no daemons recorded under $RUNDIR"
-    exit 0 ;;
+    exit 0
+    ;;
   --room)
     # **The box's room, and nothing else's.** A coordinator is a daemon of its own (`harnessd
     # --room`): it serves every session on this machine, it has no project and no store, and it
@@ -2328,7 +2460,8 @@ SESSIONS_EOF
     esac
     echo "  chat    ${ROOM_SOCKET%.sock}.chat (history, seq and cursors survive a restart)"
     echo "  queues  ${ROOM_SOCKET%.sock}.items (items, leases and questions survive a restart)"
-    exit 0 ;;
+    exit 0
+    ;;
   --stop)
     # `--stop N` and `--stop DIR` reach another folder's daemon; `--stop` alone is
     # still this one's. Numbering comes from `--ls`. **The flags go anywhere after it**
@@ -2343,7 +2476,8 @@ SESSIONS_EOF
         --all) STOP_ALL=1 ;;
         *)
           [ -z "$STOP_AT" ] || die "--stop takes one daemon, not both $STOP_AT and $a"
-          STOP_AT="$a" ;;
+          STOP_AT="$a"
+          ;;
       esac
     done
     [ "$STOP_ALL" = 1 ] || retarget "$STOP_AT"
@@ -2411,7 +2545,10 @@ SESSIONS_EOF
     }
     # log_of WORKSPACE -- the log that folder's daemon writes (see LOG above).
     log_of() {
-      if [ -n "${LETIBOT_LOG:-}" ]; then echo "$LETIBOT_LOG"; return 0; fi
+      if [ -n "${LETIBOT_LOG:-}" ]; then
+        echo "$LETIBOT_LOG"
+        return 0
+      fi
       echo "$HOME/logs/harnessd-$(printf '%s' "$1" | sha12).log"
     }
     if [ "$STOP_ALL" = 1 ]; then
@@ -2453,7 +2590,8 @@ SESSIONS_EOF
             all_failed=1
           fi
         else
-          echo "stale record for $ws (pid $pid gone)"; rm -f "$r"
+          echo "stale record for $ws (pid $pid gone)"
+          rm -f "$r"
         fi
       done
       exit "$all_failed"
@@ -2499,7 +2637,8 @@ SESSIONS_EOF
     else
       echo "no daemon for $WORKSPACE (letibot --daemons lists the others)"
     fi
-    exit 0 ;;
+    exit 0
+    ;;
   --status)
     if up; then
       echo "up: $(daemon_line)"
@@ -2547,7 +2686,8 @@ SESSIONS_EOF
     else
       echo "NOT SERVING"
     fi
-    exit 0 ;;
+    exit 0
+    ;;
   notes)
     # Only with one of its verbs after it, so a prompt that starts with the word stays a prompt.
     case "${2:-}" in
@@ -2575,7 +2715,8 @@ SESSIONS_EOF
          $ATTACH_USAGE"
     [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the reviewer seat lives there)"
     shift
-    exec "$BIN/letibot" attach "$@" ;;
+    exec "$BIN/letibot" attach "$@"
+    ;;
   --attach)
     # Connect only. A second argument names another folder's daemon — as a
     # directory, or as the number `letibot --ls` printed beside it.
@@ -2602,7 +2743,8 @@ SESSIONS_EOF
     # answered. (When one IS listening, the probe above runs — see the note there.)
     echo "letibot: no harnessd for $WORKSPACE - run \`letibot\` there to start one" >&2
     echo "         (letibot --daemons lists the folders that have one)" >&2
-    exit 1 ;;
+    exit 1
+    ;;
 esac
 
 # Which session this invocation is about, decided before anything is started.
@@ -2624,7 +2766,7 @@ WANT_NEW=0
 # for, so the head must not ask for a second one. See the exec at the bottom.
 STARTED=0
 case "${1:-}" in
-  --continue|-c)
+  --continue | -c)
     shift
     # **AN ID HERE MEANS `--session`, AND ANYTHING ELSE IS REFUSED** (2026-10-26). `--continue`
     # takes no argument, so `leticode --continue s-1791394076177451000` fell through to the
@@ -2638,7 +2780,8 @@ case "${1:-}" in
     # the verb rather than a prompt nobody meant to type.
     if [ $# -gt 0 ] && [[ "$1" =~ ^s-[0-9]+(#t[0-9]+)?$ ]]; then
       echo "letibot: --continue takes no argument; $1 is a session id, so this is --session $1" >&2
-      SESSION="$1"; shift
+      SESSION="$1"
+      shift
     fi
     # A name, when it is the only argument left: resolved here, refused with candidates if not one.
     if [ -z "$SESSION" ] && [ $# -eq 1 ] && [[ "$1" != -* ]]; then
@@ -2671,14 +2814,17 @@ case "${1:-}" in
       fi
     fi
     ;;
-  --session|-s)
+  --session | -s)
     [ $# -ge 2 ] || need "ID" --session
     SESSION="$(resolve_session "$2")" || exit 1
-    shift 2 ;;
-  --new|-n)
+    shift 2
+    ;;
+  --new | -n)
     shift
     WANT_NEW=1
-    NEW_TITLE="${1:-}"; [ $# -gt 0 ] && shift || true ;;
+    NEW_TITLE="${1:-}"
+    [ $# -gt 0 ] && shift || true
+    ;;
 esac
 
 # **A SESSION THAT LIVES ON A HOST IS ATTACHED THROUGH ITS FORWARD.**
@@ -2698,7 +2844,7 @@ if [ -n "$SESSION" ] && [ "$WANT_NEW" != 1 ]; then
     MIGRATED_HOST="$(json_str host "$MIGRATED_RECORD")"
     [ -n "$MIGRATED_SOCKET" ] || die "$MIGRATED_RECORD names no socket — it was written by something else. Remove it, or re-run the migration."
     if ! { [ -S "$MIGRATED_SOCKET" ] &&
-           "$BIN/letibot-tui" --socket "$MIGRATED_SOCKET" --probe </dev/null >/dev/null 2>&1; }; then
+      "$BIN/letibot-tui" --socket "$MIGRATED_SOCKET" --probe </dev/null >/dev/null 2>&1; }; then
       echo "letibot: $SESSION lives on $MIGRATED_HOST — re-establishing the forward" >&2
       "$BIN/letibot" migrate --reattach "$SESSION" --store "$STORE" >&2 ||
         die "$SESSION lives on $MIGRATED_HOST and its daemon could not be reached.
@@ -2748,10 +2894,13 @@ fi
 #
 # `tests/launcher.sh` holds the cases: nothing serving and no provider starts, and the head
 # runs.
-if [ -z "$ENDPOINT" ] && [ -z "$PROVIDER_SET" ] && [ -z "$(default_provider provider)" ] \
-  && [ "$MODEL_FROM" != "the default (no flag chose one)" ]; then
-  { endpoint_missing; echo "Starting anyway: the head asks for a model on the first message."; } \
-    | sed 's/^/letibot: /' >&2
+if [ -z "$ENDPOINT" ] && [ -z "$PROVIDER_SET" ] && [ -z "$(default_provider provider)" ] &&
+  [ "$MODEL_FROM" != "the default (no flag chose one)" ]; then
+  {
+    endpoint_missing
+    echo "Starting anyway: the head asks for a model on the first message."
+  } |
+    sed 's/^/letibot: /' >&2
 fi
 ENDPOINT_ARGS=()
 [ -z "$ENDPOINT" ] || ENDPOINT_ARGS=(--endpoint "$ENDPOINT")
@@ -2763,7 +2912,6 @@ if [ -z "${LETIBOT_VOCAB:-}" ]; then
     VOCAB_ARGS=()
   fi
 fi
-
 
 # THE RUNNING DAEMON'S MODEL MUST BE THE MODEL ON THE PORT.
 #
@@ -2804,8 +2952,8 @@ if live && [ -n "$ENDPOINT" ]; then
   # ANSWER; a server that does not answer is not a mismatch, is not this pre-flight's
   # verdict to deliver, and is the daemon's own story on the next turn. `|| :` keeps
   # the empty answer an answer.
-  SERVING="$(curl -sf -m 3 "http://$ENDPOINT/props" 2>/dev/null \
-    | sed -n 's/.*"model_alias"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)" || :
+  SERVING="$(curl -sf -m 3 "http://$ENDPOINT/props" 2>/dev/null |
+    sed -n 's/.*"model_alias"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)" || :
   BOUND="$(daemon_models | paste -sd, -)"
   if [ -n "$SERVING" ] && [ -n "$BOUND" ] && ! printf '%s\n' "$BOUND" | tr ',' '\n' | grep -qxF "$SERVING"; then
     echo "letibot: the daemon on $SOCKET is bound to '$BOUND' but $ENDPOINT is serving '$SERVING'." >&2
@@ -2844,12 +2992,12 @@ if [ $# -gt 0 ]; then
   # the command in place, so the one-shot keeps this terminal.
   scope_run letibot-oneshot
   exec ${SCOPE_RUN[@]+"${SCOPE_RUN[@]}"} "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} ${ENDPOINT_ARGS[@]+"${ENDPOINT_ARGS[@]}"} \
-       --socket "$ONESHOT_SOCK" \
-       ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" \
-       --role "$ROLE" ${ADJ:+--adjudicator console} ${MODE:+--mode "$MODE"} \
-       ${SUPERVISE:+--supervise} ${ORACLE:+--oracle "$ORACLE"} ${ORACLE_BUDGET:+--oracle-budget-ms "$ORACLE_BUDGET"} \
-       ${EXEC_ARGS[@]+"${EXEC_ARGS[@]}"} ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-       ${SESSION:+--session "$SESSION"} --prompt "$*"
+    --socket "$ONESHOT_SOCK" \
+    ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" \
+    --role "$ROLE" ${ADJ:+--adjudicator console} ${MODE:+--mode "$MODE"} \
+    ${SUPERVISE:+--supervise} ${ORACLE:+--oracle "$ORACLE"} ${ORACLE_BUDGET:+--oracle-budget-ms "$ORACLE_BUDGET"} \
+    ${EXEC_ARGS[@]+"${EXEC_ARGS[@]}"} ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+    ${SESSION:+--session "$SESSION"} --prompt "$*"
 fi
 
 # **A flag that shapes the SESSION cannot be applied to a daemon that is already
@@ -2932,12 +3080,12 @@ if ! live; then
   # fresh session those two verbs mean. `--title` names it when `--new` gave one.
   STARTED=1
   detach "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} ${ENDPOINT_ARGS[@]+"${ENDPOINT_ARGS[@]}"} \
-      ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
-      --role "$ROLE" ${ADJ:+--adjudicator "$ADJ"} ${MODE:+--mode "$MODE"} \
-      ${SUPERVISE:+--supervise} ${ORACLE:+--oracle "$ORACLE"} ${ORACLE_BUDGET:+--oracle-budget-ms "$ORACLE_BUDGET"} \
-      ${EXEC_ARGS[@]+"${EXEC_ARGS[@]}"} ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-      ${SESSION:+--session "$SESSION"} ${NEW_TITLE:+--title "$NEW_TITLE"} \
-      >>"$LOG" 2>&1 </dev/null &
+    ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
+    --role "$ROLE" ${ADJ:+--adjudicator "$ADJ"} ${MODE:+--mode "$MODE"} \
+    ${SUPERVISE:+--supervise} ${ORACLE:+--oracle "$ORACLE"} ${ORACLE_BUDGET:+--oracle-budget-ms "$ORACLE_BUDGET"} \
+    ${EXEC_ARGS[@]+"${EXEC_ARGS[@]}"} ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+    ${SESSION:+--session "$SESSION"} ${NEW_TITLE:+--title "$NEW_TITLE"} \
+    >>"$LOG" 2>&1 </dev/null &
   DPID=$!
   [ "$LOG" = "$SHARED_LOG" ] ||
     printf '%s letibot: harnessd pid %s for %s logs to %s\n' "$(date '+%F %T')" "$DPID" "$WORKSPACE" "$LOG" \
@@ -2948,8 +3096,15 @@ if ! live; then
   # Poll the cheap check, not the probe: this runs up to sixty times while a cold
   # daemon boots, and sixty head processes to watch one start is the same mistake
   # one layer down.
-  for _ in $(seq 1 60); do live && break; sleep 0.5; done
-  live || { echo "letibot: daemon did not come up; last lines of $LOG:" >&2; tail -15 "$LOG" >&2; exit 1; }
+  for _ in $(seq 1 60); do
+    live && break
+    sleep 0.5
+  done
+  live || {
+    echo "letibot: daemon did not come up; last lines of $LOG:" >&2
+    tail -15 "$LOG" >&2
+    exit 1
+  }
   # **Record the pid the DAEMON claims, not the one this shell started.** By here the
   # claim is taken and the listener is up, so the lock names the process that holds the
   # folder. `--stop --all` reads these records directly and cannot consult `daemon_pid`,
@@ -3026,10 +3181,10 @@ if [ "$WANT_NEW" = 1 ] && [ "$STARTED" = 0 ]; then
   # this verb asked for and the head attaches to that one; asking here as well would open a
   # SECOND session in the same daemon and leave the first empty.
   exec "$HEAD" --socket "$SOCKET" --identity "${USER:-operator}" \
-       --new-session "$NEW_TITLE"
+    --new-session "$NEW_TITLE"
 fi
 if [ -n "$SESSION" ]; then
   exec "$HEAD" --socket "$SOCKET" --identity "${USER:-operator}" \
-       --resume "$SESSION"
+    --resume "$SESSION"
 fi
 exec "$HEAD" --socket "$SOCKET" --identity "${USER:-operator}"
