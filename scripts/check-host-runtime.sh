@@ -40,7 +40,10 @@ set -eu
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 install="$repo/install.sh"
 
-[ -f "$install" ] || { echo "check-host-runtime: no install.sh at $install" >&2; exit 1; }
+[ -f "$install" ] || {
+  echo "check-host-runtime: no install.sh at $install" >&2
+  exit 1
+}
 
 # A PATH with the POSIX essentials and a fake ldconfig, and deliberately WITHOUT
 # curl/git/tar — so a run that gets past the host check fails at the next thing it
@@ -58,28 +61,28 @@ trap 'rm -rf "$work"' EXIT INT TERM
 # reaching the curl refusal — a test that fails for its own reason teaches nothing
 # about the code, and this list is the fix for that class rather than that instance.
 for t in sh dash sed grep awk cat printf dirname pwd rm mkdir chmod cp sort tr wc ls id \
-         mktemp uname head cut ln touch test expr env; do
-    p=$(command -v "$t" 2>/dev/null) || continue
-    ln -sf "$p" "$work/$t"
+  mktemp uname head cut ln touch test expr env; do
+  p=$(command -v "$t" 2>/dev/null) || continue
+  ln -sf "$p" "$work/$t"
 done
 
 # `ldconfig -p` prints the loader's cache: one `libname.so => /path` per line.
 # The fake prints exactly what a host with the named libraries would print.
 fake_cache() { # fake_cache [LIB...]
-    for lib in "$@"; do
-        printf '\t%s (%s) => /usr/lib/x86_64-linux-gnu/%s\n' \
-            "$lib" "$(uname -m)" "$lib"
-    done
+  for lib in "$@"; do
+    printf '\t%s (%s) => /usr/lib/x86_64-linux-gnu/%s\n' \
+      "$lib" "$(uname -m)" "$lib"
+  done
 }
 
 write_fake_ldconfig() { # write_fake_ldconfig [LIB...]
-    {
-        printf '#!/bin/sh\n'
-        printf 'cat <<"EOF"\n'
-        fake_cache "$@"
-        printf 'EOF\n'
-    } > "$work/ldconfig"
-    chmod 755 "$work/ldconfig"
+  {
+    printf '#!/bin/sh\n'
+    printf 'cat <<"EOF"\n'
+    fake_cache "$@"
+    printf 'EOF\n'
+  } >"$work/ldconfig"
+  chmod 755 "$work/ldconfig"
 }
 
 # Run install.sh the way a stranger does: a copy in a directory that is not a
@@ -90,18 +93,18 @@ write_fake_ldconfig() { # write_fake_ldconfig [LIB...]
 # directories — see `patched_dirs` below, and read that note before trusting a case
 # that passes one.
 run_install() {
-    d="$work/run"
-    rm -rf "$d"
-    mkdir -p "$d"
-    cp "$install" "$d/install.sh"
-    if [ -n "${1:-}" ]; then
-        patched_dirs "$d/install.sh" "$1" || return 2
-    fi
-    # `$PLAN_ENV` adds variables to the empty environment — LETIBOT_FROM_SOURCE and the
-    # llama pair, which decide which runtime libraries this run is checked for.
-    # shellcheck disable=SC2086
-    ( cd "$d" && env -i PATH="$work" HOME="$work" LETIBOT_INSTALL_DIR="$work/prefix" ${PLAN_ENV:-} \
-        sh ./install.sh 2>&1 )
+  d="$work/run"
+  rm -rf "$d"
+  mkdir -p "$d"
+  cp "$install" "$d/install.sh"
+  if [ -n "${1:-}" ]; then
+    patched_dirs "$d/install.sh" "$1" || return 2
+  fi
+  # `$PLAN_ENV` adds variables to the empty environment — LETIBOT_FROM_SOURCE and the
+  # llama pair, which decide which runtime libraries this run is checked for.
+  # shellcheck disable=SC2086
+  (cd "$d" && env -i PATH="$work" HOME="$work" LETIBOT_INSTALL_DIR="$work/prefix" ${PLAN_ENV:-} \
+    sh ./install.sh 2>&1)
 }
 
 # **Substitute the four standard library directories for a controlled one.**
@@ -116,31 +119,34 @@ run_install() {
 # fails the case rather than letting a stale patch pass silently when the literal
 # in install.sh changes. The logic under test is untouched; only the paths are.
 patched_dirs() { # patched_dirs FILE DIR
-    _f="$1"
-    _old='/lib /lib64 /usr/lib /usr/lib64'
-    sed "s|$_old|$2|g" "$_f" > "$_f.patched" && mv "$_f.patched" "$_f" || return 1
-    grep -qF -- "$2" "$_f" || return 1
-    # And the original literal must be gone, or the substitution half-applied.
-    ! grep -qF -- "$_old" "$_f" || return 1
-    return 0
+  _f="$1"
+  _old='/lib /lib64 /usr/lib /usr/lib64'
+  sed "s|$_old|$2|g" "$_f" >"$_f.patched" && mv "$_f.patched" "$_f" || return 1
+  grep -qF -- "$2" "$_f" || return 1
+  # And the original literal must be gone, or the substitution half-applied.
+  ! grep -qF -- "$_old" "$_f" || return 1
+  return 0
 }
 
 fail=0
 note() { printf '%s\n' "$*"; }
-bad() { printf 'check-host-runtime: FAIL — %s\n' "$*" >&2; fail=1; }
+bad() {
+  printf 'check-host-runtime: FAIL — %s\n' "$*" >&2
+  fail=1
+}
 
 # --- A: a host with none of them ------------------------------------------------
-write_fake_ldconfig   # prints nothing at all
+write_fake_ldconfig # prints nothing at all
 out=$(run_install) && { bad "install.sh exited 0 on a host with none of $HOST_LIBS_FOR_TEST"; }
 case "$out" in
-    *"missing libraries the binaries need at run time"*) ;;
-    *) bad "case A: the refusal did not appear. Output was: $out" ;;
+  *"missing libraries the binaries need at run time"*) ;;
+  *) bad "case A: the refusal did not appear. Output was: $out" ;;
 esac
 for lib in libstdc++.so.6 libgomp.so.1 libsqlite3.so.0; do
-    case "$out" in
-        *"$lib"*) ;;
-        *) bad "case A: the refusal does not name $lib" ;;
-    esac
+  case "$out" in
+    *"$lib"*) ;;
+    *) bad "case A: the refusal does not name $lib" ;;
+  esac
 done
 note "A: a host with none of the three is refused, and all three are named"
 
@@ -148,17 +154,17 @@ note "A: a host with none of the three is refused, and all three are named"
 write_fake_ldconfig libgomp.so.1
 out=$(run_install) && { bad "install.sh exited 0 on a host with only libgomp"; }
 case "$out" in
-    *"libstdc++.so.6"*) ;;
-    *) bad "case B: libstdc++.so.6 is missing and was not named. Output was: $out" ;;
+  *"libstdc++.so.6"*) ;;
+  *) bad "case B: libstdc++.so.6 is missing and was not named. Output was: $out" ;;
 esac
 case "$out" in
-    *"libsqlite3.so.0"*) ;;
-    *) bad "case B: libsqlite3.so.0 is missing and was not named" ;;
+  *"libsqlite3.so.0"*) ;;
+  *) bad "case B: libsqlite3.so.0 is missing and was not named" ;;
 esac
 # The library that IS present must not be reported — otherwise the message sends
 # somebody to install something they already have.
 case "$out" in
-    *"libgomp.so.1 "*) bad "case B: libgomp.so.1 is PRESENT and was reported missing" ;;
+  *"libgomp.so.1 "*) bad "case B: libgomp.so.1 is PRESENT and was reported missing" ;;
 esac
 #
 # There is deliberately NO assertion that the message mentions libgomp: it lists
@@ -172,14 +178,15 @@ note "B: a host with only libgomp is refused, the other two are named, and libgo
 write_fake_ldconfig libstdc++.so.6 libgomp.so.1 libsqlite3.so.0
 out=$(run_install) && { bad "install.sh exited 0 with no curl and no checkout"; }
 case "$out" in
-    *"missing libraries the binaries need at run time"*)
-        bad "case C: the host check fired on a host that HAS all three. Output was: $out" ;;
+  *"missing libraries the binaries need at run time"*)
+    bad "case C: the host check fired on a host that HAS all three. Output was: $out"
+    ;;
 esac
 # It must have got past the host check and reached the next refusal, which on this
 # PATH is the missing downloader.
 case "$out" in
-    *"no curl found"*) note "C: a complete host passes the check and fails later, on curl" ;;
-    *) bad "case C: expected the run to reach the missing-curl refusal. Output was: $out" ;;
+  *"no curl found"*) note "C: a complete host passes the check and fails later, on curl" ;;
+  *) bad "case C: expected the run to reach the missing-curl refusal. Output was: $out" ;;
 esac
 
 # --- D: no glibc at all — the musl case, and the one that gives WRONG ADVICE ------
@@ -195,24 +202,24 @@ glibc_absent="$work/no-glibc"
 mkdir -p "$glibc_absent"
 write_fake_ldconfig libc.so.6
 if out=$(run_install "$glibc_absent"); then
-    bad "case D: install.sh exited 0 with no glibc loader present"
+  bad "case D: install.sh exited 0 with no glibc loader present"
 else
-    case "$?" in
-        2) bad "case D: the patch did not apply, so this case proved nothing" ;;
-    esac
-    case "$out" in
-        *"no glibc dynamic loader"*) ;;
-        *) bad "case D: no musl refusal. Output was: $out" ;;
-    esac
-    # The advice must be the source build, NOT a package name.
-    case "$out" in
-        *"FROM_SOURCE"*) ;;
-        *) bad "case D: the musl refusal does not name the source build" ;;
-    esac
-    case "$out" in
-        *"libgomp1"*) bad "case D: the musl refusal offers a package, which cannot help on musl" ;;
-    esac
-    note "D: no glibc loader is its own refusal — source build named, no package offered"
+  case "$?" in
+    2) bad "case D: the patch did not apply, so this case proved nothing" ;;
+  esac
+  case "$out" in
+    *"no glibc dynamic loader"*) ;;
+    *) bad "case D: no musl refusal. Output was: $out" ;;
+  esac
+  # The advice must be the source build, NOT a package name.
+  case "$out" in
+    *"FROM_SOURCE"*) ;;
+    *) bad "case D: the musl refusal does not name the source build" ;;
+  esac
+  case "$out" in
+    *"libgomp1"*) bad "case D: the musl refusal offers a package, which cannot help on musl" ;;
+  esac
+  note "D: no glibc loader is its own refusal — source build named, no package offered"
 fi
 
 # --- E: no ldconfig, and the directory fallback FINDS the libraries ---------------
@@ -223,26 +230,27 @@ fi
 fallback_dir="$work/fallback-libs"
 mkdir -p "$fallback_dir"
 for lib in libstdc++.so.6 libgomp.so.1 libsqlite3.so.0; do
-    : > "$fallback_dir/$lib"
+  : >"$fallback_dir/$lib"
 done
 # glibc's loader must still be findable, or case D's refusal fires first: the
 # controlled directory needs a loader file too.
-: > "$fallback_dir/ld-linux-test.so.1"
-rm -f "$work/ldconfig"   # no ldconfig at all: this is the fallback
+: >"$fallback_dir/ld-linux-test.so.1"
+rm -f "$work/ldconfig" # no ldconfig at all: this is the fallback
 if out=$(run_install "$fallback_dir"); then
-    bad "case E: install.sh exited 0 with no curl and no checkout"
+  bad "case E: install.sh exited 0 with no curl and no checkout"
 else
-    case "$?" in
-        2) bad "case E: the patch did not apply, so this case proved nothing" ;;
-    esac
-    case "$out" in
-        *"missing libraries the binaries need at run time"*)
-            bad "case E: the fallback did not find libraries that are in its search path" ;;
-    esac
-    case "$out" in
-        *"no curl found"*) note "E: with no ldconfig, the directory fallback finds them" ;;
-        *) bad "case E: expected the run to reach the missing-curl refusal. Output was: $out" ;;
-    esac
+  case "$?" in
+    2) bad "case E: the patch did not apply, so this case proved nothing" ;;
+  esac
+  case "$out" in
+    *"missing libraries the binaries need at run time"*)
+      bad "case E: the fallback did not find libraries that are in its search path"
+      ;;
+  esac
+  case "$out" in
+    *"no curl found"*) note "E: with no ldconfig, the directory fallback finds them" ;;
+    *) bad "case E: expected the run to reach the missing-curl refusal. Output was: $out" ;;
+  esac
 fi
 
 # --- what is still not covered, said here rather than assumed ---------------------
@@ -266,58 +274,61 @@ fi
 write_fake_ldconfig libsqlite3.so.0
 out=$(PLAN_ENV="LETIBOT_FROM_SOURCE=1" run_install) && bad "case F: install.sh exited 0 with no curl"
 case "$out" in
-    *"missing libraries the binaries need at run time"*)
-        bad "case F: a cloud-only build was refused over llama's libraries. Output was: $out" ;;
+  *"missing libraries the binaries need at run time"*)
+    bad "case F: a cloud-only build was refused over llama's libraries. Output was: $out"
+    ;;
 esac
 case "$out" in
-    *"no curl found"*) note "F: a cloud-only build needs only SQLite, and gets past the check" ;;
-    *) bad "case F: expected the run to reach the missing-curl refusal. Output was: $out" ;;
+  *"no curl found"*) note "F: a cloud-only build needs only SQLite, and gets past the check" ;;
+  *) bad "case F: expected the run to reach the missing-curl refusal. Output was: $out" ;;
 esac
 
 # G. Cloud-only, and SQLite missing: refused, naming SQLite and ONLY SQLite.
 write_fake_ldconfig
 out=$(PLAN_ENV="LETIBOT_FROM_SOURCE=1" run_install) && bad "case G: exited 0 with no SQLite"
 case "$out" in
-    *"libsqlite3.so.0"*) ;;
-    *) bad "case G: libsqlite3.so.0 is missing and was not named. Output was: $out" ;;
+  *"libsqlite3.so.0"*) ;;
+  *) bad "case G: libsqlite3.so.0 is missing and was not named. Output was: $out" ;;
 esac
 case "$out" in
-    *"libgomp"* | *"libstdc++"*) bad "case G: a cloud-only refusal names llama's libraries: $out" ;;
+  *"libgomp"* | *"libstdc++"*) bad "case G: a cloud-only refusal names llama's libraries: $out" ;;
 esac
 note "G: a cloud-only build missing SQLite is refused for SQLite alone"
 
 # H. A source build that names a llama.cpp needs llama's libraries again.
 write_fake_ldconfig libsqlite3.so.0
 out=$(PLAN_ENV="LETIBOT_FROM_SOURCE=1 LETIBOT_LLAMA_DIR=/x LETIBOT_LLAMA_LIB=/x" run_install) &&
-    bad "case H: exited 0 with libgomp and libstdc++ missing"
+  bad "case H: exited 0 with libgomp and libstdc++ missing"
 case "$out" in
-    *"libgomp.so.1"*) note "H: a local source build is checked for llama's libraries" ;;
-    *) bad "case H: a local build missing libgomp was not refused for it. Output was: $out" ;;
+  *"libgomp.so.1"*) note "H: a local source build is checked for llama's libraries" ;;
+  *) bad "case H: a local build missing libgomp was not refused for it. Output was: $out" ;;
 esac
 
 # I. No glibc, and a source build: not refused for glibc — the binaries are built here.
 write_fake_ldconfig libsqlite3.so.0
 if out=$(PLAN_ENV="LETIBOT_FROM_SOURCE=1" run_install "$glibc_absent"); then
-    bad "case I: install.sh exited 0 with no curl"
+  bad "case I: install.sh exited 0 with no curl"
 else
-    case "$?" in
-        2) bad "case I: the patch did not apply, so this case proved nothing" ;;
-    esac
-    case "$out" in
-        *"no glibc dynamic loader"*)
-            bad "case I: a source build was refused for glibc, which the musl refusal itself recommends" ;;
-        *"no curl found"*) note "I: on musl, the source build the refusal names is not refused itself" ;;
-        *) bad "case I: expected the run to reach the missing-curl refusal. Output was: $out" ;;
-    esac
+  case "$?" in
+    2) bad "case I: the patch did not apply, so this case proved nothing" ;;
+  esac
+  case "$out" in
+    *"no glibc dynamic loader"*)
+      bad "case I: a source build was refused for glibc, which the musl refusal itself recommends"
+      ;;
+    *"no curl found"*) note "I: on musl, the source build the refusal names is not refused itself" ;;
+    *) bad "case I: expected the run to reach the missing-curl refusal. Output was: $out" ;;
+  esac
 fi
 
 # A prebuilt refusal over llama's libraries names the cloud-only way out.
 write_fake_ldconfig libsqlite3.so.0
 out=$(run_install) || true
 case "$out" in
-    *"missing libraries the binaries need at run time"*"llama.cpp's"*"LETIBOT_FROM_SOURCE=1"*)
-        note "J: a prebuilt refusal over llama's libraries offers the cloud-only build" ;;
-    *) bad "case J: the library refusal does not offer the cloud-only build. Output was: $out" ;;
+  *"missing libraries the binaries need at run time"*"llama.cpp's"*"LETIBOT_FROM_SOURCE=1"*)
+    note "J: a prebuilt refusal over llama's libraries offers the cloud-only build"
+    ;;
+  *) bad "case J: the library refusal does not offer the cloud-only build. Output was: $out" ;;
 esac
 
 [ "$fail" = 0 ] || exit 1
