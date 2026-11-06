@@ -17,6 +17,15 @@
 //! convention. What is off is printed at startup by `Config::disclosures`: a
 //! capability that is off and silent cannot be told from one that is on and broken.
 
+/// stderr is the daemon's log. A full disk or a closed reader must not panic the thread that
+/// printed: a dead signal thread leaves a daemon no SIGTERM stops.
+macro_rules! eprintln {
+    ($($t:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($t)*);
+    }};
+}
+
 pub mod activity;
 pub mod answers;
 pub mod attachments;

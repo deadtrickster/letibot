@@ -22,7 +22,7 @@
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::registry::Registry;
@@ -37,7 +37,17 @@ use crate::sessions::{Outcome, OutcomeSaid, ReplySink, Sessions};
 /// that is what a handler may touch; `-1` means no handler is installed.
 static SIGNAL_FD: AtomicI32 = AtomicI32::new(-1);
 
+/// Signals the handler has seen, and whether the signal thread has woken for the first. A
+/// second signal the thread never answered exits from the handler, so a dead or wedged thread
+/// cannot leave a daemon that only SIGKILL stops.
+static SIGNALS_SEEN: AtomicU32 = AtomicU32::new(0);
+static SIGNAL_HEARD: AtomicBool = AtomicBool::new(false);
+
 extern "C" fn on_signal(sig: libc::c_int) {
+    if SIGNALS_SEEN.fetch_add(1, Ordering::SeqCst) >= 1 && !SIGNAL_HEARD.load(Ordering::SeqCst) {
+        // SAFETY: `_exit` is async-signal-safe and runs no destructors.
+        unsafe { libc::_exit(130) };
+    }
     let fd = SIGNAL_FD.load(Ordering::Relaxed);
     if fd >= 0 {
         // The NUMBER, not a bare byte: the thread below says which signal it was, and Ctrl-C
@@ -55,6 +65,10 @@ extern "C" fn on_signal(sig: libc::c_int) {
 /// anyway. Long enough for the killed command's result and the turn's rows to be written
 /// short enough that a person who pressed Ctrl-C is not left wondering.
 pub const ONE_SHOT_EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long a serving daemon's orderly stop may take after the first signal before it exits
+/// anyway. The stop itself spends about ten seconds at most (gates, subagent threads).
+pub const SERVE_EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Whether a one-shot's last step has returned, set by `cli` the moment its run of steps is over
 /// the grace in [`stop_on_signal`] is for a turn that has NOT come back, and a one-shot that spent
@@ -83,35 +97,50 @@ fn bring_guests_down() {
 /// which interrupts the turn before it kills the runs holding it
 fn stop_on_signal(registry: Arc<Registry>, fd: std::os::fd::RawFd, one_shot: bool) {
     let mut buf = [0u8; 1];
-    // Blocks. No timer, no poll: the byte arrives or it does not.
-    // SAFETY: `buf` is one valid, writable byte and the length passed is 1.
-    let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
-    if n <= 0 {
+    // Blocks. No timer, no poll: the byte arrives or it does not. An EINTR is not the end.
+    loop {
+        // SAFETY: `buf` is one valid, writable byte and the length passed is 1.
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
+        if n > 0 {
+            break;
+        }
+        if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
         return;
     }
+    SIGNAL_HEARD.store(true, Ordering::SeqCst);
     let what = match libc::c_int::from(buf[0]) {
         libc::SIGINT => "SIGINT (Ctrl-C)",
         libc::SIGTERM => "SIGTERM",
         _ => "a signal",
     };
     eprintln!("harnessd: {what} — interrupting the turn and stopping; a second one exits now");
-    registry.close();
-
+    // On its own thread: a close that blocks on a wedged session must not keep this one from
+    // the grace and the second signal.
     let started = std::time::Instant::now();
+    let closing = registry.clone();
+    if std::thread::Builder::new()
+        .name("harnessd-close".into())
+        .spawn(move || closing.close())
+        .is_err()
+    {
+        registry.close();
+    }
     loop {
         let mut pfd = libc::pollfd {
             fd,
             events: libc::POLLIN,
             revents: 0,
         };
-        // A one-shot polls in slices so its grace expires; a serving daemon waits for ever, and
-        // its thread dies with the process it belongs to.
-        let wait_ms = if one_shot {
-            let left = ONE_SHOT_EXIT_GRACE.saturating_sub(started.elapsed());
-            (left.as_millis().min(200) as i32).max(1)
+        // Polls in slices so the grace expires; the thread dies with the process it belongs to.
+        let grace = if one_shot {
+            ONE_SHOT_EXIT_GRACE
         } else {
-            -1
+            SERVE_EXIT_GRACE
         };
+        let left = grace.saturating_sub(started.elapsed());
+        let wait_ms = (left.as_millis().min(200) as i32).max(1);
         // SAFETY: `pfd` is one initialised pollfd and the count passed is 1.
         let ready = unsafe { libc::poll(&mut pfd, 1, wait_ms) };
         if ready > 0 {
@@ -140,6 +169,15 @@ fn stop_on_signal(registry: Arc<Registry>, fd: std::os::fd::RawFd, one_shot: boo
                 "harnessd: the turn did not come back within {}s of {what} — exiting anyway; the \
                  store is consistent to the last settled row",
                 ONE_SHOT_EXIT_GRACE.as_secs()
+            );
+            bring_guests_down();
+            std::process::exit(130);
+        }
+        if !one_shot && started.elapsed() >= SERVE_EXIT_GRACE {
+            eprintln!(
+                "harnessd: the stop did not finish within {}s of {what} - exiting anyway; the \
+                 store is consistent to the last settled row",
+                SERVE_EXIT_GRACE.as_secs()
             );
             bring_guests_down();
             std::process::exit(130);

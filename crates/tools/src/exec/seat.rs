@@ -289,10 +289,11 @@ pub fn git_dir_protected(project: &Path) -> Vec<Protection> {
         let at = common.join(name);
         // A placeholder mounted over a packed-only ref leaves an empty file in the real refs/heads
         // that shadows the packed value and breaks git. The loose copy is the same ref, and real.
-        if !at.exists() && at.parent().is_some_and(Path::exists) {
-            if let Some(sha) = packed.get(name.as_str()) {
-                write_loose_ref(&at, sha);
-            }
+        if !at.exists()
+            && at.parent().is_some_and(Path::exists)
+            && let Some(sha) = packed.get(name.as_str())
+        {
+            write_loose_ref(&at, sha);
         }
         if at.exists() || at.parent().is_some_and(Path::exists) {
             out.push(Protection::file(at));
