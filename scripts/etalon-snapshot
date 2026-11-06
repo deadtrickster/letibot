@@ -21,11 +21,18 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="${HOME}/.local/share/letibot/etalon"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dest) DEST="$2"; shift 2 ;;
-    *) echo "etalon-snapshot: unknown argument $1" >&2; exit 2 ;;
+    --dest)
+      DEST="$2"
+      shift 2
+      ;;
+    *)
+      echo "etalon-snapshot: unknown argument $1" >&2
+      exit 2
+      ;;
   esac
 done
-mkdir -p "$DEST"; chmod 700 "$DEST"
+mkdir -p "$DEST"
+chmod 700 "$DEST"
 
 COMMIT="$(git -C "$HERE" rev-parse --short HEAD)"
 DIRTY=""
@@ -84,12 +91,12 @@ if [ "$FAILED" = 1 ]; then
   exit 1
 fi
 
-ROWS="$(wc -l < "$RAW")"
+ROWS="$(wc -l <"$RAW")"
 zstd -q -19 -T0 "$RAW" -o "$DEST/$NAME.jsonl.zst"
-( cd "$DEST" && sha256sum "$NAME.jsonl.zst" > "$NAME.sha256" )
+(cd "$DEST" && sha256sum "$NAME.jsonl.zst" >"$NAME.sha256")
 HOSTS="$(ls "${HOME}/.local/share/letibot/etalon-src" 2>/dev/null | tr '\n' ' ')"
 
-cat > "$DEST/$NAME.manifest" <<EOF
+cat >"$DEST/$NAME.manifest" <<EOF
 etalon snapshot $NAME
 made:        $(date -Is) on $(hostname)
 extractor:   scripts/etalon-extract.py at $COMMIT$DIRTY (deadtrickster/letibot)
