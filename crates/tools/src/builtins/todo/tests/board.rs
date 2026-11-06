@@ -891,3 +891,38 @@ fn a_missing_list_a_bad_status_and_an_empty_entry_all_refuse_by_name() {
     assert_eq!(board.version(), 0);
     assert!(board.snapshot().is_empty());
 }
+
+/// Closing a long plan one `update` at a time read the whole board back per row: 75 rows a call,
+/// the done and the waiting among them. The answer lists what is left and says to batch the rest.
+#[test]
+fn an_update_answers_with_the_open_rows_and_asks_to_batch_the_finished_ones() {
+    let (rt, _board) = runtime();
+    let mut sink = RecordingToolSink::new();
+    let r = rt.invoke(
+        "t1",
+        &call(
+            r#"{"todos": [
+                    {"content": "long done", "status": "completed"},
+                    {"content": "first", "status": "pending"},
+                    {"content": "second", "status": "pending"},
+                    {"content": "after second", "status": "pending",
+                     "needs": [{"kind": "row", "content": "second"}]}
+                ]}"#,
+        ),
+        &mut sink,
+    );
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.payload);
+    let r = rt.invoke(
+        "t2",
+        &call(r#"{"update": [{"content": "first", "status": "completed"}]}"#),
+        &mut sink,
+    );
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.payload);
+    let p = &r.payload;
+    assert!(p.contains("[ ] second"), "the open row is listed: {p}");
+    assert!(!p.contains("long done"), "a done row is listed: {p}");
+    assert!(!p.contains("] first"), "the row just closed is listed: {p}");
+    assert!(!p.contains("after second"), "a waiting row is listed: {p}");
+    assert!(p.contains("not listed: 2 done, 1 waiting"), "{p}");
+    assert!(p.contains("mark them all in one `update`"), "{p}");
+}

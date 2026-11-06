@@ -2150,7 +2150,14 @@ impl TodoWriteTool {
         };
         // The list back to the model, as it now stands - so the next call is written against what
         // the pane shows, not against what the model believes it wrote.
-        let mut out = render(&self.board.snapshot());
+        // A full list is answered in full, so the edges it wrote are read back. A call that only
+        // moved rows is answered with what is left to do.
+        let board = self.board.snapshot();
+        let mut out = if list_sent {
+            render(&board)
+        } else {
+            render_answer(&board)
+        };
         if !updates.is_empty() {
             out.push_str(&format!(
                 "\nof your own rows you named, {} changed status{}.\n",
@@ -2161,6 +2168,17 @@ impl TodoWriteTool {
                     " (the rest already said that)"
                 }
             ));
+            // A plan is often closed one row per call, each answered with the board. One call can
+            // name every row already finished.
+            if !list_sent
+                && board.iter().any(|t| {
+                    matches!(t.status, TodoStatus::Pending | TodoStatus::InProgress) && !waits(t)
+                })
+            {
+                out.push_str(
+                    "if any row above is already done, mark them all in one `update` now.\n",
+                );
+            }
         }
         if !ops.is_empty() {
             out.push_str(&format!(
@@ -2846,10 +2864,61 @@ pub fn board_text(todos: &[TodoItem]) -> String {
 
 /// The list, the way the model wrote it.
 fn render(todos: &[TodoItem]) -> String {
+    render_rows(todos, |_| true)
+}
+
+/// A row that waits on something live: the check asks about it when the wait ends, so it is not
+/// work for now.
+fn waits(t: &TodoItem) -> bool {
+    t.needs.iter().any(|need| {
+        !matches!(
+            need,
+            TodoNeed::Answered { .. } | TodoNeed::Room { working: false, .. }
+        )
+    })
+}
+
+/// What a `todo_write` answers with: the rows there is work on now. Finished and waiting rows are
+/// counted, not listed, or a long plan closed one row at a time reads the whole board back per row.
+fn render_answer(todos: &[TodoItem]) -> String {
+    let done = todos
+        .iter()
+        .filter(|t| t.status == TodoStatus::Completed)
+        .count();
+    let waiting = todos
+        .iter()
+        .filter(|t| matches!(t.status, TodoStatus::Pending | TodoStatus::InProgress) && waits(t))
+        .count();
+    let mut out = render_rows(todos, |t| match t.status {
+        TodoStatus::Completed => false,
+        TodoStatus::Pending | TodoStatus::InProgress => !waits(t),
+        TodoStatus::Postponed | TodoStatus::Cancelled => true,
+    });
+    if done + waiting > 0 {
+        out.push_str(&format!(
+            "\nnot listed: {done} done, {waiting} waiting on something (each is asked about when \
+             its wait ends). They are still on the board.\n"
+        ));
+    }
+    out
+}
+
+/// The rows `keep` admits, numbered as shown; the header counts the whole board.
+fn render_rows(todos: &[TodoItem], keep: impl Fn(&TodoItem) -> bool) -> String {
     if todos.is_empty() {
         return "the todo list is now empty".into();
     }
-    let mut out = format!("the todo list is now ({}):\n", todos.len());
+    let shown: Vec<&TodoItem> = todos.iter().filter(|t| keep(t)).collect();
+    let mut out = if shown.len() == todos.len() {
+        format!("the todo list is now ({}):\n", todos.len())
+    } else {
+        format!(
+            "the todo list is now ({} rows, {} open shown):\n",
+            todos.len(),
+            shown.len()
+        )
+    };
+    let todos = shown;
     for (i, t) in todos.iter().enumerate() {
         let mark = match t.status {
             TodoStatus::Pending => "[ ]",
