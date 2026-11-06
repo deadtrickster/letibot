@@ -220,9 +220,9 @@ impl SessionRoom {
         let named = letibot_room::room_name(&key, project);
         let client = Client::connect_named(socket, Speaker::top_level(session), named, wake)
             .map_err(|e| e.to_string())?;
-        // Chat: always kept for the feed; a message that names this session, or the operator's
-        // unaddressed broadcast, also wakes a turn. Other sessions' chatter does not. A tag's agent
-        // and the arbiter work the queue and are never woken by chat.
+        // Chat: kept for the feed, and every message from someone else wakes a turn; only one
+        // addressed to this session asks for a reply (`wake::ETIQUETTE`). A tag's agent and the
+        // arbiter work the queue and are never woken by chat.
         let recent: Arc<Mutex<std::collections::VecDeque<letibot_room::Message>>> = Arc::default();
         {
             let recent = Arc::clone(&recent);
@@ -237,7 +237,7 @@ impl SessionRoom {
                         r.pop_front();
                     }
                 }
-                if plain && m.attends(&me, letibot_room::Attention::ToMe) {
+                if plain && m.attends(&me, letibot_room::Attention::All) {
                     wake::push(&me, wake::chat_sentence(m, &me));
                     bell(&me);
                 }
@@ -1073,6 +1073,18 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
             )
         }
         Response::Event { event } => format!("the room said: {event:?}"),
+        // Every member is woken, but only an addressed message asks for a reply, so a model that
+        // wrote "arango session: ..." is told it asked nobody.
+        Response::Said { message, .. }
+            if message.to.is_none() && letibot_room::chat::mentions(&message.text).is_empty() =>
+        {
+            format!(
+                "said: {}\nit names no session: everyone in the room reads it and nobody is \
+                 asked to reply. To ask one session, `say` again with its id in `to` or an \
+                 `@<session id>` in the text.",
+                message.line()
+            )
+        }
         Response::Said { message, .. } => format!("said: {}", message.line()),
         Response::History(h) => {
             if h.rows.is_empty() {
@@ -1211,6 +1223,32 @@ mod tests {
         assert!(e.contains("not a room verb"), "{e}");
     }
 
+    /// A session wrote "arango session: ..." with no `to`, which asks nobody for a reply. The
+    /// reply says so, and an addressed message does not.
+    #[test]
+    fn a_say_that_names_nobody_says_it_asked_nobody() {
+        let said = |to: Option<&str>, text: &str| Response::Said {
+            id: "c1".into(),
+            message: letibot_room::Message {
+                seq: 79,
+                ts: 0,
+                room: "host".into(),
+                author: "s-a".into(),
+                kind: letibot_room::Seat::Session,
+                to: to.map(str::to_string),
+                thread: None,
+                refs: Vec::new(),
+                text: text.into(),
+            },
+        };
+        let plain = answer_sentence(&said(None, "arango session: two questions"), "s-a").unwrap();
+        assert!(plain.contains("nobody is asked to reply"), "{plain}");
+        for (to, text) in [(Some("s-b"), "two questions"), (None, "@s-b two questions")] {
+            let named = answer_sentence(&said(to, text), "s-a").unwrap();
+            assert!(!named.contains("nobody is asked"), "{named}");
+        }
+    }
+
     #[test]
     fn a_refusal_from_the_room_is_a_sentence_and_not_a_panic() {
         let refused = Response::Refused {
@@ -1225,6 +1263,70 @@ mod tests {
         let e = answer_sentence(&refused, "s-a").unwrap_err();
         assert!(e.contains("held by `s-b`"), "{e}");
         assert!(e.contains("a tag is a lock"), "{e}");
+    }
+
+    /// Another session's unaddressed chat wakes this one, told that no reply is asked. A session
+    /// wrote "arango session: ..." with no `to`, and arango never heard it.
+    #[test]
+    fn a_sessions_unaddressed_chat_wakes_every_other_session() {
+        let me_id = "s-a-chatwake";
+        let other_id = "s-b-chatwake";
+        let dir =
+            std::env::temp_dir().join(format!("letibot-room-chatwake-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let _server = letibot_room::Server::serve(&path, letibot_room::Room::new())
+            .expect("a room to talk to");
+        let rung: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let bell: Arc<dyn Fn(&str) + Send + Sync> = {
+            let rung = Arc::clone(&rung);
+            Arc::new(move |session: &str| rung.lock().unwrap().push(session.to_string()))
+        };
+        let _me = SessionRoom::connect(
+            me_id,
+            &path,
+            letibot_room::DEFAULT_PROJECT,
+            None,
+            bell.clone(),
+            None,
+        )
+        .expect("s-a connects");
+        let other = SessionRoom::connect(
+            other_id,
+            &path,
+            letibot_room::DEFAULT_PROJECT,
+            None,
+            bell,
+            None,
+        )
+        .expect("s-b connects");
+        other
+            .call(
+                "say",
+                &serde_json::json!({"room": "host", "text": "arango session: two questions"}),
+            )
+            .expect("a say");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut said: Vec<String> = Vec::new();
+        while std::time::Instant::now() < deadline {
+            said.extend(wake::take(me_id));
+            if said.iter().any(|s| s.contains("two questions")) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let line = said
+            .iter()
+            .find(|s| s.contains("two questions"))
+            .unwrap_or_else(|| panic!("the chat never reached `{me_id}`: {said:?}"));
+        assert!(line.contains("[to everyone]"), "{line}");
+        assert!(line.contains(wake::ETIQUETTE), "{line}");
+        assert!(
+            rung.lock().unwrap().iter().any(|s| s == me_id),
+            "the bell did not ring for `{me_id}`: {:?}",
+            rung.lock().unwrap()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The wake, end to end minus the harness: a real server, two real connections, and the

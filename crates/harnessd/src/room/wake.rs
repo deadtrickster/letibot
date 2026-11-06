@@ -112,11 +112,12 @@ pub fn waiting(session: &str) -> usize {
 }
 
 /// What a session is told about messages for someone else.
-pub const ETIQUETTE: &str = "Answer what is addressed to you or to everyone. A message for \
-     someone else is context: answer it only if you hold something they lack (an answer or a \
-     fact), once and briefly. Never ack, echo or restate.";
+pub const ETIQUETTE: &str = "Only a message addressed to you (`to` you, or `@` your id) asks \
+     for a reply. Everything else is context: act on it if it bears on your work, and answer it \
+     only if you hold something they lack (an answer or a fact), once and briefly. Never ack, \
+     echo or restate.";
 
-/// The sentence a chat message that names a session becomes. Bounded: a long message is cut for
+/// The sentence a chat message becomes for a session it wakes. Bounded: a long message is cut for
 /// the turn's notice, and `room read` has the whole.
 pub fn chat_sentence(m: &letibot_room::Message, me: &str) -> String {
     // A digest is already bounded by the room, and says what it left out.

@@ -124,7 +124,7 @@ impl Tool for RoomTool {
                     },
                     "to": {
                         "type": "string",
-                        "description": "For `rule` with `decision: \"hand\"`: the session that gets the claim. It must be a top-level session the room has met."
+                        "description": "For `say`: the session id the message asks for a reply. Every message wakes every session in the room; only one addressed here or by `@<session id>` in the text asks for a reply. For `rule` with `decision: \"hand\"`: the session that gets the claim. It must be a top-level session the room has met."
                     },
                     "room": {
                         "type": "string",
