@@ -65,9 +65,9 @@ here=$(pwd -P)
 
 # The tree that was built — the gate's own worktree, from the step's working directory.
 tree=$(git -C "$here" rev-parse --show-toplevel) || {
-    echo "install-gate-build: $here is not inside a git checkout, so neither the tree that was" >&2
-    echo "  built nor the tree the launcher starts from can be named." >&2
-    exit 1
+  echo "install-gate-build: $here is not inside a git checkout, so neither the tree that was" >&2
+  echo "  built nor the tree the launcher starts from can be named." >&2
+  exit 1
 }
 
 # **The main tree, which is not this one.** The gate runs in a LINKED worktree, whose common
@@ -77,13 +77,13 @@ tree=$(git -C "$here" rev-parse --show-toplevel) || {
 # install into a directory nobody looks at.
 common=$(git -C "$here" rev-parse --path-format=absolute --git-common-dir)
 case "$common" in
-    */.git) main=${common%/.git} ;;
-    *)
-        echo "install-gate-build: the common git directory is $common, which is not <tree>/.git." >&2
-        echo "  A bare repository has no working tree and no target/release, so there is nowhere" >&2
-        echo "  for the launcher to start this build from." >&2
-        exit 1
-        ;;
+  */.git) main=${common%/.git} ;;
+  *)
+    echo "install-gate-build: the common git directory is $common, which is not <tree>/.git." >&2
+    echo "  A bare repository has no working tree and no target/release, so there is nowhere" >&2
+    echo "  for the launcher to start this build from." >&2
+    exit 1
+    ;;
 esac
 dest=$main/target/release
 
@@ -93,23 +93,23 @@ dest=$main/target/release
 # copy of a file onto its own name is a no-op rather than an error.
 target=${CARGO_TARGET_DIR:-$tree/target}
 case "$target" in
-    /*) ;;
-    *) target=$here/$target ;;
+  /*) ;;
+  *) target=$here/$target ;;
 esac
 built=$target/release
 if [ ! -d "$built" ]; then
-    echo "install-gate-build: nothing was built at $built." >&2
-    echo "  The step before this one is \`cargo build --release --bins\`, and it writes into" >&2
-    echo "  \$CARGO_TARGET_DIR/release. A gate whose install step runs without it has nothing" >&2
-    echo "  to install, and installing nothing quietly is the defect this script exists for." >&2
-    exit 1
+  echo "install-gate-build: nothing was built at $built." >&2
+  echo "  The step before this one is \`cargo build --release --bins\`, and it writes into" >&2
+  echo "  \$CARGO_TARGET_DIR/release. A gate whose install step runs without it has nothing" >&2
+  echo "  to install, and installing nothing quietly is the defect this script exists for." >&2
+  exit 1
 fi
 
 bins=$(sed -n 's/^BINARIES="\(.*\)"$/\1/p' "$tree/install.sh" | head -1)
 if [ -z "$bins" ]; then
-    echo "install-gate-build: $tree/install.sh has no \`BINARIES=\` line to read the names from." >&2
-    echo "  That line is what an install copies; refusing rather than installing nothing." >&2
-    exit 1
+  echo "install-gate-build: $tree/install.sh has no \`BINARIES=\` line to read the names from." >&2
+  echo "  That line is what an install copies; refusing rather than installing nothing." >&2
+  exit 1
 fi
 
 # **The names in that list that are REPOSITORY SCRIPTS, not build products.** `install.sh`
@@ -127,49 +127,49 @@ launchers=$(sed -n 's/^LAUNCHERS="\(.*\)"$/\1/p' "$tree/install.sh" | head -1)
 # **The two the launcher execs are not optional**, whatever the list says: a `BINARIES=` that
 # had lost one would install a directory the launcher cannot start, silently.
 for name in harnessd letibot-tui; do
-    case " $bins " in
-        *" $name "*) ;;
-        *)
-            echo "install-gate-build: $name is not in install.sh's BINARIES, and the launcher" >&2
-            echo "  execs it — this install cannot be complete." >&2
-            exit 1
-            ;;
-    esac
+  case " $bins " in
+    *" $name "*) ;;
+    *)
+      echo "install-gate-build: $name is not in install.sh's BINARIES, and the launcher" >&2
+      echo "  execs it — this install cannot be complete." >&2
+      exit 1
+      ;;
+  esac
 done
 
 mkdir -p "$dest"
 installed=""
 skipped=""
 for name in $bins; do
-    src=$built/$name
-    if [ ! -x "$src" ]; then
-        # **A launcher is not a build product**: `install.sh` copies it out of `scripts/`, and the
-        # launcher's own resolution (`scripts/letibot`) never looks for it beside `harnessd`. Said
-        # once per name rather than passed over, so a `BINARIES=` that gained a script nobody
-        # listed in `LAUNCHERS` still fails below instead of vanishing.
-        case " $launchers " in
-            *" $name "*)
-                echo "install-gate-build: $name is a repository script (install.sh's LAUNCHERS)," \
-                     "not a build product — left to \`scripts/$name\`" >&2
-                skipped="$skipped $name"
-                continue
-                ;;
-        esac
-        echo "install-gate-build: $src is not an executable file — the build step did not" >&2
-        echo "  produce \`$name\` in $built." >&2
-        exit 1
-    fi
-    # `-p` keeps the mode and the mtime. The mtime is the honest one for the launcher's own
-    # staleness line (`daemon_stale_line` compares it with the daemon's start): when the code
-    # was BUILT, not when it was copied into place.
-    cp -p "$src" "$dest/$name.new.$$"
-    mv -f "$dest/$name.new.$$" "$dest/$name"
-    installed="$installed $name"
+  src=$built/$name
+  if [ ! -x "$src" ]; then
+    # **A launcher is not a build product**: `install.sh` copies it out of `scripts/`, and the
+    # launcher's own resolution (`scripts/letibot`) never looks for it beside `harnessd`. Said
+    # once per name rather than passed over, so a `BINARIES=` that gained a script nobody
+    # listed in `LAUNCHERS` still fails below instead of vanishing.
+    case " $launchers " in
+      *" $name "*)
+        echo "install-gate-build: $name is a repository script (install.sh's LAUNCHERS)," \
+          "not a build product — left to \`scripts/$name\`" >&2
+        skipped="$skipped $name"
+        continue
+        ;;
+    esac
+    echo "install-gate-build: $src is not an executable file — the build step did not" >&2
+    echo "  produce \`$name\` in $built." >&2
+    exit 1
+  fi
+  # `-p` keeps the mode and the mtime. The mtime is the honest one for the launcher's own
+  # staleness line (`daemon_stale_line` compares it with the daemon's start): when the code
+  # was BUILT, not when it was copied into place.
+  cp -p "$src" "$dest/$name.new.$$"
+  mv -f "$dest/$name.new.$$" "$dest/$name"
+  installed="$installed $name"
 done
 
 echo "install-gate-build: proved    $built"
 if [ -n "$skipped" ]; then
-    echo "install-gate-build: launchers $skipped are scripts in the tree, not build products"
+  echo "install-gate-build: launchers $skipped are scripts in the tree, not build products"
 fi
 echo "install-gate-build: built from $tree at $(git -C "$tree" rev-parse --short HEAD)"
 
