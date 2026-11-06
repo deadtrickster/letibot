@@ -319,7 +319,6 @@ scope_ok() {
     systemd-run --user --scope --quiet --collect --expand-environment=no true >/dev/null 2>&1
 }
 # Sets SCOPE_RUN to the words that start a command in such a scope, or to nothing.
-DETACHES=0
 scope_run() { # scope_run UNIT-STEM
   SCOPE_RUN=()
   if scope_ok; then
@@ -329,18 +328,16 @@ scope_run() { # scope_run UNIT-STEM
     echo "letibot: no systemd user manager here - harnessd shares this terminal's cgroup, and its tool calls run uncapped" >&2
   fi
 }
-detach() { # detach COMMAND [ARGS...]
-  # **Two detaches from one launcher must not want one scope name.** The name is
-  # `letibot-harnessd-$KEY-$$`, and `$$` is the launcher's pid — so once the ROOM autostarts
-  # beside a session daemon, the second `systemd-run --unit` is refused: *"Unit
-  # letibot-harnessd-…-1272849.scope was already loaded or has a fragment file"*. MEASURED
-  # 2026-10-31 on the first `leticode` in a folder with no daemon: the room took the name and
-  # the daemon could not start. A counter per run is what makes each its own scope.
-  DETACHES=$((DETACHES + 1))
+detach() { # detach UNIT-STEM COMMAND [ARGS...]
+  # The caller names the scope: every call runs under `&`, in a subshell, so a counter kept here
+  # never reaches the next call and the room and a daemon started by one launcher asked for one
+  # unit name, which systemd refuses.
+  local stem=$1
+  shift
   if [ "$HOST_OS" = Darwin ]; then
     /usr/bin/perl -MPOSIX -e 'POSIX::setsid(); exec { $ARGV[0] } @ARGV or die "detach: $ARGV[0]: $!\n"' -- "$@"
   else
-    scope_run "letibot-harnessd-$DETACHES"
+    scope_run "$stem"
     ${SCOPE_RUN[@]+"${SCOPE_RUN[@]}"} setsid "$@"
   fi
 }
@@ -2011,7 +2008,7 @@ room_start() {
   # deliberately NOT removed here: a box whose reader cannot see the listener would have this
   # script unlink a LIVE socket — the `live_detached` brick, one daemon down — and the bind replaces
   # a dead file by itself.
-  detach "${NOGPU[@]}" "$BIN/harnessd" --room >>"$ROOM_LOG" 2>&1 </dev/null &
+  detach letibot-room "${NOGPU[@]}" "$BIN/harnessd" --room >>"$ROOM_LOG" 2>&1 </dev/null &
   p=$!
   # Ten seconds. The socket is what is watched, and a coordinator that LOSES the lease exits in
   # milliseconds with the holder's name in its log, so the wait is only ever spent on a real start.
@@ -3079,7 +3076,7 @@ if ! live; then
   # with no `--session` (a plain run, and `--new`) the daemon mints a fresh id, which is the
   # fresh session those two verbs mean. `--title` names it when `--new` gave one.
   STARTED=1
-  detach "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} ${ENDPOINT_ARGS[@]+"${ENDPOINT_ARGS[@]}"} \
+  detach letibot-harnessd "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} ${ENDPOINT_ARGS[@]+"${ENDPOINT_ARGS[@]}"} \
     ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
     --role "$ROLE" ${ADJ:+--adjudicator "$ADJ"} ${MODE:+--mode "$MODE"} \
     ${SUPERVISE:+--supervise} ${ORACLE:+--oracle "$ORACLE"} ${ORACLE_BUDGET:+--oracle-budget-ms "$ORACLE_BUDGET"} \
