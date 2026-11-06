@@ -566,7 +566,10 @@ impl App {
     /// A ctrl-v window is open - `payload_sel` names a result, not a run (see
     /// [`App::run_is_open`]). What the scroll keys ask before they page a window.
     pub(crate) fn payload_window_open(&self) -> bool {
-        self.payload_sel.is_some() && !self.run_is_open()
+        // The live tail's sentinel with no work behind it is a window on nothing.
+        self.payload_sel.is_some()
+            && self.payload_sel.as_deref() != Some(super::runclick::LIVE_RUN)
+            && !self.run_is_open()
     }
 
     /// Open the payload window on `id`, at its top: the one writer of the three fields a window is made of.

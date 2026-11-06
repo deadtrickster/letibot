@@ -11,7 +11,8 @@ impl App {
     pub(crate) fn key_payload_window(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         // Only while the conversation is what is drawn: the window is a row of the conversation
         // opened wide, and a pane or rano over it is a screen whose arrows are its own.
-        if self.payload_sel.is_some() && self.drawn() == Drawn::Conversation {
+        if (self.payload_window_open() || self.run_is_open()) && self.drawn() == Drawn::Conversation
+        {
             /// How far one press pages. The same unit the transcript scrolls by.
             const BY: usize = 10;
             match k {
@@ -31,6 +32,9 @@ impl App {
                 // An open run has no window to page (see [`App::run_is_open`]): Esc above folds it,
                 // and the arrows move the conversation it is drawn in by the same step, while the
                 // page keys and the wheel go on to the conversation's own scroll.
+                // A permission card under an open run is the question on screen, so it keeps the
+                // arrows; the conversation still scrolls with the page keys and the wheel.
+                Key::Up | Key::Down if self.run_is_open() && !self.open.is_empty() => {}
                 Key::Up if self.run_is_open() => {
                     self.scroll_up(BY);
                     self.redraw = true;

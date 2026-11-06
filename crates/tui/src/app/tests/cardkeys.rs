@@ -1259,3 +1259,35 @@ fn a_panes_body_has_no_hints_and_the_help_screen_keeps_its_own() {
         "a pane body became buttons"
     );
 }
+
+/// Words held in the composer do not take the arrows off a permission card: the ladder is the
+/// question on screen, and the words wait for it.
+#[test]
+fn the_arrows_move_a_permission_ladder_with_words_in_the_composer() {
+    let mut a = app();
+    typed(&mut a, "half a thought");
+    ask(&mut a, 1, testing::requested("r1", "rm"));
+    a.key(Key::Down);
+    assert_eq!(a.sel, 1, "the arrow moved the ladder");
+    a.key(Key::Up);
+    assert_eq!(a.sel, 0);
+    assert_eq!(
+        a.editor.text(),
+        "half a thought",
+        "the words are still there"
+    );
+}
+
+/// A ctrl-v on the live tail that outlived its work leaves no window on screen, so it holds no
+/// arrows: a permission card that comes up after it moves its ladder.
+#[test]
+fn a_stale_live_tail_selection_does_not_take_the_arrows_from_a_permission_card() {
+    let mut a = app();
+    a.payload_sel = Some(crate::app::runclick::LIVE_RUN.to_string());
+    ask(&mut a, 1, testing::requested("r1", "rm"));
+    a.key(Key::Down);
+    assert_eq!(
+        a.sel, 1,
+        "the arrow moved the ladder, not a window nobody sees"
+    );
+}
