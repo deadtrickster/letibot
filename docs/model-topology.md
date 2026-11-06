@@ -1,7 +1,7 @@
 # What the three models on this box actually look like
 
 Every number here was read out of the GGUF files - headers and per-layer tensor lists,
-across all shards - not taken from a model card. `experiments/model-topology/split.py`
+across all shards - not taken from a model card. `experiments/model-topology/split.py` (operator's private archive, `hands-off/letibot/`)
 re-derives all of it in about a second, with no dependencies.
 
 Companion to `docs/qwen-attention.md`, which this corrects in two places: the 12/36 split

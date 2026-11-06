@@ -232,7 +232,7 @@ thresholds:
 | the note near-copy gate | refuses a note write that is a paraphrase of another note | 0.30 |
 | the context claim check | finds the claim a session already made, so it is not made twice | 0.25 |
 | the waits offer | says a brief looks like a row somebody already holds | 0.35 |
-| the done offer | says a brief looks like work a commit or a settled entry already did | 0.35 |
+| the done offer | says a brief looks like work a commit already did | 0.35 |
 | compaction relevance | keeps an old exchange whole because it is about a row on the board | 0.35 |
 
 A caller that cannot answer with meaning falls back to its own words, and the tier is emptied rather

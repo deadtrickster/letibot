@@ -1,8 +1,9 @@
 # TODO
 
-Work queue, open work only. The INDEX below has one row per open entry. Settled work is in
-`TODO-settled.md` (each entry there has a `settled:` line naming what settled it), review records are
-in `docs/reviews/`. Nothing closed belongs in this file.
+Work queue, open work only. The INDEX below has one row per open entry. A settled entry is deleted
+from this file: its commit message carries the settled line (what closed it, the commits and tests),
+and the operator's private archive (`hands-off/letibot/TODO-settled.md`) holds the history. Review
+records are in `docs/reviews/`. Nothing closed belongs in this file.
 
 How to read it: find the entry in the INDEX, then read its **Status** line (one sentence, then
 `left:`). Entries are in three groups, in this order: Code work, Needs the operator, Parked. Entries
@@ -17,8 +18,8 @@ marked "in flight on a branch" are being changed by other branches and keep thei
 3. **Verify with the item's `done when`, not by reading your own diff.** If a check needs a live
    model, see what is serving on 127.0.0.1:8080 first; several test files require it and will
    otherwise pass vacuously.
-4. **If you find it already done**, move it to `TODO-settled.md` with a header line
-   `settled: <commit or file>` and stop. That is a complete, valuable outcome.
+4. **If you find it already done**, delete the entry and say in the commit message what closed it
+   (commits and tests), then stop. That is a complete, valuable outcome.
 5. **If it turns out to need a decision**, move it to Needs the operator with the question stated.
    Do not guess the answer.
 6. **Do not edit an entry marked "in flight on a branch".**
@@ -403,7 +404,7 @@ nothing to design.
     live landing itself is still open — see the audit's item 39 above.
 40. R70 — move the largest inline test blocks into sibling files (unblocked now the big edits have
     landed).
-    — OPEN: only part done — `crates/harnessd/src/plugins.rs:2226` still carries a 2,469-line inline test block (`TODO-settled.md:1500`).
+    — OPEN: only part done — `crates/harnessd/src/plugins.rs:2226` still carries a 2,469-line inline test block (the settled archive, `hands-off/letibot/TODO-settled.md`).
 41. R60 — the three things `!term` did not do: **built on `r60-term`**, see R60.
     — ✓ fixed in 26913ddd, test a_second_pane_runs_beside_the_first_and_each_is_named_by_its_number
 
@@ -708,7 +709,7 @@ Open:
 More callers, from the operator on 2026-11-03:
 
 - Waits. When a brief, task or subagent prompt is written, score it against the open todo rows of the session and its relatives. A close match is offered as "this looks like todo X, owned by Y - consider `needs`/wait_on it instead of starting it".
-- Already done. Score a new brief against recent commit subjects and TODO-settled.md. A close match is offered as "looks like <sha> already did this - check before starting". On 2026-11-02 four of fifteen packages found their whole scope already fixed on main.
+- Already done. Score a new brief against recent commit subjects. A close match is offered as "looks like <sha> already did this - check before starting". On 2026-11-02 four of fifteen packages found their whole scope already fixed on main.
 - Compaction relevance. Rank old turns by their score against the current todos and plan, keep the relevant ones in full and summarise the rest, instead of cutting by age. This feeds R22.
 
 ---
@@ -1508,8 +1509,8 @@ failure names the absence, and the grant prompt carries its `why` and its conseq
 All four are in `main` now (2026-11-03): the loop is closed for a read-only grant that the
 runtime raises, and what remains is the question above — the ssh path reaching `grant_view`
 as an ordinary card.
-That is N4's answer too — see `TODO-settled.md`'s N4 for why a shaped runner was wanted rather than
-`bash`.
+That is N4's answer too - a shaped runner was wanted rather than `bash` (N4 is in the settled archive,
+`hands-off/letibot/TODO-settled.md`).
 
 ---
 
@@ -1675,7 +1676,7 @@ its own kind rather than a `User` row, folded to one line a monitor with the cou
 a monitor rings at most once a `FIRING_RATE` (30 s) window besides its TTL, so a burst cannot start
 more than one turn (`crates/tools/src/exec/monitor.rs`,
 `crates/harnessd/src/turn_tail.rs::may_ring`). The spelling D26 asked for is the row's kind, and the
-tests are named in T24's entry in `TODO-settled.md`.
+tests are named in T24's entry in the settled archive (`hands-off/letibot/TODO-settled.md`).
 
 **D27 — Six adjudication items from the assembly agent, none filed until now.**
 Carried out of a subagent's report and into scrollback, which is exactly the failure
@@ -1842,7 +1843,7 @@ the evidence through a function with a test that fails when the evidence violate
 
 ## T19 - Rewrite or not, on the KV representation
 
-**Status:** rows 1 and 2 are settled negative, measured (`experiments/kv-stitching/RESULTS.md`). left: row 3, which should not be built as written yet - it is the one checkpoint at `TokenLedger::prefix_len()` and not section 3.4.1's placement. The section 6 measurement that says whether it pays needs the :8080 server restarted, which is the operator's.
+**Status:** rows 1 and 2 are settled negative, measured (`hands-off/letibot/experiments/kv-stitching/RESULTS.md`, the operator's private archive). left: row 3, which should not be built as written yet - it is the one checkpoint at `TokenLedger::prefix_len()` and not section 3.4.1's placement. The section 6 measurement that says whether it pays needs the :8080 server restarted, which is the operator's.
 
 The operator's framing, and it is the right one: llama.cpp's data structures are not
 the question. The question is **what would require a rewrite, and whether that rewrite
@@ -1880,7 +1881,7 @@ fork (§5.5), backtracking and eviction all actually need, and today it falls of
 cliff at 516 tokens. Storing recurrent state at more positions makes rewind cheap. That
 is a parameter and a representation choice, not a redesign.
 
-— rows 1 and 2 are measured now, not argued: `experiments/kv-stitching/RESULTS.md` answers
+— rows 1 and 2 are measured now, not argued: `hands-off/letibot/experiments/kv-stitching/RESULTS.md` answers
 UNVERIFIED-16 negative (T14), so composition across a divergence and a split save format are
 both settled against a rewrite.
 — OPEN: row 3 is unbuilt — `docs/implementation-plan.md:71` still lists §3.4.1 checkpoint
@@ -1927,7 +1928,7 @@ therefore far more expensive than its token count suggests. `server-context.cpp:
 records four previous occurrences; this was the fifth.
 
 — OPEN: a fact about the server, not this tree — nothing here sizes or caps the per-sequence
-accumulator; the only guard is the sweep's own floor (`experiments/kv-stitching/srv.py:29`).
+accumulator; the only guard is the sweep's own floor (`hands-off/letibot/experiments/kv-stitching/srv.py:29`).
 
 **A second cost, measured on a DENSE model, 2026-09-14 by `lubuntu1-lab` on .76
 (Qwen3.8-27B Q6, llama.cpp, stock).** Different mechanism from the recurrent
@@ -1955,7 +1956,7 @@ accumulator above and it compounds with it:
   model does not port. Nobody has yet established what makes a context
   unsupported; the suspicion is an attention property rather than a flag.
   — OPEN: answered for a hybrid and not for the model it was measured on —
-  `experiments/kv-stitching/RESULTS.md:99` gives the gate as `ctx_tgt_has_recurrent_state`
+  `hands-off/letibot/experiments/kv-stitching/RESULTS.md:99` gives the gate as `ctx_tgt_has_recurrent_state`
   (`server-context.cpp:5763`), which cannot be what disabled it on the DENSE 27B this bullet is
   about; no doc explains that case.
 
@@ -1963,7 +1964,7 @@ Mitigation used, and worth generalising: the sweep harness refuses to start a co
 below 40 GiB `MemAvailable`. Any future experiment that prefills many distinct prompts
 needs the same guard.
 
-— fixed in b82b906b in code, untested: `experiments/kv-stitching/srv.py:29` refuses to start a
+— fixed in b82b906b in code, untested: `hands-off/letibot/experiments/kv-stitching/srv.py:29` refuses to start a
 condition below `guard(floor_gib=40.0)` of `MemAvailable`, with this OOM named in its docstring.
 
 ---
@@ -2066,7 +2067,7 @@ The operator, deciding N4: "the more i use things the more i understand the role
 - `automode` works out of the box: today it requires an adjudicator and a reachable oracle and refuses without them. Its default decider is the session's own provider or a cheap fast model, with no setup. It admits in-checkout reads, writes, builds and tests; asks the operator for the network, paths outside the project, the always-ask list and destructive or irreversible actions; tells the model why when it denies; and records each decision with its reason, so the decisions can be reviewed and measured (the etalon oracle corpus exists for that).
 - It must be predictable: the same call in the same context gets the same answer, and the operator can read why.
 
-N4 moves to TODO-settled.md as superseded by this entry.
+N4 is superseded by this entry and is in the settled archive.
 
 Parked by the operator the same day. There is no default oracle because every open, locally hosted model tried so far FAILED the oracle tests (the etalon corpus, `crates/harnessd/src/etalon_oracle.rs`), and automode without a passing oracle is a model approving its own actions. The work resumes when a model passes the corpus; until then the seats keep today's modes.
 

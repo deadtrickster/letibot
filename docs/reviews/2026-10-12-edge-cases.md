@@ -7,7 +7,7 @@ is below as its own entry; each report is kept verbatim in section 4 under *"The
 2026-10-12, in full"*, and the numbers in brackets point into it. Line numbers are on `50b3e55`.
 CONFIRMED means the reviewer read the whole path or saw it on disk; SUSPECTED means it inferred
 the last step. **Still open?** for each: re-read the cited lines on the current main.
-**R89 and R90** are settled 2026-11-03 and their entries are in `TODO-settled.md`; the other three are below.
+**R89 and R90** are settled 2026-11-03 and their settled lines are in the closing commit messages; the other three are below.
 
 
 ## The review of 2026-10-12, in full

@@ -67,36 +67,6 @@ fn a_brief_a_commit_already_did_gets_the_offer() {
     assert_eq!(settled.label, "abc1234");
 }
 
-/// A settled entry is the other half of "already done", and it is checked by reading the file
-/// rather than by a sha.
-#[test]
-fn a_settled_entry_is_a_record_too() {
-    let records = settled(&format!(
-        "# TODO — settled\n\n## T9 — {SUBJECT} — **SETTLED 2026-01-01: done**\n\nbody\n"
-    ));
-    assert_eq!(records.len(), 1, "{records:?}");
-    assert_eq!(records[0].0, PathBuf::from("TODO-settled.md#T9"));
-    let (_m, _d, embedder) = fixture::model("settled");
-    let mut offers = caller(&embedder);
-    assert!(offers.compose(&records, BRIEF));
-    let made = offers.tail();
-    let TranscriptItem::User { parts, .. } = &made[0] else {
-        panic!("an offer is a user item: {made:?}")
-    };
-    let UserPart::Text { text } = &parts[0] else {
-        panic!("text")
-    };
-    assert!(text.contains("TODO-settled.md T9"), "{text}");
-    assert!(
-        !text.contains("git show"),
-        "a settled entry is read, not shown: {text}"
-    );
-    let offer = offers
-        .settle(&logs("settled"), "s-1", &[])
-        .expect("settled");
-    assert!(!offer.commit);
-}
-
 /// And a brief that nothing in the tree has done says nothing: the line is worth reading or it is
 /// not written.
 #[test]
@@ -172,11 +142,9 @@ fn a_call_that_names_the_record_is_the_take_up() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The two parsers: a log line is a sha and a subject, and a settled heading is an id, a title and
-/// a status clause that is dropped because the date and the word SETTLED would be terms every
-/// entry shares.
+/// A log line is a sha and a subject.
 #[test]
-fn the_log_and_the_settled_file_are_read_by_their_own_shapes() {
+fn the_log_is_read_by_its_shape() {
     let log = "abc1234\ta subject here\n\ndeadbee\tanother subject\nnot a record\n";
     let records = subjects_of(log);
     assert_eq!(
@@ -186,24 +154,13 @@ fn the_log_and_the_settled_file_are_read_by_their_own_shapes() {
             (PathBuf::from("deadbee"), "another subject".to_string()),
         ]
     );
-
-    let file = "# TODO — settled\n\nintro\n\n## T1 — How templates are rendered — **SETTLED 2026-09-09: x**\n\n## T2\n";
-    let entries = settled(file);
-    assert_eq!(entries.len(), 2, "{entries:?}");
-    assert_eq!(entries[0].0, PathBuf::from("TODO-settled.md#T1"));
-    assert_eq!(entries[0].1, "T1 How templates are rendered");
-    assert_eq!(entries[1].1, "T2");
 }
 
-/// A workspace that is not a repository has no commits, and that is an empty half rather than a
-/// failure: the settled file's entries still speak.
+/// A workspace that is not a repository has no commits: an empty corpus, not a failure.
 #[test]
 fn a_tree_that_is_not_a_repository_has_no_commits() {
     let dir = logs("plain");
     std::fs::create_dir_all(&dir).expect("scratch");
-    std::fs::write(dir.join(SETTLED), format!("## T9 — {SUBJECT}\n")).expect("write");
-    let records = records(&dir);
-    assert_eq!(records.len(), 1, "{records:?}");
-    assert_eq!(records[0].0, PathBuf::from("TODO-settled.md#T9"));
+    assert!(records(&dir).is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }

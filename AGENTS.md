@@ -40,6 +40,10 @@ number.
 Elsewhere: `docs/`, `scripts/` (source of the `letibot` and `leticode` wrappers), `tests/`,
 `config/`, `plugins/`.
 
+Raw experiment data, score files and the settled-TODO history are not in this repo: they are in the
+operator's private archive (`hands-off/letibot/`). A settled TODO entry is deleted from `TODO.md`; its
+commit message carries the settled line (what closed it, the commits and tests).
+
 ## How it runs on this box
 
 `~/bin/letibot` and `~/bin/leticode` are wrappers (copies in `scripts/`) that start or attach to

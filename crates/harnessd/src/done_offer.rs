@@ -1,6 +1,6 @@
 //! A brief the repository already did, said at the tail of the request like the notes and skills: earned by a score floor, once per record, silent when nothing clears it.
 //!
-//! The corpus is this workspace's recent commit subjects (keyed by short sha) and `TODO-settled.md` entries (keyed by id), both bounded.
+//! The corpus is this workspace's recent commit subjects (keyed by short sha), bounded. A settled TODO entry lives in its closing commit's message, so the log covers it.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -18,15 +18,10 @@ pub const OFFER_FLOOR: f64 = 0.35;
 /// tree itself.
 pub const COMMITS: usize = 200;
 
-/// The settled file's name, at the workspace's root: the open list's closed half, which is where a
-/// package finds its own scope already fixed.
-pub const SETTLED: &str = "TODO-settled.md";
-
 /// The file the take-up log is appended to, in the session's logs directory beside the others.
 pub const LOG: &str = "done-offers.jsonl";
 
-/// One record: a commit or a settled entry, with the score that earned it and whether it is a
-/// commit, because a commit is checked with `git show` and a settled entry with a `read`.
+/// One record: a commit with the score that earned it. `commit` stays so older log rows still parse.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Offer {
     pub label: String,
@@ -43,10 +38,7 @@ impl Offer {
     /// The line the model is given: the request assembly renders it after everything the session
     /// holds, and it names the record and the one command that settles it.
     pub fn tail(&self) -> TranscriptItem {
-        let check = match self.commit {
-            true => format!("`git show {}` says what it changed", self.label),
-            false => format!("`read` `{SETTLED}` and search for it"),
-        };
+        let check = format!("`git show {}` says what it changed", self.label);
         TranscriptItem::User {
             speaker: Speaker::Agent,
             parts: vec![UserPart::Text {
@@ -157,7 +149,7 @@ impl Offers {
             .unwrap_or_default()
     }
 
-    /// Settle the round's offer against what the round did, and log both sides. A take-up is any call naming the record (a `git show` of the sha, a `read` of the settled file).
+    /// Settle the round's offer against what the round did, and log both sides. A take-up is any call naming the record (a `git show` of the sha).
     /// Logged either way: the ratio tunes [`OFFER_FLOOR`].
     pub fn settle(
         &mut self,
@@ -199,32 +191,19 @@ impl Offers {
     }
 }
 
-/// One record as an offer: a sha is a commit, and the settled file's own prefix says it is not.
+/// One record as an offer: the key is a commit's short sha.
 fn offer_of(path: &Path, score: f64) -> Offer {
-    let key = path.to_string_lossy();
-    match key.split_once('#') {
-        Some((file, name)) => Offer {
-            label: format!("{file} {name}"),
-            score,
-            commit: false,
-        },
-        None => Offer {
-            label: key.to_string(),
-            score,
-            commit: true,
-        },
+    Offer {
+        label: path.to_string_lossy().to_string(),
+        score,
+        commit: true,
     }
 }
 
-/// What a new brief is scored against: the workspace's recent commits and its settled entries. A
-/// workspace that is not a repository, or a tree with no settled file, is an empty half and never
-/// an error - a missing corpus is silence, and the other half still speaks.
+/// What a new brief is scored against: the workspace's recent commits. A workspace that is not a
+/// repository is an empty corpus and never an error.
 pub fn records(workspace: &Path) -> Vec<(PathBuf, String)> {
-    let mut out = commits(workspace);
-    if let Ok(text) = std::fs::read_to_string(workspace.join(SETTLED)) {
-        out.extend(settled(&text));
-    }
-    out
+    commits(workspace)
 }
 
 /// The last [`COMMITS`] subjects, keyed by short sha. Bounded rather than timed: a local `git log`
@@ -252,31 +231,6 @@ pub fn subjects_of(text: &str) -> Vec<(PathBuf, String)> {
         .map(|(sha, subject)| (PathBuf::from(sha.trim()), subject.trim().to_string()))
         .filter(|(sha, subject)| !sha.as_os_str().is_empty() && !subject.is_empty())
         .collect()
-}
-
-/// One entry per heading of the settled file: the id and the title, which is the sentence a brief
-/// is scored against. The status clause after the title is dropped - a date and the word SETTLED
-/// are terms every entry would then share.
-pub fn settled(text: &str) -> Vec<(PathBuf, String)> {
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let Some(rest) = line.strip_prefix("## ") else {
-            continue;
-        };
-        let mut parts = rest.split(" — ");
-        let id = parts.next().unwrap_or_default().trim();
-        let title = parts.next().unwrap_or_default().trim();
-        if id.is_empty() {
-            continue;
-        }
-        let key = format!("{SETTLED}#{id}");
-        let scored = match title.is_empty() {
-            true => id.to_string(),
-            false => format!("{id} {title}"),
-        };
-        out.push((PathBuf::from(key), scored));
-    }
-    out
 }
 
 /// Seconds since the unix epoch. No date library for one field of one log line.

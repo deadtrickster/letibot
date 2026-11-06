@@ -1,7 +1,7 @@
 # The gatekeeper - the guard's rules, corpus and model
 
 Companion to `boundary-and-adjudication.md` (the gate's design). The section numbers are cited from the
-code (`crates/harnessd/src/{etalon,etalon_oracle,etalon_map}.rs`) and from `docs/evidence/`, so they are
+code (`crates/harnessd/src/{etalon,etalon_oracle,etalon_map}.rs`) and from the evidence in the operator's private archive (`hands-off/letibot/evidence/`), so they are
 kept.
 
 **The rule this document sets:** every commit that lands a step here names its source - the paper by

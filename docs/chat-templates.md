@@ -75,7 +75,7 @@ llama.cpp reuses a cached prompt only when the new prompt is a **strict prefix e
 it, so anything that makes turn N's replay differ from what was cached kills the cache from that
 point. The leak above is one such thing and cannot arise here, because we never hand llama.cpp a
 `messages` array. Replaying reasoning as its own message is refuted for opencode
-(`docs/evidence/opencode-reasoning-2026-09-11.md`).
+(raw data in the operator's private archive, `hands-off/letibot/evidence/opencode-reasoning-2026-09-11.md`).
 
 The gate checks the prefix property at **every prefix boundary**: a renderer that is right about
 a whole conversation and wrong about its third prefix has a cache that never hits.

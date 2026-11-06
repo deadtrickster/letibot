@@ -115,7 +115,7 @@ segments, and its nodes are what the suggester nominates.
 
 Zoom-as-paging - place a cached block at the tail, prefix untouched, near-free - was the
 original shape of this section, and it was tested and settles negative.
-`experiments/kv-stitching/RESULTS.md`.
+`experiments/kv-stitching/RESULTS.md` in the operator's private archive (`hands-off/letibot/`).
 
 The reason is stronger than a partial correction being hard: there is nothing to correct.
 `llama_memory_recurrent`'s cells *are* sequence ids, so a per-sequence save writes **one** cell whose

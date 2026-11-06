@@ -133,7 +133,7 @@ refuse() { # refuse NAME OUTPUT PATTERN -- the output must not match
 #   POSIX_SH  `#!/bin/sh`, so POSIX: grepped only. bash-4 syntax is not `sh` syntax either.
 #
 # Named as out of scope, so nobody has to guess: `tests/acceptance/*.sh` (CI runs them under
-# Linux's bash 5), `tests/fidelity/serve_oracle.sh`, `experiments/`, and `firecode.layer`
+# Linux's bash 5), `tests/fidelity/serve_oracle.sh`, and `firecode.layer`
 # (a VM recipe, not a shell on this box).
 #
 # **`+=` on an array is NOT in the spelling list**: that is bash 3.1, not 4, and

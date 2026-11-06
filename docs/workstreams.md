@@ -12,7 +12,7 @@ over is written down before the work starts.
 
 | id | strand | delivers | plan §§ | landed where |
 |---|---|---|---|---|
-| **W1** | Measurement rig | recording proxy, scripted 30-turn session, metric extraction, opencode baseline | §14.3, §17-M0, §18.2 | `tests/fidelity` (`run_gate.py`, `serve_oracle.sh`), `experiments/falsifier-b` |
+| **W1** | Measurement rig | recording proxy, scripted 30-turn session, metric extraction, opencode baseline | §14.3, §17-M0, §18.2 | `tests/fidelity` (`run_gate.py`, `serve_oracle.sh`), `hands-off/letibot/experiments/falsifier-b` (private archive) |
 | **W2** | Prefix-invariant suite | grok port, I1/I2, C1/C3/C4/C5, NOTICE + per-file headers | §14.1, §14.2, §18.1 | `turn/src/metrics.rs` (`PrefixCheck`, `f_keep`), `turn/tests` |
 | **W3** | Renderer-fidelity rig | fixture corpus + `/apply-template` diff runner (C2 / I3) | §7.2, §7.4 | `tests/fidelity` + `fixtures` |
 | **W4** | Dialects | GLM renderer + parser; then Qwen; then 27B dense | §7 | `crates/dialect`, `dialect-glm`, `dialect-qwen` |
@@ -27,7 +27,7 @@ over is written down before the work starts.
 | **W13** | Segments + leveled compaction | SegmentMark, segment table, levels, warm summarizer, soft/hard, scheduler | §10, §19 L1-L7 | `turn/src/compaction.rs`, `transcript` `SegmentMark` |
 | **W14** | EXPLAIN | `ExplainPlan`, per-stage counters, formatter, `explain --deep` | §6 | metrics exist (`turn/src/metrics.rs`); **`ExplainPlan` has no field list** |
 | **W15** | Server track | S0 control channel + shm; S1, S1b, S2b, S3b, S4b, S5b | §3.3, §3.4, §17 | **not landed**; the tree runs the `/completion` fallback |
-| **W16** | Experiments & settlements | Falsifier B; UNVERIFIED-6/11/12/13/15/16; the 27B preset | §9.3, §20.1 | `experiments/falsifier-b` (run, scored); UNVERIFIED registry in the plan |
+| **W16** | Experiments & settlements | Falsifier B; UNVERIFIED-6/11/12/13/15/16; the 27B preset | §9.3, §20.1 | `hands-off/letibot/experiments/falsifier-b` (private archive; run, scored); UNVERIFIED registry in the plan |
 
 Sizes are gone on purpose: they were developer-day estimates for ordering, and the ordering is now
 history. What remains is the ids and what each one owns.
@@ -36,7 +36,7 @@ history. What remains is the ids and what each one owns.
 
 A strand's contract is what it hands the next one. Where the plan left a gap the answer is in the tree,
 and this is what a new strand reads before inventing a second shape: **W1/W16** the scripted session is
-`tests/fidelity` plus `experiments/falsifier-b/tasks.py`; **W3** a fixture is messages plus tools plus an
+`tests/fidelity` plus `hands-off/letibot/experiments/falsifier-b/tasks.py` (private archive); **W3** a fixture is messages plus tools plus an
 expected render, run against a directly launched single-model server (not the router, UNVERIFIED-6);
 **W4** `RenderSpan`, `ParsedSpan`, `ControlTokens` and `Guard` live in `crates/dialect`; **W5** the memfd
 region and ledger are `tokencore/{region,ledger,store}.rs`, and a restart replays spans; **W7** ATTACH,

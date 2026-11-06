@@ -3,7 +3,7 @@
 `TODO.md` T19 asks what would require a *rewrite* of the KV representation and whether that
 rewrite pays, rather than arguing about llama.cpp's data structures. This is the answer
 written from the code, with the two rows T19 already settles taken as settled
-(`experiments/kv-stitching/RESULTS.md`, T14) and the third examined against what this tree
+(`experiments/kv-stitching/RESULTS.md` in the operator's private archive `hands-off/letibot/`, T14) and the third examined against what this tree
 actually sends.
 
 The short version. **This tree holds no KV at all.** It holds a *prompt* representation that
@@ -97,7 +97,7 @@ one.
 ## 2. What UNVERIFIED-16 asked, and what it now answers
 
 UNVERIFIED-16 asked whether a bounded recompute can repair a KV computed over a different
-history, on a hybrid attention+recurrent model. `experiments/kv-stitching/RESULTS.md` answers
+history, on a hybrid attention+recurrent model. `hands-off/letibot/experiments/kv-stitching/RESULTS.md` (the operator's private archive) answers
 no, and the reason is structural rather than numerical:
 
 | | measured |
@@ -167,7 +167,7 @@ argument and not a representation one.
   common prefix is the stable prefix, where no checkpoint is due to exist.
 - The cost of being wrong is large and measured in two places: a miss is *linear in the suffix*
   — ~11 s at the tail and ~453 s at the head of 200 k (`docs/implementation-plan.md` §19.3) —
-  and a cold prompt against a warm one measured 144.6 s against 0.8 s (T14, `TODO-settled.md`).
+  and a cold prompt against a warm one measured 144.6 s against 0.8 s (T14, the settled archive `hands-off/letibot/TODO-settled.md`).
   F1's own numbers say the same from the other side: with replay off, `f_keep` p10 0.000 and p99
   re-prefill 78,598 tokens; on, 0.999 and 5,294 (`docs/implementation-plan.md` F1).
 - Compaction is not rare in a deep session: it is what keeps a 262 k session alive, and on the
@@ -239,7 +239,7 @@ Two arms, one depth sweep, no new code, and every number already recorded by the
 
 1. **Setup.** A session against the local server on a scripted prompt, repeated until the
    resident ledger is at a stated depth — 40 k and 120 k, one run each. Guard the box with
-   `experiments/kv-stitching/srv.py`'s `guard(floor_gib=40.0)`; the run prefills several distinct
+   `hands-off/letibot/experiments/kv-stitching/srv.py`'s `guard(floor_gib=40.0)`; the run prefills several distinct
    prompts and that guard exists because of the fifth OOM.
 2. **Arm A, the server as it runs today.** Let the session compact (drive it over the configured
    window, or force it), then take the next turn. Read from the store, per turn:
