@@ -372,10 +372,53 @@ struct CommandQueue {
     journal: Option<Journal>,
 }
 
+/// The queue's side of the journal. The store write runs on the journal's own thread: a store
+/// another process holds locked must not hold the hub's lock, which every head and the session's
+/// turn need.
 struct Journal {
-    sink: Box<dyn PromptJournal>,
+    tx: std::sync::mpsc::Sender<(u64, Vec<JournaledPrompt>)>,
     last: Vec<JournaledPrompt>,
+    sent: u64,
+    saved: Arc<(Mutex<u64>, Condvar)>,
+}
+
+/// Save the newest snapshot, retrying a failed one until a newer snapshot replaces it. Ends when
+/// the hub is gone, after the last snapshot is written.
+fn run_journal(
+    mut sink: Box<dyn PromptJournal>,
+    rx: std::sync::mpsc::Receiver<(u64, Vec<JournaledPrompt>)>,
+    saved: Arc<(Mutex<u64>, Condvar)>,
     session_id: String,
+) {
+    use std::sync::mpsc::RecvTimeoutError;
+    let Ok(mut want) = rx.recv() else { return };
+    loop {
+        while let Ok(newer) = rx.try_recv() {
+            want = newer;
+        }
+        match sink.save(&want.1) {
+            Ok(()) => {
+                let (n, cv) = &*saved;
+                *n.lock().unwrap_or_else(|e| e.into_inner()) = want.0;
+                cv.notify_all();
+                match rx.recv() {
+                    Ok(next) => want = next,
+                    Err(_) => return,
+                }
+            }
+            Err(e) => {
+                eprintln!("  {session_id} · queued prompts not saved: {e}");
+                match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+                    Ok(next) => want = next,
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => {
+                        let _ = sink.save(&want.1);
+                        return;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// An accepted operator prompt that has not started.
@@ -440,18 +483,16 @@ impl CommandQueue {
             })
             .collect()
     }
-    /// Save the prompts if they changed. A save that fails is said on stderr and retried at the
-    /// next change: the queue itself is never held up by it.
+    /// Hand the prompts to the journal's thread if they changed. Never waits on the store.
     fn sync(&mut self) {
         let now = self.prompts();
         let Some(j) = &mut self.journal else { return };
         if now == j.last {
             return;
         }
-        match j.sink.save(&now) {
-            Ok(()) => j.last = now,
-            Err(e) => eprintln!("  {} · queued prompts not saved: {e}", j.session_id),
-        }
+        j.sent += 1;
+        let _ = j.tx.send((j.sent, now.clone()));
+        j.last = now;
     }
 }
 
@@ -678,16 +719,44 @@ impl Hub {
             });
         }
         let session_id = g.log.session_id().to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let saved = Arc::new((Mutex::new(0u64), Condvar::new()));
+        let for_thread = saved.clone();
+        let spawned = std::thread::Builder::new()
+            .name("prompt-journal".into())
+            .spawn(move || run_journal(sink, rx, for_thread, session_id));
+        if spawned.is_err() {
+            return n;
+        }
         g.commands.journal = Some(Journal {
-            sink,
+            tx,
             last: stored,
-            session_id,
+            sent: 0,
+            saved,
         });
         drop(g);
         if n > 0 {
             self.cv.notify_all();
         }
         n
+    }
+
+    /// Wait until the journal has written every change handed to it, up to `within`. True when it
+    /// has, or when there is no journal.
+    pub fn journal_settled(&self, within: std::time::Duration) -> bool {
+        let (want, saved) = {
+            let g = self.lock();
+            match &g.commands.journal {
+                Some(j) => (j.sent, j.saved.clone()),
+                None => return true,
+            }
+        };
+        let (n, cv) = &*saved;
+        let g = n.lock().unwrap_or_else(|e| e.into_inner());
+        let (g, _) = cv
+            .wait_timeout_while(g, within, |done| *done < want)
+            .unwrap_or_else(|e| e.into_inner());
+        *g >= want
     }
 
     /// Mark this session as served by the thread that is opening it, not by the worker. See
@@ -3112,8 +3181,9 @@ mod mode_steering_tests {
                 attachments: Vec::new(),
             },
         );
+        assert!(hub.journal_settled(std::time::Duration::from_secs(5)));
         let saved = kept.lock().unwrap().clone();
-        assert_eq!(saved.len(), 1, "an accepted prompt is saved at once");
+        assert_eq!(saved.len(), 1, "an accepted prompt is saved");
         // The daemon is killed here. A new hub is handed what was saved.
         let again = Hub::new("s-journal");
         let n = again.journal_prompts(Box::new(Kept(Arc::new(Mutex::new(Vec::new())))), saved);
@@ -3127,7 +3197,70 @@ mod mode_steering_tests {
         }
         // Taking it empties the saved queue on the first hub too.
         assert!(matches!(hub.take_own_work(), OwnWork::Command(_)));
+        assert!(hub.journal_settled(std::time::Duration::from_secs(5)));
         assert!(kept.lock().unwrap().is_empty(), "taken, so no longer saved");
+    }
+
+    /// A journal whose store is locked by another process must not hold the session up: the
+    /// prompt is accepted and taken at once, and saved when the store lets go.
+    #[test]
+    fn a_blocked_journal_holds_up_neither_the_submit_nor_the_take() {
+        use std::sync::{Arc, Mutex, mpsc};
+        use std::time::{Duration, Instant};
+        struct Locked {
+            gate: Arc<Mutex<mpsc::Receiver<()>>>,
+            kept: Arc<Mutex<Vec<JournaledPrompt>>>,
+        }
+        impl PromptJournal for Locked {
+            fn save(&mut self, p: &[JournaledPrompt]) -> Result<(), String> {
+                let _ = self
+                    .gate
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(30));
+                *self.kept.lock().unwrap() = p.to_vec();
+                Ok(())
+            }
+        }
+        let (release, gate) = mpsc::channel();
+        let kept = Arc::new(Mutex::new(Vec::new()));
+        let hub = Arc::new(Hub::new("s-journal-locked"));
+        hub.journal_prompts(
+            Box::new(Locked {
+                gate: Arc::new(Mutex::new(gate)),
+                kept: kept.clone(),
+            }),
+            Vec::new(),
+        );
+        let a = hub.attach("tui", "dead", Caps::default(), 0);
+        let (done, finished) = mpsc::channel();
+        let h = hub.clone();
+        let head = a.head_id.clone();
+        std::thread::spawn(move || {
+            h.submit(
+                &head,
+                "c1",
+                0,
+                CommandKind::Prompt {
+                    text: "tell me about it".into(),
+                    attachments: Vec::new(),
+                },
+            );
+            let taken = matches!(
+                h.take_own_work_until(Some(Instant::now() + Duration::from_secs(1))),
+                OwnWork::Command(_)
+            );
+            let _ = done.send(taken);
+        });
+        let taken = finished.recv_timeout(Duration::from_secs(5));
+        let _ = release.send(());
+        let _ = release.send(());
+        assert_eq!(
+            taken,
+            Ok(true),
+            "the submit or the take waited on the journal's store write"
+        );
+        let _ = kept;
     }
 
     /// Looking is not taking: `has_queued_prompt` exists so a round that backgrounded a job can

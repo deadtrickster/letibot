@@ -1524,6 +1524,7 @@ mod journal_tests {
                 attachments: Vec::new(),
             },
         );
+        assert!(first.journal_settled(std::time::Duration::from_secs(30)));
         // kill -9: the first hub is simply gone.
         drop(first);
         let second = Hub::new("s-killed");
@@ -1535,6 +1536,7 @@ mod journal_tests {
             matches!(&c.kind, CommandKind::Prompt { text, .. } if text == "carry on after the restart"),
             "{c:?}"
         );
+        assert!(second.journal_settled(std::time::Duration::from_secs(30)));
         let third = Hub::new("s-killed");
         assert_eq!(
             StoreJournal::attach(&third, &path),
