@@ -424,7 +424,6 @@ impl App {
         }
         self.injected_for = self.front_card();
         self.injected.extend(k.bytes);
-        self.redraw = true;
         ControlFlow::Break(None)
     }
 

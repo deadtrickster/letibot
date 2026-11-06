@@ -114,7 +114,6 @@ impl App {
             if unread && !self.queued.contains(&Action::ListTodos) {
                 self.queued.push(Action::ListTodos);
             }
-            self.redraw = true;
             return;
         };
         let req_id = format!("{TODO_ASK}{}", ask.content);
@@ -123,12 +122,10 @@ impl App {
             && !first.req_id.starts_with(TODO_ASK)
         {
             self.say("answer the open card first — then alt-a opens the question waiting on you");
-            self.redraw = true;
             return;
         }
         if self.open.first().is_some_and(|d| d.req_id == req_id) {
             // Already the card on the screen: nothing to open, and its draft is the composer.
-            self.redraw = true;
             return;
         }
         // What was put away for this row comes back with it, the words and the highlight, provided it is still the
@@ -183,7 +180,6 @@ impl App {
                 asked_ts: 0,
             },
         );
-        self.redraw = true;
     }
 
     /// A question card's answer, as the action that carries it - to the ROW for a card
@@ -204,7 +200,6 @@ impl App {
             self.open.retain(|d| d.req_id != req_id);
             self.away.retain(|a| a.decision.req_id != req_id);
             self.sel = 0;
-            self.redraw = true;
             self.todo_answered
                 .push((content.to_string(), question.clone()));
             self.advance_operator_asks();
@@ -260,7 +255,6 @@ impl App {
             "put away — nothing was answered, the call is still waiting on you · alt-a brings it \
              back"
         });
-        self.redraw = true;
     }
 
     /// Move the card on top of the open list to [`App::away`] with the composer's words and the
@@ -284,7 +278,6 @@ impl App {
             sel: self.sel,
         });
         self.sel = 0;
-        self.redraw = true;
     }
 
     /// A resync or a switch replaces the open list with the daemon's, and this head's own todo cards are not on it:
@@ -367,7 +360,6 @@ impl App {
             } else {
                 "that todo row no longer waits on you — its card closed"
             });
-            self.redraw = true;
         }
         if let Some(d) = self.open.first() {
             self.sel = self.sel.min(decision_rows(d).saturating_sub(1));
@@ -389,7 +381,6 @@ impl App {
             sel,
             request: None,
         });
-        self.redraw = true;
     }
 
     /// The driver sent it, under this `client_request_id` - what a refusal will name.
@@ -420,7 +411,6 @@ impl App {
             self.sel_for = a.decision.req_id.clone();
             self.sel = a.sel;
         }
-        self.redraw = true;
         true
     }
 
@@ -440,7 +430,6 @@ impl App {
         let mode_up = self.mode_confirm.is_some();
         if mode_up != self.mode_up_for {
             self.mode_up_for = mode_up;
-            self.redraw = true;
             if mode_up && !self.editor.text().is_empty() {
                 self.hold_line();
                 self.say(
@@ -452,7 +441,6 @@ impl App {
         if front != self.sel_for {
             self.sel_for = front.clone();
             self.sel = 0;
-            self.redraw = true;
             // A decision coming up closes the quit card: the decision is drawn ahead
             // of it and takes its keys, so a `1` meant as "detach" would answer the decision.
             if !front.is_empty() && self.quit_card {
@@ -493,7 +481,6 @@ impl App {
             } else {
                 self.editor.insert(&format!("{held}\n{now}"));
             }
-            self.redraw = true;
         }
     }
 
@@ -535,14 +522,12 @@ impl App {
         if self.prompt.is_some() && self.prompt_away {
             self.prompt_away = false;
             self.prompt_buf.clear();
-            self.redraw = true;
             return;
         }
         // Then the password card Esc put away: sudo keeps waiting, and this is the only
         // way back to it. Behind a card that is up it waits its turn, as questions do.
         if self.secret.is_some() && self.secret_away && self.card_up().is_none() {
             self.secret_away = false;
-            self.redraw = true;
             return;
         }
         // And then an allow-all another head asked for: the request is still open at the
@@ -565,7 +550,6 @@ impl App {
                 "a question is the open card — answer it, or esc puts it away; then alt-a opens \
                  what else waits on you",
             );
-            self.redraw = true;
             return;
         }
         let sid = self.session_id.clone();
@@ -576,7 +560,6 @@ impl App {
         {
             if !self.open.is_empty() && !self.open[0].req_id.starts_with(TODO_ASK) {
                 self.say("answer the open card first — then alt-a brings the question back");
-                self.redraw = true;
                 return;
             }
             if !self.open.is_empty() {
@@ -598,7 +581,6 @@ impl App {
             self.sel = a.sel.min(decision_rows(&a.decision).saturating_sub(1));
             self.sel_for = a.decision.req_id.clone();
             self.open.insert(0, a.decision);
-            self.redraw = true;
             return;
         }
         let asks = self.operator_asks();
@@ -626,7 +608,6 @@ impl App {
             "adding a todo item — title, then tab for the description; enter adds it to the \
              session's plan as yours, esc cancels",
         );
-        self.redraw = true;
     }
 
     /// `/todo ...`, the person's own rows. Every form sends the whole list.
@@ -649,7 +630,6 @@ impl App {
         self.todos
             .retain(|t| t.by != letibot_sessionlog::event::TodoBy::Operator);
         self.todos.extend(mine);
-        self.redraw = true;
     }
 
     /// Is a starter-todo seed due for this project? The switch is on, the workspace is known and the record does not
@@ -834,7 +814,6 @@ impl App {
         // row the cursor landed on ([`App::todos_stop_rows`]). A scroll computed here would read
         // the record the last frame wrote, and that record describes the list as it was.
         self.todos_follow = true;
-        self.redraw = true;
         // Remembered across restarts, like every other switch on `/config` - a switch that
         // forgets is a switch the reader keeps re-making, and the operator asked for this one
         // about a board whose done rows are the noise.
@@ -1013,7 +992,6 @@ impl App {
     /// Open what a row waits on, which is what a click on its link and `w` on the selected row share: a job opens
     /// its output, the same window Enter on that job in the jobs pane opens, and a child opens its session.
     pub(crate) fn open_wait(&mut self, w: &WaitOn) -> Option<Action> {
-        self.redraw = true;
         if self.session_id.is_empty() {
             self.say("not attached to a session yet");
             return None;

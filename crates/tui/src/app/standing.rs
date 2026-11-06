@@ -105,6 +105,5 @@ impl App {
             return;
         };
         self.open_in_editor(&FileRef::file(&entry.path));
-        self.redraw = true;
     }
 }

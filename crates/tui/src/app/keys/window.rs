@@ -26,7 +26,6 @@ impl App {
                     // An open run's rows are in the history cache, so it is rebuilt - as
                     // ctrl-t's close does.
                     self.invalidate_history();
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 // An open run has no window to page (see [`App::run_is_open`]): Esc above folds it,
@@ -37,12 +36,10 @@ impl App {
                 Key::Up | Key::Down if self.run_is_open() && !self.open.is_empty() => {}
                 Key::Up if self.run_is_open() => {
                     self.scroll_up(BY);
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 Key::Down if self.run_is_open() => {
                     self.hold(BY as isize);
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 _ if self.run_is_open() => {}

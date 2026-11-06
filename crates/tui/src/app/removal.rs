@@ -46,7 +46,6 @@ impl App {
                 "that line is a group, not a session — `x` removes a session's row, and enter or \
                  → folds a group",
             );
-            self.redraw = true;
             return None;
         };
         self.remove_row(i);
@@ -100,7 +99,6 @@ impl App {
                 "{id} is the session you are in — a list that removes where you are standing \
                  cannot answer where am I. Nothing was removed."
             ));
-            self.redraw = true;
             return;
         }
         if self.chain_to(&self.session_id, &id) {
@@ -111,7 +109,6 @@ impl App {
                  was removed.",
                 self.session_id
             ));
-            self.redraw = true;
             return;
         }
         // The second press, on the same row, inside the arm's window.
@@ -122,12 +119,10 @@ impl App {
             self.removal_armed = None;
             self.removed.push(id.clone());
             self.say(&self.removed_words(&id));
-            self.redraw = true;
             return;
         }
         self.removal_armed = Some((id.clone(), self.now_ms));
         self.say(&self.removal_ask(i, &id));
-        self.redraw = true;
     }
 
     /// `ctrl-z` - the last removal, back. One at a time, in the order they were removed, and
@@ -135,12 +130,10 @@ impl App {
     pub(crate) fn restore_removed(&mut self) {
         let Some(id) = self.removed.pop() else {
             self.say("nothing is removed from this list — `del` removes the row under the cursor");
-            self.redraw = true;
             return;
         };
         self.removal_armed = None;
         self.say(&self.removed_words(&id));
-        self.redraw = true;
     }
 
     /// `/forget [ID]`: refused, always, and the sentence is the finding - what a forget would take
@@ -158,7 +151,6 @@ impl App {
                         "/forget ID — name a session, or open the list (ctrl-s) and /forget with \
                          no argument forgets the row under the cursor",
                     );
-                    self.redraw = true;
                     return;
                 }
             }
@@ -167,7 +159,6 @@ impl App {
                 Ok(i) => i,
                 Err(said) => {
                     self.say(&said);
-                    self.redraw = true;
                     return;
                 }
             }
@@ -248,7 +239,6 @@ impl App {
             "{id} is not forgotten: {held}, and forgetting it would take {cost}. {door} — this head \
              has no frame that reaches the store's delete. Nothing was removed."
         ));
-        self.redraw = true;
     }
 
     /// The sentence before the second press - what the row is, what goes with it, and what

@@ -26,7 +26,6 @@ impl App {
                 // for it, so it stays out of the pane and the count.
                 if role == "gatekeeper" {
                     self.subagents.retain(|s| s.session_id != subagent_id);
-                    self.redraw = true;
                     return Disposition::Filtered;
                 }
                 // The event's own word for the instant: it publishes `running` when the child's
@@ -67,7 +66,6 @@ impl App {
                         slug,
                     });
                 }
-                self.redraw = true;
                 Disposition::Filtered
             }
             SessionEvent::JobSettled {
@@ -92,7 +90,6 @@ impl App {
                 // settled in a turn this head never watched has no row to fold into, which is
                 // the case a count taken from the pane's rows would get wrong.
                 self.queued.push(Action::ListJobs);
-                self.redraw = true;
                 Disposition::Filtered
             }
             // A job's output, the answer to the jobs pane's Enter. Not folded into any view:
@@ -169,7 +166,6 @@ impl App {
                     // a running job, should show what it just wrote. `back` is left
                     // alone, so ← still walks the pages the reader came through.
                     v.scroll = 0;
-                    self.redraw = true;
                     return Disposition::Rendered;
                 }
                 Disposition::Filtered

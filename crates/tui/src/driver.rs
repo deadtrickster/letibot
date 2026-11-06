@@ -947,7 +947,6 @@ impl Link {
                 Ok(outcome) => {
                     self.force = None;
                     app.force_stop_finished(outcome);
-                    app.mark_redraw();
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 // The thread died without answering - a panic in it. Said rather than
@@ -991,12 +990,11 @@ impl Link {
         {
             next_gone = true;
         }
-        if next_closed != closed || next_gone != gone {
-            if let Some(s) = app.stopping_mut() {
-                s.closed = next_closed;
-                s.gone = next_gone;
-            }
-            app.mark_redraw();
+        if (next_closed != closed || next_gone != gone)
+            && let Some(s) = app.stopping_mut()
+        {
+            s.closed = next_closed;
+            s.gone = next_gone;
         }
         // The ordinary stop did not finish: escalate, once. Only when the deadline passed and the process is
         // still there, and the pid is the one the head holds, checked again before each signal. A force path
@@ -1009,12 +1007,6 @@ impl Link {
                 now,
             );
             self.start_force(pid);
-        }
-        // The deadline crossing is a frame too. The waiting line stops being drawn the
-        // moment the question is answered, and without this the head would sit on the last
-        // frame it drew for up to a tick with a sentence saying it was still waiting.
-        if next_gone || now >= deadline {
-            app.mark_redraw();
         }
     }
 }

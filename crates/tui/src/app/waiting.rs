@@ -44,7 +44,6 @@ impl App {
     pub(crate) fn toggle_asks_folded(&mut self) {
         if self.asks_folded() {
             self.asks_hidden = None;
-            self.redraw = true;
             return;
         }
         let keys = self.waiting_keys();
@@ -58,7 +57,6 @@ impl App {
             "{n} waiting on you, folded away — the box's edge counts them; alt-h shows them again, \
              /asks lists them, alt-a answers. A new one shows itself."
         ));
-        self.redraw = true;
     }
 
     /// `/asks`: every question waiting on you, whole, answering none - the cards put away,

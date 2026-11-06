@@ -44,7 +44,6 @@ impl App {
             "that question is no longer open — its card closed, and what you typed on it was \
              cleared (ctrl-z brings it back)",
         );
-        self.redraw = true;
     }
 
     /// Asks and their answers: decisions, secrets, prompts, explanations, denials. One family of
@@ -97,7 +96,6 @@ impl App {
                         subagent,
                         asked_ts: a.decision.asked_ts,
                     };
-                    self.redraw = true;
                     return Disposition::Rendered;
                 }
                 self.open.retain(|d| d.req_id != req_id);
@@ -141,7 +139,6 @@ impl App {
                 if let Some(i) = self.away.iter().position(|a| a.decision.req_id == req_id) {
                     let a = self.away.remove(i);
                     self.open.push(a.decision);
-                    self.redraw = true;
                 }
                 // …and one this head answered, closed when the answer left: it settles
                 // here like an open one, read off the same card.
@@ -221,7 +218,6 @@ impl App {
                     deadline,
                 });
                 self.secret_buf.clear();
-                self.redraw = true;
                 Disposition::Rendered
             }
             SessionEvent::SecretSettled { req_id, given, by } => {
@@ -293,7 +289,6 @@ impl App {
                 // a run this daemon cannot read: a head that kept its own "put away" across it
                 // would swallow the second question `apt` asks.
                 self.prompt_away = false;
-                self.redraw = true;
                 Disposition::Rendered
             }
             // The card comes down, whether it was answered or the command ended - and the

@@ -14,7 +14,6 @@ impl App {
         self.mode_confirm = Some(name);
         self.mode_asked = asked;
         self.mode_confirm_at = self.now_ms;
-        self.redraw = true;
     }
 
     /// Take the next waiting confirmation into the slot, if the slot is empty. Called wherever
@@ -53,7 +52,6 @@ impl App {
                             name,
                         });
                         self.say("another allow-all confirmation is waiting behind this card");
-                        self.redraw = true;
                     } else {
                         self.open_mode_card(
                             name.clone(),
@@ -83,14 +81,12 @@ impl App {
                     // a request nobody can settle any more.
                     self.mode_asked = None;
                     self.mode_confirm = None;
-                    self.redraw = true;
                     self.bring_next_mode_card();
                 }
                 // A card Esc put away can also be the one settled: the request is over for
                 // this head too, and alt-a must not bring a finished question back.
                 if self.mode_away.as_ref().is_some_and(|a| a.req_id == req_id) {
                     self.mode_away = None;
-                    self.redraw = true;
                 }
                 if session_id == self.session_id && mine {
                     let who = if answer == "yes" {
@@ -144,7 +140,6 @@ impl App {
                     // picker; opening it here put the list over the header `/rename` had just changed.
                     None => {}
                 }
-                self.redraw = true;
                 Disposition::Control
             }
             // The daemon's job table, whole: which jobs are listed, what the command reads as and what
@@ -163,7 +158,6 @@ impl App {
                     self.monitors_sel = self
                         .monitors_sel
                         .min(self.monitor_stops().len().saturating_sub(1));
-                    self.redraw = true;
                 }
                 Disposition::Control
             }
@@ -180,7 +174,6 @@ impl App {
                     self.standing_dir = dir;
                     self.standing_sel =
                         self.standing_sel.min(self.standing.len().saturating_sub(1));
-                    self.redraw = true;
                 }
                 Disposition::Control
             }
@@ -190,7 +183,6 @@ impl App {
                 if session_id == self.session_id {
                     self.skills = skills;
                     self.skills_sel = self.skills_sel.min(self.skills.len().saturating_sub(1));
-                    self.redraw = true;
                 }
                 Disposition::Control
             }
@@ -204,7 +196,6 @@ impl App {
                 // The one thing a snapshot cannot say about itself - whether a running step's
                 // output has moved since the last one (see `App::track_gate_tails`).
                 self.track_gate_tails();
-                self.redraw = true;
                 Disposition::Control
             }
             // The model's proposed `!` completions, answered: correlated by the id this head minted, so
@@ -217,7 +208,6 @@ impl App {
             } => {
                 if let Some((prefix, position)) = self.shell_ask.remove(&client_request_id) {
                     self.shell_suggestions.insert((prefix, position), lines);
-                    self.redraw = true;
                 }
                 Disposition::Control
             }
@@ -239,7 +229,6 @@ impl App {
                         self.todo_seed_pending = false;
                         self.seed_todos();
                     }
-                    self.redraw = true;
                 }
                 Disposition::Control
             }
@@ -287,7 +276,6 @@ impl App {
                 if self.pick.is_some() && self.pick_unseeded {
                     self.seed_pick();
                 }
-                self.redraw = true;
                 Disposition::Control
             }
             _ => unreachable!("on_lists was handed a variant it does not handle"),
@@ -444,7 +432,6 @@ impl App {
                     && let Some(s) = &mut self.stopping
                 {
                     s.acked = true;
-                    self.redraw = true;
                 } else if note != letibot_sessionlog::protocol::NOTE_PROMPT_QUEUED {
                     // Telling the person who just pressed enter that their prompt was accepted is not
                     // information, and the old head left exactly that sitting on the input line for the

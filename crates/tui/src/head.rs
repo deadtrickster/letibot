@@ -330,7 +330,7 @@ fn replay(args: &Args, cfg: RenderConfig) {
             for env in envelopes {
                 app.apply(ServerFrame::Event(env));
                 let (w, h) = term.size();
-                if app.take_redraw() {
+                if app.take_repaint() {
                     term.invalidate();
                 }
                 let frame = app.screen(w, h);
@@ -357,7 +357,7 @@ fn replay(args: &Args, cfg: RenderConfig) {
                 // an Esc from ten minutes ago still armed.
                 app.clock(now_ms());
                 let (w, h) = term.size();
-                if app.take_redraw() {
+                if app.take_repaint() {
                     term.invalidate();
                 }
                 let frame = app.screen(w, h);
@@ -918,7 +918,7 @@ fn live(
                 // and every mouse report inside it, and what comes back is this head's keys.
                 let (keys, raw) = read_routed(&term, &mut app);
                 let size = term.size();
-                if app.take_redraw() {
+                if app.take_repaint() {
                     term.invalidate();
                 }
                 link.tick(&mut app, size, &keys, &raw, &mut draw);

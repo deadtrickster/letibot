@@ -42,7 +42,6 @@ impl App {
         if !model.is_empty() {
             self.model = model;
             self.model_from_live_at = at;
-            self.redraw = true;
         }
     }
 
@@ -60,7 +59,6 @@ impl App {
                 // The daemon's boot, as a state and not as rows - the line on the
                 // tail and the label on a queued prompt; the steps are not the conversation.
                 if self.boot_warning(&code, &detail) {
-                    self.redraw = true;
                     return Disposition::Filtered;
                 }
                 // A state rather than a row: it must sit where the Responding text is
@@ -68,7 +66,6 @@ impl App {
                 // daemon re-says it on every attach, so a late head gets it too.
                 if code == STORE_NEWER {
                     self.store_newer = Some(detail.to_string());
-                    self.redraw = true;
                     return Disposition::Filtered;
                 }
                 // The fork has two halves: this warning precedes it, `compacted` and `reseated` follow. Resolving at the first
@@ -77,7 +74,6 @@ impl App {
                 if code == "compacting" {
                     self.mark_fork();
                     self.compacting_why = Some(detail.clone());
-                    self.redraw = true;
                     return Disposition::Filtered;
                 }
                 // An older daemon sends the same announcement under this code: mark the fork and
@@ -150,7 +146,6 @@ impl App {
                     // Drawn on the status row rather than filed: a pending switch is
                     // something about to happen, and the applied/not-applied row that
                     // follows is the record.
-                    self.redraw = true;
                     return Disposition::Filtered;
                 }
                 if code == "model_switch_applied" || code == "model_switch_not_applied" {
@@ -222,7 +217,6 @@ impl App {
                     v.loading = false;
                     v.polling = false;
                     v.error = Some(detail.clone());
-                    self.redraw = true;
                 }
                 // Weather notes go on the edge (`warning::ALARM_ONLY`): the triangle, a counter with
                 // `/status` holding the number, and the daemon's sentence listed by `/notes` and
@@ -247,7 +241,6 @@ impl App {
                             ts,
                         }));
                     }
-                    self.redraw = true;
                     return Disposition::Filtered;
                 }
                 self.note(Note::Warned(Warned { code, detail, ts }));
@@ -326,7 +319,6 @@ impl App {
                 self.invalidate_history_from(seam.saturating_sub(1));
             }
         }
-        self.redraw = true;
         Disposition::Rendered
     }
 

@@ -17,7 +17,6 @@ impl App {
                 if let Some(row) = self.sessions.iter_mut().find(|s| s.session_id == id) {
                     row.title = title.clone();
                 }
-                self.redraw = true;
                 // Said out loud, because the header changes under the operator and an
                 // unexplained change of the one label that identifies where you are
                 // is worse than no label.
@@ -47,7 +46,6 @@ impl App {
                 // they do not exist until `screen()` builds the frame. Rendering here
                 // would be a second rendering of what the driver already sends.
                 self.screen_requests.push(req_id);
-                self.redraw = true;
                 // `Filtered`, not `Control`: this is a `SessionEvent`, and `Control` means
                 // "not an event". Its sibling arm says the same; the two move together
                 // because they are one rule spelled at two arms.

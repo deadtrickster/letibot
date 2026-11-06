@@ -648,7 +648,6 @@ fn the_layer_is_asked_once_a_second_and_not_once_a_frame() {
 
     // Half a second later: the clock has moved, the input has not.
     a.now_ms += 500;
-    a.redraw = true;
     a.screen(120, 30);
     assert_eq!(
         seen.take().len(),
@@ -658,7 +657,6 @@ fn the_layer_is_asked_once_a_second_and_not_once_a_frame() {
 
     // And the next second is a new question - an age has moved, and the pane must be redrawn.
     a.now_ms += 500;
-    a.redraw = true;
     a.screen(120, 30);
     assert_eq!(seen.take().len(), 1, "a second later is a new call");
     std::fs::remove_dir_all(&project).ok();
@@ -742,7 +740,6 @@ fn a_rebuilt_layer_in_the_sessions_plugin_directory_redraws_the_pane() {
     // which is a thing to test somewhere else and not a thing to test here by accident.
     let later = a.now_ms + 3_000;
     a.clock(later);
-    a.redraw = true;
     let screen = a.screen(120, 30).join("\n");
     assert!(
         screen.contains("agent/one"),
@@ -1074,14 +1071,12 @@ fn the_detail_asks_for_a_snapshot_on_the_panes_clock() {
     a.take_actions();
     // Five seconds later, on the detail, with no frame applied - the ask is the head's.
     a.now_ms += crate::ui::panes::queue::REFRESH_MS;
-    a.redraw = true;
     a.screen(120, 40);
     assert!(
         a.take_actions().contains(&Action::ListMergeQueue),
         "the detail asks for the snapshot it is drawing a live gate from"
     );
     // And inside the clock it does not ask twice - one field, two surfaces.
-    a.redraw = true;
     a.screen(120, 40);
     assert!(
         !a.take_actions().contains(&Action::ListMergeQueue),
@@ -1150,7 +1145,6 @@ fn a_detail_with_no_answer_does_not_call_the_gate_stuck() {
     a.key(Key::Enter);
     // Twenty minutes of the head's clock, and not one frame.
     a.now_ms += 20 * 60_000;
-    a.redraw = true;
     let screen = a.screen(120, 40).join("\n");
     assert!(
         screen.contains("no snapshot for 20m"),

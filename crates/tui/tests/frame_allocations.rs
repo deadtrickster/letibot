@@ -203,12 +203,10 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
         s
     };
 
-    // Spend the flag the arrivals set, the way the head's loop does: `take_redraw` is read at the top
-    // of every pass and before the keys (`head.rs`), so draining it here keeps the assertions below
-    // about the scroll rather than about the forty rows that built the fixture.
+    // Rows arriving are a diff like a scroll is: an erase per arrival flickers while a turn streams.
     assert!(
-        app.take_redraw(),
-        "the fixture's own rows should have asked for a frame"
+        !app.take_repaint(),
+        "the fixture's arriving rows asked for a full repaint"
     );
 
     let mut before = app.screen(120, 40);
@@ -221,7 +219,7 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
     assert!(app.following(), "the fixture starts on the stream");
     assert_eq!(app.key(Key::WheelUp), None);
     assert!(!app.following(), "a notch up parks the reader");
-    assert!(!app.take_redraw(), "a notch up asked for a full repaint");
+    assert!(!app.take_repaint(), "a notch up asked for a full repaint");
     assert_eq!(app.key(Key::WheelDown), None);
     assert!(
         app.following(),
@@ -229,7 +227,7 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
     );
     assert_eq!(app.scroll, 0, "and the count agrees with the anchor");
     assert!(
-        !app.take_redraw(),
+        !app.take_repaint(),
         "the notch down asked for a full repaint"
     );
     before = app.screen(120, 40);
@@ -248,7 +246,7 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
         let name = format!("{key:?}");
         assert_eq!(app.key(key), None, "{name} is the head's own key");
         assert!(
-            !app.take_redraw(),
+            !app.take_repaint(),
             "{name} asked for the glass to be thrown away — that is the `ESC[2J` per notch a \
              touchpad flick was made of"
         );
@@ -275,7 +273,7 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
     // and it lives in `term.rs`, where the new size is known.
     assert_eq!(app.key(Key::CtrlL), None);
     assert!(
-        app.take_redraw(),
+        app.take_repaint(),
         "Ctrl-L no longer asks for a full repaint"
     );
     assert!(

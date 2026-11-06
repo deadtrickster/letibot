@@ -41,7 +41,6 @@ impl App {
         }
         self.forward_editor_graphics();
         self.invalidate_history();
-        self.redraw = true;
     }
 
     /// The pictures among the conversation rows on this window, as `(screen row, picture)`; the

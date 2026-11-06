@@ -43,7 +43,6 @@ impl App {
             // Only into an empty composer: what the operator was typing is theirs.
             if self.editor.is_empty() {
                 self.editor.insert(if good { "/fb+ " } else { "/fb- " });
-                self.redraw = true;
             }
             return None;
         }

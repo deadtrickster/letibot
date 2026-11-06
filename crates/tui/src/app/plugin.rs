@@ -49,12 +49,10 @@ impl App {
         match e {
             SessionEvent::PluginPane { pane, view } => {
                 self.plugin_panes.insert(pane, PluginState::of(view));
-                self.redraw = true;
                 Disposition::Control
             }
             SessionEvent::PluginPaneGone { pane } => {
                 self.plugin_gone(&pane);
-                self.redraw = true;
                 Disposition::Control
             }
             _ => Disposition::Control,
@@ -131,7 +129,6 @@ impl App {
             self.say(&format!(
                 "no plugin pane called `{name}` — `/pane` lists the ones this session has"
             ));
-            self.redraw = true;
             return None;
         }
         // A different pane in the same rectangle is a pane that closed: the surface is one, and
@@ -184,7 +181,6 @@ impl App {
         self.plugin_screen = view::Screen::Overview;
         self.plugin_sel = 0;
         self.pane_scroll = 0;
-        self.redraw = true;
         true
     }
 
@@ -213,7 +209,6 @@ impl App {
             };
             self.plugin_sel = 0;
             self.pane_scroll = 0;
-            self.redraw = true;
             return ControlFlow::Break(None);
         }
         if let Some(i) = panel {
@@ -331,7 +326,6 @@ impl App {
         };
         self.plugin_sel = 0;
         self.pane_scroll = 0;
-        self.redraw = true;
         None
     }
 

@@ -535,7 +535,6 @@ impl App {
                     self.fleet_unlisted = read.unlisted;
                     self.fleet_job = None;
                     self.fleet_read = self.now_ms;
-                    self.redraw = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => return,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -709,7 +708,6 @@ impl App {
                     item: id.to_string(),
                     action: event.clone(),
                 });
-                self.redraw = true;
                 None
             }
             // Said rather than done: the queue's verbs belong to the queue's pane, whose
@@ -721,7 +719,6 @@ impl App {
                      has no key for it. Nothing was sent."
                 );
                 self.say(&said);
-                self.redraw = true;
                 None
             }
         }
@@ -1022,7 +1019,6 @@ impl App {
             }
             _ => {}
         }
-        self.redraw = true;
     }
 }
 

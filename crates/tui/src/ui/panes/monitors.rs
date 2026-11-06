@@ -133,7 +133,6 @@ impl App {
             return None;
         }
         self.say(&format!("retiring monitor `{name}`"));
-        self.redraw = true;
         Some(Action::Slash {
             line: format!("monitor retire {name}"),
         })

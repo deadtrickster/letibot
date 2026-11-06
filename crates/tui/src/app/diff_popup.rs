@@ -304,7 +304,6 @@ impl App {
         {
             p.laid = None;
         }
-        self.redraw = true;
     }
 
     /// The notice rows among lines `start..end`, as `(row of the window, index in `items`)` -
@@ -657,9 +656,8 @@ impl App {
             // land in the composer underneath, unseen.
             _ => {}
         }
-        // No `self.redraw`: that flag is a full repaint (`ESC[2J` and every row again) while the
-        // frame is built and diffed every tick anyway, so a scroll costs exactly the rows it
-        // moved. Setting it would erase the screen on every wheel notch, which reads as a flicker.
+        // No `self.repaint`: the frame is built and diffed every tick, so a scroll costs exactly
+        // the rows it moved.
         ControlFlow::Break(None)
     }
 }

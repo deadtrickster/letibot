@@ -18,7 +18,6 @@ impl App {
                 self.term_fact = self.term_fact.with(pane, &command);
                 let adopt = self.term.as_ref().is_some_and(|p| p.pane.is_none());
                 if !adopt {
-                    self.redraw = true;
                     return Disposition::Control;
                 }
                 // The number, and the keys that were waiting for it - see
@@ -36,7 +35,6 @@ impl App {
                 if opened {
                     // The answer to this head's own `!term COMMAND`: the line it typed is
                     // already on the pane, and the number is all that was missing.
-                    self.redraw = true;
                     return Disposition::Control;
                 }
                 // The line is the daemon's: this head sent `!term` with no command, so only the
@@ -52,7 +50,6 @@ impl App {
                     "attached to pane {pane}, `!term {command}`. \
                      ctrl-\\ leaves it running, `!term close` ends it."
                 ));
-                self.redraw = true;
                 Disposition::Control
             }
             // What this session's pane is running, or nothing - the answer to a read, and
@@ -64,7 +61,6 @@ impl App {
                 } else {
                     PaneFact::Running(panes)
                 };
-                self.redraw = true;
                 // A `!term close` held while the pane was unknown runs now, through the same
                 // decision it would have taken had the head known - so the line is held, not
                 // guessed, which is why `Unasked` is a state and not an `Option`.
@@ -103,7 +99,6 @@ impl App {
                         closed: p.closing,
                         reason,
                     });
-                    self.redraw = true;
                 }
                 Disposition::Control
             }

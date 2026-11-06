@@ -27,7 +27,6 @@ impl App {
                     self.todo_seed_pending = false;
                     self.seed_todos();
                 }
-                self.redraw = true;
                 if self.is_open(Surface::Todos) {
                     Disposition::Rendered
                 } else {
@@ -42,7 +41,6 @@ impl App {
                     self.queued.push(Action::ListMergeQueue);
                     self.queues_asked_ms = self.now_ms;
                 }
-                self.redraw = true;
                 Disposition::Filtered
             }
             _ => unreachable!("on_todo_event was handed an event it does not handle"),

@@ -404,11 +404,11 @@ fn a_held_view_draws_the_same_frame_while_the_turn_streams() {
         "the held frame moved while the turn streamed"
     );
 
-    // `redraw` cannot force a repaint behind the hold's back, which is the other way
-    // bytes could reach the glass: a full repaint writes every row.
-    a.mark_redraw();
+    // A repaint cannot happen behind the hold's back, which is the other way bytes could
+    // reach the glass: a full repaint writes every row.
+    a.repaint = true;
     assert!(
-        !a.take_redraw(),
+        !a.take_repaint(),
         "a held view let the glass be thrown away, so a full repaint is one frame away"
     );
     assert_eq!(a.screen(100, 24), frozen);
@@ -2467,7 +2467,7 @@ fn a_wheel_notch_down_walks_and_a_run_of_notches_is_what_reaches_the_tail() {
     let above = a.view_top;
     // Drain the flag, so what is asserted below is about the notch rather than about anything
     // the thirty rows did - the head's loop reads it at the top of every pass.
-    let _ = a.take_redraw();
+    let _ = a.take_repaint();
 
     // One notch down is a STEP, not the tail - the opposite of what this test asserted
     // before, and the whole of the reversal.
@@ -2484,7 +2484,7 @@ fn a_wheel_notch_down_walks_and_a_run_of_notches_is_what_reaches_the_tail() {
         "a notch down is three lines of conversation, not a jump to the end"
     );
     assert!(
-        !a.take_redraw(),
+        !a.take_repaint(),
         "the notch asked for the glass to be thrown away — that is the erase the flicker fix \
              removed from the scroll path"
     );
@@ -2529,7 +2529,7 @@ fn three_notches_down_walk_three_lines_each_and_only_arriving_follows() {
     }
     a.screen(80, 24);
     // Drain the flag, so the assertions below are about the notches and not about the fixture.
-    let _ = a.take_redraw();
+    let _ = a.take_repaint();
     let bottom = a.body_len - a.view_room;
 
     // Park nine lines up - three notches' worth - so the walk down has somewhere to go.
@@ -2555,7 +2555,7 @@ fn three_notches_down_walk_three_lines_each_and_only_arriving_follows() {
         );
         assert_eq!(a.view_top, want, "notch {n} down did not walk three lines");
         assert!(
-            !a.take_redraw(),
+            !a.take_repaint(),
             "notch {n} down asked for the glass to be thrown away"
         );
     }
@@ -2569,7 +2569,7 @@ fn three_notches_down_walk_three_lines_each_and_only_arriving_follows() {
     );
     assert_eq!(a.scroll, 0, "and the count agrees with the anchor");
     assert!(
-        !a.take_redraw(),
+        !a.take_repaint(),
         "the arriving notch asked for the glass to be thrown away"
     );
 }

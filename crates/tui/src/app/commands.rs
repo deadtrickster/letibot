@@ -41,7 +41,6 @@ impl App {
     pub(crate) fn refold(&mut self) {
         self.invalidate_history();
         self.scroll = 0;
-        self.redraw = true;
         self.say(&format!(
             "thinking {} · tool output {} · raw tool calls {}",
             fold_word(self.reasoning),
@@ -481,7 +480,6 @@ impl App {
                 self.close_surface(Surface::Picker);
                 self.close_surface(Surface::Config);
                 self.seed_pick();
-                self.redraw = true;
                 return Some(Action::Settings);
             }
             return self.mode_action(name);
@@ -540,7 +538,6 @@ impl App {
                     self.close_surface(Surface::Picker);
                     self.close_surface(Surface::Config);
                     self.seed_pick();
-                    self.redraw = true;
                     return None;
                 }
                 self.set_verbosity(&rest)
@@ -555,7 +552,6 @@ impl App {
                 self.close_surface(Surface::Picker);
                 self.close_surface(Surface::Config);
                 self.seed_pick();
-                self.redraw = true;
                 None
             }
             _ if verb_arg(cmd, "diff").is_some() => {
@@ -565,7 +561,6 @@ impl App {
                     self.close_surface(Surface::Picker);
                     self.close_surface(Surface::Config);
                     self.seed_pick();
-                    self.redraw = true;
                     return None;
                 }
                 self.set_diff(&rest)
@@ -1130,7 +1125,6 @@ impl App {
                 // said otherwise.
                 self.read_marks.clear();
                 self.invalidate_history();
-                self.redraw = true;
                 // `Replace`, and this is the whole of the third item: under a union the save wrote the file's keys
                 // straight back, so the dismissal survived on disk while the head believed it had restored.
                 let saved = self.save_prefs(RetiredWrite::Replace);

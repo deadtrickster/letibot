@@ -410,7 +410,6 @@ fn a_question_the_head_has_read_the_board_for_dies_with_its_row() {
             .find("WAITING ON YOU")
             .is_none()
     );
-    a.redraw = true;
     assert!(
         a.screen(200, 40)
             .join("\n")

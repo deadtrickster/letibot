@@ -295,3 +295,60 @@ fn picker_names_the_daemon_and_the_workspace() {
         assert!(text(&many).contains("letibot (5)"), "{}", text(&many));
     }
 }
+
+/// A pane scroll is a diff, not an erase. Every notch and arrow in the todos pane, past both ends
+/// included, erased the whole screen, which flickers under tmux.
+#[test]
+fn scrolling_the_todos_pane_past_either_end_never_erases_the_screen() {
+    use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    let todos = (0..60)
+        .map(|i| TodoEntry {
+            by: TodoBy::Operator,
+            content: format!("row {i}"),
+            status: TodoStatus::Pending,
+            when: None,
+            needs: Vec::new(),
+        })
+        .collect();
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::TodosUpdated { todos },
+    )));
+    a.push_surface(Surface::Todos);
+    a.screen(80, 24);
+    for (k, n) in [
+        (Key::WheelDown, 40),
+        (Key::WheelUp, 40),
+        (Key::Down, 70),
+        (Key::Up, 70),
+    ] {
+        for i in 0..n {
+            a.key(k.clone());
+            a.screen(80, 24);
+            assert!(
+                !a.take_repaint(),
+                "{k:?} #{i} in the todos pane erased the screen"
+            );
+        }
+    }
+}
+
+/// A room poll answers every few seconds whether or not anything changed, so an erase per answer
+/// is a flicker on a timer.
+#[test]
+fn a_room_poll_answer_never_erases_the_screen() {
+    let mut a = app();
+    a.screen(80, 24);
+    a.apply(ServerFrame::RoomChat {
+        client_request_id: "c1".into(),
+        reply: serde_json::json!({"type": "rooms", "rows": []}),
+    });
+    a.screen(80, 24);
+    assert!(!a.take_repaint(), "a room poll answer erased the screen");
+}

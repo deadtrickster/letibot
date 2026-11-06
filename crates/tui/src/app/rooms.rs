@@ -429,7 +429,6 @@ impl App {
     /// The daemon's answer to a chat request. `id` is the request the answer belongs to: a
     /// send's answer is told from a poll's by it, and no poll may clear a send's record.
     pub(crate) fn on_room_chat(&mut self, id: &str, reply: Value) {
-        self.redraw = true;
         if let Some(e) = reply.get("error").and_then(Value::as_str) {
             // A send that never reached the coordinator keeps its line with the reason on it;
             // the footer is for the poll's own trouble, which no send owns.
@@ -591,7 +590,6 @@ impl App {
         };
         self.rooms.next_poll_ms = 0;
         self.scroll_rooms_to_tail();
-        self.redraw = true;
         Some(Action::RoomChat { op, id: Some(id) })
     }
 
@@ -611,9 +609,6 @@ impl App {
                 self.rooms.sends.retain(|s| s.id != failed.id);
                 self.rooms_say(&text)
             });
-        if act.is_some() {
-            self.redraw = true;
-        }
         ControlFlow::Break(act)
     }
 
@@ -624,7 +619,6 @@ impl App {
             && let Some(failed) = self.rooms.failed_of(&chan).map(|s| s.id.clone())
         {
             self.rooms.sends.retain(|s| s.id != failed);
-            self.redraw = true;
         }
         ControlFlow::Break(None)
     }
@@ -669,13 +663,11 @@ impl App {
         self.scroll_rooms_to_tail();
         self.rooms.next_poll_ms = 0;
         self.rooms_shown();
-        self.redraw = true;
     }
 
     /// The roster always shows the connected members. `r` adds or drops the offline ones.
     pub(crate) fn rooms_toggle_roster(&mut self) -> ControlFlow<Option<Action>> {
         self.rooms.roster_all = !self.rooms.roster_all;
-        self.redraw = true;
         ControlFlow::Break(None)
     }
 
@@ -691,7 +683,6 @@ impl App {
             " "
         };
         self.editor.insert(&format!("{lead}@{handle} "));
-        self.redraw = true;
     }
 
     fn scroll_rooms_to_tail(&mut self) {

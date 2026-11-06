@@ -122,7 +122,6 @@ impl App {
         let added = self.hide_read();
         if self.read_marks != before || added > 0 {
             self.invalidate_history();
-            self.redraw = true;
         }
     }
 
@@ -206,7 +205,6 @@ impl App {
         // A note that was in `hist_lines` has to come out of it, and the walk is
         // incremental: the only honest way to un-draw a line is to rebuild.
         self.invalidate_history();
-        self.redraw = true;
         added
     }
 
@@ -225,7 +223,6 @@ impl App {
             // on the next draw.
             self.hide_read();
             self.invalidate_history();
-            self.redraw = true;
         }
     }
 

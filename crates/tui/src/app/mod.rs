@@ -825,8 +825,10 @@ pub struct App {
     /// so nothing to show" from "metered and nothing has finished yet".
     pub(crate) spent_seen: bool,
     pub(crate) quit: bool,
-    /// Set whenever a full repaint is wanted regardless of the diff.
-    pub(crate) redraw: bool,
+    /// The glass is not what the painter last sent, so the next frame erases and repaints every
+    /// row. Only Ctrl-L sets it: every frame is built and diffed anyway, so a state change needs
+    /// no flag, and setting this for one erases the screen and reads as a flicker.
+    pub(crate) repaint: bool,
     /// The view is held: the head writes nothing at all, so a mouse selection survives a
     /// streaming turn. Events keep arriving and folding; only the drawing stops.
     /// See [`App::toggle_hold`].
@@ -1379,7 +1381,7 @@ impl App {
             spent_micros: 0,
             spent_seen: false,
             quit: false,
-            redraw: false,
+            repaint: false,
             hold: false,
             hold_frame: None,
             hold_size: (0, 0),
@@ -1487,17 +1489,16 @@ impl App {
         self.rooms_poll();
     }
 
-    /// Whether the head wants the terminal repainted from scratch (Ctrl-L, or a fold that changed
-    /// every cached line); reading it clears it. Not the scroll keys: a moved viewport is a diff
-    /// rather than an erase, so flagging it bought a whole-screen erase per wheel notch.
-    pub fn take_redraw(&mut self) -> bool {
+    /// Whether the head wants the terminal repainted from scratch, which only Ctrl-L asks for.
+    /// Reading it clears it.
+    pub fn take_repaint(&mut self) -> bool {
         // A held view does not let the glass be thrown away: a `true` here makes the driver call
         // `Terminal::invalidate`, a full repaint, which is the one thing the hold exists to
         // prevent. The flag is LEFT SET so the release spends it exactly once.
         if self.hold {
             return false;
         }
-        std::mem::take(&mut self.redraw)
+        std::mem::take(&mut self.repaint)
     }
 
     pub fn should_quit(&self) -> bool {
@@ -1515,13 +1516,6 @@ impl App {
             return true;
         }
         self.quit
-    }
-
-    /// Ask for the next frame to be rebuilt. The driver is a separate file and mutates the head's
-    /// state directly, so it needs one way to say *this changed, draw again* - the same flag every
-    /// internal writer sets, exposed rather than kept private.
-    pub fn mark_redraw(&mut self) {
-        self.redraw = true;
     }
 
     pub fn session_id(&self) -> &str {

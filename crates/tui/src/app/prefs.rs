@@ -18,7 +18,6 @@ impl App {
             .into_iter()
             .map(|s| format!("head.toml: {s}"))
             .collect();
-        self.redraw = true;
     }
 
     /// Take a git reading from the LOOP, on a thread: it spawns a process, so the frame cannot draw
@@ -476,7 +475,6 @@ impl App {
     pub(crate) fn config_change(&mut self) -> Option<Action> {
         let rows = self.config_rows();
         let row = rows.get(self.config_sel.min(rows.len().saturating_sub(1)))?;
-        self.redraw = true;
         match &row.edit {
             ConfigEdit::Head(which) => {
                 match which {

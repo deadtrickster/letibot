@@ -31,7 +31,6 @@ impl App {
                 // a silent `osascript` lookup is the whole cost when there is none. Not while a
                 // window is open: that press must close the result the reader opened.
                 if self.payload_sel.is_none() && self.attach_from_clipboard() {
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 // One row, not a switch: a chord cannot be named by a per-row seam and mean the
@@ -57,14 +56,12 @@ impl App {
                 // Not `refold`. That is the fold's own: it resets the scroll and
                 // announces the fold state, and neither happened here.
                 self.invalidate_history();
-                self.redraw = true;
                 return ControlFlow::Break(None);
             }
             Key::CtrlL => {
-                // This one keeps `redraw`, which means throw the glass away: Ctrl-L is the
-                // operator saying something else wrote to their terminal. The scroll keys are
-                // the opposite case and take the diff; see [`App::hold`].
-                self.redraw = true;
+                // Something else wrote to the terminal, so the painter's record of the glass is
+                // wrong and only a full erase puts it right.
+                self.repaint = true;
                 return ControlFlow::Break(None);
             }
             // The panes' chords, read from the table that advertises them (`Surface::chord`) and
@@ -169,7 +166,6 @@ impl App {
         } else {
             (self.dec_scroll + by).min(max)
         };
-        self.redraw = true;
         true
     }
 
@@ -189,7 +185,6 @@ impl App {
         } else {
             (self.pane_scroll + by).min(max)
         };
-        self.redraw = true;
     }
 
     /// The conversation's own scroll - a page key's or a wheel notch's, once nothing in front

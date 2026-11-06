@@ -156,7 +156,6 @@ impl App {
                     if of == &dir {
                         self.gh_refs = refs.map(std::sync::Arc::new);
                         self.gh_read = (dir.clone(), self.now_ms);
-                        self.redraw = true;
                     }
                     self.gh_job = None;
                 }

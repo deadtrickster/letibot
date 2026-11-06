@@ -509,7 +509,6 @@ impl crate::app::App {
             text,
             attachment: a,
         });
-        self.redraw = true;
     }
 
     /// A bracketed paste read as what it is: files when it names files, a picture when the terminal
@@ -625,7 +624,6 @@ impl crate::app::App {
         };
         self.editor.kill_range(start..end);
         self.chips.retain(|c| c.text != chip_text);
-        self.redraw = true;
         true
     }
 
@@ -646,7 +644,6 @@ impl crate::app::App {
                     "{name} is gone — nothing was sent. Take the chip out and send again, or put \
                      the file back where it was."
                 ));
-                self.redraw = true;
                 return None;
             }
             out.push(chip.attachment.clone());

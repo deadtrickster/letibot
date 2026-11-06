@@ -245,7 +245,6 @@ impl App {
             scroll: 0,
         });
         self.pane_scroll = 0;
-        self.redraw = true;
         // The session list's own failure, said where a person will see it. Opening the list is
         // the moment their broken layer matters (`app::sessions_pane`).
         if s == Surface::Picker
@@ -276,7 +275,6 @@ impl App {
         if self.top_surface() != was_top {
             self.pane_scroll = self.surfaces.last().map_or(0, |o| o.scroll);
         }
-        self.redraw = true;
     }
 
     /// Pop the top - Esc's act on a surface. Returns what was closed.

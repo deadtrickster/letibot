@@ -56,7 +56,6 @@ impl App {
             Key::Enter if s.owns_enter() => {
                 if !self.editor.text().is_empty() {
                     self.say("this pane takes enter — your line is held; esc closes the pane, then enter sends it");
-                    self.redraw = true;
                 }
                 ControlFlow::Break(None)
             }
@@ -134,7 +133,6 @@ impl App {
             // It works over an empty queue too: the strip still says which half you are looking at.
             Act::View => {
                 self.queue_view = self.queue_view.other();
-                self.redraw = true;
                 ControlFlow::Break(None)
             }
             Act::Verb(v) => self.queue_verb(v),
@@ -264,7 +262,6 @@ impl App {
             Surface::Rooms => self.rooms_step(up),
             _ => return ControlFlow::Continue(()),
         }
-        self.redraw = true;
         ControlFlow::Break(None)
     }
 
@@ -320,7 +317,6 @@ impl App {
             Surface::Jobs => self.jobs_enter(),
             Surface::Monitors => {
                 self.open_monitor_details();
-                self.redraw = true;
                 ControlFlow::Break(None)
             }
             // Enter reads the stop under the cursor whole: a finding with its evidence, its fix
@@ -401,7 +397,6 @@ impl App {
         match *stop {
             SubStop::Finished => {
                 self.subagents_finished_open = !self.subagents_finished_open;
-                self.redraw = true;
                 ControlFlow::Break(None)
             }
             SubStop::Agent(i) => {
@@ -410,7 +405,6 @@ impl App {
                     // Nothing to attach to yet, and the daemon would refuse the switch by name
                     // anyway; saying it here keeps the operator in the pane they were using.
                     self.say("that subagent is still opening — nothing to attach to yet");
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 let id = row.session_id.clone();
@@ -434,7 +428,6 @@ impl App {
         let row = &self.subagents[i];
         if row.state == "opening" {
             self.say("that subagent is still opening — nothing to read yet");
-            self.redraw = true;
             return ControlFlow::Break(None);
         }
         let id = row.session_id.clone();
@@ -510,7 +503,6 @@ impl App {
                     self.todos_sel = at;
                 }
                 self.todos_follow = true;
-                self.redraw = true;
                 ControlFlow::Break(Some(Action::SetOperatorTodos {
                     items: mine,
                     moved: Vec::new(),
@@ -520,14 +512,12 @@ impl App {
                 self.repo_sel = i;
                 self.repo_open = !self.repo_open;
                 self.scroll_into_view(self.todos_row_of());
-                self.redraw = true;
                 ControlFlow::Break(None)
             }
             // Said, not silently nothing: the model moves its own row's status and the operator
             // may not, and a Tab that did nothing would read as a pane that stopped answering.
             TodoStop::Theirs(_) => {
                 self.say("that row is the model's — nothing here moves it; enter reads it whole");
-                self.redraw = true;
                 ControlFlow::Break(None)
             }
         }
@@ -568,7 +558,6 @@ impl App {
                      the window. Nothing was sent."
                 );
                 self.say(&said);
-                self.redraw = true;
                 return None;
             }
         };
@@ -578,7 +567,6 @@ impl App {
                 verb.word()
             );
             self.say(&said);
-            self.redraw = true;
             return None;
         }
         // `regate` is about the row's TARGET, named with its repository so the re-gate reaches the
@@ -606,13 +594,11 @@ impl App {
         match *stop {
             JobStop::Finished => {
                 self.jobs_finished_open = !self.jobs_finished_open;
-                self.redraw = true;
                 ControlFlow::Break(None)
             }
             JobStop::Job(i) => {
                 if self.session_id.is_empty() {
                     self.say("not attached to a session yet");
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 ControlFlow::Break(self.open_job_out(i))

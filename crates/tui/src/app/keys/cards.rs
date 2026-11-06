@@ -29,12 +29,10 @@ impl App {
                         "the composer has words in it — clear them (ctrl-c) to answer, or esc puts \
                          the card away",
                     );
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 if self.now_ms.saturating_sub(self.mode_confirm_at) < MODE_ARM_MS {
                     self.say("the card just came up — press enter again to answer it");
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
             }
@@ -49,7 +47,6 @@ impl App {
             {
                 let asked = self.mode_asked.take();
                 self.mode_confirm = None;
-                self.redraw = true;
                 if let Some(asked) = asked {
                     // Put away, not refused: the daemon's request stays open and alt-a brings
                     // the card back, so a stray key sends nothing on the asker's behalf.
@@ -68,7 +65,6 @@ impl App {
             // is a point THEY asked for and goes as `Mode { consented }`, while a card another head
             // asked for is answered by its id, so the daemon settles only the request shown.
             let asked = self.mode_asked.take();
-            self.redraw = true;
             let yes = matches!(k, Key::Char('y') | Key::Char('Y') | Key::Enter);
             let out = match (asked, yes) {
                 (Some(asked), yes) => {
@@ -121,7 +117,6 @@ impl App {
                         draft.focus = next;
                     }
                     self.set_composer(&shown);
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 Key::Enter => {
@@ -135,7 +130,6 @@ impl App {
                     if draft.title.trim().is_empty() {
                         self.todo_draft = Some(draft);
                         self.say("a todo item needs a title — type one, or esc to cancel");
-                        self.redraw = true;
                         return ControlFlow::Break(None);
                     }
                     let mut text = draft.title.trim().to_string();
@@ -149,7 +143,6 @@ impl App {
                     if let Some(why) = row_refusal(&text) {
                         self.todo_draft = Some(draft);
                         self.say(&why);
-                        self.redraw = true;
                         return ControlFlow::Break(None);
                     }
                     let when = if draft.when.trim().is_empty() {
@@ -175,7 +168,6 @@ impl App {
                         needs: Vec::new(),
                     });
                     self.echo_operator_todos(mine.clone());
-                    self.redraw = true;
                     return ControlFlow::Break(Some(Action::SetOperatorTodos {
                         items: mine,
                         moved: Vec::new(),
@@ -185,7 +177,6 @@ impl App {
                     self.todo_draft = None;
                     self.set_composer("");
                     self.say("nothing added");
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 _ => {}
@@ -212,7 +203,6 @@ impl App {
                 Key::Enter => {
                     let secret = std::mem::take(&mut self.secret_buf);
                     self.secret = None;
-                    self.redraw = true;
                     return ControlFlow::Break(Some(Action::Secret {
                         req_id,
                         secret: Some(secret),
@@ -224,7 +214,6 @@ impl App {
                     // nothing into the field - so no keystroke aimed elsewhere sends it.
                     self.secret_buf.clear();
                     self.secret_away = true;
-                    self.redraw = true;
                     self.say(
                         "the password card is put away — sudo keeps waiting · alt-a brings it back",
                     );
@@ -233,7 +222,6 @@ impl App {
                 Key::CtrlC => {
                     self.secret_buf.clear();
                     self.secret = None;
-                    self.redraw = true;
                     return ControlFlow::Break(Some(Action::Secret {
                         req_id,
                         secret: None,
@@ -241,7 +229,6 @@ impl App {
                 }
                 _ => {}
             }
-            self.redraw = true;
             return ControlFlow::Break(None);
         }
         ControlFlow::Continue(())
@@ -252,7 +239,6 @@ impl App {
     /// card exists only for a `!term close` the operator typed while a program is running.
     pub(crate) fn key_term_ask(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if let Some(ask) = self.term_ask.take() {
-            self.redraw = true;
             return ControlFlow::Break(match k {
                 Key::Char('y') | Key::Char('Y') => {
                     // An ending is on its way, so the keys stop here: a byte written into a pty whose
@@ -298,7 +284,6 @@ impl App {
                 Key::Enter => {
                     let line = std::mem::take(&mut self.prompt_buf);
                     self.prompt = None;
-                    self.redraw = true;
                     return ControlFlow::Break(Some(Action::PromptAnswer { req_id, line }));
                 }
                 Key::Esc | Key::CtrlC => {
@@ -307,7 +292,6 @@ impl App {
                     // waiting, which is why `App::submit` reads `self.prompt` - a bare line typed
                     // while the card is away must not become a prompt for the model.
                     self.prompt_away = true;
-                    self.redraw = true;
                     self.say(
                         "card put away — the command is still waiting · alt-a brings it back, \
                          and `!send LINE` answers it",
@@ -316,7 +300,6 @@ impl App {
                 }
                 _ => {}
             }
-            self.redraw = true;
             return ControlFlow::Break(None);
         }
         ControlFlow::Continue(())
@@ -337,7 +320,6 @@ impl App {
                 Key::Enter => {
                     let key = std::mem::take(&mut self.key_buf);
                     self.key_ask = None;
-                    self.redraw = true;
                     // An empty enter is a cancelled ask, not a stored empty key - the
                     // daemon would refuse it and the row was not taken.
                     if key.is_empty() {
@@ -362,12 +344,10 @@ impl App {
                     self.key_buf.clear();
                     self.key_ask = None;
                     self.say("cancelled — nothing was stored and the row was not taken");
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 _ => {}
             }
-            self.redraw = true;
             return ControlFlow::Break(None);
         }
         ControlFlow::Continue(())
@@ -395,12 +375,10 @@ impl App {
                 }
                 Key::Up if n > 0 => {
                     self.sel = if self.sel == 0 { n - 1 } else { self.sel - 1 };
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 Key::Down if n > 0 => {
                     self.sel = (self.sel + 1) % n;
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 Key::Enter if n > 0 && !typing => {
@@ -411,7 +389,6 @@ impl App {
                 Key::Up | Key::Down if n == 0 => return ControlFlow::Break(None),
                 Key::Enter if n == 0 && !typing => {
                     self.say("type your answer — enter sends it");
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 // A row number MARKS the row on a permission; Enter answers it. Answering on the
@@ -419,7 +396,6 @@ impl App {
                 // and marking it ate the first character of a question's answer.
                 _ if numbered && !typing && digit_row(k, n).is_some() => {
                     self.sel = digit_row(k, n).unwrap();
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 _ => {}
@@ -436,7 +412,6 @@ impl App {
             match k {
                 Key::Up | Key::Down => {
                     self.quit_sel = 1 - self.quit_sel.min(1);
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 // A row number MARKS the row; Enter answers it. Answering on the digit let a `2`
@@ -444,7 +419,6 @@ impl App {
                 // the bar said "1/2 or up/down then enter". A digit is a move now, and Enter answers.
                 _ if self.editor.text().is_empty() && digit_row(k, 2).is_some() => {
                     self.quit_sel = digit_row(k, 2).expect("just checked");
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 // Enter has the digits' empty-composer guard: words typed after the
@@ -454,7 +428,6 @@ impl App {
                         "the composer has words in it — clear them (ctrl-c) to choose, or esc \
                          stays",
                     );
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 Key::Enter => {
@@ -472,7 +445,6 @@ impl App {
                 Key::Esc | Key::CtrlC => {
                     self.quit_card = false;
                     self.say("staying");
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 _ => {}
@@ -505,13 +477,11 @@ impl App {
                     // here on must not move it - see [`App::pick_unseeded`]. A worse defect
                     // than the one the re-seed fixes: a cursor that jumps while they arrow.
                     self.pick_unseeded = false;
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 Key::Down if n > 0 => {
                     self.mode_sel = (self.mode_sel + 1) % n;
                     self.pick_unseeded = false;
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 Key::Enter if self.editor.text().is_empty() => {
@@ -535,7 +505,6 @@ impl App {
                 _ if self.editor.text().is_empty() && digit_row(k, n).is_some() => {
                     self.mode_sel = digit_row(k, n).expect("just checked");
                     self.pick_unseeded = false;
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 // Esc leaves the setting alone and closes the card - the card's own key now,
@@ -543,7 +512,6 @@ impl App {
                 // block that closed every pane and card at once.
                 Key::Esc | Key::CtrlC => {
                     self.pick = None;
-                    self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 _ => {}

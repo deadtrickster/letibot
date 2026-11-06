@@ -52,14 +52,11 @@ impl App {
                 });
             }
         }
-        self.redraw = true;
     }
 
     /// The prompt is current: the card comes down, wherever it was.
     pub(crate) fn prefix_current(&mut self) {
-        if self.reseat.take().is_some() {
-            self.redraw = true;
-        }
+        self.reseat = None;
     }
 
     /// A reseat was refused: the card is still true and alt-r may send again. A refusal because the
@@ -74,7 +71,6 @@ impl App {
                 c.sel = 0;
                 c.open = empty;
             }
-            self.redraw = true;
         }
     }
 
@@ -132,7 +128,6 @@ impl App {
             c.open = false;
             c.asked = action.is_some();
         }
-        self.redraw = true;
         action
     }
 
@@ -141,7 +136,6 @@ impl App {
         if let Some(c) = self.reseat.as_mut() {
             c.open = false;
             c.sel = 0;
-            self.redraw = true;
         }
     }
 
@@ -157,7 +151,6 @@ impl App {
             ),
             Some(c) => {
                 c.open = true;
-                self.redraw = true;
             }
             None => self.say("this session speaks the current prompt — there is nothing to reseat"),
         }
@@ -184,14 +177,12 @@ impl App {
                 if let Some(c) = self.reseat.as_mut() {
                     c.sel = 1 - c.sel.min(1);
                 }
-                self.redraw = true;
                 ControlFlow::Break(None)
             }
             Key::Tab if !typing => {
                 if let Some(c) = self.reseat.as_mut() {
                     c.whole = !c.whole;
                 }
-                self.redraw = true;
                 ControlFlow::Break(None)
             }
             Key::Enter if !typing => {
@@ -205,7 +196,6 @@ impl App {
                 if let Some(c) = self.reseat.as_mut() {
                     c.sel = digit_row(k, 2).expect("just checked");
                 }
-                self.redraw = true;
                 ControlFlow::Break(None)
             }
             Key::Esc => {

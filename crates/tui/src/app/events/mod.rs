@@ -466,7 +466,6 @@ impl App {
             t.hand_over_reasoning(&self.items);
         }
         self.scroll = 0;
-        self.redraw = true;
     }
 
     pub(crate) fn event(&mut self, e: SessionEvent, ts: u64) -> Disposition {
@@ -549,7 +548,6 @@ impl App {
             (Some(Surface::JobOut), _, Some(v)) => v.scroll = moved(v.scroll),
             _ => return false,
         }
-        self.redraw = true;
         true
     }
 
@@ -841,7 +839,6 @@ impl App {
                 ),
                 ts: 0,
             }));
-            self.redraw = true;
             return;
         };
         self.items[idx].item = Some(item);

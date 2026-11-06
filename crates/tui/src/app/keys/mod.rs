@@ -55,7 +55,6 @@ impl App {
                 if self.light_background != Some(light) {
                     self.light_background = Some(light);
                     self.invalidate_history();
-                    self.redraw = true;
                 }
                 return None;
             }
@@ -288,7 +287,6 @@ impl App {
             let text = self.pending_prompts.join("\n");
             self.pending_prompts.clear();
             self.set_composer(&text);
-            self.redraw = true;
             return Some(Action::WithdrawPrompts);
         }
 
@@ -301,7 +299,6 @@ impl App {
             } else {
                 self.complete_slash();
             }
-            self.redraw = true;
             return None;
         }
 
@@ -312,13 +309,11 @@ impl App {
             match k {
                 Key::Up => {
                     self.scroll_up(1);
-                    self.redraw = true;
                     return None;
                 }
                 Key::Down => {
                     self.anchor = None;
                     self.scroll = 0;
-                    self.redraw = true;
                     return None;
                 }
                 _ => {}
@@ -335,7 +330,6 @@ impl App {
             self.payload_sel = None;
             self.payload_page = 0;
             self.invalidate_history();
-            self.redraw = true;
         }
 
         // Esc inside a subagent's session goes back UP the tree: Enter goes down a level, Esc comes
@@ -346,7 +340,6 @@ impl App {
         {
             if !self.open.is_empty() {
                 self.say("a decision is waiting in this subagent — answer it, then esc goes up");
-                self.redraw = true;
                 return None;
             }
             // A card put away here keeps the operator here too: the parent's
@@ -362,7 +355,6 @@ impl App {
                     "a decision put away is waiting in this subagent — alt-a brings it back; \
                      answer it, then esc goes up",
                 );
-                self.redraw = true;
                 return None;
             }
             // The pane opens on the rows the person climbed out of, and the cursor lands on the child they came
@@ -379,7 +371,6 @@ impl App {
         if let Key::Paste(s) = &k
             && self.paste_arrived(s.clone())
         {
-            self.redraw = true;
             return None;
         }
         if matches!(k, Key::Backspace) && self.backspace_chip() {
@@ -423,13 +414,11 @@ impl App {
                     "a decision is up — answer it or esc puts it away, then ctrl-c twice asks \
                      whether to leave",
                 );
-                self.redraw = true;
                 None
             }
             Reaction::Quit => {
                 self.quit_card = true;
                 self.quit_sel = 0;
-                self.redraw = true;
                 None
             }
             Reaction::Changed => None,
@@ -437,12 +426,10 @@ impl App {
             // transcript; see the note above.
             Reaction::Idle => {
                 match k {
-                    // `redraw` is not "rebuild the frame" - the loop rebuilds one every pass. It is "throw the
-                    // glass away", and without it a scroll repaints only the rows whose text differs, which for a
-                    // window that slid one line over similar rows can be almost none.
+                    // No `repaint`: the loop rebuilds and diffs a frame every pass, so a scroll sends only the
+                    // rows whose text differs.
                     Key::Up => {
                         self.scroll_up(1);
-                        self.redraw = true;
                     }
                     Key::Down => {
                         self.hold(1);
@@ -488,11 +475,7 @@ impl App {
     /// with `ctrl-\` going nowhere, and the transcript is the honest thing to show. The daemon's pane is not closed
     /// here, since the close is a frame and a frame is what cannot be sent.
     pub fn drop_pane(&mut self) -> bool {
-        let had = self.term.take().is_some();
-        if had {
-            self.redraw = true;
-        }
-        had
+        self.term.take().is_some()
     }
 
     /// Whether a pane is open and drawn, and therefore owns the keyboard: the question `Link::tick` asks before it
@@ -607,11 +590,10 @@ impl App {
         if to != from {
             self.payload_page = to;
             // The history buffer is a cache of the rendered rows, and a page offset
-            // changes what one of those rows renders to - so `redraw` alone re-draws the
+            // changes what one of those rows renders to - so the diff alone re-draws the
             // *old* lines.
             self.invalidate_history();
         }
-        self.redraw = true;
     }
 }
 

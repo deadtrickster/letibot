@@ -142,7 +142,6 @@ impl App {
             self.absorbed.insert(id, key);
         }
         self.invalidate_history_from(from);
-        self.redraw = true;
     }
 }
 

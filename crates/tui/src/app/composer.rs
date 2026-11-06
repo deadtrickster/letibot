@@ -21,7 +21,6 @@ impl App {
         if let Some(why) = letibot_sessionlog::operator_line_refusal(&text) {
             self.set_composer(&text);
             self.say(&why);
-            self.redraw = true;
             return None;
         }
         // `!term` is checked before the bare `!`, because `!term mc` is also a good `!` line: the verb has to be
@@ -33,7 +32,6 @@ impl App {
                     "no daemon connection — nothing was started and nothing was ended. Your line \
                      is held here. It sends when the daemon is back.",
                 );
-                self.redraw = true;
                 return None;
             }
             if let letibot_sessionlog::TermLine::Close(which) = what {
@@ -47,7 +45,6 @@ impl App {
                 self.term_cols.max(1),
                 self.screen_rows.max(1),
             ));
-            self.redraw = true;
             return Some(Action::TermOpen { line: text });
         }
 
@@ -58,7 +55,6 @@ impl App {
                     "no daemon connection — your line is held here. It sends when the daemon \
                      is back.",
                 );
-                self.redraw = true;
                 return None;
             }
             self.scroll = 0;
@@ -77,7 +73,6 @@ impl App {
             if letibot_sessionlog::operator_shell_command(&text).is_none() {
                 self.set_composer(&text);
                 self.say("! COMMAND — the bang has to be followed by the command to run");
-                self.redraw = true;
                 return None;
             }
             if self.detached() {
@@ -86,7 +81,6 @@ impl App {
                     "no daemon connection — your line is held here. It sends when the daemon \
                      is back.",
                 );
-                self.redraw = true;
                 return None;
             }
             self.scroll = 0;
@@ -143,7 +137,6 @@ impl App {
                 OptionChoice::Ambiguous { word, candidates } => {
                     self.set_composer(&text);
                     self.say(&ambiguous_option_line(&word, &candidates));
-                    self.redraw = true;
                     return None;
                 }
                 // Nothing on the card answers to the line: the mid-typing courtesy,
@@ -175,7 +168,6 @@ impl App {
             };
             self.set_composer(&text);
             self.say(&said);
-            self.redraw = true;
             return None;
         }
         // A line typed into a head with no daemon must not look sent. Everything else a key does is local, so this is
@@ -186,7 +178,6 @@ impl App {
                 "no daemon connection — your line is held here. It sends when the daemon \
                  is back.",
             );
-            self.redraw = true;
             return None;
         }
         // A bare line is not spent on the model while the person's own command waits: with `apt` at its prompt, their
@@ -197,7 +188,6 @@ impl App {
                 "your own command is waiting on a line — `!send LINE` answers it; this message \
                  is held here, and enter sends it to the model once the run ends",
             );
-            self.redraw = true;
             return None;
         }
         // The model is checked before the words leave - see `app::reach`. Held there, not

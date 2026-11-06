@@ -740,10 +740,10 @@ fn scrolling_the_popup_repaints_only_the_popup_and_shows_no_caret() {
         Key::WheelUp,
     ] {
         let said = format!("{k:?}");
-        a.take_redraw();
+        a.take_repaint();
         a.key(k);
         assert!(
-            !a.take_redraw(),
+            !a.take_repaint(),
             "{said} asked for a full repaint: the whole screen erased for a scroll"
         );
         frames.push(a.screen(100, 14));

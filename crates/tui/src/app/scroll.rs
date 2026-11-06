@@ -154,7 +154,6 @@ impl App {
             self.hold_rows = 0;
             self.hold_frame = None;
             self.hold_size = (0, 0);
-            self.redraw = true;
             self.say(&format!(
                 "the view follows again — {arrived} rows arrived while it was held"
             ));
@@ -163,7 +162,6 @@ impl App {
             self.hold_rows = self.items.len();
             self.hold_frame = None;
             self.hold_size = (0, 0);
-            self.redraw = true;
         }
         None
     }
@@ -597,7 +595,6 @@ impl App {
         // The history buffer is a cache of the rendered rows, and the offset changes what one of
         // them renders to - see [`App::page_payload`].
         self.invalidate_history();
-        self.redraw = true;
     }
 
     /// Which rows of the conversation are lines of the open payload window, read off the rows the walk drew,
@@ -1376,7 +1373,6 @@ impl App {
                  view follows the tail again (row `{}`)",
                 held.item_id
             ));
-            self.redraw = true;
         }
     }
 
@@ -1439,7 +1435,6 @@ impl App {
                 self.say("this rung hides every row here, so there is nothing to hold a place in");
             }
         }
-        self.redraw = true;
     }
 
     /// Whether the viewport is following the stream, and the thing the screen has to say out loud:

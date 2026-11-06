@@ -26,7 +26,6 @@ impl App {
                     self.filling_since = self.now_ms;
                 }
                 self.filling = (done < total).then_some((what, unit, done, total));
-                self.redraw = true;
                 Disposition::Rendered
             }
             // What the session is waiting on: the daemon's own answer to *will this act again by
@@ -42,7 +41,6 @@ impl App {
                     t.ends_turn = Some(true);
                 }
                 self.activity = activity;
-                self.redraw = true;
                 Disposition::Control
             }
             // The held counts, replaced whole: the daemon sends the set as it is now every time it
@@ -53,7 +51,6 @@ impl App {
                 failed,
             } => {
                 self.held = (jobs + subagents > 0).then_some((jobs, subagents, failed));
-                self.redraw = true;
                 Disposition::Rendered
             }
             SessionEvent::CompactionProgress {
@@ -78,7 +75,6 @@ impl App {
                     written,
                     unit,
                 });
-                self.redraw = true;
                 Disposition::Rendered
             }
             SessionEvent::TurnStarted {

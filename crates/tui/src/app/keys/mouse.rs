@@ -248,7 +248,6 @@ impl App {
                 // inert, and a queue row is a thing you open, not a thing you point at.
                 Surface::Queue => {
                     self.queue_sel = k;
-                    self.redraw = true;
                     return self.open_act(Surface::Queue);
                 }
                 Surface::Subagents => self.subagents_sel = k,
@@ -275,7 +274,6 @@ impl App {
                 self.pick_unseeded = false;
             }
         }
-        self.redraw = true;
         ControlFlow::Break(None)
     }
 

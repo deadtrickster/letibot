@@ -83,7 +83,6 @@ impl App {
         if let Some(held) = &mut self.reach.held {
             held.push('\n');
             held.push_str(text);
-            self.redraw = true;
             return true;
         }
         if self.turn_busy() || self.session_id.is_empty() {
@@ -144,7 +143,6 @@ impl App {
             if let Some(text) = self.reach.held.take() {
                 self.set_composer(&text);
                 self.say("your message is back in the composer — enter sends it");
-                self.redraw = true;
             }
         }
     }
@@ -156,7 +154,6 @@ impl App {
             self.scroll = 0;
             self.pending_prompts.push(text.clone());
             self.queued.push(Action::Prompt(Prompt::new(text)));
-            self.redraw = true;
         }
     }
 
@@ -183,7 +180,6 @@ impl App {
         self.close_surface(Surface::Picker);
         self.close_surface(Surface::Config);
         self.seed_pick();
-        self.redraw = true;
         true
     }
 

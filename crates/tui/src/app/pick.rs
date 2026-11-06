@@ -12,7 +12,6 @@ impl App {
     pub(crate) fn pick(&mut self, typed: &str) -> Option<Action> {
         if typed.is_empty() {
             self.close_surface(Surface::Picker);
-            self.redraw = true;
             return None;
         }
         // The number is the n-th SESSION, the same reading rano's list numbers its rows from - a
@@ -77,7 +76,6 @@ impl App {
     /// that only moved the cursor would do nothing. A session's row marks; Enter switches.
     pub(crate) fn click_picker(&mut self, k: usize) {
         self.picker_sel = k;
-        self.redraw = true;
         let Some(row) = self.picker_row() else {
             return;
         };
@@ -94,7 +92,6 @@ impl App {
     pub(crate) fn pick_mode(&mut self, typed: &str) -> Option<Action> {
         if typed.is_empty() {
             self.pick = None;
-            self.redraw = true;
             return None;
         }
         let choices = self.mode_choices();
@@ -140,7 +137,6 @@ impl App {
     /// row: a round trip to be told what the screen already showed is not worth its flicker.
     pub(crate) fn take_mode(&mut self, name: String) -> Option<Action> {
         self.pick = None;
-        self.redraw = true;
         if name == self.mode_current() {
             self.say("already that mode");
             return None;
@@ -259,7 +255,6 @@ impl App {
             Some(Pick::Mode) => self.take_mode(name),
             Some(Pick::Model) => {
                 self.pick = None;
-                self.redraw = true;
                 if self.session_id.is_empty() {
                     self.say("not attached to a session yet");
                     return None;
@@ -314,7 +309,6 @@ impl App {
                     .cloned();
                 self.git_read.1 = 0;
                 self.refresh_git();
-                self.redraw = true;
                 match &self.git_pinned {
                     Some(r) => self.say(&format!("the header shows {}", repo_name(r))),
                     None => self.say("the header follows the work again"),

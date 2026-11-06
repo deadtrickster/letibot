@@ -50,7 +50,6 @@ impl App {
             turn_busy: self.turn_busy(),
             forced: None,
         });
-        self.redraw = true;
     }
 
     /// The head is stopping the daemon the forced way from the start, because the
@@ -73,7 +72,6 @@ impl App {
                 outcome: None,
             }),
         });
-        self.redraw = true;
     }
 
     /// The ordinary stop did not finish and the head is escalating, once: called when the deadline passes with the
@@ -87,7 +85,6 @@ impl App {
                 since_ms: now_ms,
                 outcome: None,
             });
-            self.redraw = true;
         }
     }
 
@@ -101,7 +98,6 @@ impl App {
                 s.gone = true;
             }
             f.outcome = Some(outcome);
-            self.redraw = true;
         }
     }
 
@@ -792,7 +788,6 @@ impl App {
             detail: u.said(),
             ts: 0,
         }));
-        self.redraw = true;
         Disposition::Control
     }
 
@@ -831,7 +826,6 @@ impl App {
             why: why.to_string(),
             next_try_ms: self.now_ms.saturating_add(RECONNECT_BACKOFF_MS),
         };
-        self.redraw = true;
     }
 
     /// Whether the caller should try to get back now: the link is down and the backoff has passed.
@@ -864,7 +858,6 @@ impl App {
             *attempts += 1;
             *known = why.to_string();
             *next_try_ms = self.now_ms.saturating_add(RECONNECT_BACKOFF_MS);
-            self.redraw = true;
         }
     }
 
@@ -891,7 +884,6 @@ impl App {
             )
         };
         self.link = Link::Attached;
-        self.redraw = true;
         Some(format!(
             "the daemon is back after {}{tries}. Resuming from seq {} — anything the \
              daemon has for me in the gap arrives as events, or as a resync if it is \
@@ -905,7 +897,6 @@ impl App {
     /// the alternative is one sentence per action and the batch is usually one action.
     pub fn refused_while_detached(&mut self) {
         self.say("no daemon connection — that did not go out");
-        self.redraw = true;
     }
 
     /// Whether the link to the daemon is down: what the screen asks before it draws the detached
@@ -953,7 +944,6 @@ impl App {
              connection, with a `Bye` naming both builds; restarting the daemon is the fix.",
             letibot_sessionlog::protocol::PROTOCOL_VERSION
         ));
-        self.redraw = true;
     }
 
     /// A command did not leave, because this head is holding its sends against an older daemon.
@@ -966,7 +956,6 @@ impl App {
                  {ATTACH_ANYWAY_CHORD} attaches anyway.",
             ));
         }
-        self.redraw = true;
     }
 
     /// Leave the pane without ending it: the rectangle goes and the conversation comes back, and nothing is sent, so
@@ -976,7 +965,6 @@ impl App {
             return false;
         };
         p.detached = true;
-        self.redraw = true;
         true
     }
 
@@ -993,7 +981,6 @@ impl App {
                     "the pane has not started yet — the daemon has not numbered it. Nothing was \
                      ended; try again in a moment.",
                 );
-                self.redraw = true;
                 return None;
             };
             let line = p.line.clone();
@@ -1011,7 +998,6 @@ impl App {
                         "there is no pane {n} running in this session — {}. Nothing was ended.",
                         panes_said(&list)
                     ));
-                    self.redraw = true;
                 }
             },
             (PaneFact::Running(list), None) if list.len() == 1 => {
@@ -1025,20 +1011,17 @@ impl App {
                     list.len(),
                     panes_said(&list)
                 ));
-                self.redraw = true;
             }
             (PaneFact::None, _) => {
                 self.say(
                     "this session has no pane to end — `!term COMMAND` starts one, and \
                      `!term` attaches to one that is already running",
                 );
-                self.redraw = true;
             }
             (PaneFact::Unasked, _) => {
                 self.close_pending = true;
                 self.close_which = which;
                 self.say("asking the daemon what this session is running…");
-                self.redraw = true;
                 return Some(Action::TermStatus);
             }
         }
@@ -1061,7 +1044,6 @@ impl App {
             line: line.to_string(),
             pane,
         });
-        self.redraw = true;
     }
 
     /// Go to another session: the one door every switch goes through, and the reason the wait is a state and not a
@@ -1072,12 +1054,10 @@ impl App {
             // way in.
             let said = format!("{} - {}", f.state.word(), f.attach_command());
             self.say(&said);
-            self.redraw = true;
             return None;
         }
         if id == self.session_id {
             self.close_surface(Surface::Picker);
-            self.redraw = true;
             self.say("already here");
             return None;
         }

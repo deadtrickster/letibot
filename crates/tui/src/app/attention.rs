@@ -13,7 +13,6 @@ impl App {
         if self.features != f {
             self.features = f;
             self.invalidate_history();
-            self.redraw = true;
         }
         self.set_proto(f.proto);
     }

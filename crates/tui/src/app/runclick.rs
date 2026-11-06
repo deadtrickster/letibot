@@ -115,7 +115,6 @@ impl App {
         // which is also what `ctrl-v` opens with.
         self.open_payload_window(run.to_string());
         self.invalidate_history();
-        self.redraw = true;
     }
 
     /// Put the switch back, and take its panel with it. A panel is the lift's own address and carries
@@ -133,7 +132,6 @@ impl App {
             self.payload_page = 0;
         }
         self.invalidate_history();
-        self.redraw = true;
     }
 
     /// Open or fold the rows of the open run, and only those: the one writer behind `/t` and a click
@@ -144,7 +142,6 @@ impl App {
         }
         self.run_tools = self.run_tools.flip();
         self.invalidate_history();
-        self.redraw = true;
         true
     }
 

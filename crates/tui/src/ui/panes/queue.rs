@@ -191,7 +191,6 @@ impl App {
         };
         let Some(r) = review else {
             self.say("that row is a landing, not a review - it has no reviewer");
-            self.redraw = true;
             return None;
         };
         let Some(id) = r.reviewer.clone().filter(|s| !s.is_empty()) else {
@@ -200,7 +199,6 @@ impl App {
                 r.branch, r.state
             );
             self.say(&said);
-            self.redraw = true;
             return None;
         };
         self.queue_open = None;
@@ -250,7 +248,6 @@ impl App {
         self.queue_scope = scope;
         self.queue_sel = 0;
         self.rescope_queues();
-        self.redraw = true;
         if self.is_open(Surface::Queue) {
             None
         } else {

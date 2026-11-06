@@ -528,7 +528,6 @@ impl App {
         // reads it (`sessions_pane::perform`).
         let open = !self.queue_folds.get(&id).copied().unwrap_or(false);
         self.queue_folds.insert(id, open);
-        self.redraw = true;
         true
     }
 
@@ -536,7 +535,6 @@ impl App {
     /// scope untouched, which is also the door after a `plugin load`. Choosing who draws the pane is
     /// not choosing WHICH queues, so the scope survives.
     pub(crate) fn queue_drawing_again(&mut self) -> Option<Action> {
-        self.redraw = true;
         if self.is_open(Surface::Queue) {
             None
         } else {

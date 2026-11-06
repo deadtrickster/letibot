@@ -77,7 +77,6 @@ impl App {
         match row.path.clone() {
             Some(path) => {
                 self.open_in_editor(&FileRef::file(&path));
-                self.redraw = true;
             }
             None => {
                 let msg = format!("`{}` is not a file on this box", row.name);
