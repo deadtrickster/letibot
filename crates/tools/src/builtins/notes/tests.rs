@@ -529,7 +529,9 @@ fn the_other_doors_into_the_notes_dir_are_refused_and_the_tool_still_writes() {
     );
 
     // And the door that owns the directory still opens. A rule that caught
-    // the wrong door would show up here and nowhere else.
+    // the wrong door would show up here and nowhere else. A second note gives the score a corpus.
+    std::fs::create_dir_all(h.notes_project_dir()).expect("notes dir");
+    std::fs::write(h.notes_project_dir().join("existing.md"), "a note\n").expect("fixture");
     let r = h.call(
         "notes",
         r#"{"action":"add","name":"scored","text":"the gate scored this one before it landed"}"#,

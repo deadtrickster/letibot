@@ -1010,8 +1010,8 @@ pub enum ServerFrame {
         session_id: String,
         notes: Vec<NoteEntry>,
         /// The project's notes directory, which the pane watches even while it is empty.
-        /// Defaulted both ways, so either side of an older pair reads it as absent.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Defaulted, so an older daemon's frame reads as none.
+        #[serde(default)]
         dir: Option<String>,
     },
     /// The answer to [`ClientFrame::ListSkills`]: what this session can be handed, in the order the
