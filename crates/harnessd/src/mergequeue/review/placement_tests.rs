@@ -403,6 +403,8 @@ fn a_host_that_refused_the_placement_is_left_out_and_the_review_runs_here() {
 
     let machines = ReviewHosts::new();
     machines.set_spare(Some("lab2x1"), Some(31.9), None);
+    // Pinned, so the host wins on any box: unpinned, this machine reports its own cores.
+    machines.set_spare(None, Some(8.0), None);
     let started = Arc::new(Started::default());
     let runner = Recorder {
         started: started.clone(),
