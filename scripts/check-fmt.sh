@@ -36,16 +36,16 @@ set -eu
 
 base=${1:-}
 if [ -z "$base" ]; then
-    echo "usage: check-fmt.sh <base-rev>" >&2
-    exit 2
+  echo "usage: check-fmt.sh <base-rev>" >&2
+  exit 2
 fi
 
 if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1; then
-    echo "check-fmt: cannot resolve $base as a commit." >&2
-    echo "  Refusing to pass: a format check with no base has not run, and reporting" >&2
-    echo "  success for a check that did not run is the failure mode this repository" >&2
-    echo "  keeps paying for. Pass the revision the change is measured from." >&2
-    exit 1
+  echo "check-fmt: cannot resolve $base as a commit." >&2
+  echo "  Refusing to pass: a format check with no base has not run, and reporting" >&2
+  echo "  success for a check that did not run is the failure mode this repository" >&2
+  echo "  keeps paying for. Pass the revision the change is measured from." >&2
+  exit 1
 fi
 
 # Added, Copied, Modified or Renamed, never Deleted — rustfmt cannot read a file that
@@ -61,12 +61,14 @@ fi
 # `git status --porcelain` covers both modified-tracked (` M`) and untracked (`??`),
 # and the two lists are unioned. A path that appears twice does no harm: rustfmt on the
 # same file twice reports the same thing once per file.
-files=$( { git diff --name-only --diff-filter=ACMR "$base" HEAD -- '*.rs'
-           git status --porcelain -- '*.rs' | sed 's/^...//' ; } | sort -u )
+files=$({
+  git diff --name-only --diff-filter=ACMR "$base" HEAD -- '*.rs'
+  git status --porcelain -- '*.rs' | sed 's/^...//'
+} | sort -u)
 
 if [ -z "$files" ]; then
-    echo "check-fmt: this change touches no Rust files"
-    exit 0
+  echo "check-fmt: this change touches no Rust files"
+  exit 0
 fi
 
 echo "check-fmt: checking $(printf '%s\n' "$files" | wc -l) Rust file(s) this change touches"
@@ -78,7 +80,7 @@ echo "check-fmt: checking $(printf '%s\n' "$files" | wc -l) Rust file(s) this ch
 repo_root=$(git rev-parse --show-toplevel)
 ours=""
 for f in $files; do
-    ours="$ours $repo_root/$f"
+  ours="$ours $repo_root/$f"
 done
 
 # `--edition 2024` is the workspace's, and it is stated rather than inferred: rustfmt
@@ -100,42 +102,42 @@ done
 # same posture the tree takes for the 26 files of pre-existing whole-tree debt.
 # shellcheck disable=SC2086 # a space-separated path list that must split
 report=$(rustfmt --check --edition 2024 $files 2>&1) && {
-    echo "check-fmt: all formatted"
-    exit 0
+  echo "check-fmt: all formatted"
+  exit 0
 }
 
 mine=""
 others=""
 for f in $(printf '%s\n' "$report" | sed -n 's/^Diff in \(.*\):[0-9]*:.*$/\1/p' | sort -u); do
-    case " $ours " in
-        *" $f "*) mine="$mine $f" ;;
-        *) others="$others $f" ;;
-    esac
+  case " $ours " in
+    *" $f "*) mine="$mine $f" ;;
+    *) others="$others $f" ;;
+  esac
 done
 
 if [ -z "$mine" ] && [ -z "$others" ]; then
-    # rustfmt failed without naming any file: a parse error rather than a formatting
-    # difference. Never ours to pass.
-    echo "check-fmt: rustfmt failed and named no file:" >&2
-    printf '%s\n' "$report" >&2
-    exit 1
+  # rustfmt failed without naming any file: a parse error rather than a formatting
+  # difference. Never ours to pass.
+  echo "check-fmt: rustfmt failed and named no file:" >&2
+  printf '%s\n' "$report" >&2
+  exit 1
 fi
 
 if [ -n "$others" ]; then
-    echo "check-fmt: note — rustfmt also wanted these, which this change does not touch." >&2
-    echo "  It follows \`mod\` declarations, so one \`lib.rs\` pulls in its children:" >&2
-    for f in $others; do echo "    ${f#"$repo_root"/}" >&2; done
+  echo "check-fmt: note — rustfmt also wanted these, which this change does not touch." >&2
+  echo "  It follows \`mod\` declarations, so one \`lib.rs\` pulls in its children:" >&2
+  for f in $others; do echo "    ${f#"$repo_root"/}" >&2; done
 fi
 
 if [ -n "$mine" ]; then
-    echo "check-fmt: these files this change touches are not formatted:" >&2
-    for f in $mine; do echo "    ${f#"$repo_root"/}" >&2; done
-    # **Only OUR diffs are printed.** rustfmt's report also carries every file it
-    # walked into, and on this crate that is tens of kilobytes of pre-existing debt in
-    # files nobody touched — which buries the one file the reader needs, at the TOP
-    # where they would have found it, under a wall they have to scroll past. The note
-    # above already names the others.
-    printf '%s\n' "$report" | awk -v ours="$ours" '
+  echo "check-fmt: these files this change touches are not formatted:" >&2
+  for f in $mine; do echo "    ${f#"$repo_root"/}" >&2; done
+  # **Only OUR diffs are printed.** rustfmt's report also carries every file it
+  # walked into, and on this crate that is tens of kilobytes of pre-existing debt in
+  # files nobody touched — which buries the one file the reader needs, at the TOP
+  # where they would have found it, under a wall they have to scroll past. The note
+  # above already names the others.
+  printf '%s\n' "$report" | awk -v ours="$ours" '
         /^Diff in / {
             file = $0
             sub(/^Diff in /, "", file)
@@ -144,7 +146,7 @@ if [ -n "$mine" ]; then
         }
         show { print }
     ' >&2
-    exit 1
+  exit 1
 fi
 
 echo "check-fmt: all $(printf '%s\n' "$files" | wc -l) file(s) this change touches are formatted"
