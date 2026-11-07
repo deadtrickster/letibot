@@ -47,7 +47,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | id | title | group | left |
 |---|---|---|---|
 | R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement) |
-| R55 | A round's end and a turn's end are the same event on the wire | Code work | only leticl's `:turn-finished` arm reading `ends_turn`: that repo is not under ~/Projects, so it is unchecked |
+| R55 | A round's end and a turn's end are the same event on the wire | Code work | leticl's `:turn-finished` arm (`src/session/seq-gap.lisp:254`) does not read `ends_turn`, so every round's end is drawn as the turn's end |
 | R121 | What a command boundary holds is hardcoded and invisible | Code work | items 5-8 (perimeters as config, children narrow and widening is an ask, file tools obey the perimeter), item 3's probe line, item 4's tool refusals |
 | R126 | Reviewers fan out to the declared hosts, opt-in | Needs the operator | setting `[queue] reviewer_hosts` in the operator's `leticode.toml` and one live review on lab2x1 (the fan-out is landed and tested against fakes, never against a real host) |
 | R125 | Script plugin layers: where a JavaScript engine comes from, and the JS-side contract | Needs the operator | the two decisions, then `docs/plugins-plan.md` step 11: no JavaScript engine is available offline here, and a vendored one compiled in would run freely as a built-in |
@@ -58,7 +58,6 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R127 | The idle nag names every free head of the plan, so independent rows run in parallel | Code work | all of it - `the_row_to_name` (`crates/tools/src/builtins/todo.rs:1333`) picks one ready row; postponed by the operator on 2026-11-07 |
 | R129 | One store file per project and a shared file, so one daemon's write cannot stall another's | Code work | the design's last edit (decisions live only in project files), the slow-call logs read across the daemons, and all of the build; the proposal is `docs/store-split.md` on branch `docs/store-split`, not merged |
 | R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | a remote placement: its keep-list and `plan.env` go into the ssh command line (`EnvSource::Remote`), where `ps` on both boxes reads them; and the operator rotates the token |
-| R131 | `cargo clippy -- -D warnings` fails on main | Code work | `mergequeue/capacity.rs:19` (`neg_cmp_op_on_partial_ord`) and `mergequeue/review/placement_tests.rs:66` (useless `format!`) |
 | R132 | `skills_path.rs` refuses its own session as written by another process, once under load | Code work | the root cause; seen once in a full gate, 6 reruns and the next gate passed |
 | R133 | The one-shot env report prints its lines out of order | Code work | a reproduction and the fix |
 | R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | a reproduction: whether it happens only while a turn or job runs, and at which row; `walking_down_from_far_up_a_long_session_reaches_the_tail_while_rows_arrive` passes on main |
@@ -419,7 +418,7 @@ nothing to design.
 
 ## R55 - A round's end and a turn's end are the same event on the wire
 
-**Status:** closed in this repo. `Hub::turn_in_flight` (`crates/sessionlog/src/hub.rs`) reads `TurnState::Finished.ends_turn` (9bb46f2c7, test `a_turn_stays_in_flight_across_rounds_until_the_ending_frame`). The round loop already decides the ending (`CapturingSink::finish`, `crates/harnessd/src/harness/turns.rs`), so a no-call round that a nudge continues says `false`; asserted without a model file in `crates/harnessd/tests/turn_end_nudge.rs`. A loop that returns after a round that said `false` (a backgrounded job with a queued prompt) now gets its ending from `Hub::end_the_prompt`, called in `one_turn` (`crates/harnessd/src/turn_tail.rs`) before the clock stops (tests `a_prompt_left_between_rounds_is_ended_once`, `an_interrupt_between_rounds_stands_the_turn_down`). Failures publish `TurnFailed` in `settle`, interrupts `TurnInterrupted`, and a restarted daemon's hub starts with no turn. left: leticl's `:turn-finished` arm is not under ~/Projects and is unchecked.
+**Status:** closed in this repo. Left in leticl, checked on 2026-11-07 at `12a4c72`: the `:turn-finished` arm in `src/session/seq-gap.lisp:254` sets the turn `finished` and calls `note-turn-finished "finished"` for every `turn_finished`, and nothing in `src/` reads `ends_turn`. A round that ends with `ends_turn: false` must leave the turn running and the row's clock untouched; an absent field (an older daemon) keeps today's reading. `Hub::turn_in_flight` (`crates/sessionlog/src/hub.rs`) reads `TurnState::Finished.ends_turn` (9bb46f2c7, test `a_turn_stays_in_flight_across_rounds_until_the_ending_frame`). The round loop already decides the ending (`CapturingSink::finish`, `crates/harnessd/src/harness/turns.rs`), so a no-call round that a nudge continues says `false`; asserted without a model file in `crates/harnessd/tests/turn_end_nudge.rs`. A loop that returns after a round that said `false` (a backgrounded job with a queued prompt) now gets its ending from `Hub::end_the_prompt`, called in `one_turn` (`crates/harnessd/src/turn_tail.rs`) before the clock stops (tests `a_prompt_left_between_rounds_is_ended_once`, `an_interrupt_between_rounds_stands_the_turn_down`). Failures publish `TurnFailed` in `settle`, interrupts `TurnInterrupted`, and a restarted daemon's hub starts with no turn. left: leticl's `:turn-finished` arm is not under ~/Projects and is unchecked.
 
 The operator, watching leticl's composer edge during a multi-round turn: *"sometimes 'responding'
 timers flickers to Responded and then back, without time reset. not harmful but annoying"*, and then
@@ -806,13 +805,6 @@ Every daemon writes one `sessions.db` (9.4 GB on 2026-11-06, a WAL that reached 
 
 - Left: a remote placement renders the same pairs into the ssh command line (`EnvSource::Remote`), where `ps` on both machines reads them. The far shell can take them on stdin instead.
 - Left: the token was readable while the old binary ran, so the operator rotates it.
-
-## R131 - `cargo clippy -- -D warnings` fails on main
-
-**Status:** open. left: two findings, both outside this session's changes.
-
-- `crates/harnessd/src/mergequeue/capacity.rs:19`: `if !(spare > 0.0)`, `neg_cmp_op_on_partial_ord`. The NaN case is the point, so say it with `partial_cmp` or a named check.
-- `crates/harnessd/src/mergequeue/review/placement_tests.rs:66`: a `format!` with no arguments.
 
 ## R132 - `skills_path.rs` refuses its own session once under load
 
