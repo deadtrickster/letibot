@@ -73,6 +73,7 @@ sh scripts/check-fmt.sh main
 sh scripts/check-test-attrs.sh
 sh scripts/clippy-gate.sh --all-targets -- -D warnings -A clippy::result_large_err -A clippy::type_complexity -A clippy::large_enum_variant -A clippy::too_many_arguments
 LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast -- --nocapture
+# ^ also runs tests/launcher.sh and tests/rrun.sh, from crates/tools/tests/shell_suites.rs
 cargo build --release --bins
 sh scripts/install-gate-build.sh
 ```
@@ -88,6 +89,11 @@ sh scripts/install-gate-build.sh
   v2 subtree, no store fixture) into a failure. Without it a skipping test returns and counts as
   passed. Apparatus the platform can never have goes through `apparatus::applies` and is not
   refusable.
+- **The shell suites are in the `cargo test` step.** `tests/launcher.sh` and `tests/rrun.sh` run from
+  `crates/tools/tests/shell_suites.rs`, because `scripts/letibot` and `scripts/rrun` decide a run
+  before any Rust executes and no `#[test]` reaches them - four launcher cases had drifted with
+  nothing running the file. Each needs `bash` and `python3`, and without them the test skips loudly
+  through `apparatus`, which `LETIBOT_REQUIRE_APPARATUS=1` turns into a failure.
 - Each of the `build.rs` scripts bakes the llama.cpp it first found into an rpath, and cargo does
   not see that input change. If vocabulary targets are red on a box with a working llama.cpp, set
   `LETIBOT_LLAMA_DIR` and `LETIBOT_LLAMA_LIB` on the build steps or delete that worktree's `target/`.

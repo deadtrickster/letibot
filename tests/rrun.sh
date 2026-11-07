@@ -33,20 +33,27 @@ import shutil
 import sys
 
 cmd = sys.argv[-1] if len(sys.argv) > 1 else ""
-# A watcher outlives the case that started it, so a log path that is already gone must not turn into
-# a stub that fails: the launcher's loop would spin on a read that never answers.
+payload = re.match(r"cat > (\S+)\s*$", cmd)
+# The watcher's read travels beside the unit's liveness probe (`cat .../status.json && echo &&
+# systemctl ...`), so it is matched by its head: anchored at the end it stopped matching when the
+# probe was added, and the unanswered watcher re-read for ever - a spin on the stubbed `sleep`.
+probe = not payload and re.match(r"^cat \S+/status\.json\b", cmd)
+# **A watcher's read goes to a log of its own.** It outlives the case that started it, and a read
+# landing between that case's `: > ssh.log` and its check is a failure about nothing; a log path
+# already gone must not turn into a stub that fails either.
 try:
-    with open(os.environ["RRUN_SSH_LOG"], "a") as log:
+    with open(os.environ["RRUN_SSH_POLL_LOG" if probe else "RRUN_SSH_LOG"], "a") as log:
         log.write(cmd + "\n")
 except OSError:
     pass
-payload = re.match(r"cat > (\S+)\s*$", cmd)
 if payload:
     dest = os.path.join(os.environ["RRUN_SSH_FILES"], os.path.basename(payload.group(1)))
     with open(dest, "wb") as f:
         shutil.copyfileobj(sys.stdin.buffer, f)
-elif re.match(r"cat \S+/status\.json\s*$", cmd):
-    sys.stdout.write('{"state": "passed"}')
+elif probe:
+    # The state first and the unit's last: the launcher reads the tail as the probe and the rest as
+    # the status. `passed` ends the watcher at its first read instead of every 15 s until its deadline.
+    sys.stdout.write('{"state": "passed", "steps": []}\nactive\n')
 sys.exit(0)
 STUB
 # The launcher's watcher sleeps 15 s between reads of the run's status; every other duration
@@ -89,7 +96,7 @@ refuse() {
 # the operator's environment: the throwaway HOME holds the status file it writes.
 run_rrun() {
   (cd "$ROOT" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" USER=tester \
-    RRUN_SSH_LOG="$T/ssh.log" RRUN_SSH_FILES="$T/files" \
+    RRUN_SSH_LOG="$T/ssh.log" RRUN_SSH_POLL_LOG="$T/poll.log" RRUN_SSH_FILES="$T/files" \
     "$(command -v bash)" "$RRUN" "$@" 2>&1 < /dev/null)
 }
 

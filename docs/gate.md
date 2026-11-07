@@ -76,6 +76,11 @@ cargo build --release --bins
 - **`LETIBOT_REQUIRE_APPARATUS=1` is the project's own demand**, written into the step so a test
   that skips itself - no vocabulary GGUF, no delegated cgroup - cannot read as a pass. Without it,
   ten review tests that never ran report `10 passed`.
+- **The shell suites are inside that `cargo test`.** `tests/launcher.sh` and `tests/rrun.sh` run
+  from `crates/tools/tests/shell_suites.rs`: `scripts/letibot` and `scripts/rrun` are shell, so no
+  `#[test]` reaches them, and four launcher cases drifted with nothing running the file. Both need
+  `bash` and `python3`; without them the test skips through `apparatus`, which the step's
+  `LETIBOT_REQUIRE_APPARATUS=1` turns into a failure.
 - **`check-fmt.sh` takes the ref this change started from.** `main` is that ref for a branch
   about to land, which is why the section says `main`; checking something else, name its base.
 
