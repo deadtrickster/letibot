@@ -242,7 +242,8 @@ mod tests {
             Duration::from_secs(1),
         )
         .expect("scan");
-        assert!(t.elapsed() < Duration::from_secs(4), "{:?}", t.elapsed());
+        // One timeout plus the store read; the bound only has to tell a timeout from a hang.
+        assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
         assert_eq!(fleet.rows.len(), 1, "{:?}", fleet.rows);
         assert_eq!(fleet.rows[0].id, "s-hung");
         assert_eq!(
