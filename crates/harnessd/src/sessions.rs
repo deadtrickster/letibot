@@ -768,7 +768,7 @@ impl<'a> Sessions<'a> {
         // And the plugin layers this session has, found last so nothing above it waits for a
         // wasm compile: a session with no layers costs three `read_dir`s on directories that do
         // not exist.
-        sessions.open_plugins(&id);
+        sessions.open_plugins(&id, crate::plugins::Inherited::none());
         Ok(sessions)
     }
 
@@ -1970,7 +1970,7 @@ impl<'a> Sessions<'a> {
             self.declare_flowy_monitor(session_id, cond);
             // A SESSION THAT HAS JUST BEEN BUILT IS PUT TO WORK, WHICH ARMING IS NOT.
             self.put_a_restored_session_to_work(session_id);
-            self.open_plugins(session_id);
+            self.open_plugins(session_id, crate::plugins::Inherited::none());
         }
         Ok(self.open.get_mut(session_id).expect("just inserted"))
     }
@@ -1983,8 +1983,10 @@ impl<'a> Sessions<'a> {
     }
 
     /// The plugin layers `session_id` has, discovered once, when it opens. At open rather than
-    /// on the first pane because of C4's own shape
-    fn open_plugins(&mut self, session_id: &str) {
+    /// on the first pane because of C4's own shape. `inherited` is what a spawned child takes from
+    /// its parent and a session the daemon started itself takes from nothing
+    /// (`PluginHost::for_child`).
+    fn open_plugins(&mut self, session_id: &str, inherited: crate::plugins::Inherited) {
         if self.plugins.contains_key(session_id) {
             return;
         }
@@ -2001,10 +2003,10 @@ impl<'a> Sessions<'a> {
         // The daemon's session list, handed to the host - a pane on disk that declares the
         // `sessions` feed is drawn from it (`docs/plugins-plan.md`). The registry is the one
         // holder of *every* session, live and on disk, so it is the whole source.
-        let host =
-            crate::plugins::PluginHost::production(session_id, &workspace).with_sessions(Arc::new(
-                crate::plugins::feed::RegistryFeed::new(self.registry.clone()),
-            ));
+        let host = crate::plugins::PluginHost::for_child(session_id, &workspace, inherited)
+            .with_sessions(Arc::new(crate::plugins::feed::RegistryFeed::new(
+                self.registry.clone(),
+            )));
         // And the session's own connection to the box's room, so a room pane is drawn from it and
         // its four controls have somewhere to go.
         let host = match self.open.get(session_id).and_then(|h| h.room_link()) {

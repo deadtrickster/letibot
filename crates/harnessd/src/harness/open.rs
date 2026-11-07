@@ -1792,6 +1792,11 @@ impl Harness {
         // against the session that outlives it, and a leftover with nowhere to go is an orphan.
         let heir_slot: Arc<std::sync::Mutex<Option<Arc<dyn letibot_tools::exec::ProcessHost>>>> =
             Default::default();
+        // Where this session's plugin host lands, filled by the daemon once it opens the session's
+        // layers and read by a child of this session for what it inherits. Declared here, before the
+        // runner that holds it, `tree_watch_slot`'s reason.
+        let plugin_slot: Arc<std::sync::Mutex<Option<Arc<crate::plugins::PluginHost>>>> =
+            Default::default();
         // This session's handle list, in one place: the runner is what `task` and `task_result`
         // ask, and the tree entry is what the daemon's worker asks when it runs a parked child's
         // turn - see `crates::trees`. One map, or the two would hand out different children.
@@ -1825,6 +1830,7 @@ impl Harness {
                 foreign_vocabs: Default::default(),
                 placed: Arc::new(std::sync::Mutex::new(Vec::new())),
                 merge_store: Arc::new(std::sync::Mutex::new(None)),
+                plugin_slot: plugin_slot.clone(),
             });
         // Cloned before `with_session_tools` takes it: `digest` folds its findings through the same
         // subagent runner `task` uses, or a digest would be a subagent tree `task_result` cannot show.
@@ -1861,8 +1867,6 @@ impl Harness {
         // The plugin loop: a pane written, built, tested and loaded at run time. The host does not
         // exist yet (the daemon builds it when it opens a session), so the desk holds a SLOT the
         // daemon fills; scaffold and build need no host at all.
-        let plugin_slot: Arc<std::sync::Mutex<Option<Arc<crate::plugins::PluginHost>>>> =
-            Default::default();
         let plugin_desk: Arc<dyn letibot_tools::builtins::plugin::PluginDesk> =
             Arc::new(crate::plugins::desk::SessionPlugins::new(
                 cfg.session_id.clone(),

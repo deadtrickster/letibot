@@ -1505,8 +1505,19 @@ impl Table {
         caps: &[&str],
         hooks: &[(&str, Script)],
     ) -> PathBuf {
-        let dir = root.join(".letibot/plugins").join(name);
-        std::fs::create_dir_all(&dir).expect("the layer dir");
+        self.layer_at(&root.join(".letibot/plugins").join(name), name, caps, hooks)
+    }
+
+    /// One layer in the directory a test names. A SESSION-scope layer lives in its own session's
+    /// directory rather than the project's, so what a child inherits has to be placed there.
+    fn layer_at(
+        self: &Table,
+        dir: &Path,
+        name: &str,
+        caps: &[&str],
+        hooks: &[(&str, Script)],
+    ) -> PathBuf {
+        std::fs::create_dir_all(dir).expect("the layer dir");
         let declared = hooks
             .iter()
             .map(|(h, _)| format!("\"{h}\""))
@@ -1531,7 +1542,7 @@ impl Table {
         for (hook, script) in hooks {
             entry.insert(key(hook), script.clone());
         }
-        dir
+        dir.to_path_buf()
     }
 }
 
@@ -2364,6 +2375,302 @@ fn a_session_with_no_layers_passes_every_call_through() {
     assert!(host.on_tool_call(&hub, &asked, &standing()).is_none());
     assert!(host.lock().rec.inputs("on_tool_call").is_empty());
     assert!(hub.retained().is_empty());
+}
+
+// A CHILD GETS A STACK (K1, `docs/plugin-extension-points-wide.md` §3 X11). The daemon's door is
+// `PluginHost::for_child`; a test builds the child's host over its own loader and inherits through
+// the same `with_inherited`, so what is proved here is the rule and not the engine.
+
+/// The host a spawned child gets, as a test can build it: the child's own directories and
+/// workspace, the trust book its parent decided against, and what it inherits from `parent`.
+fn child_host(
+    root: &Path,
+    table: &Table,
+    child: &str,
+    parent: &PluginHost,
+    trust: Arc<letibot_plugins::Trust>,
+) -> PluginHost {
+    PluginHost::discover(
+        child,
+        root,
+        None,
+        None,
+        Arc::new(TableLoader {
+            table: table.clone(),
+        }),
+        Arc::new(FileBuilder),
+    )
+    .with_trust(trust)
+    .with_inherited(Inherited::of(parent))
+}
+
+/// A child's `on_tool_call` is answered by a PROJECT layer - the scope a child gets by existing,
+/// since its workspace is its own. Before this a child had no stack at all, so every hook was a
+/// no-op in it and a reviewer's `review_verdict` could not be guarded.
+#[test]
+fn a_child_answers_the_parents_project_on_tool_call_layer() {
+    let root = tempdir("child-project-call");
+    let table = Table::new();
+    table.layer(
+        &root,
+        "one-watch",
+        &[(
+            "on_tool_call",
+            says(json!({"refuse": "already watched as pr-24; use that"})),
+        )],
+    );
+    let trust = letibot_plugins::Trust::in_memory();
+    let parent = table_host(&root, &table).with_trust(trust.clone());
+    let child = child_host(&root, &table, "s-child", &parent, trust);
+    let hub = Hub::new("s-child");
+    let asked = letibot_plugin::Call::new("monitor", json!({}));
+    let answered = child
+        .on_tool_call(&hub, &asked, &standing())
+        .expect("the project layer answers in the child");
+    assert_eq!(
+        answered.out.verdict(),
+        letibot_plugin::tool_call::Verdict::Refuse("already watched as pr-24; use that")
+    );
+    assert_eq!(child.layer_sentence(&answered.by), "one-watch (project)");
+    assert_eq!(
+        child.workspace(),
+        root,
+        "and the layer resolved against the child's own workspace"
+    );
+    // The same layer answers the parent, because a project is one rule for every session in it.
+    let parent_hub = Hub::new("s-parent");
+    assert!(
+        parent
+            .on_tool_call(&parent_hub, &asked, &standing())
+            .is_some()
+    );
+}
+
+/// The parent's PINNED session layers reach its child and its unpinned ones do not: a child's work
+/// goes to review, and an unpinned layer is the parent's experiment (§7 question 1, on its default).
+#[test]
+fn a_child_inherits_a_pinned_session_layer_and_not_an_unpinned_one() {
+    let root = tempdir("child-inherit");
+    let table = Table::new();
+    let session = root.join("sessions/s-gatekeeper/plugins");
+    let pinned = table.layer_at(
+        &session.join("gatekeeper-guard"),
+        "gatekeeper-guard",
+        &[],
+        &[(
+            "on_tool_call",
+            says(json!({"refuse": "the gatekeeper's rule"})),
+        )],
+    );
+    table.layer_at(
+        &session.join("experiment"),
+        "experiment",
+        &[],
+        &[(
+            "on_tool_call",
+            says(json!({"refuse": "the experiment's rule"})),
+        )],
+    );
+    let trust = letibot_plugins::Trust::in_memory();
+    trust.pin("gatekeeper-guard", &pinned).expect("a pin");
+    let parent = PluginHost::discover(
+        "s-gatekeeper",
+        &root,
+        Some(session.clone()),
+        None,
+        Arc::new(TableLoader {
+            table: table.clone(),
+        }),
+        Arc::new(FileBuilder),
+    )
+    .with_trust(trust.clone());
+
+    let child = child_host(&root, &table, "s-child", &parent, trust);
+    assert!(
+        child.layer("gatekeeper-guard").is_some(),
+        "the pinned layer is on the child's stack"
+    );
+    assert!(
+        child.layer("experiment").is_none(),
+        "an unpinned session layer is the parent's experiment, and stays there"
+    );
+    let hub = Hub::new("s-child");
+    let asked = letibot_plugin::Call::new("monitor", json!({}));
+    let answered = child
+        .on_tool_call(&hub, &asked, &standing())
+        .expect("the inherited layer answers");
+    assert_eq!(
+        answered.out.verdict(),
+        letibot_plugin::tool_call::Verdict::Refuse("the gatekeeper's rule")
+    );
+    assert_eq!(
+        child.layer_sentence(&answered.by),
+        "gatekeeper-guard (session)"
+    );
+    assert!(
+        child.free_layer("on_tool_call"),
+        "and it is still pinned in the child, so it runs without a card"
+    );
+    // The parent holds both, so the child's one answer is the rule and not a layer that went missing.
+    assert!(parent.layer("experiment").is_some());
+    assert!(parent.layer("gatekeeper-guard").is_some());
+}
+
+/// A reviewer child runs the gatekeeper's layers: the `review_verdict` call a reviewer hands its
+/// verdict in through is guarded by the session that spawned it, which is what K5 needs to build on.
+#[test]
+fn a_reviewer_child_runs_the_gatekeepers_layers() {
+    let root = tempdir("child-reviewer");
+    let table = Table::new();
+    let session = root.join("sessions/s-gatekeeper/plugins");
+    let guard = table.layer_at(
+        &session.join("verdict-floor"),
+        "verdict-floor",
+        &[],
+        &[(
+            "on_tool_call",
+            says(json!({"refuse": "a verdict names its commands; this one names none"})),
+        )],
+    );
+    let trust = letibot_plugins::Trust::in_memory();
+    trust.pin("verdict-floor", &guard).expect("a pin");
+    let gatekeeper = PluginHost::discover(
+        "s-gatekeeper",
+        &root,
+        Some(session.clone()),
+        None,
+        Arc::new(TableLoader {
+            table: table.clone(),
+        }),
+        Arc::new(FileBuilder),
+    )
+    .with_trust(trust.clone());
+    let child = child_host(&root, &table, "s-reviewer-child", &gatekeeper, trust);
+    let hub = Hub::new("s-reviewer-child");
+    let verdict = letibot_plugin::Call::new(
+        letibot_tools::builtins::verdict::TOOL,
+        json!({"verdict": "approve"}),
+    );
+    let answered = child
+        .on_tool_call(&hub, &verdict, &standing())
+        .expect("the gatekeeper's layer guards the verdict in its reviewer child");
+    let letibot_plugin::tool_call::Verdict::Refuse(why) = answered.out.verdict() else {
+        panic!("the floor refuses: {:?}", answered.out);
+    };
+    assert!(why.contains("names its commands"), "{why}");
+    assert_eq!(
+        child.layer_sentence(&answered.by),
+        "verdict-floor (session)"
+    );
+}
+
+/// A child's layer traps, and the child's own session is what hears it: the refusal is the child's
+/// tool result and the notice is queued for the child's model on the child's hub. A host asked with
+/// the parent's hub would put a child's failure on the parent's log and its parent's prompt.
+#[test]
+fn a_childs_trap_is_reported_to_the_childs_own_session() {
+    let root = tempdir("child-trap");
+    let table = Table::new();
+    let session = root.join("sessions/s-parent/plugins");
+    let broken = table.layer_at(
+        &session.join("broken-guard"),
+        "broken-guard",
+        &[],
+        &[("on_tool_call", vec![None])],
+    );
+    let trust = letibot_plugins::Trust::in_memory();
+    trust.pin("broken-guard", &broken).expect("a pin");
+    let parent = PluginHost::discover(
+        "s-parent",
+        &root,
+        Some(session.clone()),
+        None,
+        Arc::new(TableLoader {
+            table: table.clone(),
+        }),
+        Arc::new(FileBuilder),
+    )
+    .with_trust(trust.clone());
+    let child = child_host(&root, &table, "s-child", &parent, trust);
+    let child_hub = Hub::new("s-child");
+    let asked = letibot_plugin::Call::new("monitor", json!({}));
+    let answered = child
+        .on_tool_call(&child_hub, &asked, &standing())
+        .expect("a failed guard refuses the call");
+    let letibot_plugin::tool_call::Verdict::Refuse(why) = answered.out.verdict() else {
+        panic!("a failed guard refuses: {:?}", answered.out);
+    };
+    assert!(
+        why.contains("guards this call and failed"),
+        "the child reads it as its own call's refusal: {why}"
+    );
+    let warned = child_hub
+        .retained()
+        .iter()
+        .any(|e| matches!(&e.event, SessionEvent::Warning { code, .. } if code == "plugin_layer"));
+    assert!(warned, "the child's own log carries the trap");
+    assert!(
+        child
+            .take_notices()
+            .iter()
+            .any(|n| n.contains("guards this call and failed")),
+        "and the child's own model, through the queue the child's thread drains"
+    );
+    assert!(
+        parent.take_notices().is_empty(),
+        "the parent's host answered nothing, so nothing is owed the parent's model"
+    );
+}
+
+/// Nothing changes for a top-level session: it inherits nothing, because a session the daemon starts
+/// itself is opened with `Inherited::none()`, and the rule takes only an ENABLED, PINNED SESSION
+/// layer - a project layer is found again by the child's own discovery rather than copied down, and a
+/// layer switched off in the parent is off in its children.
+#[test]
+fn a_top_level_session_hands_nothing_down() {
+    let root = tempdir("child-top-level");
+    let table = Table::new();
+    table.layer(
+        &root,
+        "project-one",
+        &[(
+            "on_tool_call",
+            says(json!({"refuse": "the project's rule"})),
+        )],
+    );
+    let session = root.join("sessions/s-top/plugins");
+    let off = table.layer_at(
+        &session.join("switched-off"),
+        "switched-off",
+        &[],
+        &[(
+            "on_tool_call",
+            says(json!({"refuse": "the switched-off rule"})),
+        )],
+    );
+    let trust = letibot_plugins::Trust::in_memory();
+    trust.pin("switched-off", &off).expect("a pin");
+    let top = PluginHost::discover(
+        "s-top",
+        &root,
+        Some(session.clone()),
+        None,
+        Arc::new(TableLoader {
+            table: table.clone(),
+        }),
+        Arc::new(FileBuilder),
+    )
+    .with_trust(trust);
+    assert!(top.layer("project-one").is_some());
+    let id = top.layer("switched-off").expect("the session layer").id;
+    top.lock()
+        .stack
+        .set_disabled(&id, true)
+        .expect("the layer is off in the parent");
+    assert!(
+        Inherited::of(&top).is_empty(),
+        "a top-level session hands nothing down: not the project's layer, not one that is off"
+    );
 }
 
 // `condition`: a monitor whose policy is a layer.

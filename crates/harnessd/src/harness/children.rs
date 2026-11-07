@@ -934,6 +934,15 @@ impl crate::turn_tail::TurnOwner for ChildTurns {
     }
 
     fn turn_ended(&mut self, h: &mut Harness, door: &crate::turn_tail::Door) {
+        // A layer's notice is a transcript row and this thread is the child's only writer: the daemon's
+        // plugin tick holds no harness for a child, so a trap a guard reported is handed over here.
+        if let Some(host) = h.plugin_host() {
+            for notice in host.take_notices() {
+                if let Err(e) = h.note_to_model(&notice) {
+                    eprintln!("  {} · a plugin notice could not be written: {e}", self.id);
+                }
+            }
+        }
         // Said even when the turn failed - the metronome rule: a check the model never
         // answered must not come back every window, it is the same notice and the plan has not
         // moved. Recorded BEFORE the re-arm, which reads it.
@@ -1413,6 +1422,10 @@ pub(crate) struct HarnessTaskRunner {
     /// store is not opened for every session that never starts a `task_start` child. The cell is a `Mutex`
     /// because a `rusqlite::Connection` is `Send` and not `Sync`.
     pub(crate) merge_store: Arc<std::sync::Mutex<Option<Store>>>,
+    /// This session's plugin host, for what a child of it inherits: a slot because the runner is built
+    /// before the daemon opens the session's layers (`tree_watch`'s reason). `None` is a session nobody
+    /// gave a host, and then a child inherits nothing and answers no hook, as it did before K1.
+    pub(crate) plugin_slot: Arc<std::sync::Mutex<Option<Arc<crate::plugins::PluginHost>>>>,
 }
 
 /// One `task_start` child, as the runner remembers it: the two things the enqueue needs and nothing else in
@@ -3027,6 +3040,9 @@ impl HarnessTaskRunner {
             point: Arc::new(std::sync::Mutex::new(point)),
             placed: Arc::new(std::sync::Mutex::new(placed)),
             merge_store: Arc::new(std::sync::Mutex::new(None)),
+            // No spawn runs through this constructor, so nothing ever asks what a child would
+            // inherit: an empty slot is the same answer a session with no layers gives.
+            plugin_slot: Default::default(),
             // No spawn runs through this constructor, so no child's estate is ever settled
             // here: `None` is `settle_estate`'s *there is nobody to hand it to*.
             heir: Arc::new(std::sync::Mutex::new(None)),
@@ -3749,6 +3765,10 @@ impl HarnessTaskRunner {
             trees: &self.trees,
             id: &sub_id,
         };
+        // THE CHILD'S OWN STACK, installed before its first turn can call a tool. Without a host every
+        // hook in a child was a no-op, so a reviewer's `review_verdict` could not be guarded
+        // (`docs/plugin-extension-points-wide.md` §1.1, X11).
+        open_the_childs_plugins(self, &sub, &sub_id);
         self.tasks.record(crate::tasks::TaskEntry {
             name: sub_id.clone(),
             role: seat.as_str().to_string(),
@@ -3945,6 +3965,24 @@ pub(crate) fn run_place(run: &letibot_tokencore::store::SubagentRun) -> String {
         .and_then(|r| r.worktree)
         .map(|w| format!(", worktree `{}` on branch `{}`", w.path, w.branch))
         .unwrap_or_default()
+}
+
+/// Install the child's plugin host on the cell its runtime was built with - the one door both hooks
+/// and the trap notices read. A parent the daemon never gave a host hands nothing down, which is the
+/// old behaviour: a child with no layers answers no hook. The child's host is not ticked, so its
+/// layers are the bytes it was spawned with; a running session's hot reload is the parent's.
+fn open_the_childs_plugins(parent: &HarnessTaskRunner, sub: &Harness, sub_id: &str) {
+    let parent_host = parent
+        .plugin_slot
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let inherited = match parent_host {
+        Some(host) => crate::plugins::Inherited::of(&host),
+        None => crate::plugins::Inherited::none(),
+    };
+    let host = crate::plugins::PluginHost::for_child(sub_id, sub.workspace(), inherited);
+    *sub.plugin_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(host));
 }
 
 #[cfg(test)]

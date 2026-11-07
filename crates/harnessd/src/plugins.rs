@@ -80,6 +80,42 @@ pub struct PluginHost {
     builtins_started: std::sync::atomic::AtomicBool,
 }
 
+/// What a spawned child takes from the session that spawned it: the directories of the parent's
+/// SESSION-scope layers whose bytes a person pinned, re-read on the child's own stack. Unpinned
+/// session layers stay the parent's, because a child's work goes to review and an unpinned layer is
+/// the parent's experiment (`docs/plugin-extension-points-wide.md` §7 question 1, on its default).
+#[derive(Clone, Debug, Default)]
+pub struct Inherited {
+    dirs: Vec<PathBuf>,
+}
+
+impl Inherited {
+    /// A session that inherits nothing: every session the daemon starts itself.
+    pub fn none() -> Inherited {
+        Inherited::default()
+    }
+
+    /// What `parent` hands down. A pinned layer is one the trust book holds the bytes of, which is
+    /// `Layer::trusted`; a disabled one is off in the parent and so off here.
+    pub fn of(parent: &PluginHost) -> Inherited {
+        let inner = parent.lock();
+        Inherited {
+            dirs: inner
+                .stack
+                .layers()
+                .iter()
+                .filter(|l| l.scope == Scope::Session && !l.disabled && l.trusted)
+                .map(|l| l.dir.clone())
+                .filter(|dir| !dir.as_os_str().is_empty())
+                .collect(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.dirs.is_empty()
+    }
+}
+
 struct Inner {
     stack: Stack,
     rec: Recorder,
@@ -297,6 +333,39 @@ impl PluginHost {
         host.install_builtin_panes = true;
         host.install_builtin_tools(&crate::plugins::declared_tools(session, workspace));
         host
+    }
+
+    /// The host a spawned child gets: [`PluginHost::production`] for the child's own dirs and
+    /// workspace, with what [`Inherited::of`] says it takes from its parent. Every hook in a child
+    /// was a no-op before this, so a reviewer's `review_verdict` could not be guarded
+    /// (`docs/plugin-extension-points-wide.md` §1.1, X11).
+    pub fn for_child(session: &str, workspace: &Path, inherited: Inherited) -> PluginHost {
+        PluginHost::production(session, workspace).with_inherited(inherited)
+    }
+
+    /// Take a parent's pinned session layers onto this stack. A builder rather than an argument of
+    /// [`PluginHost::discover`] so a test's host inherits by the same code the daemon's child does.
+    pub fn with_inherited(self, inherited: Inherited) -> PluginHost {
+        for dir in inherited.dirs {
+            // One guard for both steps: `lock` is not reentrant, so holding it across a second
+            // `lock()` in the same statement would deadlock on the first layer to inherit.
+            let applied = {
+                let mut inner = self.lock();
+                inner
+                    .stack
+                    .candidate(&dir, Scope::Session)
+                    .and_then(|c| inner.stack.apply(c))
+            };
+            if let Err(why) = applied {
+                // Said once, to this child's own model: the parent's pin is on bytes this child
+                // could not load, and the same line at every call is noise a model learns to skip.
+                self.say_once(format!(
+                    "a plugin layer inherited from the session that spawned this one could not be \
+                     loaded, so it is not answering here: {why}"
+                ));
+            }
+        }
+        self
     }
 
     /// Put the built-in layers a session declared a tool from at the bottom of this stack, matched
@@ -528,17 +597,25 @@ impl PluginHost {
         }
     }
 
+    /// One sentence for this session's model, queued once: a failure said every call is noise the
+    /// model learns to ignore. Answers whether this is the first time, which is also when the
+    /// session's log is worth a line.
+    fn say_once(&self, said: String) -> bool {
+        let mut inner = self.lock();
+        if !inner.said.insert(said.clone()) {
+            return false;
+        }
+        inner.notices.push(said);
+        true
+    }
+
     /// A layer's answer the host could not use, said once - to the model, which can fix the layer
     /// and to the session's log, so a person watching sees why nothing changed. Not through the
     /// `notice` hook: a layer that fails must not fail again about its own failure.
     fn complain(&self, hub: &Arc<Hub>, layer: &str, what: &str) {
         let said = format!("a plugin layer's answer was refused: {what}");
-        {
-            let mut inner = self.lock();
-            if !inner.said.insert(said.clone()) {
-                return;
-            }
-            inner.notices.push(said.clone());
+        if !self.say_once(said.clone()) {
+            return;
         }
         hub.warn(
             "plugin_layer",
