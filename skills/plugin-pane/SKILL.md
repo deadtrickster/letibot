@@ -1,6 +1,6 @@
 ---
 name: plugin-pane
-description: Write a letibot plugin pane in the session and make it answer, hot — scaffold, edit the view, build, test, load, and iterate. Use when the operator asks for a dashboard or panel that letibot does not have, or when a session needs to see something letibot has no pane for.
+description: Write a letibot plugin pane in the session and make it answer, hot — scaffold, edit the view, build, test, load, and iterate — and draw it so every number has its denominator and every word was measured. Use when the operator asks for a dashboard or panel that letibot does not have, or when a session needs to see something letibot has no pane for.
 ---
 
 # Write a pane plugin in this session
@@ -99,6 +99,73 @@ the world at all — `read` is the one this slice grants, and an `exec` look is 
 sentence saying so. Promoting a pane to the project is a separate act: copy the directory into
 `.letibot/plugins/` on the session's branch and let the merge queue review it like any other
 code.
+
+## Drawing a pane worth opening
+
+The host lays out every row, so a pane cannot look wrong. It can still say something wrong, and
+that is the failure that matters: a dashboard does not crash, it states a confident sentence the
+data cannot support. The language is serenedash's (`docs/plugins-plan.md` §4.9); these are the
+rules that language was learned from. A pane is operated, not read: the operator opens it to
+answer *is it moving, is anything stuck, is anything wrong*, and closes it.
+
+**Say only what was measured.** Before putting a word in a `tail` or a `role`, name the
+measurement that would be false if the word were wrong. `sleeping` on a thread at 60% of a core,
+`spilling` on a directory that has not grown in a day, `1 active` above `nothing running` - each
+was one read standing in for a rate, or two definitions of a word one line apart. If no
+measurement backs the word, the number alone was already saying it.
+
+**One denominator per panel, and name it.** Every `bar.frac` and every `spark` point in a panel is
+a share of the panel's `denominator`, and the field says what that is. Not the busiest row, not a
+total that appears nowhere, not the rows that happened to fit. A value travels with its base:
+`242 of 533 scored`, never `45%` alone. A spark that self-scales draws a flat 260 MB the same
+height as a flat 34 GB.
+
+**Stale, zero and absent are three facts.** A file that stopped updating must not look like a
+quiet system: take its age from what the look read and say it (`badge`, or a `stale` finding with
+the age in `evidence`). An entity with no data is `not started` or `no data`, never `0`. A
+judgement over a window says how much window it had, and refuses below a minimum: `findings: []`
+means nothing tripped only if something could have.
+
+**Degrade by panel.** A panel whose source is gone returns `unavailable` with `why` and a `fix`
+the operator can run. It never draws its shape with zeros in it: `sessions 0` from an empty result
+is not a degraded panel, it is a false one. The other panels keep what they can still measure.
+
+**Constant shape.** A panel's line count comes from a budget, not from how many rows the data has
+this tick: pad short, count the overflow on the last line (`+7 more`). A frame that changes height
+when a job ends has to be re-read from the top every refresh. Put the detail behind the panel's
+`key`, in `view`, not in a summary that grows.
+
+**Findings carry the fix.** A finding is what tripped, the evidence with its numbers, what to do,
+and a `verify` command the operator can run to check it without trusting the pane. Sort the worst
+first. A finding that nobody can clear trains the operator to ignore the list, so a condition
+that is normal for some rows (an empty corpus on a target that needs none) is not a finding on
+those rows.
+
+**Every label is in the legend.** A label, a role, a column or a tail word the operator might not
+know goes in `legend`, which answers on hover and in `l`. Explanations live there once, not
+repeated in tails.
+
+**A spark needs a caption.** The tail says what the line means: first and last value, the point
+count, and `falling` / `climbing` / `flat` with a threshold above the noise. A trend across a
+change in what is measured (the denominator moved) is not a trend: trim the window to the current
+population.
+
+**Annotate the numbers that lie at face value.** A rate that is high because the input is
+misdeclared, a pass count that includes skips: put the reason beside the number in its `detail`,
+dated, pinned to the row. This is the part a generic widget cannot hold.
+
+**Do not say it twice.** The badge, the panel title and the first line are three places; a fact
+goes in one. One producer per fact in your `view()`: a count computed twice disagrees with itself
+eventually, always in the direction that looks like a different bug.
+
+**Fetch what will be drawn.** A look's output crosses the host on every refresh: read the file the
+pane needs, not the directory above it, and cut long text to what a row shows (keep its full length
+in the row's `detail` or a count beside it, so a cut value never reads as a short one). Set
+`every_s` to how fast the source changes, not as fast as allowed.
+
+Check before `load`: run `test` with a real frame and read the view as the operator will. For each
+number ask what it is a share of; for each word, what measured it; for each empty panel, whether it
+is empty or blind.
 
 ## Saying what you did
 
