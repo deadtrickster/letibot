@@ -5,6 +5,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// A session's context row as [`Store::set_context`] takes it: `(session id, tokens, cached, ledger)`.
+pub type ContextRow<'a> = (&'a str, Option<u64>, Option<u64>, Option<u64>);
+
 use letibot_transcript::TranscriptItem;
 use rusqlite::{Connection, OptionalExtension, Params, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -2430,7 +2433,7 @@ impl Store {
         transcript_id: &str,
         first_seq: u32,
         rows: I,
-        context: Option<(&str, Option<u64>, Option<u64>, Option<u64>)>,
+        context: Option<ContextRow<'_>>,
     ) -> Result<()>
     where
         I: IntoIterator<Item = (&'a TranscriptItem, &'a LedgerRow, &'a [TokenId])>,

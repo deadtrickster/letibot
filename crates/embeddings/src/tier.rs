@@ -6,6 +6,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
+/// Each document's id and its vector.
+type Embedded = Vec<(String, Vec<f32>)>;
+
 use crate::builtin::{self, DownloadError, Pin};
 use crate::cache::{Cache, CacheError, EmbedOrCacheError, Hit};
 use crate::config::{Mode, Settings};
@@ -374,7 +377,7 @@ impl Embedder {
         &self,
         documents: impl IntoIterator<Item = (String, String)>,
         now_ms: i64,
-    ) -> Result<(Vec<(String, Vec<f32>)>, Filled), TierError> {
+    ) -> Result<(Embedded, Filled), TierError> {
         let docs: Vec<(String, String)> = documents.into_iter().collect();
         let name = self.engine.name();
         let mut vectors: Vec<Option<Vec<f32>>> = Vec::with_capacity(docs.len());

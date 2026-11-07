@@ -1153,7 +1153,7 @@ impl Harness {
 
     /// The conversation this session opens on: the stored one resumed as it stands, forked onto this build's prompt when the stored rendering or vocabulary moved, repaired onto the prefix its rows chain from when it will not rebuild, else a fresh one.
     /// Answers transcript id, session, stored row count, resume rebuild, seat prefix and store id, and the attach sentence when the prompt is one this daemon would not compose now.
-    #[allow(clippy::type_complexity)]
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     fn open_the_conversation(
         store: &Option<Store>,
         stored: &Option<letibot_tokencore::store::StoredSession>,
@@ -3563,7 +3563,7 @@ pub fn build_provider(
 pub(crate) fn scoped_provider(
     inner: Box<dyn letibot_backend::MessagesBackend>,
     marks: std::sync::Arc<std::sync::Mutex<letibot_provider::marks::Marks>>,
-    learned: Option<std::sync::Arc<dyn Fn(&letibot_provider::marks::Marks) + Send + Sync>>,
+    learned: Option<letibot_provider::marks::Learned>,
 ) -> Box<dyn letibot_backend::MessagesBackend> {
     letibot_provider::marks::scoped(inner, marks, learned)
 }

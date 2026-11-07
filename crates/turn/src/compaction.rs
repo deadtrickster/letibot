@@ -1695,6 +1695,7 @@ mod overrun_planning {
 /// Summarise an over-budget conversation into a scratchpad, in two halves: `plan_overrun` decides
 /// when, and this is the two summary turns that make the new base. `rows` is the plan the session
 /// is working from, which is what the eviction may not touch.
+#[allow(clippy::too_many_arguments)]
 pub fn summarise_overrun(
     engine: &mut TurnEngine,
     prefix: &StablePrefix,
@@ -1978,6 +1979,7 @@ pub fn plan_fold(
 /// Carry out `plan_fold`: one summary turn over `items[..split]`, returned as the record that
 /// stands in for those items. `row` is the plan the session is working from, which is what the
 /// eviction may not touch.
+#[allow(clippy::too_many_arguments)]
 pub fn summarise_first_half(
     engine: &mut TurnEngine,
     prefix: &StablePrefix,

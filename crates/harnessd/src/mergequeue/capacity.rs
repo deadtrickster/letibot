@@ -16,7 +16,8 @@ pub const PER_HOST_MAX: usize = 4;
 /// How many reviewers one machine can take now: `spare / CORES_PER_REVIEWER`, floored and capped
 /// at [`PER_HOST_MAX`]. `0` means not this pass, not never.
 pub fn reviewers_fit(spare: f64) -> usize {
-    if !(spare > 0.0) {
+    // NaN as well as zero and below: a machine whose spare cores were not measured takes nobody.
+    if spare.is_nan() || spare <= 0.0 {
         return 0;
     }
     ((spare / CORES_PER_REVIEWER).floor() as usize).min(PER_HOST_MAX)

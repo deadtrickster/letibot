@@ -7,6 +7,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// A test's hook, run with every recorded event.
+type EventHook = Arc<dyn Fn(&SessionEvent) + Send + Sync>;
+
 use letibot_sessionlog::SessionEvent;
 use letibot_tokencore::store::{
     Approval, HealthState, LeaseClaim, LeaseOutcome, MergePriority, MergeState, Move, NewReview,
@@ -121,7 +124,7 @@ pub(crate) struct Door {
     pub(crate) delivers: Mutex<bool>,
     /// Run with every event after it is recorded: the only code that runs between two attempts of
     /// a retrying worker, so it is where a test makes the world change while it waits.
-    pub(crate) hook: Mutex<Option<Arc<dyn Fn(&SessionEvent) + Send + Sync>>>,
+    pub(crate) hook: Mutex<Option<EventHook>>,
 }
 
 impl QueueDoor for Door {

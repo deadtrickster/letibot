@@ -5,6 +5,9 @@
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
+/// What a backend calls with the marks after it learned one, to keep them.
+pub type Learned = Arc<dyn Fn(&Marks) + Send + Sync>;
+
 use letibot_backend::{
     BackendCaps, BackendError, Completion, Delta, MessagesBackend, StreamFlow, TurnRequest,
 };
@@ -142,7 +145,7 @@ pub fn read<T>(f: impl FnOnce(&Marks) -> T) -> Option<T> {
 pub struct Scoped {
     inner: Box<dyn MessagesBackend>,
     marks: Arc<Mutex<Marks>>,
-    learned: Option<Arc<dyn Fn(&Marks) + Send + Sync>>,
+    learned: Option<Learned>,
 }
 
 /// `inner` as one session's backend: every call it assembles runs under `marks`, and `learned` is
@@ -150,7 +153,7 @@ pub struct Scoped {
 pub fn scoped(
     inner: Box<dyn MessagesBackend>,
     marks: Arc<Mutex<Marks>>,
-    learned: Option<Arc<dyn Fn(&Marks) + Send + Sync>>,
+    learned: Option<Learned>,
 ) -> Box<dyn MessagesBackend> {
     Box::new(Scoped {
         inner,

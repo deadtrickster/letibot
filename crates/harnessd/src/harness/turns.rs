@@ -148,7 +148,7 @@ pub(crate) fn reconcile_rows(
 
 /// How one round ends, for a decision that is not the round's: the loop goes on, or the turn does.
 enum RoundEnd {
-    Go(TurnOk),
+    Go(Box<TurnOk>),
     Again,
 }
 
@@ -1808,7 +1808,7 @@ impl Harness {
             // is a failure the daemon cannot name.
             self.last_turn_id = sink.turn_id.clone().unwrap_or_default();
             let ok: TurnOk = match self.judge_the_round(outcome, &ladder, round)? {
-                RoundEnd::Go(ok) => ok,
+                RoundEnd::Go(ok) => *ok,
                 RoundEnd::Again => continue,
             };
 
@@ -2317,7 +2317,7 @@ impl Harness {
             }
             Err(e) => return Err(e.into()),
         };
-        Ok(RoundEnd::Go(ok))
+        Ok(RoundEnd::Go(Box::new(ok)))
     }
 
     /// One round as the provider took it, plus the retry ladder. Endpoint failures retry here, not in `rounds`, since a retry produced nothing and must not spend a round.

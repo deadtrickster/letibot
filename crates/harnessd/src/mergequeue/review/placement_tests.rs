@@ -63,11 +63,10 @@ impl TaskRunner for Recorder {
     fn collect(&self, handle: &str, _timeout: std::time::Duration) -> TaskStatus {
         if self.fail_first && handle == "s-gatekeeper-sub-0" {
             return TaskStatus::Failed {
-                why: format!(
-                    "placing this session on lab2x1: ssh exited 255, which is a connection or \
+                why: "placing this session on lab2x1: ssh exited 255, which is a connection or \
                      authentication failure and never a remote command's own status - \
                      ssh: connect to host lab2x1 port 22: No route to host"
-                ),
+                    .to_string(),
             };
         }
         TaskStatus::Running {

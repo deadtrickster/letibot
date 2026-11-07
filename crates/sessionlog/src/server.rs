@@ -1848,6 +1848,7 @@ pub fn serve_conn_rooted(
 
 /// Attach to `hub`, send the `Hello`, hand over the backlog and start the pump: the whole of
 /// *you are now in this session*, in one place.
+#[allow(clippy::too_many_arguments)]
 fn seat_in(
     registry: &Arc<Registry>,
     hub: Arc<Hub>,
