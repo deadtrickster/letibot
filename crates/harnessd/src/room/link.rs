@@ -1436,6 +1436,16 @@ mod tests {
         for name in ["a.pdf", "b.png.exe", "no-extension"] {
             assert_eq!(letibot_tools::builtins::room::mime_of(name), None, "{name}");
         }
+        // The sizes travel with the same table, and a bridge reads them from there: one number, so
+        // a part that outgrows a frame or a blob past the cap is caught in one place.
+        assert_eq!(
+            letibot_tools::builtins::room::MAX_ATTACHMENT,
+            letibot_room::blob::MAX_BLOB
+        );
+        assert_eq!(
+            letibot_tools::builtins::room::PART_BYTES,
+            letibot_room::blob::MAX_PART
+        );
     }
 
     #[test]

@@ -195,6 +195,12 @@ pub fn mime_of(path: &str) -> Option<&'static str> {
     })
 }
 
+/// The largest one attachment may be, and the bytes one `put_blob` part carries: the coordinator's
+/// own numbers, restated because a bridge names only the protocol number from the room crate.
+/// `the_attachment_table_is_the_rooms_allowlist` (harnessd) pins both to `letibot_room::blob`.
+pub const MAX_ATTACHMENT: usize = 8 * 1024 * 1024;
+pub const PART_BYTES: usize = 512 * 1024;
+
 /// The words a message carries once its files are on the room: a body names a picture
 /// `![alt](blob:ID)`, so a file the sender did not name is referenced on its own line. A reference
 /// the text already carries is left alone - the sender's words are not rewritten twice.

@@ -1099,15 +1099,17 @@ fn upload(
             ));
         };
         let bytes = std::fs::read(&full).map_err(|e| format!("`{raw}` could not be read: {e}"))?;
-        if bytes.len() > letibot_room::blob::MAX_BLOB {
+        if bytes.len() > letibot_tools::builtins::room::MAX_ATTACHMENT {
             return Err(format!(
                 "`{name}` is {} byte(s), and the room takes at most {} per file — nothing was \
                  uploaded",
                 bytes.len(),
-                letibot_room::blob::MAX_BLOB
+                letibot_tools::builtins::room::MAX_ATTACHMENT
             ));
         }
-        let mut parts: Vec<&[u8]> = bytes.chunks(letibot_room::blob::MAX_PART).collect();
+        let mut parts: Vec<&[u8]> = bytes
+            .chunks(letibot_tools::builtins::room::PART_BYTES)
+            .collect();
         if parts.is_empty() {
             parts.push(&[]);
         }
@@ -1122,7 +1124,7 @@ fn upload(
                 "mime": mime,
                 "part": i,
                 "last": i == last,
-                "data": letibot_room::blob::encode_base64(chunk),
+                "data": letibot_transcript::media::encode_base64(chunk),
             }))?;
             match reply["type"].as_str() {
                 Some("blob") => {
