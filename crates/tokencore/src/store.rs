@@ -37,6 +37,7 @@ mod leases;
 mod marks;
 mod procs;
 mod prompts;
+mod seat;
 mod told;
 pub use leases::{Ask, FIRST_PORT, LEASES_SQL, Lease};
 pub use procs::{Check, PROCS_SQL, ProcState, ProcessRecord};
@@ -192,7 +193,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 40;
+pub const SCHEMA_VERSION: i64 = 41;
 
 /// What this row's columns mean. Stamped on every corpus row, because a column can keep its
 /// name and its type while changing what it records, and a trainer that pools two meanings
@@ -1473,6 +1474,7 @@ impl Store {
         self.conn().execute_batch(modes::MODES_SQL)?;
         self.conn().execute_batch(told::TOLD_SQL)?;
         self.conn().execute_batch(marks::MARKS_SQL)?;
+        self.conn().execute_batch(seat::SEAT_TODO_SQL)?;
         self.conn().execute_batch(citations::CITATIONS_SQL)?;
         self.conn().execute_batch(writers::WRITERS_SQL)?;
         self.conn().execute_batch(procs::PROCS_SQL)?;
@@ -2067,6 +2069,11 @@ impl Store {
             // `IF NOT EXISTS`; a store from before it re-earns each refusal once, which is the
             // honest state of a session nobody had taught yet.
             self.conn().execute_batch(marks::MARKS_SQL)?;
+        }
+        if from < 41 {
+            // v41: a Claude Code seat's todo board - `todo` keyed by the seat's handle instead of a
+            // session id, because a seat is not a session and its table carries no foreign key.
+            self.conn().execute_batch(seat::SEAT_TODO_SQL)?;
         }
         Ok(())
     }
