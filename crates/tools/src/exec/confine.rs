@@ -1539,7 +1539,8 @@ pub enum EnvSource {
 pub const SECRET_FD: i32 = 200;
 
 /// The secret pairs `env` holds, as the NUL-separated `--setenv` arguments bwrap reads from
-/// [`SECRET_FD`]; `None` when there are none, and then the argv asks for no descriptor.
+/// [`SECRET_FD`]; `None` when there are none, and then the argv asks for no descriptor. The bytes
+/// are what a local spawn writes into a pipe and what a remote one feeds the ssh session's stdin.
 pub fn secret_args(env: &[(String, String)]) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     for (k, v) in env {
@@ -2695,11 +2696,12 @@ fn pieces_of(
         arg(&mut a, "SSH_AUTH_SOCK");
         arg(&mut a, AGENT_SOCKET);
     }
-    // The caller's own environment last, so an explicit request wins over the keep-list. A
-    // secret's value is read from [`SECRET_FD`] here instead, so it is never in bwrap's argv.
+    // The caller's own environment last, so an explicit request wins over the keep-list. A secret
+    // comes in on [`SECRET_FD`] instead, from a local pipe or from the ssh session's own stdin, so
+    // no argv on either machine ever carries its value: `ps` reads argv, not a descriptor.
     let mut sealed = false;
     for (k, v) in plan.env {
-        if env == EnvSource::Process && super::boundary::is_secret_name(k) {
+        if super::boundary::is_secret_name(k) {
             sealed = true;
             continue;
         }

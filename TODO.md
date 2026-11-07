@@ -57,7 +57,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R117 | The leticode MCP bridge pushes package and queue events into Claude Code as a channel | Code work | queue events on the channel (rooms and held sessions already push), and the plugin; a self-published channel plugin still needs `--dangerously-load-development-channels` during the preview |
 | R127 | The idle nag names every free head of the plan, so independent rows run in parallel | Code work | all of it - `the_row_to_name` (`crates/tools/src/builtins/todo.rs:1333`) picks one ready row; postponed by the operator on 2026-11-07 |
 | R129 | One store file per project and a shared file, so one daemon's write cannot stall another's | Code work | the design's last edit (decisions live only in project files), the slow-call logs read across the daemons, and all of the build; the proposal is `docs/store-split.md` on branch `docs/store-split`, not merged |
-| R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | a remote placement: its keep-list and `plan.env` go into the ssh command line (`EnvSource::Remote`), where `ps` on both boxes reads them; and the operator rotates the token |
+| R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | the operator rotates the token; a command this box spawns and a remote placement both keep every secret off every argv now |
 | R132 | `skills_path.rs` refuses its own session as written by another process, once under load | Code work | the root cause; seen once in a full gate, 6 reruns and the next gate passed |
 | R133 | The one-shot env report prints its lines out of order | Code work | a reproduction and the fix |
 | R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | the next stop's line from `~/.local/state/letibot/scroll-stalls.log`, which the head now writes at each stop |
@@ -811,11 +811,15 @@ Every daemon writes one `sessions.db` (9.4 GB on 2026-11-06, a WAL that reached 
 
 ## R130 - The seat's `GH_TOKEN` is readable in `ps`
 
-**Status:** fixed for a command this box spawns. left: a remote placement, and rotating the token.
+**Status:** fixed, for a command this box spawns and for a remote placement. left: rotating the token.
 
 `confine.rs` passed the seat's secret environment to bwrap as `--setenv NAME VALUE`, so every user on the box read `GH_TOKEN` from `ps`. A secret's pair now travels on bwrap's `--args` from a pipe the child holds at `SECRET_FD` (`confine::hand_secrets`, used by `HostProcesses::spawn`), and the argv carries only `--args 200`. `boundary::is_secret_name` is the one list both the argv and the pipe read.
 
-- Left: a remote placement renders the same pairs into the ssh command line (`EnvSource::Remote`), where `ps` on both machines reads them. The far shell can take them on stdin instead.
+- A remote placement renders no secret either: `pieces_of` leaves the pair out for `EnvSource::Remote` too, and the far shell puts it on that same descriptor out of the ssh session's stdin — `exec 200< <(dd bs=1 count=<n> 2>/dev/null)` before the helper runs. `dd` moves exactly its own bytes, so what is left of stdin is the command's own.
+- A job's launcher cannot read stdin (it is `/dev/null`, or the job dies with the connection), so its payload sits in that file as base64 and reaches the helper the same way: still on no argv.
+- A host with no `bwrap` exports the pairs itself out of the same descriptor, so an unconfined remote command is not the door that keeps the old spelling.
+- A `firecode in` guest has no stdin at all, so a command that needs a secret there is refused by name rather than run without it.
+- Tests: `remote_confine.rs` (a confined command and a confined job) and `remote_hosts.rs` (a host with no boundary) assert the token is on neither the ssh argv nor the helper's, that the far command still receives it in its environment, and that a command reading stdin reads its own.
 - Left: the token was readable while the old binary ran, so the operator rotates it.
 
 ## R132 - `skills_path.rs` refuses its own session once under load

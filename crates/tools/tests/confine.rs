@@ -1035,6 +1035,55 @@ fn a_secret_crosses_the_boundary_without_being_on_the_command_line() {
     assert!(text.contains("plain=in-the-open"), "{text}");
 }
 
+/// The same rule one machine over: a remote render puts no secret on the FAR machine's command line
+/// either, where that machine's own `ps` reads it. The helper is told to read a descriptor, which
+/// the session's stdin fills before the command runs.
+#[test]
+fn a_remote_render_names_the_descriptor_and_never_a_secret() {
+    let dir = std::env::temp_dir().join(format!("letibot-far-secret-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let b = match Bwrap::project(&dir) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return no_boundary(&e, "a_remote_render_names_the_descriptor");
+        }
+    };
+    let env = vec![
+        ("GH_TOKEN".to_string(), "s3cr3t-on-the-far-side".to_string()),
+        ("LETIBOT_PLAIN".to_string(), "in-the-open".to_string()),
+    ];
+    let pieces = b
+        .remote_pieces(
+            &ConfinePlan {
+                cwd: &dir,
+                env: &env,
+            },
+            letibot_tools::exec::Session::Kept,
+        )
+        .expect("a remote command line");
+    let line = letibot_tools::exec::confine::join(&pieces);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        !line.contains("s3cr3t-on-the-far-side") && !line.contains("GH_TOKEN=s3cr3t"),
+        "the secret is on the far machine's command line: {line}"
+    );
+    assert!(
+        line.contains("--args 200"),
+        "the helper is not told where to read the secrets: {line}"
+    );
+    assert!(
+        line.contains("--setenv LETIBOT_PLAIN in-the-open"),
+        "a pair that is not a secret still travels as it did: {line}"
+    );
+    // The keep-list is still the far shell's own: the values there are that machine's, and none of
+    // the names is a secret.
+    assert!(
+        line.contains("--setenv PATH \"$PATH\""),
+        "the keep-list is still expanded by the far shell: {line}"
+    );
+}
+
 #[test]
 fn a_file_written_to_tmp_in_one_confined_call_is_there_for_the_next() {
     // The two-call scratch idiom: with a fresh tmpfs per command a file written by one call is gone by the

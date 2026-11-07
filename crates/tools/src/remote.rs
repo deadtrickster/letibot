@@ -1704,12 +1704,14 @@ impl Ssh {
 
     /// One command of the model's: [`SshBackend::run`]'s door, and the only caller. It keeps the
     /// deadline it is given and nothing else, and it is at most once, so a call that died in flight
-    /// is reported by [`Ssh::unknown`] and never re-sent.
+    /// is reported by [`Ssh::unknown`] and never re-sent. `secrets` is the payload the script's own
+    /// prelude takes off this session's stdin, and it goes nowhere near the argv.
     fn sh_run(
         &self,
         step: &str,
         script: &str,
         pgid: Option<&str>,
+        secrets: Option<&[u8]>,
     ) -> Result<(String, Vec<u8>, i32), BackendError> {
         let wrapped = match pgid {
             Some(file) => grouped(script, file),
@@ -1721,7 +1723,7 @@ impl Ssh {
             Retry::Never,
             self.bound,
             Reported::Always,
-            None,
+            secrets,
         )?;
         match ended {
             Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
@@ -2905,12 +2907,15 @@ fn confined_here(host: &str) -> Option<String> {
 /// The command line a confined remote spawn becomes: the helper's argv, `--`, then the command's own
 /// argv. One function for both spawns, because two spellings is how the group kill gets lost. The
 /// refusal is returned, not swallowed: running unconfined is the boundary quietly not being there.
+///
+/// The line is secret-free on both machines, and the secrets it left out come back with it: the
+/// helper reads them from a descriptor (`--args`), which the caller fills from the session's stdin.
 fn wrap_confined(
     confine: &crate::exec::Bwrap,
     cwd: &str,
     env: &[(String, String)],
     argv: &[String],
-) -> Result<String, crate::exec::ExecError> {
+) -> Result<(String, Option<Vec<u8>>), crate::exec::ExecError> {
     let plan = crate::exec::ConfinePlan {
         cwd: std::path::Path::new(cwd),
         env,
@@ -2921,7 +2926,47 @@ fn wrap_confined(
         line.push(' ');
         line.push_str(&quote(a));
     }
-    Ok(line)
+    Ok((line, crate::exec::confine::secret_args(env)))
+}
+
+/// The far shell's own words for taking the secret payload off stdin before the command starts.
+/// `dd` moves exactly the payload's bytes, a byte at a time because a buffered reader would swallow
+/// the command's own stdin, and what is left of stdin is the command's.
+fn secrets_from_stdin(line: &str, secrets: Option<&[u8]>, exported: bool) -> String {
+    let Some(bytes) = secrets else {
+        return line.to_string();
+    };
+    let open = format!(
+        "exec {fd}< <(dd bs=1 count={n} 2>/dev/null); ",
+        fd = crate::exec::confine::SECRET_FD,
+        n = bytes.len()
+    );
+    // With no helper to read the descriptor, the far shell puts the pairs in the command's own
+    // environment itself; the descriptor is still where the bytes come from.
+    let export = if exported {
+        format!(
+            "while IFS= read -r -d '' _ && IFS= read -r -d '' k && IFS= read -r -d '' v; do \
+             export \"$k=$v\"; done <&{}; ",
+            crate::exec::confine::SECRET_FD
+        )
+    } else {
+        String::new()
+    };
+    format!("{open}{export}{line}")
+}
+
+/// The same descriptor, filled from the script itself: a job's launcher is a FILE on the far side,
+/// whose stdin is `/dev/null` because it must outlive the connection. The payload is in the file as
+/// base64, so it is on no argv; the file is already where the job's own `export`s live.
+fn secrets_from_the_file(line: &str, secrets: Option<Vec<u8>>) -> String {
+    let Some(bytes) = secrets else {
+        return line.to_string();
+    };
+    format!(
+        "exec {fd}< <(printf %s {b64} | base64 -d); {line}",
+        fd = crate::exec::confine::SECRET_FD,
+        b64 = quote(&crate::firecode::encode_base64(&bytes)),
+    )
 }
 
 /// One session's view on a host, and the boundary measured for it, or the reason there is none. The
@@ -3705,23 +3750,28 @@ impl SshBackend {
 
     /// The script a command becomes, confined where there is a boundary: the helper's argv, then
     /// `--`, then the command's own `argv`. The argv is spliced rather than wrapped in another
-    /// shell, since `Command::argv` is already the shell the caller chose.
+    /// shell, since `Command::argv` is already the shell the caller chose. With it, the secret pairs
+    /// the script leaves out, for the session's stdin to carry.
     fn confined_script(
         &self,
         cwd: &str,
         env: &[(String, String)],
         argv: &[String],
-    ) -> Result<String, crate::exec::ExecError> {
+    ) -> Result<(String, Option<Vec<u8>>), crate::exec::ExecError> {
         let mut pairs: Vec<(String, String)> = self.confined_env.clone();
         pairs.extend(env.iter().cloned());
-        wrap_confined(
+        let (line, secrets) = wrap_confined(
             self.confine
                 .as_ref()
                 .expect("only called where a boundary was measured"),
             cwd,
             &pairs,
             argv,
-        )
+        )?;
+        Ok((
+            secrets_from_stdin(&line, secrets.as_deref(), false),
+            secrets,
+        ))
     }
 
     /// The remote root the worktrees live under.
@@ -4426,9 +4476,12 @@ impl ExecBackend for SshBackend {
             .map(|a| quote(a))
             .collect::<Vec<_>>()
             .join(" ");
+        // A secret's name stays out of this prefix as its value does: the far shell exports it out
+        // of the bytes on stdin instead, and `ps` on that machine reads argv too.
         let env_prefix = cmd
             .env
             .iter()
+            .filter(|(k, _)| !crate::exec::boundary::is_secret_name(k))
             .map(|(k, v)| format!("{}={} ", quote(k), quote(v)))
             .collect::<String>();
         let cwd = self.abs(&cmd.cwd);
@@ -4444,13 +4497,29 @@ impl ExecBackend for SshBackend {
         // `run` is the one call that keeps the tool's deadline and nothing else: the command may be
         // a build, and a command that loses its connection is not a failure, since it may be running
         // still - so it is reported as an unknown outcome and never re-sent.
-        let script = match &self.confine {
+        let (script, secrets) = match &self.confine {
             Some(_) => self
                 .confined_script(&cwd, &cmd.env, &cmd.argv)
                 .map_err(|e| BackendError::Io(e.to_string()))?,
-            None => format!("cd {} && {env_prefix}{joined}", quote(&cwd)),
+            None => {
+                let sealed = crate::exec::confine::secret_args(&cmd.env);
+                let line = format!("cd {} && {env_prefix}{joined}", quote(&cwd));
+                (secrets_from_stdin(&line, sealed.as_deref(), true), sealed)
+            }
         };
-        let (out, _stderr, exit) = self.ssh.sh_run("this command ran", &script, Some(&pgid))?;
+        // `firecode in` carries no stdin, so a VM has no channel that is not an argv; a command that
+        // needs a secret there is refused rather than run without it.
+        if secrets.is_some() && self.vm.is_some() {
+            return Err(BackendError::Io(format!(
+                "a secret cannot reach a command inside a firecode VM on {}: `firecode in` does not \
+                 carry this session's stdin, and the only other way in is the command line, which \
+                 every user there reads with `ps`. Nothing was run.",
+                self.host
+            )));
+        }
+        let (out, _stderr, exit) =
+            self.ssh
+                .sh_run("this command ran", &script, Some(&pgid), secrets.as_deref())?;
         Ok(Output {
             stdout: out.into_bytes(),
             // Merged by ssh itself: see `Ssh::remote_command`.
@@ -4859,7 +4928,10 @@ impl RemoteProcesses {
         self
     }
 
-    /// [`wrap_confined`] with this session's own environment folded in.
+    /// [`wrap_confined`] with this session's own environment folded in, for a launcher FILE: a job
+    /// outlives the connection and its stdin is `/dev/null`, so the secrets sit in that file as
+    /// base64 on a descriptor instead — still on no argv, and the helper reads them as it would
+    /// locally.
     fn confined_line(
         &self,
         cwd: &str,
@@ -4869,7 +4941,10 @@ impl RemoteProcesses {
         let mut pairs = self.confined_env.clone();
         pairs.extend(env.iter().cloned());
         match &self.confine {
-            Some(c) => wrap_confined(c, cwd, &pairs, argv),
+            Some(c) => {
+                let (line, secrets) = wrap_confined(c, cwd, &pairs, argv)?;
+                Ok(secrets_from_the_file(&line, secrets))
+            }
             None => Ok(String::new()),
         }
     }
@@ -5131,7 +5206,7 @@ impl RemoteProcesses {
         // would be a second copy of the operator's work.
         let (said, stderr, code) = self
             .ssh
-            .sh_run("the job was starting", &launch, None)
+            .sh_run("the job was starting", &launch, None, None)
             .map_err(|e| ExecError::Spawn(format!("starting a job on {}: {e}", self.host)))?;
         if code != 0 {
             return Err(ExecError::Spawn(format!(

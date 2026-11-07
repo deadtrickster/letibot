@@ -395,6 +395,41 @@ fn a_command_runs_in_the_checkout_and_names_the_host() {
     );
 }
 
+/// The fixture's secret: token-shaped, and nobody's token. Searched for verbatim in what the ssh of
+/// this box was handed, which is what `ps` shows here.
+const TOKEN: &str = "ghs_r130fixtureSECRETvalue0123456789";
+
+/// A host with no boundary still gets a secret, and still not on any command line: the far shell
+/// exports it out of the bytes on this session's stdin, which the ssh argv never carries.
+#[test]
+fn a_secret_reaches_an_unconfined_host_without_being_on_the_command_line() {
+    let mut rig = Rig::new("secret");
+    let b = rig.place();
+    let out = b
+        .run(&Command {
+            argv: vec![
+                "sh".into(),
+                "-c".into(),
+                "printf 'token=%s' \"$GH_TOKEN\"".into(),
+            ],
+            cwd: String::new(),
+            env: vec![("GH_TOKEN".into(), TOKEN.into())],
+        })
+        .expect("it runs");
+    let said = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.exit, 0, "{said}");
+    assert_eq!(
+        said,
+        format!("token={TOKEN}"),
+        "the secret did not reach the command's environment there"
+    );
+    let log = rig.ssh_log();
+    assert!(
+        !log.contains(TOKEN) && !log.contains(&format!("GH_TOKEN={TOKEN}")),
+        "the secret is on the ssh command line, where `ps` reads it: {log}"
+    );
+}
+
 /// `list` and `stat`, and the tree in the order a walk would have produced it.
 #[test]
 fn list_stat_and_the_walk_agree_with_a_local_tree() {

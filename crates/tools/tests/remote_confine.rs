@@ -37,6 +37,8 @@ struct Rig {
     jobs: PathBuf,
     repo: PathBuf,
     ssh: PathBuf,
+    /// What the fake `ssh` was handed, one line per call: the command line, whole.
+    ssh_log: PathBuf,
     /// What the fake `bwrap` was handed, one line per call.
     bwrap_log: PathBuf,
     paths: Paths,
@@ -81,14 +83,19 @@ impl Rig {
         std::fs::write(home.join(".gitconfig"), b"[user]\n\tname = a test\n").expect("a gitconfig");
 
         let ssh = bin.join("ssh");
+        // Its argv is written down, because what this suite is about is what a command line carries:
+        // a secret on one is readable by every user on both machines with `ps`.
+        let ssh_log = dir.join("ssh.log");
         write_executable(
             &ssh,
             &format!(
                 "#!/bin/bash\n\
+                 printf 'ARGV %s\\n' \"$*\" >> '{log}'\n\
                  export PATH='{bin}':$PATH\n\
                  export HOME='{home}'\n\
                  for last; do :; done\n\
                  exec bash -lc \"$last\"\n",
+                log = ssh_log.display(),
                 bin = bin.display(),
                 home = home.display()
             ),
@@ -137,6 +144,7 @@ impl Rig {
             jobs,
             repo,
             ssh,
+            ssh_log,
             bwrap_log,
             paths,
             host,
@@ -184,6 +192,12 @@ impl Rig {
             .filter(|l| l.starts_with("ARGV "))
             .collect()
     }
+
+    /// Everything this rig's ssh was called with, whole: a command line as `ps` shows it on the
+    /// machine that spawns ssh.
+    fn ssh_calls(&self) -> String {
+        std::fs::read_to_string(&self.ssh_log).unwrap_or_default()
+    }
 }
 
 impl Drop for Rig {
@@ -209,14 +223,15 @@ impl Drop for Rig {
 
 /// The fake helper: `--version`, the argv it was handed, a fabricated readback, and otherwise the command
 /// after `--`, run in the environment and directory it was given. The binds and namespaces it does not
-/// implement, and those are asserted as argv because that is where their meaning is.
+/// implement, and those are asserted as argv because that is where their meaning is. `--args FD` is
+/// implemented, because that is how a secret is meant to arrive: through the descriptor, not an argv.
 fn bwrap_shim(log: &Path, readback: &str) -> String {
     format!(
         "#!/bin/bash\n\
          [ $# -eq 0 ] && exit 0\n\
          if [ \"$1\" = \"--version\" ]; then echo 'bubblewrap 0.11.1 (fake)'; exit 0; fi\n\
          printf 'ARGV %s\\n' \"$*\" >> '{log}'\n\
-         args=(); cmd=(); envp=(); cleared=0; seen=0\n\
+         args=(); cmd=(); envp=(); fromfd=(); cleared=0; seen=0\n\
          shift 0\n\
          argv=(\"$@\"); i=0\n\
          while [ $i -lt ${{#argv[@]}} ]; do\n\
@@ -227,9 +242,18 @@ fn bwrap_shim(log: &Path, readback: &str) -> String {
              --chdir) i=$((i+1)); args+=(\"--chdir\" \"${{argv[$i]}}\") ;;\n\
              --clearenv) cleared=1 ;;\n\
              --setenv) i=$((i+1)); k=\"${{argv[$i]}}\"; i=$((i+1)); envp+=(\"$k=${{argv[$i]}}\") ;;\n\
+             --args) i=$((i+1)); args+=(\"--args\" \"${{argv[$i]}}\")\n\
+               while IFS= read -r -d '' -u \"${{argv[$i]}}\" b; do fromfd+=(\"$b\"); done ;;\n\
              *) args+=(\"$a\") ;;\n\
            esac\n\
            i=$((i+1))\n\
+         done\n\
+         j=0\n\
+         while [ $j -lt ${{#fromfd[@]}} ]; do\n\
+           case \"${{fromfd[$j]}}\" in\n\
+             --setenv) envp+=(\"${{fromfd[$((j+1))]}}=${{fromfd[$((j+2))]}}\"); j=$((j+3)) ;;\n\
+             *) j=$((j+1)) ;;\n\
+           esac\n\
          done\n\
          case \"${{cmd[*]}}\" in\n\
            *'readlink /proc/self/ns/'*)\n\
@@ -626,6 +650,46 @@ fn a_job_runs_inside_the_boundary_and_its_group_is_killed() {
     ));
 }
 
+/// A job's secret takes the same road, one difference: a job's stdin is `/dev/null`, because it must
+/// outlive the connection. Its launcher is a FILE on that machine, so the payload rides in there and
+/// reaches the helper on the descriptor — never an argv, which is what `ps` reads.
+#[test]
+fn a_secret_reaches_a_confined_job_without_being_on_the_helpers_argv() {
+    let mut rig = Rig::new("jobsecret", FAKE_READBACK, true);
+    let b = rig.place(Egress::Denied);
+    let host = b.processes_arc().expect("this backend starts processes");
+    let id: JobId = host
+        .spawn(&SpawnRequest {
+            command: "printf 'token=%s' \"$GH_TOKEN\"".into(),
+            slug: None,
+            cwd: String::new(),
+            scope: ScopeKind::Session,
+            scope_name: None,
+            background: false,
+            env: vec![("GH_TOKEN".into(), TOKEN.into())],
+            tty: false,
+            memory: None,
+            env_trailer: false,
+        })
+        .expect("the job starts");
+    let _ = host.wait_job(&id, Duration::from_secs(20)).expect("a wait");
+    let out = host.output(&id, 0, usize::MAX).expect("its output");
+    assert!(
+        out.text().contains(&format!("token={TOKEN}")),
+        "the job did not get the secret: {}",
+        out.text()
+    );
+    let helper = rig.bwrap_calls().join("\n");
+    assert!(
+        helper.contains("--args 200"),
+        "the launcher did not give the helper a descriptor to read: {helper}"
+    );
+    assert!(
+        !helper.contains(TOKEN),
+        "the secret is in the helper's argv on that machine, where `ps` reads it: {helper}"
+    );
+}
+
 /// A file tool on a confined session sees what a command sees and nothing else. This is the half a path
 /// refusal on this box cannot reach on a placed session, where a path on the far machine resolves to
 /// nothing here and passes.
@@ -824,5 +888,108 @@ fn confined_is_a_fact_read_off_the_backend() {
     assert!(
         u.boundary_refusal().is_some_and(|w| !w.is_empty()),
         "and it says why, so the card can"
+    );
+}
+
+/// The fixture's secret. A token-shaped value that is nobody's token, searched for verbatim on both
+/// command lines: the ssh this box spawns, and the shell the far side runs.
+const TOKEN: &str = "ghs_r130fixtureSECRETvalue0123456789";
+
+fn token_env() -> Vec<(String, String)> {
+    vec![
+        ("GH_TOKEN".to_string(), TOKEN.to_string()),
+        ("LETIBOT_PLAIN".to_string(), "in-the-open".to_string()),
+    ]
+}
+
+/// A secret never goes on a command line, on either machine: here the ssh this box spawns carries it,
+/// there the helper does, and `ps` reads both. It travels on the session's stdin instead, onto the
+/// descriptor the helper reads `--args` from, and reaches the command's own environment.
+#[test]
+fn a_secret_crosses_to_a_remote_command_without_being_on_any_command_line() {
+    let mut rig = Rig::new("secret", FAKE_READBACK, true);
+    let b = rig.place(Egress::Denied);
+    assert!(b.is_confined(), "the fake host answered the probe");
+    let out = b
+        .run(&Command {
+            argv: vec![
+                "sh".into(),
+                "-c".into(),
+                "printf 'token=%s plain=%s' \"$GH_TOKEN\" \"$LETIBOT_PLAIN\"".to_string(),
+            ],
+            cwd: String::new(),
+            env: token_env(),
+        })
+        .expect("the command runs");
+    let said = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.exit, 0, "{said}");
+    // The far side has it: a secret that never arrives is a silent `gh` failure, not a fix.
+    assert!(
+        said.contains(&format!("token={TOKEN}")),
+        "the secret did not reach the command's environment on that machine: {said}"
+    );
+    assert!(said.contains("plain=in-the-open"), "{said}");
+
+    // And no argv on either side carries it, by value or as `NAME=value`.
+    let ssh = rig.ssh_calls();
+    assert!(
+        !ssh.contains(TOKEN) && !ssh.contains(&format!("GH_TOKEN={TOKEN}")),
+        "the secret is on the ssh command line, where `ps` reads it: {ssh}"
+    );
+    assert!(
+        ssh.contains("--args"),
+        "the helper was not asked to read the descriptor the secret comes on: {ssh}"
+    );
+    let helper = rig.bwrap_calls().join("\n");
+    assert!(
+        !helper.contains(TOKEN),
+        "the secret is in the helper's argv on that machine, where `ps` reads it: {helper}"
+    );
+    assert!(
+        helper.contains("--args 200"),
+        "the helper reads the secrets from the fixed descriptor: {helper}"
+    );
+    // The caller's non-secret pair stays where it was: a pair that is not a secret has nothing to
+    // hide, and moving it would be a second behaviour to keep.
+    assert!(
+        helper.contains("--setenv LETIBOT_PLAIN in-the-open"),
+        "an ordinary pair still travels as it did: {helper}"
+    );
+}
+
+/// The other half of the same rule: what the preamble takes off stdin is exactly its own bytes, so a
+/// command that reads stdin reads its OWN stdin — which here is nothing, never the secret ahead of it.
+#[test]
+fn a_remote_command_reading_stdin_gets_its_own_and_not_the_secret() {
+    let mut rig = Rig::new("stdin", FAKE_READBACK, true);
+    let b = rig.place(Egress::Denied);
+    let out = b
+        .run(&Command {
+            argv: vec!["sh".into(), "-c".into(), "cat; printf 'done'".into()],
+            cwd: String::new(),
+            env: token_env(),
+        })
+        .expect("the command runs");
+    let said = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.exit, 0, "{said}");
+    assert_eq!(
+        said, "done",
+        "the command read something that was not its own stdin: {said}"
+    );
+    assert!(
+        !said.contains(TOKEN),
+        "the secret was left on the command's stdin: {said}"
+    );
+
+    // The other stdin in this file still works: a write's bytes are fed to the far side and arrive
+    // whole, which is the door a preamble must not eat.
+    let bytes: Vec<u8> = (0u8..=255)
+        .chain(b"tail with a newline\n".to_vec())
+        .collect();
+    b.write("fed.bin", &bytes).expect("the write lands");
+    assert_eq!(
+        b.read("fed.bin").expect("it reads back"),
+        bytes,
+        "the bytes fed on stdin are the file's, whole"
     );
 }
