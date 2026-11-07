@@ -300,6 +300,14 @@ pub trait ScopeTree: Send + Sync {
     /// whose cgroup sits under its root. Nothing is reaped differently for knowing it, only listed.
     fn remember(&self, _scope: &ScopeId) {}
 
+    /// Re-attach a job's process to `scope` after a restart lost the tree's memory of it, from
+    /// facts the kernel keeps: the leader pid is its group id, and `identity` (`start:<n>`) tells
+    /// the leader from a later process with that number. Returns how many members the scope has
+    /// afterwards. A tree whose membership survives a restart needs nothing and answers 0.
+    fn claim(&self, _scope: &ScopeId, _pid: u32, _identity: &str) -> usize {
+        0
+    }
+
     /// Remove the tree's own empty directories, and report how many went. Only unpopulated
     /// directories go: a populated one is somebody's live work, and the kernel refuses it anyway.
     /// Debris that holds nothing is still debris.
@@ -1457,6 +1465,26 @@ impl ScopeTree for ProcessGroups {
 
     fn list(&self) -> Vec<ScopeId> {
         self.open.lock().expect("scope list").clone()
+    }
+
+    /// A job leads its own group, so its pid is the group id. The leader may be gone while
+    /// children live on in the group: the kernel cannot reuse a pid that names a live group, so
+    /// "no process has this pid and the group has members" is still the original group.
+    fn claim(&self, scope: &ScopeId, pid: u32, identity: &str) -> usize {
+        let recorded = pg_members(&scope.path);
+        if !recorded.is_empty() {
+            return recorded.len();
+        }
+        let leader_ok = match super::darwin::info(pid) {
+            Some(i) => !identity.is_empty() && identity == format!("start:{}", i.start_us),
+            None => true,
+        };
+        if !leader_ok || super::darwin::members_of_groups(&[pid]).is_empty() {
+            return 0;
+        }
+        let _ = std::fs::create_dir_all(&scope.path);
+        let _ = std::fs::write(scope.path.join("cgroup.procs"), format!("{pid}\n"));
+        pg_members(&scope.path).len()
     }
 
     /// [`Cgroup2::remember`]'s reason: the group is already recorded where the giver wrote it.
