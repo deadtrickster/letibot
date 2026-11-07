@@ -1,9 +1,12 @@
 //! What a command changed on disk, so a change made by a shell command or a `git merge` still
 //! draws a diff. The old bytes of an already-dirty file must be read before the command runs;
 //! one whose bytes were never read is not reported, because a wrong diff is worse than none.
+//!
+//! The tree is found from the directory the command runs in, not from the session's workspace: a
+//! `cd <other-checkout> && …` writes into a repository the workspace may not be the root of.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The budget is the point, not the coverage: sized to be invisible on the common case, a handful
@@ -24,19 +27,24 @@ pub const WIDE_TREE: usize = 40;
 pub struct Before {
     /// Dirty files whose content was read in time, by repo-relative path.
     pub dirty: BTreeMap<String, String>,
-    /// True when the workspace is a git repo and the sweep can run at all.
+    /// True when the directory was in a git work tree and the sweep can run at all.
     pub in_repo: bool,
     /// Every path git called modified, read or not. One `git status`, and it is what
     /// separates this command's doing from what was already there.
     pub was_dirty: std::collections::BTreeSet<String>,
-    /// `(mtime_ns, len)` for every modified path, read or not. A stat is orders
-    /// of magnitude cheaper than a read, and it is enough to answer "did this
-    /// command touch it", which is the only question the cheap phase asks.
-    pub stamp: BTreeMap<String, (u128, u64)>,
     /// Dirty files that were NOT read, because the caps above were reached. A change to one of
     /// these is not reported at all: diffing it against `HEAD` would show somebody else's earlier
     /// edits as this command's.
     pub skipped: usize,
+}
+
+/// The git work tree `dir` is in, walked up from `dir` itself, or `None` when it is in none.
+/// A shell command's `cd` is not visible to anybody but the shell, so the tree is read from the
+/// directory the call starts in and from the one a leading `cd` names.
+pub fn tree(dir: &Path) -> Option<PathBuf> {
+    let out = git(dir, &["rev-parse", "--show-toplevel"])?;
+    let top = String::from_utf8_lossy(&out).trim().to_string();
+    (!top.is_empty()).then(|| PathBuf::from(top))
 }
 
 /// One file this command changed.
@@ -50,8 +58,9 @@ pub struct Changed {
     pub created: bool,
 }
 
-/// Snapshot what a sweep will need. Cheap when the tree is clean: one `git
-/// status`, and nothing read.
+/// Snapshot what a sweep will need. Cheap when the tree is clean: one `git status`, and nothing
+/// read. `root` is a work tree root, as [`tree`] gives it, so the paths git names are relative to
+/// what they are joined onto.
 pub fn before(root: &Path) -> Before {
     let Some(paths) = dirty_paths(root) else {
         return Before::default();
@@ -60,15 +69,12 @@ pub fn before(root: &Path) -> Before {
         in_repo: true,
         ..Before::default()
     };
-    // The set of modified paths is recorded whatever happens: it is what tells
-    // "this command changed it" from "it was already like that", and it is one
-    // `git status` either way. Only the CONTENT is budgeted.
+    // The set of modified paths is recorded whatever happens: one `git status`, and it is what
+    // tells "this command changed it" from "already like that". The content read in time IS the
+    // hash, so a rewrite that left the same bytes is not a change.
     let wide = paths.len() > WIDE_TREE;
     let mut bytes = 0usize;
     for p in paths {
-        if let Some(st) = stamp_of(root, &p) {
-            out.stamp.insert(p.clone(), st);
-        }
         if wide || out.dirty.len() >= MAX_PRE_READ || bytes >= MAX_PRE_BYTES {
             out.was_dirty.insert(p);
             out.skipped += 1;
@@ -91,9 +97,9 @@ pub fn before(root: &Path) -> Before {
     out
 }
 
-/// Which paths this command changed: the cheap half, and the only half that always runs. One
-/// `git status` and a stat per modified path, no read and no diff, because the caller usually
-/// only wants the names. A path whose old bytes were never read is left out: [`Before::skipped`].
+/// Which paths this command changed: one `git status` and a read of the files whose old bytes are
+/// already held, no diff, because the caller usually only wants the names. A path whose old bytes
+/// were never read is left out: [`Before::skipped`].
 pub fn changed_since(root: &Path, base: &Before) -> Vec<String> {
     if !base.in_repo {
         return Vec::new();
@@ -102,19 +108,13 @@ pub fn changed_since(root: &Path, base: &Before) -> Vec<String> {
         return Vec::new();
     };
     now.into_iter()
-        .filter(|p| match base.stamp.get(p) {
-            // Modified before. A stat that has not moved is a file this command
-            // did not write; one that has is worth a diff.
-            Some(was) => {
-                stamp_of(root, p).is_some_and(|now| now != *was)
-                // ...unless its old bytes were over the budget, in which case there is
-                // nothing to diff against and the honest answer is silence rather than a
-                // diff against `HEAD` that would blame this command for earlier edits.
-                && base.dirty.contains_key(p)
-            }
-            // Not modified before and modified now: this command did it, and
-            // `HEAD` still has the old bytes.
-            None => true,
+        .filter(|p| match base.dirty.get(p) {
+            // Already dirty, and its old bytes are in hand, so the answer is exactly whether the
+            // content moved: a rewrite that left the same bytes is not this command's change.
+            Some(was) => std::fs::read_to_string(root.join(p)).is_ok_and(|now| &now != was),
+            // Already dirty and over the budget: there is nothing to diff against, and the honest
+            // answer is silence rather than a diff against `HEAD` that would blame earlier edits.
+            None => !base.was_dirty.contains(p),
         })
         .collect()
 }
@@ -143,42 +143,46 @@ pub fn diff_of(root: &Path, base: &Before, path: &str) -> Option<Changed> {
     }
 }
 
-/// `(mtime, len)`, or `None` for a path that cannot be stat'd.
-fn stamp_of(root: &Path, rel: &str) -> Option<(u128, u64)> {
-    let md = std::fs::metadata(root.join(rel)).ok()?;
-    let mtime = md
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_nanos();
-    Some((mtime, md.len()))
-}
-
 /// Repo-relative paths git reports as changed, or `None` when this is not a repo
 /// (or git is not installed, which is the same answer to this question).
 fn dirty_paths(root: &Path) -> Option<Vec<String>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["status", "--porcelain", "-z", "--untracked-files=all"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    // `-z` is NUL-separated with no quoting, which is the only form that
-    // survives a path with a space, a quote or a newline in it.
+    // `--porcelain=v2` is the stable format; `-z` is NUL-separated with no quoting, which is the
+    // only form that survives a path with a space, a quote or a newline in it. Ignored paths are
+    // not listed at all, which is what keeps a generated file out of the sweep.
+    let out = git(
+        root,
+        &["status", "--porcelain=v2", "-z", "--untracked-files=all"],
+    )?;
+    let text = String::from_utf8_lossy(&out).into_owned();
+    let fields: Vec<&str> = text.split('\0').collect();
     let mut paths = Vec::new();
-    for rec in String::from_utf8_lossy(&out.stdout).split('\0') {
-        if rec.len() < 4 {
+    let mut i = 0;
+    while i < fields.len() {
+        let rec = fields[i];
+        i += 1;
+        let Some((kind, rest)) = rec.split_once(' ') else {
             continue;
-        }
-        // `XY <path>`: two status columns, a space, then the path.
-        let (code, path) = rec.split_at(3);
-        // A rename's second half arrives as its own record under `-z`; the
-        // destination is what exists on disk and is what a diff is about.
-        if code.starts_with('D') || code.starts_with(" D") {
+        };
+        // Every record but `?`/`!` starts with its two status columns, then a fixed number of
+        // tokens, then the path - which may itself hold spaces, hence `splitn`'s last piece.
+        let path = match kind {
+            // `? <path>`: an untracked file, so the whole remainder is the path.
+            "?" => rest,
+            // `1 XY <sub> <mH> <mI> <mW> <hH> <hI> <path>`
+            "1" => rest.splitn(8, ' ').nth(7).unwrap_or(""),
+            // `u XY <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`
+            "u" => rest.splitn(10, ' ').nth(9).unwrap_or(""),
+            // `2 XY <sub> <mH> <mI> <mW> <hH> <hI> <score> <path>`, and the field AFTER the record
+            // is the original path: the destination is what exists and what a diff is about.
+            "2" => {
+                i += 1;
+                rest.splitn(9, ' ').nth(8).unwrap_or("")
+            }
+            _ => continue,
+        };
+        // A file git calls deleted is not on disk, so there is nothing to read and nothing to draw.
+        let xy = rest.split(' ').next().unwrap_or("");
+        if path.is_empty() || (kind != "?" && xy.contains('D')) {
             continue;
         }
         paths.push(path.to_string());
@@ -186,17 +190,20 @@ fn dirty_paths(root: &Path) -> Option<Vec<String>> {
     Some(paths)
 }
 
-fn show_head(root: &Path, path: &str) -> Option<String> {
+/// `git -C <dir> <args>`, or `None` when git refused, is not installed, or `<dir>` is not in a repo.
+fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
     let out = Command::new("git")
         .arg("-C")
-        .arg(root)
-        .arg("show")
-        .arg(format!("HEAD:{path}"))
+        .arg(dir)
+        .args(args)
         .output()
         .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    out.status.success().then_some(out.stdout)
+}
+
+fn show_head(root: &Path, path: &str) -> Option<String> {
+    let out = git(root, &["show", &format!("HEAD:{path}")])?;
+    Some(String::from_utf8_lossy(&out).into_owned())
 }
 
 #[cfg(test)]
@@ -355,6 +362,81 @@ mod tests {
         assert!(!base.in_repo);
         std::fs::write(root.join("x.txt"), "hello").expect("write");
         assert!(changed_since(&root, &base).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A command's `cd` is invisible from outside it, so the tree is found by walking up from the
+    /// directory the call names: a session working in a subdirectory is still in its repository.
+    #[test]
+    fn a_directory_inside_a_repository_finds_its_tree() {
+        let root = repo("subdir");
+        std::fs::create_dir_all(root.join("fuzz/deep")).expect("mkdir");
+        assert_eq!(
+            tree(&root.join("fuzz/deep")).as_deref(),
+            Some(root.as_path())
+        );
+        assert_eq!(tree(&root).as_deref(), Some(root.as_path()));
+        // Outside one there is no tree to sweep, which is what switches the sweep off.
+        let outside =
+            std::env::temp_dir().join(format!("letibot-detect-not-a-repo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).expect("mkdir");
+        assert!(
+            tree(&outside).is_none(),
+            "found a tree for a directory in none"
+        );
+        let _ = std::fs::remove_dir_all(&outside);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The status reader is `--porcelain=v2 -z`: a path may hold a space, a rename reports its
+    /// destination and never its original, and a file git calls deleted is not a change.
+    #[test]
+    fn the_status_reader_names_the_paths_a_diff_can_be_drawn_for() {
+        let root = repo("porcelain");
+        // An untracked path with a space in it: one path, not a status column and a fragment.
+        std::fs::write(root.join("with a space.txt"), "new\n").expect("write");
+        let got = dirty_paths(&root).expect("a repo");
+        assert!(
+            got.iter().any(|p| p == "with a space.txt"),
+            "an untracked path with a space in it is one path: {got:?}"
+        );
+
+        // A rename: the destination is what exists on disk, and it is what a diff is about.
+        git(&root, &["mv", "a.txt", "renamed.txt"]);
+        let got = dirty_paths(&root).expect("a repo");
+        assert!(
+            got.iter().any(|p| p == "renamed.txt"),
+            "a rename's destination is a path: {got:?}"
+        );
+        assert!(
+            !got.iter().any(|p| p == "a.txt"),
+            "a rename's ORIGINAL path is not what exists: {got:?}"
+        );
+
+        // A deleted file has nothing to read and nothing to draw.
+        std::fs::remove_file(root.join("renamed.txt")).expect("rm");
+        let got = dirty_paths(&root).expect("a repo");
+        assert!(
+            !got.iter().any(|p| p == "renamed.txt" || p == "a.txt"),
+            "a file git calls deleted is not a change: {got:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A rewrite that leaves the same bytes is not this command's change, and it is decided on the
+    /// content: a stat would call any same-length rewrite inside one clock tick a change.
+    #[test]
+    fn a_rewrite_that_leaves_the_same_bytes_is_not_a_change() {
+        let root = repo("same");
+        std::fs::write(root.join("a.txt"), "one\nTWO\n").expect("write");
+        let base = before(&root);
+        // The same bytes, written again: exactly what a `python3 -c` round trip does.
+        std::fs::write(root.join("a.txt"), "one\nTWO\n").expect("write");
+        assert!(
+            changed_since(&root, &base).is_empty(),
+            "a no-op rewrite was reported as a change"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

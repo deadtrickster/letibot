@@ -23,6 +23,9 @@ pub struct Bash {
     /// Whether this session's model has been told that some modified files are past the
     /// snapshot budget. Said once: it is a fact the model can do nothing about.
     snapshot_budget_said: std::sync::atomic::AtomicBool,
+    /// The work tree each run directory is in, remembered: a session runs nearly all of its
+    /// commands in the same place, and a `rev-parse` per call would be a third git call on every one.
+    trees: std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, std::path::PathBuf>>,
 }
 
 impl Bash {
@@ -38,6 +41,136 @@ impl Bash {
     pub fn with_foreground(mut self, foreground: ForegroundPolicy) -> Bash {
         self.foreground = foreground;
         self
+    }
+
+    /// The git work tree a run directory is in, asked of git once per directory: `None` when it is
+    /// in none, which is the answer that switches the whole sweep off. A miss is not remembered,
+    /// because a session may `git init` a directory after the first call there.
+    fn tree_of(&self, dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        if let Some(known) = self
+            .trees
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(dir)
+        {
+            return Some(known.clone());
+        }
+        let found = crate::detect::tree(dir)?;
+        self.trees
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(dir.to_path_buf(), found.clone());
+        Some(found)
+    }
+}
+
+/// The directory a command runs in, as a host path: the backend's root joined with the
+/// root-relative `cwd` its spawn is given. `None` for a backend whose files are on another host,
+/// where a local `git status` would read a tree the command never touched.
+fn run_dir(ctx: &InvokeCtx<'_>, cwd: &str) -> Option<std::path::PathBuf> {
+    if ctx.backend.host_label().is_some() {
+        return None;
+    }
+    let root = std::path::PathBuf::from(ctx.backend.root_path()?);
+    Some(root.join(ctx.backend.workdir(cwd).ok()?))
+}
+
+/// The path as this session spells it: relative to where it sits when the file is under it, which
+/// is the spelling the file ledger and the provenance sink are keyed on, else absolute.
+fn spelled(workspace: Option<&std::path::Path>, tree: &std::path::Path, path: &str) -> String {
+    let abs = tree.join(path);
+    workspace
+        .and_then(|w| abs.strip_prefix(w).ok())
+        .map(|rel| rel.to_string_lossy().into_owned())
+        .unwrap_or_else(|| abs.to_string_lossy().into_owned())
+}
+
+/// The git tree a foreground command runs in, snapshotted before it starts and read after it ends.
+/// A struct because the three facts are only useful together, and because the attach below is the
+/// half a test can prove on a box where no process may be started.
+struct Sweep {
+    tree: std::path::PathBuf,
+    base: crate::detect::Before,
+    /// Where the session sits, for the spelling the ledger and the provenance sink are keyed on.
+    workspace: Option<std::path::PathBuf>,
+}
+
+impl Sweep {
+    fn before(tree: std::path::PathBuf, workspace: Option<std::path::PathBuf>) -> Sweep {
+        let base = crate::detect::before(&tree);
+        Sweep {
+            tree,
+            base,
+            workspace,
+        }
+    }
+}
+
+/// What the command changed, attached to its result: one file is the edit it is, several are named
+/// because one result carries one card. `wrote` is the runtime's provenance sink, so bytes this
+/// session's own command wrote do not read as a second writer's later.
+fn attach_changes(
+    inv: &mut Invocation,
+    sweep: &Sweep,
+    files: &crate::files::FileLedger,
+    writes_with: crate::runtime::WritesWith,
+    wrote: &dyn Fn(&str, &[u8]),
+) {
+    // Names first, and only names: one `git status` and a read of the files whose old bytes were
+    // already held. The diff below is computed for the one file a card is drawn for.
+    let changed = crate::detect::changed_since(&sweep.tree, &sweep.base);
+    if changed.is_empty() {
+        return;
+    }
+    let mut drawn = false;
+    if changed.len() == 1
+        && let Some(c) = crate::detect::diff_of(&sweep.tree, &sweep.base, &changed[0])
+    {
+        let was = c.before.clone().unwrap_or_default();
+        // An empty diff draws an empty card, which reads as a bug.
+        if was != c.after {
+            let spelling = spelled(sweep.workspace.as_deref(), &sweep.tree, &c.path);
+            files.mark_whole(&spelling, c.after.as_bytes());
+            wrote(&spelling, c.after.as_bytes());
+            inv.notes.push(format!(
+                "this command changed `{}` — the diff beside it was detected afterwards, \
+                 not made by `edit`",
+                c.path
+            ));
+            inv.edit = Some(crate::edit::FileEdit {
+                path: c.path.clone(),
+                before: was.clone(),
+                after: c.after.clone(),
+                created: c.created,
+                before_digest: crate::spill::content_hash(was.as_bytes()),
+                after_digest: crate::spill::content_hash(c.after.as_bytes()),
+                replacements: 1,
+                changed: crate::edit::changed_span(&was, &c.after),
+            });
+            drawn = true;
+        }
+    }
+    if !drawn {
+        let names: Vec<&str> = changed.iter().take(12).map(String::as_str).collect();
+        let more = changed.len().saturating_sub(names.len());
+        let listed = format!(
+            "{}{}",
+            names.join(", "),
+            match more {
+                0 => String::new(),
+                more => format!(", and {more} more files"),
+            }
+        );
+        inv.notes.push(match changed.len() {
+            1 => format!("this command changed `{listed}`, and no diff could be read back for it"),
+            n => format!(
+                "this command changed {n} file(s): {listed}. One result carries one diff, so none \
+                 is drawn for a change this wide; `git diff` is the one to read."
+            ),
+        });
+    }
+    if let Some(note) = writes_with.after_a_command() {
+        inv.notes.push(note.to_string());
     }
 }
 
@@ -371,16 +504,6 @@ impl Tool for Bash {
             return Invocation::not_run(r.why(), r.body());
         }
 
-        // The workspace, not the backend's root: `root_path()` is `/` for an unconfined session,
-        // which is the right answer to is-this-inside-the-boundary and the wrong one for where-is-
-        // the-tree-I-am-watching, so seeded from `/` a shell that rewrites a file hands no diff.
-        let root = ctx
-            .backend
-            .workspace_path()
-            .or_else(|| ctx.backend.root_path())
-            .map(std::path::PathBuf::from);
-        let before = root.as_deref().map(crate::detect::before);
-
         // The second gate, and it is a different mechanism from the first: a
         // session whose backend cannot start processes refuses here however the
         // adjudicator answered. Same asymmetry `write` keeps.
@@ -436,6 +559,28 @@ impl Tool for Bash {
             .get("background")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        // The tree the shell will write into, before anything starts: not simply the workspace, since
+        // a `cd <other-checkout>` writes a repository the workspace may only contain. A background
+        // job is not swept here; its writes are read with the completion that ends it.
+        let sweep = if background {
+            None
+        } else {
+            let asked_cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
+            run_dir(ctx, asked_cwd)
+                .and_then(|dir| {
+                    // A leading `cd <dir> &&` is where the command really runs, and the shell's
+                    // own `cd` is not visible anywhere else, so it decides which tree is read.
+                    let dir = match crate::heredoc::leading_cd(command) {
+                        Some(cd) => dir.join(cd),
+                        None => dir,
+                    };
+                    self.tree_of(&dir)
+                })
+                .map(|tree| {
+                    let workspace = ctx.backend.workspace_path().map(std::path::PathBuf::from);
+                    Sweep::before(tree, workspace)
+                })
+        };
         // The caller's own name for this work, or nothing. Read here rather than derived from
         // `command` anywhere: see [`slug_arg`].
         let slug = slug_arg(args);
@@ -898,46 +1043,14 @@ impl Tool for Bash {
             inv = inv.with_note(note);
         }
 
-        // And what it changed. Attached as an edit when it is one file, which is the shape a
-        // script-that-edits has, and named otherwise, because one result carries one card. Either way
-        // the operator is told: a change nobody can see is a change nobody reviewed.
-        if let (Some(root), Some(base)) = (root.as_deref(), before.as_ref()) {
-            // Names first, and only names: one `git status` and a stat each. The diff below is
-            // computed for the one file it is drawn for, never for every file that moved.
-            let changed = crate::detect::changed_since(root, base);
-            match changed.len() {
-                0 => {}
-                1 => {
-                    if let Some(c) = crate::detect::diff_of(root, base, &changed[0]) {
-                        let was = c.before.clone().unwrap_or_default();
-                        inv = inv.with_note(format!(
-                            "this command changed `{}` — the diff beside it was detected \
-                             afterwards, not made by `edit`",
-                            c.path
-                        ));
-                        inv.edit = Some(crate::edit::FileEdit {
-                            path: c.path.clone(),
-                            before: was.clone(),
-                            after: c.after.clone(),
-                            created: c.created,
-                            before_digest: crate::spill::content_hash(was.as_bytes()),
-                            after_digest: crate::spill::content_hash(c.after.as_bytes()),
-                            replacements: 1,
-                            changed: crate::edit::changed_span(&was, &c.after),
-                        });
-                    }
-                }
-                n => {
-                    let names: Vec<&str> = changed.iter().take(12).map(String::as_str).collect();
-                    inv = inv.with_note(format!(
-                        "this command changed {n} file(s): {}{}. No diff is shown for a \
-                         change this wide; `git diff` is the one to read.",
-                        names.join(", "),
-                        if n > names.len() { ", …" } else { "" }
-                    ));
-                }
-            }
-            if base.skipped > 0
+        // And what it changed: the sweep taken before the run, attached to the result now.
+        if let Some(sweep) = &sweep {
+            let files = ctx.files;
+            let writes_with = ctx.writes_with;
+            attach_changes(&mut inv, sweep, files, writes_with, &|path, bytes| {
+                ctx.wrote(path, bytes)
+            });
+            if sweep.base.skipped > 0
                 && !self
                     .snapshot_budget_said
                     .swap(true, std::sync::atomic::Ordering::Relaxed)
@@ -945,7 +1058,7 @@ impl Tool for Bash {
                 inv = inv.with_note(format!(
                     "{} file(s) were already modified and beyond the snapshot budget, so a \
                      change to one of them is not reported",
-                    base.skipped
+                    sweep.base.skipped
                 ));
             }
         }
@@ -1188,6 +1301,287 @@ fn ask_if_waiting(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // What a command changed, and what the tool attaches for it. No process host is needed here
+    // (this box has no cgroup), so the command is run by the test itself and the sweep is what is
+    // measured: the same file the same way `bash` would have written it, then the attach.
+
+    /// `git` with this box's own config held out of it: the fixtures must commit the same way on
+    /// every machine, and `testing::git` is behind a feature the unit tests are not built with.
+    fn git(root: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .current_dir(root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_AUTHOR_NAME", "letibot fixture")
+            .env("GIT_AUTHOR_EMAIL", "fixture@letibot.invalid")
+            .env("GIT_COMMITTER_NAME", "letibot fixture")
+            .env("GIT_COMMITTER_EMAIL", "fixture@letibot.invalid")
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    }
+
+    /// A repository with two committed files, and a workspace that is its root.
+    fn repo(name: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("letibot-sweep-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("fuzz")).expect("mkdir");
+        std::fs::write(root.join("a.txt"), "one\ntwo\n").expect("write");
+        std::fs::write(root.join("fuzz/list.inc"), "alpha\nbeta\n").expect("write");
+        git(&root, &["init", "-q"]);
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-qm", name]);
+        root
+    }
+
+    fn sweep_of(root: &std::path::Path) -> Sweep {
+        Sweep::before(root.to_path_buf(), Some(root.to_path_buf()))
+    }
+
+    /// Attach over a sweep and say what the row now holds.
+    fn attached(
+        sweep: &Sweep,
+        files: &crate::files::FileLedger,
+    ) -> (Invocation, Vec<(String, Vec<u8>)>) {
+        let wrote: std::sync::Mutex<Vec<(String, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
+        let mut inv = Invocation::ok("ran");
+        attach_changes(
+            &mut inv,
+            sweep,
+            files,
+            crate::runtime::WritesWith {
+                edit: true,
+                write: true,
+            },
+            &|path, bytes| {
+                wrote
+                    .lock()
+                    .unwrap()
+                    .push((path.to_string(), bytes.to_vec()))
+            },
+        );
+        let wrote = wrote.into_inner().unwrap();
+        (inv, wrote)
+    }
+
+    /// The editor's shape: an inline python program that reads a tracked file and writes it back.
+    /// The command is the real one, run here rather than through the boundary this box lacks.
+    #[test]
+    fn a_python_inline_program_that_rewrites_a_tracked_file_draws_its_diff() {
+        let root = repo("python");
+        let sweep = sweep_of(&root);
+        let out = std::process::Command::new("python3")
+            .current_dir(&root)
+            .args([
+                "-c",
+                "p = 'fuzz/list.inc'; s = open(p).read(); open(p, 'w').write(s + 'gamma' + chr(10))",
+            ])
+            .output()
+            .expect("python3");
+        assert!(out.status.success(), "{out:?}");
+
+        let files = crate::files::FileLedger::new();
+        let (inv, wrote) = attached(&sweep, &files);
+        let edit = inv.edit.as_ref().expect("a diff");
+        assert_eq!(edit.path, "fuzz/list.inc");
+        assert_eq!(edit.before, "alpha\nbeta\n");
+        assert_eq!(edit.after, "alpha\nbeta\ngamma\n");
+        assert!(!edit.created);
+        assert!(
+            inv.notes.iter().any(|n| n.contains("detected afterwards")),
+            "{:?}",
+            inv.notes
+        );
+        // The ledger and the provenance sink both learned whose bytes these are.
+        assert_eq!(
+            files.whole_of("fuzz/list.inc"),
+            Some((
+                crate::spill::content_hash(b"alpha\nbeta\ngamma\n"),
+                "alpha\nbeta\ngamma\n".len()
+            ))
+        );
+        assert_eq!(wrote.len(), 1, "{wrote:?}");
+        assert_eq!(wrote[0].0, "fuzz/list.inc");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `sed -i` is the other shape a model reaches for.
+    #[test]
+    fn a_sed_in_place_rewrite_draws_its_diff() {
+        let root = repo("sed");
+        let sweep = sweep_of(&root);
+        let out = std::process::Command::new("sed")
+            .current_dir(&root)
+            .args(["-i", "s/two/TWO/", "a.txt"])
+            .output()
+            .expect("sed");
+        assert!(out.status.success(), "{out:?}");
+
+        let (inv, _wrote) = attached(&sweep, &crate::files::FileLedger::new());
+        let edit = inv.edit.as_ref().expect("a diff");
+        assert_eq!(edit.path, "a.txt");
+        assert_eq!(edit.before, "one\ntwo\n");
+        assert_eq!(edit.after, "one\nTWO\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A `>` redirect onto a path git never had is a creation, not a rewrite.
+    #[test]
+    fn a_redirect_onto_a_new_path_is_a_creation() {
+        let root = repo("redirect");
+        let sweep = sweep_of(&root);
+        std::fs::write(root.join("b.txt"), "new\n").expect("write");
+        let (inv, _wrote) = attached(&sweep, &crate::files::FileLedger::new());
+        let edit = inv.edit.as_ref().expect("a diff");
+        assert_eq!(edit.path, "b.txt");
+        assert!(edit.created, "a file git never had was called a rewrite");
+        assert_eq!(edit.before, "");
+        assert_eq!(edit.after, "new\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A file that was already dirty is diffed against the bytes it held when the call started:
+    /// somebody else's earlier edit is not this command's.
+    #[test]
+    fn a_dirty_file_shows_only_this_commands_change() {
+        let root = repo("dirty");
+        std::fs::write(root.join("a.txt"), "one\ntwo edited by hand\n").expect("write");
+        let sweep = sweep_of(&root);
+        std::fs::write(root.join("a.txt"), "one\nthree edited by hand\n").expect("write");
+
+        let (inv, _wrote) = attached(&sweep, &crate::files::FileLedger::new());
+        let edit = inv.edit.as_ref().expect("a diff");
+        assert_eq!(edit.before, "one\ntwo edited by hand\n");
+        assert_eq!(edit.after, "one\nthree edited by hand\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A command that changed nothing draws nothing, however dirty the tree already was.
+    #[test]
+    fn a_command_that_changed_nothing_attaches_nothing() {
+        let root = repo("nothing");
+        std::fs::write(root.join("a.txt"), "somebody else's work\n").expect("write");
+        let sweep = sweep_of(&root);
+
+        let (inv, wrote) = attached(&sweep, &crate::files::FileLedger::new());
+        assert!(inv.edit.is_none(), "{:?}", inv.notes);
+        assert!(inv.notes.is_empty(), "{:?}", inv.notes);
+        assert!(wrote.is_empty(), "{wrote:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Several files are named and none is drawn, because one result carries one card; past twelve
+    /// the rest are counted rather than dropped without a denominator.
+    #[test]
+    fn several_changed_files_are_named_and_counted() {
+        let root = repo("several");
+        let sweep = sweep_of(&root);
+        for i in 0..15 {
+            std::fs::write(root.join(format!("f{i}.txt")), "new\n").expect("write");
+        }
+
+        let (inv, _wrote) = attached(&sweep, &crate::files::FileLedger::new());
+        assert!(inv.edit.is_none(), "one card, and this is not one file");
+        let note = inv.notes.join("\n");
+        assert!(note.contains("changed 15 file(s)"), "{note}");
+        assert!(note.contains("and 3 more files"), "{note}");
+        assert!(note.contains("`git diff` is the one to read"), "{note}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A rewrite that leaves the same bytes is not a change: an empty card reads as a bug.
+    #[test]
+    fn a_rewrite_that_leaves_the_same_bytes_draws_nothing() {
+        let root = repo("same");
+        let sweep = sweep_of(&root);
+        std::fs::write(root.join("a.txt"), "one\ntwo\n").expect("write");
+
+        let (inv, _wrote) = attached(&sweep, &crate::files::FileLedger::new());
+        assert!(inv.edit.is_none(), "{:?}", inv.notes);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Outside a git tree the sweep is off and the result is exactly what it was: no note, no card.
+    #[test]
+    fn a_workspace_in_no_git_tree_attaches_nothing() {
+        let root =
+            std::env::temp_dir().join(format!("letibot-sweep-not-a-repo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(root.join("a.txt"), "one\n").expect("write");
+        let sweep = Sweep::before(root.clone(), Some(root.clone()));
+        std::fs::write(root.join("a.txt"), "two\n").expect("write");
+
+        let (inv, wrote) = attached(&sweep, &crate::files::FileLedger::new());
+        assert!(inv.edit.is_none());
+        assert!(inv.notes.is_empty(), "{:?}", inv.notes);
+        assert!(wrote.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The path the ledger is marked under is the one the session would use: relative to its
+    /// workspace when the file is under it, absolute when the command wrote outside it.
+    #[test]
+    fn the_spelling_is_the_sessions_own() {
+        let root = repo("spelling");
+        let sweep = sweep_of(&root);
+        std::fs::write(root.join("fuzz/list.inc"), "changed\n").expect("write");
+        let files = crate::files::FileLedger::new();
+        let (inv, wrote) = attached(&sweep, &files);
+        assert_eq!(
+            inv.edit.as_ref().map(|e| e.path.as_str()),
+            Some("fuzz/list.inc")
+        );
+        assert_eq!(wrote[0].0, "fuzz/list.inc");
+
+        // The same tree read from a session that sits elsewhere in it: the path is still the
+        // one that file has under the workspace.
+        let elsewhere = Sweep::before(root.clone(), Some(root.join("fuzz")));
+        std::fs::write(root.join("fuzz/list.inc"), "changed again\n").expect("write");
+        let (inv, wrote) = attached(&elsewhere, &crate::files::FileLedger::new());
+        assert_eq!(
+            inv.edit.as_ref().map(|e| e.path.as_str()),
+            Some("fuzz/list.inc")
+        );
+        assert_eq!(
+            wrote[0].0, "list.inc",
+            "relative to where that session sits"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A command that changed a file is not adjudicated as an edit, so the row names the tools
+    /// that would have been: and only the ones this seat has.
+    #[test]
+    fn the_note_names_only_the_writing_tools_the_seat_has() {
+        let root = repo("nudge");
+        let sweep = sweep_of(&root);
+        std::fs::write(root.join("a.txt"), "one\nchanged\n").expect("write");
+
+        let mut inv = Invocation::ok("ran");
+        let files = crate::files::FileLedger::new();
+        attach_changes(
+            &mut inv,
+            &sweep,
+            &files,
+            crate::runtime::WritesWith {
+                edit: false,
+                write: false,
+            },
+            &|_, _| {},
+        );
+        let note = inv.notes.join("\n");
+        assert!(note.contains("changed `a.txt`"), "{note}");
+        assert!(
+            !note.contains("judges a change before it lands"),
+            "a seat with no writing tool was given advice it cannot take: {note}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// The capture trails the pipe, so the beat a block is first seen on can hold nothing of what
     /// the program already wrote - and a card is never revised once it is up. The first reading

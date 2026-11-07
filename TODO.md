@@ -46,6 +46,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 
 | id | title | group | left |
 |---|---|---|---|
+| R161 | A `bash` call that writes a file is not shown as an edit | Code work | a diff for each file when a command changes more than one (one result carries one `edit` excerpt), and a sweep for a command run in the background — the sweep of the tree the command actually ran in, the single-file diff, the ledger and the nudge are built |
 | R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement) |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | leticl's `:turn-finished` arm (`src/session/seq-gap.lisp:254`) does not read `ends_turn`, so every round's end is drawn as the turn's end |
 | R121 | What a command boundary holds is hardcoded and invisible | Code work | items 1-8 are built: the two seat levels and every role are `[perimeter.<name>]` tables, a child composes its parent's and may only narrow it, and a widening is an operator card. left: `grants_rw` and `secrets` are the user file's alone (operator ruling 2026-11-05), a `leticode` seat with no shell still has no boundary to put a perimeter in front of, and R95's carry-over should call `boundary::env_refusal` |
@@ -93,6 +94,20 @@ One row per open entry. `left` is what is really left, checked against the tree.
 # Code work
 
 Things an agent can do in this repo, ordered by value: stability and UX first.
+
+---
+
+## R161 - A `bash` call that writes a file is not shown as an edit
+
+**Status:** partly built. left: a diff for each file when a command changes more than one, and a sweep for a command run in the background.
+
+The operator's arango session ran `cd .../arangodb && python3 -c "s = open('fuzz/aql_functions_list.inc').read() … (writes it back)"`; the head drew it as `Ran … · ok · 115ms · 5 lines` with no diff, and nothing recorded which file changed. A heredoc write is the one shape noticed (`crates/tools/src/heredoc.rs::nudge`, used in `crates/tools/src/runtime.rs`), and the sweep that reads a change back after a command (`crates/tools/src/detect.rs`, called from `builtins/bash.rs`) knew only the files the session's workspace repo lists, from the workspace as its root. That root is the arango shape's failure: the session sits somewhere that is not the checkout, the command `cd`s into it, and the sweep looked at a directory git does not answer for.
+
+Build (as filed): for a foreground `bash` call in a git work tree, take a cheap snapshot of the tree's changed files before and after the call (`git status --porcelain=v2 -z` plus the content hash of each dirty or untracked file the status names; skip files over a size cap and ignored paths), and attach to the call's result every file the call itself changed, with its diff (against the pre-call content for a file that was already dirty, against `HEAD` otherwise), in the same `edit` record shape the `edit`/`write` tools produce, so the head draws it as an edit with its diff and the file ledger knows the file was written. Also the existing nudge: name the tools that would have produced the diff (`edit`/`write`) when the session has them. Background jobs are out of scope. Keep the cost bounded: two git calls per `bash` call, skipped outside a git tree, and a total diff size cap with "and N more files" beyond it.
+
+Built: the sweep is now taken of the git work tree the command runs in, found by walking up from the run directory and from a leading `cd <dir> &&` (cached per directory, so a call still costs two git calls); the status reader is `--porcelain=v2 -z`, so an untracked path with a space is one path, a rename is its destination and a deleted file is not a change; the pre-read content is the hash, so a rewrite that left the same bytes reports nothing; a single changed file is attached as the `edit` record the row draws a diff from, several are named with "and N more files" past twelve; the file ledger and the provenance sink learn the bytes, so a later `write` on a file this session's own command wrote is not a second writer; and the nudge names only the writing tools the seat has. Tests: `builtins/bash.rs` (the sweep driven by a real `sed -i`, `python3 -c` and a `>`; a dirty file; nothing changed; a non-git tree; the spelling; the count) and `crates/tools/tests/detected_diff.rs` (the same through `bash` itself, which skips on a box with no cgroup).
+
+Still open: one result carries one `edit` excerpt (`crates/transcript`'s row, the `ToolFinished` event and the store all hold `Option`), so a change to several files is named and not drawn — drawing each needs that shape to become a list, a protocol bump and a head that pages them. And a background job is still not swept: the row follows the brief's "background out of scope", and the next session may want to take the snapshot at the spawn and attach at the completion instead.
 
 ---
 
