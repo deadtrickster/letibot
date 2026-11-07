@@ -964,6 +964,8 @@ Twenty `python3 /tmp/tmp.*/bin/harnessd` stubs were still listening on lab2x1 on
 
 On 2026-11-07 four placements failed at the same step while their host was building: `making the mirror` and `handing the bundle to the remote repository` got no answer within 20 s, the ssh was killed and the daemon shut down before the brief was sent. A retry minutes later always worked. Also seen: an ssh `Connection closed` on lubuntu3 while three packages opened connections at once (sshd `MaxStartups`), and `remote_call_slow` warnings with budgets under a tenth of a second. The placement's one-off steps should take a budget sized for a loaded host, and the link should reuse one ssh connection per host (`ControlMaster`) instead of opening one per call. Beside R149, which sizes the build width.
 
+
+A second budget did the same to running sessions (`cc@serenedb`, room #861, two sessions on 2026-11-07): a remote job's status poll was given what the caller's wait had left, 0.03 to 1.1 s, so on a loaded host every poll timed out, the job read as running, the progress check stopped the turn and the model concluded the host was unreachable. A poll now gets at least 2 s (`remote::POLL_FLOOR`, `poll_budget`). Left from that report: a status query that timed out should not count as a failed round in the progress check.
 ## R154 - The channel push says turns, not work, and a lost event is never replayed
 
 **Status:** fixed. left: nothing.

@@ -859,6 +859,16 @@ pub const SLOW_CODE: &str = "remote_call_slow";
 /// the deadline it was given.
 const POLL_BOUND: Duration = Duration::from_secs(5);
 
+/// The least time one status poll is given, whatever a wait has left. A round trip to a loaded host
+/// does not answer in tens of milliseconds, so a poll sized to a wait's last moments never learned
+/// that a job had ended, and the turn read the host as unreachable.
+const POLL_FLOOR: Duration = Duration::from_secs(2);
+
+/// One status poll's budget, given what a wait has left and the connection's own poll bound.
+fn poll_budget(left: Duration, bound: Duration) -> Duration {
+    left.min(bound).max(POLL_FLOOR.min(POLL_BOUND))
+}
+
 /// The bound on the calls that only ask about the connection - `ssh -O check` and `-O exit`. They are
 /// local IPC to a socket with no network in them at all, so anything past this is a master that has
 /// stopped answering.
@@ -1449,7 +1459,7 @@ impl Ssh {
     /// a caller that asked for a second of patience did not ask for five times that on every tick of a
     /// wait loop.
     fn poll_bound(&self) -> Duration {
-        POLL_BOUND.min(self.bound)
+        POLL_BOUND.min(self.bound).max(POLL_FLOOR)
     }
 
     pub fn host(&self) -> &Host {
@@ -5463,7 +5473,7 @@ impl RemoteProcesses {
         let settle_started = Instant::now();
         while settle_started.elapsed() < settle_by {
             let left = settle_by.saturating_sub(settle_started.elapsed());
-            self.refresh_within(job, left.min(self.ssh.poll_bound()));
+            self.refresh_within(job, poll_budget(left, self.ssh.poll_bound()));
             if !job.is_running() {
                 break;
             }
@@ -5606,7 +5616,7 @@ impl ProcessHost for RemoteProcesses {
                     since_last_output: None,
                 });
             }
-            self.refresh_within(&job, left.min(self.ssh.poll_bound()));
+            self.refresh_within(&job, poll_budget(left, self.ssh.poll_bound()));
             if !job.is_running() {
                 return Ok(Waited::Happened {
                     state: Some(job.state()),
@@ -5649,7 +5659,7 @@ impl ProcessHost for RemoteProcesses {
                 });
             }
             for j in &mine {
-                self.refresh_within(j, left.min(self.ssh.poll_bound()));
+                self.refresh_within(j, poll_budget(left, self.ssh.poll_bound()));
             }
             if mine.iter().all(|j| !j.is_running()) {
                 return Ok(Waited::Happened {
@@ -5849,6 +5859,24 @@ impl ProcessHost for RemoteProcesses {
 
 #[cfg(test)]
 mod tests {
+
+    /// A wait's last few milliseconds still give a status poll the floor: a poll shorter than a
+    /// round trip never answers, and the job it asks about reads as running for ever.
+    #[test]
+    fn a_status_poll_is_never_given_less_than_the_floor() {
+        assert_eq!(
+            super::poll_budget(Duration::from_millis(30), Duration::from_secs(5)),
+            super::POLL_FLOOR
+        );
+        assert_eq!(
+            super::poll_budget(Duration::from_secs(60), Duration::from_secs(5)),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            super::poll_budget(Duration::from_secs(3), Duration::from_secs(5)),
+            Duration::from_secs(3)
+        );
+    }
 
     /// A pgid file is a claim: the group it names is signalled only when that process was started
     /// by [`grouped`] for this very file, so a rewritten file cannot aim the kill at a neighbour.
