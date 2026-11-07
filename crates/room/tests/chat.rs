@@ -600,7 +600,9 @@ fn a_member_reconnecting_after_a_restart_gets_a_digest_of_what_it_missed() {
     let first = stored(&dir);
     let away = seat(&first, "s-away", A, Seat::Session);
     let talker = seat(&first, "s-talker", A, Seat::Session);
-    said(talker.say("a", "", "while connected"));
+    let heard = said(talker.say("a", "", "while connected"));
+    // The daemon's model took it, so it acks; a push alone is not a seen mark.
+    let _ = away.call(Request::Ack { seq: heard.seq });
     drop(away);
     until("the connection to close", || first.connections() == 1);
     for i in 0..10 {
@@ -617,6 +619,33 @@ fn a_member_reconnecting_after_a_restart_gets_a_digest_of_what_it_missed() {
     assert_eq!(got[0].kind, Seat::System);
     assert!(got[0].text.contains("said since"), "{}", got[0].text);
     assert!(got[0].text.contains("s-talker 10"), "{}", got[0].text);
+    second.stop();
+}
+
+/// A session that was pushed a message and never acked it - its daemon dropped it, or restarted
+/// before a turn took it - is told it again in the join digest.
+#[test]
+fn a_message_pushed_but_never_acked_is_in_the_next_join_digest() {
+    let dir = Scratch::new();
+    let first = stored(&dir);
+    let away = seat(&first, "s-away", A, Seat::Session);
+    let talker = seat(&first, "s-talker", A, Seat::Session);
+    said(talker.say("a", "", "pushed and dropped"));
+    drop(away);
+    until("the connection to close", || first.connections() == 1);
+    first.stop();
+    drop(talker);
+    std::thread::sleep(Duration::from_millis(50));
+
+    let second = stored(&dir);
+    let back = seat(&second, "s-away", A, Seat::Session);
+    let got = drained(&back);
+    assert_eq!(got.len(), 1, "one digest: {got:?}");
+    assert!(
+        got[0].text.contains("pushed and dropped"),
+        "{}",
+        got[0].text
+    );
     second.stop();
 }
 

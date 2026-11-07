@@ -21,6 +21,8 @@ struct Queue {
     pushed: u64,
     /// Notes the bound took: said on the log rather than cut in silence.
     dropped: u64,
+    /// The newest chat `seq` behind a queued note, acked to the room when a turn takes it.
+    chat_seq: u64,
 }
 
 /// The process-wide queues and the counter that orders them.
@@ -42,6 +44,15 @@ pub fn push(session: &str, line: String) {
         session,
         line,
     );
+}
+
+/// A chat message's note, remembered by its `seq` so the turn that takes it can tell the room.
+pub fn push_chat(session: &str, seq: u64, line: String) {
+    let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
+    enqueue(&mut q, session, line);
+    if let Some(entry) = q.map.get_mut(session) {
+        entry.chat_seq = entry.chat_seq.max(seq);
+    }
 }
 
 /// The push, given the queues it goes into - so a test can prove the bounds without filling the
@@ -80,6 +91,15 @@ fn enqueue(queues: &mut Queues, session: &str, line: String) {
 
 /// Take everything waiting for this session - what `Harness::wake` composes into its notices.
 pub fn take(session: &str) -> Vec<String> {
+    let (lines, seq) = take_with_seq(session);
+    if seq > 0 {
+        super::link::ack_taken(session, seq);
+    }
+    lines
+}
+
+/// [`take`] without the ack: the notes, and the newest chat `seq` among them (0 for none).
+pub fn take_with_seq(session: &str) -> (Vec<String>, u64) {
     let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
     match q.map.remove(session) {
         Some(queue) => {
@@ -89,9 +109,9 @@ pub fn take(session: &str) -> Vec<String> {
                     queue.dropped
                 );
             }
-            queue.lines.into_iter().collect()
+            (queue.lines.into_iter().collect(), queue.chat_seq)
         }
-        None => Vec::new(),
+        None => (Vec::new(), 0),
     }
 }
 

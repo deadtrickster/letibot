@@ -692,6 +692,11 @@ impl Server {
 
     /// How many sessions are connected now - the pane's *is anybody here*, and the number a
     /// test reads instead of sleeping.
+    /// The newest chat `seq` `name` is marked as having seen, `None` for a member never seen.
+    pub fn seen(&self, name: &str) -> Option<u64> {
+        self.inner.chat.lock().expect("the chat lock").seen(name)
+    }
+
     pub fn connections(&self) -> usize {
         self.inner.conns.lock().expect("the connections lock").len()
     }
@@ -1228,9 +1233,12 @@ impl Server {
                 },
             });
         }
-        let mut chat = self.inner.chat.lock().expect("the chat lock");
-        chat.mark_seen(session, head);
-        chat.keep_seen(session);
+        // A session acks the digest when its model takes it; until then a reconnect says it again.
+        if conn.seat != Seat::Session {
+            let mut chat = self.inner.chat.lock().expect("the chat lock");
+            chat.mark_seen(session, head);
+            chat.keep_seen(session);
+        }
     }
 
     /// The unfinished items of the project a chat room belongs to, one short line each.
@@ -1609,14 +1617,17 @@ impl Server {
                     head: chat.head(),
                 }
             }
-            Request::Ack { seq } => Response::Acked {
-                cursor: self
-                    .inner
-                    .chat
-                    .lock()
-                    .expect("the chat lock")
-                    .ack(name, *seq),
-            },
+            Request::Ack { seq } => {
+                let mut chat = self.inner.chat.lock().expect("the chat lock");
+                // A session's ack is also its seen mark (see `append_and_push`).
+                if seat == Seat::Session {
+                    chat.mark_seen(name, *seq);
+                    chat.keep_seen(name);
+                }
+                Response::Acked {
+                    cursor: chat.ack(name, *seq),
+                }
+            }
             _ => refuse(None, crate::Refused::ChatIsTheServers),
         }
     }
@@ -1663,11 +1674,15 @@ impl Server {
                 names_you: message.names(name),
                 message: self.shown(message.clone(), &handles),
             });
-            self.inner
-                .chat
-                .lock()
-                .expect("the chat lock")
-                .mark_seen(name, message.seq);
+            // A session's daemon marks what its model took, with `Ack`: a push it dropped, or held
+            // across its own restart, was not seen, and the join digest must still tell it.
+            if c.seat != Seat::Session {
+                self.inner
+                    .chat
+                    .lock()
+                    .expect("the chat lock")
+                    .mark_seen(name, message.seq);
+            }
         }
         // And a member with no connection is told nothing by a push. It is not lost: the message is
         // kept for it and delivered when it next connects, and its inbox cursor counts it unread.

@@ -87,6 +87,29 @@ pub struct SessionRoom {
     plain: bool,
 }
 
+/// Tell the room `session` has taken chat up to `seq`, which is its seen mark: the room retells
+/// anything after it on the next join. Off the caller's thread, which is a turn or the reader.
+pub(crate) fn ack_taken(session: &str, seq: u64) {
+    let Some(room) = links()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(session)
+        .and_then(Weak::upgrade)
+    else {
+        return;
+    };
+    let _ = std::thread::Builder::new()
+        .name("room-ack".into())
+        .spawn(move || {
+            if let Err(e) = room.client.request(&Request::Ack { seq }) {
+                eprintln!(
+                    "harnessd: `{}` could not ack room #{seq}: {e}",
+                    room.session
+                );
+            }
+        });
+}
+
 fn links() -> &'static Mutex<std::collections::BTreeMap<String, Weak<SessionRoom>>> {
     static LINKS: std::sync::OnceLock<
         Mutex<std::collections::BTreeMap<String, Weak<SessionRoom>>>,
@@ -238,8 +261,11 @@ impl SessionRoom {
                     }
                 }
                 if plain && m.attends(&me, letibot_room::Attention::All) {
-                    wake::push(&me, wake::chat_sentence(m, &me));
+                    wake::push_chat(&me, m.seq, wake::chat_sentence(m, &me));
                     bell(&me);
+                } else {
+                    // Nothing here will take it as a note, so it is seen on arrival.
+                    ack_taken(&me, m.seq);
                 }
             }));
         }
@@ -1275,7 +1301,7 @@ mod tests {
             std::env::temp_dir().join(format!("letibot-room-chatwake-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("room.sock");
-        let _server = letibot_room::Server::serve(&path, letibot_room::Room::new())
+        let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
             .expect("a room to talk to");
         let rung: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let bell: Arc<dyn Fn(&str) + Send + Sync> = {
@@ -1325,6 +1351,16 @@ mod tests {
             rung.lock().unwrap().iter().any(|s| s == me_id),
             "the bell did not ring for `{me_id}`: {:?}",
             rung.lock().unwrap()
+        );
+        // Taking the note is what marks it seen: a push alone left a restarted daemon's model
+        // without it, and the join digest skipped it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while server.seen(me_id).unwrap_or(0) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            server.seen(me_id).unwrap_or(0) > 0,
+            "the taken note never reached the room as a seen mark"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
