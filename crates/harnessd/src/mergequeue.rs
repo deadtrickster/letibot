@@ -20,6 +20,7 @@ pub mod gate_host;
 pub mod gate_orphans;
 pub mod git;
 pub mod lease;
+pub mod listen;
 pub mod notices;
 pub mod review;
 pub mod serve;
@@ -744,6 +745,20 @@ pub fn repositories_of_workspace(workspace: &Path) -> Vec<String> {
     git::repos_of_workspace(workspace)
         .iter()
         .filter_map(|r| git::repository_key(r))
+        .collect()
+}
+
+/// Whether `[queue] mute` names this repository: by its directory name or by its key.
+pub fn is_muted(key: &str, mute: &[String]) -> bool {
+    let dir = Path::new(key).file_name().and_then(|n| n.to_str());
+    mute.iter().any(|m| m == key || Some(m.as_str()) == dir)
+}
+
+/// The names in `mute` that match none of `keys`.
+pub fn unknown_mutes<'a>(keys: &[String], mute: &'a [String]) -> Vec<&'a str> {
+    mute.iter()
+        .filter(|m| !keys.iter().any(|k| is_muted(k, std::slice::from_ref(m))))
+        .map(String::as_str)
         .collect()
 }
 

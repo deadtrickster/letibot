@@ -2062,3 +2062,53 @@ fn the_notes_repo_is_outside_the_tree_and_configurable() {
     assert_eq!(cfg.notes_repo(), Some(base.join("data/notes")));
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// A folder project's repositories are one `listen.NAME` row each: the config-muted one is checked
+/// and has no verb, a `/listen` one is checked with one, the rest are unchecked.
+#[test]
+fn a_folder_projects_repositories_are_listen_rows() {
+    let dir = std::env::temp_dir().join(format!("listen-rows-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for n in ["a", "b", "c"] {
+        let p = dir.join(n);
+        std::fs::create_dir_all(&p).unwrap();
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec![
+                "remote",
+                "add",
+                "origin",
+                &format!("https://github.com/o/{n}.git"),
+            ],
+        ] {
+            let ok = std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&p)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok);
+        }
+    }
+    let file = dir.join("leticode.toml");
+    std::fs::write(&file, "[queue]\nmute = [\"c\"]\n").unwrap();
+    let mut cfg = Config::for_this_box(&dir);
+    cfg.workspace = dir.clone();
+    cfg.store = Some(dir.join("s.db"));
+    cfg.leticode = crate::leticode_config::LeticodeConfig::load(&file).unwrap();
+    let store = letibot_tokencore::store::Store::open(&dir.join("s.db")).unwrap();
+    store
+        .set_queue_mute(&crate::mergequeue::listen::workspace_key(&dir), "b", true)
+        .unwrap();
+    let rows = cfg.listen_rows();
+    let by = |k: &str| rows.iter().find(|r| r.key == k).expect(k);
+    assert_eq!(rows.len(), 3);
+    assert_eq!(by("listen.a").value, "[ ] listened");
+    assert!(!by("listen.a").editable.is_empty());
+    assert_eq!(by("listen.b").value, "[x] muted");
+    assert!(!by("listen.b").editable.is_empty());
+    assert_eq!(by("listen.c").value, "[x] muted");
+    assert!(by("listen.c").editable.is_empty(), "locked");
+    assert!(by("listen.c").source.contains("leticode.toml"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -17,6 +17,12 @@ CREATE TABLE IF NOT EXISTS mode_import (
     source       TEXT PRIMARY KEY,   -- the legacy file imported, so it is imported once
     at           INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS queue_mute (
+    workspace    TEXT NOT NULL,      -- the session folder, canonical
+    repository   TEXT NOT NULL,      -- a repository's directory name under it, or its key
+    set_at       INTEGER NOT NULL,
+    PRIMARY KEY (workspace, repository)
+);
 CREATE TABLE IF NOT EXISTS session_mode (
     session_id   TEXT PRIMARY KEY,
     mode         TEXT NOT NULL,
@@ -100,6 +106,43 @@ impl Store {
             .optional()?)
     }
 
+    /// The repositories a workspace's sessions are not told the gate's news of.
+    pub fn queue_mutes(&self, workspace: &str) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut st = conn.prepare(
+            "SELECT repository FROM queue_mute WHERE workspace = ?1 ORDER BY repository",
+        )?;
+        let rows = st
+            .query_map(params![workspace], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(rows)
+    }
+
+    /// Mute (`true`) or listen to (`false`) one repository of a workspace.
+    pub fn set_queue_mute(&self, workspace: &str, repository: &str, muted: bool) -> Result<()> {
+        if muted {
+            self.exec(
+                "INSERT OR IGNORE INTO queue_mute (workspace, repository, set_at) VALUES (?1, ?2, ?3)",
+                params![workspace, repository, now_ms()],
+            )?;
+        } else {
+            self.exec(
+                "DELETE FROM queue_mute WHERE workspace = ?1 AND repository = ?2",
+                params![workspace, repository],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Forget every mute of a workspace.
+    pub fn clear_queue_mutes(&self, workspace: &str) -> Result<()> {
+        self.exec(
+            "DELETE FROM queue_mute WHERE workspace = ?1",
+            params![workspace],
+        )?;
+        Ok(())
+    }
+
     /// Record the point this session was put at.
     pub fn set_session_mode(
         &self,
@@ -139,6 +182,21 @@ mod tests {
         assert_eq!(peerdb.consented_at.as_deref(), Some("2026-10-12T07:00:00Z"));
         assert!(s.remove_project_mode("/p/letim").unwrap());
         assert!(!s.remove_project_mode("/p/letim").unwrap());
+    }
+
+    #[test]
+    fn queue_mutes_are_per_workspace_and_set_clear_idempotently() {
+        let s = store();
+        s.set_queue_mute("/w/a", "x", true).unwrap();
+        s.set_queue_mute("/w/a", "x", true).unwrap();
+        s.set_queue_mute("/w/a", "y", true).unwrap();
+        s.set_queue_mute("/w/b", "x", true).unwrap();
+        assert_eq!(s.queue_mutes("/w/a").unwrap(), ["x", "y"]);
+        s.set_queue_mute("/w/a", "x", false).unwrap();
+        assert_eq!(s.queue_mutes("/w/a").unwrap(), ["y"]);
+        s.clear_queue_mutes("/w/a").unwrap();
+        assert!(s.queue_mutes("/w/a").unwrap().is_empty());
+        assert_eq!(s.queue_mutes("/w/b").unwrap(), ["x"]);
     }
 
     #[test]

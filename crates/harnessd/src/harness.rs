@@ -136,6 +136,9 @@ const WORKSPACE_GONE: &str = "workspace_gone";
 /// typo does not read as a pin that took effect.
 pub(crate) const SKILLS_PIN: &str = "skills_pin";
 
+/// The warning code for a `[queue] mute` name matching no repository of the workspace.
+pub(crate) const QUEUE_MUTE: &str = "queue_mute";
+
 /// The warning code for a session that runs unconfined as designed: a `leticode` seat asks for no
 /// boundary, and this session seats no shell for a wide one to wrap. Said once by the top-level
 /// session. Routine: a disclosure.

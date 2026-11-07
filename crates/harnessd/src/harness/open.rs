@@ -2883,6 +2883,25 @@ impl Harness {
                 ),
             );
         }
+        let mute = cfg.leticode.queue_mute();
+        if !mute.is_empty() {
+            let keys = crate::mergequeue::repositories_of_workspace(&cfg.workspace);
+            let unknown = crate::mergequeue::unknown_mutes(&keys, mute);
+            if !unknown.is_empty() {
+                hub.warn(
+                    QUEUE_MUTE,
+                    format!(
+                        "`[queue] mute` names no repository of this workspace: {}. A name is a \
+                         repository's directory name or key; the rest of the mutes are in force.",
+                        unknown
+                            .iter()
+                            .map(|n| format!("`{n}`"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                );
+            }
+        }
         let declared = crate::standing_notes::preloaded(parts.skills.as_ref(), &cfg.skills);
         // Through the backend the session's tools use: a placed session's instruction files are on
         // that host, and this is the first prompt they have to reach.

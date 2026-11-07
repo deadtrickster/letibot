@@ -606,14 +606,22 @@ impl App {
         }
     }
 
+    /// The repository a red notice open in the popup is about: the key `m` mutes it.
+    pub(crate) fn popup_red_repo(&self) -> Option<String> {
+        match &self.diff_popup.as_ref()?.body {
+            PopupBody::Notice { text, .. } => crate::ui::transcript::red_card::red_repo(text),
+            _ => None,
+        }
+    }
+
     /// The popup owns the keyboard while it is open: arrows, the paging keys, `ctrl-]` to the
     /// editor, Esc to close. Except while a decision is open, when it keeps only the keys that
     /// cannot be the card's (Esc, `ctrl-c`, `ctrl-]`, wheel, paging), or the card is unanswerable.
     pub(crate) fn key_diff_popup(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         let deciding = !self.open.is_empty();
-        let Some(p) = self.diff_popup.as_mut() else {
+        if self.diff_popup.is_none() {
             return ControlFlow::Continue(());
-        };
+        }
         if deciding
             && !matches!(
                 k,
@@ -628,6 +636,21 @@ impl App {
         {
             return ControlFlow::Continue(());
         }
+        // `m` on a red notice mutes its repository for this folder, and re-reads the rows so the
+        // config pane's checkbox follows (the daemon pushes nothing).
+        if matches!(k, Key::Char('m'))
+            && let Some(repo) = self.popup_red_repo()
+        {
+            self.close_popup();
+            self.say(&format!("/listen -{repo} (asking the daemon)"));
+            self.queued.push(Action::Settings);
+            return ControlFlow::Break(Some(Action::Slash {
+                line: format!("listen -{repo}"),
+            }));
+        }
+        let Some(p) = self.diff_popup.as_mut() else {
+            return ControlFlow::Continue(());
+        };
         let len = p.laid.as_ref().map_or(0, |l| l.rows.len());
         let page = p.room.max(1);
         let max = len.saturating_sub(page);

@@ -1450,3 +1450,238 @@ fn a_blocked_childs_review_is_rung_and_told_to_its_root_once() {
     );
     assert!(project.handover_notices().is_empty(), "said ONCE");
 }
+
+/// A one-org folder session muting one repository: its red and its parked Target review are not
+/// told, the other repository's are, and the session's own branch review in the muted repository
+/// still is.
+#[test]
+fn a_muted_repository_of_a_folder_is_not_told_but_the_sessions_own_branch_review_is() {
+    use letibot_tokencore::store::{HealthState, TargetHealth};
+    let Some(mut f) = Fixture::new("mute-told") else {
+        return;
+    };
+    let org = f.dir.path().join("stroppy-io");
+    let child = |name: &str, url: &str| {
+        let p = org.join(name);
+        std::fs::create_dir_all(&p).unwrap();
+        git(&p, &["init", "-q", "-b", "main"]);
+        git(&p, &["remote", "add", "origin", url]);
+        std::fs::canonicalize(p).unwrap().display().to_string()
+    };
+    let kept = child("stroppy", "https://github.com/stroppy-io/stroppy.git");
+    let muted = child(
+        "stroppy-rust",
+        "https://github.com/stroppy-io/stroppy-rust.git",
+    );
+    f.cfg.workspace = org.clone();
+    let file = f.dir.path().join("leticode.toml");
+    std::fs::write(&file, "[queue]\nmute = [\"stroppy-rust\", \"gone\"]\n").unwrap();
+    f.cfg.leticode = crate::leticode_config::LeticodeConfig::load(&file).expect("parses");
+    let s = f.store();
+    let sha = "8b9366aa12ffffffffffffffffffffffffffffff".to_string();
+    for repository in [&kept, &muted] {
+        s.set_target_health(
+            &TargetHealth {
+                repository: repository.clone(),
+                target: "main".into(),
+                sha: sha.clone(),
+                state: HealthState::Red,
+                checked_ms: 1,
+                evidence: "`scripts/merge_gate.sh` failed".into(),
+                gate_steps: Vec::new(),
+            },
+            "test",
+        )
+        .unwrap();
+    }
+    let blocked = |id: &str, repository: &str, kind: ReviewKind, session: &str| {
+        s.enqueue_review(
+            &NewReview {
+                id: id.into(),
+                repository: repository.into(),
+                target: "main".into(),
+                kind,
+                session_id: session.into(),
+                branch: "main".into(),
+                worktree: None,
+                base_sha: String::new(),
+                head_sha: sha.clone(),
+                brief: "red".into(),
+                priority: MergePriority::Urgent,
+                fixes: None,
+                evidence: String::new(),
+            },
+            "test",
+            1,
+        )
+        .unwrap();
+        assert!(
+            s.move_review(
+                id,
+                ReviewState::Waiting,
+                ReviewState::Blocked,
+                &Move::new("queue", "blocked").set("failure", "it conflicts"),
+                2,
+            )
+            .unwrap()
+        );
+    };
+    blocked("t-muted", &muted, ReviewKind::Target, "");
+    blocked("b-muted", &muted, ReviewKind::Branch, "s-parent");
+    let mut sessions = Sessions::open_first(&f.parts, f.cfg.clone(), f.registry.clone())
+        .expect("the session opens");
+    let project = sessions.held("s-parent").expect("the project's session");
+    let notices = project.queue_emergency_notices();
+    assert_eq!(notices.len(), 2, "{notices:#?}");
+    assert!(
+        notices[0].starts_with("EMERGENCY") && notices[0].contains(&kept),
+        "{}",
+        notices[0]
+    );
+    assert!(
+        !notices.iter().any(|n| n.contains("t-muted")),
+        "the muted repository's Target review is not told: {notices:#?}"
+    );
+    assert!(
+        notices[1].contains("b-muted"),
+        "the session's own branch review is: {}",
+        notices[1]
+    );
+    // Green again for the muted repository stays silent too.
+    let mut green = s.target_health(&muted, "main").unwrap().unwrap();
+    green.state = HealthState::Green;
+    s.set_target_health(&green, "test").unwrap();
+    assert!(project.queue_emergency_notices().is_empty());
+}
+
+#[test]
+fn a_mute_name_matches_a_directory_name_or_the_key_and_a_typo_is_found() {
+    let keys = vec![
+        "/w/stroppy-io/stroppy".to_string(),
+        "/w/stroppy-io/stroppy-rust".to_string(),
+    ];
+    let m = |s: &str| vec![s.to_string()];
+    assert!(crate::mergequeue::is_muted(&keys[1], &m("stroppy-rust")));
+    assert!(crate::mergequeue::is_muted(
+        &keys[1],
+        &m("/w/stroppy-io/stroppy-rust")
+    ));
+    assert!(!crate::mergequeue::is_muted(&keys[0], &m("stroppy-rust")));
+    let mute = vec!["stroppy-rust".to_string(), "stroppy-rsut".to_string()];
+    assert_eq!(
+        crate::mergequeue::unknown_mutes(&keys, &mute),
+        ["stroppy-rsut"]
+    );
+}
+
+/// `/listen -REPO` from the notice's hint stops the next red of that repository and not of the
+/// other, and a new session of the same folder inherits it from the store.
+#[test]
+fn a_listen_mute_stops_that_repositorys_next_red_and_a_new_session_inherits_it() {
+    use letibot_tokencore::store::{HealthState, TargetHealth};
+    let Some(mut f) = Fixture::new("listen-told") else {
+        return;
+    };
+    let org = f.dir.path().join("stroppy-io");
+    let child = |name: &str, url: &str| {
+        let p = org.join(name);
+        std::fs::create_dir_all(&p).unwrap();
+        git(&p, &["init", "-q", "-b", "main"]);
+        git(&p, &["remote", "add", "origin", url]);
+        std::fs::canonicalize(p).unwrap().display().to_string()
+    };
+    let a = child("a", "https://github.com/stroppy-io/a.git");
+    let b = child("b", "https://github.com/stroppy-io/b.git");
+    f.cfg.workspace = org.clone();
+    let s = f.store();
+    let red = |repository: &str, sha: &str| {
+        s.set_target_health(
+            &TargetHealth {
+                repository: repository.into(),
+                target: "main".into(),
+                sha: sha.into(),
+                state: HealthState::Red,
+                checked_ms: 1,
+                evidence: "`scripts/merge_gate.sh` failed".into(),
+                gate_steps: Vec::new(),
+            },
+            "test",
+        )
+        .unwrap();
+    };
+    let mut sessions = Sessions::open_first(&f.parts, f.cfg.clone(), f.registry.clone())
+        .expect("the session opens");
+    let project = sessions.held("s-parent").expect("the project's session");
+    red(&a, "1111111111111111111111111111111111111111");
+    let first = project.queue_emergency_notices();
+    assert!(first[0].contains("/listen -a"), "the hint: {}", first[0]);
+    let said = project.listen_verb(&["-a".into()]);
+    assert!(said.ok, "{:?}", said.lines);
+    red(&a, "2222222222222222222222222222222222222222");
+    red(&b, "3333333333333333333333333333333333333333");
+    let next = project.queue_emergency_notices();
+    assert_eq!(next.len(), 1, "{next:#?}");
+    assert!(
+        next[0].contains(&b) && !next[0].contains(&format!("in {a}")),
+        "{}",
+        next[0]
+    );
+    // A session opened later in the same folder reads the same set.
+    assert_eq!(
+        crate::mergequeue::listen::effective(Some(&f.store()), &org, &[]),
+        ["a"]
+    );
+}
+
+/// `letibot --listen` writes the store before any session exists, so the first queue pass of a
+/// fresh session already skips the muted repository.
+#[test]
+fn the_launcher_flag_reaches_the_store_before_the_first_queue_pass() {
+    use letibot_tokencore::store::{HealthState, TargetHealth};
+    let Some(mut f) = Fixture::new("listen-flag") else {
+        return;
+    };
+    let org = f.dir.path().join("stroppy-io");
+    let child = |name: &str| {
+        let p = org.join(name);
+        std::fs::create_dir_all(&p).unwrap();
+        git(&p, &["init", "-q", "-b", "main"]);
+        git(
+            &p,
+            &[
+                "remote",
+                "add",
+                "origin",
+                &format!("https://github.com/stroppy-io/{name}.git"),
+            ],
+        );
+        std::fs::canonicalize(p).unwrap().display().to_string()
+    };
+    let a = child("a");
+    let b = child("b");
+    f.cfg.workspace = org.clone();
+    let code = crate::cli::listen_offline(&f.cfg, &f.store(), &["-b".to_string()]).unwrap();
+    assert_eq!(code, 0);
+    let s = f.store();
+    for repository in [&a, &b] {
+        s.set_target_health(
+            &TargetHealth {
+                repository: repository.clone(),
+                target: "main".into(),
+                sha: "8b9366aa12ffffffffffffffffffffffffffffff".into(),
+                state: HealthState::Red,
+                checked_ms: 1,
+                evidence: "`scripts/merge_gate.sh` failed".into(),
+                gate_steps: Vec::new(),
+            },
+            "test",
+        )
+        .unwrap();
+    }
+    let mut sessions = Sessions::open_first(&f.parts, f.cfg.clone(), f.registry.clone())
+        .expect("the session opens");
+    let project = sessions.held("s-parent").expect("the project's session");
+    let told = project.queue_emergency_notices();
+    assert_eq!(told.len(), 1, "{told:#?}");
+    assert!(told[0].contains(&a), "{}", told[0]);
+}

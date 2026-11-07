@@ -32,6 +32,7 @@ pub const VERBS: &[&str] = &[
     "flowy",
     "gate",
     "job",
+    "listen",
     "login",
     "models",
     "monitor",
@@ -62,6 +63,9 @@ pub enum Slash {
         /// bare `/clear`.
         next: Option<String>,
     },
+    /// `/listen [-REPO] [+REPO] [only REPO|this] [all]` - which repositories of a folder project
+    /// this folder's sessions hear gate news of. No words lists them.
+    Listen(Vec<String>),
     /// `/prune` - the oldest tool-call bodies leave this conversation as stubs, each kept in
     /// the spill store under an id `recall` opens. No summary runs, so the verb works with no
     /// model behind it. See `harness/prune.rs`.
@@ -267,6 +271,7 @@ impl Slash {
                     .map(str::to_string),
             },
             Some("prune") => Slash::Prune,
+            Some("listen") => Slash::Listen(words[1..].iter().map(|w| w.to_string()).collect()),
             Some("tools") => Slash::Tools,
             Some("boundary") => Slash::Boundary,
             // `off` and `on` are kept as the same verbs, because they are what somebody reaches
