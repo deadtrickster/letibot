@@ -65,6 +65,12 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R136 | Answer waits: a row waits on another top-level session's answer | Code work | all of the build, per `docs/answer-waits.md` (operator's rulings 2026-11-07 are in it) |
 | R137 | Todo graphs that span projects | Code work | the design; an answer-wait ask is the first cross-project edge |
 | R138 | Stable session identities across hosts, through migrations | Code work | the design; until then asks are same-host only |
+| R139 | Room UI P0: attachment and blob wire, the head push frame, stubs for P1-P4 | Code work | all of it, per `docs/room-tui.md` P0; room protocol 9 |
+| R140 | Room UI P1: live chat push to the head, agents attach pictures | Code work | all of it, after R139 |
+| R141 | Room UI P2: message rendering (markdown, code colours, grouping, speaker colours, names, unread divider, pictures) | Code work | all of it, after R139 |
+| R142 | Room UI P3: composer (`@` completion, room `/` verbs, history and drafts, reply, pasted pictures) | Code work | all of it, after R139 |
+| R143 | Room UI P4: navigation (message cursor, jump to unread, `Ctrl+K` switcher, search, picture cache) | Code work | all of it, after R139 |
+| R144 | The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag | Code work | the design and the build |
 | T16 | W9's open questions | Code work | item 7 (call ids are positional per turn); unclear: item 6 asked lubuntu3 whether RAGFlow signals "no coverage" in a field, no answer is recorded |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
 | R100 | A remote session in a firecode VM: `--host` and `--vm` as one placement | Needs the operator | the live proof on lab2x1: a real `firecode` copy carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, the copy-out's cost |
@@ -848,6 +854,18 @@ Today a board's edges stay inside one session tree. An answer-wait ask (R136) is
 **Status:** open. left: the design.
 
 A session's identity is stable on its host only. Answer waits (R136) assume a stable graph of services, so they refuse targets on other hosts. A session that migrates between hosts must keep its name and its open asks, both as asker and target, for asks to cross hosts.
+
+## R139 to R143 - The room in the TUI, as good as flowy's chat
+
+**Status:** open. left: the build.
+
+The design and the five packages are `docs/room-tui.md`, from a study of flowy's web console and Go TUI. P0 (R139) lands first and alone: `Attachment` and a coordinator blob store, `ROOM_PROTOCOL_VERSION` 9, `ServerFrame::RoomChatPushed` with sessionlog protocol 65, and the TUI stub modules and key bindings so P1 to P4 never edit one file. P1 (R140) pushes chat to heads, P2 (R141) renders messages, P3 (R142) is the composer, P4 (R143) is navigation and the picture cache. Each package names its done-tests in the doc. Defaults taken on the doc's open questions: bump the protocol, blobs on the coordinator (8 MiB each), no reactions, no thread folding, search within the 500-message ring, agents see a picture's name and size only. Answer waits (R136) take room protocol 10.
+
+## R144 - The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag
+
+**Status:** open. left: the design and the build.
+
+A Claude Code seat orchestrating letibot sessions has no board: its waits live in Monitors and its own memory. The bridge should serve the same `todo_write` / `todos` / `update` tools a session has, kept in the store under the seat's handle, with `wait_on` edges to letibot sessions, their jobs, room asks (R136) and the operator. The same idle check nags the seat through the channel push when a row is ready or in progress with no wait. Then Monitors are not needed for waiting on packages, and a seat's plan is visible on the head's todo pane like any session's.
 
 ## R134 - Scrolling stops at a line above the tail
 
