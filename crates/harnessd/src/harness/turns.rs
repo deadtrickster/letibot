@@ -1708,7 +1708,10 @@ impl Harness {
         offers.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
         // The turn's skill offers, by the same delivery and the same memory: a name in the tail, once
         // per session, settled against the round's own `skill` loads.
-        let mut skill_offers = crate::skills_offer::Offers::new().with_tier(self.cfg.tier());
+        let seat_tools = super::open::tool_names(&self.prefix.tools_json);
+        let mut skill_offers = crate::skills_offer::Offers::new()
+            .with_tier(self.cfg.tier())
+            .with_seat(seat_tools.iter(), self.cfg.skills_never_offer().iter());
         skill_offers.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
         // And the tree's open rows, offered when the brief in hand is one of them: a row somebody
         // already holds is a wait, and spawning a child to redo it is what that line saves.

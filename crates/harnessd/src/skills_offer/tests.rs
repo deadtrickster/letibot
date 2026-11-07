@@ -454,3 +454,74 @@ fn the_subject_is_capped_from_the_newest_end() {
     assert!(text.contains("the newest thought"), "the newest survives");
     assert!(!text.contains("the oldest thing said"), "the oldest is cut");
 }
+
+/// Skills that name tools the seat lacks are not offered, a plain one still is, `never_offer`
+/// vetoes by name, and the reason lands in the log.
+#[test]
+fn a_skill_the_seat_cannot_use_is_not_offered() {
+    let claude = |name: &str, body: &str| {
+        Skill::new(
+            name,
+            "desktop screenshots of the screen and apps, click and type",
+            body,
+            SkillSource::Installed(Some("claude".into())),
+        )
+    };
+    let mut all = registry().skills;
+    all.extend(vec![
+        claude(
+            "computer-use",
+            "Its tools are named `mcp__computer-use__*` when in the desktop app.",
+        ),
+        claude(
+            "chrome-browser",
+            "Tools named `mcp__claude-in-chrome__*` act in Chrome.",
+        ),
+        claude("docs", "Everything is served by the docs connector."),
+        claude("plain", "Take care when you click and type."),
+        claude("vetoed", "Take care when you click and type."),
+    ]);
+    let registry = SkillRegistry::new(all);
+    let text = subject(
+        &prompt("take desktop screenshots of the screen and apps, click and type"),
+        &[],
+    );
+    let tools: Vec<String> = vec!["bash".into(), "read".into()];
+    let never = vec!["vetoed".to_string()];
+    let mut offers = Offers::new().with_seat(tools.iter(), never.iter());
+    // Every candidate is considered: ask repeatedly as the cap is two.
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        if !offers.compose(&registry, &text) {
+            break;
+        }
+        for o in &offers.open {
+            seen.push(o.name.clone());
+        }
+        let logs = std::env::temp_dir().join(format!(
+            "harnessd-skills-seat-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
+        offers.settle(&logs, "s1", &[]);
+        let log = std::fs::read_to_string(logs.join(LOG)).unwrap_or_default();
+        if log.contains("skipped") {
+            assert!(
+                log.contains("computer-use") && log.contains("mcp__computer-use__"),
+                "{log}"
+            );
+            assert!(log.contains("never_offer"), "{log}");
+            assert!(log.contains("docs"), "{log}");
+        }
+    }
+    assert_eq!(seen.iter().filter(|n| *n == "plain").count(), 1, "{seen:?}");
+    for bad in ["computer-use", "chrome-browser", "docs", "vetoed"] {
+        assert!(!seen.iter().any(|n| n == bad), "{bad} offered: {seen:?}");
+    }
+
+    let with: Vec<String> = vec!["mcp__computer-use__screenshot".into()];
+    let seat = with.iter().map(|t| t.to_ascii_lowercase()).collect();
+    let skills = registry.live_skills();
+    let cu = skills.iter().find(|s| s.name == "computer-use").unwrap();
+    assert!(cu.unmet(&seat).is_none(), "present tools satisfy it");
+}

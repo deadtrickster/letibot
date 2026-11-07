@@ -1792,6 +1792,11 @@ impl Config {
         &self.leticode.skills.pin
     }
 
+    /// `[skills] never_offer`, both levels: skills neither offered nor listed as usable.
+    pub fn skills_never_offer(&self) -> &[String] {
+        &self.leticode.skills.never_offer
+    }
+
     /// This session's logs directory: `<logs_root>/<session id>/`, or - with no logs root, as
     /// in a fixture - `<workspace>/.letibot/`, where they were before.
     pub fn daemon_logs(&self) -> PathBuf {
