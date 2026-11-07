@@ -68,6 +68,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R157 | Built-in panes `b-sessions`/`pane_sessions` and `b-irc`/`pane_nicks` trap with symbol-less backtraces | Code work | a reproduction (reported by gatekeeper@arangodb, room #1029), the cause, the fix |
 | R154 | The channel push says turns, not work: idle-with-open-work and a held job's exit are silent, and a lost turn end is never replayed | Code work | all of it |
 | R159 | `←`/`→` in the `/sessions` tree collapse the wrong row, and `←` throws the cursor to another project | Code work | all of it |
+| R158 | Resuming a session reads gigabytes of the store: the startup corpus counts scan `adjudication` row by row | Landed | nothing — the counts read 4.98 MB where they read 1.80 GB; a live 10 GB store takes the index at its daemon's next start (one build, 8.6 s, 2.2 GB) |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
 | R150 | Plugin extension points: the harness and head open to plugins | Needs the operator | the operator's answers to the 13 questions in `docs/plugin-extension-points-wide.md` §8 (each has a default and is built on it meanwhile); K2-K6, K11 and P6 to build; H0, P5, K7, K8, K9, K10 are landed and K1 is in flight |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
@@ -1030,6 +1031,68 @@ Reported by the operator on 2026-11-08, in the head's `/sessions` tree: to proje
 What the head does now (`App::picker_fold`, `crates/tui/src/app/keys/panes.rs:372`): `←` on a session row closes its PARENT (or, with the parent in another group, the whole group), so the row the person was on disappears and `picker_sel` stays where it was - which is now the next project's line. `→` on a session only ever opens it, so a key that should walk into the tree does nothing on a row that is already open. The bar's words for the two keys say `→ opens its subagents` and `← closes them`, which is not what a tree does either.
 
 Done when: `←` on an expanded session collapses only it with the cursor kept; `←` on a leaf moves the cursor to its parent and collapses nothing; `←` on a closed project moves nothing to another project; `→` expands, and `→` again lands on the first child; every existing tree test still passes.
+
+## R158 - Resuming a session reads gigabytes of the store
+
+**Status:** fixed. left: nothing — a live store takes the index at its daemon's next start.
+
+Reported 2026-11-07: lab2x1 rebooted with a cold page cache, the arangodb daemon logged
+`starting: resuming the session (1707 rows)` and then sat in `D` state (`folio_wait_bit_common`)
+for minutes — `/proc/<pid>/io` showed 2 GB read after two minutes, out of a 10 GB `sessions.db`
+whose `transcript_item` is 8.2 GB. 1707 rows should cost megabytes.
+
+**The resume's own reads were innocent.** Measured on a copy of the live store (10 GB, 1904
+sessions, 777 086 transcript rows, `adjudication` 189 205 rows / 946 MB), statement by statement,
+cold, read off `/proc/self/io` after dropping the file's pages with `posix_fadvise(DONTNEED)`:
+`Store::session(id)` 160 KB (all `SEARCH`); `load_transcript` of the session's 1710 rows 8.1 MB
+(`SEARCH transcript_item USING PK` — `PRIMARY KEY (transcript_id, seq)` is exactly the index that
+read wants); the stable prefix's tokens 0.5 MB; `max_adjudication_seq` 24 KB; `list_sessions` over
+all 1904 sessions 215 MB. None is a whole-table read of `transcript_item`, and no fork's transcript
+is read.
+
+**The culprit is the startup disclosure's five `COUNT(*)`s over `adjudication`** —
+`Store::corpus_counts` (`crates/tokencore/src/store.rs`), run at every open from `Harness::open`
+(`crates/harnessd/src/harness/open.rs:456` → `corpus.rs`). `asked = 1`, `consulted = 1` and
+`verdict_by LIKE 'model%'` are columns no index carries, so each of the three read all 946 MB row
+by row:
+
+    SELECT COUNT(*) FROM adjudication                       11.7 MB  SCAN ... USING COVERING INDEX (pk)
+    SELECT COUNT(*) FROM adjudication WHERE asked = 1        975 MB  SCAN adjudication
+    SELECT COUNT(*) FROM adjudication WHERE consulted = 1    975 MB  SCAN adjudication
+    ... WHERE operator_kind IN ('granted','revoked')        0.37 MB  adjudication_disagreements (partial)
+    ... WHERE verdict_by LIKE 'model%'                      2239 MB  SCAN adjudication
+
+Cold, statement by statement, that is 4.20 GB; in one process with one cold cache it is
+**1 800 486 912 B** — the 2 GB the operator watched, and it was still going.
+
+**Fix, both halves, because either alone is not enough.** v42 (additive: a new index is nothing an
+older reader names, so its `READER_ARMS` row is `Additive`) creates
+`adjudication_corpus_counts ON adjudication (asked, consulted, verdict_by, operator_kind)` with
+`CREATE INDEX IF NOT EXISTS`, run beside `SCHEMA_SQL` on a fresh store and by the v42 arm at open,
+so an existing 10 GB store is indexed the first time this build opens it — **8.6 s and 2.2 GB read,
+once**, which the arm says on stderr if it takes over 300 ms (`CREATE INDEX` alone on the copy:
+10.4 s, 4.98 MB of index). And the five counts are one pass —
+`COUNT(*), COALESCE(SUM(asked = 1), 0), …` — because they are one question, with the four
+predicates still spelled once by `ASKED_SQL` and its siblings.
+
+| | before | after |
+|---|---|---|
+| plan for the counts | three `SCAN adjudication` | one `SCAN adjudication USING COVERING INDEX adjudication_corpus_counts` |
+| the counts, cold | 1 800 486 912 B, 7.3 s | 4 980 736 B, 88 ms |
+| the counts, v42 index but the old five queries | — | 22 MB (one `SEARCH`, two index scans, one partial index) |
+| the whole open: store, counts, session row, the 1710-row transcript | 1.81 GB | **13 561 856 B, 183 ms** |
+
+Both answer the same five numbers: 189 205 total, 590 asked, 36 987 measured, 19 871 disagreements,
+1618 model-decided. Tests: `the_reads_an_open_makes_reach_a_row_by_an_index` — `EXPLAIN QUERY
+PLAN` over the counts, the transcript read and the keyed session row, asserting no `SCAN` of a
+table that is not a covering index and that the counts name the v42 index — and
+`a_store_from_before_the_corpus_index_is_migrated_onto_it` — drop the index, stamp 41, reopen: it
+is built, and the rows written before it still count.
+
+Still a scan, measured and left alone: `list_sessions` costs 215 MB (one last-item row per session,
+out of the 8.2 GB table) and runs when a head attaches and when the queue starts. The index that
+would serve it is over all 777 086 rows — minutes to build on this store — so it is a row of its own
+and not this one: a resume reads pages proportional to its own rows now.
 
 ## R134 - Scrolling stops at a line above the tail
 
