@@ -180,6 +180,8 @@ pub(crate) struct RoomsView {
     /// Sessions the review queue runs (the gatekeeper and its reviewers): what they say is a queue
     /// event, counted on the Queues rows, and never a room message.
     pub queue_authors: BTreeSet<String>,
+    /// The Queues row holding the list's one highlight, in place of the selected room.
+    pub queue_sel: Option<String>,
     /// The newest queue move each repository's row has shown, by repository key.
     pub queue_seen: BTreeMap<String, u64>,
     /// The newest `seq` of a queue post dropped from each room, so reading the room to its end
@@ -865,6 +867,7 @@ impl App {
             None if up => n - 1,
             None => 0,
         };
+        self.rooms.queue_sel = None;
         self.rooms.sel = Some(all[next].clone());
         self.rooms.gone = None;
         self.scroll_rooms_to_tail();
@@ -982,6 +985,7 @@ impl App {
     /// Enter a channel: select it and start reading it at the tail. The switcher's Enter and a
     /// click on a channel's name are this one act.
     pub(crate) fn rooms_go(&mut self, c: Chan) {
+        self.rooms.queue_sel = None;
         self.rooms.sel = Some(c);
         self.rooms.gone = None;
         // A channel is a different stream: the cursor, the search and the tail mark all belong

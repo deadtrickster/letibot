@@ -285,6 +285,9 @@ impl App {
     /// Enter or a click on a row: a session is switched to, a room or a DM is entered in `/rooms`.
     pub(crate) fn sidebar_act(&mut self, c: Chan) -> Option<Action> {
         if let Chan::Session(id) = c {
+            // The highlight is the list's one: it moves to the session even though the view leaves.
+            self.rooms.queue_sel = None;
+            self.rooms.sel = Some(Chan::Session(id.clone()));
             return self.rooms_switch_session(id);
         }
         self.sidebar_show(c)

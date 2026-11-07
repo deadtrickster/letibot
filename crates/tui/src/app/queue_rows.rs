@@ -129,6 +129,7 @@ impl App {
             .unwrap_or(0)
             .max(self.queues_all.at_ms);
         self.rooms.queue_seen.insert(repo.clone(), newest);
+        self.rooms.queue_sel = Some(repo.clone());
         self.queue_in(QueueScope::Path(repo))
     }
 

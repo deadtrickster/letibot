@@ -381,7 +381,8 @@ impl App {
             l.push(Span::raw(" ".repeat(pad)));
             l.push(Span::role(count, Role::Attention));
             at.push((lines.len(), ListRow::Queue(r.repo.clone())));
-            lines.push(l);
+            let held = self.rooms.queue_sel.as_deref() == Some(r.repo.as_str());
+            lines.push(if held { pane::picked(l, true) } else { l });
             let facts = format!("  {}w {}g {}p", r.waiting, r.gating, r.person);
             let check = if r.muted { "[x]" } else { "[ ]" };
             let mut l2 = Line::new(vec![Span::role(
@@ -425,7 +426,7 @@ impl App {
                 dm_heading = true;
                 lines.push(padded(pane::faint("direct messages"), lw));
             }
-            let is_sel = picked.as_ref() == Some(c);
+            let is_sel = picked.as_ref() == Some(c) && self.rooms.queue_sel.is_none();
             if is_sel {
                 sel_row = lines.len();
             }

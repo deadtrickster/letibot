@@ -302,6 +302,65 @@ fn a_queue_orchestrator_and_a_package_session_are_not_listed() {
     assert_eq!(ids, ["s-op"]);
 }
 
+/// The operator's `~` session lives in another daemon, renamed: it is listed from the fleet scan.
+#[test]
+fn a_renamed_operator_session_of_another_daemon_is_listed() {
+    let mut a = app();
+    a.fleet_mine = vec![letibot_sessionlog::FleetRow {
+        id: "s-1793187533079211000".into(),
+        title: "home".into(),
+        workspace: "/Users/dead".into(),
+        model: "m".into(),
+        placement: None,
+        state: letibot_sessionlog::FleetState::Idle,
+    }];
+    a.rooms_sync_sessions();
+    let s = a
+        .rooms
+        .sessions
+        .iter()
+        .find(|s| s.id == "s-1793187533079211000")
+        .expect("home is listed");
+    assert_eq!((s.name.as_str(), s.state), ("home", "idle"));
+    a.sidebar_command("on");
+    let rows = a.screen(160, 24);
+    assert!(rows.iter().any(|r| r.contains("home")), "{rows:#?}");
+}
+
+/// A rename of this session shows in the list without waiting for the next session list.
+#[test]
+fn a_rename_reaches_the_sessions_section() {
+    let mut a = sidebar_with_rooms();
+    a.event(
+        letibot_sessionlog::event::SessionEvent::SessionRenamed {
+            title: "renamed".into(),
+        },
+        0,
+    );
+    assert!(a.rooms.sessions.iter().any(|s| s.name == "renamed"));
+}
+
+/// One highlight for the whole list: a click on a session moves it off the room.
+#[test]
+fn the_highlight_follows_the_last_click() {
+    let mut a = sidebar_with_rooms();
+    let rows = a.screen(160, 24);
+    let (x, y) = pos(&rows, "#ab12cd34ef56", true);
+    a.key(Key::Click { x, y });
+    let rows = a.screen(160, 24);
+    assert!(
+        rows.iter().any(|r| r.contains("▸ #ab12cd34ef56")),
+        "{rows:#?}"
+    );
+
+    let (x, y) = pos(&rows, "alpha", true);
+    a.key(Key::Click { x, y });
+    let rows = a.screen(160, 24);
+    let marked: Vec<&String> = rows.iter().filter(|r| r.contains('▸')).collect();
+    assert_eq!(marked.len(), 1, "{rows:#?}");
+    assert!(marked[0].contains("▸ alpha"), "{rows:#?}");
+}
+
 fn cells_of(row: &str) -> Vec<char> {
     crate::app::keyhints::cells(row)
 }
@@ -339,42 +398,4 @@ fn a_hover_does_not_cross_the_sidebars_border() {
     assert_ne!(lit[y], plain[y]);
     let main = |r: &str| r.rsplit_once('│').map_or(r, |(m, _)| m).to_string();
     assert_eq!(main(&lit[y]), main(&plain[y]));
-}
-
-/// The operator's `~` session lives in another daemon, renamed: it is listed from the fleet scan.
-#[test]
-fn a_renamed_operator_session_of_another_daemon_is_listed() {
-    let mut a = app();
-    a.fleet_mine = vec![letibot_sessionlog::FleetRow {
-        id: "s-1793187533079211000".into(),
-        title: "home".into(),
-        workspace: "/Users/dead".into(),
-        model: "m".into(),
-        placement: None,
-        state: letibot_sessionlog::FleetState::Idle,
-    }];
-    a.rooms_sync_sessions();
-    let s = a
-        .rooms
-        .sessions
-        .iter()
-        .find(|s| s.id == "s-1793187533079211000")
-        .expect("home is listed");
-    assert_eq!((s.name.as_str(), s.state), ("home", "idle"));
-    a.sidebar_command("on");
-    let rows = a.screen(160, 24);
-    assert!(rows.iter().any(|r| r.contains("home")), "{rows:#?}");
-}
-
-/// A rename of this session shows in the list without waiting for the next session list.
-#[test]
-fn a_rename_reaches_the_sessions_section() {
-    let mut a = sidebar_with_rooms();
-    a.event(
-        letibot_sessionlog::event::SessionEvent::SessionRenamed {
-            title: "renamed".into(),
-        },
-        0,
-    );
-    assert!(a.rooms.sessions.iter().any(|s| s.name == "renamed"));
 }
