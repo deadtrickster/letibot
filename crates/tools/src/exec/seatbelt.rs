@@ -51,6 +51,14 @@ pub const MACH_SERVICES: &[&str] = &[
     "com.apple.trustd.agent",
 ];
 
+/// What `firecode-vz` looks up to boot a guest: the Virtualization service, and the directory
+/// service for the user name it runs the guest as. The top-level seat's alone, so a child that
+/// needs a VM asks for a `firecode` task.
+pub const VM_MACH_SERVICES: &[&str] = &[
+    "com.apple.Virtualization.VirtualMachine",
+    "com.apple.system.opendirectoryd.libinfo",
+];
+
 /// What a child's profile allows of [`MACH_SERVICES`]: everything a toolchain needs and not the
 /// keychain, so `security find-generic-password -s gh:github.com -w` has nothing to ask.
 pub fn mach_services(wide: bool) -> Vec<&'static str> {
@@ -58,6 +66,7 @@ pub fn mach_services(wide: bool) -> Vec<&'static str> {
         .iter()
         .copied()
         .filter(|s| wide || *s != "com.apple.SecurityServer")
+        .chain(VM_MACH_SERVICES.iter().copied().filter(|_| wide))
         .collect()
 }
 
@@ -256,6 +265,12 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
     // `process*` is fork, exec and the posix_spawn machinery. Without `process-exec` nothing
     // starts at all; a profile that allows it and nothing else is a program that cannot run.
     s.push_str("(allow process*)\n");
+    if l.wide {
+        // `/bin/ps` is setuid root and the kernel refuses to exec a setuid binary inside a profile
+        // unless the rule says `no-sandbox`. `firecode` runs `ps` before it boots a VM. Only this
+        // one path, only the top-level seat.
+        s.push_str("(allow process-exec* (literal \"/bin/ps\") (with no-sandbox))\n");
+    }
     s.push_str("(allow sysctl-read)\n");
     // `same-sandbox`, not `self`: a test runner stops the child it started, and both are inside.
     s.push_str("(allow signal (target same-sandbox))\n");
