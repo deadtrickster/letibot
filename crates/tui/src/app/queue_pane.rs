@@ -269,6 +269,8 @@ impl App {
                     "host": l.host,
                     "build": l.build,
                     "heartbeat_ms": age,
+                    "held_ms": now.saturating_sub(l.acquired_ms),
+                    "expires_ms": LEASE_STALE_MS as i64 - age as i64,
                     "stale": age > LEASE_STALE_MS,
                 })
             })

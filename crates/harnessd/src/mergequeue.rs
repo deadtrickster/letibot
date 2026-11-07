@@ -13,6 +13,8 @@ use letibot_tokencore::store::{MergeRow, ReviewRow, Store, StoreError};
 pub mod capacity;
 pub mod carry;
 pub mod desk;
+pub mod enqueue;
+pub mod explain;
 pub mod gate;
 pub mod gate_host;
 pub mod gate_orphans;

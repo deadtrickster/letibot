@@ -106,6 +106,37 @@ impl QueueDesk for SessionQueue {
         verbs::regate(&self.store()?, &repo, &target, &self.who(), &self.events())
     }
 
+    fn enqueue(
+        &self,
+        branch: &str,
+        target: Option<&str>,
+        why: &str,
+        repository: Option<&str>,
+    ) -> Result<String, String> {
+        let (repo, _) = resolve(&self.workspace, repository, Some("-"))?;
+        let row = super::enqueue::enqueue_branch(
+            &self.store()?,
+            Path::new(&repo),
+            branch,
+            target,
+            why,
+            &self.session,
+            now_ms(),
+        )?;
+        self.registry.broadcast(SessionEvent::QueueMoved {
+            queue: "review".into(),
+            id: row.id.clone(),
+            to: row.state.as_str().into(),
+            why: row.evidence.clone(),
+        });
+        Ok(format!(
+            "`{}` is in the review queue as `{}` onto `{}`: a reviewer judges it against the \
+             work you named, the merge queue then rebases it, gates it and lands it. \
+             `queue` with `action: \"status\"` shows where it is and why.",
+            row.branch, row.id, row.target
+        ))
+    }
+
     fn restart(&self, id: &str) -> Result<String, String> {
         verbs::restart_by(&self.store()?, id, &self.who(), &self.events())
     }
@@ -185,6 +216,9 @@ pub fn propose_target(
 
 /// How many rows a bounded answer prints in full before it counts the rest.
 const SHOWN_ROWS: usize = 10;
+
+/// How many entries a bounded answer explains; `repository: "."` explains all of them.
+const SHOWN_WHY: usize = 5;
 
 /// The lines of a failing step's tail a bounded answer keeps - the full shape keeps all 30.
 const SHOWN_TAIL: usize = 3;
@@ -504,6 +538,7 @@ fn bounded(store: &Store, repo: &str) -> Result<String, String> {
         ));
     }
     out.push_str(&served_by(&leases));
+    out.push_str(&super::explain::read(store, repo, Some(SHOWN_WHY))?);
     Ok(out)
 }
 
@@ -511,8 +546,9 @@ fn bounded(store: &Store, repo: &str) -> Result<String, String> {
 /// step, every open or parked row, and who serves it.
 fn detail(store: &Store, repo: &str) -> Result<String, String> {
     Ok(format!(
-        "the queue for {repo}\n{}",
-        status(store, Some(repo))?
+        "the queue for {repo}\n{}{}",
+        status(store, Some(repo))?,
+        super::explain::read(store, repo, None)?
     ))
 }
 
@@ -677,7 +713,7 @@ fn tail_words(g: &gate::RunningGate, now: u64) -> String {
 
 /// A duration as a person reads it - the shape the head's queue pane uses (`6m12s`), so a model reading
 /// `status` and a person reading the pane are told the same thing in the same words.
-fn dur_human(ms: u64) -> String {
+pub(super) fn dur_human(ms: u64) -> String {
     if ms < 1_000 {
         format!("{ms} ms")
     } else if ms < 60_000 {
@@ -922,7 +958,7 @@ fn short_names(repos: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn short_sha(sha: &str) -> String {
+pub(super) fn short_sha(sha: &str) -> String {
     sha.chars().take(12).collect()
 }
 
@@ -1442,7 +1478,7 @@ mod tests {
             said.contains("… 3 more lines; `repository: \".\"` prints them all"),
             "the tail is cut, and it says so: {said}"
         );
-        assert!(said.lines().count() <= 25, "a screenful: {said}");
+        assert!(said.lines().count() <= 40, "a screenful: {said}");
 
         // The escape the bounded answer names is the one that works - `.` is this session's own
         // repository, and it prints every row rather than ten.
