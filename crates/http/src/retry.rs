@@ -173,13 +173,19 @@ impl Policy {
         }
     }
 
-    /// When the provider said its limit lifts, Unix millis, from the caller's clock (`now_ms`).
-    /// Only `Retry-After` seconds is read; prose is for a person, so `None` rather than a guessed instant.
+    /// When the provider said its limit lifts, Unix millis, from the caller's clock (`now_ms`):
+    /// the `Retry-After` the wire carried, else the wall clock or the window a 429's prose names
+    /// ([`crate::reset`]). A limit with a known reset is never a reason to give up on a turn.
     pub fn reset_ms(e: &HttpError, now_ms: u64) -> Option<u64> {
-        let HttpError::Status { retry_after, .. } = e else {
+        let HttpError::Status {
+            retry_after, body, ..
+        } = e
+        else {
             return None;
         };
-        retry_after.map(|secs| now_ms.saturating_add(secs.saturating_mul(1000)))
+        retry_after
+            .map(|secs| now_ms.saturating_add(secs.saturating_mul(1000)))
+            .or_else(|| crate::reset::from_prose(body, now_ms))
     }
 
     /// The status, when the provider refused what was SENT - `4xx` except the two
@@ -457,11 +463,10 @@ mod tests {
         assert_eq!(Trouble::Stall.name(), "stall");
     }
 
-    /// The reset time is the header's, or it is nothing. A provider that says it in prose has
-    /// said it to a person; an instant invented out of a wall clock in an unknown zone is worse than
-    /// `None`, because a caller sleeps on it.
+    /// The reset time is the header's, else the body's: a `429` that names a wall clock or the
+    /// window it closed has said when, and a session that gives up on it has thrown a turn away.
     #[test]
-    fn the_reset_time_comes_from_retry_after_and_nowhere_else() {
+    fn the_reset_time_comes_from_retry_after_or_the_prose() {
         let with = HttpError::Status {
             code: 429,
             body: "Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-12 15:01:48."
@@ -469,13 +474,20 @@ mod tests {
             retry_after: Some(90),
         };
         assert_eq!(Policy::reset_ms(&with, 1_000_000), Some(1_090_000));
-        let prose_only = said(429, "Your limit will reset at 2026-10-12 15:01:48.");
+        let prose_only = said(
+            429,
+            "Usage limit reached for 5 hour. Your limit will reset at 2026-11-07 21:02:27",
+        );
         assert_eq!(
-            Policy::reset_ms(&prose_only, 1_000_000),
-            None,
-            "a wall clock in the body is the operator's copy, not a deadline"
+            Policy::reset_ms(&prose_only, 1_700_000_000_000),
+            Some(1_700_000_000_000 + 5 * 3_600_000),
+            "the window the text names bounds the wall clock beside it"
         );
         assert_eq!(Policy::reset_ms(&dns(), 1_000_000), None);
+        assert_eq!(
+            Policy::reset_ms(&said(429, "rate limited"), 1_000_000),
+            None
+        );
     }
 
     /// The three classes, over the statuses the brief names.

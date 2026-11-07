@@ -2,6 +2,7 @@
 //! Hand-written because the turn engine needs byte-level control of `text/event-stream` and an async
 //! runtime does not belong under a pure state machine. TLS, redirects and HTTP/2 are absent on purpose.
 
+pub mod reset;
 pub mod retry;
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -381,6 +382,14 @@ pub fn get(endpoint: &Endpoint, path: &str) -> Result<Body, HttpError> {
     )
 }
 
+/// This box's clock, Unix millis - what an HTTP-date in a header is measured against.
+fn now_ms_utc() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn connect(endpoint: &Endpoint) -> Result<TcpStream, HttpError> {
     let addr = endpoint
         .authority()
@@ -405,9 +414,9 @@ fn read_response(mut reader: BufReader<TcpStream>) -> Result<Body, HttpError> {
 
     let mut chunked = false;
     let mut length: Option<usize> = None;
-    // The provider's own answer to *when may I come back*: seconds, and the one form of it a caller
-    // may act on. The prose some providers put in the body names a wall clock in a zone nothing here
-    // knows, so it stays prose.
+    // The provider's own answer to *when may I come back*: seconds, in either form RFC 9110 allows -
+    // a delay, or a date this box subtracts its own clock from. The prose in a body is
+    // `reset::from_prose`'s, read where the failure is handled.
     let mut retry_after: Option<u64> = None;
     loop {
         let mut line = String::new();
@@ -425,7 +434,7 @@ fn read_response(mut reader: BufReader<TcpStream>) -> Result<Body, HttpError> {
         if name == "transfer-encoding" && value.eq_ignore_ascii_case("chunked") {
             chunked = true;
         } else if name == "retry-after" {
-            retry_after = value.parse().ok();
+            retry_after = reset::from_retry_after(value, now_ms_utc());
         } else if name == "content-length" {
             length = value.parse().ok();
         }

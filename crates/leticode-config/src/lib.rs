@@ -492,6 +492,81 @@ pub struct LeticodeConfig {
     pub notes: NotesKeys,
     /// The `[exec]` table: the foreground threshold and whether passing it backgrounds.
     pub exec: ExecKeys,
+    /// The `[provider]` table: what a session does when its provider says the model is limited.
+    /// See [`ProviderKeys`] and [`LeticodeConfig::limit_policy`].
+    pub provider: ProviderKeys,
+}
+
+/// What a session does when its provider answers a usage limit with a known reset: the
+/// operator's ruling is that it never fails on one, so these are the whole of the choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnLimit {
+    /// Park the session until the reset and resume the same turn by itself.
+    Wait,
+    /// Move the session to the next fallback model it is not limited on, and move back after.
+    Switch,
+}
+
+impl OnLimit {
+    /// The word in the file, in the disclosure and in the status row.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OnLimit::Wait => "wait",
+            OnLimit::Switch => "switch",
+        }
+    }
+
+    /// The word back, or a refusal naming the two the file may say.
+    pub fn parse(s: &str) -> Result<OnLimit, String> {
+        match s.trim() {
+            "wait" => Ok(OnLimit::Wait),
+            "switch" => Ok(OnLimit::Switch),
+            other => Err(format!(
+                "on_limit = \"{other}\" is not one of the two answers: `wait` parks the session \
+                 until the reset and resumes the turn by itself, `switch` moves it to the next \
+                 fallback model and moves it back after the reset"
+            )),
+        }
+    }
+}
+
+/// `[provider]` in a `leticode.toml`.
+///
+/// ```toml
+/// [provider]
+/// on_limit = "switch"                            # or "wait"
+/// fallback = ["deepseek", "glm-coding/glm-5.3"]  # where a switch goes, in order
+/// ```
+///
+/// `on_limit` absent means `switch` when a fallback list exists and `wait` when nothing is set -
+/// see [`LeticodeConfig::limit_policy`]. `fallback` here is the same list as the file's top-level
+/// `fallback`, and a file that writes both to different lists is refused by name.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProviderKeys {
+    pub on_limit: Option<OnLimit>,
+    pub fallback: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderTable {
+    #[serde(default)]
+    on_limit: Option<String>,
+    #[serde(default)]
+    fallback: Option<toml::Value>,
+}
+
+fn provider_keys(value: &toml::Value) -> Result<ProviderKeys, String> {
+    let t: ProviderTable = value.clone().try_into().map_err(|e| {
+        format!("[provider]: {e}; the keys are `on_limit` (\"wait\" or \"switch\") and `fallback`")
+    })?;
+    Ok(ProviderKeys {
+        on_limit: t.on_limit.as_deref().map(OnLimit::parse).transpose()?,
+        fallback: match &t.fallback {
+            Some(v) => fallback_list(v)?,
+            None => Vec::new(),
+        },
+    })
 }
 
 /// `[exec]` in a `leticode.toml`.
@@ -965,7 +1040,7 @@ impl LeticodeConfig {
             roles.insert(role.clone(), settings);
         }
 
-        let config = LeticodeConfig {
+        let mut config = LeticodeConfig {
             main_model: file.main_model.as_deref().and_then(non_empty),
             subagent_model: file.subagent_model.as_deref().and_then(non_empty),
             gatekeeper_model: file.gatekeeper_model.as_deref().and_then(non_empty),
@@ -1007,7 +1082,25 @@ impl LeticodeConfig {
                 Some(v) => exec_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
                 None => ExecKeys::default(),
             },
+            provider: match &file.provider {
+                Some(v) => provider_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
+                None => ProviderKeys::default(),
+            },
         };
+
+        // One list of models, two places to write it. `[provider] fallback` is the newer home of
+        // the top-level key, so a file may carry either - and a file that carries both to
+        // different lists is refused rather than resolved, because the answer would be a guess.
+        if !config.provider.fallback.is_empty() {
+            if !config.fallback.is_empty() && config.fallback != config.provider.fallback {
+                return Err(format!(
+                    "{}: `fallback` and `[provider] fallback` are one list, and this file gives \
+                     them different ones. Write it once, under `[provider]`",
+                    path.display()
+                ));
+            }
+            config.fallback = config.provider.fallback.clone();
+        }
 
         // One seat, two answers. The guard and the adjudicator are one oracle in this
         // build, so `gatekeeper_model` and `judge_model` are two words for one setting;
@@ -1125,7 +1218,30 @@ impl LeticodeConfig {
                     .clone()
                     .or_else(|| other.notes.remote.clone()),
             },
+            provider: ProviderKeys {
+                // The project's answer wins, and an absent one says nothing.
+                on_limit: other.provider.on_limit.or(self.provider.on_limit),
+                fallback: if other.provider.fallback.is_empty() {
+                    self.provider.fallback.clone()
+                } else {
+                    other.provider.fallback.clone()
+                },
+            },
         }
+    }
+
+    /// What this session does when its provider answers a usage limit with a known reset: the
+    /// file's own word, else `switch` when a fallback list exists, else `wait` - the two defaults
+    /// are the operator's ruling, since a session that fails on a limit the provider put a time on
+    /// has thrown the turn away for nothing.
+    pub fn limit_policy(&self) -> OnLimit {
+        self.provider
+            .on_limit
+            .unwrap_or(if self.fallback.is_empty() {
+                OnLimit::Wait
+            } else {
+                OnLimit::Switch
+            })
     }
 
     /// Which models the file set, as the disclosure says them, and for a role that set
@@ -1149,6 +1265,12 @@ impl LeticodeConfig {
         // The budget is a number and not a model, so it stays out of this list.
         for m in &self.fallback {
             out.push(format!("fallback {m}"));
+        }
+        // And the answer to a limit, when the file gave one: an absent key is the daemon's own
+        // default, which `limit_policy` states, and the disclosure must not claim a setting nobody
+        // made.
+        if let Some(o) = self.provider.on_limit {
+            out.push(format!("on_limit {}", o.as_str()));
         }
         for (role, r) in &self.roles {
             let mut line = role.clone();
@@ -1290,6 +1412,10 @@ struct LeticodeConfigFile {
     /// message, which names the table and not the key the operator wrote.
     #[serde(default)]
     fallback: Option<toml::Value>,
+    /// The `[provider]` table - what a session does when the model is limited, and where it goes
+    /// instead. See [`ProviderKeys`].
+    #[serde(default)]
+    provider: Option<toml::Value>,
     #[serde(default)]
     fallback_after_timeouts: Option<toml::Value>,
     /// The `[embeddings]` table, read by `letibot_embeddings::Settings` from this same file.
@@ -1416,6 +1542,13 @@ mod tests {
     fn project_dir(test: &str) -> PathBuf {
         let d =
             std::env::temp_dir().join(format!("letibot-leticode-{}-{test}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A fresh subdirectory, for a test that needs two files in one temp tree.
+    fn sub(dir: &Path, name: &str) -> PathBuf {
+        let d = dir.join(name);
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -2395,5 +2528,76 @@ mod tests {
             "the list, in the order the file wrote it: {set:?}"
         );
         assert!(LeticodeConfig::default().set_models().is_empty());
+    }
+
+    /// The operator's ruling, in the file: what a session does when its provider puts a time on a
+    /// limit. `switch` when a fallback list exists, `wait` when nothing is set, and the file's own
+    /// word over both.
+    #[test]
+    fn the_provider_table_says_what_a_limit_does_and_its_defaults_are_the_rulings() {
+        let dir = project_dir("provider_on_limit");
+        let written = write_file(
+            &dir,
+            "[provider]\non_limit = \"switch\"\nfallback = [\"deepseek\", \"glm-coding/glm-5.3\"]\n",
+        );
+        let cfg = LeticodeConfig::load(&written).expect("[provider] is read");
+        assert_eq!(cfg.provider.on_limit, Some(OnLimit::Switch));
+        assert_eq!(
+            cfg.fallback,
+            ["deepseek", "glm-coding/glm-5.3"],
+            "[provider] fallback is the one list, so the daemon's fallback reads it"
+        );
+        assert_eq!(cfg.limit_policy(), OnLimit::Switch);
+        assert!(
+            cfg.set_models().contains(&"on_limit switch".to_string()),
+            "the disclosure says what the file decided: {:?}",
+            cfg.set_models()
+        );
+
+        // The two defaults, and the file's word beats both.
+        assert_eq!(LeticodeConfig::default().limit_policy(), OnLimit::Wait);
+        let list_only = write_file(&sub(&dir, "list"), "fallback = [\"deepseek\"]\n");
+        let cfg = LeticodeConfig::load(&list_only).unwrap();
+        assert_eq!(cfg.limit_policy(), OnLimit::Switch, "a list means switch");
+        let wait = write_file(
+            &sub(&dir, "wait"),
+            "[provider]\non_limit = \"wait\"\nfallback = [\"deepseek\"]\n",
+        );
+        assert_eq!(
+            LeticodeConfig::load(&wait).unwrap().limit_policy(),
+            OnLimit::Wait,
+            "a file that says wait keeps the list and waits"
+        );
+    }
+
+    /// A `[provider]` table is refused by name when it is malformed, and the two spellings of one
+    /// list are refused when they disagree.
+    #[test]
+    fn a_bad_provider_table_and_two_disagreeing_fallbacks_are_refused_by_name() {
+        let dir = project_dir("provider_refusals");
+        let bad = write_file(&sub(&dir, "bad"), "[provider]\non_limit = \"sleep\"\n");
+        let err = LeticodeConfig::load(&bad).expect_err("sleep is not an answer");
+        assert!(err.contains("on_limit"), "{err}");
+        assert!(err.contains("wait"), "the two answers are named: {err}");
+
+        let unknown = write_file(&sub(&dir, "unknown"), "[provider]\nfall_back = []\n");
+        let err = LeticodeConfig::load(&unknown).expect_err("an unknown key");
+        assert!(err.contains("provider"), "{err}");
+
+        let two = write_file(
+            &sub(&dir, "two"),
+            "fallback = [\"deepseek\"]\n[provider]\nfallback = [\"glm\"]\n",
+        );
+        let err = LeticodeConfig::load(&two).expect_err("one list, two answers");
+        assert!(err.contains("`[provider] fallback`"), "{err}");
+        let same = write_file(
+            &sub(&dir, "same"),
+            "fallback = [\"deepseek\"]\n[provider]\nfallback = [\"deepseek\"]\n",
+        );
+        assert_eq!(
+            LeticodeConfig::load(&same).unwrap().fallback,
+            ["deepseek"],
+            "the same list twice is one list"
+        );
     }
 }
