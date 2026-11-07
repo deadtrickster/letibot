@@ -131,15 +131,12 @@ pub fn waiting(session: &str) -> usize {
     q.map.get(session).map(|v| v.lines.len()).unwrap_or(0)
 }
 
-/// What a session is told about messages for someone else.
-pub const ETIQUETTE: &str = "Only a message addressed to you (`to` you, or `@` your id) asks \
-     for a reply. Everything else is context: act on it if it bears on your work, and answer it \
-     only if you hold something they lack (an answer or a fact), once and briefly. Never ack, \
-     echo or restate.";
-
 /// The sentence a chat message becomes for a session it wakes. Bounded: a long message is cut for
 /// the turn's notice, and `room read` has the whole.
-pub fn chat_sentence(m: &letibot_room::Message, me: &str) -> String {
+///
+/// `names_you` is the room's answer, not a reading of the text: the room shows names, so a
+/// message for this session can name it by a handle its id does not match.
+pub fn chat_sentence(m: &letibot_room::Message, names_you: bool) -> String {
     // A digest is already bounded by the room, and says what it left out.
     if m.kind == letibot_room::Seat::System && m.author == letibot_room::chat::DIGEST_AUTHOR {
         return format!("[room] {}", m.text);
@@ -153,11 +150,23 @@ pub fn chat_sentence(m: &letibot_room::Message, me: &str) -> String {
         line.truncate(end);
         line.push_str(" ...");
     }
-    format!(
-        "[chat] {line} [{}] - answer with `room say` (room `host` or `project`, optional `to`). \
-         {ETIQUETTE}",
-        m.addressee_for(me)
-    )
+    let mut named: Vec<String> = m.to.iter().cloned().collect();
+    for n in letibot_room::chat::mentions(&m.text) {
+        if !named.contains(&n) {
+            named.push(n);
+        }
+    }
+    let tail = if names_you {
+        format!("for you - reply with `room say`, `to` `{}`.", m.author)
+    } else if named.is_empty() {
+        "to everyone - no reply asked; act on it if it bears on your work.".to_string()
+    } else {
+        format!(
+            "for {} - context for you; reply only with something they lack.",
+            named.join(", ")
+        )
+    };
+    format!("[chat] {line} - {tail}")
 }
 
 /// The sentence one room event becomes, in the words a model reads. `None` for an event a
@@ -261,22 +270,22 @@ mod tests {
         }
     }
 
+    /// The room's `names_you` decides "for you", not the text: it shows a session its own handle,
+    /// and matching the id against it read a message for arango as someone else's.
     #[test]
-    fn a_message_for_someone_else_says_not_you_and_the_etiquette() {
-        let other = chat_sentence(&said(Some("s-b"), "status?"), "s-a");
-        assert!(other.contains("[to s-b (not you)]"), "{other}");
-        assert!(other.contains(ETIQUETTE), "{other}");
-        assert!(
-            other.contains("only if you hold something they lack"),
-            "{other}"
-        );
-        assert!(!other.contains("do not answer"), "{other}");
-        let mention = chat_sentence(&said(None, "@cc@letibot see this"), "s-a");
-        assert!(mention.contains("not you"), "{mention}");
-        let mine = chat_sentence(&said(Some("s-a"), "status?"), "s-a");
-        assert!(mine.contains("[to you]"), "{mine}");
-        let all = chat_sentence(&said(None, "status?"), "s-a");
-        assert!(all.contains("[to everyone]"), "{all}");
+    fn a_chat_line_says_who_it_is_for_from_the_rooms_answer() {
+        let mine = chat_sentence(&said(Some("arango"), "two questions"), true);
+        assert!(mine.contains("for you - reply"), "{mine}");
+        assert!(mine.contains("`to` `operator`"), "{mine}");
+        let other = chat_sentence(&said(Some("s-b"), "status?"), false);
+        assert!(other.contains("for s-b - context for you"), "{other}");
+        let mention = chat_sentence(&said(None, "@cc@letibot see this"), false);
+        assert!(mention.contains("for cc@letibot - context"), "{mention}");
+        let all = chat_sentence(&said(None, "status?"), false);
+        assert!(all.contains("to everyone - no reply asked"), "{all}");
+        for line in [&mine, &other, &all] {
+            assert!(!line.contains("not you"), "{line}");
+        }
     }
 
     #[test]

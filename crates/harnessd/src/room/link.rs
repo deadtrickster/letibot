@@ -243,8 +243,9 @@ impl SessionRoom {
         let named = letibot_room::room_name(&key, project);
         let client = Client::connect_named(socket, Speaker::top_level(session), named, wake)
             .map_err(|e| e.to_string())?;
-        // Chat: kept for the feed, and every message from someone else wakes a turn; only one
-        // addressed to this session asks for a reply (`wake::ETIQUETTE`). A tag's agent and the
+        // Chat: kept for the feed, and every message someone else wrote wakes a turn; only one
+        // addressed to this session asks for a reply (`wake::chat_sentence`). The room's own
+        // system facts wake only the session they name. A tag's agent and the
         // arbiter work the queue and are never woken by chat.
         let recent: Arc<Mutex<std::collections::VecDeque<letibot_room::Message>>> = Arc::default();
         {
@@ -252,7 +253,7 @@ impl SessionRoom {
             let bell = Arc::clone(&bell);
             let me = me.clone();
             let plain = letibot_room::tag_of_session(&key, session).is_none() && !arbiter;
-            client.on_chat(Arc::new(move |m: &letibot_room::Message, _names: bool| {
+            client.on_chat(Arc::new(move |m: &letibot_room::Message, names: bool| {
                 {
                     let mut r = recent.lock().unwrap_or_else(|e| e.into_inner());
                     r.push_back(m.clone());
@@ -260,8 +261,11 @@ impl SessionRoom {
                         r.pop_front();
                     }
                 }
-                if plain && m.attends(&me, letibot_room::Attention::All) {
-                    wake::push_chat(&me, m.seq, wake::chat_sentence(m, &me));
+                // The room's own facts (a todo row done, a queue move) are kind `system` and
+                // wake only the session they are addressed to; a session woke on its own rows.
+                let wakes = m.kind != letibot_room::Seat::System || names;
+                if plain && wakes && m.attends(&me, letibot_room::Attention::All) {
+                    wake::push_chat(&me, m.seq, wake::chat_sentence(m, names));
                     bell(&me);
                 } else {
                     // Nothing here will take it as a note, so it is seen on arrival.
@@ -1341,12 +1345,25 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+        // The room's own fact about another session's row wakes nobody it does not name.
+        other.notify_in(
+            "host",
+            "todo",
+            format!("todo:{other_id}:done:a row"),
+            "a row is done".to_string(),
+            Vec::new(),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        said.extend(wake::take(me_id));
+        assert!(
+            !said.iter().any(|s| s.contains("a row is done")),
+            "a todo fact woke `{me_id}`: {said:?}"
+        );
         let line = said
             .iter()
             .find(|s| s.contains("two questions"))
             .unwrap_or_else(|| panic!("the chat never reached `{me_id}`: {said:?}"));
-        assert!(line.contains("[to everyone]"), "{line}");
-        assert!(line.contains(wake::ETIQUETTE), "{line}");
+        assert!(line.contains("to everyone - no reply asked"), "{line}");
         assert!(
             rung.lock().unwrap().iter().any(|s| s == me_id),
             "the bell did not ring for `{me_id}`: {:?}",
