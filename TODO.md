@@ -62,6 +62,9 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R133 | The one-shot env report prints its lines out of order | Code work | a reproduction and the fix |
 | R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | the next stop's line from `~/.local/state/letibot/scroll-stalls.log`, which the head now writes at each stop |
 | R135 | The context-claim detector's `carry` anchor is not calibrated | Code work | score the store's sentences carrying `carry` near `session` against the floor, as the 747-sentence set was |
+| R136 | Answer waits: a row waits on another top-level session's answer | Code work | all of the build, per `docs/answer-waits.md` (operator's rulings 2026-11-07 are in it) |
+| R137 | Todo graphs that span projects | Code work | the design; an answer-wait ask is the first cross-project edge |
+| R138 | Stable session identities across hosts, through migrations | Code work | the design; until then asks are same-host only |
 | T16 | W9's open questions | Code work | item 7 (call ids are positional per turn); unclear: item 6 asked lubuntu3 whether RAGFlow signals "no coverage" in a field, no answer is recorded |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
 | R100 | A remote session in a firecode VM: `--host` and `--vm` as one placement | Needs the operator | the live proof on lab2x1: a real `firecode` copy carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, the copy-out's cost |
@@ -827,6 +830,24 @@ The environment trailer a one-shot command appends (`shell::oneshot_trailer`) wa
 **Status:** open. left: the measurement.
 
 A session stopped at 842k of 1M with five rows open, saying *"I'm at the end of what I can carry in this session"*. `context_claim` anchors only on `context` and `room`, so the sentence was never scored. `carry` is now an anchor when `session` is in its window, with two exemplars, and the module's tests pass. The floor (0.25) was measured on 747 labelled sentences that did not include this anchor, so the store's sentences with `carry` near `session` should be scored against it the same way.
+
+## R136 - Answer waits: a row waits on another top-level session's answer
+
+**Status:** open. left: the build.
+
+The design is `docs/answer-waits.md`. A's row carries an `Ask` edge, the room holds the ask, B gets a row on its own board saying A waits, and only B's explicit `answer` or `decline` settles it. The contract under it: top-level sessions are services. A session gone for 5 minutes raises an operator ask to restart it and settles nothing. An ask ends only by answer, decline, withdrawal by A or the operator, or B's session being deleted (`Retire`, the one `DOWN`). Claude Code seats are asked through bridge tools `room_answer`, `room_decline`, `room_asks`.
+
+## R137 - Todo graphs that span projects
+
+**Status:** open. left: the design.
+
+Today a board's edges stay inside one session tree. An answer-wait ask (R136) is the first edge from one project's board to another's. Consider whether rows in one project may need rows in another directly, how the head draws such a graph, and how the idle check treats a cross-project edge.
+
+## R138 - Stable session identities across hosts, through migrations
+
+**Status:** open. left: the design.
+
+A session's identity is stable on its host only. Answer waits (R136) assume a stable graph of services, so they refuse targets on other hosts. A session that migrates between hosts must keep its name and its open asks, both as asker and target, for asks to cross hosts.
 
 ## R134 - Scrolling stops at a line above the tail
 
