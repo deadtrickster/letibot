@@ -11,6 +11,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
+/// The id prefix of a project's review queue session, `s-gatekeeper-<project key>`.
+const GATEKEEPER: &str = "s-gatekeeper-";
+
 use crate::chat::{self, Chat, Seat};
 use crate::item::Speaker;
 use crate::lease::{CoordinatorLease, LEASE_BEAT_EVERY_MS};
@@ -880,6 +883,18 @@ impl Server {
         if self.is_known(name) {
             return Ok(name.to_string());
         }
+        // `gatekeeper@<label>` is that project's review queue; a bare `gatekeeper` is the sender's.
+        if let Some(label) = name.strip_prefix("gatekeeper@") {
+            if let Some((key, _)) = self
+                .project_label_map()
+                .into_iter()
+                .find(|(_, l)| l == label)
+            {
+                return Ok(format!("{GATEKEEPER}{key}"));
+            }
+        } else if name == "gatekeeper" && !project.is_empty() {
+            return Ok(format!("{GATEKEEPER}{project}"));
+        }
         if !chat::BRIDGE_ALIASES.contains(&name) {
             return self.resolve_handle(project, name);
         }
@@ -1012,7 +1027,19 @@ impl Server {
                 .collect()
         };
         out.extend(self.bridge_display());
+        for (id, shown) in self.gatekeeper_display() {
+            out.entry(id).or_insert(shown);
+        }
         out
+    }
+
+    /// Each project's review queue as `gatekeeper@<label>`, the way a bridge reads `cc@<folder>`:
+    /// its id is `s-gatekeeper-<project key>`, which says nothing to a reader.
+    fn gatekeeper_display(&self) -> BTreeMap<String, String> {
+        self.project_label_map()
+            .into_iter()
+            .map(|(key, label)| (format!("{GATEKEEPER}{key}"), format!("gatekeeper@{label}")))
+            .collect()
     }
 
     /// `message` as a reader sees it: a named session's id in the author, the addressee and the
@@ -1467,11 +1494,16 @@ impl Server {
             row.kind = c.seat;
         }
         let display = self.bridge_display();
+        let gatekeepers = self.gatekeeper_display();
         for row in rows.values_mut() {
             if row.kind == Seat::External
                 && let Some(d) = display.get(&row.id)
             {
                 row.name = d.clone();
+            } else if row.name == row.id
+                && let Some(g) = gatekeepers.get(&row.id)
+            {
+                row.name = g.clone();
             }
         }
         rows.into_values().collect()

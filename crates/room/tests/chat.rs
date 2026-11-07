@@ -1045,3 +1045,41 @@ fn a_session_invited_into_another_projects_room_hears_it_until_it_leaves() {
     b1.silent();
     second.stop();
 }
+
+/// A project's review queue reads `gatekeeper@<project>`, the way a bridge reads `cc@<folder>`, and
+/// that name and a bare `gatekeeper` both reach it.
+#[test]
+fn a_review_queue_reads_and_answers_as_gatekeeper_at_its_project() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let root = dir.0.join("arangodb");
+    std::fs::create_dir_all(&root).unwrap();
+    let key = letibot_room::project_key(&root.display().to_string());
+    let gk_id = format!("s-gatekeeper-{key}");
+    let gk = seat(&server, &gk_id, &key, Seat::Session);
+    gk.call(Request::Members {
+        rows: Vec::new(),
+        root: root.display().to_string(),
+    });
+    let a1 = seat(&server, "s-a1", &key, Seat::Session);
+
+    let m = said(gk.say("g1", "", "queue is green"));
+    let (heard, _) = a1.next_seq(m.seq);
+    assert_eq!(heard.author, "gatekeeper@arangodb", "{heard:?}");
+
+    for (i, to) in ["gatekeeper@arangodb", "gatekeeper"].iter().enumerate() {
+        let m = said(say_to(&a1, &format!("t{i}"), to, "review mine"));
+        let (heard, names_you) = gk.next_seq(m.seq);
+        assert!(names_you, "`{to}` did not reach the queue: {heard:?}");
+    }
+    match a1.call(Request::Roster {
+        room: String::new(),
+    }) {
+        Response::Roster { rows, .. } => assert!(
+            rows.iter()
+                .any(|r| r.id == gk_id && r.name == "gatekeeper@arangodb"),
+            "{rows:?}"
+        ),
+        other => panic!("{other:?}"),
+    }
+}
