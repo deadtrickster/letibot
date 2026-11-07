@@ -1576,6 +1576,18 @@ impl ProcessHost for HostProcesses {
             }
         }
 
+        // A confined command's secrets go on a descriptor, not in bwrap's argv (`SECRET_FD`).
+        #[cfg(target_os = "linux")]
+        let _secrets = if wrap.is_empty() {
+            None
+        } else {
+            super::confine::hand_secrets(&mut cmd, &plan_env).map_err(|e| {
+                let _ = self.tree.end(&cgroup);
+                ExecError::Spawn(format!(
+                    "the secrets could not be handed to the boundary: {e}"
+                ))
+            })?
+        };
         let mut child = cmd.spawn().map_err(|e| {
             // The cgroup was made and nothing joined it; take it back rather than
             // leaving an empty directory that a later listing would call a scope.

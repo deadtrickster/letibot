@@ -58,7 +58,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R127 | The idle nag names every free head of the plan, so independent rows run in parallel | Code work | all of it - `the_row_to_name` (`crates/tools/src/builtins/todo.rs:1333`) picks one ready row; postponed by the operator on 2026-11-07 |
 | R128 | A model switch says it is re-rendering, and a prompt sent meanwhile says why it waits | Code work | all of it - the re-render is in the daemon log only, and the head shows the prompt as `queued` with no reason |
 | R129 | One store file per project and a shared file, so one daemon's write cannot stall another's | Code work | the design's last edit (decisions live only in project files) and all of the build; the proposal is `docs/store-split.md` on branch `docs/store-split`, not merged |
-| R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | all of it - `--setenv` carries secrets (`crates/tools/src/exec/confine.rs:2589`); the token should be rotated once it is passed another way |
+| R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | a remote placement: its keep-list and `plan.env` go into the ssh command line (`EnvSource::Remote`), where `ps` on both boxes reads them; and the operator rotates the token |
 | R131 | `cargo clippy -- -D warnings` fails on main | Code work | `mergequeue/capacity.rs:19` (`neg_cmp_op_on_partial_ord`) and `mergequeue/review/placement_tests.rs:66` (useless `format!`) |
 | R132 | `skills_path.rs` refuses its own session as written by another process, once under load | Code work | the root cause; seen once in a full gate, 6 reruns and the next gate passed |
 | R133 | The head's small hangs and orderings | Code work | the 30 s attach wait (`crates/tui/src/head.rs:240`) with no word on screen, the one-shot env report's order, the macOS `osascript` clipboard read with no deadline |
@@ -808,9 +808,12 @@ Every daemon writes one `sessions.db` (9.4 GB on 2026-11-06, a WAL that reached 
 
 ## R130 - The seat's `GH_TOKEN` is readable in `ps`
 
-**Status:** not started. left: all of it.
+**Status:** fixed for a command this box spawns. left: a remote placement, and rotating the token.
 
-`confine.rs` passes the seat's secret environment to bwrap as `--setenv NAME VALUE` (`crates/tools/src/exec/confine.rs:2589`), so every user on the box reads `GH_TOKEN` from `ps`. Pass secrets through an inherited environment or a file descriptor bwrap reads, and rotate the token after.
+`confine.rs` passed the seat's secret environment to bwrap as `--setenv NAME VALUE`, so every user on the box read `GH_TOKEN` from `ps`. A secret's pair now travels on bwrap's `--args` from a pipe the child holds at `SECRET_FD` (`confine::hand_secrets`, used by `HostProcesses::spawn`), and the argv carries only `--args 200`. `boundary::is_secret_name` is the one list both the argv and the pipe read.
+
+- Left: a remote placement renders the same pairs into the ssh command line (`EnvSource::Remote`), where `ps` on both machines reads them. The far shell can take them on stdin instead.
+- Left: the token was readable while the old binary ran, so the operator rotates it.
 
 ## R131 - `cargo clippy -- -D warnings` fails on main
 

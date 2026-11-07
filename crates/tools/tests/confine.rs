@@ -965,6 +965,76 @@ fn the_environment_is_cleared_so_a_token_is_absent_rather_than_filtered() {
     assert!(text.contains("declared=on-purpose"), "{text}");
 }
 
+/// A secret the caller hands a confined command reaches it, but never through bwrap's argv,
+/// which every user on the box reads with `ps`: it travels on `--args` from a descriptor.
+#[test]
+fn a_secret_crosses_the_boundary_without_being_on_the_command_line() {
+    let _only_one = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join(format!("letibot-secret-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let secret = (
+        "LETIBOT_PROBE_TOKEN".to_string(),
+        "s3cr3t-on-fd".to_string(),
+    );
+    let plain = ("LETIBOT_PLAIN".to_string(), "in-the-open".to_string());
+    let env = vec![secret.clone(), plain.clone()];
+    let b = match Bwrap::project(&dir) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return no_boundary(&e, "a_secret_crosses_the_boundary");
+        }
+    };
+    let argv = b
+        .wrap(&ConfinePlan {
+            cwd: &dir,
+            env: &env,
+        })
+        .expect("a command line");
+    let joined = argv.join(" ");
+    assert!(
+        !joined.contains("s3cr3t-on-fd"),
+        "the secret is on the argv: {joined}"
+    );
+    assert!(
+        joined.contains("--setenv LETIBOT_PLAIN in-the-open"),
+        "{joined}"
+    );
+    assert!(joined.contains("--args 200"), "{joined}");
+
+    let Ok(host) = HostProcesses::confined(&dir, Box::new(b)) else {
+        let _ = std::fs::remove_dir_all(&dir);
+        return absent(CGROUP);
+    };
+    let id = host
+        .spawn(&SpawnRequest {
+            command:
+                "echo token=${LETIBOT_PROBE_TOKEN:-absent}; echo plain=${LETIBOT_PLAIN:-absent}"
+                    .into(),
+            slug: None,
+            cwd: ".".into(),
+            scope: ScopeKind::Turn,
+            scope_name: None,
+            background: false,
+            env,
+            tty: false,
+            memory: None,
+            env_trailer: false,
+        })
+        .expect("spawn");
+    let _ = host.wait_job(&id, std::time::Duration::from_secs(20));
+    let text = host
+        .output(&id, 0, usize::MAX)
+        .map(|o| o.text())
+        .unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        text.contains("token=s3cr3t-on-fd"),
+        "the secret did not cross: {text}"
+    );
+    assert!(text.contains("plain=in-the-open"), "{text}");
+}
+
 #[test]
 fn a_file_written_to_tmp_in_one_confined_call_is_there_for_the_next() {
     // The two-call scratch idiom: with a fresh tmpfs per command a file written by one call is gone by the

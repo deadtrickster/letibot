@@ -77,10 +77,9 @@ pub fn never_grant() -> Vec<&'static str> {
     super::seatbelt::deny_under_home(false)
 }
 
-/// Why `name` may not be handed in by config, or `None`. Secrets travel by the seat's own
-/// injection, and loader variables run code in every command. Minimal on purpose: the one list a
-/// carry-over of the caller's environment reads too.
-pub fn env_refusal(name: &str) -> Option<&'static str> {
+/// Is `name` a secret or a credential helper? Such a value is never put on a command line, where
+/// every user on the box reads it with `ps`.
+pub fn is_secret_name(name: &str) -> bool {
     const SECRET_SUFFIX: &[&str] = &[
         "_TOKEN",
         "_SECRET",
@@ -89,12 +88,19 @@ pub fn env_refusal(name: &str) -> Option<&'static str> {
         "_ACCESS_KEY",
         "_PRIVATE_KEY",
     ];
-    const EXACT: &[&str] = &["SSH_AUTH_SOCK", "BASH_ENV", "ENV", "PATH", "HOME", "TMPDIR"];
     let up = name.to_ascii_uppercase();
-    if up == "GH_TOKEN"
+    up == "GH_TOKEN"
         || up.starts_with("GIT_CONFIG")
         || SECRET_SUFFIX.iter().any(|s| up.ends_with(s))
-    {
+}
+
+/// Why `name` may not be handed in by config, or `None`. Secrets travel by the seat's own
+/// injection, and loader variables run code in every command. Minimal on purpose: the one list a
+/// carry-over of the caller's environment reads too.
+pub fn env_refusal(name: &str) -> Option<&'static str> {
+    const EXACT: &[&str] = &["SSH_AUTH_SOCK", "BASH_ENV", "ENV", "PATH", "HOME", "TMPDIR"];
+    let up = name.to_ascii_uppercase();
+    if is_secret_name(name) {
         return Some("a secret or a credential helper travels by the seat's own injection");
     }
     if EXACT.contains(&up.as_str()) || up.starts_with("LD_") || up.starts_with("DYLD_") {

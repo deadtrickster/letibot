@@ -1515,6 +1515,61 @@ pub enum EnvSource {
     Remote,
 }
 
+/// The descriptor a confined command's secret `--setenv` pairs are read from (bwrap's `--args`).
+/// Fixed, so the argv builder stays pure; [`hand_secrets`] puts the pipe there in the child.
+pub const SECRET_FD: i32 = 200;
+
+/// The secret pairs `env` holds, as the NUL-separated `--setenv` arguments bwrap reads from
+/// [`SECRET_FD`]; `None` when there are none, and then the argv asks for no descriptor.
+pub fn secret_args(env: &[(String, String)]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    for (k, v) in env {
+        if super::boundary::is_secret_name(k) {
+            for part in ["--setenv", k.as_str(), v.as_str()] {
+                out.extend_from_slice(part.as_bytes());
+                out.push(0);
+            }
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// Give `cmd` the secret pairs of `env` on [`SECRET_FD`], for a bwrap argv that asks for them.
+/// The pipe is close-on-exec and moved to the fixed number only in the child, so a command
+/// another thread spawns meanwhile does not inherit it. Keep the answer until `spawn` returns.
+#[cfg(target_os = "linux")]
+pub fn hand_secrets(
+    cmd: &mut std::process::Command,
+    env: &[(String, String)],
+) -> std::io::Result<Option<std::os::fd::OwnedFd>> {
+    use std::io::Write;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::process::CommandExt;
+    let Some(bytes) = secret_args(env) else {
+        return Ok(None);
+    };
+    let mut fds = [0i32; 2];
+    // SAFETY: `pipe2` writes two descriptors into `fds` on success, and both are owned below.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: both descriptors were just created and nothing else owns them.
+    let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    // Secrets are a few hundred bytes, under any pipe's buffer, so this cannot block.
+    std::fs::File::from(write).write_all(&bytes)?;
+    let raw = read.as_raw_fd();
+    // SAFETY: `dup2` is async-signal-safe, and the new descriptor drops close-on-exec.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::dup2(raw, SECRET_FD) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(Some(read))
+}
+
 /// Join pieces into a POSIX shell command line: literals quoted, shell fragments as written.
 pub fn join(pieces: &[Piece]) -> String {
     pieces
@@ -2621,11 +2676,21 @@ fn pieces_of(
         arg(&mut a, "SSH_AUTH_SOCK");
         arg(&mut a, AGENT_SOCKET);
     }
-    // The caller's own environment last, so an explicit request wins over the keep-list.
+    // The caller's own environment last, so an explicit request wins over the keep-list. A
+    // secret's value is read from [`SECRET_FD`] here instead, so it is never in bwrap's argv.
+    let mut sealed = false;
     for (k, v) in plan.env {
+        if env == EnvSource::Process && super::boundary::is_secret_name(k) {
+            sealed = true;
+            continue;
+        }
         arg(&mut a, "--setenv");
         arg(&mut a, k);
         arg(&mut a, v);
+    }
+    if sealed {
+        arg(&mut a, "--args");
+        arg(&mut a, SECRET_FD.to_string());
     }
 
     arg(&mut a, "--chdir");
