@@ -23,6 +23,8 @@ pub(crate) enum On {
     /// chord everybody's hands already know, and never as a letter for the same reason as
     /// [`On::Delete`].
     Undo,
+    /// The End key: the room's tail, and nowhere else so far - a letter cannot spell it.
+    End,
     /// PageUp and PageDown.
     Page,
     /// A wheel notch with no position - what the chords hand a surface.
@@ -43,6 +45,7 @@ impl On {
             | (On::Tab, Key::Tab)
             | (On::Delete, Key::Delete)
             | (On::Undo, Key::Undo)
+            | (On::End, Key::End)
             | (On::Page, Key::PageUp | Key::PageDown)
             | (On::Wheel, Key::WheelUp | Key::WheelDown) => true,
             (On::Char(c), Key::Char(d)) => c == *d,
@@ -64,6 +67,7 @@ impl On {
             On::Char(c) => c.to_string(),
             On::Delete => "del".into(),
             On::Undo => "ctrl-z".into(),
+            On::End => "end".into(),
             On::Page => "pgup/pgdn".into(),
             On::Wheel => "the wheel".into(),
             On::Any => String::new(),
@@ -139,6 +143,21 @@ pub(crate) enum Act {
     /// The session list's `ctrl-z`: put the last removed row back - [`App::restore_removed`],
     /// the undo a removal has to have if it is to be the sense worth building.
     Undo,
+    /// The rooms view's `tab`: put the cursor on the newest message, so the arrows walk messages
+    /// rather than channels from then on. P4 fills [`App::rooms_cursor_move`].
+    RoomCursor,
+    /// The rooms view's `R`: answer the message under the cursor. P3 fills the reply target.
+    RoomReply,
+    /// The rooms view's `y`: copy the message under the cursor. P4 fills it.
+    RoomCopy,
+    /// The rooms view's `t`: show the thread of the message under the cursor. P4 fills it.
+    RoomThread,
+    /// The rooms view's `u`: the unread divider. P4 fills the jump.
+    RoomUnread,
+    /// The rooms view's `G` and `end`: the newest message. P4 fills the jump.
+    RoomTail,
+    /// The rooms view's `n` and `N`: the next or the previous search hit. P4 fills it.
+    RoomSearchStep(bool),
 }
 
 /// What the bar and the help say about a binding.
@@ -422,6 +441,17 @@ const ROOMS: &[Binding] = &[
         Act::ResendSend,
         Text("resends the failed line"),
     ),
+    // The chat keys of `docs/room-tui.md`. Each acts on the message under the cursor, so until P4
+    // gives the room one every one of them declines and the key is the composer's - which is what
+    // it was before, and why none of them claims a word on the bar yet.
+    b(&[On::Tab], Empty, Act::RoomCursor, Nothing),
+    b(&[On::Char('R')], Empty, Act::RoomReply, Nothing),
+    b(&[On::Char('y')], Empty, Act::RoomCopy, Nothing),
+    b(&[On::Char('t')], Empty, Act::RoomThread, Nothing),
+    b(&[On::Char('u')], Empty, Act::RoomUnread, Nothing),
+    b(&[On::Char('G'), On::End], Empty, Act::RoomTail, Nothing),
+    b(&[On::Char('n')], Empty, Act::RoomSearchStep(true), Nothing),
+    b(&[On::Char('N')], Empty, Act::RoomSearchStep(false), Nothing),
     PAGE,
     WHEEL,
 ];

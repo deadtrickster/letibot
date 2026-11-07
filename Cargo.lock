@@ -1629,6 +1629,7 @@ name = "letibot-room"
 version = "0.6.0"
 dependencies = [
  "letibot-metrics",
+ "letibot-transcript",
  "libc",
  "serde",
  "serde_json",

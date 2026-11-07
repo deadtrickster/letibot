@@ -51,6 +51,7 @@ fn the_waiter_joins_its_bridge_and_a_second_bridge_is_suffixed() {
                 to: Some("cc@letibot".into()),
                 thread: None,
                 refs: Vec::new(),
+                attachments: Vec::new(),
             })
             .expect("said");
         h.join().unwrap()

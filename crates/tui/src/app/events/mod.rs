@@ -75,6 +75,13 @@ impl App {
                 self.on_room_chat(&client_request_id, reply);
                 Disposition::Control
             }
+            // A message the coordinator PUSHED (`PROTOCOL_VERSION` 65): its read reached the
+            // operator's seat and the daemon fanned it out, so /rooms merges it as a poll's row
+            // instead of waiting for the next poll.
+            ServerFrame::RoomChatPushed { message, names_you } => {
+                self.on_room_pushed(message, names_you);
+                Disposition::Control
+            }
             frame @ ServerFrame::Event { .. } => self.on_event_frame(frame),
             frame @ (ServerFrame::TermAttached { .. }
             | ServerFrame::TermStatus { .. }

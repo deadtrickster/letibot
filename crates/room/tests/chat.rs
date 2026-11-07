@@ -69,6 +69,7 @@ impl Seated {
             to: None,
             thread: None,
             refs: Vec::new(),
+            attachments: Vec::new(),
         })
     }
 
@@ -224,6 +225,7 @@ fn dms_mentions_threads_and_the_inbox() {
         to: Some("s-a1".into()),
         thread: Some(root.seq),
         refs: Vec::new(),
+        attachments: Vec::new(),
     }));
     assert_eq!(reply.thread, Some(root.seq));
     match a1.call(Request::Read {
@@ -246,6 +248,7 @@ fn dms_mentions_threads_and_the_inbox() {
         to: "claude-code".into(),
         text: "private".into(),
         thread: None,
+        attachments: Vec::new(),
     }));
     assert_eq!(dm.room, "dm");
     assert_eq!(cc.next().0.text, "@s-a2 look at this");
@@ -272,7 +275,8 @@ fn dms_mentions_threads_and_the_inbox() {
             id: "5".into(),
             to: "nobody-here".into(),
             text: "x".into(),
-            thread: None
+            thread: None,
+            attachments: Vec::new(),
         })),
         Refused::UnknownAddressee { .. }
     ));
@@ -664,6 +668,7 @@ fn a_short_bridge_name_is_the_one_connected_bridge_or_ambiguous() {
         to: Some("claude-code".into()),
         thread: None,
         refs: Vec::new(),
+        attachments: Vec::new(),
     }));
     assert_eq!(m.to.as_deref(), Some("cc@app"));
     assert_eq!(m.text, "@cc@app look");
@@ -685,6 +690,7 @@ fn a_short_bridge_name_is_the_one_connected_bridge_or_ambiguous() {
             to: "cc".into(),
             text: "hi".into(),
             thread: None,
+            attachments: Vec::new(),
         })),
         Refused::Ambiguous { .. }
     ));
@@ -694,6 +700,7 @@ fn a_short_bridge_name_is_the_one_connected_bridge_or_ambiguous() {
         to: "cc@web".into(),
         text: "hi".into(),
         thread: None,
+        attachments: Vec::new(),
     }));
     drop(two);
     let again = Client::connect_as(
@@ -870,6 +877,7 @@ fn say_to(s: &Seated, id: &str, to: &str, text: &str) -> Response {
         to: Some(to.into()),
         thread: None,
         refs: Vec::new(),
+        attachments: Vec::new(),
     })
 }
 

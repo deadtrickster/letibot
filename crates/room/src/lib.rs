@@ -2,6 +2,7 @@
 //! A tag is a lock, not a list of claimable items. The state machine reads no clock and opens no socket.
 
 pub mod agent;
+pub mod blob;
 pub mod chat;
 pub mod client;
 pub mod item;
@@ -14,9 +15,10 @@ pub mod tree;
 pub mod wire;
 
 pub use agent::{AgentLedger, TagAgent};
+pub use blob::Blobs;
 pub use chat::{
-    Attention, Chat, DM_ROOM, HOST_ROOM, History, MAX_TEXT, Message, OPERATOR, Presence, RING, Ref,
-    RoomInfo, Seat, is_member_handle, project_room, valid_handle,
+    Attachment, Attention, Chat, DM_ROOM, HOST_ROOM, History, MAX_ATTACHMENTS, MAX_TEXT, Message,
+    OPERATOR, Presence, RING, Ref, RoomInfo, Seat, is_member_handle, project_room, valid_handle,
 };
 pub use item::{Abandonment, Claim, Item, Speaker, State, Wait, Why, duration};
 pub use lease::{

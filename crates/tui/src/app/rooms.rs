@@ -48,6 +48,24 @@ pub(crate) struct ChatRef {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[allow(dead_code)] // P2 draws the pictures and the size; the wire carries them from P0.
+pub(crate) struct Attach {
+    /// The sha256 hex of the bytes: what a `![alt](blob:ID)` in the text names.
+    pub id: String,
+    #[serde(default)]
+    pub mime: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub bytes: u64,
+    /// The picture's size, when the coordinator could read it out of the header.
+    #[serde(default)]
+    pub w: Option<u32>,
+    #[serde(default)]
+    pub h: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub(crate) struct Msg {
     pub seq: u64,
     #[serde(default)]
@@ -62,6 +80,11 @@ pub(crate) struct Msg {
     pub thread: Option<u64>,
     #[serde(default)]
     pub refs: Vec<ChatRef>,
+    /// The pictures and files the message carries, defaulted so a coordinator that predates them
+    /// parses exactly as before.
+    #[serde(default)]
+    #[allow(dead_code)] // P2 draws them.
+    pub attachments: Vec<Attach>,
     #[serde(default)]
     pub text: String,
 }
@@ -109,6 +132,10 @@ pub(crate) struct RoomsView {
     pub read_to: BTreeMap<String, u64>,
     /// The newest `seq` shown per channel key.
     pub seen: BTreeMap<String, u64>,
+    /// The channel's `seen` mark at the moment it was opened: the unread divider sits before the
+    /// first message newer than it, and stays for as long as the channel is selected.
+    #[allow(dead_code)] // P2 reads it to place the divider; P4 fills it.
+    pub opened_seen: BTreeMap<String, u64>,
     /// The selected channel by identity, never by position: a poll replaces `rows` wholesale,
     /// so a room arriving ahead of the current one would move an index and send the next line
     /// to another channel.
@@ -260,7 +287,7 @@ impl RoomsView {
             .find(|s| s.chan == *c && s.error.is_some())
     }
 
-    fn merge(&mut self, room: &str, rows: Vec<Msg>) {
+    pub(crate) fn merge(&mut self, room: &str, rows: Vec<Msg>) {
         let cursor = self.read_to.entry(room.to_string()).or_insert(0);
         let list = self.msgs.entry(room.to_string()).or_default();
         for m in rows {

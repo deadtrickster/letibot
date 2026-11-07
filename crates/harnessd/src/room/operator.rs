@@ -69,6 +69,8 @@ impl OperatorSeat {
                 | Request::Roster { .. }
                 | Request::Inbox { .. }
                 | Request::Ack { .. }
+                | Request::PutBlob { .. }
+                | Request::GetBlob { .. }
         ) {
             return json!({"error": "the operator seat takes chat requests only"});
         }
@@ -145,6 +147,41 @@ mod tests {
         assert_eq!(said["message"]["kind"], "operator");
         let read = seat.ask("h1", json!({"type": "read", "room": "host"}));
         assert_eq!(read["rows"][0]["text"], "hi");
+        server.stop();
+    }
+
+    /// A head's pictures go through the same seat as its words: an upload and a fetch are chat
+    /// requests, and a seat that took `say` and refused the blob under it could never send one.
+    #[test]
+    fn the_seat_passes_blob_requests() {
+        let (server, sock) = serve("blobs");
+        let seat = OperatorSeat::new(sock);
+        // One part, last: the store hashes what it holds and answers the attachment.
+        let said = seat.ask(
+            "h1",
+            json!({"type": "put_blob", "upload": "u1", "name": "a.png", "mime": "image/png",
+                   "part": 0, "last": true, "data": "iVBORw0KGgo="}),
+        );
+        assert_eq!(said["type"], "blob", "{said}");
+        let id = said["attachment"]["id"]
+            .as_str()
+            .expect("an id")
+            .to_string();
+        assert_eq!(id.len(), 64, "the sha256 hex of the bytes: {said}");
+        assert_eq!(said["attachment"]["mime"], "image/png");
+        // And it can be fetched back by id, which is what a head draws a picture from.
+        let got = seat.ask("h1", json!({"type": "get_blob", "id": id}));
+        assert_eq!(got["type"], "blob_part", "{got}");
+        assert_eq!(got["data"], "iVBORw0KGgo=", "{got}");
+        assert_eq!(got["last"], true, "{got}");
+        // And a say names it: the picture travels with the words it was sent with.
+        let line = seat.ask(
+            "h1",
+            json!({"type": "say", "id": "1", "room": "host", "text": "![a](blob:B)",
+                   "attachments": [id]}),
+        );
+        assert_eq!(line["type"], "said", "{line}");
+        assert_eq!(line["message"]["attachments"][0]["mime"], "image/png");
         server.stop();
     }
 

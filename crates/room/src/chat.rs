@@ -134,6 +134,28 @@ pub struct Ref {
 pub const MAX_REFS: usize = 8;
 /// The longest ref id, in bytes.
 pub const MAX_REF_ID: usize = 200;
+/// How many attachments one message may carry.
+pub const MAX_ATTACHMENTS: usize = 4;
+
+/// One picture or file a message carries, from the coordinator's blob store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    /// The sha256 hex of the bytes: the id a `![alt](blob:ID)` in the text names.
+    pub id: String,
+    /// One of the store's allowlist, e.g. `image/png`.
+    pub mime: String,
+    /// What the file was called where it was uploaded.
+    #[serde(default)]
+    pub name: String,
+    /// How many bytes the blob holds.
+    #[serde(default)]
+    pub bytes: u64,
+    /// Width in pixels, when the store could read it out of the bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub w: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub h: Option<u32>,
+}
 
 /// One chat message. `room` is `host`, `project/<key>` or `dm`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +174,10 @@ pub struct Message {
     /// Todo and merge-queue rows this message is about.
     #[serde(default)]
     pub refs: Vec<Ref>,
+    /// Pictures and files the message carries. Absent from every line written before P0, so an
+    /// old store replays unchanged: the field is defaulted and skipped when it is empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
     pub text: String,
 }
 
@@ -459,6 +485,9 @@ pub struct Chat {
     store: Option<Store>,
     /// Each project room's invited sessions, by room.
     guests: BTreeMap<String, BTreeSet<String>>,
+    /// How many times the store has been rewritten from live state: the one moment the ring's
+    /// answer to *what does a message still name* is exact, so it is when blobs are collected.
+    rewrites: u64,
 }
 
 fn ring_bytes(ring: &VecDeque<Message>) -> usize {
@@ -618,7 +647,7 @@ impl Chat {
         let path = store.path.clone();
         let tmp = path.with_extension("tmp");
         let done = std::fs::write(&tmp, buf.as_bytes()).and_then(|()| std::fs::rename(&tmp, &path));
-        match done {
+        match &done {
             Ok(()) => {
                 if let Some(s) = self.store.as_mut() {
                     s.bytes = buf.len() as u64;
@@ -626,6 +655,24 @@ impl Chat {
             }
             Err(e) => eprintln!("room: chat store {} not compacted ({e})", path.display()),
         }
+        if done.is_ok() {
+            self.rewrites += 1;
+        }
+    }
+
+    /// How many times the store has been rewritten from live state.
+    pub fn rewrites(&self) -> u64 {
+        self.rewrites
+    }
+
+    /// Every blob id the messages the ring still holds name. A blob absent from this set is one
+    /// no kept message references.
+    pub fn kept_attachments(&self) -> BTreeSet<String> {
+        self.rings
+            .values()
+            .flatten()
+            .flat_map(|m| m.attachments.iter().map(|a| a.id.clone()))
+            .collect()
     }
 
     /// The newest `seq` in the whole log.
@@ -646,6 +693,7 @@ impl Chat {
         to: Option<String>,
         thread: Option<u64>,
         refs: Vec<Ref>,
+        attachments: Vec<Attachment>,
         text: &str,
     ) -> Result<Message, Refused> {
         let key = (author.to_string(), request.to_string());
@@ -678,6 +726,12 @@ impl Chat {
         {
             return Err(Refused::BadRef);
         }
+        if attachments.len() > MAX_ATTACHMENTS {
+            return Err(Refused::TooManyAttachments {
+                max: MAX_ATTACHMENTS as u64,
+                got: attachments.len() as u64,
+            });
+        }
         self.next += 1;
         let m = Message {
             seq: self.next,
@@ -688,6 +742,7 @@ impl Chat {
             to,
             thread,
             refs,
+            attachments,
             text: text.to_string(),
         };
         self.rings
@@ -918,8 +973,19 @@ mod tests {
     use super::*;
 
     fn say(c: &mut Chat, id: &str, room: &str, who: &str, kind: Seat, text: &str) -> Message {
-        c.append(1, id, room, who, kind, None, None, Vec::new(), text)
-            .expect("a message")
+        c.append(
+            1,
+            id,
+            room,
+            who,
+            kind,
+            None,
+            None,
+            Vec::new(),
+            Vec::new(),
+            text,
+        )
+        .expect("a message")
     }
 
     #[test]
@@ -987,6 +1053,7 @@ mod tests {
                 None,
                 None,
                 Vec::new(),
+                Vec::new(),
                 &long,
             )
             .unwrap_err();
@@ -1000,6 +1067,7 @@ mod tests {
                 Seat::Session,
                 None,
                 None,
+                Vec::new(),
                 Vec::new(),
                 "  ",
             )
@@ -1050,6 +1118,7 @@ mod tests {
                 None,
                 Some(root.seq),
                 Vec::new(),
+                Vec::new(),
                 "a",
             )
             .unwrap();
@@ -1068,6 +1137,7 @@ mod tests {
                 Seat::Session,
                 None,
                 Some(root.seq),
+                Vec::new(),
                 Vec::new(),
                 "x",
             )
@@ -1136,6 +1206,7 @@ mod tests {
                 None,
                 None,
                 vec![r("todo", "t-7")],
+                Vec::new(),
                 "filed",
             )
             .unwrap();
@@ -1151,6 +1222,7 @@ mod tests {
                     None,
                     None,
                     vec![bad],
+                    Vec::new(),
                     "x",
                 )
                 .unwrap_err();
@@ -1189,6 +1261,7 @@ mod store_tests {
             Seat::Session,
             None,
             None,
+            Vec::new(),
             Vec::new(),
             text,
         )
@@ -1235,6 +1308,52 @@ mod store_tests {
         let again = Chat::open(&p);
         assert_eq!(again.head(), 1);
         assert_eq!(again.cursor("r"), 3999);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// A store written before attachments existed says nothing about them, and must replay as it
+    /// always did: the field is `serde(default)`, so an old line is a message with no pictures.
+    #[test]
+    fn an_old_store_line_replays_without_attachments() {
+        let p = path("old-line");
+        let line = concat!(
+            r#"{"msg":{"request":"op-1","message":{"seq":7,"ts":1700000000000,"#,
+            r#""room":"host","author":"s-a","kind":"session","to":null,"thread":null,"#,
+            r#""refs":[],"text":"the way it was written"}}}"#,
+            "\n"
+        );
+        std::fs::write(&p, line).expect("an old store");
+        let c = Chat::open(&p);
+        let h = c.read(HOST_ROOM, 0, None, None, None, |_| true);
+        assert_eq!(h.rows.len(), 1, "{:?}", h.rows);
+        let m = &h.rows[0];
+        assert_eq!(m.seq, 7);
+        assert_eq!(m.text, "the way it was written");
+        assert!(m.attachments.is_empty(), "{:?}", m.attachments);
+        // And the reader that wrote it can still read it: the seq resumes after the old line.
+        let mut c = c;
+        let next = say(&mut c, "2", HOST_ROOM, "and the next one");
+        assert_eq!(next.seq, 8);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// The other half of the same promise: a message with no attachments serialises to exactly what
+    /// it did before the field existed, so a store line does not change shape under an old reader.
+    #[test]
+    fn a_message_without_attachments_serialises_as_before() {
+        let p = path("no-attach");
+        let mut c = Chat::open(&p);
+        let m = say(&mut c, "1", HOST_ROOM, "plain");
+        let json = serde_json::to_string(&m).expect("a message serialises");
+        assert!(!json.contains("attachments"), "{json}");
+        assert_eq!(
+            json,
+            r#"{"seq":1,"ts":1,"room":"host","author":"s-a","kind":"session","to":null,"thread":null,"refs":[],"text":"plain"}"#,
+            "a row written before attachments existed, byte for byte"
+        );
+        // Through the store too: the line the file holds carries no attachments key.
+        let written = std::fs::read_to_string(&p).expect("the store");
+        assert!(!written.contains("attachments"), "{written}");
         let _ = std::fs::remove_file(&p);
     }
 }

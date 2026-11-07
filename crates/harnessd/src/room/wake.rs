@@ -296,6 +296,7 @@ mod tests {
             to: to.map(str::to_string),
             thread: None,
             refs: Vec::new(),
+            attachments: Vec::new(),
             text: text.into(),
         }
     }

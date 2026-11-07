@@ -281,6 +281,30 @@ pub enum Refused {
     },
     /// A ref names something other than a todo or a queue row, or is empty.
     BadRef,
+    /// A blob id no upload finished: the bytes a message would carry are not in the store.
+    UnknownBlob {
+        id: String,
+    },
+    /// A blob past the store's cap for one file.
+    BlobTooLarge {
+        max: u64,
+        got: u64,
+    },
+    /// A mime the store will not keep: a message carries pictures and plain text, not programs.
+    BadMime {
+        mime: String,
+    },
+    /// A part that is not the one the upload waits for, so its bytes would be assembled out of
+    /// order and hash to an id nothing else can produce.
+    BadPart {
+        expected: u32,
+        got: u32,
+    },
+    /// More attachments named than a message carries.
+    TooManyAttachments {
+        max: u64,
+        got: u64,
+    },
 }
 
 impl fmt::Display for Refused {
@@ -400,6 +424,30 @@ impl fmt::Display for Refused {
                 f,
                 "a ref is `todo` or `queue` with a row id, at most {} per message",
                 crate::chat::MAX_REFS
+            ),
+            Refused::UnknownBlob { id } => write!(
+                f,
+                "there is no blob `{id}` in this room's store - upload it with `put_blob` first, \
+                 or say the message without it"
+            ),
+            Refused::BlobTooLarge { max, got } => write!(
+                f,
+                "a blob is at most {max} bytes and this one is {got} - upload a smaller file, or \
+                 name it in the text instead"
+            ),
+            Refused::BadMime { mime } => write!(
+                f,
+                "`{mime}` is not a kind of file a message carries - the store keeps {}",
+                crate::blob::MIMES.join(", ")
+            ),
+            Refused::BadPart { expected, got } => write!(
+                f,
+                "part {got} is not the one this upload waits for ({expected}) - parts append in \
+                 order, so nothing was added"
+            ),
+            Refused::TooManyAttachments { max, got } => write!(
+                f,
+                "a message carries at most {max} attachments and this one names {got}"
             ),
         }
     }

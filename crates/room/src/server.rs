@@ -156,6 +156,12 @@ struct Inner {
     /// The token a connection must present to be the operator, minted at [`Server::with_options`]
     /// and written beside the socket in mode 0600. The seat is a file, not a word in a frame.
     operator_token: String,
+    /// The pictures and files a message carries, in `room-<host key>.blobs` beside the socket. Always
+    /// present: the directory is made by the first upload, so a room with no pictures touches no disk.
+    blobs: Mutex<crate::blob::Blobs>,
+    /// The chat store's rewrite count when blobs were last collected, so the collection runs on a
+    /// rewrite and not on every message.
+    blob_rewrites: AtomicU64,
 }
 
 /// How long a session was out of earshot, and how much it missed while it was - see
@@ -240,6 +246,8 @@ impl Server {
                 pending: Mutex::new(BTreeMap::new()),
                 principals: AtomicUsize::new(MAX_PRINCIPALS),
                 operator_token,
+                blobs: Mutex::new(crate::blob::Blobs::open(&path.with_extension("blobs"))),
+                blob_rewrites: AtomicU64::new(0),
                 stop: AtomicBool::new(false),
                 served: AtomicU64::new(0),
             }),
@@ -311,6 +319,13 @@ impl Server {
         let chat = Chat::open(path);
         *self.inner.guests.lock().expect("the guests lock") = chat.guests();
         *self.inner.chat.lock().expect("the chat lock") = chat;
+        self
+    }
+
+    /// Keep the blobs messages carry in `dir`, instead of the `room-<host key>.blobs` beside the
+    /// socket. A test points it at its own directory; the coordinator never needs to.
+    pub fn with_blob_store(&self, dir: &Path) -> &Self {
+        *self.inner.blobs.lock().expect("the blob lock") = crate::blob::Blobs::open(dir);
         self
     }
 
@@ -1262,6 +1277,7 @@ impl Server {
                     to: Some(session.to_string()),
                     thread: None,
                     refs: Vec::new(),
+                    attachments: Vec::new(),
                     text,
                 },
             });
@@ -1572,6 +1588,7 @@ impl Server {
                 to,
                 thread,
                 refs,
+                attachments,
             } => {
                 let room = match room.trim() {
                     "" => Self::default_chat_room(seat, project),
@@ -1602,13 +1619,29 @@ impl Server {
                         crate::Refused::UnknownAddressee { name: t.clone() },
                     );
                 }
-                self.append_and_push(id, &room, name, seat, to, *thread, refs.clone(), text, now)
+                let attachments = match self.attach_blobs(attachments) {
+                    Ok(a) => a,
+                    Err(why) => return refuse(Some(id), why),
+                };
+                self.append_and_push(
+                    id,
+                    &room,
+                    name,
+                    seat,
+                    to,
+                    *thread,
+                    refs.clone(),
+                    attachments,
+                    text,
+                    now,
+                )
             }
             Request::Dm {
                 id,
                 to,
                 text,
                 thread,
+                attachments,
             } => {
                 let to = to.trim().trim_start_matches('@').to_string();
                 let to = match self.resolve_name(project, &to) {
@@ -1630,6 +1663,10 @@ impl Server {
                 if to.is_empty() || to == name || !self.is_known(&to) {
                     return refuse(Some(id), crate::Refused::UnknownAddressee { name: to });
                 }
+                let attachments = match self.attach_blobs(attachments) {
+                    Ok(a) => a,
+                    Err(why) => return refuse(Some(id), why),
+                };
                 self.append_and_push(
                     id,
                     chat::DM_ROOM,
@@ -1638,6 +1675,7 @@ impl Server {
                     Some(to),
                     *thread,
                     Vec::new(),
+                    attachments,
                     text,
                     now,
                 )
@@ -1674,6 +1712,7 @@ impl Server {
                     None,
                     None,
                     refs.clone(),
+                    Vec::new(),
                     text,
                     now,
                 )
@@ -1708,6 +1747,45 @@ impl Server {
                     .map(|m| self.shown(m, &handles))
                     .collect();
                 Response::History(history)
+            }
+            // The blob store is the room's, not a room's: an upload is a file with an id and no
+            // audience until a message names it, so it is not gated on which room this seat is in.
+            Request::PutBlob {
+                upload,
+                name: blob_name,
+                mime,
+                part,
+                last,
+                data,
+            } => {
+                let bytes = crate::blob::decode_base64(data);
+                let out = self
+                    .inner
+                    .blobs
+                    .lock()
+                    .expect("the blob lock")
+                    .put_part(upload, blob_name, mime, *part, &bytes, *last, now);
+                match out {
+                    Ok(attachment) => Response::Blob { attachment },
+                    Err(why) => refuse(None, why),
+                }
+            }
+            Request::GetBlob { id, offset } => {
+                let part = self
+                    .inner
+                    .blobs
+                    .lock()
+                    .expect("the blob lock")
+                    .read(id, *offset);
+                match part {
+                    Ok(p) => Response::BlobPart {
+                        attachment: p.attachment,
+                        offset: p.offset,
+                        data: crate::blob::encode_base64(&p.data),
+                        last: p.last,
+                    },
+                    Err(why) => refuse(None, why),
+                }
             }
             Request::Roster { room } => {
                 let room = match room.trim() {
@@ -1807,6 +1885,50 @@ impl Server {
         }
     }
 
+    /// The message's attachments, as the store holds them. An id the store does not have is
+    /// refused: a message naming bytes nobody can fetch is a line a reader cannot draw.
+    fn attach_blobs(&self, ids: &[String]) -> Result<Vec<chat::Attachment>, crate::Refused> {
+        if ids.len() > chat::MAX_ATTACHMENTS {
+            return Err(crate::Refused::TooManyAttachments {
+                max: chat::MAX_ATTACHMENTS as u64,
+                got: ids.len() as u64,
+            });
+        }
+        let blobs = self.inner.blobs.lock().expect("the blob lock");
+        ids.iter()
+            .map(|id| {
+                blobs
+                    .get(id)
+                    .ok_or(crate::Refused::UnknownBlob { id: id.clone() })
+            })
+            .collect()
+    }
+
+    /// Drop the blobs no kept message names, once the chat store has been rewritten: that rewrite is
+    /// the one moment the ring's answer to *what is still referenced* is exact.
+    fn gc_blobs(&self, now: u64) {
+        let rewrites = self.inner.chat.lock().expect("the chat lock").rewrites();
+        if rewrites == self.inner.blob_rewrites.load(Ordering::SeqCst) {
+            return;
+        }
+        self.inner.blob_rewrites.store(rewrites, Ordering::SeqCst);
+        let kept = self
+            .inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .kept_attachments();
+        let dropped = self
+            .inner
+            .blobs
+            .lock()
+            .expect("the blob lock")
+            .gc(&kept, now);
+        if dropped > 0 {
+            eprintln!("room: blob store dropped {dropped} blob(s) no message keeps");
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn append_and_push(
         &self,
@@ -1817,15 +1939,22 @@ impl Server {
         to: Option<String>,
         thread: Option<u64>,
         refs: Vec<chat::Ref>,
+        attachments: Vec<chat::Attachment>,
         text: &str,
         now: u64,
     ) -> Response {
-        let appended = self
-            .inner
-            .chat
-            .lock()
-            .expect("the chat lock")
-            .append(now, id, room, author, kind, to, thread, refs, text);
+        let appended = self.inner.chat.lock().expect("the chat lock").append(
+            now,
+            id,
+            room,
+            author,
+            kind,
+            to,
+            thread,
+            refs,
+            attachments,
+            text,
+        );
         let message = match appended {
             Ok(m) => m,
             Err(why) => {
@@ -1862,6 +1991,7 @@ impl Server {
         // And a member with no connection is told nothing by a push. It is not lost: the message is
         // kept for it and delivered when it next connects, and its inbox cursor counts it unread.
         self.remember_for_absent(&message, &here);
+        self.gc_blobs(now);
         Response::Said {
             id: id.to_string(),
             message: self.shown(message, &handles),
@@ -2367,6 +2497,8 @@ fn is_chat_frame(frame: &Request) -> bool {
             | Request::Inbox { .. }
             | Request::Ack { .. }
             | Request::Invite { .. }
+            | Request::PutBlob { .. }
+            | Request::GetBlob { .. }
             | Request::Leave { .. }
     )
 }
@@ -2841,14 +2973,14 @@ mod tests {
     /// spells the number rather than the constant, so a wire change that misses a pin is a quiet lie
     /// about what two binaries share.
     #[test]
-    fn the_room_speaks_protocol_eight() {
-        assert_eq!(ROOM_PROTOCOL_VERSION, 8);
+    fn the_room_speaks_protocol_nine() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 9);
         // And the refusal names which side is older, in both directions.
-        let old = crate::wire::protocol_refusal(7).expect("7 is not 8");
+        let old = crate::wire::protocol_refusal(8).expect("8 is not 9");
         assert!(old.contains("the client is the older"), "{old}");
-        let new = crate::wire::protocol_refusal(9).expect("9 is not 8");
+        let new = crate::wire::protocol_refusal(10).expect("10 is not 9");
         assert!(new.contains("this room is the older"), "{new}");
-        assert_eq!(crate::wire::protocol_refusal(8), None);
+        assert_eq!(crate::wire::protocol_refusal(9), None);
         assert!(
             new.contains("letibot --room --stop && letibot --room"),
             "{new}"
@@ -3062,5 +3194,258 @@ mod tests {
         );
         // And a send after the end is a no-op rather than a second disconnection.
         conn.send(bye("four"));
+    }
+
+    // ===== The blob store on the wire =====
+
+    /// A server whose blobs live in a directory of their own, so a test never writes beside a
+    /// socket another test may be using.
+    fn with_blobs(tag: &str) -> (Server, PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("letibot-room-blob-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let server = Server::serve(&dir.join("room.sock"), Room::new()).expect("a socket");
+        server.with_blob_store(&dir.join("room-test.blobs"));
+        (server, dir)
+    }
+
+    /// One PNG of the given size, uploaded through the frames a head sends: `PutBlob` in parts and
+    /// the last one finishes it.
+    fn upload(
+        server: &Server,
+        me: &Speaker,
+        upload: &str,
+        png: &[u8],
+        now: u64,
+    ) -> chat::Attachment {
+        let chunks: Vec<&[u8]> = png.chunks(crate::blob::MAX_PART).collect();
+        let mut attachment = None;
+        for (i, chunk) in chunks.iter().enumerate() {
+            let answer = server.answer_frame(
+                crate::DEFAULT_PROJECT,
+                Seat::Session,
+                me,
+                &Request::PutBlob {
+                    upload: upload.into(),
+                    name: "shot.png".into(),
+                    mime: "image/png".into(),
+                    part: i as u32,
+                    last: i + 1 == chunks.len(),
+                    data: crate::blob::encode_base64(chunk),
+                },
+                now,
+            );
+            match answer.response {
+                Response::Blob { attachment: a } => attachment = a,
+                other => panic!("part {i} is answered with a blob: {other:?}"),
+            }
+        }
+        attachment.expect("the last part finished the upload")
+    }
+
+    /// A message names a blob by id and carries what the store holds for it: the picture travels
+    /// with the row, so a reader that has the history has the bytes' description too.
+    #[test]
+    fn a_say_with_a_blob_carries_its_attachment() {
+        let (server, dir) = with_blobs("say");
+        let me = Speaker::top_level("s-a");
+        let png: Vec<u8> = {
+            // A PNG's first chunk is IHDR: the signature, its length, its type, then the size.
+            let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
+            v.extend_from_slice(&13u32.to_be_bytes());
+            v.extend_from_slice(b"IHDR");
+            v.extend_from_slice(&40u32.to_be_bytes());
+            v.extend_from_slice(&20u32.to_be_bytes());
+            v.extend_from_slice(b"\x08\x02\x00\x00\x00");
+            v
+        };
+        let blob = upload(&server, &me, "up1", &png, 1_000);
+        assert_eq!(blob.w, Some(40), "the header is read, not guessed");
+        assert_eq!(blob.h, Some(20));
+        let said = server.answer_frame(
+            crate::DEFAULT_PROJECT,
+            Seat::Session,
+            &me,
+            &Request::Say {
+                id: "1".into(),
+                room: chat::HOST_ROOM.into(),
+                text: "look: ![shot](blob:ID)".into(),
+                to: None,
+                thread: None,
+                refs: Vec::new(),
+                attachments: vec![blob.id.clone()],
+            },
+            1_001,
+        );
+        match said.response {
+            Response::Said { message, .. } => {
+                assert_eq!(message.attachments.len(), 1);
+                assert_eq!(message.attachments[0], blob, "the store's own record");
+                assert_eq!(message.attachments[0].bytes, png.len() as u64);
+            }
+            other => panic!("a say is answered with the message: {other:?}"),
+        }
+        // And a read carries it too: the attachment is on the row, not a second fetch.
+        let read = server.answer_frame(
+            crate::DEFAULT_PROJECT,
+            Seat::Session,
+            &me,
+            &Request::Read {
+                room: chat::HOST_ROOM.into(),
+                since: 0,
+                last: None,
+                thread: None,
+                before: None,
+            },
+            1_002,
+        );
+        match read.response {
+            Response::History(h) => assert_eq!(h.rows[0].attachments, vec![blob]),
+            other => panic!("a read is answered with history: {other:?}"),
+        }
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An id the store does not hold is refused rather than dropped: a message that names bytes
+    /// nobody can fetch is a line a reader would draw as a broken picture for ever.
+    #[test]
+    fn a_say_naming_an_unknown_blob_is_refused() {
+        let (server, dir) = with_blobs("unknown");
+        let me = Speaker::top_level("s-a");
+        let answer = server.answer_frame(
+            crate::DEFAULT_PROJECT,
+            Seat::Session,
+            &me,
+            &Request::Say {
+                id: "1".into(),
+                room: chat::HOST_ROOM.into(),
+                text: "here it is".into(),
+                to: None,
+                thread: None,
+                refs: Vec::new(),
+                attachments: vec!["a".repeat(64)],
+            },
+            1_000,
+        );
+        match answer.response {
+            Response::Refused { why, .. } => {
+                assert!(
+                    matches!(&why, crate::Refused::UnknownBlob { id } if *id == "a".repeat(64)),
+                    "{why}"
+                );
+                assert!(why.to_string().contains(&"a".repeat(64)), "{why}");
+            }
+            other => panic!("an unknown blob is refused: {other:?}"),
+        }
+        // Nothing was appended: a refused say leaves the room as it was.
+        assert_eq!(server.chat_head(), 0);
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What `put_blob` stored is what `get_blob` answers, part by part, and the last part says so -
+    /// the reader stops asking because the store told it to, not because the bytes ran out.
+    #[test]
+    fn get_blob_returns_what_put_blob_stored() {
+        let (server, dir) = with_blobs("get");
+        let me = Speaker::top_level("s-a");
+        // Two parts, so the second read is the one that carries `last`.
+        let bytes: Vec<u8> = (0..(crate::blob::MAX_PART + 100))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let blob = upload(&server, &me, "up2", &bytes, 1_000);
+        let mut got: Vec<u8> = Vec::new();
+        let mut offset = 0u64;
+        loop {
+            let answer = server.answer_frame(
+                crate::DEFAULT_PROJECT,
+                Seat::Session,
+                &me,
+                &Request::GetBlob {
+                    id: blob.id.clone(),
+                    offset,
+                },
+                1_001,
+            );
+            match answer.response {
+                Response::BlobPart {
+                    attachment,
+                    offset: at,
+                    data,
+                    last,
+                } => {
+                    assert_eq!(attachment.id, blob.id);
+                    assert_eq!(at, offset, "the store answers from where it was asked");
+                    let part = crate::blob::decode_base64(&data);
+                    assert!(part.len() <= crate::blob::MAX_PART, "one frame, one part");
+                    got.extend_from_slice(&part);
+                    offset = at + part.len() as u64;
+                    if last {
+                        break;
+                    }
+                }
+                other => panic!("a get is answered with bytes: {other:?}"),
+            }
+        }
+        assert_eq!(got, bytes, "the same bytes, in the same order");
+        // An id nobody uploaded is a refusal, not an empty part.
+        let answer = server.answer_frame(
+            crate::DEFAULT_PROJECT,
+            Seat::Session,
+            &me,
+            &Request::GetBlob {
+                id: "b".repeat(64),
+                offset: 0,
+            },
+            1_002,
+        );
+        assert!(
+            matches!(answer.response, Response::Refused { .. }),
+            "{:?}",
+            answer.response
+        );
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The store keeps pictures and plain text, and says which of those it keeps. A frame that
+    /// offers anything else is told the list rather than quietly stored.
+    #[test]
+    fn a_wrong_mime_is_refused() {
+        let (server, dir) = with_blobs("mime");
+        let me = Speaker::top_level("s-a");
+        let answer = server.answer_frame(
+            crate::DEFAULT_PROJECT,
+            Seat::Session,
+            &me,
+            &Request::PutBlob {
+                upload: "up3".into(),
+                name: "run.sh".into(),
+                mime: "application/x-sh".into(),
+                part: 0,
+                last: true,
+                data: crate::blob::encode_base64(b"#!/bin/sh\n"),
+            },
+            1_000,
+        );
+        match answer.response {
+            Response::Refused { why, .. } => {
+                assert!(
+                    matches!(&why, crate::Refused::BadMime { mime } if mime == "application/x-sh"),
+                    "{why}"
+                );
+                let sentence = why.to_string();
+                assert!(sentence.contains("image/png"), "{sentence}");
+                assert!(sentence.contains("text/plain"), "{sentence}");
+            }
+            other => panic!("a wrong mime is refused: {other:?}"),
+        }
+        // A picture is what the list is for, and it goes through.
+        let png = upload(&server, &me, "up4", b"\x89PNG\r\n\x1a\n", 1_001);
+        assert_eq!(png.mime, "image/png");
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -806,6 +806,7 @@ fn a_stalled_reader_is_disconnected_and_does_not_block_the_others() {
                 to: None,
                 thread: None,
                 refs: Vec::new(),
+                attachments: Vec::new(),
             },
         );
         assert!(matches!(answer, Response::Said { .. }), "{answer:?}");
@@ -906,6 +907,7 @@ fn an_external_that_has_gone_is_not_known_any_more() {
             to: Some("claude-code".into()),
             thread: None,
             refs: Vec::new(),
+            attachments: Vec::new(),
         })
         .expect("an answer")
     };
@@ -960,6 +962,7 @@ fn a_name_is_known_the_moment_its_welcome_is_read() {
                 to: Some("claude-code".into()),
                 thread: None,
                 refs: Vec::new(),
+                attachments: Vec::new(),
             })
             .expect("an answer");
         assert!(matches!(answer, Response::Said { .. }), "{i}: {answer:?}");

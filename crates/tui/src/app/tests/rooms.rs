@@ -681,6 +681,7 @@ fn a_mention_is_a_name_not_a_prefix() {
         to: to.map(String::from),
         thread: None,
         refs: Vec::new(),
+        attachments: Vec::new(),
         text: text.into(),
     };
     assert!(mentions_operator(&m("s-a", None, "ping @operator, please")));

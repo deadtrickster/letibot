@@ -114,6 +114,16 @@ fn frame_kind(f: &ServerFrame) -> String {
         ServerFrame::RoomChat {
             client_request_id, ..
         } => format!("RoomChat({client_request_id})"),
+        // The pushed message is named by its seq: a diagnostic showing two of the same number was
+        // the double-merge this frame has to avoid.
+        ServerFrame::RoomChatPushed { message, names_you } => format!(
+            "RoomChatPushed(#{}, names_you={names_you})",
+            message
+                .get("seq")
+                .and_then(|s| s.as_u64())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "?".into())
+        ),
         ServerFrame::Peeked {
             session_id, events, ..
         } => format!("Peeked({}, {} events)", session_id, events.len()),

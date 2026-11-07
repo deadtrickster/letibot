@@ -10,9 +10,9 @@ use crate::room::{
 };
 
 /// The room's protocol version, and the room's alone - see the module header. The number moves at
-/// RELEASE POINTS: a frame added mid-series rides the next number with whatever else lands before it,
-/// because the room has no users outside this tree to be compatible with.
-pub const ROOM_PROTOCOL_VERSION: u16 = 8;
+/// RELEASE POINTS: a frame added mid-series rides the next number with whatever else lands first.
+/// 9 is the blob store and `attachments` on a say: a version-8 coordinator would drop them silently.
+pub const ROOM_PROTOCOL_VERSION: u16 = 9;
 
 /// The sentence a protocol mismatch is refused with, or `None` when the two agree. One function because
 /// two doors refuse it - a [`crate::Server`]'s and [`crate::Room::answer_traced`]'s - and two sentences
@@ -97,6 +97,10 @@ pub enum Request {
         thread: Option<u64>,
         #[serde(default)]
         refs: Vec<crate::chat::Ref>,
+        /// Blob ids from [`Request::PutBlob`]: the pictures and files the message carries. The
+        /// server fills the message's attachments from its store and refuses an id it does not hold.
+        #[serde(default)]
+        attachments: Vec<String>,
     },
     /// A direct message: read by its author and `to` only.
     Dm {
@@ -105,6 +109,27 @@ pub enum Request {
         text: String,
         #[serde(default)]
         thread: Option<u64>,
+        #[serde(default)]
+        attachments: Vec<String>,
+    },
+    /// One part of a file, on its way into the blob store. `data` is base64, so a copy that is not
+    /// UTF-8 still crosses a frame that is one line of JSON.
+    PutBlob {
+        /// The client's own name for this upload, unique among its uploads in flight.
+        upload: String,
+        name: String,
+        mime: String,
+        /// The 0-based index of this part: parts append in order, and a gap is refused.
+        part: u32,
+        /// This is the last part, so the store hashes what it holds and answers the attachment.
+        last: bool,
+        data: String,
+    },
+    /// Ask for one part of a stored blob, from `offset` bytes in.
+    GetBlob {
+        id: String,
+        #[serde(default)]
+        offset: u64,
     },
     /// The harness reports a fact. Only a session connection (a daemon) may send it, into the host
     /// room or that session's project room, authored by `source` with kind `system`.
@@ -225,6 +250,8 @@ impl Request {
             | Request::Reminders
             | Request::Questions
             | Request::Members { .. }
+            | Request::PutBlob { .. }
+            | Request::GetBlob { .. }
             | Request::Room => None,
             Request::Say { id, .. }
             | Request::Dm { id, .. }
@@ -390,6 +417,22 @@ pub enum Response {
     Chat {
         message: crate::chat::Message,
         names_you: bool,
+    },
+    /// The answer to [`Request::PutBlob`]'s last part: the blob is stored, and this is what a
+    /// message names. `None` from a part that is not the last - there is no blob until the bytes are
+    /// whole, so a client reads the id only from the frame that finished the upload.
+    Blob {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attachment: Option<crate::chat::Attachment>,
+    },
+    /// The answer to [`Request::GetBlob`]: one part of the bytes from `offset` in. `last` says no
+    /// part follows, so a reader stops asking.
+    BlobPart {
+        attachment: crate::chat::Attachment,
+        offset: u64,
+        /// Base64 of at most [`crate::blob::MAX_PART`] bytes.
+        data: String,
+        last: bool,
     },
     /// The bell - an unsolicited event. A client that only ever answers a prompt cannot be woken by
     /// this.
@@ -600,6 +643,8 @@ impl Room {
             | Request::Inbox { .. }
             | Request::Ack { .. }
             | Request::Invite { .. }
+            | Request::PutBlob { .. }
+            | Request::GetBlob { .. }
             | Request::Leave { .. } => Answer::quiet(Response::Refused {
                 id: request.request_id().map(str::to_string),
                 why: Refused::ChatIsTheServers,
@@ -643,6 +688,33 @@ impl Room {
                 agents: Vec::new(),
                 members: self.members().to_vec(),
             }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The number is the contract: a version-8 coordinator parses a `say` with attachments and
+    /// drops them in silence, so the bump is what turns that into the refusal below.
+    #[test]
+    fn the_protocol_is_nine() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 9);
+        assert_eq!(crate::server::protocol(), 9);
+        assert_eq!(protocol_refusal(9), None, "the same build speaks to itself");
+        let older = protocol_refusal(8).expect("a version-8 client is told");
+        assert!(older.contains("this room speaks protocol 9"), "{older}");
+        assert!(older.contains("the client is the older"), "{older}");
+        assert!(older.contains(CLIENT_UPGRADE), "{older}");
+        let newer = protocol_refusal(10).expect("a newer client is told");
+        assert!(newer.contains(ROOM_UPGRADE), "{newer}");
+        // And an old client's frame is still a frame: the attachments it cannot know are defaulted,
+        // so a version-8 head reading a 9 daemon's `say` sees exactly what it always saw.
+        let old: Request = serde_json::from_str(r#"{"type":"say","id":"1","text":"hi"}"#).unwrap();
+        match old {
+            Request::Say { attachments, .. } => assert!(attachments.is_empty()),
+            other => panic!("a say is a say: {other:?}"),
         }
     }
 }

@@ -540,6 +540,7 @@ mod tests {
             to: None,
             thread: None,
             refs: Vec::new(),
+            attachments: Vec::new(),
             text: "hello".into(),
         });
         let value = feed(snap);

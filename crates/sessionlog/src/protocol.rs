@@ -12,7 +12,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 64;
+pub const PROTOCOL_VERSION: u32 = 65;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -1032,6 +1032,13 @@ pub enum ServerFrame {
         client_request_id: String,
         reply: serde_json::Value,
     },
+    /// A chat message the coordinator pushed to the operator's seat, straight to every head that has
+    /// chatted: the room `Message` as JSON and whether it names this reader. Unsolicited, so a head
+    /// that merges it must recognise a `seq` its own poll already brought.
+    RoomChatPushed {
+        message: serde_json::Value,
+        names_you: bool,
+    },
     Peeked {
         session_id: String,
         dropped: u64,
@@ -1314,6 +1321,7 @@ mod tests {
                 | ServerFrame::Skills { .. }
                 | ServerFrame::Queues { .. }
                 | ServerFrame::RoomChat { .. }
+                | ServerFrame::RoomChatPushed { .. }
                 | ServerFrame::Peeked { .. }
                 | ServerFrame::ModeConfirm { .. }
                 | ServerFrame::ModeSettled { .. }
@@ -1335,8 +1343,11 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 64,
-            "the match above was last reconciled with the frame list at 64. 64 added \
+            PROTOCOL_VERSION, 65,
+            "the match above was last reconciled with the frame list at 65. 65 added \
+             `ServerFrame::RoomChatPushed`, the unsolicited half of the operator's chat: the \
+             coordinator's push reaches a head without a poll, and a version-64 head cannot decode \
+             it, so the number moves. 64 added \
              `TranscriptItem::Offer`, the display-only row that shows the operator a skill or \
              note offered to the model: a version-63 head cannot decode a snapshot or an \
              announcement that carries one, so the number moves. Every renderer skips it, so the \

@@ -4,6 +4,7 @@
 
 use super::bindings::Act;
 use super::*;
+use crate::app::chat_nav::Jump;
 use crate::ui::panes::queue::{Selected, Verb, verb_moves};
 use letibot_plugin::pane::Act as RowAct;
 use std::ops::ControlFlow;
@@ -96,6 +97,22 @@ impl App {
             Act::Roster => self.rooms_toggle_roster(),
             Act::DismissSend => self.rooms_dismiss_send(),
             Act::ResendSend => self.rooms_resend_send(),
+            // The room's chat keys (`docs/room-tui.md`): each acts on the message under the cursor,
+            // and with no cursor there is nothing to act on - so it declines and the key is the
+            // composer's, exactly as it was before P0 wired it.
+            Act::RoomCursor => self.rooms_cursor_move(false),
+            Act::RoomUnread => self.rooms_jump(Jump::Unread),
+            Act::RoomTail => self.rooms_jump(Jump::Tail),
+            Act::RoomCopy => self.rooms_copy(),
+            Act::RoomThread => self.rooms_thread(),
+            Act::RoomSearchStep(forward) => self.rooms_search_step(forward),
+            Act::RoomReply => {
+                let Some(seq) = self.rooms_cursor() else {
+                    return ControlFlow::Continue(());
+                };
+                self.rooms_set_reply(Some(seq));
+                ControlFlow::Break(None)
+            }
             Act::Open => self.open_act(s),
             Act::Alt => self.todos_alt(),
             // `w` opens what the selected row waits on - the keyboard's half of the click on its

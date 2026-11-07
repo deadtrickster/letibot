@@ -3,6 +3,7 @@
 //! the terminal (`rano::term`).
 
 pub mod cards;
+pub mod chat;
 pub mod composer;
 pub mod diff_popup;
 pub mod editor;

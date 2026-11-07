@@ -213,14 +213,22 @@ is the user's own process trust, and the peer check on the daemon is the other g
 ```json
 {"seq": 14, "ts": 1793735794000, "room": "host", "author": "s-a", "kind": "session",
  "to": "s-b", "thread": 9, "refs": [{"kind": "todo", "id": "s-a/write the doc"}],
- "text": "who has the disk?"}
+ "attachments": [{"id": "9f2c…", "mime": "image/png", "name": "shot.png", "bytes": 24019,
+                  "w": 1280, "h": 720}],
+ "text": "who has the disk? ![shot](blob:9f2c…)"}
 ```
 
 - `seq` is one counter across the whole log (all rooms and DMs), starting at 1. It is the cursor.
 - `to` names one principal. `thread` is the `seq` of the message answered, in the same room.
 - `refs` point at rows other parts of letibot own: `todo` (`<session>/<title>`) or `queue` (the queue
   row id). At most 8 per message, each id at most 200 bytes. The row is not copied.
+- `attachments` are the pictures and files the message carries, from the blob store: at most 4, each
+  at most 8 MiB. `id` is the sha256 hex of the bytes. The field is absent from a message with none,
+  and from every line written before it existed, so an old store replays unchanged. `w`/`h` are there
+  when the store could read them out of the header (PNG, GIF).
 - `text` is trimmed, non-empty and at most 4000 bytes. Longer is refused (`chat_too_long`), never cut.
+  A picture is REFERENCED in the text as `![alt](blob:<id>)`; that reference needs no field, so a
+  reader that does not know attachments still sees markdown it can draw as text.
 - A name nobody on the host answers to (`to`, or the target of a `dm`) is refused (`unknown_addressee`).
   The operator is always known, an external once it has connected.
 
@@ -231,8 +239,14 @@ A DM is a message with room `dm` and a `to`. It is readable by its author and `t
 Each room keeps its newest **500** messages, and **256 KiB** of text. The oldest is dropped first. The
 coordinator appends chat, cursors and members' seen marks to `room-<host key>.chat` beside its socket and
 loads it at start, so a restart keeps history, `seq` and cursors. Without that file (a bare `Server`) chat
-is memory only. Items and leases are in `room-<host key>.items`. A read says `trimmed: true` when messages
-after the asked-for `seq` were dropped.
+is memory only. Items and leases are in `room-<host key>.items`, and the blobs messages carry are files
+in `room-<host key>.blobs/`: `<id>` is the bytes and `<id>.json` what they are. A read says
+`trimmed: true` when messages after the asked-for `seq` were dropped.
+
+A blob no kept message names is deleted when the chat store is rewritten, and an upload nothing has said
+is deleted an hour after it was started. The hour is the point: a picture is uploaded and then said a
+moment later, so a collection that ran between the two would delete the bytes the message is about to
+name.
 
 ### Requests
 
@@ -240,8 +254,8 @@ after the asked-for `seq` were dropped.
 |---|---|---|
 | `hello {protocol, speaker, room, seat, token}` | `welcome` | `room` is `<host key>/<project key>` for a session; `token` is the operator's |
 | `rooms` | `rooms {rows}` | the rooms this connection may see |
-| `say {id, room, text, to?, thread?, refs?}` | `said {id, message}` | `room` empty is the project room, or `host` with no project |
-| `dm {id, to, text, thread?}` | `said` | |
+| `say {id, room, text, to?, thread?, refs?, attachments?}` | `said {id, message}` | `room` empty is the project room, or `host` with no project. `attachments` are blob ids, at most 4 |
+| `dm {id, to, text, thread?, attachments?}` | `said` | |
 | `notify {id, room, source, text, refs?}` | `said` | daemons only, kind `system` |
 | `read {room, since?, last?, thread?, before?}` | `history {room, rows, last_seq, trimmed}` | moves no cursor. `last` defaults to 200, the most one read returns. `thread` returns the root and replies. `before` is a seq: the newest `last` messages older than it, one page back |
 | `roster {room}` | `roster {room, rows}` | `name`, `kind`, `connected`, `project`, `label` |
@@ -251,6 +265,20 @@ after the asked-for `seq` were dropped.
 A repeated `say`, `dm` or `notify` with the same `(author, id)` returns the first message and appends
 nothing, inside a window of 256 requests. Refusals are `refused {id, why}`; a room a connection may not
 see is `unknown_chat_room`.
+
+### Blobs
+
+A picture or a file crosses the wire in parts, because a frame is one line of JSON and a picture is not.
+
+| request | answer | notes |
+|---|---|---|
+| `put_blob {upload, name, mime, part, last, data}` | `blob {attachment}` | `data` is base64, at most 512 KiB. `part` is the 0-based index: parts append in order and a gap is refused (`bad_part`). `last` finishes the upload, hashes what the parts made and answers the attachment; a part before it answers `blob` with no attachment |
+| `get_blob {id, offset?}` | `blob_part {attachment, offset, data, last}` | at most 512 KiB per part, base64. `last` says no part follows |
+
+The store keeps `image/png`, `image/jpeg`, `image/gif`, `image/webp` and `text/plain`; anything else is
+`bad_mime`. One blob is at most 8 MiB (`blob_too_large`), and `id` is the sha256 hex of the bytes: the
+same bytes uploaded twice are the same blob. A `say` or `dm` naming a blob the store does not hold is
+refused (`unknown_blob`), so a message never carries an id a reader cannot fetch.
 
 ### Subscribing
 
@@ -305,9 +333,16 @@ by `ServerFrame::RoomChat {client_request_id, reply}`, where `reply` is the room
 `{"error": "..."}` when the coordinator is unreachable or `op` is not a chat request. It needs the
 head door, so a tool call is refused.
 
+`ServerFrame::RoomChatPushed {message, names_you}` is the other direction and the only unsolicited chat
+frame: a message the coordinator pushed to the operator's seat, fanned out to every head that has
+chatted. `message` is the room `Message` as JSON. A head merges it as though a `read` had brought it, so a
+`seq` it already has is dropped rather than drawn twice.
+
 ### Versions
 
-`ROOM_PROTOCOL_VERSION` is 8, the room's own number. `PROTOCOL_VERSION` (head to daemon) is 64.
+`ROOM_PROTOCOL_VERSION` is 9, the room's own number: 9 added the blob store and `attachments` on a `say`,
+so a version-8 coordinator would drop a picture in silence and the skew is refused instead.
+`PROTOCOL_VERSION` (head to daemon) is 65: 65 added `ServerFrame::RoomChatPushed`.
 
 ### What is kept from flowy, and what is not
 

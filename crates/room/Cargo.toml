@@ -24,6 +24,9 @@ serde_json.workspace = true
 # imported because the room holds no store and no `tokencore`, and a test in `harnessd` pins the two
 # spellings to one table (`crates/harnessd/tests/room_tree.rs`).
 sha2 = "0.10"
+# The tree's one base64 alphabet, for a blob part on a wire that is one line of JSON. The crate is
+# serde and serde_json and nothing else, so it costs the room no second store or model connection.
+letibot-transcript.workspace = true
 # The tree's one wall clock, for the socket's beat and its sweep. The state machine still
 # holds none: `server` reads it and hands the number in.
 letibot-metrics.workspace = true

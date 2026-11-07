@@ -926,6 +926,8 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
                 to: Some(s("to")).filter(|x| !x.is_empty()),
                 thread: n("thread"),
                 refs,
+                // P1 gives the session tool an `attachments: [path]` and uploads the files.
+                attachments: Vec::new(),
             }
         }
         "read" => Request::Read {
@@ -1170,6 +1172,23 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
             format!("{} message(s), {skipped} left out", rows.len())
         }
         Response::Acked { cursor } => format!("read up to #{cursor}"),
+        // The blob frames exist for a HEAD to draw a picture. A model's verbs do not upload or
+        // fetch one yet, so this says what the room answered rather than inventing bytes for it.
+        Response::Blob { attachment } => match attachment {
+            Some(a) => format!("blob `{}` stored: {} of {} byte(s)", a.id, a.mime, a.bytes),
+            None => "blob part stored, and the upload is not finished".to_string(),
+        },
+        Response::BlobPart {
+            attachment,
+            offset,
+            data,
+            last,
+        } => format!(
+            "blob `{}` from byte {offset}: {} byte(s) of base64{}",
+            attachment.id,
+            data.len(),
+            if *last { ", and that is all of it" } else { "" }
+        ),
     })
 }
 
@@ -1281,6 +1300,7 @@ mod tests {
                 to: to.map(str::to_string),
                 thread: None,
                 refs: Vec::new(),
+                attachments: Vec::new(),
                 text: text.into(),
             },
         };

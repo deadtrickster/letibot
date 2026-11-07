@@ -63,7 +63,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R136 | Answer waits: a row waits on another top-level session's answer | Code work | all of the build, per `docs/answer-waits.md` (operator's rulings 2026-11-07 are in it) |
 | R137 | Todo graphs that span projects | Code work | the design; an answer-wait ask is the first cross-project edge |
 | R138 | Stable session identities across hosts, through migrations | Code work | the design; until then asks are same-host only |
-| R139 | Room UI P0: attachment and blob wire, the head push frame, stubs for P1-P4 | Code work | all of it, per `docs/room-tui.md` P0; room protocol 9 |
+| R139 | Room UI P0: attachment and blob wire, the head push frame, stubs for P1-P4 | Code work | built and tested on the branch: `Attachment` + coordinator blob store, room protocol 9, `ServerFrame::RoomChatPushed` + sessionlog 65, the seat's blob allowlist, and the TUI's five stub modules with the room keys dispatching to them; left: the merge queue's gate once the branch is approved |
 | R140 | Room UI P1: live chat push to the head, agents attach pictures | Code work | all of it, after R139 |
 | R141 | Room UI P2: message rendering (markdown, code colours, grouping, speaker colours, names, unread divider, pictures) | Code work | all of it, after R139 |
 | R142 | Room UI P3: composer (`@` completion, room `/` verbs, history and drafts, reply, pasted pictures) | Code work | all of it, after R139 |
@@ -905,7 +905,7 @@ A session's identity is stable on its host only. Answer waits (R136) assume a st
 
 ## R139 to R143 - The room in the TUI, as good as flowy's chat
 
-**Status:** open. left: the build.
+**Status:** P0 (R139) built and tested on its branch; P1 to P4 open. left: P0's landing through the merge queue, then P1 to P4.
 
 The design and the five packages are `docs/room-tui.md`, from a study of flowy's web console and Go TUI. P0 (R139) lands first and alone: `Attachment` and a coordinator blob store, `ROOM_PROTOCOL_VERSION` 9, `ServerFrame::RoomChatPushed` with sessionlog protocol 65, and the TUI stub modules and key bindings so P1 to P4 never edit one file. P1 (R140) pushes chat to heads, P2 (R141) renders messages, P3 (R142) is the composer, P4 (R143) is navigation and the picture cache. Each package names its done-tests in the doc. Defaults taken on the doc's open questions: bump the protocol, blobs on the coordinator (8 MiB each), no reactions, no thread folding, search within the 500-message ring, agents see a picture's name and size only. Answer waits (R136) take room protocol 10.
 
