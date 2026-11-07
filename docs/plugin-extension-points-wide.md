@@ -648,3 +648,44 @@ Owns `bridge/src/tools.rs` (plugin tools listed after the 23), `bridge/src/push.
    and pinned layers only (and the same rule for any feed of other sessions' text); cursor mode;
    `exec` looks for pinned panes AND pinned `tool_` layers (K8); `dock` as the first step of
    windows; no automatic pin on rebuild.
+
+## 8. Waiting on the operator, both reviews
+
+Status 2026-11-07: both reviews are written; nothing of them is built except R151 (in flight). Every
+question below has a default; a question not answered is built on its default. Answers go here, one
+line each under the question, dated.
+
+From this review (§7):
+
+1. Which layers a child inherits. Default: built-in, user, project, and the parent's pinned session
+   layers; unpinned session layers are not inherited.
+2. `on_tool_call`'s `answer` skips the gate for exec and write tools. Keep it? Default: keep - it
+   runs nothing and the `[note]` line discloses it; restrict it if a layer is seen answering `bash`.
+3. May a `nag_` layer stay quiet? Default: yes, up to `NAG_REPEAT_CAP`, never for queue rows.
+4. May session layers answer `prompt_` or `adjudicate_`? Default: no to both.
+5. Agents typing operator verbs through tmux (`/queue reset`, `/reseat`). Default: native
+   self-scoped verbs (`reseat_self`, `compact_self`); operator verbs stay the operator's.
+6. Warning mute, `[keys]`, verbosity, the queue and nag constants: config, not plugins? Default: yes.
+7. leticl's JSON dashboards (`~/.config/letibot/dashboards`) against wasm panes. Default: one
+   contract, the pane language; a built-in layer reads the JSON files and leticl draws the pane
+   language too.
+8. When the butler comes. Default: after K3.
+
+From the first review (`docs/plugin-extension-points.md` §6; question 1 is answered there, §7):
+
+9. Who may read the `chat` feed, and any feed of other sessions' text. Default: built-in and pinned
+   layers only.
+10. Message keys: cursor mode (Tab on an empty input enters, Esc leaves) or uppercase keys while
+    typing. Default: cursor mode.
+11. `exec` looks for pinned panes and pinned `tool_` layers, through `admit_unasked`. Default: yes.
+12. `dock` beside the conversation: the "tabs or windows" asked for, or a first step. Default: first
+    step; one right-hand column, host-owned width.
+13. Pin a session layer automatically when the session that built it loads it. Default: no; `load`
+    names the one command to type.
+
+Decided so far:
+
+- 2026-11-07: the native room renderer stays only as a safety net until the built-in chat plugin has
+  run without traps, then it is deleted (first review, §7).
+- 2026-11-07: the first review was too room-focused; this wide review answers for the whole system,
+  and its §6 plan (K1-K11 merged with H0, P1-P6 and R151) is the one plan.

@@ -73,7 +73,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
 | R145 | The review queue's session is seated a role its own prompt does not match | Code work | all of it: `Seat::Orchestrator` resolves to `roles::m1_orchestrator`, which holds neither `task_result` nor `task_message`, and the prompt prescribes both |
-| R150 | Plugin extension points: the head's UI moves out to plugins | Code work | the wide review (`docs/plugin-extension-points-wide.md`), then the operator's answers to questions 2-6 of `docs/plugin-extension-points.md`, then the packages |
+| R150 | Plugin extension points: the harness and head open to plugins | Needs the operator | answers to the 13 questions in `docs/plugin-extension-points-wide.md` §8 (each has a default), then the plan's packages K1-K11 with H0, P5, P6 |
 | R151 | Four plugin walls that are bugs: unreachable built-in panes, `read` against the workspace, the pin lost on rebuild, the hooks skill's missing kinds | Code work | all of it |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
 | R100 | A remote session in a firecode VM: `--host` and `--vm` as one placement | Needs the operator | the live proof on lab2x1: a real `firecode` copy carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, the copy-out's cost |
@@ -945,7 +945,7 @@ The reviewer's seat (`Role::gatekeeper`, `runtime.rs:1143`) is the other half an
 
 ## R150 - Plugin extension points: the head's UI moves out to plugins
 
-**Status:** reviewing. left: the wide review, the operator's answers, the build.
+**Status:** both reviews written. left: the operator's answers (`docs/plugin-extension-points-wide.md` §8, 13 questions with defaults), then the build per its §6.
 
 `docs/plugin-extension-points.md` is the first review, scoped to the room chat: its decisions can be a plugin, its mechanics stay host. Ten host additions (X1-X10: a `chat` feed, a `stream` block, pictures by blob id, theme hues, an input surface, a `complete_` hook, acts in answers, cursor-mode keys, a clock in the input, and dock/built-in/exec/read fixes for the other panes) and packages H0, P5, P6 beside room-tui's P2-P4. The operator's ruling: the native renderer stays only as a safety net until the built-in chat plugin is proven, then goes. The review was too room-focused, so a second one covers the whole harness and head before questions 2-6 are answered.
 
