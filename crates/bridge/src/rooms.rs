@@ -4,7 +4,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, Weak};
@@ -924,6 +924,11 @@ pub fn tool_list() -> Vec<Value> {
                             },
                             "required": ["kind", "id"]
                         }
+                    },
+                    "attachments": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Files to send with the words, as paths inside this seat's working folder — a path outside it is refused. At most 4, each at most 8 MiB: a picture (`png`, `jpeg`, `gif`, `webp`) or a text file. Each is uploaded and referenced in the text as `![name](blob:ID)` unless the text already names it."
                     }
                 },
                 "required": ["text"]
@@ -1047,6 +1052,100 @@ fn arg_refs(args: &Value) -> Result<Vec<Value>, String> {
         .collect()
 }
 
+/// The files a `room_say` carries, uploaded one part at a time: an id exists only after the
+/// coordinator has hashed the bytes, so the words that name one are built after this returns.
+fn upload(
+    link: &RoomLink,
+    args: &Value,
+    workspace: &Path,
+) -> Result<Vec<(String, String)>, String> {
+    let Some(v) = args.get("attachments").filter(|v| !v.is_null()) else {
+        return Ok(Vec::new());
+    };
+    let paths = v
+        .as_array()
+        .ok_or("`attachments` must be an array of file paths")?;
+    let root = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    let mut out = Vec::new();
+    for p in paths {
+        let raw = p
+            .as_str()
+            .ok_or("`attachments` must be an array of file paths")?;
+        let full = root.join(raw);
+        let full = full.canonicalize().unwrap_or(full);
+        if !full.starts_with(&root) {
+            return Err(format!(
+                "`{raw}` is outside this seat's folder `{}`, so it is not a file it may send — \
+                 nothing was uploaded",
+                root.display()
+            ));
+        }
+        if !full.is_file() {
+            return Err(format!(
+                "`{raw}` is not a file this seat can read — nothing was uploaded"
+            ));
+        }
+        let name = full
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("attachment")
+            .to_string();
+        let Some(mime) = letibot_tools::builtins::room::mime_of(&name) else {
+            return Err(format!(
+                "`{name}` is not a kind the room carries: a picture (`png`, `jpeg`, `gif`, `webp`) \
+                 or a text file — nothing was uploaded"
+            ));
+        };
+        let bytes = std::fs::read(&full).map_err(|e| format!("`{raw}` could not be read: {e}"))?;
+        if bytes.len() > letibot_room::blob::MAX_BLOB {
+            return Err(format!(
+                "`{name}` is {} byte(s), and the room takes at most {} per file — nothing was \
+                 uploaded",
+                bytes.len(),
+                letibot_room::blob::MAX_BLOB
+            ));
+        }
+        let mut parts: Vec<&[u8]> = bytes.chunks(letibot_room::blob::MAX_PART).collect();
+        if parts.is_empty() {
+            parts.push(&[]);
+        }
+        let tag = link.id();
+        let last = parts.len() - 1;
+        let mut id = None;
+        for (i, chunk) in parts.iter().enumerate() {
+            let reply = link.request(&json!({
+                "type": "put_blob",
+                "upload": tag,
+                "name": name,
+                "mime": mime,
+                "part": i,
+                "last": i == last,
+                "data": letibot_room::blob::encode_base64(chunk),
+            }))?;
+            match reply["type"].as_str() {
+                Some("blob") => {
+                    if let Some(named) = reply["attachment"]["id"].as_str() {
+                        id = Some(named.to_string());
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "the room answered `{name}` with {} — nothing was uploaded",
+                        other.unwrap_or("no type")
+                    ));
+                }
+            }
+        }
+        let id = id.ok_or_else(|| {
+            format!("the room took `{name}` and named no blob: nothing was sent with it")
+        })?;
+        out.push((id, name));
+    }
+    Ok(out)
+}
+
 fn with_lines(mut reply: Value) -> Value {
     let lines: Vec<String> = reply["rows"]
         .as_array()
@@ -1058,8 +1157,20 @@ fn with_lines(mut reply: Value) -> Value {
     reply
 }
 
-/// Run one room tool.
+/// Run one room tool, resolving an attachment's path against the folder this process works in.
 pub fn call(link: &RoomLink, name: &str, args: &Value) -> Result<Value, String> {
+    let workspace = std::env::current_dir().unwrap_or_default();
+    call_in(link, name, args, &workspace)
+}
+
+/// As [`call`], with the folder the seat works in stated: a picture is read from there and nowhere
+/// else, because the bridge opens the file itself and may open no further than the seat may.
+pub fn call_in(
+    link: &RoomLink,
+    name: &str,
+    args: &Value,
+    workspace: &Path,
+) -> Result<Value, String> {
     match name {
         "rooms" => link.request(&json!({ "type": "rooms" })),
         "room_read" => {
@@ -1076,13 +1187,24 @@ pub fn call(link: &RoomLink, name: &str, args: &Value) -> Result<Value, String> 
             link.request(&f).map(with_lines)
         }
         "room_say" => {
+            let files = upload(link, args, workspace)?;
+            let text =
+                letibot_tools::builtins::room::referenced(arg_str(args, "text")?.trim(), &files);
             let mut f = json!({
                 "type": "say",
                 "id": link.id(),
                 "room": arg_opt_str(args, "room")?.unwrap_or_else(|| "host".into()),
-                "text": arg_str(args, "text")?,
+                "text": text,
                 "refs": arg_refs(args)?,
             });
+            if !files.is_empty() {
+                f["attachments"] = json!(
+                    files
+                        .iter()
+                        .map(|(id, _)| id.clone())
+                        .collect::<Vec<String>>()
+                );
+            }
             if let Some(to) = arg_opt_str(args, "to")? {
                 f["to"] = json!(to);
             }

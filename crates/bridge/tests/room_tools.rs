@@ -20,6 +20,9 @@ struct Fake {
     cursor: Arc<Mutex<u64>>,
     /// The coordinator start the welcome names; `restart` moves it.
     instance: Arc<Mutex<u64>>,
+    /// The blobs a `put_blob` stored, by id: a `say` naming one gets it back, as the real store
+    /// fills a message's attachments from its own bytes.
+    blobs: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
 }
 
 impl Fake {
@@ -48,24 +51,27 @@ impl Fake {
             log: Arc::default(),
             cursor: Arc::default(),
             instance: Arc::new(Mutex::new(1)),
+            blobs: Arc::default(),
         };
-        let (frames, conns, log, cursor, instance) = (
+        let (frames, conns, log, cursor, instance, blobs) = (
             fake.frames.clone(),
             fake.conns.clone(),
             fake.log.clone(),
             fake.cursor.clone(),
             fake.instance.clone(),
+            fake.blobs.clone(),
         );
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 conns.lock().unwrap().push(stream.try_clone().unwrap());
-                let (frames, log, cursor, instance) = (
+                let (frames, log, cursor, instance, blobs) = (
                     frames.clone(),
                     log.clone(),
                     cursor.clone(),
                     instance.clone(),
+                    blobs.clone(),
                 );
-                std::thread::spawn(move || serve_one(stream, frames, log, cursor, instance));
+                std::thread::spawn(move || serve_one(stream, frames, log, cursor, instance, blobs));
             }
         });
         fake
@@ -116,6 +122,7 @@ fn serve_one(
     log: Arc<Mutex<Vec<Value>>>,
     cursor: Arc<Mutex<u64>>,
     instance: Arc<Mutex<u64>>,
+    blobs: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
 ) {
     let mut w = stream.try_clone().unwrap();
     let mut seat = String::from("session");
@@ -147,9 +154,19 @@ fn serve_one(
                     f["room"].as_str().unwrap()
                 };
                 let to = f.get("to").cloned().unwrap_or(Value::Null);
-                let m = json!({"seq": log.len() as u64 + 1, "ts": 0, "room": room, "author": name,
+                let mut m = json!({"seq": log.len() as u64 + 1, "ts": 0, "room": room, "author": name,
                     "kind": seat, "to": to, "thread": f.get("thread").cloned().unwrap_or(Value::Null),
                     "refs": f.get("refs").cloned().unwrap_or(json!([])), "text": f["text"]});
+                // The store fills a message's attachments from its own bytes, so a `say` naming an
+                // id nothing stored gets none of them back.
+                if let Some(ids) = f.get("attachments").and_then(Value::as_array) {
+                    let held = blobs.lock().unwrap();
+                    let rows: Vec<Value> = ids
+                        .iter()
+                        .filter_map(|id| held.get(id.as_str()?).cloned())
+                        .collect();
+                    m["attachments"] = json!(rows);
+                }
                 log.push(m.clone());
                 json!({"type": "said", "id": f["id"], "message": m})
             }
@@ -166,6 +183,22 @@ fn serve_one(
             }
             "roster" => json!({"type": "roster", "room": f["room"], "rows": [
                 {"name": "claude-code", "kind": "external", "connected": true, "project": "", "label": ""}]}),
+            // A blob put: the id is the sha256 hex of what the parts held, as the store answers it,
+            // and only the part that says `last` names the blob.
+            "put_blob" => {
+                use sha2::{Digest, Sha256};
+                let mut h = Sha256::new();
+                h.update(f["data"].as_str().unwrap_or("").as_bytes());
+                let id: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+                if f["last"] == true {
+                    let attachment = json!({"id": id, "mime": f["mime"],
+                        "name": f["name"], "bytes": 4});
+                    blobs.lock().unwrap().insert(id, attachment.clone());
+                    json!({"type": "blob", "attachment": attachment})
+                } else {
+                    json!({"type": "blob", "attachment": null})
+                }
+            }
             "inbox" => {
                 let log = log.lock().unwrap();
                 let cur = *cursor.lock().unwrap();
@@ -266,6 +299,69 @@ fn the_tools_round_trip_against_a_coordinator() {
     );
     // One connection for all of it.
     assert_eq!(fake.frames("hello").len(), 1);
+}
+
+/// A picture the seat can read goes to the coordinator in a `put_blob` and is named in the words it
+/// was sent with: the id exists only once the room has hashed the bytes, so the reference is built
+/// after the upload. A path outside the seat's folder never reaches the room at all.
+#[test]
+fn room_say_uploads_a_picture_and_references_it() {
+    let fake = Fake::start("attach");
+    let link = RoomLink::at(&fake.path);
+    let dir = letibot_sessionlog::testing::scratch_root().join(format!(
+        "room-attach-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let seat = dir.join("seat");
+    std::fs::create_dir_all(seat.join("shots")).unwrap();
+    std::fs::write(seat.join("shots/shot.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+    let outside = dir.join("outside.png");
+    std::fs::write(&outside, b"x").unwrap();
+
+    let said = rooms::call_in(
+        &link,
+        "room_say",
+        &json!({"text": "look at this", "attachments": ["shots/shot.png"]}),
+        &seat,
+    )
+    .expect("the say");
+    let puts = fake.frames("put_blob");
+    assert_eq!(puts.len(), 1, "one file, one upload: {puts:?}");
+    assert_eq!(puts[0]["mime"], "image/png");
+    assert_eq!(puts[0]["name"], "shot.png");
+    assert_eq!(puts[0]["last"], true);
+    let id = said["message"]["attachments"][0]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the message names its picture: {said}"))
+        .to_string();
+    assert_eq!(
+        said["message"]["attachments"][0]["mime"].as_str(),
+        Some("image/png")
+    );
+    let text = said["message"]["text"].as_str().unwrap_or("");
+    assert!(text.contains("look at this"), "{text}");
+    assert!(text.contains(&format!("![shot.png](blob:{id})")), "{text}");
+
+    // And a file outside the folder the seat works in is refused before anything is uploaded.
+    let before = fake.frames("put_blob").len();
+    let why = rooms::call_in(
+        &link,
+        "room_say",
+        &json!({"text": "sneaky", "attachments": [outside.to_string_lossy()]}),
+        &seat,
+    )
+    .expect_err("a path outside the seat is refused");
+    assert!(why.contains("outside"), "{why}");
+    assert_eq!(
+        fake.frames("put_blob").len(),
+        before,
+        "nothing was uploaded"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

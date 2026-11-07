@@ -2,6 +2,7 @@
 //! The socket behind it is the daemon's ([`RoomLink`]), so a subagent is refused at the door.
 //! The daemon beats while a turn runs, and [`RoomLink::beats_on_my_behalf`] says which.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -152,6 +153,11 @@ impl Tool for RoomTool {
                     "session": {
                         "type": "string",
                         "description": "For `holding`: whose claims to read. Omit for your own. For `invite` and `leave`: the session, by id or name."
+                    },
+                    "attachments": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "For `say`: files to send with the words, as paths inside this session's workspace — a path outside it is refused. At most 4, each at most 8 MiB: a picture (`png`, `jpeg`, `gif`, `webp`) or a text file. Each is uploaded and referenced in the text as `![name](blob:ID)` unless the text already names it."
                     }
                 },
                 "required": ["verb"]
@@ -163,18 +169,112 @@ impl Tool for RoomTool {
         )
     }
 
-    fn invoke(&self, _ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
-        match dispatch(self.link.as_ref(), args) {
+    fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
+        let workspace = ctx.backend.workspace_path().map(PathBuf::from);
+        match dispatch(self.link.as_ref(), args, workspace.as_deref()) {
             Ok(said) => Invocation::ok(said),
             Err(failure) => failure,
         }
     }
 }
 
+/// The mime the room takes for a file, by its name: one table, because the daemon that reads the
+/// bytes and the bridge that uploads them both ask this question, and two answers would drift.
+/// These are the five of `letibot_room::blob::MIMES`; the room still refuses anything else.
+/// `None` is a kind the room does not take, so the caller refuses before uploading.
+pub fn mime_of(path: &str) -> Option<&'static str> {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "txt" | "text" | "log" => "text/plain",
+        _ => return None,
+    })
+}
+
+/// The words a message carries once its files are on the room: a body names a picture
+/// `![alt](blob:ID)`, so a file the sender did not name is referenced on its own line. A reference
+/// the text already carries is left alone - the sender's words are not rewritten twice.
+pub fn referenced(text: &str, files: &[(String, String)]) -> String {
+    let mut out = text.to_string();
+    for (id, name) in files {
+        if out.contains(&format!("blob:{id}")) {
+            continue;
+        }
+        out.push_str(&format!("\n![{name}](blob:{id})"));
+    }
+    out
+}
+
+/// The files a `say` names, resolved against the workspace this session works in. A path outside it
+/// is refused here: the daemon reads these bytes on the session's behalf, and it may read no further
+/// than the session itself may.
+fn attachments_of(args: &Value, workspace: Option<&Path>) -> Result<Vec<String>, String> {
+    let Some(v) = args.get("attachments").filter(|v| !v.is_null()) else {
+        return Ok(Vec::new());
+    };
+    let paths = v
+        .as_array()
+        .ok_or("`attachments` must be an array of file paths")?;
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(workspace) = workspace else {
+        return Err(
+            "this session has no workspace, so there is no directory an attachment may be read \
+             from — nothing was uploaded"
+                .to_string(),
+        );
+    };
+    let root = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    let mut out = Vec::new();
+    for p in paths {
+        let raw = p
+            .as_str()
+            .ok_or("`attachments` must be an array of file paths")?;
+        if raw.trim().is_empty() {
+            return Err("`attachments` holds an empty path — nothing was uploaded".to_string());
+        }
+        let full = root.join(raw);
+        // Canonicalised where the file is there, so a symlink out of the workspace is the path it
+        // really names; a path that does not exist fails the `is_file` below either way.
+        let full = full.canonicalize().unwrap_or(full);
+        if !full.starts_with(&root) {
+            return Err(format!(
+                "`{raw}` is outside this session's workspace `{}`, so it is not a file this \
+                 session may send — nothing was uploaded",
+                root.display()
+            ));
+        }
+        if !full.is_file() {
+            return Err(format!(
+                "`{raw}` is not a file this session can read — nothing was uploaded"
+            ));
+        }
+        if mime_of(raw).is_none() {
+            return Err(format!(
+                "`{raw}` is not a kind the room carries: a picture (`png`, `jpeg`, `gif`, `webp`) \
+                 or a text file — nothing was uploaded"
+            ));
+        }
+        out.push(full.to_string_lossy().into_owned());
+    }
+    Ok(out)
+}
+
 /// The tool's whole decision with no context, which is what the tests drive: the rule that a
 /// verb without its field never reaches the room cannot be asserted through an `InvokeCtx`.
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
-fn dispatch(link: &dyn RoomLink, args: &Value) -> Result<String, Invocation> {
+fn dispatch(
+    link: &dyn RoomLink,
+    args: &Value,
+    workspace: Option<&Path>,
+) -> Result<String, Invocation> {
     let verb = args
         .get("verb")
         .and_then(|v| v.as_str())
@@ -250,6 +350,32 @@ fn dispatch(link: &dyn RoomLink, args: &Value) -> Result<String, Invocation> {
             ),
         ));
     }
+    if verb != "say" && args.get("attachments").is_some_and(|v| !v.is_null()) {
+        return Err(Invocation::failed(
+            "`attachments` is a `say` thing",
+            format!(
+                "`{verb}` carries no files: only `say` takes `attachments`, and nothing was sent to \
+                 the room."
+            ),
+        ));
+    }
+    let files = match attachments_of(args, workspace) {
+        Ok(files) => files,
+        Err(why) => return Err(Invocation::failed(why.clone(), why)),
+    };
+    // The daemon reads the bytes, so it is given paths resolved against this workspace and nothing
+    // it has to guess a directory from.
+    let with;
+    let args = if files.is_empty() {
+        args
+    } else {
+        with = {
+            let mut a = args.clone();
+            a["attachments"] = json!(files);
+            a
+        };
+        &with
+    };
     link.call(&verb, args)
         .map_err(|why| Invocation::failed(why.clone(), why))
 }
@@ -297,7 +423,16 @@ mod tests {
     }
 
     fn invoke(link: Arc<dyn RoomLink>, args: Value) -> (bool, String) {
-        match dispatch(link.as_ref(), &args) {
+        invoke_in(link, args, None)
+    }
+
+    /// The same, with the workspace a session works in: an attachment is resolved against it.
+    fn invoke_in(
+        link: Arc<dyn RoomLink>,
+        args: Value,
+        workspace: Option<&std::path::Path>,
+    ) -> (bool, String) {
+        match dispatch(link.as_ref(), &args, workspace) {
             Ok(said) => (true, said),
             Err(failure) => (
                 false,
@@ -309,6 +444,61 @@ mod tests {
                 },
             ),
         }
+    }
+
+    /// A session sends a picture it can read, and no other file on the disk: the daemon reads these
+    /// bytes on the session's behalf, so the directory it may read from is the one it works in.
+    #[test]
+    fn an_attachment_outside_the_workspace_is_refused() {
+        let root =
+            std::env::temp_dir().join(format!("letibot-room-attach-tool-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let ws = root.join("ws");
+        std::fs::create_dir_all(ws.join("shots")).expect("a workspace");
+        let shot = ws.join("shots/shot.png");
+        std::fs::write(&shot, b"\x89PNG\r\n\x1a\n-ish").expect("a picture");
+        let outside = root.join("outside.png");
+        std::fs::write(&outside, b"x").expect("a file outside");
+
+        // A path inside the workspace is resolved and handed on as the absolute file it names.
+        let link = Recorder::new(Ok("said #1"));
+        let (ok, text) = invoke_in(
+            link.clone(),
+            json!({"verb": "say", "text": "look", "attachments": ["shots/shot.png"]}),
+            Some(&ws),
+        );
+        assert!(ok, "{text}");
+        let seen = link.seen.lock().unwrap();
+        let sent = seen[0].1["attachments"][0].as_str().unwrap_or("");
+        assert_eq!(
+            sent,
+            shot.to_string_lossy(),
+            "resolved against the workspace"
+        );
+        drop(seen);
+
+        for (named, want) in [
+            (outside.to_string_lossy().into_owned(), "outside"),
+            ("../outside.png".to_string(), "outside"),
+            ("/etc/passwd".to_string(), "outside"),
+        ] {
+            let link = Recorder::new(Err("never"));
+            let (ok, text) = invoke_in(
+                link.clone(),
+                json!({"verb": "say", "text": "look", "attachments": [named]}),
+                Some(&ws),
+            );
+            assert!(!ok, "{named} must be refused: {text}");
+            assert!(
+                text.contains(want) || text.contains("outside this session's workspace"),
+                "{named}: {text}"
+            );
+            assert!(
+                link.seen.lock().unwrap().is_empty(),
+                "nothing is uploaded: {text}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

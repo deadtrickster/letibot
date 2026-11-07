@@ -664,7 +664,31 @@ impl SessionRoom {
     /// `claim` acknowledges itself - silence reads as absence, and a model at work will not think
     /// about the queue's bookkeeping. It is `said` and not `waits_on`, which silences the reminder.
     pub fn call(&self, verb: &str, args: &serde_json::Value) -> Result<String, String> {
-        let request = request_of(verb, args)?;
+        let files = self.upload(verb, args)?;
+        let mut request = request_of(verb, args)?;
+        if !files.is_empty() {
+            let said = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            let text = letibot_tools::builtins::room::referenced(said.trim(), &files);
+            if text.len() > letibot_room::MAX_TEXT {
+                return Err(format!(
+                    "the words and the {} file reference(s) come to {} bytes, and the room takes at \
+                     most {} — say less, or send the file in a message of its own",
+                    files.len(),
+                    text.len(),
+                    letibot_room::MAX_TEXT
+                ));
+            }
+            let Request::Say {
+                text: words,
+                attachments,
+                ..
+            } = &mut request
+            else {
+                return Err(format!("`{verb}` carries no files"));
+            };
+            *attachments = files.iter().map(|(id, _)| id.clone()).collect();
+            *words = text;
+        }
         let acknowledges = matches!(verb, "claim" | "claim_item");
         let response = self
             .client
@@ -686,6 +710,107 @@ impl SessionRoom {
                  you are doing with it"
             ),
         })
+    }
+
+    /// The files a session's `say` carries, uploaded before the message that names them. The tool
+    /// resolved these paths against the session's workspace, so an absolute path is all this half
+    /// may ask for: the daemon reads no directory of its own choosing.
+    fn upload(
+        &self,
+        verb: &str,
+        args: &serde_json::Value,
+    ) -> Result<Vec<(String, String)>, String> {
+        let Some(list) = args.get("attachments").filter(|v| !v.is_null()) else {
+            return Ok(Vec::new());
+        };
+        let paths = list
+            .as_array()
+            .ok_or("`attachments` must be an array of file paths")?;
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        if verb != "say" {
+            return Err(format!(
+                "`{verb}` carries no files: only `say` takes `attachments`, and nothing was sent"
+            ));
+        }
+        let mut out = Vec::new();
+        for p in paths {
+            let path = p
+                .as_str()
+                .ok_or("`attachments` must be an array of file paths")?;
+            out.push(self.put_blob(path)?);
+        }
+        Ok(out)
+    }
+
+    /// One file, in the room's 512 KiB parts, answered by the id its bytes hash to.
+    fn put_blob(&self, path: &str) -> Result<(String, String), String> {
+        let file = std::path::Path::new(path);
+        if !file.is_absolute() {
+            return Err(format!(
+                "`{path}` is not an absolute path: an attachment reaches the daemon resolved \
+                 against the session's workspace, and this one did not"
+            ));
+        }
+        let name = file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("attachment")
+            .to_string();
+        let Some(mime) = letibot_tools::builtins::room::mime_of(&name) else {
+            return Err(format!(
+                "`{name}` is not a kind the room carries: a picture (`png`, `jpeg`, `gif`, `webp`) \
+                 or a text file — nothing was sent"
+            ));
+        };
+        let bytes = std::fs::read(file).map_err(|e| format!("`{path}` could not be read: {e}"))?;
+        if bytes.len() > letibot_room::blob::MAX_BLOB {
+            return Err(format!(
+                "`{name}` is {} byte(s), and the room takes at most {} per file — nothing was sent",
+                bytes.len(),
+                letibot_room::blob::MAX_BLOB
+            ));
+        }
+        let mut parts: Vec<&[u8]> = bytes.chunks(letibot_room::blob::MAX_PART).collect();
+        if parts.is_empty() {
+            parts.push(&[]);
+        }
+        let upload = request_id("blob");
+        let last = parts.len() - 1;
+        let mut id = None;
+        for (i, chunk) in parts.iter().enumerate() {
+            let request = Request::PutBlob {
+                upload: upload.clone(),
+                name: name.clone(),
+                mime: mime.to_string(),
+                part: i as u32,
+                last: i == last,
+                data: letibot_room::blob::encode_base64(chunk),
+            };
+            let answer = self.client.request(&request).map_err(|e| {
+                format!("the room at {} did not answer: {e}", self.socket.display())
+            })?;
+            match answer {
+                Response::Blob { attachment } => {
+                    if let Some(a) = attachment {
+                        id = Some(a.id);
+                    }
+                }
+                Response::Refused { why, .. } => {
+                    return Err(format!("the room refused `{name}`: {why}"));
+                }
+                other => {
+                    return Err(format!(
+                        "the room answered `{name}` with a frame that is not a blob: {other:?}"
+                    ));
+                }
+            }
+        }
+        let id = id.ok_or_else(|| {
+            format!("the room took `{name}` and named no blob: nothing was sent with it")
+        })?;
+        Ok((id, name))
     }
 
     /// "Seen, doing X", on the room - the sentence [`SessionRoom::call`] adds to a claim.
@@ -966,7 +1091,8 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
                 to: Some(s("to")).filter(|x| !x.is_empty()),
                 thread: n("thread"),
                 refs,
-                // P1 gives the session tool an `attachments: [path]` and uploads the files.
+                // Filled by `SessionRoom::call` once the files are uploaded: the ids exist only
+                // after the room has hashed the bytes.
                 attachments: Vec::new(),
             }
         }
@@ -1284,6 +1410,31 @@ mod tests {
     impl Drop for Scratch {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The tool's attachment table and the room's allowlist are one list: a name this daemon would
+    /// upload is a mime the coordinator takes, and a kind it refuses is one nothing uploads.
+    #[test]
+    fn the_attachment_table_is_the_rooms_allowlist() {
+        for name in [
+            "a.png",
+            "b.jpg",
+            "c.jpeg",
+            "d.gif",
+            "e.webp",
+            "f.txt",
+            "/x/y/shot.png",
+        ] {
+            let mime = letibot_tools::builtins::room::mime_of(name)
+                .unwrap_or_else(|| panic!("{name} is a kind the daemon must carry"));
+            assert!(
+                letibot_room::blob::MIMES.contains(&mime),
+                "{name} maps to {mime}, which the room refuses"
+            );
+        }
+        for name in ["a.pdf", "b.png.exe", "no-extension"] {
+            assert_eq!(letibot_tools::builtins::room::mime_of(name), None, "{name}");
         }
     }
 
@@ -2242,6 +2393,75 @@ mod tests {
         );
 
         drop(me);
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session's picture, end to end: the file is read here, uploaded in the room's parts, and the
+    /// message that follows names it - so a model that says "look at this" hands over the bytes.
+    #[test]
+    fn a_say_with_an_attachment_uploads_it_and_references_it() {
+        let id = "s-a-attach";
+        let dir =
+            std::env::temp_dir().join(format!("letibot-room-attach-link-{}", std::process::id()));
+        // A killed run leaves a socket file behind, and binding it again is a refusal rather than a
+        // fresh room: the fixture starts from nothing.
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("shots")).unwrap();
+        let shot = dir.join("shots/shot.png");
+        std::fs::write(&shot, b"\x89PNG\r\n\x1a\n").unwrap();
+        let path = dir.join("room.sock");
+        let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
+            .expect("a room to talk to");
+        let bell: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|_: &str| {});
+        let link = SessionRoom::connect(id, &path, letibot_room::DEFAULT_PROJECT, None, bell, None)
+            .expect("a session link");
+
+        let said = link
+            .call(
+                "say",
+                &serde_json::json!({"room": "host", "text": "look at this",
+                    "attachments": [shot.to_string_lossy()]}),
+            )
+            .expect("the say");
+        assert!(said.starts_with("said:"), "{said}");
+        let read = link
+            .client
+            .request(&Request::Read {
+                room: "host".into(),
+                since: 0,
+                last: Some(5),
+                thread: None,
+                before: None,
+            })
+            .expect("a read of what was said");
+        let Response::History(history) = read else {
+            panic!("the room answered a frame that is not a history: {read:?}")
+        };
+        let message = history.rows.last().expect("the message that was said");
+        assert_eq!(message.attachments.len(), 1, "{message:?}");
+        let picture = &message.attachments[0];
+        assert_eq!(picture.name, "shot.png");
+        assert_eq!(picture.mime, "image/png");
+        assert_eq!(picture.bytes, 8);
+        assert!(
+            message
+                .text
+                .contains(&format!("![shot.png](blob:{})", picture.id)),
+            "the words reference the picture: {:?}",
+            message.text
+        );
+
+        // A path the tool did not resolve is refused by the daemon too: the daemon reads no
+        // directory of its own choosing.
+        let why = link
+            .call(
+                "say",
+                &serde_json::json!({"room": "host", "text": "sneaky",
+                    "attachments": ["shots/shot.png"]}),
+            )
+            .expect_err("a relative path is refused");
+        assert!(why.contains("absolute"), "{why}");
         server.stop();
         let _ = std::fs::remove_dir_all(&dir);
     }
