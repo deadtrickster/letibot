@@ -8,9 +8,10 @@
 //! subagent, and a nick list of every subagent would bury the channels a person is actually in.
 
 use letibot_guest_abi as abi;
-use letibot_plugin::pane::{Act, Cell, Input, Role};
+use letibot_plugin::pane::{Act, Cell, Event, Role, Size};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// **The narrowest column worth drawing** - at this width a row is a mark, a name of twelve and a
 /// three-letter fact, which is the least that still answers *who* and *is it stuck*.
@@ -90,8 +91,10 @@ impl State {
     /// and last call's order when it has not. `wanted` arrives already sorted, so this is the one
     /// place stability is decided - a row that moves under the cursor is a row to find again.
     fn roster(&mut self, wanted: Vec<String>) -> Vec<String> {
-        let same =
-            self.order.len() == wanted.len() && wanted.iter().all(|id| self.order.contains(id));
+        // A set, not `contains` on a vec: the list is every session the daemon holds, and a
+        // quadratic scan burns the hook's fuel budget at a couple of thousand rows.
+        let have: BTreeSet<&String> = self.order.iter().collect();
+        let same = self.order.len() == wanted.len() && wanted.iter().all(|id| have.contains(id));
         if !same {
             self.order = wanted;
         }
@@ -168,23 +171,66 @@ struct Session {
     repo: String,
 }
 
+/// The slice of the input envelope this layer reads, with the `sessions` feed parsed straight
+/// into [`Feed`]: a `Value` tree of every session first costs more fuel than the list itself.
+#[derive(Deserialize)]
+struct Env {
+    #[serde(default)]
+    state: Option<Value>,
+    #[serde(default)]
+    event: Option<Event>,
+    #[serde(default)]
+    size: Size,
+    #[serde(default)]
+    feeds: Feeds,
+}
+
+#[derive(Default, Deserialize)]
+struct Feeds {
+    #[serde(default)]
+    sessions: Option<Feed>,
+}
+
+/// The same envelope read loosely, for a feed whose shape the typed read refused: whatever the
+/// host sent that this layer does not understand is defaulted, never a trap.
+#[derive(Deserialize)]
+struct LooseEnv {
+    #[serde(default)]
+    state: Option<Value>,
+    #[serde(default)]
+    event: Option<Event>,
+    #[serde(default)]
+    size: Size,
+    #[serde(default)]
+    feeds: BTreeMap<String, Value>,
+}
+
 /// The pane's answer for one call: the state to keep and the view to draw.
 fn answer(bytes: &[u8]) -> Option<String> {
-    let input: Input = serde_json::from_slice(bytes).ok()?;
-    let mut st = match input.state.clone() {
+    let (state, event, size, feed) = match serde_json::from_slice::<Env>(bytes) {
+        Ok(e) => (e.state, e.event, e.size, e.feeds.sessions),
+        Err(_) => {
+            let mut e: LooseEnv = serde_json::from_slice(bytes).ok()?;
+            let feed = e
+                .feeds
+                .remove("sessions")
+                .map(|v| serde_json::from_value(v).unwrap_or_default());
+            (e.state, e.event, e.size, feed)
+        }
+    };
+    let mut st = match state {
         Some(value) => serde_json::from_value::<State>(value).unwrap_or_default(),
         None => State::default(),
     };
-    let rect = input.size.w as usize;
-    if let Some(event) = &input.event {
+    let rect = size.w as usize;
+    if let Some(event) = &event {
         st.apply(&event.action, rect);
     }
     // **A feed the host did not hand is a screen that says so.** The layer passed would draw
     // nothing at all, and a pane that vanishes is a pane somebody thinks they closed.
-    let Some(value) = input.feeds.get("sessions") else {
+    let Some(feed) = feed else {
         return serde_json::to_string(&no_feed()).ok();
     };
-    let feed: Feed = serde_json::from_value(value.clone()).unwrap_or_default();
     let view = if st.hidden {
         strip(&feed, &st, rect)
     } else {
@@ -296,9 +342,13 @@ fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
         .collect();
     let mut wanted: Vec<String> = inside.iter().map(|s| s.id.clone()).collect();
     wanted.extend(outside.iter().map(|s| s.id.clone()));
-    wanted.sort_by_key(|id| key_of(id, feed, &feed.here));
+    let by_id = index(feed);
+    wanted.sort_by_cached_key(|id| key_of(id, &by_id, &feed.here));
     let order = st.roster(wanted);
 
+    let inside_ids: BTreeMap<&str, &Session> = inside.iter().map(|s| (s.id.as_str(), *s)).collect();
+    let outside_ids: BTreeMap<&str, &Session> =
+        outside.iter().map(|s| (s.id.as_str(), *s)).collect();
     let shown = inside.len();
     let total = top.len();
     let working = inside.iter().filter(|s| s.running).count();
@@ -308,10 +358,24 @@ fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
     rows.push(json!({"cells": [
         Cell::role(header(scope, here, &Counts { shown, total, working }, width), Role::Strong),
     ]}));
+    // Only the first DRAWN rows are built: the order puts you, attached and working sessions
+    // first, and a row per session the daemon ever held would burn the hook's fuel for a screen
+    // nobody scrolls.
+    let mut budget = DRAWN;
     for id in &order {
-        if let Some(s) = inside.iter().find(|s| &s.id == id) {
-            rows.push(session_row(s, width, &feed.here, feed.now, &feed.home));
+        if budget == 0 {
+            break;
         }
+        if let Some(s) = inside_ids.get(id.as_str()) {
+            rows.push(session_row(s, width, &feed.here, feed.now, &feed.home));
+            budget -= 1;
+        }
+    }
+    if inside.len() > DRAWN {
+        rows.push(json!({"cells": [Cell::role(
+            fit(&format!("· {} more not drawn · `s` narrows", inside.len() - DRAWN), width),
+            Role::Faint,
+        )]}));
     }
     if inside.is_empty() && outside.is_empty() {
         // A list with nothing in it is still a row, not an `empty` sentence: the sentence leaves
@@ -341,7 +405,7 @@ fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
         };
         rows.push(json!({"cells": [Cell::role(said, Role::Faint)]}));
         for id in &order {
-            if let Some(s) = outside.iter().find(|s| &s.id == id) {
+            if let Some(s) = outside_ids.get(id.as_str()) {
                 rows.push(session_row(s, width, &feed.here, feed.now, &feed.home));
             }
         }
@@ -362,6 +426,9 @@ fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
         "state": serde_json::to_value(&*st).unwrap_or(Value::Null),
     })
 }
+
+/// How many session rows one call builds.
+const DRAWN: usize = 150;
 
 /// The empty scope's row id - a stop, so the keys stay reachable when there is nothing to switch to.
 const EMPTY: &str = "·empty";
@@ -519,8 +586,12 @@ fn here_of(feed: &Feed) -> Option<&Session> {
 /// **The order the roster is computed by**, when it is computed at all: you, then a head attached,
 /// then working, then idle by recency, then only-on-disk. Ties by id, so one roster always sorts
 /// the same way.
-fn key_of(id: &str, feed: &Feed, here: &str) -> (u8, std::cmp::Reverse<u64>, String) {
-    let Some(s) = feed.sessions.iter().find(|s| s.id == id) else {
+fn key_of(
+    id: &str,
+    by_id: &BTreeMap<&str, &Session>,
+    here: &str,
+) -> (u8, std::cmp::Reverse<u64>, String) {
+    let Some(s) = by_id.get(id) else {
         return (5, std::cmp::Reverse(0), id.to_string());
     };
     let rank = if id == here {
@@ -535,6 +606,11 @@ fn key_of(id: &str, feed: &Feed, here: &str) -> (u8, std::cmp::Reverse<u64>, Str
         4
     };
     (rank, std::cmp::Reverse(s.moved_ms), id.to_string())
+}
+
+/// Sessions by id, built once per call: a lookup per row against the vec is quadratic.
+fn index(feed: &Feed) -> BTreeMap<&str, &Session> {
+    feed.sessions.iter().map(|s| (s.id.as_str(), s)).collect()
 }
 
 /// The mark and the role it is drawn in - one column, the most significant fact first.

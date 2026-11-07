@@ -724,3 +724,27 @@ fn the_divider_keeps_the_count_when_the_words_do_not_fit() {
         rows(&narrow).iter().map(|r| cell(r, 0)).collect::<Vec<_>>()
     );
 }
+
+/// A list longer than the drawn cap builds only the cap, says how many it left out, and still
+/// counts all of them.
+#[test]
+fn a_very_long_list_draws_the_cap_and_says_the_rest() {
+    let sessions: Vec<Value> = (0..DRAWN + 40)
+        .map(|i| s(&format!("s-{i:05}-aaaaaaaa"), &format!("n{i}")))
+        .collect();
+    let view = call(
+        &feed_of(sessions, "s-00001-aaaaaaaa"),
+        &json!({"scope": "every"}),
+        120,
+    );
+    let text = view.to_string();
+    assert!(text.contains("40 more not drawn"), "{text}");
+    assert_eq!(
+        view["badge"]["text"],
+        format!("{} here · 0 working", DRAWN + 40)
+    );
+    assert_eq!(
+        rows(&view).iter().filter(|r| r.get("id").is_some()).count(),
+        DRAWN
+    );
+}

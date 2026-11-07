@@ -12,6 +12,29 @@
 /// to say which one it draws (`letibot_plugins::MOVED`, the manifest's `[contracts]`).
 pub const V: u32 = 3;
 
+/// The most session rows a host puts in the `sessions` feed. A guest pays about 130k fuel a row
+/// against a 50M hook budget, so a store of thousands of sessions would trap every pane that
+/// reads the feed.
+pub const SESSION_FEED_ROWS: usize = 250;
+
+/// Cut `rows` to [`SESSION_FEED_ROWS`], keeping the ones a person is in, then the ones that moved
+/// last. `key` is `(wanted regardless, last moved ms)`; the order of what is kept is unchanged.
+pub fn cap_session_rows<T>(rows: Vec<T>, key: impl Fn(&T) -> (bool, u64)) -> Vec<T> {
+    if rows.len() <= SESSION_FEED_ROWS {
+        return rows;
+    }
+    let mut order: Vec<usize> = (0..rows.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(key(&rows[i])));
+    let mut keep = vec![false; rows.len()];
+    for &i in order.iter().take(SESSION_FEED_ROWS) {
+        keep[i] = true;
+    }
+    rows.into_iter()
+        .zip(keep)
+        .filter_map(|(row, kept)| kept.then_some(row))
+        .collect()
+}
+
 /// The export name a pane answers under: `pane_<name>`.
 pub fn hook(name: &str) -> String {
     format!("pane_{name}")
@@ -557,6 +580,23 @@ fn is_zero_u64(n: &u64) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The cap keeps what a person is in first, then the newest, in the original order.
+    #[test]
+    fn the_session_cap_keeps_the_wanted_and_the_newest_in_order() {
+        let rows: Vec<(u32, bool, u64)> = (0..(SESSION_FEED_ROWS as u32 + 50))
+            .map(|i| (i, i == 0, u64::from(i)))
+            .collect();
+        let kept = cap_session_rows(rows, |r| (r.1, r.2));
+        assert_eq!(kept.len(), SESSION_FEED_ROWS);
+        assert_eq!(kept[0].0, 0, "the wanted row survives though it is oldest");
+        assert!(kept.windows(2).all(|w| w[0].0 < w[1].0), "order unchanged");
+        assert_eq!(
+            kept.last().map(|r| r.0),
+            Some(SESSION_FEED_ROWS as u32 + 49)
+        );
+        assert!(cap_session_rows(vec![1, 2], |_| (false, 0)).len() == 2);
+    }
 
     #[test]
     fn a_feed_is_the_word_its_manifest_spells() {
