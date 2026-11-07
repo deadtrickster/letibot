@@ -1186,6 +1186,48 @@ fn todo_list() -> Vec<Value> {
                 "required": ["content", "question", "reply"]
             }),
         ),
+        tool(
+            "seat_job_start",
+            "Run a command as a job of YOURS - the seat's own, not a package's - and answer the \
+             handle. A seat is not a session, so nothing else here can background a command for \
+             it: this is the local gate, the long build, the thing a row waits on while the \
+             package turn it was waiting for is over. `argv` is run verbatim (no shell), its \
+             output goes to a file under this bridge's rundir, and the row's `todo_write \
+             {wait_on: [{content, job: \"<handle>\"}]}` is quiet until it ends. Its ending arrives \
+             as a <channel> event `job_ended`, the same frame a package's jobs use.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "argv": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "The command and its arguments, each already a word: `[\"scripts/correctness_gate.sh\", \"--ratchet\", \"0\"]`. No shell, so a pipe or a `&&` is a word the program gets, not something this runs."
+                    },
+                    "cwd": {"type": "string", "description": "Where to run it. Omitted: the bridge's own working directory."},
+                    "name": {"type": "string", "description": "A short name for the listing, so `seat_jobs` reads as work rather than as handles."}
+                },
+                "required": ["argv"]
+            }),
+        ),
+        tool(
+            "seat_jobs",
+            "Every job this seat has started, oldest first, with the state each ended in - `running` \
+             only while its process is really there. The `log` is the file its output went to, and \
+             `pid`/`start` are what `wait_on {pid}` names.",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool(
+            "seat_job_kill",
+            "End one of this seat's own jobs: SIGKILL to that exact process. Its ending - the row's \
+             release and the `job_ended` event - follows on the seat's next pass.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "job": {"type": "string", "description": "The handle `seat_job_start` answered, `j…`."}
+                },
+                "required": ["job"]
+            }),
+        ),
     ]
 }
 
@@ -1202,8 +1244,15 @@ pub fn names() -> Vec<&'static str> {
     all
 }
 
-/// The seat's own three verbs, registered here and served by `crate::seat`.
-pub const TODO_TOOLS: [&str; 3] = ["todo_write", "todos", "todo_answer"];
+/// The seat's own verbs, registered here and served by `crate::seat` and `crate::seat_jobs`.
+pub const TODO_TOOLS: [&str; 6] = [
+    "todo_write",
+    "todos",
+    "todo_answer",
+    "seat_job_start",
+    "seat_jobs",
+    "seat_job_kill",
+];
 
 fn leticode_names() -> Vec<&'static str> {
     vec![
@@ -1341,6 +1390,26 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
         "todo_write" => bridge.seat()?.write(args),
         "todos" => Ok(bridge.seat()?.board_json()),
         "todo_answer" => bridge.seat()?.answer(args),
+        "seat_job_start" => {
+            let Some(argv) = args.get("argv").and_then(|a| a.as_array()) else {
+                return Err(
+                    "`argv` is required: the command and its arguments, as a list of \
+                            words"
+                        .into(),
+                );
+            };
+            let cwd = arg_opt_str(args, "cwd")?;
+            let name = arg_opt_str(args, "name")?;
+            bridge
+                .seat()?
+                .jobs()
+                .start(argv, cwd.as_deref(), name.as_deref())
+        }
+        "seat_jobs" => Ok(json!({ "jobs": bridge.seat()?.jobs().listing() })),
+        "seat_job_kill" => {
+            let job = arg_str(args, "job")?;
+            bridge.seat()?.jobs().kill(&job)
+        }
         room if crate::rooms::TOOLS.contains(&room) => {
             crate::rooms::call(bridge.rooms(), room, args)
         }
@@ -1513,14 +1582,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo);
     }
 
-    /// Twenty-nine tools (fourteen leticode, twelve room, three todo), each with a schema and a
-    /// required list - the count and the names the design's table fixes. A tool added to `tools/list` and forgotten in `call` (or the other
-    /// way round) is the defect this pairs against.
+    /// Thirty-two tools (fourteen leticode, twelve room, six todo and seat jobs), each with a
+    /// schema and a required list - the count and the names the design's table fixes. A tool added
+    /// to `tools/list` and forgotten in `call` (or the other way round) is the defect this pairs
+    /// against.
     #[test]
-    fn the_twenty_nine_tools_are_listed_with_schemas() {
+    fn the_thirty_two_tools_are_listed_with_schemas() {
         let listed = list();
         let tools = listed["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 29, "{listed}");
+        assert_eq!(tools.len(), 32, "{listed}");
         let mut named: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         named.sort_unstable();
         let mut want = names();

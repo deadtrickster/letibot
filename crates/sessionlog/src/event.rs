@@ -215,6 +215,14 @@ pub enum TodoNeed {
     /// [`TodoNeed::Child`]'s sibling one layer down: an EDGE, where a `when` of the same handle is
     /// the operator's clock.
     Job { handle: String },
+    /// A process on this host, by pid and the start time `/proc/<pid>/stat` gave it - the half that
+    /// survives reuse. A head draws it as `waits on pid <n>`.
+    Pid {
+        #[serde(default)]
+        pid: u32,
+        #[serde(default)]
+        start: u64,
+    },
     /// A monitor, by the name it was armed under.
     Monitor { name: String },
     /// A room item the holder has on its board. The number is the room's item id - the one `room`'s
@@ -226,6 +234,13 @@ pub enum TodoNeed {
     Operator {
         question: String,
         options: Vec<String>,
+    },
+    /// Something outside this machine's bookkeeping, in the row's own words: a review on a forge, a
+    /// deploy, a person's other tool. A head draws it as `waits on <what>`, and only the row moving
+    /// ends it.
+    External {
+        #[serde(default)]
+        what: String,
     },
     /// An operator edge the operator has answered - met, and kept as the reply so the row still
     /// records what it waited for. `ask` is the room's id when the reply came from a peer session.

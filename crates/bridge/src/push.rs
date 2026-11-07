@@ -329,6 +329,37 @@ pub fn job_event(who: &str, session: &str, e: &Entry) -> (String, Value) {
     )
 }
 
+/// A SEAT's own job ending (`seat_job_start`): the same frame a held session's job change uses,
+/// with `source: seat` so one client reads one kind of event and `meta.event` says which. Keyed by
+/// the job and its state, so one settlement is one message.
+pub fn seat_job_event(seat: &str, job: &letibot_tokencore::store::SeatJob) -> (String, Value) {
+    let state = if job.state.is_empty() {
+        "settled".to_string()
+    } else {
+        job.state.clone()
+    };
+    let ran = match job.elapsed_ms {
+        0 => String::new(),
+        ms => format!(" after {}", span(ms)),
+    };
+    let key = format!("seat-job-end:{}:{state}", job.handle);
+    let meta = json!({
+        "source": "seat",
+        "event": "job_ended",
+        "seat": seat,
+        "job": job.handle,
+        "state": state,
+        "log": job.log,
+    });
+    (
+        key,
+        notification(
+            format!("your job `{}` ended: {state}{ran}", job.handle),
+            meta,
+        ),
+    )
+}
+
 /// `40m 12s`, `9s`, `4h 3m`: how long a job ran, in the two units a reader cares about.
 fn span(ms: u64) -> String {
     let secs = ms / 1000;

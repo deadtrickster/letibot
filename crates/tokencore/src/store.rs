@@ -42,6 +42,7 @@ mod told;
 pub use leases::{Ask, FIRST_PORT, LEASES_SQL, Lease};
 pub use procs::{Check, PROCS_SQL, ProcState, ProcessRecord};
 pub use prompts::{PROMPTS_SQL, QueuedPrompt};
+pub use seat::SeatJob;
 pub use told::Told;
 
 /// Why `session.role` is nullable: a role belongs to the SESSION and not to the process, and
@@ -193,7 +194,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 42;
+pub const SCHEMA_VERSION: i64 = 43;
 
 /// What this row's columns mean. Stamped on every corpus row, because a column can keep its
 /// name and its type while changing what it records, and a trainer that pools two meanings
@@ -1022,6 +1023,15 @@ pub enum TodoNeed {
     /// that job ends, and while it runs the check is silent. The distinction from a `when` is
     /// the whole of why this exists: the two read one handle and mean opposite things.
     Job { handle: String },
+    /// A PROCESS on this host, by pid AND the start time `/proc/<pid>/stat` gave it: a row that
+    /// waits on a command started outside the job bookkeeping - a gate somebody ran by hand. The
+    /// start time is what makes it exact: a number alone would be a different process after reuse.
+    Pid {
+        #[serde(default)]
+        pid: u32,
+        #[serde(default)]
+        start: u64,
+    },
     /// A MONITOR, by the name it was armed under: the row cannot start until it ends, fires,
     /// expires or is retired. While it watches the check is silent, because its firing wakes the
     /// session by itself. A name that is not watching is a monitor that ended.
@@ -1036,6 +1046,13 @@ pub enum TodoNeed {
     Operator {
         question: String,
         options: Vec<String>,
+    },
+    /// Something OUTSIDE this machine's bookkeeping - a review on a forge, a deploy, a person's
+    /// other tool - which no snapshot here can watch. `what` is the row's own words for it, and the
+    /// check stays quiet on the row until it moves: nothing local could ever say this wait ended.
+    External {
+        #[serde(default)]
+        what: String,
     },
     /// An [`TodoNeed::Operator`] edge the operator has ANSWERED: met, always, and kept on the row
     /// as the reply, so a submitted row becomes unblocked with its answer attached. `ask` is the
@@ -1523,6 +1540,7 @@ impl Store {
         self.conn().execute_batch(told::TOLD_SQL)?;
         self.conn().execute_batch(marks::MARKS_SQL)?;
         self.conn().execute_batch(seat::SEAT_TODO_SQL)?;
+        self.conn().execute_batch(seat::SEAT_JOB_SQL)?;
         self.conn().execute_batch(citations::CITATIONS_SQL)?;
         self.conn().execute_batch(writers::WRITERS_SQL)?;
         self.conn().execute_batch(procs::PROCS_SQL)?;
@@ -2141,6 +2159,11 @@ impl Store {
                     );
                 }
             }
+        }
+        if from < 43 {
+            // v43: a seat's own background jobs - `job` keyed by the seat's handle, for v41's
+            // reason one table over, with the pid's start time beside it.
+            self.conn().execute_batch(seat::SEAT_JOB_SQL)?;
         }
         Ok(())
     }

@@ -133,7 +133,9 @@ pub fn read_only_tools(
 
 /// Add the session tool (`todo_write`) to a registry. It is not in [`read_only_tools`] because its board
 /// is the session's own, yet the read-only roles name it, so every registry they resolve against must
-/// hold it.
+/// hold it. Eight arguments and not a struct: each is a different seam the owning runtime knows
+/// about, and a bag of them would be the same eight fields one more name away.
+#[allow(clippy::too_many_arguments)]
 pub fn with_session_tools(
     mut reg: Registry,
     board: std::sync::Arc<builtins::todo::TodoBoard>,

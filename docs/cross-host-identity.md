@@ -93,7 +93,7 @@ migration already (host to host is relayed through it, `docs/remote-hosts.md:608
    with the session at either end and marks them `moving`. A moving ask is open, is not escalated,
    and its `gone_since` is not counted. Reason: a migration is not a fault the operator owes.
 2. **Journal.** The hub writes `migration(session, from, to, phase, asks_json, ms)` to its store, a
-   new table (schema 42, `Additive`). A re-run of `--migrate` reads it and resumes at the phase.
+   new table (the next schema version, `Additive`). A re-run of `--migrate` reads it and resumes at the phase.
 3. **Store rows.** Export, carry, import, unchanged. Edges keep their `AskRef`s.
 4. **Re-home.** Each handed-off ask goes where its ends now are: both on one host, that host's room;
    otherwise the hub. The hub sends `Adopt { asks }` with their `AskRef`s kept. The source drops them

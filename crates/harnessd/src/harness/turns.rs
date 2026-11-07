@@ -3369,6 +3369,11 @@ impl Harness {
                     letibot_tokencore::store::TodoNeed::Job { handle } => {
                         letibot_sessionlog::event::TodoNeed::Job { handle }
                     }
+                    // A pid crosses with its start time, the pair that makes it exact: a head that
+                    // dropped the second half would draw another process after a reuse.
+                    letibot_tokencore::store::TodoNeed::Pid { pid, start } => {
+                        letibot_sessionlog::event::TodoNeed::Pid { pid, start }
+                    }
                     letibot_tokencore::store::TodoNeed::Monitor { name } => {
                         letibot_sessionlog::event::TodoNeed::Monitor { name }
                     }
@@ -3408,6 +3413,11 @@ impl Harness {
                     },
                     letibot_tokencore::store::TodoNeed::Owed { ask } => {
                         letibot_sessionlog::event::TodoNeed::Owed { ask }
+                    }
+                    // Something outside the machine, in the row's own words: the head draws it as
+                    // `waits on <what>` and holds no table behind it.
+                    letibot_tokencore::store::TodoNeed::External { what } => {
+                        letibot_sessionlog::event::TodoNeed::External { what }
                     }
                     letibot_tokencore::store::TodoNeed::Unknown => {
                         letibot_sessionlog::event::TodoNeed::Unknown

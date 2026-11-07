@@ -29,4 +29,5 @@ pub mod report;
 pub mod rooms;
 pub mod rows;
 pub mod seat;
+pub mod seat_jobs;
 pub mod tools;

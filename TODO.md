@@ -65,7 +65,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
 | R153 | Placing a session on a busy host times out at 20 s | Needs the operator | the live proof on a loaded lab2x1: a placement there while the host is building, and a session's `job_wait` against it; the minute-long arranging budget, the one connection per host and the round a timed-out status query is not are landed |
 | R155 | A remote placement's memory cap is checked against the daemon's box, not the host the command runs on | Landed | built: the backend's `machine_memory`, a placement's `/proc/meminfo` over its own ssh link cached 30 s, an unknown host asks and every card and refusal names it; local sessions unchanged |
-| R156 | A Claude Code seat's nag repeats on every package job and offers the packages' jobs as its own waits | Code work | all of it |
+| R156 | A Claude Code seat's nag repeats on every package job and offers the packages' jobs as its own waits | Done | the seat's clock is keyed by its plan, a package's job is named as the package's and offered as that package's turn, and an outside wait is the kind `external` (both `TodoNeed` copies, `needs` and `wait_on`) |
 | R157 | Built-in panes `b-sessions`/`pane_sessions` and `b-irc`/`pane_nicks` trap with symbol-less backtraces | Code work | nothing: fixed (fuel exhaustion), with the measured limit in the section |
 | R154 | The channel push says turns, not work: idle-with-open-work and a held job's exit are silent, and a lost turn end is never replayed | Code work | all of it |
 | R159 | `←`/`→` in the `/sessions` tree collapse the wrong row, and `←` throws the cursor to another project | Code work | all of it |
@@ -1025,9 +1025,50 @@ Fixed in `letibot-tools`. The seam is `ExecBackend::machine_memory`, whose defau
 
 ## R156 - A Claude Code seat's nag repeats on every package job and offers the packages' jobs as its own
 
-**Status:** open. left: all of it.
+**Status:** done. left: nothing.
 
 Seen the first evening the seat board ran (R144): with one row in progress and two packages building, the seat got about twenty `[todo check]` pushes in fifteen minutes. The check's sentence carries "Also running: `jNNNN`", so every job a held package starts or ends is a new sentence and the once-per-change rule fires again. And it suggests `wait_on` a package's job (`j83509`) as if it were the seat's: a seat's own waits are its packages' turns and the operator; a package's jobs are that package's. The seat's own background work (a local gate) has no `wait_on` kind at all. Wanted: the change key is the plan, not the job list; package jobs are named as the package's; and a seat can say a row waits on something outside letibot (a free-text `external` wait that the nag stays quiet on until the row moves).
+
+Three pieces, all in `crates/tools/src/builtins/todo` and `crates/bridge/src/seat.rs`:
+
+- **The key is the plan.** `the_plan_as_a_key` is every row's words, status and waits, and
+  `TodoNagClock::keyed_by_plan` + `said_plan` make a seat's delivery remembered by that key.
+  `Seat::new` and `Seat::with_window` both set it, and the watcher's per-pass decision moved into
+  `a_pass`. Sessions keep the sentence as their key, which is right for them: their jobs are their
+  own work, and a notice that gains one is a notice they have not read.
+- **A package's job is the package's.** `RunningJobs::of_package`/`owner` carry the fact, the seat's
+  snapshot fills it, and `the_wait_to_offer` says `` `K1` is running `j83509` `` and offers
+  `{"child": "K1"}` - never `{"job": "j83509"}`, and no door at all for a package that is not
+  turning. A job the board runs itself gets exactly the sentence it got before.
+- **`external`.** A fifth wait kind on both `TodoNeed` copies (serde `#[serde(default)] what`), as a
+  `needs` entry or `wait_on`'s `"external": "…"`, taken off by `detach`. `the_check_may_ask_about`
+  keeps the row quiet until it moves, and the head draws `waits on <what>`.
+
+And, added afterwards by the operator (*"no wait_on for you is sad"*), two waits a seat can actually
+SETTLE, because a seat's only waits were a package's turn and a person:
+
+- **`seat_job_start {argv, cwd?, name?}` / `seat_jobs` / `seat_job_kill`** - a job of the SEAT's
+  own (`crates/bridge/src/seat_jobs.rs`): argv verbatim, no shell, output to a file under the
+  bridge's rundir, the row in a new `seat_job` table (store schema 43, `Additive`) under the seat's
+  handle. The handle is `wait_on`'s `job` - the seat's open jobs joined its job table - and its end
+  settles the row and pushes one `job_ended` frame with `meta.source: seat`, as a package's does.
+  A reaper thread settles them, and a `running` row left by a dead bridge is settled by the process
+  table (`lost`), not by a guess.
+- **`wait_on {"pid": N}`** - a process this host is already running, by pid AND
+  `/proc/<pid>/stat`'s start time, read when the row is written. The seat's watcher reads the
+  process table each pass, so the row stops being quiet when the process goes, and a pid the number
+  was reused for is a different process (`procs::alive`).
+
+Tests: `a_seat_is_asked_again_for_its_plan_moving_and_not_for_the_jobs_running_beside_it` and
+`an_external_wait_keeps_its_row_quiet_until_it_moves` (`crates/tools/.../tests/nag.rs`),
+`a_packages_job_is_named_as_the_packages_and_never_offered_as_a_wait_here` (`tests/wait_on.rs`),
+`twenty_package_jobs_starting_and_ending_say_one_unchanged_plan_once` (`crates/bridge/src/seat.rs`),
+`a_row_waiting_on_something_outside_is_quiet_until_the_seat_takes_the_wait_off`,
+`a_seat_jobs_end_settles_its_row_and_pushes_one_job_ended` and
+`a_pid_wait_settles_when_the_process_exits_and_not_when_a_pid_is_reused`
+(`crates/bridge/tests/seat_todo.rs`), `a_seats_jobs_are_written_and_their_settlement_is_the_same_row`
+and `a_v41_store_gains_the_seat_job_table` (`crates/tokencore/src/store/seat.rs`), and
+`docs/seat-todo.md` says how a seat is keyed and what it may wait on now.
 
 ## R157 - Built-in panes trap with symbol-less backtraces
 

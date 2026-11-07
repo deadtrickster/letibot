@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -19,10 +19,13 @@ use letibot_tools::builtins::todo::{
     ChildSessions, ChildTodos, RunningChild, RunningJobs, TodoBoard, TodoNagClock, TodoWriteTool,
     the_plan_as_checked, unfinished_plan,
 };
+use letibot_tools::exec::procs;
 use letibot_tools::runtime::Invocation;
 use serde_json::{Value, json};
 
 use crate::head::{Head, Turn};
+use crate::push::Outbox;
+use crate::seat_jobs::SeatJobs;
 
 /// How long the seat sits quiet before the plan check comes due: the session's own window
 /// (`TODO_NAG_AFTER`), because a seat that has not called a tool is as idle as a turn that ended.
@@ -56,6 +59,15 @@ pub struct Seat {
     store: PathBuf,
     /// The bridge's packages, shared and not copied: a head held later is a package here at once.
     heads: Arc<Mutex<HashMap<String, Arc<Head>>>>,
+    /// This seat's OWN jobs (`seat_job_start`), which no daemon runs: the bridge does, and the
+    /// store keeps their rows under the seat's handle.
+    jobs: Arc<SeatJobs>,
+    /// The seat's channel: the nags and its own jobs' endings, kept so a client that reconnects is
+    /// told what it missed. Created by the first [`Seat::watch`].
+    outbox: Mutex<Option<Arc<Outbox>>>,
+    /// How many notes this seat has pushed. A nag is said again on the ladder, so its outbox key
+    /// has to be new every time - the plan key would silence its own repeat.
+    notes: AtomicU64,
 }
 
 impl Seat {
@@ -68,22 +80,41 @@ impl Seat {
         let handle = handle.into();
         let store = store.into();
         let board = TodoBoard::new(load(&store, &handle));
+        let jobs = SeatJobs::new(
+            handle.clone(),
+            store.clone(),
+            crate::daemon::rundir().join(format!(
+                "{}.seat-jobs-{}",
+                crate::daemon::key(store.parent().unwrap_or(&store)),
+                handle.replace(['/', '@', ':'], "-")
+            )),
+        );
+        SeatJobs::reap_in_background(&jobs);
         Seat {
             handle,
             board: Arc::new(board),
-            clock: Mutex::new(TodoNagClock::with_window(NAG_AFTER)),
+            clock: Mutex::new(TodoNagClock::with_window(NAG_AFTER).keyed_by_plan()),
             active: Mutex::new(Instant::now()),
             dirty: AtomicBool::new(true),
             working: Mutex::new(HashMap::new()),
             store,
             heads,
+            jobs,
+            outbox: Mutex::new(None),
+            notes: AtomicU64::new(0),
         }
+    }
+
+    /// This seat's own jobs: the handle `seat_job_start` answered is `wait_on`'s `job`, and the
+    /// listing is `seat_jobs`.
+    pub fn jobs(&self) -> &Arc<SeatJobs> {
+        &self.jobs
     }
 
     /// A seat whose window is shorter than a minute - the tests' door, and `set_window`'s reason:
     /// driving the schedule has to be possible without sleeping through the window it pins.
     pub fn with_window(mut self, window: Duration) -> Seat {
-        self.clock = Mutex::new(TodoNagClock::with_window(window));
+        self.clock = Mutex::new(TodoNagClock::with_window(window).keyed_by_plan());
         self
     }
 
@@ -185,9 +216,10 @@ impl Seat {
         answer
     }
 
-    /// The packages and their open jobs, as the plan check reads them, with a signature of the
-    /// reading: a pass that finds the same signature does not re-arm and cannot postpone the check.
-    fn packages(&self) -> (ChildSessions, RunningJobs, String) {
+    /// The packages and their open jobs, the seat's OWN jobs, and the processes its rows wait on -
+    /// as the plan check reads them, with a signature of the reading: a pass that finds the same
+    /// signature does not re-arm and cannot postpone the check.
+    fn packages(&self, rows: &[TodoItem]) -> (ChildSessions, RunningJobs, String) {
         let heads: Vec<Arc<Head>> = self
             .heads
             .lock()
@@ -212,7 +244,11 @@ impl Seat {
                 head.session, state.jobs_open
             ));
             for handle in &state.jobs_open {
-                jobs = jobs.running(handle.clone());
+                jobs = jobs
+                    .running(handle.clone())
+                    // A package's job is the PACKAGE's: the check names it as such and offers the
+                    // package's turn instead (`docs/seat-todo.md`).
+                    .of_package(handle.clone(), head.session.clone());
             }
             if !running {
                 continue;
@@ -237,10 +273,30 @@ impl Seat {
             );
         }
         working.retain(|id, _| at_work.contains(id));
+        drop(working);
+        // The seat's own jobs: no daemon runs them, so the check names them as this board's own -
+        // and a row waiting on one is quiet until the reaper says it ended.
+        for job in self.jobs.open() {
+            signature.push_str(&format!("|seat:{}", job.handle));
+            jobs = jobs
+                .running(job.handle.clone())
+                .about(job.handle.clone(), job.command.clone());
+        }
+        // And the processes the board names by pid: the only fact about them is the process table,
+        // so it is read here and the pair travels to the narrowing - and into the signature, because
+        // an exit is what makes the row askable again.
+        for (pid, start) in pid_waits(rows) {
+            let up = procs::alive(pid, start);
+            signature.push_str(&format!("|pid:{pid}:{up}"));
+            if up {
+                jobs = jobs.pid(pid, start);
+            }
+        }
         (children, jobs, signature)
     }
 
-    /// The open jobs of every package, as the board's `job` waits are resolved against.
+    /// The open jobs of every package and of the seat itself, as the board's `job` waits are
+    /// resolved against.
     fn open_jobs(&self) -> PackageJobs {
         let heads: Vec<Arc<Head>> = self
             .heads
@@ -253,18 +309,34 @@ impl Seat {
         for head in heads {
             open.extend(head.snapshot().jobs_open);
         }
+        open.extend(self.jobs.open().into_iter().map(|j| j.handle));
         open.sort();
         open.dedup();
         PackageJobs { open }
     }
 
-    /// Push this seat's nags on `tx` from now on, watching the board and the packages while the
-    /// bridge lives. Called once, when the client has initialized and a channel frame is legal.
+    /// Push this seat's nags - and its own jobs' endings - on `tx` from now on, watching the board
+    /// and the packages while the bridge lives. Called once, when the client has initialized and a
+    /// channel frame is legal; a second call only re-points the channel at the new client.
     pub fn watch(seat: &Arc<Seat>, tx: Sender<Value>) {
+        let mut outbox = seat.outbox.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(outbox) = outbox.as_ref() {
+            outbox.attach(tx);
+            return;
+        }
+        let made = Outbox::at(crate::daemon::rundir().join(format!(
+            "{}.seat-nag-{}",
+            crate::daemon::key(seat.store.parent().unwrap_or(&seat.store)),
+            seat.handle.replace(['/', '@', ':'], "-")
+        )));
+        made.attach(tx);
+        seat.jobs.attach(made.clone());
+        *outbox = Some(made.clone());
+        drop(outbox);
         let seat = seat.clone();
         let _ = std::thread::Builder::new()
             .name("leticode-seat-todo".into())
-            .spawn(move || run(&seat, &tx));
+            .spawn(move || run(&seat, &made));
     }
 }
 
@@ -272,42 +344,74 @@ impl Seat {
 /// package moves, or when the seat has called a tool since the last pass, and it asks the clock
 /// whether the check is due on every pass - `due_now`'s disarm is before the push, so a delivery
 /// that took longer than the window does not fire twice.
-fn run(seat: &Arc<Seat>, tx: &Sender<Value>) {
+fn run(seat: &Arc<Seat>, outbox: &Arc<Outbox>) {
     let mut armed_for = String::new();
     loop {
         let now = Instant::now();
-        let (children, jobs, signature) = seat.packages();
         let rows = seat.board.snapshot();
+        let (children, jobs, signature) = seat.packages(&rows);
         let dirty = seat.dirty.swap(false, Ordering::SeqCst);
+        let active = *seat.active.lock().unwrap_or_else(|e| e.into_inner());
         let mut clock = seat.clock.lock().unwrap_or_else(|e| e.into_inner());
-        if dirty || signature != armed_for {
-            armed_for = signature;
-            let active = *seat.active.lock().unwrap_or_else(|e| e.into_inner());
-            // `rearm_from` and not `rearm`: a seat that is still calling tools is working, so the
-            // deadline moves with its last call - a session's, by contrast, must not be postponed
-            // by a monitor waking it.
-            clock.rearm_from(&rows, active, &children, &jobs);
-        }
-        if clock.due_now(now) {
-            let notice = unfinished_plan(
-                &the_plan_as_checked(&rows, &children, &jobs),
-                &rows,
-                &children,
-                &jobs,
-            );
-            // Recorded before the push, for `TodoNagClock::said`'s reason: a notice whose write
-            // failed still counts as said, or it would come back at every pass.
-            clock.said(notice.clone(), now);
-            if let Some(text) = notice {
-                let note = nag(seat.handle(), &text);
-                if tx.send(note).is_err() {
-                    return;
-                }
-            }
+        let moved = dirty || signature != armed_for;
+        armed_for = signature;
+        if let Some(notice) = a_pass(&mut clock, &rows, &children, &jobs, moved, active, now)
+            && let Some(text) = notice
+        {
+            // A new key per delivery: a plan said again on the ladder is news, and the outbox's
+            // key is what would otherwise silence its own repeat.
+            let n = seat.notes.fetch_add(1, Ordering::SeqCst);
+            outbox.record(format!("nag:{n}"), nag(seat.handle(), &text));
         }
         drop(clock);
         std::thread::sleep(PASS);
     }
+}
+
+/// The processes the board waits on, by pid and start time - the pair an edge on a process
+/// carries. Deduplicated, because two rows may wait on one gate.
+fn pid_waits(rows: &[TodoItem]) -> Vec<(u32, u64)> {
+    let mut out: Vec<(u32, u64)> = rows
+        .iter()
+        .flat_map(|r| r.needs.iter())
+        .filter_map(|n| match n {
+            TodoNeed::Pid { pid, start } => Some((*pid, *start)),
+            _ => None,
+        })
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// One pass of the watcher, as a value: `None` when the check is not due, else what it said - the
+/// notice, or `None` for a delivery with nothing left to ask about. Split out of [`run`] so a test
+/// can drive twenty passes over one plan without a daemon to hold the packages.
+fn a_pass(
+    clock: &mut TodoNagClock,
+    rows: &[TodoItem],
+    children: &ChildSessions,
+    jobs: &RunningJobs,
+    moved: bool,
+    active: Instant,
+    now: Instant,
+) -> Option<Option<String>> {
+    if moved {
+        // `rearm_from` and not `rearm`: a seat that is still calling tools is working, so the
+        // deadline moves with its last call - a session's, by contrast, must not be postponed
+        // by a monitor waking it.
+        clock.rearm_from(rows, active, children, jobs);
+    }
+    if !clock.due_now(now) {
+        return None;
+    }
+    let askable = the_plan_as_checked(rows, children, jobs);
+    let notice = unfinished_plan(&askable, rows, children, jobs);
+    // Recorded before the push, for `TodoNagClock::said`'s reason: a notice whose write failed
+    // still counts as said, or it would come back at every pass. Recorded by the PLAN, so that the
+    // packages' jobs coming and going are not twenty reasons to ask one plan again.
+    clock.said_plan(&askable, notice.clone(), now);
+    Some(notice)
 }
 
 /// The channel notification for one notice: the same frame a held session's events use, so a client
@@ -475,4 +579,84 @@ fn render(rows: &[TodoItem]) -> String {
         out.push_str(&format!("{}. [{word}] {}\n", i + 1, row.content));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use letibot_tokencore::store::TodoBy;
+
+    /// A row with no waits, as a seat writes one.
+    fn row(content: &str, status: TodoStatus) -> TodoItem {
+        TodoItem {
+            content: content.into(),
+            status,
+            by: TodoBy::Model,
+            when: None,
+            needs: Vec::new(),
+        }
+    }
+
+    /// Twenty package jobs starting and ending over one unchanged seat plan are ONE check: the
+    /// notice names them, so the sentence moves, and the plan it is about does not.
+    #[test]
+    fn twenty_package_jobs_starting_and_ending_say_one_unchanged_plan_once() {
+        let window = Duration::from_millis(200);
+        let mut clock = TodoNagClock::with_window(window).keyed_by_plan();
+        let rows = vec![row("ship the pane", TodoStatus::InProgress)];
+        let packages = ChildSessions::none().running(
+            "K1",
+            RunningChild {
+                age: Duration::from_secs(60),
+                quiet_for: Some(Duration::from_secs(1)),
+                working: true,
+            },
+        );
+        let t0 = Instant::now();
+        let first = a_pass(
+            &mut clock,
+            &rows,
+            &packages,
+            &RunningJobs::none(),
+            true,
+            t0,
+            t0 + window,
+        )
+        .expect("the check is due")
+        .expect("there is work to name");
+        assert!(first.contains("ship the pane"), "{first}");
+
+        for n in 0..20 {
+            let handle = format!("j{}", 83500 + n);
+            let jobs = RunningJobs::none()
+                .running(handle.clone())
+                .of_package(handle, "K1");
+            let now = t0 + window + Duration::from_millis(1 + n);
+            assert_eq!(
+                a_pass(&mut clock, &rows, &packages, &jobs, true, t0, now),
+                None,
+                "a package's job starting or ending said the seat's plan again"
+            );
+        }
+
+        // And a plan that MOVES is news at once - the row that was only in progress gains a
+        // second one beside it.
+        let grown = vec![
+            row("ship the pane", TodoStatus::InProgress),
+            row("and the thing after it", TodoStatus::Pending),
+        ];
+        assert!(
+            a_pass(
+                &mut clock,
+                &grown,
+                &packages,
+                &RunningJobs::none(),
+                true,
+                t0,
+                t0 + window + Duration::from_millis(30)
+            )
+            .is_some(),
+            "a plan that moved is asked about"
+        );
+    }
 }

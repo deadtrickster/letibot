@@ -21,7 +21,8 @@ use crate::schema::{Access, ToolSchema};
 pub mod nag;
 pub use nag::{
     NAG_REPEAT_CAP, NagHold, NagTimings, OPERATOR_ADD_NAG_AFTER, QueueNews, STUCK_REPEAT,
-    TODO_NAG_AFTER, TodoNagClock, nag_should_arm, the_check_may_ask_about, the_plan_as_checked,
+    TODO_NAG_AFTER, TodoNagClock, nag_should_arm, the_check_may_ask_about, the_plan_as_a_key,
+    the_plan_as_checked,
 };
 
 /// The session's todo list, shared between the tool that writes it and the
@@ -290,6 +291,8 @@ impl TodoBoard {
                                 | TodoNeed::Child { .. }
                                 | TodoNeed::Operator { .. }
                                 | TodoNeed::Ask { .. }
+                                | TodoNeed::External { .. }
+                                | TodoNeed::Pid { .. }
                         )
                     });
                     row.needs.len() != before
@@ -869,8 +872,8 @@ pub enum Wait {
     /// Wait on this - a [`TodoNeed::Job`] or a [`TodoNeed::Child`], already resolved to the full
     /// handle by the caller. Attaching one the row already has is not a change.
     On(TodoNeed),
-    /// Take the row's job, child, monitor, operator and ask waits off, and leave its row edges and
-    /// its answers where they are.
+    /// Take the row's job, child, monitor, operator, ask and outside waits off, and leave its row
+    /// edges and its answers where they are.
     Detach,
 }
 
@@ -1032,6 +1035,12 @@ pub struct RunningJobs {
     /// by handle (or child id), each with how long is left before the backstop releases it. See
     /// [`RunningJobs::digesting`].
     digesting: BTreeMap<String, Duration>,
+    /// The PACKAGE each job belongs to, where the board reading this is not the job's owner: a
+    /// seat's board is `cc@x` and `j83509` runs inside `K1`. See [`RunningJobs::of_package`].
+    owners: BTreeMap<String, String>,
+    /// The processes this host still has, as `(pid, /proc/<pid>/stat starttime)`: what a
+    /// [`TodoNeed::Pid`] edge resolves against. See [`RunningJobs::pid`].
+    pids: BTreeSet<(u32, u64)>,
 }
 
 impl RunningJobs {
@@ -1053,6 +1062,35 @@ impl RunningJobs {
     /// narrowing both take.
     pub fn is_running(&self, handle: &str) -> bool {
         self.live.contains(handle)
+    }
+
+    /// A job this board does not run but can only reach THROUGH its owner, by the owner's session
+    /// id. [`Self::running`]'s builder, and the fact a seat's board has and a session's has not.
+    pub fn of_package(mut self, handle: impl Into<String>, package: impl Into<String>) -> Self {
+        self.owners.insert(handle.into(), package.into());
+        self
+    }
+
+    /// Who is running this job when it is not this board's own - `None` for a job the board runs
+    /// itself, which is every job a session's snapshot holds.
+    pub fn owner(&self, handle: &str) -> Option<&str> {
+        self.owners.get(handle).map(String::as_str)
+    }
+
+    /// A process this host still has, by pid and the start time `/proc/<pid>/stat` gave it - the
+    /// pair that makes a pid edge exact. A builder, like [`Self::running`].
+    pub fn pid(mut self, pid: u32, start: u64) -> Self {
+        self.pids.insert((pid, start));
+        self
+    }
+
+    /// Whether this exact process is still there. A `start` of zero is matched on the pid alone:
+    /// the weaker answer, and the one an edge rewritten by hand can still carry.
+    pub fn is_running_pid(&self, pid: u32, start: u64) -> bool {
+        match start {
+            0 => self.pids.iter().any(|(p, _)| *p == pid),
+            start => self.pids.contains(&(pid, start)),
+        }
     }
 
     /// A monitor that is still watching here, by its name - a builder, like [`Self::running`].
@@ -1213,6 +1251,9 @@ pub fn waits_on_a_child_with_room_to_breathe(row: &TodoItem, children: &ChildSes
 pub fn waits_on_a_running_job(row: &TodoItem, jobs: &RunningJobs) -> bool {
     row.needs.iter().any(|need| match need {
         TodoNeed::Job { handle } => jobs.is_running(handle),
+        // A process named by pid is the same silence: it ends when it ends, and no job table can
+        // say so.
+        TodoNeed::Pid { pid, start } => jobs.is_running_pid(*pid, *start),
         // A monitor still watching is the same silence: its firing wakes the session itself.
         TodoNeed::Monitor { name } => jobs.is_watching(name),
         _ => false,
@@ -1225,6 +1266,15 @@ pub fn waits_on_the_room(row: &TodoItem) -> bool {
     row.needs
         .iter()
         .any(|n| matches!(n, TodoNeed::Room { working: true, .. }))
+}
+
+/// Whether a row waits on something outside this machine's bookkeeping - a forge's review, a
+/// deploy, a person's other tool. Nothing here ends that, so the check is silent on the row until
+/// the row itself moves: a wait no snapshot can see is not a wait the nag may doubt.
+pub fn waits_on_something_external(row: &TodoItem) -> bool {
+    row.needs
+        .iter()
+        .any(|n| matches!(n, TodoNeed::External { .. }))
 }
 
 /// The room items a row is the pass's own record of - every item number its room edges name,
@@ -1468,26 +1518,13 @@ pub fn unfinished_plan_for(
     // The door for a row that is only waiting, when there is something it could wait on: the
     // model will not reach for a door nobody named. Appended to the advice's own line, because
     // the head folds a notice only while every line after the bullet is the advice it knows.
-    let offer = match (&next.by, jobs.likeliest_wait(&next.content).as_slice()) {
-        (TodoBy::Model | TodoBy::Operator, [(kind, handle, _, _), rest @ ..]) => {
-            let others: Vec<String> = rest
-                .iter()
-                .take(2)
-                .map(|(_, h, a, _)| format!("`{h}` ({})", said_short(a)))
-                .collect();
-            let others = match others.is_empty() {
-                true => String::new(),
-                false => format!(" Also running: {}.", others.join(", ")),
-            };
-            format!(
-                " If this row is only waiting on a running job or subagent, attach the wait \
-                 instead of answering — `todo_write` {{\"wait_on\": [{{\"content\": \"<the text \
-                 above>\", \"{kind}\": \"{handle}\"}}]}} — and this check stays quiet until it \
-                 ends.{others}"
-            )
+    let offer = match next.by {
+        TodoBy::Model | TodoBy::Operator => {
+            the_wait_to_offer(&jobs.likeliest_wait(&next.content), children, jobs)
         }
-        _ => String::new(),
-    };
+        _ => None,
+    }
+    .unwrap_or_default();
     // AND WHAT CANNOT START IS SAID, not merely skipped. A blocked row is invisible to the ask
     // - that is the whole point - so the model would otherwise learn nothing about the rows it
     // cannot be asked for, and a plan whose edges have gone stale would look like a shorter plan.
@@ -1512,6 +1549,74 @@ pub fn unfinished_plan_for(
     ))
 }
 
+/// The `wait_on` the check offers a row that is only waiting, from what is running: the job or
+/// subagent itself, and - for a job a PACKAGE runs - that package's turn, which is the only wait a
+/// board like a seat's can make on it (`docs/seat-todo.md`). `None` when there is nothing to offer.
+fn the_wait_to_offer(
+    candidates: &[(&'static str, &str, &str, f64)],
+    children: &ChildSessions,
+    jobs: &RunningJobs,
+) -> Option<String> {
+    let [(kind, handle, _, _), _rest @ ..] = candidates else {
+        return None;
+    };
+    // Everything running, said the same way wherever it is named: a person cannot act on a wait
+    // the offer never mentions, and a handle alone would read as one this board could make.
+    let described: Vec<String> = candidates
+        .iter()
+        .take(3)
+        .map(|(_, h, a, _)| said_running(h, a, jobs))
+        .collect();
+    let also = |from: usize| -> String {
+        match described
+            .get(from..)
+            .map(|d| d.join(", "))
+            .filter(|d| !d.is_empty())
+        {
+            Some(list) => format!(" Also running: {list}."),
+            None => String::new(),
+        }
+    };
+    // A package's job is the package's to wait on, and its TURN is what this board may attach - and
+    // only while that turn is in flight, since a child that has ended is a wait already met.
+    if let Some(package) = jobs.owner(handle) {
+        if children.child(package).is_some() {
+            return Some(format!(
+                " If this row is only waiting on a package's turn — `{package}` is running \
+                 `{handle}` — attach the wait instead of answering — `todo_write` {{\"wait_on\": \
+                 [{{\"content\": \"<the text above>\", \"child\": \"{package}\"}}]}} — and this \
+                 check stays quiet until that turn ends.{}",
+                also(1)
+            ));
+        }
+        // A package that is not turning has nothing this board could wait on, and its job is still
+        // the package's: named as such, with no door - a wait on it would never end here.
+        return Some(also(0));
+    }
+    Some(format!(
+        " If this row is only waiting on a running job or subagent, attach the wait instead of \
+         answering — `todo_write` {{\"wait_on\": [{{\"content\": \"<the text above>\", \"{kind}\": \
+         \"{handle}\"}}]}} — and this check stays quiet until it ends.{}",
+        also(1)
+    ))
+}
+
+/// One running job or child as the offer names it: `` `j12` (cargo bench) ``, or - for a job a
+/// package runs - `` `K1` is running `j83509` ``, because the board it is said to is not the one
+/// running it and a bare handle would read as a wait that board could make.
+fn said_running(handle: &str, about: &str, jobs: &RunningJobs) -> String {
+    let short = said_short(about);
+    let said = if short == "no description" {
+        String::new()
+    } else {
+        format!(" ({short})")
+    };
+    match jobs.owner(handle) {
+        Some(package) => format!("`{package}` is running `{handle}`{said}"),
+        None => format!("`{handle}`{said}"),
+    }
+}
+
 /// Is everything that is blocked waiting, in the end, on the operator? A row is, when every
 /// unmet need is an unanswered question or a row that is itself on the operator. Empty is
 /// `false`: there is nothing to be silent about.
@@ -1534,12 +1639,17 @@ fn all_on_the_operator(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> bool
             // blocked only on them is not a plan to fix either.
             let rooted = unmet.iter().all(|(name, fate)| match fate {
                 NeedFate::OperatorAsked | NeedFate::JobRunning | NeedFate::MonitorWatching => true,
+                // And a live process: it ends on its own, so nothing here can move it.
+                NeedFate::PidRunning => true,
                 // And a peer that was asked: the answer comes through the room's pass, so the rest
                 // of the plan keeps going and this row is nobody's to unblock.
                 NeedFate::PeerAsked => true,
                 // A room item the room is working on is a root too: not the plan's to move, and a
                 // plan blocked only on it is not a plan to fix.
                 NeedFate::RoomWorking => true,
+                // And something outside the machine: only the row moving ends it, so no pass of
+                // this check can.
+                NeedFate::External => true,
                 NeedFate::ChildRunning(child) => child.age < CHILD_ROOM_TO_BREATHE,
                 NeedFate::NotDone => on.contains(name.trim()),
                 _ => false,
@@ -1596,6 +1706,8 @@ pub enum NeedFate {
     /// It carries no payload because a job needs no steering - the daemon delivers its settlement
     /// as a turn of its own.
     JobRunning,
+    /// A process this host still has, by pid: [`NeedFate::JobRunning`]'s sibling one door over.
+    PidRunning,
     /// A monitor still watching - [`NeedFate::JobRunning`]'s sibling: the row cannot start
     /// until it ends, and the check is silent about the row while it watches.
     MonitorWatching,
@@ -1613,6 +1725,9 @@ pub enum NeedFate {
     /// plan's hands too, so the row is a root of the check's silence and the settlement is the
     /// room's to deliver.
     PeerAsked,
+    /// Something outside this machine's bookkeeping, in the row's own words. Not met, and not this
+    /// plan's to move: nothing here can tell when it ended.
+    External,
 }
 
 /// The rows the check may speak about, read as a graph - split by whether they can start.
@@ -1704,6 +1819,13 @@ fn unmet_needs(
                     out.push((handle.clone(), NeedFate::EndedUnread));
                 }
             }
+            // A process somebody else started: alive is not met, and gone is the ending - which is
+            // why the edge carries the start time it was waited on.
+            TodoNeed::Pid { pid, start } => {
+                if jobs.is_running_pid(*pid, *start) {
+                    out.push((format!("pid {pid}"), NeedFate::PidRunning));
+                }
+            }
             // The room is working on it, so the edge is not met; the name printed is the room's own
             // `#3`, which is what its verbs take. A quiet room edge is met: nothing outside will
             // move the item, so it is the holder's own work.
@@ -1730,6 +1852,9 @@ fn unmet_needs(
             // other way round, so the row that carries it is the model's own work now.
             TodoNeed::Owed { .. } => {}
             TodoNeed::Answered { .. } => {}
+            // Nothing here can watch it, so it is not met - and the words are the name, because they
+            // are all the edge has.
+            TodoNeed::External { what } => out.push((what.clone(), NeedFate::External)),
             TodoNeed::Unknown => out.push((String::new(), NeedFate::UnknownKind)),
         }
     }
@@ -1767,6 +1892,10 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
             NeedFate::JobRunning => format!(
                 "the job `{name}`, still running — its completion reaches you as soon as it ends"
             ),
+            NeedFate::PidRunning => format!(
+                "the process `{name}`, still running — nothing here reports its exit, so this row \
+                 is asked about once it is gone"
+            ),
             NeedFate::MonitorWatching => format!(
                 "the monitor `{name}`, still watching — its firing reaches you as soon as it fires"
             ),
@@ -1779,6 +1908,12 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
             NeedFate::EndedUnread => format!(
                 "`{name}`, which has ended — its completion is reaching you; read it before \
                  this row is asked about"
+            ),
+            // Said as the reader's own fact: nothing outside is going to report its ending here, so
+            // the one act that ends the silence is moving the row.
+            NeedFate::External => format!(
+                "{name} (outside leticobot — nothing here can tell when it ends, so the check stays \
+                 quiet on this row until it moves)"
             ),
             // The operator's sentence carries the instruction, because it is the one blocker the
             // model may resolve without the blocker moving: keep going, and take the wait off with
@@ -2204,22 +2339,24 @@ impl Tool for TodoWriteTool {
                                     "items": {"anyOf": [
                                         {"type": "string"},
                                         {"type": "object", "properties": {
-                                            "kind": {"type": "string", "enum": ["row", "child", "job", "monitor", "operator"]},
+                                            "kind": {"type": "string", "enum": ["row", "child", "job", "monitor", "operator", "external", "pid"]},
                                             "name": {"type": "string"},
                                             "content": {"type": "string"},
                                             "id": {"type": "string"},
                                             "handle": {"type": "string"},
+                                            "what": {"type": "string"},
+                                            "pid": {"type": "integer"},
                                             "question": {"type": "string"},
                                             "options": {"type": "array", "items": {"type": "string"}}
                                         }, "required": ["kind"]}
                                     ]},
                                     "description": "What this row waits for: a plain string \
                                                     is another row's exact `content`; the tagged \
-                                                    form names a `child` (\"id\": \"s-…\"), a \
-                                                    `job` (\"handle\": \"j…\", any ending), a \
-                                                    `monitor` (\"name\": \"…\", its firing), or \
+                                                    form names a `child` (\"id\"), a \
+                                                    `job` (\"handle\"), a \
+                                                    `monitor` (\"name\"), or \
                                                     the `operator` (\"question\": …, \"options\": \
-                                                    […], at least two) for their answer. A row \
+                                                    […], at least two) for their answer, `external` (\"what\": …) or `pid` (\"pid\": N). A row \
                                                     that names nothing is ready at once; a name \
                                                     matching no row, or two, blocks the row and \
                                                     the check says which. An `ask` is NOT \
@@ -2235,15 +2372,18 @@ impl Tool for TodoWriteTool {
                         "description": "Rows already on the board, quoted exactly, that \
                                         wait on a `job` (a handle or a name), a `child` (an \
                                         id `task` handed back), the `operator`'s answer, \
-                                        another SESSION's answer (`ask`), or \
-                                        `detach: true` to take the waits off. A call of \
-                                        its own.",
+                                        another SESSION's answer (`ask`), what it waits on \
+                                        outside this machine (`external`), a process on this \
+                                        host (`pid`), or `detach: true` to take the waits off. \
+                                        A call of its own.",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "content": {"type": "string"},
                                 "job": {"type": "string"},
                                 "child": {"type": "string"},
+                                "external": {"type": "string"},
+                                "pid": {"type": "integer"},
                                 "operator": {
                                     "type": "object",
                                     "properties": {
@@ -2552,7 +2692,9 @@ impl TodoWriteTool {
              back, or its slug>\" in place of `job`, or \"operator\": {\"question\": \"…\", \"options\": \
              [\"…\", \"…\"]} to wait on the operator's answer, or \"ask\": {\"session\": \"<another \
              session>\", \"room\": \"<a room, optional>\", \"question\": \"…\"} to wait on \
-             another session's answer, or \"detach\": true to take the row's waits off."
+             another session's answer, \"external\": \"<what the row waits on, in your own \
+             words>\" for something outside this machine that nothing here can watch, or \"pid\": <a process id on this host> to wait on it exiting, or \
+             \"detach\": true to take the row's waits off."
                 .to_string()
         };
         let Some(list) = v.as_array() else {
@@ -2573,7 +2715,14 @@ impl TodoWriteTool {
             for key in obj.keys() {
                 if !matches!(
                     key.as_str(),
-                    "content" | "job" | "child" | "detach" | "operator" | "ask"
+                    "content"
+                        | "job"
+                        | "child"
+                        | "detach"
+                        | "operator"
+                        | "ask"
+                        | "external"
+                        | "pid"
                 ) {
                     return refused(
                         format!("wait_on entry {n} has an unknown field `{key}`"),
@@ -2584,19 +2733,23 @@ impl TodoWriteTool {
             let Some(content) = obj.get("content").and_then(|c| c.as_str()) else {
                 return refused(format!("wait_on entry {n} has no `content`"), shape());
             };
-            let said: Vec<&str> = ["job", "child", "detach", "operator", "ask"]
-                .into_iter()
-                .filter(|k| obj.contains_key(*k))
-                .collect();
+            let said: Vec<&str> = [
+                "job", "child", "detach", "operator", "ask", "external", "pid",
+            ]
+            .into_iter()
+            .filter(|k| obj.contains_key(*k))
+            .collect();
             let [which] = said.as_slice() else {
                 return refused(
                     format!(
-                        "wait_on entry {n} names {} of `job`, `child`, `operator`, `ask` and `detach`",
+                        "wait_on entry {n} names {} of `job`, `child`, `operator`, `ask`, \
+                         `external`, `pid` and `detach`",
                         said.len()
                     ),
                     "each entry says exactly ONE thing about its row: the job it waits on, the \
                      child it waits on, the question it waits on the operator for, the question it \
-                     asks another session, or `\"detach\": true`. Send two entries for two waits."
+                     asks another session, what it waits on outside this machine, the process it \
+                     waits on, or `\"detach\": true`. Send two entries for two waits."
                         .into(),
                 );
             };
@@ -2610,6 +2763,38 @@ impl TodoWriteTool {
                     }
                     Wait::Detach
                 }
+                // Something outside the machine, in the caller's own words: no handle to resolve and
+                // no snapshot to resolve it against - the row is quiet until it moves.
+                "external" => match obj.get("external").and_then(|w| w.as_str()) {
+                    Some(what) if !what.trim().is_empty() => Wait::On(TodoNeed::External {
+                        what: what.trim().to_string(),
+                    }),
+                    _ => {
+                        return refused(
+                            format!("wait_on entry {n}'s `external` names nothing"),
+                            "an `external` wait says WHAT outside this machine the row waits on, \
+                             in your own words — a review on a forge, a deploy, a person's other \
+                             tool. Nothing here can watch it, so the check stays quiet on the row \
+                             until the row moves."
+                                .into(),
+                        );
+                    }
+                },
+                // A process on this host, by its number: nothing in this runtime started it, so
+                // the only fact there is is the process table - and the start time read here is
+                // what keeps a reused pid out of it.
+                "pid" => match obj.get("pid").and_then(|p| p.as_u64()) {
+                    Some(pid) => match pid_need(pid, None, &format!("wait_on entry {n}'s `pid`")) {
+                        Ok(need) => Wait::On(need),
+                        Err((what, why)) => return refused(what, why),
+                    },
+                    None => {
+                        return refused(
+                            format!("wait_on entry {n}'s `pid` is not a number"),
+                            shape(),
+                        );
+                    }
+                },
                 // The operator, asked - no handle to resolve: the question is the wait, and it
                 // ends when they answer it (or when the model takes it off having worked it out).
                 "operator" => {
@@ -2784,7 +2969,9 @@ impl TodoWriteTool {
              already said that). A row waiting on a running job or a subagent is not asked about \
              until it ends; then it is asked about again. A row waiting on the operator is not \
              asked about until they answer — their heads show the question loudly, the answer \
-             reaches you the moment they give it, and the rest of the plan keeps going meanwhile. Its words and status are unchanged. \
+             reaches you the moment they give it, and the rest of the plan keeps going meanwhile. A \
+             row waiting on something OUTSIDE this machine is not asked about until the row moves: \
+             nothing here can see that wait end. Its words and status are unchanged. \
              Restating one of YOUR rows in `todos` restates its `needs` too, so a `todos` entry \
              without the wait takes it off.\n"
         ));
@@ -3146,6 +3333,18 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
             handle: handle.to_string(),
         })
     };
+    let external = |what: &str| -> Result<TodoNeed, Invocation> {
+        if what.trim().is_empty() {
+            return Err(Invocation::failed(
+                format!("{where_} names nothing it is waiting for"),
+                "an `external` need says WHAT outside this machine the row waits on, in its own \
+                 words; an empty `what` waits for nothing while saying it waits.",
+            ));
+        }
+        Ok(TodoNeed::External {
+            what: what.trim().to_string(),
+        })
+    };
     match v {
         Value::String(content) => named(content),
         Value::Object(o) => match o.get("kind").and_then(|k| k.as_str()) {
@@ -3181,6 +3380,25 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
                      `monitor` — the one `job_list` and the monitors pane show.",
                 )),
             },
+            Some("external") => match o.get("what").and_then(|w| w.as_str()) {
+                Some(what) => external(what),
+                None => Err(Invocation::failed(
+                    format!("{where_} has kind `external` and no `what`"),
+                    "an `external` need says WHAT is outside this machine, in its own words — a \
+                     review on a forge, a deploy, a person's other tool. Nothing here can see its \
+                     ending, so the check stays quiet on that row until the row moves.",
+                )),
+            },
+            Some("pid") => match o.get("pid").and_then(|p| p.as_u64()) {
+                Some(pid) => pid_need(pid, o.get("start").and_then(|s| s.as_u64()), &where_)
+                    .map_err(|(what, why)| Invocation::failed(what, why)),
+                None => Err(Invocation::failed(
+                    format!("{where_} has kind `pid` and no `pid`"),
+                    "a `pid` need names the process to wait on by its number, as \
+                     {\"kind\": \"pid\", \"pid\": 1234}. The start time is read from /proc when \
+                     the row is written, so a reused pid is not mistaken for this one.",
+                )),
+            },
             Some("operator") => {
                 let question = o.get("question").and_then(|q| q.as_str()).unwrap_or("");
                 operator_need(question, o.get("options")).map_err(|why| {
@@ -3210,8 +3428,9 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
                 "the kinds of need are `row` — another row on this list, by its exact `content` — \
                  `child` — a subagent you started with `task`, by the session id it gave you — and \
                  `job` — a background job, by the handle `job_list` prints — `monitor` — a monitor \
-                 you armed, by its name, until it fires or ends — and `operator` — a \
-                 question for the operator, with at least two `options`. Send a row's name as a \
+                 you armed, by its name, until it fires or ends — `operator` — a \
+                 question for the operator, with at least two `options` — and `external` — \
+                 something outside this machine, by your own words for it. Send a row's name as a \
                  plain string, or the tagged form {\"kind\": \"row\", \"content\": \"…\"}, \
                  {\"kind\": \"child\", \"id\": \"s-…\"} or {\"kind\": \"job\", \"handle\": \"j…\"}. \
                  A kind nobody can evaluate is refused rather than dropped: a need that cannot be \
@@ -3229,6 +3448,39 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
             "a need is either a plain string (the other row's exact `content`) or \
              {\"kind\": \"row\", \"content\": \"…\"} / {\"kind\": \"child\", \"id\": \"s-…\"} / \
              {\"kind\": \"job\", \"handle\": \"j…\"}.",
+        )),
+    }
+}
+
+/// A pid edge, made exact: the process's start time, read here and now unless the call named
+/// one. Refused - with the reason - for a pid nothing is running under, because a wait settled by
+/// an exit is a wait on nothing.
+fn pid_need(pid: u64, start: Option<u64>, where_: &str) -> Result<TodoNeed, (String, String)> {
+    if pid == 0 {
+        return Err((
+            format!("{where_} names pid 0"),
+            "a `pid` wait names the process to wait on by its number - the one `ps` prints.".into(),
+        ));
+    }
+    // Given a start time, it is taken as given: `wait_on` may be repeated by a caller that kept
+    // the pair, and a process this host can no longer see is the ending that pair describes.
+    if let Some(start) = start.filter(|s| *s > 0) {
+        return Ok(TodoNeed::Pid {
+            pid: pid as u32,
+            start,
+        });
+    }
+    match crate::exec::procs::read(pid as u32) {
+        Some(info) => Ok(TodoNeed::Pid {
+            pid: pid as u32,
+            start: info.start,
+        }),
+        None => Err((
+            format!("{where_} names pid {pid}, and this host is not running it"),
+            "a pid wait ends when that process EXITS, so a number nothing is running under has \
+             nothing to wait for. Start it first, or name a job (`wait_on`'s `job`) if this runtime \
+             started it."
+                .into(),
         )),
     }
 }
@@ -3341,7 +3593,7 @@ fn render_answer(todos: &[TodoItem], wrote: &[&str]) -> String {
     if done + waiting > 0 {
         out.push_str(&format!(
             "\nnot listed: {done} done, {waiting} waiting on something (each is asked about when \
-             its wait ends). They are still on the board.\n"
+             its wait ends, or when the row moves). They are still on the board.\n"
         ));
     }
     out
@@ -3420,6 +3672,7 @@ fn render_rows(todos: &[TodoItem], keep: impl Fn(&TodoItem) -> bool) -> String {
                         // same rule the nag's own line keeps.
                         TodoNeed::Job { handle } => format!("the job `{handle}`"),
                         TodoNeed::Monitor { name } => format!("the monitor `{name}`"),
+                        TodoNeed::Pid { pid, .. } => format!("the process `{pid}`"),
                         // The room's item, by the number `room`'s own verbs take - the edge
                         // the daemon's room pass puts on a `you hold …` row while the room is
                         // working on it, so a model reading its list sees why the row is quiet.
@@ -3444,6 +3697,9 @@ fn render_rows(todos: &[TodoItem], keep: impl Fn(&TodoItem) -> bool) -> String {
                         ),
                         TodoNeed::Owed { .. } => unreachable!("filtered above"),
                         TodoNeed::Answered { .. } => unreachable!("filtered above"),
+                        // In the reader's own words: they are all the edge has, and they say what
+                        // the row is waiting for better than any word this build could add.
+                        TodoNeed::External { what } => what.trim().to_string(),
                         TodoNeed::Unknown => "a kind this build cannot evaluate".to_string(),
                     })
                     .collect();

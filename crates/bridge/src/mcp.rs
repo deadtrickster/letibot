@@ -267,12 +267,12 @@ mod tests {
     }
 
     /// Every tool this build serves, each with a schema - the design's table, and the shape MCP
-    /// requires: the leticode verbs, the session's three todo tools, and the room's twelve.
+    /// requires: the leticode verbs, the seat's own todo tools and its jobs, and the room's twelve.
     #[test]
     fn tools_list_lists_every_tool_with_a_schema() {
         let answers = run(&[r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#]);
         let tools = answers[0]["result"]["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 29, "{:?}", answers[0]);
+        assert_eq!(tools.len(), 32, "{:?}", answers[0]);
         for t in tools {
             assert!(t["name"].is_string(), "{t}");
             assert!(t["description"].is_string(), "{t}");

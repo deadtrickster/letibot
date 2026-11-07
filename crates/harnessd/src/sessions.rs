@@ -3714,6 +3714,12 @@ impl<'a> Sessions<'a> {
                                         handle: handle.clone(),
                                     }
                                 }
+                                letibot_sessionlog::event::TodoNeed::Pid { pid, start } => {
+                                    letibot_tokencore::store::TodoNeed::Pid {
+                                        pid: *pid,
+                                        start: *start,
+                                    }
+                                }
                                 letibot_sessionlog::event::TodoNeed::Monitor { name } => {
                                     letibot_tokencore::store::TodoNeed::Monitor {
                                         name: name.clone(),
@@ -3763,6 +3769,13 @@ impl<'a> Sessions<'a> {
                                 },
                                 letibot_sessionlog::event::TodoNeed::Owed { ask } => {
                                     letibot_tokencore::store::TodoNeed::Owed { ask: *ask }
+                                }
+                                // The words cross verbatim: they are all the edge has, and a head
+                                // that dropped them would hand back a row that waits on nothing.
+                                letibot_sessionlog::event::TodoNeed::External { what } => {
+                                    letibot_tokencore::store::TodoNeed::External {
+                                        what: what.clone(),
+                                    }
                                 }
                                 letibot_sessionlog::event::TodoNeed::Unknown => {
                                     letibot_tokencore::store::TodoNeed::Unknown
