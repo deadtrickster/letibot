@@ -60,23 +60,18 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | the operator rotates the token; a command this box spawns and a remote placement both keep every secret off every argv now |
 | R132 | `skills_path.rs` refuses its own session as written by another process, once under load | Code work | the root cause; seen once in a full gate, 6 reruns and the next gate passed |
 | R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | the next stop's line from `~/.local/state/letibot/scroll-stalls.log`, which the head now writes at each stop |
-| R136 | Answer waits: a row waits on another top-level session's answer | Code work | all of the build, per `docs/answer-waits.md` (operator's rulings 2026-11-07 are in it) |
+| R136 | Answer waits: a row waits on another top-level session's answer | Code work | plan steps 1, 4, 5, 7, 8 (the room's asks, the `answer`/`decline` verbs, the passes, end to end, docs) on room protocol 10; steps 2, 3, 6 (the todo side and the head) are landed |
 | R137 | Todo graphs that span projects | Code work | the design; an answer-wait ask is the first cross-project edge |
 | R138 | Stable session identities across hosts, through migrations | Code work | the design; until then asks are same-host only |
-| R139 | Room UI P0: attachment and blob wire, the head push frame, stubs for P1-P4 | Code work | built and tested on the branch: `Attachment` + coordinator blob store, room protocol 9, `ServerFrame::RoomChatPushed` + sessionlog 65, the seat's blob allowlist, and the TUI's five stub modules with the room keys dispatching to them; left: the merge queue's gate once the branch is approved |
-| R140 | Room UI P1: live chat push to the head, agents attach pictures | Code work | all of it, after R139 |
+| R140 | Room UI P1: live chat push to the head, agents attach pictures | Code work | all of it; P0 (attachments, blob store, push frame, stubs) is landed |
 | R141 | Room UI P2: message rendering (markdown, code colours, grouping, speaker colours, names, unread divider, pictures) | Code work | all of it, after R139 |
 | R142 | Room UI P3: composer (`@` completion, room `/` verbs, history and drafts, reply, pasted pictures) | Code work | all of it, after R139 |
 | R143 | Room UI P4: navigation (message cursor, jump to unread, `Ctrl+K` switcher, search, picture cache) | Code work | all of it, after R139 |
-| R144 | The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag | Code work | the design and the build |
-| R152 | `tests/launcher.sh` stubs outlived their run, and four of its cases had drifted | Code work | nothing; the file is not in the merge gate, which is how the drift went unseen |
-| R147 | A grant card is raised for a container's path or a glob | Code work | nothing: a card now needs a path this host has, with no glob left |
+| R144 | The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag | Code work | the head's pane for a seat's board; the board, its waits and its nag are landed |
+| R152 | `tests/launcher.sh` stubs outlived their run, and four of its cases had drifted | Code work | putting `tests/launcher.sh` in the merge gate |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
-| R145 | The review queue's session is seated a role its own prompt does not match | Code work | all of it: `Seat::Orchestrator` resolves to `roles::m1_orchestrator`, which holds neither `task_result` nor `task_message`, and the prompt prescribes both |
 | R150 | Plugin extension points: the harness and head open to plugins | Needs the operator | answers to the 13 questions in `docs/plugin-extension-points-wide.md` §8 (each has a default), then the plan's packages K1-K11 with H0, P5, P6 |
-| R146 | Room routing: a gatekeeper sits in its project, `to:` is private, host is broadcasts | Code work | the five rules in the say/wake paths; tests per rule, and `to:` on a thread reply is a decision to check with the operator |
-| R148 | A usage limit with a known reset never fails a session | Code work | the build on branch `r148-limit-reset`: wait/switch config, the reset-time parser, the park, the switch and its return, the no-reset retry, the status row and the bridge push |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
 | R100 | A remote session in a firecode VM: `--host` and `--vm` as one placement | Needs the operator | the live proof on lab2x1: a real `firecode` copy carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, the copy-out's cost |
 | R59 | The context wall's denominator moves a third between firings | Needs the operator | the operator's ruling on smoothing the ratio (the tree keeps it per round, as recommended) |
@@ -923,72 +918,17 @@ The design and the build are `docs/seat-todo.md`: `seat_todo` in the shared stor
 
 A Claude Code seat orchestrating letibot sessions has no board: its waits live in Monitors and its own memory. The bridge should serve the same `todo_write` / `todos` / `update` tools a session has, kept in the store under the seat's handle, with `wait_on` edges to letibot sessions, their jobs, room asks (R136) and the operator. The same idle check nags the seat through the channel push when a row is ready or in progress with no wait. Then Monitors are not needed for waiting on packages, and a seat's plan is visible on the head's todo pane like any session's.
 
-## R147 - A grant card is raised for a container's path or a glob
-
-**Status:** fixed. left: nothing.
-
-`Boundary::outside_paths` read every absolute path on a "No such file or directory" line of a command's output as a host path the view hid. A serenedb child running `docker run -v /tmp:/hosttmp ... ls /hosttmp/c-*` got the operator asked to grant `/hosttmp/c-*`. A card is now raised only for a path that exists on this host and has no glob characters (`is_a_host_path`, test `a_path_this_host_does_not_have_raises_no_grant_card`). The notes still describe what the command failed on.
-
 ## R149 - A placement caps a package's build width from the host's free cores
 
 **Status:** postponed by the operator on 2026-11-07. left: all of it.
 
 On 2026-11-07 four packages on lubuntu1, each with subagents running cargo at full width, drove its load to 254 on 32 cores. Remote writes then timed out (`remote_call_slow`, then a failed `edit`), and R139's turn was stopped by the progress check. The fix was a message asking each package for `CARGO_BUILD_JOBS=6`. A placement should set it instead: the daemon placing a session on a host knows the host's cores (`hosts.toml` `reserve` holds some back for the owner) and the packages already placed there, so it hands each session `CARGO_BUILD_JOBS` and a test-thread count from the free share, and a session's subagents divide their parent's share rather than each taking the whole box. The placement's status should say the share.
 
-## R145 - The review queue's session is seated a role its own prompt does not match
-
-**Status:** open. left: the role, its selection for the queue's session, and the reach of the two verbs.
-
-The queue's own session (`s-gatekeeper-*`, `crates/harnessd/src/sessions/gatekeeper.rs:31`) is seated `Seat::Orchestrator`, which resolves to `roles::m1_orchestrator()` (`crates/tools/src/runtime.rs:1025`): `read`, `grep`, `glob`, `ask_code`, `ask_corpus`, `read_spill`, `recall`, `todo_write`, `room`. Its prompt (`gatekeeper.rs:126`) prescribes `task_result` and `task_message` - the two doors on the reviewer child the queue's clock starts for each row - and that role has neither. `roles::orchestrator()` has them, and `task` with them, which is why the pair cannot simply be added to `m1_orchestrator`: that reaches every default session.
-
-The fix is a purpose-built role: M1's set plus `task_result` and `task_message`, and still no `task`, `task_start`, `review_verdict` or `bash` - the queue starts no child of its own (its clock does), runs no command and hands in no verdict (the reviewer does). Selected for the queue's session where the seat's role is resolved, by the session's id and not its `Seat`, so no other session moves. And the two verbs must resolve only the queue's own reviewer children: the daemon's runner addresses any live session by id, which `task_message` would otherwise turn into a door onto the whole daemon.
-
-The reviewer's seat (`Role::gatekeeper`, `runtime.rs:1143`) is the other half and must not move: `bash` behind the daemon's flag, `review_verdict`, and no `task_result`.
-
-**Done when**: the queue's session resolves to the new role, a session next door in the same workspace still resolves to M1, and a test over both roles names the delta between them.
-
 ## R150 - Plugin extension points: the head's UI moves out to plugins
 
 **Status:** both reviews written. left: the operator's answers (`docs/plugin-extension-points-wide.md` §8, 13 questions with defaults), then the build per its §6.
 
 `docs/plugin-extension-points.md` is the first review, scoped to the room chat: its decisions can be a plugin, its mechanics stay host. Ten host additions (X1-X10: a `chat` feed, a `stream` block, pictures by blob id, theme hues, an input surface, a `complete_` hook, acts in answers, cursor-mode keys, a clock in the input, and dock/built-in/exec/read fixes for the other panes) and packages H0, P5, P6 beside room-tui's P2-P4. The operator's ruling: the native renderer stays only as a safety net until the built-in chat plugin is proven, then goes. The review was too room-focused, so a second one covers the whole harness and head before questions 2-6 are answered.
-
-## R146 - Room routing: a gatekeeper sits in its project, `to:` is private, host is broadcasts
-
-**Status:** open. left: the five rules in the say and wake paths, one test each, plus the old store replaying.
-
-The host room is crowded: cross-project talk and the gatekeepers all sit there. The operator's rules, 2026-11-08:
-
-1. Gatekeepers sit in their project room: `gatekeeper@serenedb` is in `project/serenedb`, not `host`.
-2. `to: X` is a PRIVATE message: it goes to the dm channel between sender and X, never into host or a project room; only the two see it. `@X` in the text is a MENTION: the message stays public in the room where it was said, and it wakes X. If X cannot see that room, X is invited into it (the existing `Invite`), so the mention reaches X with its thread.
-3. Host keeps broadcasts (no `to`, no `@`) and the operator's messages (to and from the operator).
-4. A thread reply stays in its root's room.
-5. A session is woken only by rooms it sits in or was invited to, not by host chatter between others.
-
-Where it lands: `crates/room/src/server.rs` (`resolve_name`, `own_room_or`, `Invite`, `may_see`, the `say`/`dm` handlers, and how a coordinator's own project-less sessions get only host), `crates/room/src/chat.rs` (the wake predicate and the thread lookup), `crates/harnessd/src/room/link.rs` and `wake.rs` (`on_chat`, `names_you`, the wake), `crates/tools/src/builtins/room.rs` (the schema text says what `to` and `@` do), `crates/bridge/src/rooms.rs` (`room_say` for `cc@` seats follows the same rules). R139 is editing `server.rs`, `chat.rs` and `wire.rs` for attachments at the same time: keep the changes in the routing paths, add no wire field, and keep any wire change additive. A `to` beside a public thread is a dm that names the thread (`re #N in <room>: …`), the operator's ruling; no wire change.
-
-**Target:** a test per rule; the tool answer for a `to:` say says it went to dm; an `@` of an outsider invites them and the invite is in the roster; an old chat store replays.
-
-**A decision the operator has not made:** a `say` with both `to` and `thread` asks for two things the rules do not both allow - `to` is private, a reply stays in its root's room, which may be public. Taken the strict way (2026-11-08, this branch): it is refused, and the refusal names `dm` with the same `thread` as the private way and `@name` in the text as the public one. If the operator would rather it picked one, that is a change of the refusal alone.
-
-## R148 - A usage limit with a known reset never fails a session
-
-**Status:** built on branch `r148-limit-reset`, not merged. left: nothing on this branch; the merge queue lands it.
-
-Held by `crates/harnessd/tests/limits.rs` (six scenarios on fake providers and a clock the test moves: a park and its resume, a switch and the way back, a fallback that is limited too being skipped, a no-instant 429's long beat twice, the prose park, a prompt queued while parked), `crates/http/src/reset.rs` (the GLM text, the HTTP-date forms), `leticode-config`'s `[provider]` tests and `crates/bridge/src/head.rs`'s `LimitNews` words. `PROTOCOL_VERSION` 65: `Waiting::Limit` is a new variant on the activity.
-
-A session whose provider answered a usage limit ended the day as `FAILED - tried 6 times over 31s, then gave up: … http 429: Usage limit reached for 5 hour. Your limit will reset at 2026-11-07 21:02:27`. The operator's ruling is that a session never fails on a limit with a known reset: it either waits for it or switches models.
-
-```toml
-[provider]
-on_limit = "switch"   # or "wait"
-fallback = ["deepseek", "glm-coding/glm-5.3"]
-```
-
-- `switch` (the default when a fallback list is set): on a 429 with a reset, the session moves to the next fallback model it is not limited on, re-runs the same turn there, and moves back after the reset. A fallback that is itself limited is skipped. The status row and the session's own notes say `glm limited until 21:02, on deepseek`.
-- `wait` (the default when nothing is set): the session is parked until the reset plus a little jitter and resumes the same turn by itself. The status row says `paused until 21:02:27`, the idle plan-check is silent while parked and the session is not reported as stalled, and a prompt the operator sends meanwhile is queued and says what it waits for.
-- A 429 with no reset keeps the retry ladder, then waits five minutes and tries again instead of failing; after a few such rounds it fails as before.
-- The bridge's push (`crates/bridge/src/push.rs`) reports `limited until X`, `switched to Y` and `resumed` as channel events for held sessions.
 
 ## R152 - `tests/launcher.sh` stubs outlived their run, and four of its cases had drifted
 
