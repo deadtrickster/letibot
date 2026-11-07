@@ -686,16 +686,12 @@ impl App {
             return None;
         }
         let Some(chan) = self.rooms.selected() else {
-            let which = self
-                .rooms
-                .gone
-                .clone()
-                .unwrap_or_else(|| "the channel".into());
+            let which = self.rooms.gone.clone().unwrap_or_else(|| "the room".into());
             // The line is held, not swallowed: nothing was sent, so the words are still the
             // operator's to send somewhere real.
             self.set_composer(text.trim());
             self.say(&format!(
-                "{which} is gone, so nothing is selected - up or down picks a channel"
+                "{which} is gone, so nothing is selected - up or down picks a room"
             ));
             return None;
         };

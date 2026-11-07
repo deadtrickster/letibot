@@ -751,7 +751,8 @@ fn before_any_answer_the_view_says_it_is_asking() {
         let rows = screen(&mut a, cols);
         fits(&rows, cols);
         let all = rows.join("\n");
-        assert!(all.contains("channels"), "{all}");
+        assert!(all.contains("Rooms"), "{all}");
+        assert!(!all.contains("channel"), "{all}");
         assert!(all.contains("▸ host"), "{all}");
         assert!(all.contains("asking the coordinator"), "{all}");
     }

@@ -430,7 +430,7 @@ const JOB_OUT: &[Binding] = &[
 // while anything is typed, so the composer's Enter posts - and on an empty composer Enter
 // resends the channel's failed line. Page keys and the wheel scroll the chat.
 const ROOMS: &[Binding] = &[
-    b(UPDOWN, Always, Act::Cursor, Text("switches channel")),
+    b(UPDOWN, Always, Act::Cursor, Text("switches room")),
     b(
         &[On::Char('r')],
         Empty,
@@ -456,7 +456,7 @@ const ROOMS: &[Binding] = &[
         &[On::KillToEnd],
         Empty,
         Act::RoomSwitcher,
-        Text("switches channel"),
+        Text("switches room"),
     ),
     b(
         &[On::Tab],
@@ -723,7 +723,7 @@ impl Surface {
             Surface::Listing => "a slash command's listing",
             Surface::Rooms => {
                 "the chat rooms: the host room, one room per project and your DMs on the left, \
-                 the selected channel on the right; what you type posts as operator"
+                 the selected room on the right; what you type posts as operator"
             }
             Surface::PluginPane => {
                 "a plugin's pane: the dashboard a `pane` hook answered — its panels, what \

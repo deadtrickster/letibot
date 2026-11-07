@@ -665,7 +665,7 @@ impl App {
             _ if verb_arg(cmd, "search").is_some() => {
                 let rest = verb_arg(cmd, "search").unwrap_or("").to_string();
                 if !self.is_open(Surface::Rooms) {
-                    self.say("/search works on the channel /rooms has open — open it first");
+                    self.say("/search works on the room /rooms has open — open it first");
                     return None;
                 }
                 self.rooms_search(&rest);
@@ -1376,7 +1376,7 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "search",
-        "TEXT - matches in the channel /rooms has open; `n` and `N` step through them, and \
+        "TEXT - matches in the room /rooms has open; `n` and `N` step through them, and \
          `/search` with nothing after it closes the search",
     ),
     (

@@ -319,7 +319,7 @@ impl App {
     fn rooms_left(&mut self, lw: usize, room: usize) -> Vec<Line> {
         let channels = self.rooms.channels();
         let picked = self.rooms.selected();
-        let mut lines = vec![padded(pane::faint(trim_to("channels", lw)), lw)];
+        let mut lines = vec![padded(pane::faint(trim_to("Rooms", lw)), lw)];
         let mut sel_row = 0;
         let mut dm_heading = false;
         let mut at: Vec<(usize, Chan)> = Vec::new();
@@ -375,14 +375,10 @@ impl App {
         let Some(c) = self.rooms.selected() else {
             // The selected channel is gone rather than empty, and the sentence says which:
             // an empty channel draws "nothing here yet", which would be a lie here.
-            let which = self
-                .rooms
-                .gone
-                .clone()
-                .unwrap_or_else(|| "the channel".into());
+            let which = self.rooms.gone.clone().unwrap_or_else(|| "the room".into());
             return (
                 vec![pane::faint(format!(
-                    "  {which} is gone - up or down selects a channel"
+                    "  {which} is gone - up or down selects a room"
                 ))],
                 None,
             );
@@ -524,7 +520,7 @@ impl App {
         let header = self
             .rooms
             .selected()
-            .map_or_else(|| pane::title("no channel"), |c| self.rooms.header(&c, rw));
+            .map_or_else(|| pane::title("no room"), |c| self.rooms.header(&c, rw));
         right.insert(0, header);
         if let Some(l) = strip {
             right.insert(1, l);

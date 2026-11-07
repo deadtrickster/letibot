@@ -105,7 +105,7 @@ TUI (`crates/tui`)
 - A message is `seq! HH:MM <author> text`, text through `clean_line` and `wrap`, no markdown
   (`panes/rooms.rs:157-226`). Session ids are shown as titles via `rooms_names` (`panes/rooms.rs:430-450`),
   but only for the author column, not for `@s-...` inside the text.
-- Keys: Up and Down switch channel, `r` roster, `d` dismiss (`crates/tui/src/app/keys/bindings.rs:405-430`).
+- Keys: Up and Down switch room, `r` roster, `d` dismiss (`crates/tui/src/app/keys/bindings.rs:405-430`).
 - 61 tests in `crates/tui/src/app/tests/rooms.rs`.
 
 What the TUI already has elsewhere and the room does not use

@@ -500,7 +500,7 @@ impl App {
             "pick" => {
                 self.say(
                     "the chat layer asked for the host's picker, which this head has not got for a \
-                     layer yet — type the channel instead",
+                     layer yet — type the room instead",
                 );
                 None
             }
