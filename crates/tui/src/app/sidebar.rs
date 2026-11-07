@@ -17,6 +17,8 @@ pub(crate) const SIDE_MIN: usize = 18;
 pub(crate) struct Sidebar {
     pub on: bool,
     pub focus: bool,
+    /// Set by the frame: the sidebar is drawn beside this frame's `/rooms` view.
+    pub drawn: bool,
     /// The rows of the last frame, by screen row.
     pub rows: Vec<(usize, ListRow)>,
 }
@@ -48,7 +50,9 @@ impl App {
 
     /// The frame with the sidebar beside it, or a strip row that says it is collapsed.
     pub(crate) fn compose_framed(&mut self, term_w: usize, h: usize) -> Vec<String> {
-        match self.sidebar_fit(term_w) {
+        let fit = self.sidebar_fit(term_w);
+        self.sidebar.drawn = matches!(fit, Fit::Wide(_));
+        match fit {
             Fit::Off => {
                 self.sidebar.rows.clear();
                 self.compose_screen(term_w, h)

@@ -568,11 +568,19 @@ impl App {
                 palette,
             );
         }
-        let lw = self.rooms_left_width(w);
+        // With the sidebar drawn beside this view it is the navigation, and the room takes the
+        // whole width instead of repeating the list.
+        let listless = self.sidebar.drawn;
+        let lw = if listless {
+            0
+        } else {
+            self.rooms_left_width(w)
+        };
+        let sep = if listless { 0 } else { visible_width(SEP) };
         // Recorded for the same reason click arithmetic is: a test reading the column must
         // not re-derive a width the frame already computed.
         self.rooms_left_w = lw;
-        let full = w.saturating_sub(lw + visible_width(SEP));
+        let full = w.saturating_sub(lw + sep);
         let names = self.rooms_names();
         let room_key = match self.rooms.selected() {
             Some(Chan::Room(id)) => Some(id),
@@ -611,10 +619,14 @@ impl App {
             .then(|| member_strip(members.as_ref(), &names, rw));
         let chat_room = room - 2 - usize::from(strip.is_some());
         if wide {
-            self.rooms.member_col = (lw + visible_width(SEP) + rw + visible_width(SEP), mw);
+            self.rooms.member_col = (lw + sep + rw + visible_width(SEP), mw);
         }
 
-        let left = self.rooms_left(lw, room);
+        let left = if listless {
+            Vec::new()
+        } else {
+            self.rooms_left(lw, room)
+        };
         let (body, first) = self.rooms_body(rw);
         // The body has asked the chat layer by now: a layer that could not answer is a fallback
         // drawn here, and this is the frame that owes the reason - once, not every frame.
@@ -678,7 +690,9 @@ impl App {
                 for s in &l.spans {
                     out.push(Span::styled(s.content.clone(), l.style.patch(&s.style)));
                 }
-                out.push(Span::role(SEP, Role::Faint));
+                if !listless {
+                    out.push(Span::role(SEP, Role::Faint));
+                }
                 let r = if wide { padded(r, rw) } else { r };
                 for s in &r.spans {
                     out.push(Span::styled(s.content.clone(), r.style.patch(&s.style)));

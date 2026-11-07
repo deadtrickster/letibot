@@ -178,3 +178,21 @@ fn a_session_row_leaves_a_room_and_so_does_esc() {
     a.key(Key::Esc);
     assert!(!a.is_open(Surface::Rooms) && !a.sidebar.focus);
 }
+
+/// With the sidebar beside it `/rooms` draws no list of its own, and without it the list stays.
+#[test]
+fn the_rooms_view_has_no_list_of_its_own_beside_the_sidebar() {
+    let mut a = sidebar_with_rooms();
+    a.sidebar_act(Chan::Room("host".into()));
+    let rows = a.screen(160, 24);
+    let headings = rows.iter().filter(|r| r.contains("Sessions")).count();
+    assert_eq!(headings, 1, "{rows:#?}");
+    // The room's title starts at the left edge, where its own list used to be.
+    let (x, _) = pos(&rows, "host room", false);
+    assert!(x < 8, "{x}: {rows:#?}");
+
+    a.sidebar_command("off");
+    let rows = a.screen(160, 24);
+    let (x, _) = pos(&rows, "host room", false);
+    assert!(x > 8, "the list is back: {x}");
+}
