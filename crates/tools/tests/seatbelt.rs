@@ -1016,3 +1016,57 @@ fn every_seat_reads_the_stores_data_and_never_its_secrets_or_writes_it() {
         assert!(!out.contains("letibot-fixture-line"), "{out}");
     }
 }
+
+/// The point of the store rule: `sqlite3 -readonly` answers on a live WAL database that a daemon
+/// holds open, in a wide and a tight seat.
+#[test]
+fn sqlite_readonly_answers_on_a_live_wal_store_in_both_seats() {
+    use std::io::Write;
+    for tight in [false, true] {
+        let f = Fixture::new("sqlite");
+        let op = f.root.join("operator");
+        let store = fake_store(&op);
+        let db = store.join("sessions.db");
+        let _ = std::fs::remove_file(&db);
+        let mut writer = std::process::Command::new("/usr/bin/sqlite3")
+            .arg(&db)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("the writer starts");
+        writeln!(
+            writer.stdin.as_mut().expect("stdin"),
+            "PRAGMA journal_mode=wal; create table t(x); insert into t values (1),(2),(3);"
+        )
+        .expect("the writer is fed");
+        let shm = store.join("sessions.db-shm");
+        for _ in 0..100 {
+            if shm.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(shm.exists(), "the writer holds a -shm");
+        assert!(store.join("sessions.db-wal").exists(), "and a -wal");
+        let view = if tight {
+            f.view()
+        } else {
+            ViewSpec::project_only(f.project())
+                .with_home(HomeView::Dir(op.clone()))
+                .with_tmp(TmpView::Session(f.root.join("tmp")))
+        };
+        let s = Seatbelt::probe_as(view, Egress::Denied, vec![], op.clone())
+            .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+        let (rc, out) = run_in(
+            &s,
+            &f.project(),
+            &format!(
+                "/usr/bin/sqlite3 -readonly '{}' 'select count(*) from t'",
+                db.display()
+            ),
+        );
+        drop(writer.stdin.take());
+        let _ = writer.wait();
+        assert_eq!((rc, out.trim()), (0, "3"), "tight={tight}: {out}");
+    }
+}
