@@ -479,6 +479,27 @@ fn no_lease_says_nothing_is_serving_the_queues() {
     );
 }
 
+/// The synthetic first frame a daemon asks every built-in pane at a session's door
+/// (`PluginHost::ensure_builtin_panes`). Nothing to draw is a pane that SAYS so: passing here is a
+/// pane that vanishes, and a vanished pane reads as one somebody closed.
+#[test]
+fn a_host_with_no_feed_is_a_pane_that_says_so() {
+    let input = json!({
+        "v": letibot_plugin::pane::V,
+        "size": {"w": 20, "h": 5},
+        "feeds": {},
+    });
+    let bytes = serde_json::to_vec(&input).expect("the input serialises");
+    let text = answer(&bytes).expect("the layer answers rather than vanishing");
+    let view: Value = serde_json::from_str(&text).expect("and it is JSON");
+    let said = view.to_string();
+    assert!(said.contains("hands no `queue` feed"), "{said}");
+    assert!(
+        rows(&view).is_empty(),
+        "a pane with no feed claims no rows: {said}"
+    );
+}
+
 /// **A row names its repository when the scope holds more than one** - and only then. The answer is
 /// the host's (`scope.several`), never a reading of the scope's prose.
 #[test]

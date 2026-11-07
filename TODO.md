@@ -66,7 +66,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R153 | Placing a session on a busy host times out at 20 s | Needs the operator | the live proof on a loaded lab2x1: a placement there while the host is building, and a session's `job_wait` against it; the minute-long arranging budget, the one connection per host and the round a timed-out status query is not are landed |
 | R155 | A remote placement's memory cap is checked against the daemon's box, not the host the command runs on | Landed | built: the backend's `machine_memory`, a placement's `/proc/meminfo` over its own ssh link cached 30 s, an unknown host asks and every card and refusal names it; local sessions unchanged |
 | R156 | A Claude Code seat's nag repeats on every package job and offers the packages' jobs as its own waits | Code work | all of it |
-| R157 | Built-in panes `b-sessions`/`pane_sessions` and `b-irc`/`pane_nicks` trap with symbol-less backtraces | Code work | a reproduction (reported by gatekeeper@arangodb, room #1029), the cause, the fix |
+| R157 | Built-in panes `b-sessions`/`pane_sessions` and `b-irc`/`pane_nicks` trap with symbol-less backtraces | Code work | nothing: fixed (fuel exhaustion), with the measured limit in the section |
 | R154 | The channel push says turns, not work: idle-with-open-work and a held job's exit are silent, and a lost turn end is never replayed | Code work | all of it |
 | R159 | `←`/`→` in the `/sessions` tree collapse the wrong row, and `←` throws the cursor to another project | Code work | all of it |
 | R158 | Resuming a session reads gigabytes of the store: the startup corpus counts scan `adjudication` row by row | Landed | nothing — the counts read 4.98 MB where they read 1.80 GB; a live 10 GB store takes the index at its daemon's next start (one build, 8.6 s, 2.2 GB) |
@@ -1031,9 +1031,55 @@ Seen the first evening the seat board ran (R144): with one row in progress and t
 
 ## R157 - Built-in panes trap with symbol-less backtraces
 
-**Status:** open. left: a reproduction, the cause, the fix.
+**Status:** fixed. left: nothing in this row; the limit that remains is written below, and it is a
+bound for the operator to decide rather than a defect.
 
-gatekeeper@arangodb (room #1029, 2026-11-07) saw `b-sessions`/`pane_sessions` and `b-irc`/`pane_nicks` both trap, with backtraces of 17 and 18 frames and no symbols. Likely new since R151 installed the built-in panes at a head's door, so these are now compiled and asked in sessions that never asked them. The trap should be reproduced with the session's input, the modules built with names kept so a backtrace says where, and the cause fixed.
+gatekeeper@arangodb (room #1029, 2026-11-07) saw `b-sessions`/`pane_sessions` and `b-irc`/`pane_nicks` both trap, with backtraces of 17 and 18 frames and no symbols. Likely new since R151 installed the built-in panes at a head's door, so these are now compiled and asked in sessions that never asked them.
+
+**The trap is fuel exhaustion, and the frames are where it ran out.** `rano` answers a trap as
+`format!("trapped: {e}")` (`rano`'s `src/plugin.rs`, `call_bytes`), and wasmtime's `Display` for
+a trap is the wasm backtrace alone — the kind (`all fuel consumed by WebAssembly`) is a cause
+further down the error chain, so the sentence cannot name it. What names it is the number:
+`Stack::fuel(layer)` after a FAILED call reads exactly `rano::plugin::HOOK_FUEL` (50,000,000), and
+one under it for the last call that answered. Exactly two built-in panes declare
+`feeds = ["sessions"]` — the daemon's whole session list — so exactly those two trapped, and
+`pane_room`/`pane_github`/`pane_queue` did not.
+
+**Reproduced** through the real engine by `crates/harnessd/tests/builtin_panes.rs`, with 600 sessions
+of nothing special (one project, no parents): both panes trap at HEAD, and the fuel says where the
+line is — `pane_sessions` 300 rows 45.6M, 400 rows trap; `pane_nicks` 150 rows 41.7M, 200 rows trap.
+
+**The cause was the price of a call, in three parts.** (1) Both read the feed out of
+`letibot_plugin::pane::Input`, whose `feeds` is a `BTreeMap<String, Value>`: the whole list parsed
+into a tree and then parsed AGAIN into the layer's structs — P6's lesson, in a second place. (2)
+Both walks were O(n²): `pane_sessions` scanned the feed per row for its children, its fold glyph and
+its project's members; `pane_nicks` sorted its roster with `sort_by_key` over a key that scanned the
+feed and allocated a `String` per comparison, and `State::roster` asked `contains` per id. (3) Both
+built the answer as a `Value` tree row by row and then serialized it — about twenty allocations per
+row more than the row needs.
+
+**The fix:** each pane reads its own envelope with the feed TYPED on the way in (`Ask`/`Feeds`),
+every walk is a lookup (id index, children map, project map, one sort key per row, no `Vec<String>`
+joined per row), and the rows and the view are `Serialize` structs written straight out. Measured on
+the 600-row frame of `crates/harnessd/tests/builtin_panes.rs` (`--nocapture` prints the number):
+`pane_sessions` 34.2M and `pane_nicks` 41.3M of the 50M cap, where HEAD trapped both. On shorter
+titles and paths — the shape the first measurements used — the same 600 rows is 27.0M and 30M. The
+test asserts the fuel beside the answer, because the answer IS the budget.
+
+Also found by the same door, and fixed: `pane_sessions` and `pane_queue` answered `unchanged` on a
+frame with no feed, so the pane a daemon announces VANISHED instead of saying why; both now answer
+their own "this host hands no `X` feed" view, as `pane_nicks` already did. And
+`plugins/builtin/sessions/src/tests.rs` had not compiled since `bucket` arrived in the feed and not in
+its fixture — its 14 tests run again (`cargo test` in that directory; the guests are outside the
+workspace, so nothing ran them, which is what `crates/harnessd/tests/builtin_panes.rs` now does from
+the normal run for every built-in pane).
+
+**The limit that remains, and it is not a defect:** a pane's work is linear in the list and a call's
+fuel is fixed, so the wall is a row count rather than a bug — `pane_nicks` at the 600 rows above is
+at 41.3M of 50M, which puts it near seven hundred. Going past that means drawing fewer rows than
+the feed holds: the first N and a row saying how many were left. That changes what the session
+picker shows, which is why it is the operator's decision rather than a fix here, and the numbers to
+decide against are above.
 
 ## R159 - `←`/`→` in the `/sessions` tree collapse the wrong row
 

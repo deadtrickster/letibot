@@ -759,10 +759,32 @@ fn empty_of(view: &str) -> &'static str {
     }
 }
 
+/// **The pane a host hands no `queue` feed**: one sentence naming the missing half, because an
+/// empty queue and a broken host look identical on a screen and mean opposite things. A layer that
+/// passed instead would draw nothing at all, and a pane that vanishes is a pane somebody thinks
+/// they closed - the shape `pane_nicks` already answers with.
+fn no_feed() -> Value {
+    json!({
+        "title": "the merge queue: branches in review, and landings gated onto main",
+        "panels": [{
+            "id": "rows",
+            "title": "nothing in either queue",
+            "summary": [{"tree": {
+                "rows": [],
+                "empty": "this host hands no `queue` feed, so there is nothing to show — the \
+                          pane needs a head that builds feeds (docs/plugins-plan.md §4.9).",
+            }}],
+        }],
+    })
+}
+
 /// The pane's answer, or `None` for *unchanged*.
 fn answer(bytes: &[u8]) -> Option<String> {
     let input: Input = serde_json::from_slice(bytes).ok()?;
-    let feed: Feed = serde_json::from_value(input.feeds.get("queue")?.clone()).ok()?;
+    let Some(value) = input.feeds.get("queue") else {
+        return serde_json::to_string(&no_feed()).ok();
+    };
+    let feed: Feed = serde_json::from_value(value.clone()).ok()?;
     let folded = input.folded.get("finished").copied().unwrap_or(false);
     // **One repository in scope, or several?** A row names its repository only when there is more
     // than one to tell apart. The answer is the host's (`scope.several`), because the host is what
