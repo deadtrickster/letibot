@@ -2462,6 +2462,37 @@ fn no_such_session(e: impl std::fmt::Display) -> String {
 }
 
 /// Answer a question about the store and exit. No socket, no vocabulary, no model.
+/// `--listen WORDS`: `/listen` against the store before any daemon runs. `this` is the repository
+/// the process's cwd is in.
+pub(crate) fn listen_offline(
+    cfg: &Config,
+    store: &letibot_tokencore::store::Store,
+    words: &[String],
+) -> Result<i32, String> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| cfg.workspace.clone());
+    let config = crate::leticode_config::LeticodeConfig::discover(&cfg.workspace)
+        .and_then(|p| crate::leticode_config::LeticodeConfig::load(&p).ok())
+        .unwrap_or_default();
+    let config = config.queue_mute();
+    let (lines, ok) = if words.is_empty() {
+        (
+            crate::mergequeue::listen::show(store, &cfg.workspace, config),
+            true,
+        )
+    } else {
+        let this = crate::mergequeue::listen::this_repo(&cwd);
+        crate::mergequeue::listen::run(store, &cfg.workspace, config, words, this.as_deref())
+    };
+    for l in &lines {
+        if ok {
+            println!("{l}");
+        } else {
+            eprintln!("{l}");
+        }
+    }
+    Ok(if ok { 0 } else { 2 })
+}
+
 fn run_query(
     cfg: &Config,
     q: Query,
@@ -2717,36 +2748,7 @@ fn run_query(
             );
             Ok(0)
         }
-        Query::Listen(words) => {
-            let cwd = std::env::current_dir().unwrap_or_else(|_| cfg.workspace.clone());
-            let config = crate::leticode_config::LeticodeConfig::discover(&cfg.workspace)
-                .and_then(|p| crate::leticode_config::LeticodeConfig::load(&p).ok())
-                .unwrap_or_default();
-            let config = config.queue_mute();
-            let (lines, ok) = if words.is_empty() {
-                (
-                    crate::mergequeue::listen::show(&store, &cfg.workspace, config),
-                    true,
-                )
-            } else {
-                let this = crate::mergequeue::listen::this_repo(&cwd);
-                crate::mergequeue::listen::run(
-                    &store,
-                    &cfg.workspace,
-                    config,
-                    &words,
-                    this.as_deref(),
-                )
-            };
-            for l in &lines {
-                if ok {
-                    println!("{l}");
-                } else {
-                    eprintln!("{l}");
-                }
-            }
-            Ok(if ok { 0 } else { 2 })
-        }
+        Query::Listen(words) => listen_offline(cfg, &store, &words),
         Query::Delete(id) => match store.delete_empty_session(&id) {
             Ok(()) => {
                 println!("{id} deleted");

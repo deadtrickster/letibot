@@ -148,11 +148,16 @@ impl App {
             let notice = self.diff_popup.as_ref().is_some_and(|d| {
                 matches!(d.body, crate::app::diff_popup::PopupBody::Notice { .. })
             });
+            let mute = self.popup_red_repo().map(|r| format!("m mutes {r} · "));
+            let notice_bar = format!(
+                "{}↑↓ pgup/pgdn scroll · esc closes it",
+                mute.unwrap_or_default()
+            );
             return crate::ui::render::row(
                 &centred(
                     Some(&editor),
                     if notice {
-                        "↑↓ pgup/pgdn scroll · esc closes it"
+                        notice_bar.as_str()
                     } else {
                         "↑↓ pgup/pgdn scroll · ctrl-] opens it in the editor · esc closes it"
                     },

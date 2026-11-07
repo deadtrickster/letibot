@@ -220,7 +220,16 @@ impl Harness {
         if crate::mergequeue::root_session(store, &me) != me {
             return None;
         }
-        let mine = crate::mergequeue::repositories_of_workspace_cached(&self.cfg.workspace);
+        let mute = crate::mergequeue::listen::effective(
+            Some(store),
+            &self.cfg.workspace,
+            self.cfg.leticode.queue_mute(),
+        );
+        let mine: Vec<String> =
+            crate::mergequeue::repositories_of_workspace_cached(&self.cfg.workspace)
+                .into_iter()
+                .filter(|k| !crate::mergequeue::is_muted(k, &mute))
+                .collect();
         if mine.is_empty() {
             return None;
         }

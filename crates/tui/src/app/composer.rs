@@ -296,8 +296,59 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// The repositories of this folder, as the daemon's `listen.NAME` rows name them.
+    pub(crate) fn listen_repos(&self) -> Vec<String> {
+        self.settings
+            .iter()
+            .filter_map(|r| r.key.strip_prefix(crate::app::prefs::LISTEN_ROW))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Tab inside `/listen WORDS`: the last word completes to a repository (after `+` or `-`, or
+    /// after `only`), or to `only`, `all`, `this`. One match fills it in, several fill their common
+    /// start and are named.
+    fn complete_listen(&mut self, text: &str) {
+        let (head, last) = match text.rfind(char::is_whitespace) {
+            Some(i) => (&text[..=i], &text[i + 1..]),
+            None => return,
+        };
+        let after_only = head.trim_end().ends_with(" only");
+        let repos = self.listen_repos();
+        let (sign, stem) = match last.chars().next() {
+            Some(c @ ('+' | '-')) => (c.to_string(), &last[1..]),
+            _ => (String::new(), last),
+        };
+        let mut options: Vec<String> = if !sign.is_empty() || after_only {
+            repos.clone()
+        } else {
+            let mut o = vec!["only".to_string(), "all".to_string(), "this".to_string()];
+            o.extend(repos.iter().cloned());
+            o
+        };
+        options.retain(|o| o.starts_with(stem));
+        let Some(first) = options.first().cloned() else {
+            self.say("no repository or word of /listen starts so");
+            return;
+        };
+        let mut common = first;
+        for o in &options[1..] {
+            while !o.starts_with(&common) {
+                common.pop();
+            }
+        }
+        if options.len() > 1 {
+            self.say(&format!("/listen: {}", options.join(" · ")));
+        }
+        self.set_composer(&format!("{head}{sign}{common}"));
+    }
+
     pub(crate) fn complete_slash(&mut self) {
         let text = self.editor.text().to_string();
+        if text.starts_with("/listen ") {
+            self.complete_listen(&text);
+            return;
+        }
         if !text.starts_with('/') || text.contains(char::is_whitespace) {
             return;
         }

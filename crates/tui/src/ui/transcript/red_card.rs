@@ -187,6 +187,12 @@ fn repo_name(repo: &str) -> String {
         .unwrap_or_else(|| repo.to_string())
 }
 
+/// The directory name of the repository a red notice or warning names, if it names one.
+pub(crate) fn red_repo(text: &str) -> Option<String> {
+    let tip = notice_tip(text).or_else(|| warning_tip(text))?;
+    tip.repo.as_deref().map(repo_name)
+}
+
 /// A `target_red` warning's detail, read - `None` for a shape this head does not know. Two
 /// families, both after `EMERGENCY: `: the queue's own (`main` is RED at SHA in REPO, then the
 /// failing step) and the red tip's reviewer's (BY finds `main` broken at SHA, then how it was met).

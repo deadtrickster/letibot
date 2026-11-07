@@ -483,7 +483,9 @@ impl App {
                 value: r.value.clone(),
                 source: r.source.clone(),
                 choices: r.choices.clone(),
-                edit: if r.editable.is_empty() {
+                edit: if r.editable.is_empty() && r.key.starts_with(LISTEN_ROW) {
+                    ConfigEdit::No("muted in leticode.toml - edit the file, /listen cannot lift it")
+                } else if r.editable.is_empty() {
                     ConfigEdit::No("takes a restart of the daemon")
                 } else {
                     ConfigEdit::Session(r.key.clone(), r.editable.clone())
@@ -619,6 +621,20 @@ impl App {
                         self.say(&format!("{line} (asking the daemon)"));
                         Some(Action::Slash { line })
                     }
+                    // A repository's checkbox: flip it with `/listen`, then re-read the rows, since
+                    // the daemon pushes nothing when a mute changes.
+                    k if k.starts_with(LISTEN_ROW) => {
+                        let name = &k[LISTEN_ROW.len()..];
+                        let sign = if row.value.starts_with("[x]") {
+                            '+'
+                        } else {
+                            '-'
+                        };
+                        let line = format!("listen {sign}{name}");
+                        self.say(&format!("/{line} (asking the daemon)"));
+                        self.queued.push(Action::Settings);
+                        Some(Action::Slash { line })
+                    }
                     _ => {
                         let line = format!("change it with {how}");
                         self.say(&line);
@@ -634,6 +650,9 @@ impl App {
         }
     }
 }
+
+/// The key prefix of a repository's mute checkbox (`listen.NAME`), as the daemon publishes it.
+pub(crate) const LISTEN_ROW: &str = "listen.";
 
 /// One row of the config pane.
 #[derive(Debug, Clone)]

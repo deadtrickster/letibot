@@ -1632,3 +1632,56 @@ fn a_listen_mute_stops_that_repositorys_next_red_and_a_new_session_inherits_it()
         ["a"]
     );
 }
+
+/// `letibot --listen` writes the store before any session exists, so the first queue pass of a
+/// fresh session already skips the muted repository.
+#[test]
+fn the_launcher_flag_reaches_the_store_before_the_first_queue_pass() {
+    use letibot_tokencore::store::{HealthState, TargetHealth};
+    let Some(mut f) = Fixture::new("listen-flag") else {
+        return;
+    };
+    let org = f.dir.path().join("stroppy-io");
+    let child = |name: &str| {
+        let p = org.join(name);
+        std::fs::create_dir_all(&p).unwrap();
+        git(&p, &["init", "-q", "-b", "main"]);
+        git(
+            &p,
+            &[
+                "remote",
+                "add",
+                "origin",
+                &format!("https://github.com/stroppy-io/{name}.git"),
+            ],
+        );
+        std::fs::canonicalize(p).unwrap().display().to_string()
+    };
+    let a = child("a");
+    let b = child("b");
+    f.cfg.workspace = org.clone();
+    let code = crate::cli::listen_offline(&f.cfg, &f.store(), &["-b".to_string()]).unwrap();
+    assert_eq!(code, 0);
+    let s = f.store();
+    for repository in [&a, &b] {
+        s.set_target_health(
+            &TargetHealth {
+                repository: repository.clone(),
+                target: "main".into(),
+                sha: "8b9366aa12ffffffffffffffffffffffffffffff".into(),
+                state: HealthState::Red,
+                checked_ms: 1,
+                evidence: "`scripts/merge_gate.sh` failed".into(),
+                gate_steps: Vec::new(),
+            },
+            "test",
+        )
+        .unwrap();
+    }
+    let mut sessions = Sessions::open_first(&f.parts, f.cfg.clone(), f.registry.clone())
+        .expect("the session opens");
+    let project = sessions.held("s-parent").expect("the project's session");
+    let told = project.queue_emergency_notices();
+    assert_eq!(told.len(), 1, "{told:#?}");
+    assert!(told[0].contains(&a), "{}", told[0]);
+}

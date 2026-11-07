@@ -812,14 +812,20 @@ impl App {
     }
 
     /// `/listen only this`: `this` is the repository the header names, which only the head knows.
-    fn listen_line_with_this(&self, line: &str) -> String {
+    pub(crate) fn listen_line_with_this(&self, line: &str) -> String {
         let here = self.header_workspace();
         let name = std::path::Path::new(&here)
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         line.split_whitespace()
-            .map(|w| if w == "this" && !name.is_empty() { name.as_str() } else { w })
+            .map(|w| {
+                if w == "this" && !name.is_empty() {
+                    name.as_str()
+                } else {
+                    w
+                }
+            })
             .collect::<Vec<_>>()
             .join(" ")
     }

@@ -1907,6 +1907,51 @@ impl Config {
     /// Every setting this session runs under, one row each, for the head's config pane (`/config`)
     /// `value` rendered and never a secret, `source` where this struct knows it (empty otherwise), and
     /// `editable` the verb that changes the row now - empty for the rows that take a restart.
+    /// One row per repository of a folder project, `listen.NAME`: see `mergequeue::listen`.
+    pub fn listen_rows(&self) -> Vec<letibot_sessionlog::protocol::SettingRow> {
+        let keys = crate::mergequeue::repositories_of_workspace_cached(&self.workspace);
+        if keys.len() < 2 {
+            return Vec::new();
+        }
+        let store = self
+            .store
+            .as_ref()
+            .and_then(|p| letibot_tokencore::store::Store::open(p).ok());
+        let stored = store
+            .as_ref()
+            .map(|s| crate::mergequeue::listen::effective(Some(s), &self.workspace, &[]))
+            .unwrap_or_default();
+        let config = self.leticode.queue_mute();
+        keys.iter()
+            .map(|k| {
+                let name = std::path::Path::new(k)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| k.clone());
+                let locked = crate::mergequeue::is_muted(k, config);
+                let muted = locked || crate::mergequeue::is_muted(k, &stored);
+                letibot_sessionlog::protocol::SettingRow {
+                    key: format!("listen.{name}"),
+                    value: if muted { "[x] muted" } else { "[ ] listened" }.into(),
+                    source: if locked {
+                        "leticode.toml [queue] mute".into()
+                    } else if muted {
+                        "/listen".into()
+                    } else {
+                        "default".into()
+                    },
+                    editable: if locked {
+                        String::new()
+                    } else {
+                        format!("/listen -{name} · /listen +{name}")
+                    },
+                    choices: Vec::new(),
+                    tools: Vec::new(),
+                }
+            })
+            .collect()
+    }
+
     pub fn settings(
         &self,
         mode_source: &str,
@@ -2026,6 +2071,9 @@ impl Config {
             },
             "/nag pause [30m|2h] · /nag resume",
         ));
+        // A folder project's repositories, each a checkbox: muted ones are not told the gate's news.
+        // A mute from leticode.toml is locked (no verb), the rest toggle through `/listen`.
+        out.extend(self.listen_rows());
         // And which of those rows this box can actually use - *"model peeker should green models we
         // have keys for"*. Only the daemon can answer it: a head that guessed would green a row that
         // refuses at the first turn. `local` is absent on purpose - it needs no credential.
