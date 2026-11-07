@@ -1322,6 +1322,7 @@ mod attention;
 mod bindings;
 mod bursts;
 mod cardkeys;
+mod chat_plugin;
 mod cite;
 mod clickables;
 mod commands;

@@ -374,6 +374,31 @@ Done when:
   doc)
 - `the_chat_feed_carries_now_ms_and_the_local_offset`
 
+Built. Two facts worth keeping from the build:
+
+- **The fuel a 200-message window costs, measured** (lubuntu1, 2026-11-11): a feed of 200 messages
+  is **329,871 bytes** of JSON, and one call carrying it through a real engine - this binary's own
+  `sessions` layer, whose input parse is that JSON - burned **3,456,254 fuel** against the engine's
+  50M per call. The test asserts a ceiling of 8,000,000, a little over twice the measurement, so a
+  doubling of the engine's own work fails and the cap is never near. P6's chat layer will add its
+  own policy on top of a number that is therefore the BOUNDARY's price.
+- **`pick` is the one `X7` act that is not performed.** `room_say`, `room_dm`, `room_read`,
+  `room_invite`, `room_leave`, `copy` and `open` are host verbs the head already had; `pick` needs
+  the host's fuzzy picker to take layer-filled items and hand the choice back as an event, and that
+  is P6's switcher. A layer that asks for it is answered with a sentence rather than silently.
+
+Three seams outside P5's own list were needed, and each is one line plus its reason: `Host::call`
+(an UNCACHED hook call, with the fuel the answering module burned - the existing `ask` caches on the
+input's JSON, which for a pane asked once per generation is the wrong question), `App::chat_pane` (a
+field for the memo, as P3 needed one for the composer), and the four call sites the head already had
+for a chat: `ui/panes/rooms.rs`'s stream, `composer.rs`'s `Surface::Rooms` arm, `keys/mod.rs`'s Tab,
+and `chat_input`'s `write_candidate` becoming crate-visible so a layer's completion writes into the
+same editor.
+
+Hooks unchanged: no daemon change was needed. The `chat` feed is built by the head from its own
+`RoomsView`, so the `feed change re-asks the pane` rule of X1 is the head's memo alone; the daemon
+half of that paragraph (an open daemon pane re-asked when its feed moves) is still nobody's.
+
 ### P6 - `plugins/builtin/chat` (M, after P5)
 
 Owns `plugins/builtin/chat/**` only. `crates/builtins/build.rs` picks it up with no edit. Ports

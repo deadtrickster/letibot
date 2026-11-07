@@ -299,6 +299,11 @@ impl App {
         // from what this session ran. The composer's keys run after, since Tab means nothing to the editor, and
         // every other key leaves a running cycle alone.
         if let Key::Tab = k {
+            // A chat layer's input asks its own completion first (`X6`): the roster it ranks and
+            // the verbs it knows are the layer's, and a slash verb is only one of its shapes.
+            if self.chat_complete() {
+                return None;
+            }
             if self.editor.text().starts_with('!') {
                 self.complete_shell();
             } else {

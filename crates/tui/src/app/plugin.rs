@@ -15,6 +15,9 @@ use letibot_sessionlog::pane as pv;
 pub(crate) struct PluginState {
     pub(crate) held: Option<pv::View>,
     pub(crate) why: Option<String>,
+    /// `X8`'s cursor mode: a pane that owns the composer has its own keys live only after Tab put
+    /// the reader into the view, because otherwise every letter is the line being typed.
+    pub(crate) cursor: bool,
 }
 
 impl PluginState {
@@ -27,6 +30,7 @@ impl PluginState {
                 Ok(()) => PluginState {
                     held: Some(v),
                     why: None,
+                    cursor: false,
                 },
                 Err(why) => PluginState {
                     why: Some(why),
@@ -36,6 +40,7 @@ impl PluginState {
             Err(e) => PluginState {
                 held: None,
                 why: Some(format!("this head cannot read that pane's view: {e}")),
+                cursor: false,
             },
         }
     }
@@ -78,6 +83,33 @@ impl App {
     pub(crate) fn plugin_why(&self) -> Option<&str> {
         let name = self.plugin_open.as_deref()?;
         self.plugin_panes.get(name)?.why.as_deref()
+    }
+
+    /// Whether the pane on the screen is in cursor mode (`X8`).
+    pub(crate) fn plugin_cursor(&self) -> bool {
+        let Some(name) = self.plugin_open.as_deref() else {
+            return false;
+        };
+        self.plugin_panes.get(name).is_some_and(|s| s.cursor)
+    }
+
+    /// Enter or leave cursor mode. Leaving it hands the letters back to the composer, which is what
+    /// Esc promises on a pane that owns the input.
+    pub(crate) fn plugin_cursor_set(&mut self, on: bool) {
+        if let Some(name) = self.plugin_open.clone()
+            && let Some(st) = self.plugin_panes.get_mut(&name)
+        {
+            st.cursor = on;
+        }
+    }
+
+    /// Whether the view's own keys are live: always on a pane with no input, and in cursor mode on
+    /// one that owns the composer (`X8`).
+    fn plugin_keys_live(&self) -> bool {
+        self.plugin_view()
+            .map(|v| v.input.is_none())
+            .unwrap_or(false)
+            || self.plugin_cursor()
     }
 
     /// The stop under the cursor, clamped to a list that can move under it - a view is
@@ -175,6 +207,11 @@ impl App {
         if self.focused_surface() != Some(Surface::PluginPane) {
             return false;
         }
+        // Cursor mode is a mode INSIDE the view, so Esc leaves it before it leaves the view.
+        if self.plugin_cursor() {
+            self.plugin_cursor_set(false);
+            return true;
+        }
         if self.plugin_screen == view::Screen::Overview {
             return false;
         }
@@ -189,6 +226,52 @@ impl App {
     /// that swallowed every one would be a pane you cannot type under.
     pub(crate) fn plugin_key(&mut self, k: &Key) -> std::ops::ControlFlow<Option<Action>> {
         use std::ops::ControlFlow;
+        // Tab on a pane that owns an input enters its cursor mode (`X8`); without an input there
+        // is no mode to enter, and the view's keys are live all the time.
+        if matches!(k, Key::Tab)
+            && self.plugin_view().is_some_and(|v| v.input.is_some())
+            && !self.plugin_cursor()
+        {
+            self.plugin_cursor_set(true);
+            return ControlFlow::Break(None);
+        }
+        // The view's own keys: a letter of either case, `ctrl-k`, `home` or `end`. Live only in
+        // cursor mode on a pane with an input, and gated by `validate_for` otherwise.
+        if let Some(word) = view_key_word(k)
+            && self.plugin_keys_live()
+            && let Some(kind) = self.plugin_view().and_then(|v| {
+                v.keys
+                    .iter()
+                    .find(|vk| vk.word() == word)
+                    .and_then(|vk| vk.kind())
+            })
+        {
+            let pane = self.plugin_open.clone();
+            let item = self
+                .plugin_selected()
+                .map(|t| t.id().to_string())
+                .unwrap_or_default();
+            return match (kind, pane) {
+                // A line to the session's model goes through the composer's own path, as a stop's
+                // `say` does, and is never a second door into the model.
+                (pv::ActionKind::Say(text), _) => ControlFlow::Break(self.submit(text)),
+                (pv::ActionKind::Look, Some(pane)) => {
+                    ControlFlow::Break(Some(Action::PaneAction {
+                        pane,
+                        item,
+                        action: "look".to_string(),
+                    }))
+                }
+                (pv::ActionKind::Event(word) | pv::ActionKind::Verb(word), Some(pane)) => {
+                    ControlFlow::Break(Some(Action::PaneAction {
+                        pane,
+                        item,
+                        action: word,
+                    }))
+                }
+                (_, None) => ControlFlow::Continue(()),
+            };
+        }
         let Key::Char(c) = *k else {
             return ControlFlow::Continue(());
         };
@@ -332,6 +415,26 @@ impl App {
     /// The pane's rows, recording where each stop and each panel title landed - the record
     /// the arrows scroll by and a click is tested against, written by the frame that drew them.
     pub(crate) fn plugin_lines(&mut self, w: usize) -> Vec<String> {
+        // A stream names its pictures by blob id: the head fetches the ones it has not got, exactly
+        // as it does for the chat's own messages, so the picture draws where the layer put it.
+        let wanted: Vec<crate::app::rooms::Attach> = self
+            .plugin_view()
+            .map(|v| {
+                v.panels
+                    .iter()
+                    .flat_map(|p| p.summary.iter().chain(p.view.iter()))
+                    .filter_map(|b| match b {
+                        pv::Block::Stream(s) => Some(crate::app::chat_plugin::stream_pictures(s)),
+                        _ => None,
+                    })
+                    .flatten()
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !wanted.is_empty() {
+            let refs: Vec<&crate::app::rooms::Attach> = wanted.iter().collect();
+            self.room_pictures_wanted(&refs);
+        }
         let Some(v) = self.plugin_view() else {
             // A pane with no readable view says why: an empty dashboard and a plugin this
             // head cannot read look identical on a screen and mean opposite things.
@@ -351,7 +454,33 @@ impl App {
             ];
             return row_strings(&lines, self.cfg.palette());
         };
-        let content = view::content(v, self.plugin_screen, self.plugin_sel, w);
+        // The blobs of the pane's stream, by the id a body named: a layer names ids, and the host
+        // is the half that holds the bytes.
+        let mut blobs: std::collections::BTreeMap<String, crate::ui::chat::Blob> =
+            std::collections::BTreeMap::new();
+        for b in v
+            .panels
+            .iter()
+            .flat_map(|p| p.summary.iter().chain(p.view.iter()))
+        {
+            if let pv::Block::Stream(s) = b {
+                for a in crate::app::chat_plugin::stream_pictures(s) {
+                    blobs.insert(
+                        a.id.clone(),
+                        crate::ui::chat::Blob {
+                            name: String::new(),
+                            picture: true,
+                            size: None,
+                        },
+                    );
+                }
+            }
+        }
+        let picture = |blob: &str| self.room_picture(blob);
+        let selected = self.plugin_selected().map(|t| t.id().to_string());
+        let draw = view::PaneDraw::new(&self.cfg, &picture, &blobs)
+            .selected(selected.as_deref().filter(|id| !id.is_empty()));
+        let content = view::content_with(v, self.plugin_screen, self.plugin_sel, w, &draw);
         self.plugin_stop_rows = content.lines.stop_rows.clone();
         self.plugin_panel_rows = content.panels;
         self.plugin_legend_rows = content.legend;
@@ -518,4 +647,16 @@ impl App {
             ),
         }
     }
+}
+
+/// The word a view key is matched by: a letter of either case, lowercased so a shift and a plain
+/// letter cannot be two keys the head's `Key::Char` cannot tell apart, or one of `NAMED_KEYS`.
+fn view_key_word(k: &Key) -> Option<String> {
+    Some(match k {
+        Key::Char(c) => c.to_ascii_lowercase().to_string(),
+        Key::KillToEnd => "ctrl-k".to_string(),
+        Key::End => "end".to_string(),
+        Key::Home => "home".to_string(),
+        _ => return None,
+    })
 }

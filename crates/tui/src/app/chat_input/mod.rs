@@ -341,8 +341,9 @@ impl App {
     }
 
     /// Write a candidate into the line: the span it names goes, the insert lands at the span's
-    /// start and the caret after it, so the next word is typed on from there.
-    fn write_candidate(&mut self, from: usize, to: usize, insert: &str) -> String {
+    /// start and the caret after it, so the next word is typed on from there. Crate-visible
+    /// because a LAYER's completion (`complete_`) writes into the same editor as a room's.
+    pub(crate) fn write_candidate(&mut self, from: usize, to: usize, insert: &str) -> String {
         let len = self.editor.text().len();
         let end = to.min(len);
         let start = from.min(end);

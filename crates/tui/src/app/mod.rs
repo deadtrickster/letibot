@@ -1023,6 +1023,9 @@ pub struct App {
     /// P4's pictures: the blobs this head holds, the ones it asked for, and the uploads on their
     /// way out.
     pub(crate) media: chat_media::Media,
+    /// P5's chat layer: the feed generation it last answered and the view it answered with, held
+    /// here so a frame costs no call and a push re-asks once.
+    pub(crate) chat_pane: chat_plugin::ChatPane,
     /// A bulk announcement the daemon has not filled yet, recorded only when a snapshot is
     /// ingested and never by a live `TranscriptAppended`: a live row is body-less for the window of
     /// every ordinary message, so a trigger built on that would fire on a healthy session.
@@ -1475,6 +1478,7 @@ impl App {
             rooms: rooms::RoomsView::default(),
             nav: chat_nav::Nav::default(),
             media: chat_media::Media::default(),
+            chat_pane: chat_plugin::ChatPane::default(),
         }
     }
 
@@ -1576,6 +1580,7 @@ pub(crate) mod chat_adapter;
 pub(crate) mod chat_input;
 pub(crate) mod chat_media;
 pub(crate) mod chat_nav;
+pub(crate) mod chat_plugin;
 mod commands;
 mod composer;
 pub(crate) mod diff_popup;

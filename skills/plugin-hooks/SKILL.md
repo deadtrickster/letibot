@@ -58,8 +58,8 @@ in the layer of the session it governs.
 | a `/` verb the head asks before it answers the line itself | **`command_`** | `command_<verb>`, as in `command_todo` | the verb, as in `/todo …` |
 | a tool in the model's own tool list | **`tool_`** | `tool_<name>`, as in `tool_claude_transcript` | the `tool` list the model is sent |
 
-`plugin_hooks` has no page for `tool_` or `command_`: their two shapes are below, and they are the
-whole contract.
+`plugin_hooks` has no page for `tool_`, `command_` or `complete_`: their shapes are below, and they
+are the whole contract.
 
 ### `pane_<name>` — a screen
 
@@ -89,6 +89,29 @@ layer to parse. The answer is `-1` to pass, which leaves the line to the head's 
 `{"act": {"name": "add_todo", "args": {"content": "buy milk"}}}`. The head performs only the act
 names its own code knows, so an undeclared name reaches a screen as *nothing was added* rather than
 a write.
+
+An answer may carry several acts instead - `{"acts": [{"name": "room_say", "args": {"text": "…"}}]}`
+- and each is performed only if `actions` in the manifest declares it. That is also how a pane's own
+input surface talks to the host: a `pane_` view with `input: {"key": "host"}` makes the head's
+composer the pane's, Enter calls `command_<pane>` with the line, Tab calls `complete_<pane>`, and the
+answer's acts are what was typed becoming something. An act the manifest did not declare is refused
+and said.
+
+### `complete_<name>` — the candidates under the caret
+
+```toml
+name = "chat"
+hooks = ["pane_chat", "command_chat", "complete_chat"]
+feeds = ["chat"]
+```
+
+The input is `{"v", "text", "cursor", "key", "feeds", "now_ms", "utc_offset_s"}`: the whole line,
+the caret as a byte offset into it, and the pane's input key. The answer is
+`{"from", "to", "candidates": [{"insert", "label", "note", "hue"}]}` — at most eight, best first,
+where `from..to` is the span of the line an accepted candidate replaces. Tab asks it and a second Tab
+cycles, Enter accepts, Esc closes. Text never reaches the layer per keystroke and the head owns the
+editor: a span outside the line, one that splits a character, or more than eight candidates is
+refused rather than applied.
 
 ### `tool_<name>` — a tool the model calls
 

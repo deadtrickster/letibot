@@ -133,12 +133,13 @@ pub const SERVED_KINDS: &[&str] = &[
     "command_",
     "tool_",
     "adjudicate_",
+    "complete_",
 ];
 
-/// The prefixes the runtime recognises and this host never asks: rano's own (`provider_open`,
-/// `digest_…`, `link_…`). Named so that these two lists are the whole of [`HOOK_PREFIXES`]: a new
-/// prefix forces a decision about the skill.
-pub const UNSERVED_KINDS: &[&str] = &["provider_", "digest_", "link_", "complete_"];
+/// The prefixes the runtime recognises and this host never asks: nothing in the tree builds a hook
+/// name with them, so they are rano's own (`provider_open`, `digest_…`, `link_…`). Named so the two
+/// lists are the whole of [`HOOK_PREFIXES`]: a new prefix forces a decision about the skill.
+pub const UNSERVED_KINDS: &[&str] = &["provider_", "digest_", "link_"];
 
 /// The module a layer directory holds when its manifest names none.
 pub const WASM: &str = "plugin.wasm";

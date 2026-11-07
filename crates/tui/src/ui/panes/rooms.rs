@@ -381,10 +381,11 @@ impl App {
                 None,
             );
         };
-        // The channel as a layer sees it: what a message means is the adapter's to say, and this
-        // pane draws the stream it answers without ever reading a `Msg`.
+        // The channel as a layer sees it: what a message means is the layer's to say - a chat
+        // plugin's when one answers, the adapter's when none does - and this pane draws the stream
+        // it answers without ever reading a `Msg`.
         let names = self.rooms_names();
-        let stream = chat_adapter::stream(&self.rooms, &c, &names, OPERATOR, self.now_ms);
+        let stream = self.chat_stream(&c, &names);
         let blobs = chat_adapter::blobs(&self.rooms, &c);
         let picture = |blob: &str| self.room_picture(blob);
         // P4's cursor is a `seq`; an entry's id is what the renderer draws as selected.
@@ -478,6 +479,9 @@ impl App {
 
         let left = self.rooms_left(lw, room);
         let (body, first) = self.rooms_body(rw);
+        // The body has asked the chat layer by now: a layer that could not answer is a fallback
+        // drawn here, and this is the frame that owes the reason - once, not every frame.
+        self.chat_note();
 
         // Stay on the tail unless the reader scrolled back from it.
         let max = body.len().saturating_sub(chat_room);

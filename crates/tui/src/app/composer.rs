@@ -95,8 +95,12 @@ impl App {
         if self.focused_surface() == Some(Surface::Picker) {
             return self.pick(text.trim());
         }
-        // In the rooms view a line is a message to the selected channel.
+        // In the rooms view a line is a message to the selected channel - or, when a chat layer
+        // owns the input surface, whatever that layer answers `command_chat` with (`X5`).
         if self.focused_surface() == Some(Surface::Rooms) {
+            if self.chat_owns_input() {
+                return self.chat_command(&text);
+            }
             return self.rooms_say(&text);
         }
         // The mode picker takes the line the same way - a row number or a name

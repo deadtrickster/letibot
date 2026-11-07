@@ -9,7 +9,67 @@ use rano::agent::tree_list::{Action as TreeAction, Cell, Row as TreeRow, TreeLis
 use rano::render::{Line, Span};
 use rano::style::Role;
 
-use crate::ui::render::{trim_to, visible_width};
+use crate::ui::chat::{Blob, ChatCtx, Picture, Pictures, chat_blocks};
+use crate::ui::render::{RenderConfig, trim_to, visible_width};
+
+/// What a pane's `stream` and `markdown` blocks are drawn against: the head's palette, the pictures
+/// it holds, the entry under the cursor and the search needle. A caller with no head behind it
+/// ([`PaneDraw::plain`]) draws the default palette and no pictures, which is a fallback row each.
+#[derive(Clone, Copy)]
+pub(crate) struct PaneDraw<'a> {
+    cfg: Option<&'a RenderConfig>,
+    picture: Option<Pictures<'a>>,
+    blobs: Option<&'a std::collections::BTreeMap<String, Blob>>,
+    selected: Option<&'a str>,
+    highlight: Option<&'a str>,
+}
+
+/// The picture cache of a head that holds none: a picture draws its one-row fallback.
+fn no_picture(_: &str) -> Option<Picture> {
+    None
+}
+
+impl<'a> PaneDraw<'a> {
+    pub(crate) fn plain() -> PaneDraw<'static> {
+        PaneDraw {
+            cfg: None,
+            picture: None,
+            blobs: None,
+            selected: None,
+            highlight: None,
+        }
+    }
+
+    /// What the head draws a pane with, from the frame's own facts.
+    pub(crate) fn new(
+        cfg: &'a RenderConfig,
+        picture: Pictures<'a>,
+        blobs: &'a std::collections::BTreeMap<String, Blob>,
+    ) -> PaneDraw<'a> {
+        PaneDraw {
+            cfg: Some(cfg),
+            picture: Some(picture),
+            blobs: Some(blobs),
+            selected: None,
+            highlight: None,
+        }
+    }
+
+    pub(crate) fn selected(mut self, id: Option<&'a str>) -> PaneDraw<'a> {
+        self.selected = id;
+        self
+    }
+
+    fn cfg(&self) -> &RenderConfig {
+        // A frame is composed against a palette; a drawing with none is a test that asserts rows.
+        self.cfg.unwrap_or(&DEFAULT_CFG)
+    }
+}
+
+/// The palette a pane with no head behind it is drawn in - `RenderConfig::default()`, which is what
+/// a replay and a pipe compare against anyway.
+static DEFAULT_CFG: std::sync::LazyLock<RenderConfig> =
+    std::sync::LazyLock::new(RenderConfig::default);
 
 /// The eight steps a sparkline is drawn in, shortest to tallest - a history read as a shape
 /// rather than as numbers.
@@ -73,7 +133,6 @@ pub(crate) enum Item<'a> {
         block: usize,
         item: usize,
         text: &'a str,
-        heading: bool,
     },
     /// One entry of a `Block::Stream` - a chat message as a plugin answered it. The entry is what
     /// the cursor rests on, never a screen row of the body it draws: a message that wrapped onto
@@ -316,13 +375,12 @@ fn blocks<'a>(panel: usize, list: &'a [pv::Block], f: &mut impl FnMut(Walk<'a>))
                 }
             }
             pv::Block::Markdown(text) => {
-                for (item, (text, heading)) in markdown_items(text).into_iter().enumerate() {
+                for (item, (text, _)) in markdown_items(text).into_iter().enumerate() {
                     f(Walk::Item(Item::Markdown {
                         panel,
                         block,
                         item,
                         text,
-                        heading,
                     }));
                 }
             }
@@ -741,6 +799,18 @@ pub(crate) struct Content {
 /// The rows of a screen, and where each stop landed - what the pane draws, the arrows scroll by,
 /// and a click is tested against.
 pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> Content {
+    content_with(view, screen, sel, w, &PaneDraw::plain())
+}
+
+/// [`content`], drawn against what the head holds: its palette, the pictures it has fetched, the
+/// entry the reader stands on and what they are looking for.
+pub(crate) fn content_with(
+    view: &pv::View,
+    screen: Screen,
+    sel: usize,
+    w: usize,
+    draw: &PaneDraw<'_>,
+) -> Content {
     let g = grid(view, screen, w);
     let mut out = PaneLines::new();
     let mut panels: Vec<(usize, usize)> = Vec::new();
@@ -776,9 +846,10 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
     let before = out.lines.len();
 
     let mut next = 0usize;
-    // Whether the items now arriving belong to a tree block, whose rows their block already drew as
-    // one list. Set on every block, so an item always knows which block it is under.
+    // Whether the items now arriving belong to a tree block or a stream, whose rows their block
+    // already drew as one list. Set on every block, so an item knows which block it is under.
     let mut in_tree = false;
+    let mut in_stream = false;
     let selected = |it: &Item<'_>, next: &mut usize| -> bool {
         if it.stop().is_some() {
             let on = *next == sel;
@@ -817,6 +888,7 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
             // a mark per row from one `selected`, so it has to see the whole stand at once, and the
             // pane's stop counter is advanced here instead of once per item below.
             in_tree = matches!(block, pv::Block::Tree(_));
+            in_stream = matches!(block, pv::Block::Stream(_));
             match block {
                 pv::Block::Table(t) if !t.columns.is_empty() => {
                     let cells: Vec<String> = t.columns.iter().map(|c| clean_line(c)).collect();
@@ -873,19 +945,68 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
                         "   {kind} — this head does not draw that block kind"
                     )));
                 }
-                // H0 carries the contract and P2 draws the stream; until then it names itself, as
-                // a kind this head does not know does, rather than claiming the pane is empty.
-                pv::Block::Stream(_) => {
-                    out.push(pane::faint(
-                        "   stream — this head does not draw that block kind",
-                    ));
+                // H0 carries the contract and P2 draws the stream: every entry is a stop, and the
+                // block is drawn here as one stream - the entry above, the body under it, the
+                // pictures where the body named them.
+                pv::Block::Stream(s) => {
+                    let stops: Vec<bool> = s
+                        .entries
+                        .iter()
+                        .map(|e| !e.is_divider() && !e.id().is_empty())
+                        .collect();
+                    let n = stops.iter().filter(|b| **b).count();
+                    let here = (sel >= next && sel < next + n).then(|| sel - next);
+                    next += n;
+                    let none = std::collections::BTreeMap::new();
+                    let ctx = ChatCtx {
+                        width: w,
+                        cfg: draw.cfg(),
+                        picture: draw.picture.unwrap_or(&no_picture),
+                        blobs: draw.blobs.unwrap_or(&none),
+                        selected: draw.selected,
+                        highlight: draw.highlight,
+                    };
+                    let blocks = chat_blocks(s, &ctx);
+                    if blocks.is_empty() {
+                        out.push(pane::faint(format!("   {}", clean_line(&s.empty))));
+                    }
+                    let mut at = 0usize;
+                    for (i, b) in blocks.iter().enumerate() {
+                        let stop = stops.get(i).copied().unwrap_or(false);
+                        let on = stop && here == Some(at);
+                        if stop {
+                            at += 1;
+                        }
+                        for (li, line) in b.lines.iter().enumerate() {
+                            let mut row = if li == 0 {
+                                let lead = if stop {
+                                    format!("{} ", pane::mark(on))
+                                } else {
+                                    "  ".to_string()
+                                };
+                                let mut row = Line::new(vec![Span::role(lead, Role::Faint)]);
+                                row.spans.extend(line.spans.iter().cloned());
+                                row.style = line.style.clone();
+                                row
+                            } else {
+                                line.clone()
+                            };
+                            row = rano::render::truncate(&row, w);
+                            if li == 0 && stop {
+                                out.push_stop(row);
+                            } else {
+                                out.push(row);
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
         }
         Walk::Item(it) => {
-            // A tree's rows were drawn with their block, above, and counted there.
-            if in_tree {
+            // A tree's rows and a stream's entries were drawn with their block, above, and
+            // counted there.
+            if in_tree || in_stream {
                 return;
             }
             let on = selected(&it, &mut next);
@@ -922,17 +1043,21 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
                         w.saturating_sub(g.label + LEAD + 1),
                     )),
                 ]),
-                Item::Markdown { text, heading, .. } => {
-                    let body = if heading {
-                        text.trim_start().trim_start_matches('#').trim_start()
-                    } else {
-                        text
-                    };
-                    let r = if heading { Role::Heading } else { Role::Plain };
-                    let body = clean(body);
-                    let mut lines = wrapped(&body, w.saturating_sub(LEAD), r);
-                    // The rest of a wrapped item is drawn with it and is no stop: the cursor
-                    // rests on the item, not on the screen row.
+                // A markdown item is drawn by the transcript's own renderer, not by a wrap: a
+                // fence, a list and an inline style are what a dashboard's prose is written in,
+                // and the plain wrap showed them as punctuation (`X2`).
+                Item::Markdown { text, .. } => {
+                    let cols = w.saturating_sub(LEAD);
+                    let opts =
+                        crate::ui::render::md_options(draw.cfg(), draw.cfg().budget.body_lines);
+                    let mut lines: Vec<Line> = Vec::new();
+                    for block in rano::markdown::lex(text) {
+                        for l in rano::markdown::render_bounded(&block, cols, &opts) {
+                            lines.push(rano::render::truncate(&l, cols));
+                        }
+                    }
+                    // The rest of the item is drawn with it and is no stop: the cursor rests on
+                    // the item, not on the screen row.
                     let first = if lines.is_empty() {
                         Line::default()
                     } else {

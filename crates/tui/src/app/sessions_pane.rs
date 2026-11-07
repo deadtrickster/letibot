@@ -116,6 +116,12 @@ struct Cached {
 /// [`App::take_sessions_failure`], because the one that has to say it is a caller with a screen.
 pub(crate) struct Answered {
     pub(crate) view: Option<pv::View>,
+    /// The answer as the layer wrote it: a `command_` or `complete_` hook's own shape, which is
+    /// not a view.
+    pub(crate) answer: Option<Value>,
+    /// The fuel the answering layer's module burned on this call - `None` when nothing answered,
+    /// or when the answer came from the cache and nothing was measured.
+    pub(crate) fuel: Option<u64>,
 }
 
 impl Host {
@@ -346,6 +352,10 @@ impl Host {
                     .answer
                     .as_ref()
                     .and_then(|a| serde_json::from_value(a.clone()).ok()),
+                answer: cache.answer.clone(),
+                // A cache hit measured nothing: a caller that wants the fuel asks [`Host::call`],
+                // which is uncached for exactly that reason.
+                fuel: None,
             };
         }
         let value = serde_json::to_value(input).unwrap_or(Value::Null);
@@ -366,7 +376,33 @@ impl Host {
                 "a plugin layer could not draw {pane}, so it is drawn from below it: {said}"
             ));
         }
-        Answered { view }
+        Answered {
+            view,
+            answer: resolved.answer.clone(),
+            fuel: resolved.by.as_deref().and_then(|id| self.stack.fuel(id)),
+        }
+    }
+
+    /// One hook call through this host's stack, UNCACHED, with the fuel the answering module burned.
+    /// A pane whose feed changes at its own pace (the chat, asked once per generation) or a hook
+    /// that answers a keystroke (`complete_`) would spend the one-slot cache above on every frame.
+    pub(crate) fn call(&self, hook: &str, pane: &str, input: &Value) -> Answered {
+        let resolved = self.stack.call(hook, input);
+        let why = resolved.failures.first().map(|f| f.to_string());
+        let view = resolved
+            .answer
+            .as_ref()
+            .and_then(|a| serde_json::from_value::<pv::View>(a.clone()).ok());
+        if let (Some(said), Ok(mut slot)) = (why.as_ref(), self.problem.lock()) {
+            *slot = Some(format!(
+                "a plugin layer could not draw {pane}, so it is drawn from below it: {said}"
+            ));
+        }
+        Answered {
+            view,
+            fuel: resolved.by.as_deref().and_then(|id| self.stack.fuel(id)),
+            answer: resolved.answer,
+        }
     }
 
     /// The state a hook's layer answered with last time - per hook, because two panes share
