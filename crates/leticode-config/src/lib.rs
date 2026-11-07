@@ -1023,8 +1023,8 @@ fn boundary_keys(
     text: &str,
     user: bool,
 ) -> Result<BoundaryConfig, String> {
-    let keys = "the keys are `grants_ro`, `grants_rw`, `hide` (lists of paths) and `env` (a table of \
-                constants)";
+    let keys = "the keys are `grants_ro`, `grants_rw`, `hide` (lists of paths), `firecode_only` (a \
+                list of program names) and `env` (a table of constants)";
     let Some(table) = value.as_table() else {
         return Err(format!(
             "{}:{}: [boundary] is a table; {keys}",
@@ -1063,6 +1063,20 @@ fn boundary_keys(
             "grants_ro" => out.grants_ro = list("grants_ro")?,
             "grants_rw" => out.grants_rw = list("grants_rw")?,
             "hide" => out.hide = list("hide")?,
+            "firecode_only" => {
+                out.firecode_only = list("firecode_only")?;
+                if let Some(bad) = out
+                    .firecode_only
+                    .iter()
+                    .find(|e| e.value.is_empty() || e.value.contains(['/', ' ']))
+                {
+                    return Err(format!(
+                        "{}: [boundary] firecode_only: `{}` is not a program name; write the \
+                         bare name (`npm`), which also matches it by path",
+                        bad.from, bad.value
+                    ));
+                }
+            }
             "env" => {
                 let Some(t) = v.as_table() else {
                     return Err(format!(
@@ -3515,6 +3529,32 @@ mod tests {
             .collect();
         assert_eq!(all, vec!["~/a", "~/b", "~/d"]);
         assert!(LeticodeConfig::default().boundary.is_empty());
+    }
+
+    /// `firecode_only` is a project key: it narrows what a session runs, and the levels union.
+    #[test]
+    fn firecode_only_is_read_from_a_project_and_unions_with_the_users() {
+        let dir = project_dir("boundary-fconly");
+        let path = write_file(&dir, "[boundary]\nfirecode_only = [\"npm\", \"node\"]\n");
+        let project = LeticodeConfig::load(&path).expect("a project may set it");
+        assert_eq!(project.boundary.firecode_only[0].value, "npm");
+        assert_eq!(project.boundary.firecode_only[1].from.line, 2);
+        let dir = project_dir("boundary-fconly-user");
+        let path = write_file(&dir, "[boundary]\nfirecode_only = [\"node\", \"yarn\"]\n");
+        let user = LeticodeConfig::load_as(&path, Level::User).expect("parses");
+        let merged = user.boundary.overridden_by(&project.boundary);
+        let all: Vec<&str> = merged
+            .firecode_only
+            .iter()
+            .map(|e| e.value.as_str())
+            .collect();
+        assert_eq!(all, vec!["node", "yarn", "npm"]);
+        let bad = write_file(
+            &project_dir("boundary-fconly-bad"),
+            "[boundary]\nfirecode_only = [\"/bin/npm\"]\n",
+        );
+        let err = LeticodeConfig::load(&bad).expect_err("a path is not a program name");
+        assert!(err.contains("firecode_only") && err.contains(":2"), "{err}");
     }
 
     /// A file that does not parse as a boundary is a refusal with file and line, never an

@@ -198,7 +198,13 @@ pub fn apparatus_from(said: &str) -> Apparatus {
 }
 
 /// The gate, on `name`'s machine - the whole of [`super::gate::run_gate`]'s host arm.
-pub fn run_on_host(name: &str, worktree: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
+pub fn run_on_host(
+    name: &str,
+    worktree: &Path,
+    steps: &[String],
+    ctl: &GateControl,
+    in_firecode: bool,
+) -> GateRun {
     let remote = match Remote::open(name, worktree) {
         Ok(r) => r,
         Err(why) => return infra(steps, why),
@@ -206,6 +212,30 @@ pub fn run_on_host(name: &str, worktree: &Path, steps: &[String], ctl: &GateCont
     let mut cost = Cost::default();
     if let Err(why) = remote.prepare(ctl, &mut cost) {
         return infra(steps, format!("{why}{}", cost.said(&remote, ctl.budget)));
+    }
+    // A host without a working firecode judges nothing: the steps are not run on it bare.
+    if in_firecode
+        && let Err(why) = remote.call(
+            &format!("asking `firecode doctor` on {name}"),
+            &format!("{} doctor", super::gate_firecode::REMOTE_BIN),
+            SETUP_BOUND,
+        )
+    {
+        return GateRun {
+            verdict: GateVerdict::Infra(super::gate_firecode::unjudged(&format!(
+                "`firecode doctor` failed on {name}: {why}"
+            ))),
+            steps: steps
+                .iter()
+                .map(|s| letibot_tokencore::store::MergeGateStep {
+                    command: s.clone(),
+                    outcome: MergeGateOutcome::NotRun,
+                    output: String::new(),
+                    started_ms: 0,
+                    elapsed_ms: 0,
+                })
+                .collect(),
+        };
     }
     // The demand the step makes of the MACHINE is asked of the machine, once, before it runs
     // where it can be met the gate meets it (a delegated scope of its own)
@@ -220,7 +250,18 @@ pub fn run_on_host(name: &str, worktree: &Path, steps: &[String], ctl: &GateCont
         }
         wrapped |= plan.own_scope;
         let started = now_ms();
-        let end = remote.run_step(plan.command, plan.own_scope, (i + 1, steps.len()), ctl);
+        let wrapped;
+        let command = if in_firecode {
+            wrapped = super::gate_firecode::launch_with(
+                super::gate_firecode::REMOTE_BIN,
+                plan.command,
+                &remote.tree,
+            );
+            wrapped.as_str()
+        } else {
+            plan.command
+        };
+        let end = remote.run_step(command, plan.own_scope, (i + 1, steps.len()), ctl);
         let elapsed = now_ms().saturating_sub(started);
         let judged = judge(
             step,

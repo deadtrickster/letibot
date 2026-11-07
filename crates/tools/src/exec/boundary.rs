@@ -7,6 +7,7 @@
 //! grants_rw = ["~/scratch"]           # writable too (user file only)
 //! hide = ["~/.local/bin/secret-tool"] # denied after every grant, at both levels
 //! env = { RUST_LOG = "info" }         # constants handed to every command
+//! firecode_only = ["npm"]             # programs a call may only run inside firecode
 //! ```
 //!
 //! The defaults are [`super::confine::GRANT_CANDIDATES`]. The parser lives in `leticode-config`;
@@ -43,13 +44,16 @@ pub struct Entry<T> {
     pub from: Origin,
 }
 
-/// The four keys of both levels, unioned. Empty is today's behaviour.
+/// The five keys of both levels, unioned. Empty is today's behaviour.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BoundaryConfig {
     pub grants_ro: Vec<Entry<String>>,
     pub grants_rw: Vec<Entry<String>>,
     pub hide: Vec<Entry<String>>,
     pub env: Vec<Entry<(String, String)>>,
+    /// Programs a shell call may run only inside a firecode VM. It narrows what a session may
+    /// run, so a project file may set it.
+    pub firecode_only: Vec<Entry<String>>,
 }
 
 impl BoundaryConfig {
@@ -69,6 +73,7 @@ impl BoundaryConfig {
             grants_rw: union(&self.grants_rw, &other.grants_rw),
             hide: union(&self.hide, &other.hide),
             env: union(&self.env, &other.env),
+            firecode_only: union(&self.firecode_only, &other.firecode_only),
         }
     }
 
@@ -161,6 +166,8 @@ pub struct Resolved {
     /// The table the entries came from, so a grant's `why` names the key a reader can edit:
     /// `[boundary]`, or the `[perimeter.<name>]` that a session's perimeter was built from.
     pub label: String,
+    /// Every install of a `firecode_only` program the host holds, denied for read and exec.
+    pub firecode_only: Vec<(PathBuf, Origin)>,
 }
 
 impl Resolved {
@@ -171,6 +178,112 @@ impl Resolved {
             &self.label
         }
     }
+}
+
+/// Which install family a program name belongs to, so denying `npm` also denies the `node` it
+/// needs and the tree it lives in.
+fn family(name: &str) -> &'static str {
+    match name {
+        "node" | "npm" | "npx" | "corepack" => "node",
+        "pnpm" | "pnpx" => "pnpm",
+        "yarn" | "yarnpkg" => "yarn",
+        "bun" | "bunx" => "bun",
+        "deno" => "deno",
+        _ => "",
+    }
+}
+
+/// Where each family keeps versions of itself under a home.
+fn family_roots(fam: &str) -> &'static [&'static str] {
+    match fam {
+        "node" => &[
+            ".local/share/mise/installs/node",
+            ".nvm",
+            ".volta",
+            ".fnm",
+            ".local/share/fnm",
+            ".asdf/installs/nodejs",
+            ".nodenv",
+        ],
+        "pnpm" => &[".local/share/mise/installs/pnpm", ".local/share/pnpm"],
+        "yarn" => &[".local/share/mise/installs/yarn", ".yarn"],
+        "bun" => &[".local/share/mise/installs/bun", ".bun"],
+        "deno" => &[".local/share/mise/installs/deno", ".deno"],
+        _ => &[],
+    }
+}
+
+/// The paths that make `names` runnable on this host, from `path_env` (symlinks followed to their
+/// real files) and the install roots of each name's family. The seat denies them, so a renamed
+/// symlink, a Makefile or a script still meets a denied file.
+pub fn firecode_paths(
+    names: &[Entry<String>],
+    home: &Path,
+    path_env: &std::ffi::OsStr,
+) -> Vec<(PathBuf, Origin)> {
+    let mut out: Vec<(PathBuf, Origin)> = Vec::new();
+    for e in names {
+        let mut add = |p: PathBuf| out.push((p, e.from.clone()));
+        for dir in std::env::split_paths(path_env) {
+            let p = dir.join(&e.value);
+            if p.symlink_metadata().is_err() {
+                continue;
+            }
+            add(p.clone());
+            let Ok(real) = p.canonicalize() else { continue };
+            add(real.clone());
+            let comps: Vec<_> = real.components().collect();
+            // A package behind the link: deny the package, not just its entry file.
+            if let Some(i) = comps.iter().position(|c| c.as_os_str() == "node_modules")
+                && let Some(pkg) = comps.get(i + 1)
+            {
+                let mut d: PathBuf = comps[..=i].iter().collect();
+                d.push(pkg);
+                add(d);
+            }
+            // A Homebrew version directory holds the runtime and its bundled tools together.
+            if let Some(i) = comps.iter().position(|c| c.as_os_str() == "Cellar")
+                && comps.len() > i + 3
+            {
+                add(comps[..i + 3].iter().collect());
+            }
+        }
+        let fam = family(&e.value);
+        for rel in family_roots(fam) {
+            let d = home.join(rel);
+            if d.exists() {
+                add(d);
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.dedup_by(|a, b| a.0 == b.0);
+    out
+}
+
+/// The `node_modules/.bin` directories under a project, not descending into a `node_modules` or
+/// a build tree: what a package manager put there is a launcher for the denied runtime.
+pub fn project_bins(project: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let name = e.file_name();
+            let Ok(t) = e.file_type() else { continue };
+            if !t.is_dir() {
+                continue;
+            }
+            if name == "node_modules" {
+                out.push(e.path().join(".bin"));
+            } else if depth < 4 && name != ".git" && name != "target" {
+                walk(&e.path(), depth + 1, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(project, 0, &mut out);
+    out
 }
 
 fn path_of(
@@ -264,6 +377,11 @@ pub fn resolve(cfg: &BoundaryConfig, home: &Path) -> Result<Resolved, String> {
         }
         r.env.push((k.clone(), v.clone(), e.from.clone()));
     }
+    r.firecode_only = firecode_paths(
+        &cfg.firecode_only,
+        home,
+        &std::env::var_os("PATH").unwrap_or_default(),
+    );
     Ok(r)
 }
 
@@ -291,6 +409,9 @@ pub fn apply(mut seat: SeatView, r: &Resolved) -> SeatView {
         }
     }
     seat.masked.extend(r.hide.iter().map(|(p, _)| p.clone()));
+    seat.masked
+        .extend(r.firecode_only.iter().map(|(p, _)| p.clone()));
+    seat.firecode_only = r.firecode_only.clone();
     seat.masked.sort();
     seat.masked.dedup();
     seat.hidden = r.hide.clone();
@@ -450,6 +571,61 @@ fn age_of(at: std::time::SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A name on `PATH` is denied as written, as its real file, and as the package behind it.
+    #[test]
+    fn firecode_only_denies_the_link_its_target_and_the_package() {
+        let root = std::env::temp_dir().join(format!("fc-paths-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let pkg = root.join("Cellar/node/9.9/lib/node_modules/npm/bin");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("npm-cli.js"), "x").unwrap();
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::os::unix::fs::symlink(pkg.join("npm-cli.js"), root.join("bin/npm")).unwrap();
+        std::fs::create_dir_all(root.join("home/.nvm")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let pkg = root.join("Cellar/node/9.9/lib/node_modules/npm/bin");
+        let got = firecode_paths(
+            &[entry("npm", false)],
+            &root.join("home"),
+            root.join("bin").as_os_str(),
+        );
+        let paths: Vec<&Path> = got.iter().map(|(p, _)| p.as_path()).collect();
+        assert!(paths.contains(&root.join("bin/npm").as_path()), "{paths:?}");
+        assert!(
+            paths.contains(&pkg.join("npm-cli.js").as_path()),
+            "{paths:?}"
+        );
+        assert!(
+            paths.contains(&root.join("Cellar/node/9.9/lib/node_modules/npm").as_path()),
+            "{paths:?}"
+        );
+        assert!(
+            paths.contains(&root.join("Cellar/node/9.9").as_path()),
+            "{paths:?}"
+        );
+        assert!(
+            paths.contains(&root.join("home/.nvm").as_path()),
+            "{paths:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_bins_finds_launchers_without_walking_into_packages() {
+        let root = std::env::temp_dir().join(format!("fc-bins-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("web/node_modules/.bin")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/a/node_modules/.bin")).unwrap();
+        let got = project_bins(&root);
+        assert!(got.contains(&root.join("web/node_modules/.bin")));
+        assert!(got.contains(&root.join("node_modules/.bin")));
+        assert!(
+            !got.iter()
+                .any(|p| p.starts_with(root.join("node_modules/a")))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
     use crate::exec::seat::{self, Level};
     use crate::mode::Mode;
 

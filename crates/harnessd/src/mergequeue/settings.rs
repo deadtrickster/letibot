@@ -27,6 +27,10 @@
 //! reviewers_at_once = 4           # how many reviewers this queue runs AT ONCE. Default:
 //!                                 #   `vm` is the box's VM slots; `host` is what the pool
 //!                                 #   of machines can take, from their cores
+//! gate_in = "firecode"            # run the gate's steps inside a firecode VM over the gate's
+//!                                 #   checkout (read-only, nothing copied back). A machine
+//!                                 #   without a working firecode leaves the tip UNJUDGED.
+//!                                 #   Default: "host" - the steps run on the gate machine
 //! reviewer_hosts = ["lab2x1"]     # opt in: the declared hosts a `host` reviewer may be placed
 //!                                 #   on (`["*"]` is all of them). Default: this machine only
 //! ```
@@ -102,6 +106,29 @@ impl Reviewers {
     }
 }
 
+/// Where a gate's steps run on the gate machine - `[queue] gate_in`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GateIn {
+    /// Directly on the gate machine. The default.
+    #[default]
+    Host,
+    /// Inside a firecode VM over the gate's checkout.
+    Firecode,
+}
+
+impl GateIn {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.trim() {
+            "host" => Ok(GateIn::Host),
+            "firecode" => Ok(GateIn::Firecode),
+            other => Err(format!(
+                "gate_in = \"{other}\" - the words are \"host\" (the steps run on the gate \
+                 machine - the default) and \"firecode\" (each step runs in a firecode VM)"
+            )),
+        }
+    }
+}
+
 /// One project's queue settings, with where they came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueSettings {
@@ -126,6 +153,8 @@ pub struct QueueSettings {
     /// `hosts.toml`, or `None` for this machine (the default, and what every project gets until
     /// it says otherwise). The name is not checked here
     pub gate_host: Option<String>,
+    /// Whether the gate's steps run in a firecode VM - `[queue] gate_in`.
+    pub gate_in: GateIn,
     /// The skills this project's reviewers are started with - `[queue] reviewer_skills`. The
     /// bodies are preloaded into each reviewer's prompt, on top of the index every session gets
     /// (`Config::skills`, which the review queue's session carries). Empty is the ordinary case.
@@ -150,6 +179,7 @@ impl Default for QueueSettings {
             reviewers: Reviewers::Host,
             gate_train: 1,
             gate_host: None,
+            gate_in: GateIn::Host,
             reviewer_skills: Vec::new(),
             reviewers_at_once: None,
             reviewer_hosts: Some(vec!["local".to_string()]),
@@ -173,6 +203,8 @@ struct QueueTable {
     reviewers: Option<String>,
     #[serde(default)]
     gate_host: Option<String>,
+    #[serde(default)]
+    gate_in: Option<String>,
     /// The reviewer's declared skills; a name that resolves to nothing is refused by the `task`
     /// tool before the child starts, not silently dropped.
     #[serde(default)]
@@ -247,6 +279,10 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
         None => Reviewers::Host,
         Some(w) => Reviewers::parse(w).map_err(|e| format!("{}: [queue] {e}", path.display()))?,
     };
+    let gate_in = match q.gate_in.as_deref() {
+        None => GateIn::Host,
+        Some(w) => GateIn::parse(w).map_err(|e| format!("{}: [queue] {e}", path.display()))?,
+    };
     let gate_train = match q.gate_train {
         None => 1,
         Some(n) if n >= 1 => n as usize,
@@ -314,6 +350,7 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
     };
     Ok(QueueSettings {
         gate_carry,
+        gate_in,
         reviewers,
         gate_host: q
             .gate_host

@@ -735,7 +735,10 @@ impl RepoQueue {
         gate::watch(&wt, &self.key);
         let cancel = Arc::new(AtomicBool::new(false));
         let lease = self.lease_ok.clone();
-        let runner = self.env.gate.clone();
+        let gate_in = (self.env.settings)(&self.repo)
+            .map(|s| s.gate_in)
+            .unwrap_or_default();
+        let runner = super::gate_firecode::runner_for(gate_in, &self.env.gate);
         let deadline = Instant::now() + self.env.gate_deadline;
         let budget = self.env.gate_deadline;
         let stop = cancel.clone();

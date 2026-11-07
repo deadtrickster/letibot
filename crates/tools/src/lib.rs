@@ -36,6 +36,7 @@ pub mod events;
 pub mod exec;
 pub mod files;
 pub mod firecode;
+pub mod firecode_route;
 // `fanout` and `scenario`, and the engine under them: work on many hosts at once, each
 // leg a job of that host's own table and a `process` record the daemon's supervisor owns.
 pub mod fleet;

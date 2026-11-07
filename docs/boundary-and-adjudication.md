@@ -909,6 +909,7 @@ grants_ro = ["~/datasets"]           # a child's view reads it (a top-level seat
 grants_rw = ["~/scratch"]            # writable too; the USER file only
 hide = ["~/.local/bin/some-tool"]    # denied after every grant, both seats, both levels
 env = { RUST_LOG = "info" }          # constants handed to every command
+firecode_only = ["npm", "npx", "pnpm", "yarn", "node"]  # run only inside firecode
 ```
 
 - Defaults are `GRANT_CANDIDATES` (`crates/tools/src/exec/confine.rs`): one home-relative list read
@@ -1029,6 +1030,34 @@ And the flow the row describes: the main session (allow-all, wide perimeter) spa
 tight one; they commit on their branches and cannot push, so the only way their code reaches main is
 the review queue and its gate. The main session keeps its credentials and can push directly - the
 operator's "manual" mode, kept on purpose for when the queue itself is what is broken.
+
+### `firecode_only`: a program that runs only inside firecode
+
+It narrows what a session may run, so a project file may set it and the levels union. Two layers:
+
+- **The seat denies the program.** At seat open the names are resolved on the host: each `PATH`
+  entry, its symlink target, the package behind it, a Homebrew version directory, the install roots
+  of the family (`~/.nvm`, `~/.volta`, `~/.fnm`, mise `installs/{node,pnpm,yarn,bun,deno}`,
+  `~/.bun`, `~/.deno`) and every `node_modules/.bin` under the project. They go into the view's
+  mask, so macOS denies read and exec (a copy cannot be made, a symlink or a `make` target meets
+  the same file) and Linux leaves them out of the view. This is the guarantee. It does not parse.
+- **`bash` routes the call.** The command is read through the shell grammar (nested `sh -c`,
+  `env`, `exec`, `timeout`, `sudo`, `xargs`, `find -exec`, absolute and `node_modules/.bin` paths,
+  scripts it can open). A call that runs a listed program goes to a firecode VM: on a Mac the
+  project is mounted read-write (`--mount-rw`), one VM per session, stopped when the session
+  ends or after ten idle minutes. On Linux it is `firecode run`, and only the package manifests
+  are fetched back with `firecode cp`. The result carries one line saying it ran in firecode.
+  If firecode is not available the call is refused with the reason. It never runs in the seat.
+- **The tree guard.** Before a routed call the project is snapshotted (tracked files outside
+  `node_modules/`, untracked files, `.git/config`, `.git/hooks/*`, `.npmrc`). Afterwards only
+  `node_modules/` and `package.json`, `package-lock.json`, `npm-shrinkwrap.json`,
+  `pnpm-lock.yaml`, `yarn.lock` may differ. Anything else is put back and named in the result.
+  A write to git hooks, git config or `.npmrc` is reverted and reported as REFUSED. A project that
+  is not a git repository is not routed.
+- **What the analysis cannot see:** a `make` target or an npm script that calls the runtime, a
+  command name built from `$VAR`, a script it cannot read (named in the result), other
+  interpreters. Those fail at the seat's deny, not by routing. Background calls are refused.
+  A file tool naming a denied path gets a sentence naming this key.
 
 ### The file tools obey the same perimeter
 

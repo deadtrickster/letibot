@@ -23,6 +23,8 @@ pub struct Bash {
     /// Whether this session's model has been told that some modified files are past the
     /// snapshot budget. Said once: it is a fact the model can do nothing about.
     snapshot_budget_said: std::sync::atomic::AtomicBool,
+    /// `[boundary] firecode_only`: where a call that runs a listed program goes instead.
+    route: Option<crate::firecode_route::FirecodeRoute>,
 }
 
 impl Bash {
@@ -31,6 +33,108 @@ impl Bash {
         Bash {
             memory,
             ..Bash::default()
+        }
+    }
+
+    /// Route calls that run a `[boundary] firecode_only` program into the session's VM.
+    pub fn with_firecode_route(
+        mut self,
+        route: Option<crate::firecode_route::FirecodeRoute>,
+    ) -> Bash {
+        self.route = route;
+        self
+    }
+
+    /// The route's answer for `command`: `Err` is the finished call, `Ok` the notes about what
+    /// the analysis could not read when no listed program runs.
+    fn routed(
+        &self,
+        ctx: &InvokeCtx<'_>,
+        command: &str,
+        args: &Value,
+    ) -> Result<Vec<String>, Box<Invocation>> {
+        use crate::firecode_route::{examine, script_of};
+        let Some(route) = &self.route else {
+            return Ok(Vec::new());
+        };
+        let workspace = ctx.backend.workspace_path();
+        let at = |p: &str| match (&workspace, p.starts_with('/')) {
+            (Some(w), false) => format!("{w}/{p}"),
+            _ => p.to_string(),
+        };
+        let seen = examine(command, &route.only, &|p| {
+            script_of(ctx.backend.read(&at(p)))
+        });
+        let Some(hit) = seen.hit else {
+            return Ok(seen
+                .unseen
+                .iter()
+                .map(|u| {
+                    format!(
+                        "firecode_only: not checked, {u}. It ran in the seat, where the listed \
+                         programs are denied, so it fails there rather than running"
+                    )
+                })
+                .collect());
+        };
+        let key = format!(
+            "`{}` is listed in `[boundary] firecode_only` at {}",
+            hit.program, hit.listed.from
+        );
+        if args
+            .get("background")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            return Err(Box::new(Invocation::not_run(
+                "a firecode-only call cannot run in the background",
+                format!(
+                    "{key}, so this call runs in a firecode VM, and that route is foreground only. \
+                     Nothing was run. Call again without `background`."
+                ),
+            )));
+        }
+        let cwd = at(args.get("cwd").and_then(|v| v.as_str()).unwrap_or("."));
+        match route.vm.run(command, &cwd) {
+            Err(why) => Err(Box::new(Invocation::not_run(
+                format!(
+                    "`{}` runs only in firecode, and the route is not available",
+                    hit.program
+                ),
+                format!(
+                    "{key}, so this call may not run in the seat. It was not run: {why}. Fix \
+                     firecode on this host (`firecode doctor`) or remove the key. A child placed \
+                     with `task {{ where: \"firecode\" }}` is the other route."
+                ),
+            ))),
+            Ok(routed) => {
+                let full = String::from_utf8_lossy(&routed.output.stdout).into_owned();
+                let (mut text, capped) = tail_lines(&full, MAX_INLINE_LINES, MAX_INLINE_BYTES);
+                if capped {
+                    text.push_str("\n[output capped inline, the tail is kept]");
+                }
+                if routed.output.exit != 0 {
+                    text.push_str(&format!(
+                        "\n\n[exit {}] the command ran and exited non-zero. That is the \
+                         command's answer, not a harness failure.",
+                        routed.output.exit
+                    ));
+                }
+                // A change the guard could not undo leads the result, ahead of the output.
+                let (alarms, notes): (Vec<String>, Vec<String>) = routed
+                    .notes
+                    .into_iter()
+                    .partition(|n| n.starts_with("REFUSED-NOT-RESTORED"));
+                if !alarms.is_empty() {
+                    text = format!("{}\n\n{text}", alarms.join("\n"));
+                }
+                let mut inv = Invocation::ok(text)
+                    .with_note(format!("ran in firecode, not in the seat: {key}"));
+                for n in notes {
+                    inv = inv.with_note(n);
+                }
+                Err(Box::new(inv))
+            }
         }
     }
 
@@ -371,6 +475,11 @@ impl Tool for Bash {
             return Invocation::not_run(r.why(), r.body());
         }
 
+        let route_notes = match self.routed(ctx, command, args) {
+            Ok(n) => n,
+            Err(inv) => return *inv,
+        };
+
         // The workspace, not the backend's root: `root_path()` is `/` for an unconfined session,
         // which is the right answer to is-this-inside-the-boundary and the wrong one for where-is-
         // the-tree-I-am-watching, so seeded from `/` a shell that rewrites a file hands no diff.
@@ -419,7 +528,7 @@ impl Tool for Bash {
         // of the damage.
         let protected = host.protected();
         let verdict = crate::exec::predicate::examine(command, &protected);
-        let mut notes: Vec<String> = Vec::new();
+        let mut notes: Vec<String> = route_notes;
         match &verdict {
             Verdict::Refuse(h) => {
                 return Invocation::failed(

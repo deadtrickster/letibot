@@ -363,6 +363,21 @@ pub fn text_only_runner_harness() -> Harness {
     }
 }
 
+/// [`text_only_runner_harness`] with `bash` routing `[boundary] firecode_only` programs to `route`,
+/// so a test measures where a call goes without a VM or a process host.
+pub fn routed_harness(route: crate::firecode_route::FirecodeRoute) -> Harness {
+    let mut h = text_only_runner_harness();
+    let mut registry = crate::read_only_tools(Arc::new(Unavailable)).expect("built-ins register");
+    registry
+        .register(Box::new(
+            crate::builtins::bash::Bash::default().with_firecode_route(Some(route)),
+        ))
+        .expect("bash registers");
+    let backend = HostBackend::writable(h.root()).expect("fixture root");
+    h.rt = ToolRuntime::new(registry, Box::new(backend)).with_gate(allow_all());
+    h
+}
+
 /// A session that can run commands inside a measured project-scoped boundary, or the reason it
 /// cannot. A `Result` for [`runner_harness`]'s reason, and here the error branch is the more
 /// interesting: a host with no usable user namespace is a real host, so the caller must say.
