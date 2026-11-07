@@ -2089,6 +2089,9 @@ impl Harness {
             })
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::pkill::Pkill)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::ps::Ps)))
+            .and_then(|_| {
+                registry.register(Box::new(letibot_tools::builtins::screen::ScreenTool::new()))
+            })
             .map_err(|e| HarnessError::Setup(format!("registering the exec tools: {e}")))?;
         // Work across hosts: `fanout` and `scenario`, with the daemon's own process book behind
         // them, so a branch on ANOTHER machine is a supervised process a restart finds. A session
@@ -4141,6 +4144,7 @@ pub(crate) fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
                             | "monitor"
                             | "pkill"
                             | "ps"
+                            | "screen"
                             | "fanout"
                             | "scenario"
                     )

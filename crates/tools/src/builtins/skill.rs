@@ -83,6 +83,8 @@ pub struct Skill {
     /// Claude Code's `allowed-tools`, when the skill declares it: names, lowercased, with any
     /// `(...)` qualifier dropped. It can only narrow a session (`tool_ceiling`).
     pub allowed_tools: Option<Vec<String>>,
+    /// The frontmatter's `tools`, lowercased: read only to tell which tools the skill needs.
+    pub tools: Vec<String>,
     /// The frontmatter's `when_to_use`, when the author wrote one: the sentence a reader decides by
     /// and a ranker needs, since a `description` is often a title.
     pub when_to_use: Option<String>,
@@ -106,10 +108,84 @@ impl Skill {
             body: body.into(),
             source,
             allowed_tools: None,
+            tools: Vec::new(),
             when_to_use: None,
             keywords: Vec::new(),
             path: None,
         }
+    }
+
+    /// Why this seat cannot use the skill, or `None` when it can. `seat` is the lowercased names of
+    /// the tools the session has. Only `mcp__` tools and `the X connector` are checked: a skill that
+    /// names none needs nothing special, and a built-in skill is ours and always usable.
+    pub fn unmet(&self, seat: &BTreeSet<String>) -> Option<String> {
+        if matches!(self.source, SkillSource::BuiltIn) {
+            return None;
+        }
+        let has = |server: &str| {
+            let prefix = format!("mcp__{}__", server.to_ascii_lowercase());
+            seat.iter().any(|t| t.starts_with(&prefix))
+        };
+        // Declared tools are all needed, one server at a time.
+        let mut declared: Vec<String> = Vec::new();
+        for t in self.allowed_tools.iter().flatten().chain(&self.tools) {
+            if let Some(server) = mcp_server(t)
+                && !declared.contains(&server)
+            {
+                declared.push(server);
+            }
+        }
+        if let Some(missing) = declared.iter().find(|s| !has(s)) {
+            return Some(format!(
+                "declares tools of `mcp__{missing}__*`, none on this seat"
+            ));
+        }
+        // Named in the body: the names are alternatives, one present is enough.
+        let mut named: Vec<String> = Vec::new();
+        let mut rest = self.body.as_str();
+        while let Some(at) = rest.find("mcp__") {
+            let tail = &rest[at..];
+            let end = tail
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+                .unwrap_or(tail.len());
+            if let Some(server) = mcp_server(&tail[..end])
+                && !named.contains(&server)
+            {
+                named.push(server);
+            }
+            rest = &tail[end.max(5)..];
+        }
+        if !named.is_empty() && !named.iter().any(|s| has(s)) {
+            let list: Vec<String> = named.iter().map(|s| format!("mcp__{s}__*")).collect();
+            return Some(format!(
+                "names tools {} and this seat has none",
+                list.join(", ")
+            ));
+        }
+        // "the docs connector": a connector word must appear in some mcp tool name on the seat.
+        let lower = self.body.to_ascii_lowercase();
+        let mut words: Vec<&str> = Vec::new();
+        let mut it = lower.split_whitespace().peekable();
+        let mut prev = "";
+        while let Some(w) = it.next() {
+            if w.trim_matches(|c: char| !c.is_ascii_alphanumeric()) == "connector"
+                && prev.len() > 1
+                && prev != "the"
+                && prev.chars().all(|c| c.is_ascii_alphanumeric())
+            {
+                words.push(prev);
+            }
+            prev = w;
+        }
+        let connector_ok = |w: &str| seat.iter().any(|t| t.starts_with("mcp__") && t.contains(w));
+        if let Some(w) = words.iter().find(|w| !connector_ok(w))
+            && !words.iter().any(|w| connector_ok(w))
+        {
+            return Some(format!(
+                "needs the `{w}` connector, no such tools on this seat"
+            ));
+        }
+        None
     }
 
     /// What this skill is scored on: its whole frontmatter, never its body. A one-line
@@ -352,6 +428,8 @@ impl SkillRegistry {
                 "plugin-hooks",
                 include_str!("../../../../skills/plugin-hooks/SKILL.md"),
             ),
+            // How to look at a UI change with the `screen` tool.
+            ("screen", include_str!("../../../../skills/screen/SKILL.md")),
         ]
         .into_iter()
         .filter_map(|(what, text)| {
@@ -647,6 +725,14 @@ impl SkillRegistry {
     }
 }
 
+/// `mcp__server__tool*` or `mcp__server`: the server part, lowercased.
+fn mcp_server(name: &str) -> Option<String> {
+    let rest = name.to_ascii_lowercase();
+    let rest = rest.strip_prefix("mcp__")?;
+    let server = rest.split("__").next()?.trim_matches(['*', '_']);
+    (!server.is_empty()).then(|| server.to_string())
+}
+
 fn names_or_none(skills: &[Skill]) -> String {
     if skills.is_empty() {
         "none".into()
@@ -773,6 +859,7 @@ fn from_text(text: &str, source: SkillSource) -> Option<Skill> {
     let mut name = None;
     let mut description = None;
     let mut allowed = None;
+    let mut tools_line = Vec::new();
     let mut when = None;
     let mut keywords = Vec::new();
     for line in front.lines() {
@@ -786,6 +873,8 @@ fn from_text(text: &str, source: SkillSource) -> Option<Skill> {
             if !tools.is_empty() {
                 allowed = Some(tools);
             }
+        } else if let Some(v) = line.strip_prefix("tools:") {
+            tools_line = tool_names(v);
         } else if let Some(v) = line.strip_prefix("when_to_use:") {
             when = Some(v.trim().to_string()).filter(|v| !v.is_empty());
         } else if let Some(v) = line.strip_prefix("keywords:") {
@@ -807,6 +896,7 @@ fn from_text(text: &str, source: SkillSource) -> Option<Skill> {
         body: rest.trim_start().to_string(),
         source,
         allowed_tools: allowed,
+        tools: tools_line,
         when_to_use: when,
         keywords,
         path: None,

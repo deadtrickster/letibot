@@ -315,6 +315,16 @@ pub trait ProcessHost: Send + Sync {
     /// End a scope: kill everything under it, and record it.
     fn end_scope(&self, scope: &ScopeId) -> Result<Reaping, ExecError>;
 
+    /// The argv a pty program is started inside, the boundary a `bash` call gets. `None` is a
+    /// host that cannot run a pty program here, so a caller says so and starts nothing.
+    fn terminal_argv(
+        &self,
+        _cwd: &std::path::Path,
+        _env: &[(String, String)],
+    ) -> Option<Result<Vec<String>, String>> {
+        None
+    }
+
     /// Move a running job into a scope that outlives the turn, and record what moved: the one verb behind
     /// the runtime's threshold and a person promoting from a head. A [`Promotion`], never a bool. The frame
     /// that would let a head ask is not on the wire: a new `ClientFrame` variant bumps `PROTOCOL_VERSION`:
@@ -1378,6 +1388,14 @@ impl HostProcesses {
 }
 
 impl ProcessHost for HostProcesses {
+    fn terminal_argv(
+        &self,
+        cwd: &std::path::Path,
+        env: &[(String, String)],
+    ) -> Option<Result<Vec<String>, String>> {
+        Some(self.terminal_wrap(cwd, env).map_err(|e| e.to_string()))
+    }
+
     /// Read off the state, both halves: the sentence comes from [`Confinement::describe`],
     /// which comes from a boundary measured from inside itself, rather than from a banner that
     /// asserts a property of the session.

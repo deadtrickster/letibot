@@ -1016,6 +1016,9 @@ pub mod roles {
                 // table that never lists this process. Seated with the shell, which is what
                 // it looks at.
                 "ps",
+                // `screen`: a program on a pty, seen as text or a picture, so a UI change can be
+                // looked at. Seated with the shell, because it runs commands.
+                "screen",
                 // `fanout` and `scenario`: work on many hosts at once. Seated beside `bash` and
                 // `hosts`, because a seat that can reach one machine at a time is the seat that
                 // hand-rolls `ssh ... &` and a `ps` poll.
@@ -1068,7 +1071,7 @@ pub mod roles {
         // The declared ceiling is this list's own count and not DEFAULT_MAX_TOOLS: the
         // number is written down where somebody deciding can read it, and a ceiling
         // quietly raised for everybody is not a ceiling.
-        r.max_tools = 38;
+        r.max_tools = 39;
         r
     }
 
@@ -2915,7 +2918,7 @@ mod tests {
         // It took its own seat rather than trading for one: nothing left the list when it
         // arrived, which is the property `max_tools` is declared for. The count is pinned so a
         // tool added without a decision fails here.
-        assert_eq!(seat.tools.len(), 37, "{:?}", seat.tools);
+        assert_eq!(seat.tools.len(), 38, "{:?}", seat.tools);
         assert!(
             seat.tools.len() <= seat.max_tools,
             "the seat is over its own ceiling: {} > {}",

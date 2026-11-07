@@ -1207,25 +1207,34 @@ fn perimeter_tables(
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SkillKeys {
     pub pin: Vec<String>,
+    /// Skills never offered or listed as usable, whatever their score: the operator's veto for
+    /// skills that name tools this box lacks and that the automatic filter cannot see.
+    pub never_offer: Vec<String>,
 }
 
 impl SkillKeys {
     /// The two levels as one: this level's names in its own order, then the ones `other`
     /// adds, each once. See the type's note on why a pin unions rather than overrides.
     pub fn overridden_by(&self, other: &SkillKeys) -> SkillKeys {
-        let mut pin: Vec<String> = Vec::with_capacity(self.pin.len() + other.pin.len());
-        for name in self.pin.iter().chain(other.pin.iter()) {
-            if !pin.contains(name) {
-                pin.push(name.clone());
+        let union = |a: &[String], b: &[String]| {
+            let mut out: Vec<String> = Vec::with_capacity(a.len() + b.len());
+            for name in a.iter().chain(b.iter()) {
+                if !out.contains(name) {
+                    out.push(name.clone());
+                }
             }
+            out
+        };
+        SkillKeys {
+            pin: union(&self.pin, &other.pin),
+            never_offer: union(&self.never_offer, &other.never_offer),
         }
-        SkillKeys { pin }
     }
 
     /// Whether the file said anything at all, for the disclosure, which must not claim a
     /// setting nobody made.
     pub fn is_empty(&self) -> bool {
-        self.pin.is_empty()
+        self.pin.is_empty() && self.never_offer.is_empty()
     }
 }
 
@@ -1235,17 +1244,17 @@ impl SkillKeys {
 struct SkillTable {
     #[serde(default)]
     pin: Option<Vec<String>>,
+    #[serde(default)]
+    never_offer: Option<Vec<String>>,
 }
 
 fn skill_keys(value: &toml::Value) -> Result<SkillKeys, String> {
     let t: SkillTable = value.clone().try_into().map_err(|e| {
-        format!(
-            "[skills]: {e}; the one key is `pin`, a list of the skill names this level keeps \
-             loaded"
-        )
+        format!("[skills]: {e}; the keys are `pin` and `never_offer`, lists of skill names")
     })?;
     Ok(SkillKeys {
         pin: t.pin.unwrap_or_default(),
+        never_offer: t.never_offer.unwrap_or_default(),
     })
 }
 
@@ -3274,6 +3283,10 @@ mod tests {
             LeticodeConfig::default().skills.is_empty(),
             "a file that says nothing pins nothing"
         );
+
+        let path = write_file(&dir, "[skills]\nnever_offer = [\"x\", \"y\"]\n");
+        let cfg = LeticodeConfig::load(&path).expect("never_offer parses");
+        assert_eq!(cfg.skills.never_offer, ["x", "y"]);
 
         let path = write_file(&dir, "[skills]\npi = [\"x\"]\n");
         let err = LeticodeConfig::load(&path).unwrap_err();

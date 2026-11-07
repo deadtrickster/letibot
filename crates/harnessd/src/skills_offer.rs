@@ -2,7 +2,7 @@
 //! never the prefix (a prefix change re-prefills the conversation) and never a row (a row cannot be
 //! un-said). Earned by a score floor, at most two, silent when unsure, recomposed each round.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
 use letibot_tokencore::store::{TodoBy, TodoItem};
@@ -77,6 +77,13 @@ pub struct Offers {
     /// The box's second tier, when it has one: this registry's vectors, and nothing of another
     /// caller's. `None` is the lexical score exactly, which is the default.
     tier: Option<Tier>,
+    /// The tools this seat has, lowercased. `None` filters nothing (a fixture, a caller with no seat).
+    seat: Option<BTreeSet<String>>,
+    /// `[skills] never_offer`: names refused whatever their score.
+    never: HashSet<String>,
+    /// Skills passed over this session and why, written to the log once each.
+    skipped: Vec<(String, String)>,
+    skip_logged: HashSet<String>,
 }
 
 impl Offers {
@@ -88,6 +95,17 @@ impl Offers {
     /// before the tier existed; the floor is this caller's either way.
     pub fn with_tier(mut self, tier: Option<Tier>) -> Offers {
         self.tier = tier;
+        self
+    }
+
+    /// Offer only what this seat can use: `tools` are its tool names, `never` the operator's veto.
+    pub fn with_seat<'a>(
+        mut self,
+        tools: impl IntoIterator<Item = &'a String>,
+        never: impl IntoIterator<Item = &'a String>,
+    ) -> Offers {
+        self.seat = Some(tools.into_iter().map(|t| t.to_ascii_lowercase()).collect());
+        self.never = never.into_iter().cloned().collect();
         self
     }
 
@@ -108,6 +126,9 @@ impl Offers {
             let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
             };
+            if row.get("skipped").is_some() {
+                continue;
+            }
             if row.get("session").and_then(|s| s.as_str()) != Some(session) {
                 continue;
             }
@@ -144,10 +165,36 @@ impl Offers {
         if text.trim().is_empty() {
             return false;
         }
-        self.open = registry
+        let candidates: Vec<(String, f64)> = registry
             .ranked_with(text, OFFERS_MAX * 4, self.tier.as_ref())
             .into_iter()
             .filter(|(name, score)| *score >= OFFER_FLOOR && !self.offered.contains(name))
+            .collect();
+        let live = match (&self.seat, candidates.is_empty()) {
+            (Some(_), false) => registry.live_skills(),
+            _ => Vec::new(),
+        };
+        let mut kept = Vec::new();
+        for (name, score) in candidates {
+            let why = if self.never.contains(&name) {
+                Some("never_offer".to_string())
+            } else {
+                match (&self.seat, live.iter().find(|s| s.name == name)) {
+                    (Some(seat), Some(skill)) => skill.unmet(seat),
+                    _ => None,
+                }
+            };
+            match why {
+                Some(why) => {
+                    if !self.skipped.iter().any(|(n, _)| *n == name) {
+                        self.skipped.push((name, why));
+                    }
+                }
+                None => kept.push((name, score)),
+            }
+        }
+        self.open = kept
+            .into_iter()
             .take(OFFERS_MAX)
             .map(|(name, score)| Offer {
                 name,
@@ -170,10 +217,21 @@ impl Offers {
     /// Logged either way, because the ratio is what tunes [`OFFER_FLOOR`].
     pub fn settle(&mut self, logs: &Path, session: &str, calls: &[ToolCall]) -> Vec<Offer> {
         let mut open = std::mem::take(&mut self.open);
-        if open.is_empty() {
+        let mut lines = String::new();
+        for (name, why) in std::mem::take(&mut self.skipped) {
+            if self.skip_logged.insert(name.clone()) {
+                lines.push_str(&format!(
+                    "{{\"at\":{},\"session\":{},\"skill\":{},\"skipped\":{}}}\n",
+                    now_secs(),
+                    json(session),
+                    json(&name),
+                    json(&why)
+                ));
+            }
+        }
+        if open.is_empty() && lines.is_empty() {
             return Vec::new();
         }
-        let mut lines = String::new();
         for offer in &mut open {
             let taken = calls
                 .iter()
