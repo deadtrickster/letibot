@@ -33,7 +33,18 @@ pub fn load(workspace: &Path) -> Result<BoundaryConfig, String> {
 
 /// [`load`], checked against the rules and expanded under `home`.
 pub fn resolved(workspace: &Path, home: &Path) -> Result<Resolved, String> {
-    boundary::resolve(&load(workspace)?, home)
+    let cfg = load(workspace)?;
+    let mut r = boundary::resolve(&cfg, home)?;
+    // A launcher a package manager put under the project is not on `PATH`, and is the same
+    // program by another name.
+    if let Some(first) = cfg.firecode_only.first() {
+        r.firecode_only.extend(
+            boundary::project_bins(workspace)
+                .into_iter()
+                .map(|p| (p, first.from.clone())),
+        );
+    }
+    Ok(r)
 }
 
 /// The `[perimeter.<name>]` tables of both files.

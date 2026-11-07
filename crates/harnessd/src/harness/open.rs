@@ -2067,7 +2067,8 @@ impl Harness {
                     &cfg.leticode_user,
                     &cfg.workspace,
                     cfg.read_project_config,
-                )),
+                ))
+                .with_firecode_route(firecode_route(&cfg)),
             ))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobList)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobOutput)))
@@ -5007,4 +5008,20 @@ mod floor_layer_tests {
             "no layer, no floor: the point settles a write inside the workspace"
         );
     }
+}
+
+/// `[boundary] firecode_only` as a route, for a session whose commands run on this machine. A
+/// session already inside a VM has nothing to route to, and one with no such key has no route.
+fn firecode_route(cfg: &Config) -> Option<letibot_tools::firecode_route::FirecodeRoute> {
+    if cfg.placement.is_vm() || cfg.vm_attach.is_some() {
+        return None;
+    }
+    let only = crate::perimeter::load(&cfg.workspace).ok()?.firecode_only;
+    (!only.is_empty()).then(|| {
+        letibot_tools::firecode_route::production(
+            only,
+            cfg.workspace.clone(),
+            cfg.session_id.clone(),
+        )
+    })
 }

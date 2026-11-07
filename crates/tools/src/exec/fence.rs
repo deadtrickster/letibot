@@ -22,6 +22,7 @@ pub struct FileFence {
     own: Option<PathBuf>,
     /// The `[boundary] hide` entries by origin, so a denial names the key that would lift it.
     hidden: Vec<(PathBuf, Origin)>,
+    firecode_only: Vec<(PathBuf, Origin)>,
     /// A tight view's roots, and whether a write may land in each. `None` for a wide view, which
     /// holds the machine: nothing is outside it and only the masks are denied.
     inside: Option<Vec<(PathBuf, bool)>>,
@@ -52,6 +53,7 @@ impl FileFence {
         FileFence {
             denied: seat.masked.clone(),
             hidden: seat.hidden.clone(),
+            firecode_only: seat.firecode_only.clone(),
             inside,
             ..Default::default()
         }
@@ -156,6 +158,19 @@ impl FileFence {
     }
 
     fn sentence(&self, path: &Path, denied: &Path) -> String {
+        if let Some((_, from)) = self
+            .firecode_only
+            .iter()
+            .find(|(p, _)| path.starts_with(p) || p.starts_with(path))
+        {
+            return format!(
+                "`{}` is not in this session's filesystem view: `[boundary] firecode_only` at \
+                 {from} lets this program run only inside firecode, so the seat can neither read \
+                 nor run it. Run it with `task {{ where: \"firecode\", ... }}`, or call it from \
+                 `bash`, which routes a listed program there.",
+                path.display()
+            );
+        }
         if let Some((_, from)) = self
             .hidden
             .iter()
@@ -330,6 +345,7 @@ mod tests {
             home: None,
             masked: Vec::new(),
             hidden: Vec::new(),
+            firecode_only: Vec::new(),
             secret_env: Default::default(),
         };
         let fence = FileFence::of(&s, &wide_view(Path::new("/p"), Path::new("/h")));

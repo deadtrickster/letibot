@@ -1070,3 +1070,63 @@ fn sqlite_readonly_answers_on_a_live_wal_store_in_both_seats() {
         assert_eq!((rc, out.trim()), (0, "3"), "tight={tight}: {out}");
     }
 }
+
+// ------------------------------------------- `[boundary] firecode_only`, for real
+
+/// A stand-in for a JavaScript runtime that leaves a mark when it runs.
+fn fake_runtime(dir: &Path, name: &str, mark: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir).expect("a tools directory");
+    let p = dir.join(name);
+    std::fs::write(&p, format!("#!/bin/sh\necho ran >> '{}'\n", mark.display()))
+        .expect("a fake runtime");
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("executable");
+    p
+}
+
+#[test]
+fn a_denied_runtime_cannot_be_run_renamed_copied_or_reached_through_make_or_a_script() {
+    let f = Fixture::new("firecode-only");
+    let tools = f.project().join("tools");
+    let mark = f.project().join("MARK");
+    let node = fake_runtime(&tools, "node", &mark);
+    let other = fake_runtime(&tools, "other", &mark);
+    std::fs::write(f.project().join("Makefile"), "all:\n\t./tools/node\n").unwrap();
+    std::fs::write(f.project().join("build.sh"), "#!/bin/sh\n./tools/node\n").unwrap();
+    // The same list `boundary::firecode_paths` resolves, through the same mask the seat uses.
+    let view = f.view().masking([node.clone()]);
+    let s = Seatbelt::probe_with(view, Egress::Denied, Vec::new())
+        .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+    let cwd = f.project();
+
+    // The control: an allowed program of the same shape runs and leaves its mark.
+    let (rc, out) = run_in(&s, &cwd, "./tools/other");
+    assert_eq!(rc, 0, "{out}");
+    assert!(
+        mark.is_file(),
+        "the harness cannot run a fake runtime: {out}"
+    );
+    std::fs::remove_file(&mark).unwrap();
+    let _ = other;
+
+    let attempts = [
+        "./tools/node",
+        "/bin/sh ./tools/node",
+        "ln -s tools/node renamed && ./renamed",
+        "cp tools/node copied && ./copied",
+        "cat tools/node > catted && chmod +x catted && ./catted",
+        "/usr/bin/make",
+        "sh build.sh",
+        "env -i ./tools/node",
+        "exec ./tools/node",
+        "/bin/sh -c 'cd tools && ./node'",
+    ];
+    for a in attempts {
+        let (rc, out) = run_in(&s, &cwd, a);
+        assert!(
+            !mark.exists(),
+            "`{a}` reached the denied runtime (exit {rc}): {out}"
+        );
+        assert_ne!(rc, 0, "`{a}` succeeded: {out}");
+    }
+}

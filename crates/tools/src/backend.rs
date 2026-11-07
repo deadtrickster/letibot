@@ -424,6 +424,7 @@ impl HostBackend {
                 home: None,
                 masked: Vec::new(),
                 hidden: Vec::new(),
+                firecode_only: Vec::new(),
                 secret_env: Default::default(),
             },
         )
