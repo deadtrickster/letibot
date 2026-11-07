@@ -295,7 +295,8 @@ pub fn git_action(workspace: &str) -> Option<&'static str> {
 pub fn project_dir(ws: &str) -> std::path::PathBuf {
     let dir = std::path::Path::new(ws);
     let is_repo = |d: &std::path::Path| d.join(".git").exists();
-    if is_repo(dir) || dir.read_dir().is_err() {
+    if is_repo(dir) || dir.read_dir().is_err() || !leticode_config::workspace::adopts_children(dir)
+    {
         return dir.to_path_buf();
     }
     // The same-named child first: nested naming is a convention, not a coincidence.
@@ -332,6 +333,16 @@ pub fn todos_path(ws: &str) -> std::path::PathBuf {
     project_dir(ws).join("TODO.md")
 }
 
+/// What the git field says in the home directory, where no repository is ever adopted.
+pub const PLAIN_HOME: &str = "no repository: ~ is a plain folder";
+
+/// The home directory with no repository at or above it.
+pub fn plain_home(ws: &str) -> bool {
+    !ws.is_empty()
+        && leticode_config::workspace::is_home(std::path::Path::new(ws))
+        && repo_of(ws).is_none()
+}
+
 /// The repository the project is: [`project_dir`]'s answer when that is one or sits inside one
 /// (git walks up), else the one repository child of a project folder that is not itself a
 /// repository. Separate from [`project_dir`] because a folder may carry the list and not the code.
@@ -352,6 +363,9 @@ pub fn repo_of(dir: &str) -> Option<std::path::PathBuf> {
     // Git walks up from `d` on its own for a workspace inside a repository.
     if d.ancestors().any(is_repo) {
         return Some(d.to_path_buf());
+    }
+    if !leticode_config::workspace::adopts_children(d) {
+        return None;
     }
     let repos: Vec<std::path::PathBuf> = d
         .read_dir()
@@ -391,6 +405,9 @@ pub fn repos_in(ws: &str) -> Vec<std::path::PathBuf> {
     }
     if dir.ancestors().any(|a| a.join(".git").exists()) {
         return vec![dir.to_path_buf()];
+    }
+    if !leticode_config::workspace::adopts_children(dir) {
+        return Vec::new();
     }
     let own = dir.file_name().map(std::ffi::OsStr::to_owned);
     let mut repos: Vec<std::path::PathBuf> = dir
@@ -844,5 +861,65 @@ mod tests {
                 "any work in the tree yellows the branch"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod home_tests {
+    use super::*;
+
+    fn folder(name: &str, repos: &[&str]) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("tg-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        for r in repos {
+            std::fs::create_dir_all(d.join(r).join(".git")).unwrap();
+        }
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn home_adopts_no_child_repository() {
+        static HOME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = HOME.lock().unwrap_or_else(|e| e.into_inner());
+        let one = folder("home-one", &[".emacs.d"]);
+        let many = folder("home-many", &[".emacs.d", "dots"]);
+        let was = std::env::var_os("HOME");
+        for home in [&one, &many] {
+            // SAFETY: serialised by HOME above; restored below.
+            unsafe { std::env::set_var("HOME", home) };
+            let ws = home.display().to_string();
+            assert_eq!(repo_of(&ws), None);
+            assert!(repos_in(&ws).is_empty());
+            assert_eq!(project_dir(&ws), *home);
+            assert!(plain_home(&ws));
+        }
+        unsafe {
+            match was {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_plain_folder_adopts_its_one_child_unless_told_not_to() {
+        let d = folder("plain", &["proj"]);
+        let ws = d.display().to_string();
+        assert_eq!(repo_of(&ws), Some(d.join("proj")));
+        assert!(!plain_home(&ws));
+        std::fs::write(d.join("leticode.toml"), "[project]\nrepository = false\n").unwrap();
+        assert_eq!(repo_of(&ws), None);
+        assert!(repos_in(&ws).is_empty());
+    }
+
+    #[test]
+    fn a_folder_inside_a_repository_resolves_upward() {
+        let d = folder("up", &[]);
+        std::fs::create_dir_all(d.join(".git")).unwrap();
+        std::fs::create_dir_all(d.join("sub")).unwrap();
+        std::fs::write(d.join("leticode.toml"), "[project]\nrepository = false\n").unwrap();
+        let sub = d.join("sub").display().to_string();
+        assert_eq!(repo_of(&sub), Some(d.join("sub")));
     }
 }

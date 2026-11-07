@@ -30,6 +30,20 @@ The names are spelled there and nowhere in `letibot-harnessd`, which asks for pa
 still arrives whole, ahead of every note). The operator's rule: *"leticode can support claude.md. but
 not letibot"*, *"i want letibot stay a framework, a runtime"*.
 
+### A folder of repositories, and the home directory
+
+A folder that is not inside a git repository takes its single child repository (or a folder of
+same-owner repositories) as its project. The home directory never does: a session in `~` has no
+repository, no queue door and no queue notices, and the header says "no repository: ~ is a plain
+folder". Any other folder can opt out the same way, in its `leticode.toml` or the user file:
+
+```toml
+[project]
+repository = false   # do not adopt a child repository
+```
+
+One rule, `leticode_config::workspace::adopts_children`, is asked by the head and the daemon.
+
 ### Config, not a plugin: the numbers and the head's keys
 
 A fixed number or a list of names is a key, not an extension point - a plugin for them would cost a

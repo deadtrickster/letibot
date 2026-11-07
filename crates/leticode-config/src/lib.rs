@@ -37,6 +37,9 @@
 //! reviewer = "deepseek/deepseek-reasoner" # needs no new key, only a line here
 //! ```
 //!
+//! `[project] repository = false` stops a folder that is not inside a git repository from taking
+//! a child repository as its project (`workspace::adopts_children`). The home directory never does.
+//!
 //! A fallback list is replaced by the higher level, never joined to it. A project
 //! that names two models must not silently inherit a third from the user file, so a
 //! non-empty list here is the whole list. `fallback_after_timeouts = 0` is refused by
@@ -280,6 +283,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub mod instructions;
+pub mod workspace;
 
 // The seat's instruction files, at the crate root - the daemon writes
 // `leticode_config::instructions(..)` rather than a module path, because what it
@@ -1811,6 +1815,24 @@ impl LeticodeConfig {
             roles.insert(role.clone(), settings);
         }
 
+        if let Some(v) = &file.project {
+            let user = level == Level::User;
+            let table = table_at(v, path, &text, "project", "the key is `repository`")?;
+            for (key, v) in table {
+                let from = at(path, &text, key, user);
+                match (key.as_str(), v.as_bool()) {
+                    ("repository", Some(_)) => {}
+                    ("repository", None) => {
+                        return Err(format!("{from}: [project] repository is true or false"));
+                    }
+                    _ => {
+                        return Err(format!(
+                            "{from}: [project] has no key `{key}`; it is `repository`"
+                        ));
+                    }
+                }
+            }
+        }
         let mut config = LeticodeConfig {
             main_model: file.main_model.as_deref().and_then(non_empty),
             subagent_model: file.subagent_model.as_deref().and_then(non_empty),
@@ -2338,6 +2360,10 @@ struct LeticodeConfigFile {
     /// The `[notes]` table, see [`NotesKeys`].
     #[serde(default)]
     notes: Option<toml::Value>,
+    /// `[project] repository = false`, read by [`workspace`]; validated here so a wrong shape is
+    /// refused with its line.
+    #[serde(default)]
+    project: Option<toml::Value>,
 }
 
 /// The fallback list as the file wrote it: an array of model names, in the order they are
