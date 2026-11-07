@@ -64,7 +64,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R138 | Stable session identities across hosts, through migrations | Code work | the build of `docs/cross-host-identity.md` (Q1-Q7) and its five open questions; until then asks are same-host only |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
 | R153 | Placing a session on a busy host times out at 20 s | Needs the operator | the live proof on a loaded lab2x1: a placement there while the host is building, and a session's `job_wait` against it; the minute-long arranging budget, the one connection per host and the round a timed-out status query is not are landed |
-| R155 | A remote placement's memory cap is checked against the daemon's box, not the host the command runs on | Code work | all of it |
+| R155 | A remote placement's memory cap is checked against the daemon's box, not the host the command runs on | Landed | built: the backend's `machine_memory`, a placement's `/proc/meminfo` over its own ssh link cached 30 s, an unknown host asks and every card and refusal names it; local sessions unchanged |
 | R156 | A Claude Code seat's nag repeats on every package job and offers the packages' jobs as its own waits | Code work | all of it |
 | R157 | Built-in panes `b-sessions`/`pane_sessions` and `b-irc`/`pane_nicks` trap with symbol-less backtraces | Code work | a reproduction (reported by gatekeeper@arangodb, room #1029), the cause, the fix |
 | R154 | The channel push says turns, not work: idle-with-open-work and a held job's exit are silent, and a lost turn end is never replayed | Code work | all of it |
@@ -1017,9 +1017,11 @@ A second budget did the same to running sessions (`cc@serenedb`, room #861, two 
 
 ## R155 - A remote placement's memory cap is checked against the daemon's box
 
-**Status:** open. left: all of it.
+**Status:** fixed. left: nothing.
 
 On 2026-11-07 R144's package, placed on lubuntu3 (123 GiB), asked for 12 GiB for a clippy run and the card said "15.1 GiB of 185.8 GiB is free now": lab2x1's numbers, the box the daemon runs on. A command's memory cap is decided by the free memory of the host it runs on, so a placement must read that host's `/proc/meminfo` (one call, cached for the poll interval) and the card must name the host.
+
+Fixed in `letibot-tools`. The seam is `ExecBackend::machine_memory`, whose default is `Machine::Here(Meminfo::read())` - the read every local session has always made - and `SshBackend` overrides it to `Machine::There { host, mem }`, the memory read by `Ssh::meminfo` from `cat /proc/meminfo` over the session's own link and cached for 30 s (a failed read is cached too, so a dead link does not put a round trip in front of every call). `memory::decide` takes the `Machine` instead of a `Meminfo`: the ceiling and every fraction are the host's, and a host that did not answer has no ceiling at all - a size is then the operator's question, a fraction of an unread memory is refused with a sentence naming the host and asking for a size, and a bare default of a size still runs. `MemoryAsk` carries the `Machine`, so the card reads "15 GiB of 123 GiB is free on lubuntu3" and its facts, the refusal and `bash`'s kill suggestion all name the machine; a local card is the same string word for word. A session grant no longer covers an ask on a machine whose memory was not read. `bash`'s decision moved into `decide_memory`, which takes the machine and the card's door, so the rule is tested without an ssh and without a person.
 
 ## R156 - A Claude Code seat's nag repeats on every package job and offers the packages' jobs as its own
 

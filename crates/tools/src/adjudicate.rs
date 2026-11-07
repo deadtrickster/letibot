@@ -2547,10 +2547,15 @@ impl Gate for AdjudicatedGate {
         use crate::exec::memory::MemoryGrant;
         // A session grant covers an ask no larger than it and no larger than what is free.
         // Uncapped is covered only by an uncapped grant, and an uncapped ask has no size to hold
-        // against what is free, so the grant itself is the operator's word on it.
+        // against what is free, so the grant itself is the operator's word on it. A machine whose
+        // memory was not read has no "what is free" to hold it against, so every ask is a fresh
+        // question rather than one admitted on figures nobody has.
         let covered = match (self.memory_session, ask.bytes) {
             (Some(None), _) => true,
-            (Some(Some(up_to)), Some(b)) => b <= up_to && b <= ask.available,
+            (Some(Some(up_to)), Some(b)) => ask
+                .machine
+                .numbers()
+                .is_some_and(|m| b <= up_to && b <= m.available),
             _ => false,
         };
         if covered {
@@ -2584,12 +2589,20 @@ impl Gate for AdjudicatedGate {
             arguments_digest: String::new(),
             scripts: Vec::new(),
             boundary_facts: vec![
-                format!(
-                    "{} of {} is free now; the model may take up to {} without asking",
-                    crate::exec::human_bytes(ask.available),
-                    crate::exec::human_bytes(ask.total),
-                    crate::exec::human_bytes(ask.ceiling)
-                ),
+                match ask.ceiling {
+                    Some(ceiling) => format!(
+                        "{}; the model may take up to {} without asking",
+                        ask.free_now(),
+                        crate::exec::human_bytes(ceiling)
+                    ),
+                    // Nothing was read off the machine the command runs on, so every amount is
+                    // this person's call and the card says why there is no figure.
+                    None => format!(
+                        "{}; and nothing says what the model may take without asking, so every \
+                         amount here is your call",
+                        ask.free_now()
+                    ),
+                },
                 "the command has NOT started; it starts only if you agree".to_string(),
                 "under its cap the command dies alone when it reaches it; uncapped, a command \
                  that eats the box is killed by the kernel along with whatever else it picks, \

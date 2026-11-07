@@ -7,7 +7,7 @@ use std::time::Duration;
 use letibot_transcript::{Backgrounding, text::tail_lines};
 use serde_json::Value;
 
-use crate::exec::memory::{Ask, Decision, Meminfo, MemoryAsk, MemoryGrant, MemoryPolicy};
+use crate::exec::memory::{Ask, Decision, Machine, MemoryAsk, MemoryGrant, MemoryPolicy};
 use crate::exec::predicate::{Verdict, annotation, refusal};
 use crate::exec::terminal;
 use crate::exec::{JobState, ProcessHost, Promotion, ScopeKind, SpawnRequest, Waited};
@@ -258,63 +258,80 @@ fn memory_note(job: &crate::exec::jobs::Job) -> Option<String> {
 }
 
 impl Bash {
-    /// The cap this call runs under, or the result that says why it did not start. The rule is
-    /// [`crate::exec::memory::decide`]'s; this is where an ask above the ceiling is put to the
-    /// operator, before anything is spawned.
+    /// The cap this call runs under, or the result that says why it did not start. The machine is
+    /// the BACKEND's: a placement's cap is decided from its host's memory and never from this
+    /// box's, and [`decide_memory`] is where that rule is.
     fn memory_for(
         &self,
         ctx: &InvokeCtx<'_>,
         command: &str,
         args: &Value,
     ) -> Result<Option<u64>, Box<Invocation>> {
-        let ask = Ask::parse(args.get("memory").and_then(|v| v.as_str())).map_err(|e| {
-            Box::new(Invocation::failed(
-                "bash's `memory` is not an amount",
-                format!("nothing was run. {e}."),
-            ))
-        })?;
-        // No `/proc/meminfo` (macOS): there is no memory controller to hold a cap either,
-        // and the result says the run was uncapped through the job's own record.
-        let Some(mem) = Meminfo::read() else {
-            return Ok(None);
-        };
-        match crate::exec::memory::decide(&self.memory, ask, &mem) {
-            Decision::Grant(b) => Ok(Some(b)),
-            Decision::Operator { bytes, ceiling } => {
-                let q = MemoryAsk {
-                    command: command.to_string(),
-                    bytes,
-                    ceiling,
-                    available: mem.available,
-                    total: mem.total,
-                };
-                match ctx.grant_memory(&q) {
-                    MemoryGrant::Granted => Ok(bytes),
-                    MemoryGrant::Refused(why) => Err(Box::new(Invocation::not_run(
-                        "the operator refused the memory this call asked for",
-                        format!(
-                            "nothing was run. You asked for {} for `{}`, which is above the {} \
-                             you may take without asking. The operator said no: {why}. Ask for \
-                             {} or less and it starts at once, or make the work smaller.",
-                            match q.bytes {
-                                Some(b) => format!("{} of memory", crate::exec::human_bytes(b)),
-                                None => "no memory cap".to_string(),
-                            },
-                            q.command,
-                            crate::exec::human_bytes(ceiling),
-                            crate::exec::human_bytes(ceiling),
-                        ),
-                    ))),
-                    MemoryGrant::NotAsked => Err(Box::new(Invocation::not_run(
-                        "nobody could be asked for the memory this call needs",
-                        format!(
-                            "nothing was run. {} — and this session has no one to put that \
-                             question to. Ask for {} or less and it starts at once.",
-                            q.summary(),
-                            crate::exec::human_bytes(ceiling)
-                        ),
-                    ))),
-                }
+        let machine = ctx.backend.machine_memory();
+        decide_memory(&self.memory, command, args, &machine, &mut |q| {
+            ctx.grant_memory(q)
+        })
+    }
+}
+
+/// The memory rule as a tool call meets it: the ask parsed, the decision, and the card when the
+/// decision is the operator's. The machine and the door to the operator are handed in, so a test
+/// can prove the numbers come from the placement's host with no ssh and no person.
+fn decide_memory(
+    policy: &MemoryPolicy,
+    command: &str,
+    args: &Value,
+    machine: &Machine,
+    grant: &mut dyn FnMut(&MemoryAsk) -> MemoryGrant,
+) -> Result<Option<u64>, Box<Invocation>> {
+    let ask = Ask::parse(args.get("memory").and_then(|v| v.as_str())).map_err(|e| {
+        Box::new(Invocation::failed(
+            "bash's `memory` is not an amount",
+            format!("nothing was run. {e}."),
+        ))
+    })?;
+    match crate::exec::memory::decide(policy, ask, machine) {
+        Decision::Uncapped => Ok(None),
+        Decision::Grant(b) => Ok(Some(b)),
+        Decision::Unresolved(why) => Err(Box::new(Invocation::not_run(
+            "this call's memory cannot be resolved on that machine",
+            format!(
+                "nothing was run. {why}. Pass `memory` as a size (`2G`) and it is decided at \
+                 once."
+            ),
+        ))),
+        Decision::Operator { bytes, ceiling } => {
+            let q = MemoryAsk {
+                command: command.to_string(),
+                bytes,
+                ceiling,
+                machine: machine.clone(),
+            };
+            match grant(&q) {
+                MemoryGrant::Granted => Ok(q.bytes),
+                MemoryGrant::Refused(why) => Err(Box::new(Invocation::not_run(
+                    "the operator refused the memory this call asked for",
+                    format!(
+                        "nothing was run. You asked for {} for `{}`, which is above {}. The \
+                         operator said no: {why}. {}",
+                        match q.bytes {
+                            Some(b) => format!("{} of memory", crate::exec::human_bytes(b)),
+                            None => "no memory cap".to_string(),
+                        },
+                        q.command,
+                        q.ceiling_clause(),
+                        q.ask_or_smaller(),
+                    ),
+                ))),
+                MemoryGrant::NotAsked => Err(Box::new(Invocation::not_run(
+                    "nobody could be asked for the memory this call needs",
+                    format!(
+                        "nothing was run. {} — and this session has no one to put that question \
+                         to. {}",
+                        q.summary(),
+                        q.ask_or_smaller(),
+                    ),
+                ))),
             }
         }
     }
@@ -998,7 +1015,10 @@ impl Tool for Bash {
                         u.clause(),
                         match u.cap {
                             Some(cap) => {
-                                crate::exec::memory::ask_after_kill(cap, Meminfo::read().as_ref())
+                                crate::exec::memory::ask_after_kill(
+                                    cap,
+                                    ctx.backend.machine_memory().numbers().as_ref(),
+                                )
                             }
                             None => "It ran uncapped, so the kill was not a cap's.".into(),
                         }
@@ -1956,5 +1976,138 @@ mod tests {
         assert_eq!(s.access, Access::Exec);
         assert!(!s.access.is_unattended(), "exec must reach the gate");
         assert_eq!(crate::schema::lint_description(&s.description), vec![]);
+    }
+
+    const GIB: u64 = 1 << 30;
+
+    /// The machine R155 was reported on: 123 GiB, 15 GiB free when the ask was made.
+    fn on_lubuntu3(free_gib: u64) -> Machine {
+        Machine::There {
+            host: "lubuntu3".into(),
+            mem: Some(crate::exec::memory::Meminfo {
+                total: 123 * GIB,
+                available: free_gib * GIB,
+                swap_free: 0,
+            }),
+        }
+    }
+
+    fn on_a_silent_lubuntu3() -> Machine {
+        Machine::There {
+            host: "lubuntu3".into(),
+            mem: None,
+        }
+    }
+
+    /// `cargo clippy` asking for 12 GiB, the call in R155's report.
+    fn clippy_12g() -> Value {
+        serde_json::json!({"command": "cargo clippy --workspace", "memory": "12G"})
+    }
+
+    /// What `memory_for` decides for one call, with the card recorded instead of answered.
+    fn decided(
+        machine: &Machine,
+        args: &Value,
+        answer: MemoryGrant,
+    ) -> (Result<Option<u64>, Box<Invocation>>, Vec<MemoryAsk>) {
+        let mut cards: Vec<MemoryAsk> = Vec::new();
+        let got = decide_memory(
+            &MemoryPolicy::default(),
+            "cargo clippy --workspace",
+            args,
+            machine,
+            &mut |q| {
+                cards.push(q.clone());
+                answer.clone()
+            },
+        );
+        (got, cards)
+    }
+
+    /// A placement's cap is decided from the host's numbers and the card says which host they are:
+    /// R155's whole report is a card quoting the daemon's box for a command that ran elsewhere.
+    #[test]
+    fn a_placements_ask_is_decided_from_its_host_and_the_card_names_it() {
+        let (got, cards) = decided(&on_lubuntu3(15), &clippy_12g(), MemoryGrant::Granted);
+        assert_eq!(
+            got.expect("the operator let it have the memory"),
+            Some(12 * GIB)
+        );
+        assert_eq!(cards.len(), 1, "an ask above the ceiling is one card");
+        let card = &cards[0];
+        // Half of lubuntu3's 15 GiB, which is not half of the daemon's box.
+        assert_eq!(card.ceiling, Some(7 * GIB + GIB / 2));
+        assert!(
+            card.summary()
+                .contains("15 GiB of 123 GiB is free on lubuntu3"),
+            "{}",
+            card.summary()
+        );
+        assert!(!card.summary().contains("185"), "{}", card.summary());
+    }
+
+    /// And a LOCAL call is decided from this box, with the card it has always worded: no machine
+    /// named, and the same figures. A change here is a change to every session on this box.
+    #[test]
+    fn a_local_ask_is_unchanged() {
+        let local = Machine::Here(Some(crate::exec::memory::Meminfo {
+            total: 185 * GIB,
+            available: 15 * GIB,
+            swap_free: 0,
+        }));
+        let (_, cards) = decided(&local, &clippy_12g(), MemoryGrant::Granted);
+        assert_eq!(
+            cards[0].summary(),
+            "the model asks for 12 GiB of memory for `cargo clippy --workspace` — above the 7.5 \
+             GiB it may take without asking; 15 GiB of 185 GiB is free now"
+        );
+    }
+
+    /// A host that does not answer ASKS: an amount nobody can compare is the operator's, and both
+    /// the card and the refusal name the host instead of quoting this box's figures.
+    #[test]
+    fn a_silent_host_asks_rather_than_being_sized_from_this_box() {
+        let (got, cards) = decided(&on_a_silent_lubuntu3(), &clippy_12g(), MemoryGrant::Granted);
+        assert_eq!(got.expect("the operator granted it"), Some(12 * GIB));
+        assert_eq!(cards.len(), 1, "an unknown machine is still a question");
+        let said = cards[0].summary();
+        assert!(said.contains("lubuntu3 did not answer"), "{said}");
+        assert!(!said.contains("is free"), "{said}");
+        assert_eq!(
+            cards[0].ceiling, None,
+            "nothing was read to compare against"
+        );
+
+        // Refused, the sentence names the host's silence as the reason there is no ceiling.
+        let (got, _) = decided(
+            &on_a_silent_lubuntu3(),
+            &clippy_12g(),
+            MemoryGrant::Refused("not on that machine".into()),
+        );
+        let refused = got.expect_err("a refusal does not run");
+        assert!(
+            refused.payload.contains("any ceiling at all")
+                && refused.payload.contains("not on that machine"),
+            "{}",
+            refused.payload
+        );
+    }
+
+    /// A fraction of what is free cannot be resolved on a host that did not answer, so the call is
+    /// refused with a sentence the model can act on: there is no number to ask a person for.
+    #[test]
+    fn a_fraction_of_an_unread_machines_memory_is_refused_with_the_hosts_name() {
+        let args = serde_json::json!({"command": "cargo build", "memory": "50%"});
+        let (got, cards) = decided(&on_a_silent_lubuntu3(), &args, MemoryGrant::Granted);
+        assert!(
+            cards.is_empty(),
+            "there is nothing to put to a person: {cards:?}"
+        );
+        let refused = got.expect_err("a fraction of an unknown machine does not run");
+        assert!(
+            refused.payload.contains("lubuntu3") && refused.payload.contains("a size"),
+            "{}",
+            refused.payload
+        );
     }
 }

@@ -212,6 +212,40 @@ impl Meminfo {
     }
 }
 
+/// The machine a command's cap is decided against: this box, or a placement and what its
+/// `/proc/meminfo` last said. Two spellings rather than one optional number, because *this box has
+/// no controller* (macOS) runs a command uncapped while *a placement did not answer* has an answer
+/// nobody here can give — a cap sized from this box's figures is the fault this type exists to end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Machine {
+    /// This box. `None` is a platform with no `/proc/meminfo`.
+    Here(Option<Meminfo>),
+    /// A placement: the host, as a card names it, and its memory when it answered.
+    There { host: String, mem: Option<Meminfo> },
+}
+
+impl Machine {
+    /// This box, which is where a session that was not placed runs.
+    pub fn here() -> Machine {
+        Machine::Here(Meminfo::read())
+    }
+
+    /// What was read off it, or `None` when nothing was.
+    pub fn numbers(&self) -> Option<Meminfo> {
+        match self {
+            Machine::Here(m) | Machine::There { mem: m, .. } => *m,
+        }
+    }
+
+    /// The machine's name when a card must say it, and `None` for this box.
+    pub fn host(&self) -> Option<&str> {
+        match self {
+            Machine::Here(_) => None,
+            Machine::There { host, .. } => Some(host),
+        }
+    }
+}
+
 /// What a daemon's own live work already promises: how many scopes it holds that carry a cap, the
 /// caps added up, and the most they have held. Read because a ceiling of a fraction of what is free
 /// does not see a grant nobody has used yet.
@@ -260,18 +294,57 @@ impl Ask {
 }
 
 /// What happens to the ask.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
+    /// Run with no cap and ask nobody: this box has no memory controller to hold one.
+    Uncapped,
     /// Run under this cap. No one is asked.
     Grant(u64),
-    /// Above the ceiling: the operator decides. `bytes` is `None` for uncapped.
-    Operator { bytes: Option<u64>, ceiling: u64 },
+    /// The operator decides. `bytes` is `None` for uncapped, and `ceiling` is `None` when the
+    /// machine's memory was not read — which is what makes an ordinary size their question.
+    Operator {
+        bytes: Option<u64>,
+        ceiling: Option<u64>,
+    },
+    /// Nothing can be decided and nobody can be asked a number: the ask is a fraction of what is
+    /// free and the machine's memory was not read. The sentence says what to write instead.
+    Unresolved(String),
 }
 
 /// The rule, in one place. The default is the operator's own number and is granted whatever
 /// the ceiling says, because they set both. An amount up to the ceiling is granted as asked;
 /// anything above it, and `uncapped`, goes to the operator.
-pub fn decide(policy: &MemoryPolicy, ask: Ask, mem: &Meminfo) -> Decision {
+pub fn decide(policy: &MemoryPolicy, ask: Ask, machine: &Machine) -> Decision {
+    let Some(mem) = machine.numbers() else {
+        return match machine {
+            // No controller to hold a cap, which is how this box has always run.
+            Machine::Here(_) => Decision::Uncapped,
+            // A placement that did not answer. A size is still nobody's to compare, so it is the
+            // operator's; a default of a size is their own number and runs; a fraction of what is
+            // free means nothing here and no one can be asked a number for it.
+            Machine::There { host, .. } => match ask {
+                Ask::Default => match policy.default {
+                    Amount::Bytes(b) => Decision::Grant(b),
+                    Amount::Fraction(_) => Decision::Unresolved(format!(
+                        "the default is a fraction of what is free, and {host}'s memory could not \
+                         be read"
+                    )),
+                },
+                Ask::Amount(Amount::Bytes(b)) => Decision::Operator {
+                    bytes: Some(b),
+                    ceiling: None,
+                },
+                Ask::Amount(Amount::Fraction(_)) => Decision::Unresolved(format!(
+                    "you asked for a fraction of what is free, and {host}'s memory could not be \
+                     read"
+                )),
+                Ask::Uncapped => Decision::Operator {
+                    bytes: None,
+                    ceiling: None,
+                },
+            },
+        };
+    };
     let ceiling = policy.ceiling.resolve(mem.available);
     match ask {
         Ask::Default => Decision::Grant(policy.default.resolve(mem.available)),
@@ -282,13 +355,13 @@ pub fn decide(policy: &MemoryPolicy, ask: Ask, mem: &Meminfo) -> Decision {
             } else {
                 Decision::Operator {
                     bytes: Some(b),
-                    ceiling,
+                    ceiling: Some(ceiling),
                 }
             }
         }
         Ask::Uncapped => Decision::Operator {
             bytes: None,
-            ceiling,
+            ceiling: Some(ceiling),
         },
     }
 }
@@ -299,12 +372,59 @@ pub struct MemoryAsk {
     pub command: String,
     /// `None` is uncapped.
     pub bytes: Option<u64>,
-    pub ceiling: u64,
-    pub available: u64,
-    pub total: u64,
+    /// The most it may take without asking. `None` when the machine's memory could not be read.
+    pub ceiling: Option<u64>,
+    /// The machine the command will run on, and what was read off it: the numbers a person is
+    /// shown have to be that machine's, or the card is about the wrong box (R155).
+    pub machine: Machine,
 }
 
 impl MemoryAsk {
+    /// How much is free, said the way the card and its facts need it: this box's figures, or the
+    /// placement's with its name, or the sentence that says there are none.
+    pub fn free_now(&self) -> String {
+        use super::scope::human_bytes;
+        match (self.machine.numbers(), self.machine.host()) {
+            (Some(m), Some(host)) => format!(
+                "{} of {} is free on {host}",
+                human_bytes(m.available),
+                human_bytes(m.total)
+            ),
+            (Some(m), None) => format!(
+                "{} of {} is free now",
+                human_bytes(m.available),
+                human_bytes(m.total)
+            ),
+            (None, Some(host)) => {
+                format!("{host} did not answer when its memory was asked for")
+            }
+            (None, None) => "this box's memory could not be read".to_string(),
+        }
+    }
+
+    /// The ceiling in the words a refusal uses. Without one, the sentence says why there is no
+    /// number rather than quoting this box's.
+    pub fn ceiling_clause(&self) -> String {
+        use super::scope::human_bytes;
+        match self.ceiling {
+            Some(c) => format!("the {} you may take without asking", human_bytes(c)),
+            None => "any ceiling at all: this machine's memory could not be read".to_string(),
+        }
+    }
+
+    /// The way back from a refusal or a question nobody could answer: a number when the ceiling
+    /// was read, and the work itself when it was not.
+    pub fn ask_or_smaller(&self) -> String {
+        use super::scope::human_bytes;
+        match self.ceiling {
+            Some(c) => format!(
+                "Ask for {} or less and it starts at once, or make the work smaller.",
+                human_bytes(c)
+            ),
+            None => "Nothing here could size a smaller ask, so make the work smaller.".to_string(),
+        }
+    }
+
     /// The card's one line.
     pub fn summary(&self) -> String {
         use super::scope::human_bytes;
@@ -312,13 +432,16 @@ impl MemoryAsk {
             Some(b) => format!("{} of memory", human_bytes(b)),
             None => "NO memory cap".to_string(),
         };
+        let above = match self.ceiling {
+            Some(c) => format!("above the {} it may take without asking", human_bytes(c)),
+            None => {
+                "above the ceiling it may take without asking, which could not be read".to_string()
+            }
+        };
         format!(
-            "the model asks for {what} for `{}` — above the {} it may take without asking; \
-             {} of {} is free now",
+            "the model asks for {what} for `{}` — {above}; {}",
             self.command,
-            human_bytes(self.ceiling),
-            human_bytes(self.available),
-            human_bytes(self.total),
+            self.free_now(),
         )
     }
 }
@@ -346,6 +469,39 @@ mod tests {
         }
     }
 
+    /// This box, with `avail_gib` free: the machine a session that was not placed runs on.
+    fn here(avail_gib: u64) -> Machine {
+        Machine::Here(Some(mem(avail_gib)))
+    }
+
+    /// Another machine, as a placement's host answers it (R155's report: 15.1 GiB of 123 GiB).
+    fn lubuntu3(avail_gib: u64) -> Machine {
+        Machine::There {
+            host: "lubuntu3".into(),
+            mem: Some(Meminfo {
+                total: 123 * GIB,
+                available: avail_gib * GIB,
+                swap_free: 0,
+            }),
+        }
+    }
+
+    /// A card over a 12 GiB ask, which is above half of what that machine has free.
+    fn a_12_gib_ask(machine: &Machine) -> MemoryAsk {
+        let p = MemoryPolicy::default();
+        let Decision::Operator { bytes, ceiling } =
+            decide(&p, Ask::Amount(Amount::Bytes(12 * GIB)), machine)
+        else {
+            panic!("12 GiB is the operator's on {machine:?}");
+        };
+        MemoryAsk {
+            command: "cargo clippy --workspace".into(),
+            bytes,
+            ceiling,
+            machine: machine.clone(),
+        }
+    }
+
     #[test]
     fn amounts_parse_as_sizes_or_fractions_and_refuse_everything_else() {
         assert_eq!(Amount::parse("64M"), Ok(Amount::Bytes(64 << 20)));
@@ -366,7 +522,7 @@ mod tests {
     fn the_default_is_granted_an_ask_up_to_the_ceiling_is_granted_and_anything_above_is_the_operators()
      {
         let p = MemoryPolicy::default();
-        let m = mem(100);
+        let m = here(100);
         assert_eq!(decide(&p, Ask::Default, &m), Decision::Grant(64 << 20));
         assert_eq!(
             decide(&p, Ask::Amount(Amount::Bytes(50 * GIB)), &m),
@@ -376,14 +532,14 @@ mod tests {
             decide(&p, Ask::Amount(Amount::Bytes(51 * GIB)), &m),
             Decision::Operator {
                 bytes: Some(51 * GIB),
-                ceiling: 50 * GIB
+                ceiling: Some(50 * GIB)
             }
         );
         assert_eq!(
             decide(&p, Ask::Uncapped, &m),
             Decision::Operator {
                 bytes: None,
-                ceiling: 50 * GIB
+                ceiling: Some(50 * GIB)
             }
         );
     }
@@ -394,10 +550,105 @@ mod tests {
     fn a_fractional_ceiling_moves_with_what_is_free() {
         let p = MemoryPolicy::default();
         let ask = Ask::Amount(Amount::Bytes(40 * GIB));
-        assert_eq!(decide(&p, ask, &mem(120)), Decision::Grant(40 * GIB));
+        assert_eq!(decide(&p, ask, &here(120)), Decision::Grant(40 * GIB));
         assert!(matches!(
-            decide(&p, ask, &mem(60)),
+            decide(&p, ask, &here(60)),
             Decision::Operator { .. }
+        ));
+    }
+
+    /// This box's card is the string it has always been, word for word: the numbers are this
+    /// box's and there is no machine to name. A change here is a change to every local session.
+    #[test]
+    fn a_local_card_is_unchanged_and_names_no_machine() {
+        let card = a_12_gib_ask(&here(15));
+        assert_eq!(
+            card.summary(),
+            "the model asks for 12 GiB of memory for `cargo clippy --workspace` — above the 7.5 \
+             GiB it may take without asking; 15 GiB of 185 GiB is free now"
+        );
+        assert_eq!(card.free_now(), "15 GiB of 185 GiB is free now");
+    }
+
+    /// A placement's cap is decided from ITS host's numbers and the card says which machine they
+    /// are: the fault R155 reports is a card quoting the daemon's box for a command that runs
+    /// somewhere else.
+    #[test]
+    fn a_placements_cap_reads_its_hosts_memory_and_the_card_names_the_host() {
+        let card = a_12_gib_ask(&lubuntu3(15));
+        // Half of lubuntu3's 15 GiB free, not half of this box's 185 GiB.
+        assert_eq!(card.ceiling, Some(7 * GIB + GIB / 2));
+        assert_eq!(card.free_now(), "15 GiB of 123 GiB is free on lubuntu3");
+        assert_eq!(
+            card.summary(),
+            "the model asks for 12 GiB of memory for `cargo clippy --workspace` — above the 7.5 \
+             GiB it may take without asking; 15 GiB of 123 GiB is free on lubuntu3"
+        );
+        assert!(!card.summary().contains("185"), "{}", card.summary());
+    }
+
+    /// A host that does not answer is `unknown`, and an unknown machine never falls back to this
+    /// box's figures: a size is the operator's, and a fraction cannot be resolved at all.
+    #[test]
+    fn an_unreachable_hosts_memory_asks_and_never_quotes_this_box() {
+        let silent = Machine::There {
+            host: "lubuntu3".into(),
+            mem: None,
+        };
+        let p = MemoryPolicy::default();
+        // A size is the operator's, with no ceiling to compare it against.
+        assert_eq!(
+            decide(&p, Ask::Amount(Amount::Bytes(12 * GIB)), &silent),
+            Decision::Operator {
+                bytes: Some(12 * GIB),
+                ceiling: None
+            }
+        );
+        let card = a_12_gib_ask(&silent);
+        assert!(
+            card.summary().contains("lubuntu3 did not answer"),
+            "{}",
+            card.summary()
+        );
+        assert!(
+            !card.summary().contains("185") && !card.summary().contains("is free"),
+            "a card that quoted a figure would be quoting this box's: {}",
+            card.summary()
+        );
+        // The default is the operator's own size, so a bare call still runs.
+        assert_eq!(decide(&p, Ask::Default, &silent), Decision::Grant(64 << 20));
+        // A fraction of what is free is a question nobody can put a number to.
+        assert!(matches!(
+            decide(&p, Ask::Amount(Amount::Fraction(0.5)), &silent),
+            Decision::Unresolved(ref why) if why.contains("lubuntu3")
+        ));
+        assert!(matches!(
+            decide(&p, Ask::Uncapped, &silent),
+            Decision::Operator {
+                bytes: None,
+                ceiling: None
+            }
+        ));
+    }
+
+    /// This box without `/proc/meminfo` (macOS) has no controller to hold a cap, which is what it
+    /// has always done; a placement without an answer is a different fact and is not this one.
+    #[test]
+    fn a_box_with_no_controller_runs_uncapped_and_a_placement_without_an_answer_does_not() {
+        let p = MemoryPolicy::default();
+        for ask in [Ask::Default, Ask::Amount(Amount::Bytes(GIB))] {
+            assert_eq!(decide(&p, ask, &Machine::Here(None)), Decision::Uncapped);
+        }
+        assert!(matches!(
+            decide(
+                &p,
+                Ask::Default,
+                &Machine::There {
+                    host: "lubuntu3".into(),
+                    mem: None
+                }
+            ),
+            Decision::Grant(_)
         ));
     }
 
