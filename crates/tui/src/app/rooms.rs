@@ -487,6 +487,11 @@ impl App {
     }
 
     pub(crate) fn on_room_chat(&mut self, id: &str, reply: Value) {
+        // The pictures' answers - a blob's parts, and the id an upload became - are told by their
+        // own reply type and belong to the cache, not to the channel a poll was about.
+        if self.on_room_blob(&reply) {
+            return;
+        }
         // An invite's or a leave's outcome is said where it was typed, the pane open or not.
         if let Some((verb, rest)) = id.split_once(':')
             && matches!(verb, "invite" | "leave")
@@ -595,6 +600,11 @@ impl App {
         if !self.is_open(Surface::Rooms) {
             return;
         }
+        // Both marks are taken BEFORE what is drawn is marked seen: the divider's place is the mark
+        // from when the channel was opened, and the news starts after what the reader had at the
+        // tail. Taken after, both would already be the channel's newest message.
+        self.rooms_opened_note();
+        self.rooms_tail_note();
         if let Some(seq) = self.rooms.shown() {
             self.queued.push(Action::RoomChat {
                 op: json!({"type": "ack", "seq": seq}),

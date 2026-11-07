@@ -44,6 +44,11 @@ impl App {
                 if self.plugin_esc() {
                     return ControlFlow::Break(None);
                 }
+                // A message cursor is a mode inside the view, so Esc leaves it before it leaves the
+                // view: the composer has the keys again, and the chat is where it was.
+                if s == Surface::Rooms && self.rooms_cursor_drop() {
+                    return ControlFlow::Break(None);
+                }
                 // A plugin's pane leaving the screen is the daemon's business too (`PaneClose`):
                 // the host keeps a refresh clock per open pane, and a dashboard nobody is looking
                 // at must stop reading files. The pop below is silent, hence a step of its own.
@@ -96,11 +101,22 @@ impl App {
             Act::Cursor => self.cursor_act(s, up),
             Act::Roster => self.rooms_toggle_roster(),
             Act::DismissSend => self.rooms_dismiss_send(),
-            Act::ResendSend => self.rooms_resend_send(),
+            // Enter on an empty composer in `/rooms` reads the message under the cursor first - its
+            // picture, its first link - and only then the failed line's resend it has always been.
+            Act::ResendSend => match self.rooms_enter() {
+                ControlFlow::Break(r) => ControlFlow::Break(r),
+                ControlFlow::Continue(()) => self.rooms_resend_send(),
+            },
             // The room's chat keys (`docs/room-tui.md`): each acts on the message under the cursor,
             // and with no cursor there is nothing to act on - so it declines and the key is the
             // composer's, exactly as it was before P0 wired it.
-            Act::RoomCursor => self.rooms_cursor_move(false),
+            Act::RoomCursor => {
+                // Tab puts the cursor on the newest message; a channel with nothing in it has none to
+                // put it on, and the key is not the composer's even then.
+                self.rooms_cursor_newest();
+                ControlFlow::Break(None)
+            }
+            Act::RoomSwitcher => self.rooms_switcher(),
             Act::RoomUnread => self.rooms_jump(Jump::Unread),
             Act::RoomTail => self.rooms_jump(Jump::Tail),
             Act::RoomCopy => self.rooms_copy(),
@@ -276,7 +292,14 @@ impl App {
                 self.plugin_sel = step(self.plugin_sel.min(n - 1), n, up);
                 self.scroll_into_view(self.plugin_row_of());
             }
-            Surface::Rooms => self.rooms_step(up),
+            Surface::Rooms => {
+                // With a message cursor up the arrows walk messages; with none they switch
+                // channel, which is what they have always done in this view.
+                if let ControlFlow::Break(r) = self.rooms_cursor_move(up) {
+                    return ControlFlow::Break(r);
+                }
+                self.rooms_step(up)
+            }
             _ => return ControlFlow::Continue(()),
         }
         ControlFlow::Break(None)

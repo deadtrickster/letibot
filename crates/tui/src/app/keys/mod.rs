@@ -262,6 +262,11 @@ impl App {
         if let ControlFlow::Break(r) = self.key_reseat_card(&k) {
             return r;
         }
+        // An open room switcher owns every key below this line, the letters included: its query is
+        // typed into it, and a letter that reached the composer would be sent as a message instead.
+        if let ControlFlow::Break(r) = self.key_room_switcher(&k) {
+            return r;
+        }
         // The surface in front, and nothing behind it - see [`App::key_surface`].
         if let ControlFlow::Break(r) = self.key_surface(&k) {
             return r;

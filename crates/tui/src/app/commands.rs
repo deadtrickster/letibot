@@ -645,6 +645,17 @@ impl App {
             // inject, since it loads the skill, writes the person's message and runs the turn.
             "skills" => self.toggle_surface(Surface::Skills),
             "rooms" => self.toggle_surface(Surface::Rooms),
+            // `/search TEXT` over the channel the room view has selected: the loaded messages, since
+            // the ring is the history. `/search` with no text closes it again.
+            _ if verb_arg(cmd, "search").is_some() => {
+                let rest = verb_arg(cmd, "search").unwrap_or("").to_string();
+                if !self.is_open(Surface::Rooms) {
+                    self.say("/search works on the channel /rooms has open — open it first");
+                    return None;
+                }
+                self.rooms_search(&rest);
+                None
+            }
             _ if verb_arg(cmd, "dm").is_some() => {
                 let rest = verb_arg(cmd, "dm").unwrap_or("").to_string();
                 self.rooms_dm(&rest)
@@ -1285,6 +1296,11 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
     (
         "dm",
         "NAME TEXT - a direct message as operator, in the rooms view",
+    ),
+    (
+        "search",
+        "TEXT - matches in the channel /rooms has open; `n` and `N` step through them, and \
+         `/search` with nothing after it closes the search",
     ),
     (
         "standing",

@@ -5,6 +5,8 @@
 pub mod cards;
 pub mod chat;
 pub mod chat_compose;
+// `ctrl-k`'s list: the rows of the channel switcher, drawn over the chat.
+pub mod chat_switcher;
 pub mod composer;
 pub mod diff_popup;
 pub mod editor;

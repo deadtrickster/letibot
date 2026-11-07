@@ -1017,6 +1017,12 @@ pub struct App {
     pub(crate) stopping: Option<Stopping>,
     /// The `/rooms` view: channels, messages read, what was shown.
     pub(crate) rooms: rooms::RoomsView,
+    /// P4's navigation: the message cursor, the open search, the switcher, and how far the reader
+    /// had read at the tail.
+    pub(crate) nav: chat_nav::Nav,
+    /// P4's pictures: the blobs this head holds, the ones it asked for, and the uploads on their
+    /// way out.
+    pub(crate) media: chat_media::Media,
     /// A bulk announcement the daemon has not filled yet, recorded only when a snapshot is
     /// ingested and never by a live `TranscriptAppended`: a live row is body-less for the window of
     /// every ordinary message, so a trigger built on that would fire on a healthy session.
@@ -1467,6 +1473,8 @@ impl App {
             echo_open: false,
             stopping: None,
             rooms: rooms::RoomsView::default(),
+            nav: chat_nav::Nav::default(),
+            media: chat_media::Media::default(),
         }
     }
 

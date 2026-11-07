@@ -23,6 +23,9 @@ pub(crate) enum On {
     /// chord everybody's hands already know, and never as a letter for the same reason as
     /// [`On::Delete`].
     Undo,
+    /// Ctrl+K, which is readline's kill-to-end. The rooms view takes it on an empty composer as
+    /// the channel switcher; with a line typed it is the editor's, exactly as before.
+    KillToEnd,
     /// The End key: the room's tail, and nowhere else so far - a letter cannot spell it.
     End,
     /// PageUp and PageDown.
@@ -45,6 +48,7 @@ impl On {
             | (On::Tab, Key::Tab)
             | (On::Delete, Key::Delete)
             | (On::Undo, Key::Undo)
+            | (On::KillToEnd, Key::KillToEnd)
             | (On::End, Key::End)
             | (On::Page, Key::PageUp | Key::PageDown)
             | (On::Wheel, Key::WheelUp | Key::WheelDown) => true,
@@ -67,6 +71,7 @@ impl On {
             On::Char(c) => c.to_string(),
             On::Delete => "del".into(),
             On::Undo => "ctrl-z".into(),
+            On::KillToEnd => "ctrl-k".into(),
             On::End => "end".into(),
             On::Page => "pgup/pgdn".into(),
             On::Wheel => "the wheel".into(),
@@ -143,6 +148,9 @@ pub(crate) enum Act {
     /// The session list's `ctrl-z`: put the last removed row back - [`App::restore_removed`],
     /// the undo a removal has to have if it is to be the sense worth building.
     Undo,
+    /// The rooms view's `ctrl-k`: the channel switcher - fuzzy over the channel labels and the DM
+    /// peers, unread first. P4 fills [`App::rooms_switcher`].
+    RoomSwitcher,
     /// The rooms view's `tab`: put the cursor on the newest message, so the arrows walk messages
     /// rather than channels from then on. P4 fills [`App::rooms_cursor_move`].
     RoomCursor,
@@ -441,15 +449,43 @@ const ROOMS: &[Binding] = &[
         Act::ResendSend,
         Text("resends the failed line"),
     ),
-    // The chat keys of `docs/room-tui.md`. Each acts on the message under the cursor, so until P4
-    // gives the room one every one of them declines and the key is the composer's - which is what
-    // it was before, and why none of them claims a word on the bar yet.
-    b(&[On::Tab], Empty, Act::RoomCursor, Nothing),
-    b(&[On::Char('R')], Empty, Act::RoomReply, Nothing),
-    b(&[On::Char('y')], Empty, Act::RoomCopy, Nothing),
-    b(&[On::Char('t')], Empty, Act::RoomThread, Nothing),
-    b(&[On::Char('u')], Empty, Act::RoomUnread, Nothing),
-    b(&[On::Char('G'), On::End], Empty, Act::RoomTail, Nothing),
+    // The chat keys of `docs/room-tui.md`. Tab puts a cursor on a message and the arrows walk the
+    // messages from then on; each of the rest acts on the message under that cursor, and with no
+    // cursor it declines and the key is the composer's, exactly as it was before P4.
+    b(
+        &[On::KillToEnd],
+        Empty,
+        Act::RoomSwitcher,
+        Text("switches channel"),
+    ),
+    b(
+        &[On::Tab],
+        Empty,
+        Act::RoomCursor,
+        Text("selects a message"),
+    ),
+    b(
+        &[On::Char('R')],
+        Empty,
+        Act::RoomReply,
+        Text("replies to it"),
+    ),
+    b(&[On::Char('y')], Empty, Act::RoomCopy, Text("copies it")),
+    b(&[On::Char('t')], Empty, Act::RoomThread, Text("its thread")),
+    b(
+        &[On::Char('u')],
+        Empty,
+        Act::RoomUnread,
+        Text("the unread divider"),
+    ),
+    b(
+        &[On::Char('G'), On::End],
+        Empty,
+        Act::RoomTail,
+        Text("the newest"),
+    ),
+    // `Nothing`, unlike the rest: a step through a search's hits means nothing while no search is
+    // open, and the bar does not spell a key that would do nothing on this frame.
     b(&[On::Char('n')], Empty, Act::RoomSearchStep(true), Nothing),
     b(&[On::Char('N')], Empty, Act::RoomSearchStep(false), Nothing),
     PAGE,

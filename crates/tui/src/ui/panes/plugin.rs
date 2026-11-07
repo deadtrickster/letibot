@@ -75,6 +75,15 @@ pub(crate) enum Item<'a> {
         text: &'a str,
         heading: bool,
     },
+    /// One entry of a `Block::Stream` - a chat message as a plugin answered it. The entry is what
+    /// the cursor rests on, never a screen row of the body it draws: a message that wrapped onto
+    /// nine rows is still one step of the arrows.
+    Entry {
+        panel: usize,
+        block: usize,
+        item: usize,
+        entry: &'a pv::StreamEntry,
+    },
     Finding {
         index: usize,
         finding: &'a pv::Finding,
@@ -115,6 +124,19 @@ impl Item<'_> {
                 block: *block,
                 item: *item,
             }),
+            // A divider is not a stop: Enter on it would open nothing, and an arrow that landed on
+            // it would take a press to get past. An entry without an id is not one either - an act
+            // names its entry by id, so nothing could be done with it.
+            Item::Entry {
+                panel,
+                block,
+                item,
+                entry,
+            } if !entry.is_divider() && !entry.id().is_empty() => Some(Stop::Item {
+                panel: *panel,
+                block: *block,
+                item: *item,
+            }),
             Item::Finding { index, .. } => Some(Stop::Finding(*index)),
             _ => None,
         }
@@ -129,6 +151,8 @@ pub(crate) enum Target<'a> {
     Row(&'a pv::Row),
     Markdown(&'a str),
     Finding(&'a pv::Finding),
+    /// One entry of a stream: a chat message, and what Enter on it does.
+    Entry(&'a pv::StreamEntry),
 }
 
 impl Target<'_> {
@@ -139,6 +163,7 @@ impl Target<'_> {
             Target::Row(r) => r.id(),
             Target::Markdown(_) => "",
             Target::Finding(f) => f.id.as_str(),
+            Target::Entry(e) => e.id(),
         }
     }
 
@@ -156,6 +181,17 @@ impl Target<'_> {
                     what
                 }
             }
+            Target::Entry(e) => {
+                // An entry's own words are its body: its head is a hue and a name, and the row says
+                // what it says.
+                let body = e.body.as_deref().unwrap_or(&e.text);
+                let what = clean_line(first_line(body));
+                if what.is_empty() {
+                    clean_line(&e.head.iter().map(|c| c.text.as_str()).collect::<String>())
+                } else {
+                    what
+                }
+            }
         }
     }
 
@@ -166,6 +202,7 @@ impl Target<'_> {
             Target::Row(r) => &r.actions,
             Target::Markdown(_) => &[],
             Target::Finding(f) => &f.actions,
+            Target::Entry(e) => &e.actions,
         }
     }
 
@@ -175,6 +212,9 @@ impl Target<'_> {
     pub(crate) fn enter(&self) -> Option<&pv::Act> {
         match self {
             Target::Row(r) => r.enter.as_ref(),
+            // An entry carries the act Enter performs on it, declared by the layer the way a row's
+            // is and gated by `validate_for`.
+            Target::Entry(e) => e.enter.as_ref(),
             Target::Line(_) | Target::Markdown(_) | Target::Finding(_) => None,
         }
     }
@@ -186,6 +226,7 @@ impl Target<'_> {
             Target::Row(r) => r.detail.as_deref().unwrap_or(""),
             Target::Markdown(text) => text,
             Target::Finding(f) => &f.detail,
+            Target::Entry(e) => e.body.as_deref().unwrap_or(""),
         }
     }
 }
@@ -286,8 +327,19 @@ fn blocks<'a>(panel: usize, list: &'a [pv::Block], f: &mut impl FnMut(Walk<'a>))
                 }
             }
             // No items: the kind is drawn by `Walk::Block`, as one muted line naming it. A stream
-            // is a renderer of its own and lands in P2; until then it names itself the same way.
-            pv::Block::Unknown(_) | pv::Block::Stream(_) => {}
+            // is a renderer of its own and lands in P2; its ENTRIES are already the cursor's, so the
+            // arrows and Enter walk a plugin's chat before it is drawn as one.
+            pv::Block::Unknown(_) => {}
+            pv::Block::Stream(s) => {
+                for (item, entry) in s.entries.iter().enumerate() {
+                    f(Walk::Item(Item::Entry {
+                        panel,
+                        block,
+                        item,
+                        entry,
+                    }));
+                }
+            }
         }
     }
 }
@@ -357,7 +409,8 @@ pub(crate) fn target_of(view: &pv::View, screen: Screen, index: usize) -> Option
                 pv::Block::Table(t) => Target::Row(t.rows.get(item)?),
                 pv::Block::Tree(t) => Target::Row(pv::rows_deep(&t.rows).get(item)?.1),
                 pv::Block::Markdown(text) => Target::Markdown(markdown_items(text).get(item)?.0),
-                pv::Block::Kv(_) | pv::Block::Unknown(_) | pv::Block::Stream(_) => return None,
+                pv::Block::Kv(_) | pv::Block::Unknown(_) => return None,
+                pv::Block::Stream(s) => Target::Entry(s.entries.get(item)?),
             }
         }
     })
@@ -896,6 +949,32 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
                         Span::role(lead, Role::Faint),
                         Span::role(format!("{word:<8}"), r),
                         Span::raw(cut(&clean_line(&finding.what), w.saturating_sub(LEAD + 9))),
+                    ])
+                }
+                // A stream entry as one row: who said it, and the first line of what they said.
+                // The block renderer - hues, grouping, the picture rows - is the chat's own and
+                // lands with P2; this keeps the rows the cursor walks on the screen until then.
+                Item::Entry { entry, .. } => {
+                    let text = if entry.is_divider() {
+                        clean_line(&entry.text)
+                    } else {
+                        let head: String = entry.head.iter().map(|c| c.text.as_str()).collect();
+                        let body = entry.body.as_deref().unwrap_or("");
+                        let said = clean_line(first_line(body));
+                        if head.is_empty() {
+                            said
+                        } else {
+                            format!("{}: {said}", clean_line(&head))
+                        }
+                    };
+                    let role = if entry.is_divider() {
+                        Role::Faint
+                    } else {
+                        Role::Plain
+                    };
+                    Line::new(vec![
+                        Span::role(lead, Role::Faint),
+                        Span::role(cut(&text, w.saturating_sub(LEAD)), role),
                     ])
                 }
             };
