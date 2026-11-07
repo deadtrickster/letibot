@@ -72,6 +72,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R147 | A grant card is raised for a container's path or a glob | Code work | nothing: a card now needs a path this host has, with no glob left |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
+| R145 | The review queue's session is seated a role its own prompt does not match | Code work | all of it: `Seat::Orchestrator` resolves to `roles::m1_orchestrator`, which holds neither `task_result` nor `task_message`, and the prompt prescribes both |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
 | R100 | A remote session in a firecode VM: `--host` and `--vm` as one placement | Needs the operator | the live proof on lab2x1: a real `firecode` copy carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, the copy-out's cost |
 | R59 | The context wall's denominator moves a third between firings | Needs the operator | the operator's ruling on smoothing the ratio (the tree keeps it per round, as recommended) |
@@ -925,6 +926,18 @@ A Claude Code seat orchestrating letibot sessions has no board: its waits live i
 **Status:** postponed by the operator on 2026-11-07. left: all of it.
 
 On 2026-11-07 four packages on lubuntu1, each with subagents running cargo at full width, drove its load to 254 on 32 cores. Remote writes then timed out (`remote_call_slow`, then a failed `edit`), and R139's turn was stopped by the progress check. The fix was a message asking each package for `CARGO_BUILD_JOBS=6`. A placement should set it instead: the daemon placing a session on a host knows the host's cores (`hosts.toml` `reserve` holds some back for the owner) and the packages already placed there, so it hands each session `CARGO_BUILD_JOBS` and a test-thread count from the free share, and a session's subagents divide their parent's share rather than each taking the whole box. The placement's status should say the share.
+
+## R145 - The review queue's session is seated a role its own prompt does not match
+
+**Status:** open. left: the role, its selection for the queue's session, and the reach of the two verbs.
+
+The queue's own session (`s-gatekeeper-*`, `crates/harnessd/src/sessions/gatekeeper.rs:31`) is seated `Seat::Orchestrator`, which resolves to `roles::m1_orchestrator()` (`crates/tools/src/runtime.rs:1025`): `read`, `grep`, `glob`, `ask_code`, `ask_corpus`, `read_spill`, `recall`, `todo_write`, `room`. Its prompt (`gatekeeper.rs:126`) prescribes `task_result` and `task_message` - the two doors on the reviewer child the queue's clock starts for each row - and that role has neither. `roles::orchestrator()` has them, and `task` with them, which is why the pair cannot simply be added to `m1_orchestrator`: that reaches every default session.
+
+The fix is a purpose-built role: M1's set plus `task_result` and `task_message`, and still no `task`, `task_start`, `review_verdict` or `bash` - the queue starts no child of its own (its clock does), runs no command and hands in no verdict (the reviewer does). Selected for the queue's session where the seat's role is resolved, by the session's id and not its `Seat`, so no other session moves. And the two verbs must resolve only the queue's own reviewer children: the daemon's runner addresses any live session by id, which `task_message` would otherwise turn into a door onto the whole daemon.
+
+The reviewer's seat (`Role::gatekeeper`, `runtime.rs:1143`) is the other half and must not move: `bash` behind the daemon's flag, `review_verdict`, and no `task_result`.
+
+**Done when**: the queue's session resolves to the new role, a session next door in the same workspace still resolves to M1, and a test over both roles names the delta between them.
 
 ## R134 - Scrolling stops at a line above the tail
 
