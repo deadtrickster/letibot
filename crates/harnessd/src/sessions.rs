@@ -274,6 +274,10 @@ pub struct TodoNagClock {
     /// the common case, and the one that keeps the waiter's sleep unbounded (the worker's
     /// `next_nag_at` returns NIL; a child's `take_own_work_until` gets `None`).
     due: Option<Instant>,
+    /// The plan notice `due` was armed for. A re-arm for the same notice keeps the deadline it
+    /// has: a session woken every few minutes by a monitor re-armed it from each turn's end,
+    /// so a thirty-minute floor never arrived and the check went silent for hours.
+    armed_for: Option<String>,
     /// The plan notice this session was last nagged with - the identity the backoff counts
     /// repeats of. A different notice is a new thing to say at the base window; the same one is a
     /// repeat at [`Self::interval`].
@@ -330,6 +334,7 @@ impl TodoNagClock {
         TodoNagClock {
             window,
             due: None,
+            armed_for: None,
             nagged: None,
             nagged_at: None,
             repeats: 0,
@@ -380,9 +385,20 @@ impl TodoNagClock {
         } else {
             self.window
         };
-        self.due = if nag_should_arm(todos, self.nagged.as_deref(), children, jobs) {
-            Some(now + floor)
-        } else if unfinished_plan(
+        let askable = the_plan_as_checked(todos, children, jobs);
+        let text = unfinished_plan(&askable, todos, children, jobs);
+        if nag_should_arm(todos, self.nagged.as_deref(), children, jobs) {
+            let fresh = now + floor;
+            self.due = match (self.due, &self.armed_for) {
+                (Some(d), Some(was)) if Some(was) == text.as_ref() => Some(d.min(fresh)),
+                _ => Some(fresh),
+            };
+            self.armed_for = text;
+            self.arm_census(now);
+            return;
+        }
+        self.armed_for = None;
+        self.due = if unfinished_plan(
             &the_plan_as_checked(todos, children, jobs),
             todos,
             children,
@@ -471,6 +487,8 @@ impl TodoNagClock {
     /// they said may have changed what the plan should be, so the once-per-saying is earned
     /// back. And the backoff goes with the notice
     pub fn prompt_arrived(&mut self) {
+        self.armed_for = None;
+        self.due = None;
         self.nagged = None;
         self.nagged_at = None;
         self.repeats = 0;
@@ -506,6 +524,7 @@ impl TodoNagClock {
         };
         self.nagged = notice;
         self.nagged_at = Some(now);
+        self.armed_for = None;
     }
 
     /// The deadline for whoever waits on this clock - the worker's blocking wait for

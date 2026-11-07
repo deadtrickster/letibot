@@ -1350,3 +1350,47 @@ fn a_young_row_arms_its_crossing_even_under_an_older_census_anchor() {
         "the crossing is armed whatever was said before"
     );
 }
+
+/// A session a monitor wakes every few minutes re-arms its clock at each turn's end. For the same
+/// plan that keeps the deadline it already had: re-armed from each turn, a thirty-minute floor
+/// slid forward forever and the check went silent for hours. The operator speaking starts over.
+#[test]
+fn re_arming_for_the_same_plan_keeps_the_deadline_it_had() {
+    use std::time::Duration;
+    let umbrella = "port every target";
+    let mut plan = vec![TodoItem {
+        by: TodoBy::Model,
+        ..row(umbrella, TodoStatus::InProgress)
+    }];
+    for i in 0..3 {
+        plan.push(TodoItem {
+            by: TodoBy::Model,
+            ..row_needing(&format!("target {i}"), &[umbrella])
+        });
+    }
+    let t0 = std::time::Instant::now();
+    let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
+    clock.rearm(&plan, t0, &no_children(), &no_jobs());
+    let first = clock.due_at().expect("an in-progress plan is checked");
+    for k in 1..=6u64 {
+        clock.rearm(
+            &plan,
+            t0 + Duration::from_secs(k * 300),
+            &no_children(),
+            &no_jobs(),
+        );
+    }
+    assert_eq!(
+        clock.due_at(),
+        Some(first),
+        "a turn every five minutes slid the check's deadline forward"
+    );
+    // The operator speaking is a new idle period, and the check waits its window again.
+    let later = t0 + Duration::from_secs(1900);
+    clock.prompt_arrived();
+    clock.rearm(&plan, later, &no_children(), &no_jobs());
+    assert!(
+        clock.due_at().is_some_and(|d| d > later),
+        "after the operator spoke the check is not due at once"
+    );
+}
