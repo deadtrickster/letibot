@@ -88,7 +88,12 @@ impl FileFence {
         {
             return None;
         }
-        if self.store.as_ref().is_some_and(|s| path.starts_with(s)) {
+        if let Some(store) = self.store.as_ref().filter(|s| path.starts_with(s)) {
+            // The store's data reads; its secrets, control files and every write do not.
+            let rel = path.strip_prefix(store).unwrap_or(path);
+            if !write && super::store::is_readable(rel) {
+                return None;
+            }
             return Some(self.store_sentence(path));
         }
         // The deepest denial wins: a `hide` inside a store is the narrower of the two answers.
@@ -132,8 +137,9 @@ impl FileFence {
         match &self.own {
             Some(own) => format!(
                 "`{}` is not in this session's filesystem view: it is inside `{}`, the letibot \
-                 store, where a session reaches its own `{}` and nothing else — `sessions.db`, \
-                 another session's folder and the plugins under it are outside every seat. No \
+                 store, where a session writes its own `{}` and reads only the data (`sessions.db`, \
+                 `metrics.db`, `embeddings.db`, `logs`, `panes`); tokens, leases, sockets, keys \
+                 and other sessions' folders are outside every seat. No \
                  `[boundary]` key grants the store: it is on the never-grant list.",
                 path.display(),
                 store.unwrap_or_default(),
@@ -141,7 +147,7 @@ impl FileFence {
             ),
             None => format!(
                 "`{}` is not in this session's filesystem view: it is inside `{}`, the letibot \
-                 store, and this session has no part of it of its own to reach. No `[boundary]` \
+                 store, which a session reads only as data and never writes. No `[boundary]` \
                  key grants the store: it is on the never-grant list.",
                 path.display(),
                 store.unwrap_or_default()
@@ -230,8 +236,18 @@ mod tests {
                 .refusal(&store.join("sessions/s-1/plugins/x.toml"), true)
                 .is_none()
         );
+        // Data reads and never writes; a secret does neither.
+        for data in [store.join("sessions.db"), store.join("logs/a/b.jsonl")] {
+            assert!(fence.refusal(&data, false).is_none(), "{data:?}");
+            assert!(
+                fence.refusal(&data, true).is_some(),
+                "{data:?} is not writable"
+            );
+        }
         for outside in [
-            store.join("sessions.db"),
+            store.join("room-h.token"),
+            store.join("logs/x.lock"),
+            store.join("keys/k"),
             store.join("sessions/s-2/plugins/x.toml"),
             store.join("sessions/s-1x/db"),
         ] {

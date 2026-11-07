@@ -63,12 +63,13 @@ pub fn mach_services(wide: bool) -> Vec<&'static str> {
 
 /// Denied for read and write after every allow, whatever the view grants, and relative to the
 /// operator's home: a deny, because it has to win over a grant of the whole home. The credential
-/// stores are [`crate::secrets::STORES`]; what is here is what only a policy can express.
+/// stores are [`crate::secrets::STORES`]; what is here is what only a policy can express. The
+/// letibot store is listed whole, and [`super::store`] cuts its readable data out of the deny.
 pub const SEAT_UNDER_HOME: &[&str] = &[
     "Library/Cookies",
     "Library/Messages",
     "Library/Mail",
-    ".local/share/letibot",
+    super::store::STORE_REL,
     ".config/letibot",
     ".zshrc",
     ".zprofile",
@@ -287,6 +288,15 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
         s.push_str(&format!("  (subpath \"{}\")\n", p.display()));
     }
     s.push_str(&format!("  (subpath \"{}\"))\n", l.xcrun_cache()));
+    // The store's data, for a view that is not the whole filesystem; the denies below keep
+    // its secrets out and its writes refused.
+    let store = l.operator_home.join(super::store::STORE_REL);
+    if l.deny.contains(&store) {
+        s.push_str(&format!(
+            "(allow file-read* {})\n",
+            super::store::sbpl_data(&store)
+        ));
+    }
     for g in &view.grants {
         match g {
             Grant::ReadOnly { path, .. } => s.push_str(&format!(
@@ -346,12 +356,25 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
     }
 
     s.push_str("\n; --- denied AFTER the allows above, so a grant cannot undo them ---\n");
-    if !l.deny.is_empty() {
+    // The store is the one deny with a hole: its data is readable (never writable) and its
+    // secrets are neither, so it is rendered by `store` rather than as a plain subpath.
+    let plain: Vec<&PathBuf> = l.deny.iter().filter(|p| **p != store).collect();
+    if !plain.is_empty() {
         s.push_str("(deny file-read* file-write*\n");
-        for p in &l.deny {
+        for p in plain {
             s.push_str(&format!("  (subpath \"{}\")\n", p.display()));
         }
         s.push_str(")\n");
+    }
+    if l.deny.contains(&store) {
+        s.push_str(&format!(
+            "(deny file-write* (subpath \"{0}\"))\n\
+             (deny file-read* (require-all (subpath \"{0}\")\n  (require-not {1})))\n\
+             (deny file-read* file-write* {2})\n",
+            store.display(),
+            super::store::sbpl_data(&store),
+            super::store::sbpl_secret(&store),
+        ));
     }
     // Read-only inside a read-write grant, after it.
     if !view.protected.is_empty() {

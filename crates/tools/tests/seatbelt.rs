@@ -933,3 +933,86 @@ fn certificate_trust_evaluates_in_both_seats_and_the_tight_seat_still_has_no_key
         "the refusal has to be the boundary's: {out}"
     );
 }
+
+/// A fake letibot store under `op`: data and secrets side by side.
+fn fake_store(op: &Path) -> PathBuf {
+    let store = op.join(".local/share/letibot");
+    for d in ["logs/2026", "panes", "keys", "sessions/s-1"] {
+        std::fs::create_dir_all(store.join(d)).expect("a store directory");
+    }
+    std::fs::create_dir_all(op.join(".config/letibot/keys")).expect("the config keys");
+    std::fs::write(op.join(".config/letibot/keys/k"), SECRET).expect("a key");
+    for (name, body) in [
+        ("sessions.db", "sessions-data"),
+        ("metrics.db", "metrics-data"),
+        ("logs/2026/a.jsonl", "log-data"),
+        ("panes/p", "pane-data"),
+        ("room-h.chat", "chat-data"),
+        ("room-h.token", SECRET),
+        ("room-h.lease", SECRET),
+        ("daemon-room-h.placement", SECRET),
+        ("logs/x.token", SECRET),
+        ("keys/k", SECRET),
+        ("sessions/s-1/f", SECRET),
+    ] {
+        std::fs::write(store.join(name), body).expect("a store file");
+    }
+    store
+}
+
+#[test]
+fn every_seat_reads_the_stores_data_and_never_its_secrets_or_writes_it() {
+    for tight in [false, true] {
+        let f = Fixture::new("store");
+        let op = f.root.join("operator");
+        let store = fake_store(&op);
+        let view = if tight {
+            f.view()
+        } else {
+            ViewSpec::project_only(f.project())
+                .with_home(HomeView::Dir(op.clone()))
+                .with_tmp(TmpView::Session(f.root.join("tmp")))
+        };
+        let s = Seatbelt::probe_as(view, Egress::Denied, vec![], op.clone())
+            .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+        let cwd = f.project();
+        let st = store.display();
+        for (file, want) in [
+            ("sessions.db", "sessions-data"),
+            ("metrics.db", "metrics-data"),
+            ("logs/2026/a.jsonl", "log-data"),
+            ("panes/p", "pane-data"),
+            ("room-h.chat", "chat-data"),
+        ] {
+            let (rc, out) = run_in(&s, &cwd, &format!("cat '{st}/{file}'"));
+            assert_eq!(
+                (rc, out.contains(want)),
+                (0, true),
+                "tight={tight} {file}: {out}"
+            );
+            let (rc, _) = run_in(&s, &cwd, &format!("echo x >> '{st}/{file}'"));
+            assert_ne!(rc, 0, "tight={tight}: {file} is not writable");
+        }
+        for file in [
+            "room-h.token",
+            "room-h.lease",
+            "daemon-room-h.placement",
+            "logs/x.token",
+            "keys/k",
+            "sessions/s-1/f",
+        ] {
+            let (rc, out) = run_in(&s, &cwd, &format!("cat '{st}/{file}'"));
+            assert_ne!(rc, 0, "tight={tight}: {file} is read: {out}");
+            assert!(!out.contains("letibot-fixture-line"), "{out}");
+        }
+        let (rc, _) = run_in(&s, &cwd, &format!("echo x > '{st}/new.db'"));
+        assert_ne!(rc, 0, "nothing new can be created in the store");
+        let (rc, out) = run_in(
+            &s,
+            &cwd,
+            &format!("cat '{}/.config/letibot/keys/k'", op.display()),
+        );
+        assert_ne!(rc, 0, "{out}");
+        assert!(!out.contains("letibot-fixture-line"), "{out}");
+    }
+}

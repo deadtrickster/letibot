@@ -2566,6 +2566,25 @@ fn pieces_of(
                 emptied.push(p);
                 arg(&mut a, "--tmpfs");
                 arg(&mut a, p.display().to_string());
+                // The letibot store keeps its data readable: bound read-only into the empty
+                // tmpfs before it is remounted, with the secrets inside the data covered.
+                if p.ends_with(super::store::STORE_REL) {
+                    let data = super::store::readable_entries(p);
+                    for e in &data {
+                        arg(&mut a, "--ro-bind");
+                        arg(&mut a, e.display().to_string());
+                        arg(&mut a, e.display().to_string());
+                    }
+                    for (secret, is_dir) in super::store::secrets_within(&data) {
+                        if is_dir {
+                            arg(&mut a, "--tmpfs");
+                        } else {
+                            arg(&mut a, "--ro-bind");
+                            arg(&mut a, "/dev/null");
+                        }
+                        arg(&mut a, secret.display().to_string());
+                    }
+                }
                 // Read-only too, so a command cannot fill it and have the operator's own tools read
                 // what it left there.
                 arg(&mut a, "--remount-ro");
@@ -3165,6 +3184,62 @@ mod tests {
             !joined.contains(&format!("/dev/null {}", lease.display())),
             "a mount under the emptied store fails every spawn: {joined}"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The masked store keeps its data: bound read-only into the empty tmpfs before the remount,
+    /// with a token inside a data directory covered and a top-level secret not mounted at all.
+    #[test]
+    fn the_masked_store_mounts_its_data_read_only_and_covers_its_secrets() {
+        let dir = std::env::temp_dir().join(format!("letibot-store-data-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let home = dir.join("home");
+        let store = home.join(".local/share/letibot");
+        std::fs::create_dir_all(store.join("logs")).expect("a fake store");
+        std::fs::create_dir_all(dir.join("project")).expect("a project");
+        for f in [
+            "sessions.db",
+            "room-x.token",
+            "logs/a.jsonl",
+            "logs/y.token",
+        ] {
+            std::fs::write(store.join(f), "").expect("a store file");
+        }
+        let view = ViewSpec::project_only(dir.join("project"))
+            .with_home(HomeView::Dir(home.clone()))
+            .wide()
+            .masking([store.clone()]);
+        let joined = build_argv_with(
+            Path::new("/usr/bin/bwrap"),
+            &view,
+            &Egress::Denied,
+            &ConfinePlan {
+                cwd: &dir,
+                env: &[],
+            },
+            Session::Detached,
+        )
+        .join(" ");
+        let s = store.display().to_string();
+        let db = format!("--ro-bind {s}/sessions.db {s}/sessions.db");
+        let logs = format!("--ro-bind {s}/logs {s}/logs");
+        let cover = format!("--ro-bind /dev/null {s}/logs/y.token");
+        let remount = format!("--remount-ro {s}");
+        let at = |needle: &str| {
+            joined
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle}: {joined}"))
+        };
+        assert!(at(&format!("--tmpfs {s} ")) < at(&db), "{joined}");
+        assert!(
+            at(&db) < at(&remount) && at(&logs) < at(&remount),
+            "{joined}"
+        );
+        assert!(
+            at(&logs) < at(&cover) && at(&cover) < at(&remount),
+            "{joined}"
+        );
+        assert!(!joined.contains("room-x.token"), "{joined}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -31,6 +31,9 @@ impl Fixture {
         std::fs::create_dir_all(store.join("sessions/s-1/plugins")).expect("own session");
         std::fs::create_dir_all(store.join("sessions/s-2/plugins")).expect("another session");
         std::fs::write(store.join("sessions.db"), "not a real store\n").expect("the store file");
+        std::fs::create_dir_all(store.join("logs")).expect("logs");
+        std::fs::write(store.join("logs/a.jsonl"), "a log line\n").expect("a log");
+        std::fs::write(store.join("room-h.token"), "secret\n").expect("a token");
         std::fs::write(store.join("sessions/s-1/plugins/x.toml"), "own plugin\n").expect("plugin");
         std::fs::write(
             store.join("sessions/s-2/plugins/other.toml"),
@@ -111,9 +114,29 @@ fn read_write_edit_grep_and_glob_refuse_the_store_outside_the_sessions_own_folde
     let store = f.store();
     let for_other = store.join("sessions/s-2/plugins/other.toml");
     let db = store.join("sessions.db");
+    let token = store.join("room-h.token");
+
+    // The store's data reads and never writes; a token does neither.
+    for data in [&db, &store.join("logs/a.jsonl")] {
+        let r = h.call("read", &format!(r#"{{"path":"{}"}}"#, data.display()));
+        assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
+    }
+    let r = h.call(
+        "grep",
+        &format!(
+            r#"{{"pattern":"log line","path":"{}"}}"#,
+            store.join("logs").display()
+        ),
+    );
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
+    let why = refused(&h.call(
+        "write",
+        &format!(r#"{{"path":"{}","content":"x"}}"#, db.display()),
+    ));
+    assert!(why.contains("the letibot store"), "{why}");
 
     for tool in [
-        format!(r#"{{"path":"{}"}}"#, db.display()),
+        format!(r#"{{"path":"{}"}}"#, token.display()),
         format!(r#"{{"path":"{}"}}"#, for_other.display()),
     ] {
         let why = refused(&h.call("read", &tool));
