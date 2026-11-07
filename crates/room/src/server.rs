@@ -1595,6 +1595,7 @@ impl Server {
                 to,
                 thread,
                 refs,
+                attachments,
             } => self.route_say(
                 project,
                 seat,

@@ -259,11 +259,6 @@ pub enum Refused {
     UnknownThread {
         thread: u64,
     },
-    /// A `say` with both `to` and `thread`: `to` is private and a reply stays in its root's room,
-    /// which may be one everybody reads.
-    PrivateToAPublicReply {
-        thread: u64,
-    },
     /// A name the connection may not speak under: the operator's, or a malformed handle.
     ReservedName {
         name: String,
@@ -409,12 +404,6 @@ impl fmt::Display for Refused {
                 f,
                 "#{thread} is not in the history of any room you can see, so a reply cannot hang \
                  from it"
-            ),
-            Refused::PrivateToAPublicReply { thread } => write!(
-                f,
-                "`to` is a private message and a reply stays in its root's room, so one of the two \
-                 has to go: answer #{thread} there with `@name` in the text, or send it with `dm` \
-                 (and `thread` #{thread}) so only the two of you read it"
             ),
             Refused::ReservedName { name } => {
                 write!(f, "`{name}` is not a name this connection may speak under")

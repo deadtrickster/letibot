@@ -1114,6 +1114,7 @@ fn a_to_is_a_private_message_and_no_room_holds_a_copy() {
         to: Some("s-a2".into()),
         thread: None,
         refs: Vec::new(),
+        attachments: Vec::new(),
     }));
     assert_eq!(m.room, "dm", "a `to` say is a dm, not a host line");
     assert_eq!(m.to.as_deref(), Some("s-a2"));
@@ -1144,6 +1145,7 @@ fn a_to_is_a_private_message_and_no_room_holds_a_copy() {
         to: Some("s-b1".into()),
         thread: None,
         refs: Vec::new(),
+        attachments: Vec::new(),
     }));
     assert_eq!(m.room, "dm");
     assert_eq!(b1.next_seq(m.seq).0.text, "over to your project");
@@ -1156,6 +1158,7 @@ fn a_to_is_a_private_message_and_no_room_holds_a_copy() {
         to: Some(OPERATOR.into()),
         thread: None,
         refs: Vec::new(),
+        attachments: Vec::new(),
     }));
     assert_eq!(m.room, "dm");
     assert_eq!(op.next_seq(m.seq).0.text, "a question for you");
@@ -1216,6 +1219,7 @@ fn an_at_of_an_outsider_invites_them_into_the_room() {
         to: None,
         thread: Some(root.seq),
         refs: Vec::new(),
+        attachments: Vec::new(),
     }));
     assert_eq!(m.room, room_a, "a mention does not move the message");
     assert_eq!(m.to, None, "nothing about a mention is private");
@@ -1266,22 +1270,31 @@ fn a_reply_stays_in_its_roots_room() {
         to: None,
         thread: Some(root.seq),
         refs: Vec::new(),
+        attachments: Vec::new(),
     }));
     assert_eq!(reply.room, room_a, "the root's room, not the one named");
     assert!(a1.next_seq(reply.seq).1, "a reply names its root's author");
 
-    // `to` beside a thread is the one combination the rules do not both allow.
-    match refused(a2.call(Request::Say {
+    // `to` beside a public thread is a private answer: a dm that names the thread it answers.
+    let private = said(a2.call(Request::Say {
         id: "3".into(),
         room: String::new(),
         text: "privately".into(),
         to: Some("s-a1".into()),
         thread: Some(root.seq),
         refs: Vec::new(),
-    })) {
-        Refused::PrivateToAPublicReply { thread } => assert_eq!(thread, root.seq),
-        other => panic!("{other:?}"),
-    }
+        attachments: Vec::new(),
+    }));
+    assert_eq!(private.room, "dm");
+    assert_eq!(private.to.as_deref(), Some("s-a1"));
+    assert_eq!(
+        private.thread, None,
+        "a dm does not hang from a public root"
+    );
+    assert_eq!(
+        private.text,
+        format!("re #{} in {room_a}: privately", root.seq)
+    );
     // A thread nobody can read is refused, not silently said somewhere else.
     assert!(matches!(
         refused(a2.call(Request::Say {
@@ -1291,6 +1304,7 @@ fn a_reply_stays_in_its_roots_room() {
             to: None,
             thread: Some(9_999),
             refs: Vec::new(),
+            attachments: Vec::new(),
         })),
         Refused::UnknownThread { thread: 9_999 }
     ));
@@ -1301,6 +1315,7 @@ fn a_reply_stays_in_its_roots_room() {
         to: "s-a2".into(),
         text: "one thing".into(),
         thread: None,
+        attachments: Vec::new(),
     }));
     let back = said(a2.call(Request::Say {
         id: "6".into(),
@@ -1309,20 +1324,26 @@ fn a_reply_stays_in_its_roots_room() {
         to: None,
         thread: Some(dm.seq),
         refs: Vec::new(),
+        attachments: Vec::new(),
     }));
     assert_eq!(back.room, "dm");
     assert_eq!(back.to.as_deref(), Some("s-a1"));
     assert_eq!(a1.next_seq(back.seq).0.text, "and another");
-    // A dm cannot hang from a public root: that is the same rule from the other side.
-    assert!(matches!(
-        refused(a2.call(Request::Dm {
-            id: "7".into(),
-            to: "s-a1".into(),
-            text: "privately".into(),
-            thread: Some(root.seq),
-        })),
-        Refused::PrivateToAPublicReply { .. }
-    ));
+    // The same from `dm`: a private answer to a public root names it and stays private.
+    let via_dm = said(a2.call(Request::Dm {
+        id: "7".into(),
+        to: "s-a1".into(),
+        text: "privately".into(),
+        thread: Some(root.seq),
+        attachments: Vec::new(),
+    }));
+    assert_eq!(via_dm.room, "dm");
+    assert_eq!(via_dm.thread, None);
+    assert!(
+        via_dm.text.starts_with(&format!("re #{} in ", root.seq)),
+        "{}",
+        via_dm.text
+    );
 }
 
 /// A gatekeeper sits in its project's room and not in the host room: the queue is one of

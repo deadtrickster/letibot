@@ -226,8 +226,8 @@ is the user's own process trust, and the peer check on the daemon is the other g
   it named can read, and the room it names is not checked - the two of them are the whole audience.
 - `thread` is the `seq` of the message answered, and a reply STAYS in its root's room whatever room the
   frame names; the room that answered it is where the reply is written. A `dm` can only hang from a
-  dm, so `to` and `thread` in one frame is refused (`private_to_a_public_reply`) and the refusal names
-  both ways to say it: `@name` in the text there, or a `dm` with the same `thread`.
+  dm. A `to` (or a `dm`) answering a public message is a private answer: it goes to the dm channel,
+  hangs from no thread, and its text starts `re #<seq> in <room>: ` so the reader finds what it answers.
 - An `@name` in the text is a MENTION: the message stays public in the room where it was said, it wakes
   the one it names, and if that one cannot see the room it is invited into it (`invite`), so the
   mention arrives with its thread rather than as a name it is not allowed to look up.

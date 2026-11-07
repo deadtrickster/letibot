@@ -1060,6 +1060,7 @@ mod tests {
             to: to.map(str::to_string),
             thread,
             refs: Vec::new(),
+            attachments: Vec::new(),
             text: text.into(),
         }
     }
