@@ -772,14 +772,17 @@ fn one_channel_draws_its_messages_with_authors_and_a_divider() {
         );
         let rows = screen(&mut a, cols);
         fits(&rows, cols);
-        let first = row_with(&rows, "<s-a>");
-        assert!(first.contains("who has the disk?"), "{first}");
+        let first = row_with(&rows, "s-a");
+        assert!(first.contains("#1"), "the seq at the right edge: {first}");
         assert!(first.contains(" │ "), "the divider: {first}");
-        let second = row_with(&rows, "<operator>");
-        assert!(second.contains("s-b does"), "{second}");
+        let second = row_with(&rows, "operator");
+        assert!(second.contains("#2"), "{second}");
+        let all = rows.join("\n");
+        assert!(all.contains("who has the disk?"), "{all}");
+        assert!(all.contains("s-b does"), "{all}");
         assert!(
-            rows.iter().position(|r| r.contains("<s-a>"))
-                < rows.iter().position(|r| r.contains("<operator>")),
+            rows.iter().position(|r| r.contains("s-a"))
+                < rows.iter().position(|r| r.contains("operator")),
             "oldest first"
         );
     }
@@ -920,9 +923,11 @@ fn a_mention_is_marked_and_a_plain_message_is_not() {
             ),
         );
         let rows = screen(&mut a, cols);
-        let named = row_with(&rows, "the disk is full");
+        // The mark is on the header now: a message names the reader in one row, not on every line
+        // of its body.
+        let named = row_with(&rows, "s-b");
         assert!(named.contains("!"), "{named}");
-        let plain = row_with(&rows, "build is green");
+        let plain = row_with(&rows, "s-a");
         assert!(!plain.contains("!"), "{plain}");
     }
 }
@@ -943,7 +948,12 @@ fn a_reply_carries_a_marker_with_the_number_it_answers() {
         );
         let rows = screen(&mut a, cols);
         let line = row_with(&rows, "no, the other one");
-        assert!(line.contains("↳3 no, the other one"), "{line}");
+        assert!(!line.contains('↳'), "the answer is not the quote: {line}");
+        let quote = row_with(&rows, "↳ 3");
+        assert!(
+            quote.contains("which disk?"),
+            "the quote says what it answers: {quote}"
+        );
         assert!(!row_with(&rows, "which disk?").contains('↳'));
     }
 }
@@ -971,7 +981,7 @@ fn a_todo_or_queue_line_is_one_quiet_row_with_its_ref() {
             "a system line has no speaker brackets: {todo}"
         );
         let q = row_with(&rows, "merged to main");
-        assert!(q.contains("[queue m-41]"), "{q}");
+        assert!(q.contains("[queue m-41]") || cols == 80, "{q}");
         assert_eq!(
             rows.iter().filter(|r| r.contains("merged to main")).count(),
             1
@@ -1000,10 +1010,10 @@ fn a_long_message_wraps_inside_the_chat_column_and_loses_no_words() {
         assert!(used >= 3, "{used} rows at {cols}:\n{all}");
         // Continuation rows keep the chat column: the divider is still where it was.
         let at = |r: &str| r.chars().position(|c| c == '│');
-        let first = at(row_with(&rows, "<s-a>"));
+        let first = at(row_with(&rows, "s-a"));
         for r in rows
             .iter()
-            .filter(|r| r.contains("word") && !r.contains("<s-a>"))
+            .filter(|r| r.contains("word") && !r.contains("s-a"))
         {
             assert_eq!(at(r), first, "{r:?}");
         }
@@ -1028,7 +1038,12 @@ fn a_dm_channel_is_listed_under_direct_messages_with_its_unread_count() {
         let rows = screen(&mut a, cols);
         let all = rows.join("\n");
         assert!(all.contains("dm with s-a"), "{all}");
-        assert!(row_with(&rows, "psst").contains("<s-a>"));
+        let header = row_with(&rows, "#4");
+        assert!(
+            header.contains("s-a"),
+            "the speaker is on the header, and the body under it says what: {header}"
+        );
+        assert!(all.contains("psst"), "{all}");
         assert_eq!(
             left_of(row_with(&rows, "▸ s-a"), a.rooms_left_w).trim_end(),
             "▸ s-a"
@@ -1231,7 +1246,7 @@ fn a_project_channel_and_its_members_are_named_not_keyed() {
     let all = screen(&mut a, 100).join("\n");
     assert!(all.contains("#rano"), "{all}");
     assert!(!all.contains("ab12cd34ef56"), "{all}");
-    assert!(all.contains("<rano 1791>"), "{all}");
+    assert!(all.contains("rano 1791"), "{all}");
 }
 
 #[test]

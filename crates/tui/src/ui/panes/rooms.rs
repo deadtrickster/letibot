@@ -3,10 +3,11 @@
 
 use std::collections::BTreeMap;
 
-use crate::app::rooms::{Chan, ChatRef, Member, Msg, OPERATOR, RoomsView, Send, mentions_operator};
+use crate::app::chat_adapter;
+use crate::app::rooms::{Chan, Member, OPERATOR, RoomsView, Send};
 use crate::app::*;
+use crate::ui::chat::{ChatCtx, chat_blocks};
 use crate::ui::render::{row_strings, trim_to, visible_width, wrap};
-use crate::ui::transcript::blocks::clock_time;
 use rano::agent::pane;
 use rano::agent::text::clean_line;
 use rano::render::{Line, Span};
@@ -108,12 +109,6 @@ fn entry(v: &RoomsView, c: &Chan, picked: bool, unread: u64, lw: usize) -> Line 
     pane::picked(l, picked)
 }
 
-fn refs_text(refs: &[ChatRef]) -> String {
-    refs.iter()
-        .map(|r| format!(" [{} {}]", clean_line(&r.kind), clean_line(&r.id)))
-        .collect()
-}
-
 /// A send of ours that has not landed: `…` while it is out, `✗` and the reason once it failed.
 /// Drawn at the tail of its own channel, where the message would have been - it stays until
 /// the operator resends it or dismisses it, whatever the polls bring back.
@@ -138,88 +133,6 @@ fn send_lines(sends: &[Send], c: &Chan, rw: usize) -> Vec<Line> {
                     out.push(pane::faint(format!("  {row}")));
                 }
             }
-        }
-    }
-    out
-}
-
-/// A todo or queue line: quiet, one row, with the row it points at.
-fn system_line(m: &Msg, rw: usize) -> Line {
-    let text = format!(
-        "  · {}: {}{}",
-        clean_line(&m.author),
-        clean_line(&m.text),
-        refs_text(&m.refs)
-    );
-    pane::faint(trim_to(&text, rw))
-}
-
-fn message_lines(
-    m: &Msg,
-    rw: usize,
-    with_time: bool,
-    names: &BTreeMap<String, String>,
-) -> Vec<Line> {
-    if m.kind == "system" {
-        return vec![system_line(m, rw)];
-    }
-    let named = mentions_operator(m);
-    let time = if with_time {
-        let t = clock_time(m.ts);
-        if t.len() >= 5 {
-            format!("{} ", &t[..5])
-        } else {
-            String::new()
-        }
-    } else {
-        String::new()
-    };
-    let seq = format!("{:>3}{}", m.seq, if named { '!' } else { ' ' });
-    let who = names.get(&m.author).unwrap_or(&m.author);
-    let author = format!("<{}> ", trim_to(&clean_line(who), 16));
-    let indent = visible_width(&seq) + visible_width(&time) + visible_width(&author);
-    let cols = rw.saturating_sub(indent).max(8);
-    let reply = m.thread.map(|t| format!("↳{t} ")).unwrap_or_default();
-
-    let mut text = format!("{}{}", reply, m.text);
-    text.push_str(&refs_text(&m.refs));
-    let mut rows: Vec<String> = Vec::new();
-    for para in text.split('\n') {
-        let para = clean_line(para);
-        if rows.is_empty() || !para.trim().is_empty() {
-            rows.extend(wrap(&para, cols));
-        }
-    }
-    if rows.is_empty() {
-        rows.push(String::new());
-    }
-
-    let (mark_role, name_role, body_role) = if named {
-        (Role::Attention, Role::Attention, Role::Attention)
-    } else {
-        (Role::Faint, Role::Strong, Role::Plain)
-    };
-    let mut out = Vec::with_capacity(rows.len());
-    for (i, row) in rows.into_iter().enumerate() {
-        if i == 0 {
-            let mut spans = vec![
-                Span::role(seq.clone(), mark_role),
-                Span::role(time.clone(), Role::Faint),
-                Span::role(author.clone(), name_role),
-            ];
-            match row.strip_prefix(&reply).filter(|_| !reply.is_empty()) {
-                Some(rest) => {
-                    spans.push(Span::role(reply.clone(), Role::Faint));
-                    spans.push(Span::role(rest.to_string(), body_role));
-                }
-                None => spans.push(Span::role(row, body_role)),
-            }
-            out.push(Line::new(spans));
-        } else {
-            out.push(Line::new(vec![
-                Span::raw(" ".repeat(indent)),
-                Span::role(row, body_role),
-            ]));
         }
     }
     out
@@ -449,8 +362,10 @@ impl App {
         names
     }
 
-    fn rooms_body(&self, rw: usize) -> Vec<Line> {
-        let names = self.rooms_names();
+    /// The chat column: the selected channel as a stream of message blocks, and the sends of ours
+    /// that have not landed. The first entry's `seq` comes back with the rows because a page of
+    /// older messages arriving above must not move the reader.
+    fn rooms_body(&self, rw: usize) -> (Vec<Line>, Option<u64>) {
         let Some(c) = self.rooms.selected() else {
             // The selected channel is gone rather than empty, and the sentence says which:
             // an empty channel draws "nothing here yet", which would be a lie here.
@@ -459,15 +374,33 @@ impl App {
                 .gone
                 .clone()
                 .unwrap_or_else(|| "the channel".into());
-            return vec![pane::faint(format!(
-                "  {which} is gone - up or down selects a channel"
-            ))];
+            return (
+                vec![pane::faint(format!(
+                    "  {which} is gone - up or down selects a channel"
+                ))],
+                None,
+            );
         };
-        let msgs = self.rooms.messages(&c);
-        let with_time = rw >= 64;
+        // The channel as a layer sees it: what a message means is the adapter's to say, and this
+        // pane draws the stream it answers without ever reading a `Msg`.
+        let names = self.rooms_names();
+        let stream = chat_adapter::stream(&self.rooms, &c, &names, OPERATOR, self.now_ms);
+        let blobs = chat_adapter::blobs(&self.rooms, &c);
+        let picture = |blob: &str| self.room_picture(blob);
+        // P4's cursor is a `seq`; an entry's id is what the renderer draws as selected.
+        let cursor = self.rooms_cursor().map(|seq| seq.to_string());
+        let ctx = ChatCtx {
+            width: rw,
+            cfg: &self.cfg,
+            picture: &picture,
+            blobs: &blobs,
+            selected: cursor.as_deref(),
+            highlight: self.rooms_search_needle(),
+        };
+        let blocks = chat_blocks(&stream, &ctx);
         let mut out: Vec<Line> = Vec::new();
         if let Chan::Room(id) = &c
-            && !msgs.is_empty()
+            && !blocks.is_empty()
         {
             out.push(pane::faint(if self.rooms.oldest_known.contains(id) {
                 "  start of the stored history"
@@ -475,20 +408,14 @@ impl App {
                 "  scroll up for older messages"
             }));
         }
-        out.extend(
-            msgs.into_iter()
-                .flat_map(|m| message_lines(m, rw, with_time, &names)),
-        );
-        out.extend(send_lines(&self.rooms.sends, &c, rw));
-        if out.is_empty() {
-            let said = if self.rooms.heard {
-                "  nothing here yet"
-            } else {
-                "  asking the coordinator..."
-            };
-            out.push(pane::faint(said));
+        out.extend(blocks.iter().flat_map(|b| b.lines.iter().cloned()));
+        if blocks.is_empty() {
+            // The layer's own sentence: an empty channel and one nobody has answered are two
+            // facts, and only the layer knows which one this is.
+            out.push(pane::faint(format!("  {}", clean_line(&stream.empty))));
         }
-        out
+        out.extend(send_lines(&self.rooms.sends, &c, rw));
+        (out, blocks.first().and_then(|b| b.seq()))
     }
 
     pub(crate) fn rooms_lines(&mut self, w: usize, room: usize) -> Vec<String> {
@@ -550,16 +477,12 @@ impl App {
         }
 
         let left = self.rooms_left(lw, room);
-        let body = self.rooms_body(rw);
+        let (body, first) = self.rooms_body(rw);
 
         // Stay on the tail unless the reader scrolled back from it.
         let max = body.len().saturating_sub(chat_room);
         // A page of older messages landing above keeps the lines the reader was on.
         let key = self.rooms.selected().map(|c| RoomsView::key(&c));
-        let first = self
-            .rooms
-            .selected()
-            .and_then(|c| self.rooms.messages(&c).first().map(|m| m.seq));
         if let (Some((k, seq, len)), Some(key), Some(first)) =
             (self.rooms.prev_first.clone(), key.clone(), first)
             && k == key

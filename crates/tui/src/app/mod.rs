@@ -1560,6 +1560,7 @@ mod action;
 mod asks;
 mod attachments;
 mod attention;
+pub(crate) mod chat_adapter;
 pub(crate) mod chat_input;
 pub(crate) mod chat_media;
 pub(crate) mod chat_nav;

@@ -1,61 +1,115 @@
-//! A message as a BLOCK rather than a line: the header, the body under it, the quote of what it
-//! answers, and the rows a picture takes. P0 defines the seam and draws today's plain line; P2
-//! replaces [`chat_blocks`] with the block the design draws, and nothing else has to move.
+//! A message as a BLOCK rather than a line: header, body, quote, pictures, dividers. It draws the
+//! pane language's `stream` block and knows nothing about rooms or `Msg` - what a message means is
+//! [`crate::app::chat_adapter`]'s to say, which is the half a plugin replaces.
+//!
+//! Two vocabularies meet here: the pane language's `Role` names what a cell MEANS and `Paint` is
+//! what the head draws it with. The renderer never takes an RGB from a layer.
 
-#![allow(dead_code)] // The seam is P0's and its readers are P2's: every field here is drawn then.
+mod block;
+mod body;
+pub(crate) mod colour;
+mod divider;
+mod mention;
 
 use std::collections::BTreeMap;
 
-use rano::agent::text::clean_line;
-use rano::render::{Line, Span};
-use rano::style::Role;
+use letibot_sessionlog::pane::{Mention, Stream, StreamEntry};
+use rano::render::Line;
 
-use crate::app::rooms::Msg;
-use crate::ui::render::{RenderConfig, trim_to};
+pub(crate) use crate::ui::render::md_options;
+pub(crate) use colour::hue;
 
-/// What one message is drawn against: who the handles are, how wide the column is, which row is
-/// picked out, and what the reader has already seen.
+/// The columns a message's time and the gutter under it take: `14:02` and two spaces.
+pub(crate) const GUTTER: usize = 7;
+
+/// What a layer called one blob its window draws, whether it is a picture, and the size the wire
+/// carried for it: a picture is drawn where the terminal can hold one, and a file is only named.
+pub(crate) struct Blob {
+    pub name: String,
+    pub picture: bool,
+    /// The pixels the store measured from the image's own header, when it could. `None` is *nobody
+    /// measured it*, which is not 0x0.
+    pub size: Option<(u32, u32)>,
+}
+
+/// A picture as the head's cache holds it: the image id it uploaded, and the pixels of it.
+pub(crate) type Picture = (u32, u32, u32);
+
+/// The picture cache, as the renderer asks it: blob id in, the picture when the bytes are here.
+pub(crate) type Pictures<'a> = &'a dyn Fn(&str) -> Option<Picture>;
+
+/// What one stream is drawn against: the column, how this head looks, which pictures it already
+/// holds, which entry the reader stands on, and what they are looking for.
 pub(crate) struct ChatCtx<'a> {
-    /// handle -> display name, from the roster.
-    pub names: &'a BTreeMap<String, String>,
-    /// The name the reader speaks as.
-    pub me: &'a str,
     pub width: usize,
-    pub cfg: &'a RenderConfig,
-    /// blob id -> (image id, w, h), from P4's picture cache. `None` is the one-row fallback.
-    pub picture: &'a dyn Fn(&str) -> Option<(u32, u32, u32)>,
-    /// The `seq` the unread divider follows, when the reader opened the channel with news.
-    pub divider_after: Option<u64>,
-    /// The `seq` under the message cursor.
-    pub selected: Option<u64>,
+    pub cfg: &'a crate::ui::render::RenderConfig,
+    /// blob id -> (image id, pixel width, pixel height), from the head's picture cache. `None` is
+    /// *the bytes are not here yet*, and draws the one-row fallback rather than a hole.
+    pub picture: Pictures<'a>,
+    /// The name each blob was sent under, so a picture row can say `shot.png`.
+    pub blobs: &'a BTreeMap<String, Blob>,
+    /// The entry id under the message cursor.
+    pub selected: Option<&'a str>,
     /// The search needle, for its hits to be picked out.
     pub highlight: Option<&'a str>,
 }
 
-/// One message's drawn rows, keyed by the `seq` that survives a poll.
+/// One entry's drawn rows, keyed by the entry's id - which for a room's stream is its `seq`, and is
+/// whatever the layer said for any other.
 pub(crate) struct Block {
-    pub seq: u64,
+    pub id: String,
     pub lines: Vec<Line>,
 }
 
-/// One block per message. P0 draws the line `/rooms` draws today - `seq author: text` - because
-/// the scroll math is already written against these rows; P2 turns each into the designed block.
-pub(crate) fn chat_blocks(msgs: &[&Msg], ctx: &ChatCtx<'_>) -> Vec<Block> {
+impl Block {
+    /// The seq this entry is, when its id is one. A layer's ids are opaque; the room's are seqs,
+    /// and that is what the pane's place-keeping orders by.
+    pub(crate) fn seq(&self) -> Option<u64> {
+        self.id.parse().ok()
+    }
+}
+
+/// Every entry of a stream as its rows, in the order the layer listed them.
+pub(crate) fn chat_blocks(s: &Stream, ctx: &ChatCtx<'_>) -> Vec<Block> {
     let cols = ctx.width.max(8);
-    msgs.iter()
-        .map(|m| {
-            let who = ctx.names.get(&m.author).unwrap_or(&m.author);
-            let text = format!("{} {}: {}", m.seq, clean_line(who), clean_line(&m.text));
+    s.entries
+        .iter()
+        .map(|e| {
+            let d = Draw {
+                e,
+                mentions: &s.mentions,
+                ctx,
+                cols,
+            };
             Block {
-                seq: m.seq,
-                lines: vec![Line::new(vec![Span::raw(trim_to(&text, cols))])],
+                id: e.id().to_string(),
+                lines: if e.is_divider() {
+                    divider::lines(&d)
+                } else {
+                    block::lines(&d)
+                },
             }
         })
         .collect()
 }
 
-/// The colour a handle speaks in. P0 answers one role for every handle; P2 hashes the handle and
-/// picks from the palette, so a rename keeps the colour.
-pub(crate) fn speaker_role(_handle: &str) -> Role {
-    Role::Strong
+/// One entry drawn against: the stream's tokens, the pane's context, and the columns it has.
+pub(crate) struct Draw<'a> {
+    pub e: &'a StreamEntry,
+    pub mentions: &'a BTreeMap<String, Mention>,
+    pub ctx: &'a ChatCtx<'a>,
+    pub cols: usize,
+}
+
+impl Draw<'_> {
+    /// The gutter a message is drawn under. A column too narrow to hold the time and a word of the
+    /// body together has no gutter: the words matter more than the column they line up in.
+    pub(crate) fn gutter(&self) -> usize {
+        if self.cols >= GUTTER + 8 { GUTTER } else { 0 }
+    }
+
+    /// The columns a body has, after the gutter.
+    pub(crate) fn body_cols(&self) -> usize {
+        self.cols.saturating_sub(self.gutter()).max(8)
+    }
 }
