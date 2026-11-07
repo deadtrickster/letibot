@@ -2178,9 +2178,8 @@ mod room_push_tests {
         let mut asked = false;
         let deadline = Instant::now() + Duration::from_secs(2);
         while !asked && Instant::now() < deadline {
-            match chatting.read::<ServerFrame>() {
-                Ok(ServerFrame::RoomChat { .. }) => asked = true,
-                Ok(_) | Err(_) => {}
+            if let Ok(ServerFrame::RoomChat { .. }) = chatting.read::<ServerFrame>() {
+                asked = true;
             }
         }
         assert!(asked, "the head's chat was never answered");
