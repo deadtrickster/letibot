@@ -1337,6 +1337,7 @@ mod hits;
 mod jobcard;
 mod jobs;
 mod linkclick;
+mod links_plugin;
 mod livecall;
 mod markerclick;
 mod markerexpand;

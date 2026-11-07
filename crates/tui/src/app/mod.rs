@@ -895,6 +895,12 @@ pub struct App {
     /// The session repository's GitHub references, its `owner/repo`, branches and commits, so the
     /// words on the screen that name them become links (`app::ghlinks`).
     pub(crate) gh_refs: Option<std::sync::Arc<ghlinks::GitRefs>>,
+    /// Whether a `link_` layer is on disk at all, and when it was last asked: read from manifests
+    /// alone, so a session with none never compiles a plugin stack for links
+    /// (`Host::any_link_layer`), and read again every minute so a layer written in this session
+    /// starts answering without a restart.
+    pub(crate) link_layers: Option<bool>,
+    pub(crate) link_layers_at: u64,
     /// The background read of them, and which repository it is for.
     pub(crate) gh_job: Option<(String, std::sync::mpsc::Receiver<Option<ghlinks::GitRefs>>)>,
     /// Which repository was last read, and when.
@@ -1416,6 +1422,8 @@ impl App {
             git_repos: Vec::new(),
             git_dir: None,
             gh_refs: None,
+            link_layers: None,
+            link_layers_at: 0,
             gh_job: None,
             gh_read: (String::new(), 0),
             git_pinned: None,

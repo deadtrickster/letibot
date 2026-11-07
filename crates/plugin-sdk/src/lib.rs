@@ -11,7 +11,9 @@ pub mod adjudicate;
 pub mod command;
 pub mod complete;
 pub mod condition;
+pub mod digest;
 pub mod lifecycle;
+pub mod link;
 pub mod notice;
 pub mod pane;
 pub mod tool_call;
@@ -75,6 +77,8 @@ mod tests {
         for event in lifecycle::EVENTS {
             assert!(admitted(&lifecycle::hook(event)), "{event}");
         }
+        assert!(admitted(&digest::hook("compilers")));
+        assert!(admitted(&link::hook("gh")));
         assert!(admitted(&pane::hook("chat")));
         for kind in notice::KINDS {
             let hook = notice::hook(kind);

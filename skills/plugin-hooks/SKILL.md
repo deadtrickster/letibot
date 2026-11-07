@@ -1,6 +1,6 @@
 ---
 name: plugin-hooks
-description: Fix the harness's own behaviour from inside a session — pick the hook kind that owns the problem (a patch point: notice, on_tool_call, on_tool_result, condition; or a surface: pane, command, tool), write a layer, test it against the input that misbehaved, and load it hot. Use when letibot does the wrong thing with a tool call, a tool result, a sentence it says to the model or a monitor's watch, and when a session needs a screen, a `/` verb or a tool this build has not got.
+description: Fix the harness's own behaviour from inside a session — pick the hook kind that owns the problem (a patch point: notice, on_tool_call, on_tool_result, condition, digest, link; or a surface: pane, command, tool), write a layer, test it against the input that misbehaved, and load it hot. Use when letibot does the wrong thing with a tool call, a tool result, a sentence it says to the model, a monitor's watch, the bytes the model has to hold or the words a screen could link, and when a session needs a screen, a `/` verb or a tool this build has not got.
 ---
 
 # Patch the harness from inside this session
@@ -9,7 +9,7 @@ The operator's complaint is usually one of five shapes, and each is a hook. When
 one of three things a layer can **add**: a pane, a `/` verb, or a tool. Eight kinds, and finding the
 right one is most of the work; after that it is a small wasm module and no release.
 
-## The five patch points
+## The patch points
 
 | what went wrong | the kind | runs |
 |---|---|---|
@@ -19,11 +19,13 @@ right one is most of the work; after that it is a small wasm module and no relea
 | the harness said something misleading, or left out what the model needed | **`notice_<kind>`**, as in `notice_monitor` | on every sentence the harness injects of that kind |
 | a monitor watches the wrong thing, or fires for the wrong reason | **`condition_<name>`** | on every poll of a watch |
 | a session's own boundary needs words or a row — it opened, was re-seated, came back after a restart, was closed | **`lifecycle_<event>`** | at that boundary, with the facts of what changed |
+| a command printed four thousand lines the model has to hold | **`digest_<name>`**, as in `digest_compilers` | on every output, before the spill policy budgets it |
+| a word on the screen names a ticket, a build or a wiki page, and nothing links it | **`link_<name>`**, as in `link_gh` | once per frame, for the words the head's own references did not know |
 
-The contract for four of these and for a pane is the `plugin_hooks` tool, **read from the host's
+The contract for some of these and for a pane is the `plugin_hooks` tool, **read from the host's
 own types**: read it before writing anything, and read it again after a refusal.
 `plugin_hooks {"hook":"condition"}` is one kind; no argument is all of them. `adjudicate_floor`,
-like `tool_` and `command_`, is written out below: the host has no page for it yet.
+`digest_`, `link_`, `tool_` and `command_` are written out below: the host has no page for them yet.
 
 ### `adjudicate_floor` — the gate's floor
 
@@ -59,8 +61,8 @@ in the layer of the session it governs.
 | a `/` verb the head asks before it answers the line itself | **`command_`** | `command_<verb>`, as in `command_todo` | the verb, as in `/todo …` |
 | a tool in the model's own tool list | **`tool_`** | `tool_<name>`, as in `tool_claude_transcript` | the `tool` list the model is sent |
 
-`plugin_hooks` has no page for `tool_`, `command_` or `complete_`: their shapes are below, and they
-are the whole contract.
+`plugin_hooks` has no page for `tool_`, `command_`, `complete_`, `digest_` or `link_`: their shapes
+are below, and they are the whole contract.
 
 ### `pane_<name>` — a screen
 
@@ -151,7 +153,46 @@ call takes at most four rounds and 64 looks. A tool of a layer nobody pinned is 
 call instead of running freely.
 
 The guest does no I/O: every file read, grep and listing is a look the **host** runs under the
-layer's capabilities, which is why a tool's schema and its `capabilities` are written together.
+layer's capabilities, which is why a tool's schema and its `capabilities` are written together. A
+look reads what this session's view holds - a path the boundary hides is refused in the boundary's
+words - and an `exec` look (`{"exec": ["gh", "pr", "view", …]}`, under `exec:gh`) is put to the
+gate without a card, because it runs inside the model's call and cannot park it behind a question.
+
+### `digest_<name>` — an output, before the budget
+
+```toml
+name = "compilers"
+hooks = ["digest_compilers"]
+capabilities = []
+```
+
+The input is `{"v": 1, "call": {"name", "arguments"}, "payload": "…"}` and the answer is
+`{"payload": "…shorter…"}`, or `{}` to leave the output alone. It runs **before the spill policy
+budgets the output**, so what you hand on is what the model has to hold: a `cargo test` that printed
+four hundred lines of warnings and one failure is a digest worth writing.
+
+Two refusals, both about spending context rather than saving it: an answer **longer** than what it
+was given is refused, and so is an empty answer for an output that had text in it. Either refusal
+leaves the tool's own output standing and says so to the session, which is what happens to a layer
+that traps - the model reads the bytes its tool produced.
+
+### `link_<name>` — what a word on the screen links to
+
+```toml
+name = "board"
+hooks = ["link_gh"]
+capabilities = []
+```
+
+The input is `{"v": 1, "words": ["#212", "LET-7", …], "repo": {"slug": "owner/repo", "branches": […]}}`
+- the words on THIS frame that the head's own references did not know - and the answer is
+`{"urls": ["https://…", null, …]}`: **one entry per word, in the order it was asked**, `null` for a
+word this layer does not link. It is asked **once per frame**, with all the words at once, and cached
+by word, so a word it said nothing about is not asked again.
+
+Only `http` and `https` targets are drawn: a head cannot ask a terminal whether a scheme is one it
+should open, so anything else is refused whole - an answer of the wrong length links nothing. A trap
+leaves the words the text they were.
 
 ## The loop
 
@@ -181,6 +222,10 @@ call that went wrong.
 A `tool_` layer is the one kind that also needs `plugin {"action":"load"}`, because the tool is
 seated when the layer applies: a tool a session has not loaded is not in the model's tool list.
 
+`scaffold` has a template for `pane`, `notice`, `on_tool_call`, `on_tool_result` and `condition`. For
+`digest_`, `link_`, `command_` or `tool_`, scaffold the nearest one and rename the export in
+`plugin.toml` and in `src/lib.rs` - the shape above is the whole of what you are writing.
+
 ## The rules that catch people
 
 - **`on_tool_call` can never admit anything.** It runs before the gate: a rewritten call is what the
@@ -201,6 +246,12 @@ seated when the layer applies: a tool a session has not loaded is not in the mod
 - **A pane, a command and a tool are capabilities too.** A row or an act names a host verb the
   manifest declared (`actions`), a look is checked against `capabilities`, and nothing outside those
   two lists is reachable — not by a row, not by a tool's args, not by a look.
+- **A digest saves the model's context, and it is what the session keeps.** It runs before the
+  spill, so the digest is the bytes budgeted - spilled to the store when they do not fit - and the
+  bytes a transcript row records. It cannot make an output longer and cannot hide one: both are
+  refused, and then the tool's own bytes stand.
+- **A link answer is one entry per word, in order, and `http`/`https` only.** A shorter or longer
+  list would link the wrong word, so it is refused whole rather than zipped.
 - **No clock, no I/O.** `SystemTime::now()` traps on wasm32; a trap falls to the layer below and is
   reported. Take time from what the look read.
 

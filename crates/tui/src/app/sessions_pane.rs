@@ -88,6 +88,10 @@ pub(crate) struct Host {
     /// belongs to the host). Keyed by hook, so the queue pane's answer and the session list's
     /// cannot overwrite each other.
     state: Mutex<std::collections::BTreeMap<String, Value>>,
+    /// Which word links where, as the `link_` layers last answered: `None` is a word they were
+    /// asked about and did not know, which is cached too - a frame asks once per word, not once
+    /// per frame (`docs/plugins-plan.md` \u{00a7}4.6).
+    links: Mutex<std::collections::BTreeMap<String, Option<String>>>,
     /// The last failure a layer met, until somebody is told. Fail down LOUDLY
     /// (`docs/plugins-plan.md`): the list the person sees may be the built-in's or
     /// the head's own, and either way the reason their layer is not drawing it is news.
@@ -150,6 +154,124 @@ impl Host {
         self.problem.lock().ok().and_then(|p| p.clone())
     }
 
+    /// One `link_` question for a frame: the words no layer has answered yet, asked of each
+    /// `link_` hook in stack order with the still-unknown words only, and cached by word. The
+    /// answer is what a head may draw - a layer that traps or answers a shape the contract refuses
+    /// is said once and leaves the words as text, which is what they were before it existed.
+    pub(crate) fn links(
+        &self,
+        words: &[String],
+        repo: &letibot_plugin::link::Repo,
+    ) -> std::collections::BTreeMap<String, Option<String>> {
+        let mut cached = self.links.lock().map(|l| l.clone()).unwrap_or_default();
+        let mut unknown: Vec<String> = Vec::new();
+        for word in words {
+            if !cached.contains_key(word) && !unknown.contains(word) {
+                unknown.push(word.clone());
+            }
+        }
+        for hook in self.link_hooks() {
+            if unknown.is_empty() {
+                break;
+            }
+            unknown.truncate(letibot_plugin::link::MAX_WORDS);
+            let input = letibot_plugin::link::Input::new(unknown.clone(), repo.clone());
+            let Ok(input) = serde_json::to_value(&input) else {
+                break;
+            };
+            let resolved = self.stack.call(&hook, &input);
+            if let (Some(said), Ok(mut slot)) = (resolved.failures.first(), self.problem.lock()) {
+                *slot = Some(format!(
+                    "a plugin layer could not answer `{hook}`, so the words it would have linked \
+                     are text: {said}"
+                ));
+            }
+            let Some(answer) = resolved.answer else {
+                continue;
+            };
+            let by = resolved.by.clone().unwrap_or_default();
+            let urls = match serde_json::from_value::<letibot_plugin::link::Out>(answer.clone()) {
+                Ok(out) => match out.checked(&unknown) {
+                    Ok(urls) => urls,
+                    Err(why) => {
+                        if let Ok(mut slot) = self.problem.lock() {
+                            *slot = Some(format!(
+                                "the plugin layer `{by}` answered `{hook}` with something a head \
+                                 will not draw: {why}"
+                            ));
+                        }
+                        continue;
+                    }
+                },
+                Err(why) => {
+                    if let Ok(mut slot) = self.problem.lock() {
+                        *slot = Some(format!(
+                            "the plugin layer `{by}` answered `{hook}` with something that is not a \
+                             link answer: {why}"
+                        ));
+                    }
+                    continue;
+                }
+            };
+            for (word, url) in unknown.iter().zip(urls) {
+                cached.insert(word.clone(), url);
+            }
+            // Only what this hook did not answer is left for the layer below it.
+            unknown.retain(|w| !cached.contains_key(w));
+        }
+        if let Ok(mut known) = self.links.lock()
+            && !cached.is_empty()
+        {
+            *known = cached.clone();
+        }
+        cached
+    }
+
+    /// The `link_<name>` hooks this stack exports, topmost layer first: a kind whose name is the
+    /// layer's own, so there is no single export to ask.
+    fn link_hooks(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for layer in self.stack.layers() {
+            if layer.disabled || layer.manifest.contract != letibot_plugins::CONTRACT {
+                continue;
+            }
+            for hook in &layer.manifest.hooks {
+                if hook.starts_with(letibot_plugin::link::PREFIX)
+                    && letibot_plugins::is_hook_kind(hook)
+                    && !out.contains(hook)
+                {
+                    out.push(hook.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Does any layer on disk answer `link_`? The head reads manifests and no modules, so a session
+    /// with no such layer keeps the head it had instead of compiling a stack on its first frame.
+    pub(crate) fn any_link_layer(session: &str, workspace: &Path) -> bool {
+        let roots = [
+            session_plugins_dir(session),
+            Some(workspace.join(".letibot").join("plugins")),
+            user_config_dir().map(|d| d.join("plugins")),
+        ];
+        roots.iter().flatten().any(|root| {
+            let Ok(entries) = std::fs::read_dir(root) else {
+                return false;
+            };
+            entries.flatten().any(|e| {
+                let dir = e.path();
+                let Ok(manifest) = letibot_plugins::Manifest::read(&dir) else {
+                    return false;
+                };
+                manifest
+                    .hooks
+                    .iter()
+                    .any(|h| h.starts_with(letibot_plugin::link::PREFIX))
+            })
+        })
+    }
+
     /// The failure the last call recorded, taken - the seam [`App::take_sessions_failure`] reads
     /// through, and the one a test uses to see that a broken layer was SEEN rather than skipped.
     #[cfg(test)]
@@ -167,6 +289,7 @@ impl Host {
             stack,
             cache: Mutex::new(Cached::default()),
             state: Mutex::new(std::collections::BTreeMap::new()),
+            links: Mutex::new(std::collections::BTreeMap::new()),
             problem: Mutex::new(problem),
             workspace,
             next_poll: 0,
@@ -212,6 +335,7 @@ impl Host {
             stack,
             cache: Mutex::new(Cached::default()),
             state: Mutex::new(std::collections::BTreeMap::new()),
+            links: Mutex::new(std::collections::BTreeMap::new()),
             problem: Mutex::new(problem),
             workspace: workspace.to_path_buf(),
             next_poll: 0,
@@ -247,9 +371,12 @@ impl Host {
             }
             // A rebuilt layer is a NEW layer answering: whatever `state` the old one left behind
             // was its own, and handing it to a different module is handing it an answer to a
-            // question it never asked.
+            // question it never asked. The words it links are asked again for the same reason.
             if let Ok(mut state) = self.state.lock() {
                 state.clear();
+            }
+            if let Ok(mut links) = self.links.lock() {
+                links.clear();
             }
         }
     }

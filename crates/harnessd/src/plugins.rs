@@ -1257,7 +1257,7 @@ impl PluginHost {
                     .layer(&by)
                     .map(|l| l.manifest.actions.clone())
                     .unwrap_or_default();
-                match accepted(hook, &answer, &declared) {
+                match accepted(hook, &answer, &declared, &input) {
                     Ok(what) => said.push(format!(
                         "`{hook}` for {}{} — {what}",
                         describe_any_input(&input),
@@ -1526,7 +1526,7 @@ impl PluginHost {
                         None => String::new(),
                     }
                 ));
-                match accepted(&hook, answer, &declared) {
+                match accepted(&hook, answer, &declared, &input) {
                     Ok(what) => {
                         out.push_str(&format!("\nit answers — {what}:\n"));
                         out.push_str(
@@ -1663,7 +1663,7 @@ fn synthetic_pane_input(feeds: &BTreeMap<String, Value>) -> Value {
 /// asked yet: the SDK's own synthetic example of that kind. A layer that cannot answer it traps on
 /// its own first frame, which is the cheapest defect to find.
 fn synthetic_for(hook: &str, feeds: &BTreeMap<String, Value>) -> Value {
-    use letibot_plugin::{condition, notice, tool_call, tool_result};
+    use letibot_plugin::{condition, digest, link, notice, tool_call, tool_result};
     let value = if hook.starts_with("pane_") {
         return synthetic_pane_input(feeds);
     } else if hook == tool_call::HOOK {
@@ -1672,6 +1672,10 @@ fn synthetic_for(hook: &str, feeds: &BTreeMap<String, Value>) -> Value {
         serde_json::to_value(tool_result::ToolResultIn::synthetic())
     } else if hook.starts_with(condition::PREFIX) {
         serde_json::to_value(condition::ConditionIn::synthetic())
+    } else if hook.starts_with(digest::PREFIX) {
+        serde_json::to_value(digest::Input::synthetic())
+    } else if hook.starts_with(link::PREFIX) {
+        serde_json::to_value(link::Input::synthetic())
     } else {
         serde_json::to_value(notice::Notice::synthetic())
     };
@@ -1681,8 +1685,13 @@ fn synthetic_for(hook: &str, feeds: &BTreeMap<String, Value>) -> Value {
 /// Would the host accept this answer for `hook`? - the same parse the running host does, in one
 /// place, so `plugin test` and `load` cannot disagree with what a session would live with. `Ok` is
 /// the one line a person reads (what the answer would do); `Err` is the refusal.
-fn accepted(hook: &str, answer: &Value, declared: &[String]) -> Result<String, String> {
-    use letibot_plugin::{condition, notice, tool_call, tool_result};
+fn accepted(
+    hook: &str,
+    answer: &Value,
+    declared: &[String],
+    input: &Value,
+) -> Result<String, String> {
+    use letibot_plugin::{condition, digest, link, notice, tool_call, tool_result};
     if hook.starts_with("pane_") {
         let view = validated(answer, hook, hook, declared)?;
         return Ok(format!("a view the host can drive — \"{}\"", view.title));
@@ -1718,6 +1727,48 @@ fn accepted(hook: &str, answer: &Value, declared: &[String]) -> Result<String, S
             "it leaves the result alone".to_string()
         } else {
             said.join("; ")
+        });
+    }
+    if hook.starts_with(digest::PREFIX) {
+        let out: digest::Out =
+            serde_json::from_value(answer.clone()).map_err(|e| format!("not a digest ({e})"))?;
+        // Checked against the input the hook was actually asked with: a digest is a statement about
+        // the bytes it was handed, and the synthetic example is that only on its own first frame.
+        let was = input["payload"].as_str().unwrap_or_default();
+        return Ok(match out.checked(was)? {
+            None => "it leaves the output as the tool produced it".to_string(),
+            Some(text) => format!(
+                "it hands on {} bytes of the {} the call produced: {text:?}",
+                text.len(),
+                was.len()
+            ),
+        });
+    }
+    if hook.starts_with(link::PREFIX) {
+        let out: link::Out = serde_json::from_value(answer.clone())
+            .map_err(|e| format!("not a link answer ({e})"))?;
+        let words: Vec<String> = input["words"]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let urls = out.checked(&words)?;
+        return Ok(match out.linked() {
+            0 => "it links none of the words a frame would ask about".to_string(),
+            n => format!(
+                "it links {n} of {} word(s): {}",
+                words.len(),
+                words
+                    .iter()
+                    .zip(&urls)
+                    .filter_map(|(w, u)| u.as_ref().map(|u| format!("`{w}` → {u}")))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         });
     }
     if hook.starts_with(condition::PREFIX) {
@@ -2462,6 +2513,118 @@ impl letibot_tools::adjudicate::FloorHook for FloorHooks {
             return letibot_tools::adjudicate::Floored::Pass;
         };
         host.adjudicate(&self.hub, action)
+    }
+}
+
+/// The runtime's `digest_` hook, backed by one session's plugin host - the same slot as
+/// [`CallHooks`], because a session has one stack and two would be two answers to what is in force.
+pub struct DigestHooks {
+    slot: Arc<Mutex<Option<Arc<PluginHost>>>>,
+    hub: Arc<Hub>,
+}
+
+impl DigestHooks {
+    pub fn new(slot: Arc<Mutex<Option<Arc<PluginHost>>>>, hub: Arc<Hub>) -> DigestHooks {
+        DigestHooks { slot, hub }
+    }
+}
+
+impl letibot_tools::runtime::DigestHook for DigestHooks {
+    fn digest(
+        &self,
+        call: &letibot_plugin::Call,
+        payload: &str,
+    ) -> Option<letibot_tools::runtime::Digest> {
+        let host = self
+            .slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        host.digest(&self.hub, call, payload)
+    }
+}
+
+impl PluginHost {
+    /// Every hook of this stack whose name a prefix begins, topmost layer first and each name once:
+    /// the names a kind with a name of its own is asked under (`digest_<name>`, `link_<name>`), as
+    /// against a kind resolved by one shared export.
+    pub fn hooks_named(&self, prefix: &str) -> Vec<String> {
+        let inner = self.lock();
+        let mut out: Vec<String> = Vec::new();
+        for layer in inner.stack.layers() {
+            if layer.disabled || layer.manifest.contract != letibot_plugins::CONTRACT {
+                continue;
+            }
+            for hook in &layer.manifest.hooks {
+                if hook.starts_with(prefix)
+                    && letibot_plugins::is_hook_kind(hook)
+                    && !out.contains(hook)
+                {
+                    out.push(hook.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// One output through this stack's `digest_` hooks: the first layer that answers, in the same
+    /// shape [`crate::plugins::DigestHooks`] hands the runtime. `None` when nothing answers, and
+    /// then the bytes budgeted are the tool's own - a layer that traps or answers a digest the
+    /// contract refuses is said once and falls to the layer below it.
+    pub fn digest(
+        &self,
+        hub: &Arc<Hub>,
+        call: &letibot_plugin::Call,
+        payload: &str,
+    ) -> Option<letibot_tools::runtime::Digest> {
+        use letibot_plugin::digest::{Input, Out};
+        let hooks = self.hooks_named(letibot_plugin::digest::PREFIX);
+        if hooks.is_empty() {
+            return None;
+        }
+        let input = serde_json::to_value(Input::new(call.clone(), payload)).ok()?;
+        for hook in hooks {
+            let Some(resolved) = self.ask(hub, &hook, &input) else {
+                continue;
+            };
+            let Some(answer) = resolved.answer else {
+                continue;
+            };
+            let by = resolved.by.clone().unwrap_or_default();
+            let out: Out = match serde_json::from_value(answer.clone()) {
+                Ok(out) => out,
+                Err(why) => {
+                    self.complain(
+                        hub,
+                        &by,
+                        &format!(
+                            "the layer `{by}` answered something that is not a digest — \
+                             `{{\"payload\": \"…\"}}` is the whole of it: {why}. Its answer was \
+                             {answer}, so the call's own output stands"
+                        ),
+                    );
+                    continue;
+                }
+            };
+            match out.checked(payload) {
+                Ok(None) => continue,
+                Ok(Some(text)) => {
+                    return Some(letibot_tools::runtime::Digest {
+                        payload: text.to_string(),
+                        by: self.layer_sentence(&by),
+                    });
+                }
+                Err(why) => self.complain(
+                    hub,
+                    &by,
+                    &format!(
+                        "the layer `{by}` digested this output and the host will not hand it on: \
+                         {why}. The call's own output stands"
+                    ),
+                ),
+            }
+        }
+        None
     }
 }
 

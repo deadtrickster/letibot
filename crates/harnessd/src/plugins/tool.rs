@@ -50,16 +50,53 @@ const MATCHES_CAP: usize = 40;
 const TOOL_V: u32 = 1;
 
 /// The one question a plugin tool puts to a gate - `Gate::admit_unasked`, through the runtime's own
-/// door. A trait and not the `InvokeCtx` itself, because a test that had to build an `InvokeCtx` to
-/// ask it would be a test of the runtime.
+/// door - and the session behind its looks. A trait and not the `InvokeCtx` itself, because a test
+/// that had to build an `InvokeCtx` to ask it would be a test of the runtime.
 pub trait Decides {
     /// `None` when there is no gate to ask, which the caller reads as *nothing could judge it*.
     fn admit_unasked(&self, name: &str, access: Access, args: &Value) -> Option<GateDecision>;
+
+    /// The whole file, through this session's view: a path its boundary denies is refused in the
+    /// boundary's own words, and a path outside its root is not read off the daemon's disk.
+    fn read(&self, _path: &str) -> Result<Vec<u8>, String> {
+        Err("this call has no session view, so nothing could read it".to_string())
+    }
+
+    /// One directory's entries, through the same view - and the same refusal.
+    fn list(&self, _path: &str) -> Result<Vec<letibot_tools::backend::DirEntry>, String> {
+        Err("this call has no session view, so nothing could list it".to_string())
+    }
+
+    /// Run one program in this session's view, for an `exec` look. `Err` is the sentence the layer
+    /// reads back; a caller with no view runs nothing, which is not the same as every gate open.
+    fn run(&self, _argv: &[String]) -> Result<letibot_tools::backend::Output, String> {
+        Err("this call has no session view, so nothing could run it".to_string())
+    }
 }
 
 impl Decides for InvokeCtx<'_> {
     fn admit_unasked(&self, name: &str, access: Access, args: &Value) -> Option<GateDecision> {
         InvokeCtx::admit_unasked(self, name, access, args)
+    }
+
+    fn read(&self, path: &str) -> Result<Vec<u8>, String> {
+        self.backend.read(path).map_err(|e| e.to_string())
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<letibot_tools::backend::DirEntry>, String> {
+        self.backend.list(path).map_err(|e| e.to_string())
+    }
+
+    fn run(&self, argv: &[String]) -> Result<letibot_tools::backend::Output, String> {
+        self.backend
+            .run(&letibot_tools::backend::Command {
+                argv: argv.to_vec(),
+                // The session's own workspace: a look is asked from the root a command starts in,
+                // and `HostBackend::workdir` maps it into the substrate's spelling.
+                cwd: ".".to_string(),
+                env: Vec::new(),
+            })
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -183,7 +220,7 @@ impl PluginTool {
         if let Some(refusal) = self.admit(&host, decider, args) {
             return refusal;
         }
-        self.answer(&host, args)
+        self.answer(&host, decider, args)
     }
 
     /// May this call run? - `None` when it may. A built-in or pinned layer runs freely; an unpinned
@@ -251,7 +288,7 @@ impl PluginTool {
     }
 
     /// The call, answered by the stack - the loop of `tool_` rounds and the result it settles on.
-    fn answer(&self, host: &PluginHost, args: &Value) -> Invocation {
+    fn answer(&self, host: &PluginHost, decider: Option<&dyn Decides>, args: &Value) -> Invocation {
         let hook = self.decl.hook();
         // Round 0 has looked at nothing, and every round replaces the results wholesale: the layer
         // asked for these looks and this call is its answer to them.
@@ -339,7 +376,7 @@ impl PluginTool {
                     }
                     looks = wanted
                         .iter()
-                        .map(|spec| run_look(spec, &self.caps, &self.workspace))
+                        .map(|spec| run_look_in(spec, &self.caps, &self.workspace, decider))
                         .collect();
                     state = carry;
                 }
@@ -444,30 +481,99 @@ fn answer_of(answer: &Value) -> Answer {
 /// a `{"exit":1,"error":…}` and never a raised error: the plugin is the half that knows what to say
 /// about a refusal, and a host that raised would take the call with it.
 pub fn run_look(spec: &Value, caps: &[Capability], workspace: &Path) -> Value {
+    run_look_in(spec, caps, workspace, None)
+}
+
+/// [`run_look`] inside a session: reads answer what the session's view holds rather than what the
+/// daemon's disk does, and an `exec` look is put to the gate without a card - `None` is a caller
+/// with no session behind it, which runs no program at all.
+pub fn run_look_in(
+    spec: &Value,
+    caps: &[Capability],
+    workspace: &Path,
+    view: Option<&dyn Decides>,
+) -> Value {
     let Some(object) = spec.as_object() else {
         return look_error(format!("{spec} is not a look — a look is a JSON object"));
     };
     if let Some(path) = object.get("read").and_then(Value::as_str) {
         return match resolve(path, caps, workspace) {
-            Ok(real) => read_look(&real, object),
+            Ok(real) => read_look(&real, object, view),
             Err(why) => look_error(why),
         };
     }
     if let Some(path) = object.get("list").and_then(Value::as_str) {
         return match resolve(path, caps, workspace) {
-            Ok(real) => list_look(&real, object),
+            Ok(real) => list_look(&real, object, view),
             Err(why) => look_error(why),
         };
     }
     if let Some(path) = object.get("grep").and_then(Value::as_str) {
         return match resolve(path, caps, workspace) {
-            Ok(real) => grep_look(&real, object),
+            Ok(real) => grep_look(&real, object, view),
             Err(why) => look_error(why),
         };
     }
+    if let Some(argv) = object.get("exec") {
+        let Some(list) = argv.as_array() else {
+            return look_error(format!(
+                "`exec` is {argv}, and it is an array of argv words"
+            ));
+        };
+        let argv: Vec<String> = list
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect();
+        return exec_look(&argv, caps, view);
+    }
     look_error(format!(
-        "{spec} names no look — the three are `read`, `list` and `grep`"
+        "{spec} names no look — the four are `read`, `list`, `grep` and `exec`"
     ))
+}
+
+/// One program, run for a layer that declared it. The capability is checked here first, because a
+/// program the layer never declared is not a call anybody adjudicates; then the gate, without a
+/// card - a look runs inside a model's call and cannot park it behind a question.
+fn exec_look(argv: &[String], caps: &[Capability], view: Option<&dyn Decides>) -> Value {
+    let Some(program) = argv.first() else {
+        return look_error("an `exec` look needs a program to run");
+    };
+    if !caps
+        .iter()
+        .any(|c| matches!(c, Capability::Exec(p) if p == program))
+    {
+        return look_error(format!(
+            "the layer that answered did not declare `exec:{program}`, so nothing was run — a \
+             capability is declared in plugin.toml and enforced here"
+        ));
+    }
+    let Some(view) = view else {
+        return look_error(format!(
+            "`{program}` was not run: this call has no session view, so nothing could judge whether \
+             a program a plugin declared may run"
+        ));
+    };
+    let args = json!({ "command": letibot_tools::command_of_argv(argv) });
+    let Some(decision) = view.admit_unasked("bash", Access::Exec, &args) else {
+        return look_error(format!(
+            "`{program}` was not run: this session has no gate, so nothing could judge it"
+        ));
+    };
+    if let GateDecision::Refuse { outcome, tell } = decision {
+        return look_error(format!(
+            "`{program}`: {}",
+            crate::plugins::conditions::said(&outcome, &tell)
+        ));
+    }
+    match view.run(argv) {
+        Ok(out) => json!({
+            "exit": out.exit,
+            "stdout": String::from_utf8_lossy(&out.stdout),
+            "stderr": String::from_utf8_lossy(&out.stderr),
+        }),
+        Err(why) => look_error(why),
+    }
 }
 
 fn look_error(why: impl std::fmt::Display) -> Value {
@@ -477,6 +583,8 @@ fn look_error(why: impl std::fmt::Display) -> Value {
 /// Resolve a path a layer asked for, or say why it may not have it. The rule is the manifest's: the
 /// workspace if the layer declared `read`, and each tree it named as `read:<path>`, nothing else.
 /// Both sides are canonicalised, so a symlink pointing out of a tree is refused for where it points.
+/// What the SESSION's view says about the path is the next question, and a look's answer comes from
+/// the view rather than from this process's own disk - see [`Decides::read`].
 fn resolve(path: &str, caps: &[Capability], workspace: &Path) -> Result<PathBuf, String> {
     if path.trim().is_empty() {
         return Err("a look named an empty path".to_string());
@@ -562,8 +670,31 @@ fn line_value(n: usize, bytes: &[u8], cap: usize) -> Value {
     })
 }
 
-/// Lines from a file, by range or by list, streamed so a 116 MB transcript costs one line.
-fn read_look(real: &Path, spec: &serde_json::Map<String, Value>) -> Value {
+/// The bytes a look reads, through the session's view when there is one: a path its boundary
+/// denies is refused in the boundary's words, and a path outside its root is not read off the
+/// daemon's disk (R121 item 8's family, X26). `None` is a caller with no session - a test's own
+/// tool, `PluginTool::run` - and then the file is this process's, as it was before there were views.
+fn open_for_read(real: &Path, view: Option<&dyn Decides>) -> Result<Box<dyn BufRead>, Value> {
+    let Some(view) = view else {
+        return match std::fs::File::open(real) {
+            Ok(file) => Ok(Box::new(BufReader::new(file))),
+            Err(e) => Err(look_error(format!("{}: {e}", real.display()))),
+        };
+    };
+    match view.read(&real.display().to_string()) {
+        // The whole file, as a command's `cat` would see it; a window is taken from the bytes.
+        Ok(bytes) => Ok(Box::new(std::io::Cursor::new(bytes))),
+        Err(why) => Err(look_error(why)),
+    }
+}
+
+/// Lines from a file, by range or by list, one line at a time so a 116 MB transcript costs its
+/// window rather than itself.
+fn read_look(
+    real: &Path,
+    spec: &serde_json::Map<String, Value>,
+    view: Option<&dyn Decides>,
+) -> Value {
     let cap = spec
         .get("max_line_bytes")
         .and_then(Value::as_u64)
@@ -585,14 +716,13 @@ fn read_look(real: &Path, spec: &serde_json::Map<String, Value>) -> Value {
         .and_then(Value::as_u64)
         .map(|n| (n as usize).max(1))
         .unwrap_or(1);
-    let file = match std::fs::File::open(real) {
-        Ok(file) => file,
-        Err(e) => return look_error(format!("{}: {e}", real.display())),
+    let mut reader = match open_for_read(real, view) {
+        Ok(reader) => reader,
+        Err(said) => return said,
     };
     let mut out = Vec::new();
     let mut bytes = 0usize;
     let mut more = false;
-    let mut reader = BufReader::new(file);
     let mut buf = Vec::new();
     let mut n = 0usize;
     loop {
@@ -643,48 +773,73 @@ fn read_look(real: &Path, spec: &serde_json::Map<String, Value>) -> Value {
 
 /// A directory's entries. Newest first is the plugin's business, not the host's: this answers them
 /// in name order and says when the list was cut.
-fn list_look(real: &Path, spec: &serde_json::Map<String, Value>) -> Value {
+fn list_look(
+    real: &Path,
+    spec: &serde_json::Map<String, Value>,
+    view: Option<&dyn Decides>,
+) -> Value {
     let limit = spec
         .get("limit")
         .and_then(Value::as_u64)
         .map(|n| (n as usize).clamp(1, ENTRIES_CAP))
         .unwrap_or(ENTRIES_CAP);
-    let meta = match std::fs::metadata(real) {
-        Ok(meta) => meta,
-        Err(e) => return look_error(format!("{}: {e}", real.display())),
-    };
-    if !meta.is_dir() {
-        return look_error(format!(
-            "{} is not a directory — `list` lists a directory, and a file is read with `read`",
-            real.display()
-        ));
-    }
-    let entries = match std::fs::read_dir(real) {
-        Ok(entries) => entries,
-        Err(e) => return look_error(format!("{}: {e}", real.display())),
+    // The entries one way or the other: a session's view answers them, and a caller with no
+    // session reads the tree this process stands on. Each is `(name, dir, size, mtime)`.
+    let entries: Vec<(String, bool, u64, u64)> = match view {
+        Some(view) => {
+            let listed = match view.list(&real.display().to_string()) {
+                Ok(listed) => listed,
+                Err(why) => return look_error(why),
+            };
+            listed
+                .into_iter()
+                .map(|e| (e.name, e.is_dir, e.bytes, e.modified.unwrap_or(0)))
+                .collect()
+        }
+        None => {
+            let meta = match std::fs::metadata(real) {
+                Ok(meta) => meta,
+                Err(e) => return look_error(format!("{}: {e}", real.display())),
+            };
+            if !meta.is_dir() {
+                return look_error(format!(
+                    "{} is not a directory — `list` lists a directory, and a file is read with `read`",
+                    real.display()
+                ));
+            }
+            let read = match std::fs::read_dir(real) {
+                Ok(entries) => entries,
+                Err(e) => return look_error(format!("{}: {e}", real.display())),
+            };
+            read.flatten()
+                .map(|entry| {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let (dir, size, mtime) = match entry.metadata() {
+                        Ok(m) => (
+                            m.is_dir(),
+                            m.len(),
+                            m.modified()
+                                .ok()
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0),
+                        ),
+                        // A dangling symlink - `~/.claude/projects` holds one - is an entry with no
+                        // metadata, and dropping it would hide a name the layer is looking for.
+                        Err(_) => (false, 0, 0),
+                    };
+                    (name, dir, size, mtime)
+                })
+                .collect()
+        }
     };
     let mut out: Vec<Value> = Vec::new();
     let mut more = false;
-    for entry in entries.flatten() {
+    for (name, dir, size, mtime) in entries {
         if out.len() >= limit {
             more = true;
             break;
         }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let (dir, size, mtime) = match entry.metadata() {
-            Ok(m) => (
-                m.is_dir(),
-                m.len(),
-                m.modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0),
-            ),
-            // A dangling symlink - `~/.claude/projects` holds one - is an entry with no metadata
-            // and dropping it would hide a name the layer may be looking for.
-            Err(_) => (false, 0, 0),
-        };
         out.push(json!({"name": name, "dir": dir, "size": size, "mtime": mtime}));
     }
     out.sort_by(|a, b| {
@@ -699,7 +854,11 @@ fn list_look(real: &Path, spec: &serde_json::Map<String, Value>) -> Value {
 /// Every line of a file that contains `match`, with its line index and byte offset. The offset is
 /// what makes a hit addressable - a caller with the file open can seek to it - and the line number
 /// is what `read`'s `at` takes, so the two halves of this vocabulary compose.
-fn grep_look(real: &Path, spec: &serde_json::Map<String, Value>) -> Value {
+fn grep_look(
+    real: &Path,
+    spec: &serde_json::Map<String, Value>,
+    view: Option<&dyn Decides>,
+) -> Value {
     let Some(needle) = spec.get("match").and_then(Value::as_str) else {
         return look_error("a `grep` look needs `match` — the text to look for".to_string());
     };
@@ -727,11 +886,10 @@ fn grep_look(real: &Path, spec: &serde_json::Map<String, Value>) -> Value {
         .and_then(Value::as_u64)
         .map(|n| (n as usize).clamp(80, LINE_CAP_MAX))
         .unwrap_or(LINE_CAP);
-    let file = match std::fs::File::open(real) {
-        Ok(file) => file,
-        Err(e) => return look_error(format!("{}: {e}", real.display())),
+    let mut reader = match open_for_read(real, view) {
+        Ok(reader) => reader,
+        Err(said) => return said,
     };
-    let mut reader = BufReader::new(file);
     let mut buf = Vec::new();
     let mut offset = 0u64;
     let mut n = 0usize;
@@ -800,7 +958,7 @@ fn grep_look(real: &Path, spec: &serde_json::Map<String, Value>) -> Value {
 
 /// The lines after a hit, consumed from the same reader so a grep stays one pass.
 fn after_lines(
-    reader: &mut BufReader<std::fs::File>,
+    reader: &mut dyn BufRead,
     offset: &mut u64,
     n: &mut usize,
     scanned: &mut usize,

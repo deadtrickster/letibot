@@ -19,6 +19,10 @@ impl Module for FileModule {
     }
 
     fn call(&self, _hook: &str, input: &str) -> Result<Option<String>, String> {
+        // A layer that traps, which is a file rather than a module because this is a fake engine.
+        if self.answer.with_file_name("TRAP").exists() {
+            return Err("trapped: error while executing at wasm backtrace".to_string());
+        }
         // Two frames, like the real example: a pane handed a look's result answers its
         // dashboard, and one that is not answers the frame that asks for it. `second.json` is
         // that dashboard; without it a layer answers once.
@@ -3844,4 +3848,408 @@ fn every_daemon_verb_is_one_a_layer_cannot_take() {
             "`/{verb}` is a daemon verb and `HOST_VERBS` does not name it"
         );
     }
+}
+
+// K8: the reserved prefixes get their callers.
+
+/// A project with one layer that answers one hook, for the kinds that carry no pane.
+fn hook_project(tag: &str, hook: &str, answer: &str) -> (PathBuf, Arc<Hub>) {
+    let root = tempdir(tag);
+    let layer = root.join(".letibot/plugins").join(hook);
+    std::fs::create_dir_all(&layer).expect("the layer dir");
+    std::fs::write(
+        layer.join("plugin.toml"),
+        format!(
+            "name = \"{hook}\"\npurpose = \"one hook, for a test\"\nhooks = [\"{hook}\"]\n\
+             capabilities = [\"read\"]\ncontract = 1\n"
+        ),
+    )
+    .expect("a manifest");
+    std::fs::write(layer.join("plugin.wasm"), b"a module").expect("a module");
+    std::fs::write(layer.join("answer.json"), answer).expect("an answer");
+    (root, Hub::new("s-plugins"))
+}
+
+/// A tool that prints `bytes` of one character: what a model's `bash` call produces when a test
+/// is compiling, and what a digest exists to shorten.
+struct Loud {
+    bytes: usize,
+}
+
+impl letibot_tools::runtime::Tool for Loud {
+    fn schema(&self) -> letibot_tools::schema::ToolSchema {
+        letibot_tools::schema::ToolSchema::new(
+            "loud",
+            "print a long line, for a digest to shorten",
+            json!({"type": "object", "properties": {}}),
+            Access::Read,
+        )
+    }
+
+    fn invoke(
+        &self,
+        _ctx: &mut letibot_tools::runtime::InvokeCtx<'_>,
+        _args: &Value,
+    ) -> letibot_tools::runtime::Invocation {
+        letibot_tools::runtime::Invocation::ok("x".repeat(self.bytes))
+    }
+}
+
+/// A runtime over one session's host, with [`Loud`] seated and a 200-byte inline budget - so which
+/// bytes were budgeted is readable off the result.
+fn loud_runtime(
+    host: Arc<PluginHost>,
+    hub: &Arc<Hub>,
+    bytes: usize,
+) -> letibot_tools::runtime::ToolRuntime {
+    let slot: Arc<std::sync::Mutex<Option<Arc<PluginHost>>>> =
+        Arc::new(std::sync::Mutex::new(Some(host)));
+    let mut reg = letibot_tools::runtime::Registry::new();
+    reg.register(Box::new(Loud { bytes }))
+        .expect("it registers");
+    let workspace = tempdir("digest-ws");
+    let backend =
+        letibot_tools::backend::HostBackend::new(&workspace).expect("a whole-host backend");
+    let runtime = letibot_tools::runtime::ToolRuntime::new(reg, Box::new(backend))
+        .with_gate(letibot_tools::testing::allow_all())
+        .with_spiller(letibot_tools::Spiller::new(
+            Box::new(letibot_tools::FixedBudget(200)),
+            Box::new(letibot_tools::MemoryStore::new()),
+        ));
+    // The digest hook only, so what this measures is the digest and not the call path.
+    let slot: Arc<std::sync::Mutex<Option<Arc<PluginHost>>>> = slot;
+    let hub = hub.clone();
+    runtime.with_digest_hook(Arc::new(crate::plugins::DigestHooks::new(slot, hub)))
+}
+
+fn loud_call() -> letibot_transcript::ToolCall {
+    letibot_transcript::ToolCall {
+        id: "c1".into(),
+        name: "loud".into(),
+        arguments: "{}".into(),
+    }
+}
+
+/// The digest runs BEFORE the spill, so the bytes the budget is spent on are the digest's: a
+/// 4000-byte output a layer shortens to one line does not spill at all (§4.5, X26).
+#[test]
+fn a_digest_layer_shortens_before_the_spill_budgets() {
+    let (root, hub) = hook_project(
+        "digest-shortens",
+        "digest_compilers",
+        r#"{"payload":"compiled 2 crates, 0 errors"}"#,
+    );
+    let host = Arc::new(host(&root));
+    let rt = loud_runtime(host.clone(), &hub, 4000);
+    let mut sink = letibot_tools::events::RecordingToolSink::new();
+    let out = rt.invoke("t1", &loud_call(), &mut sink);
+    assert_eq!(out.payload, "compiled 2 crates, 0 errors");
+    assert!(
+        out.spill.is_none(),
+        "the digest fits the budget, so nothing spilled: {:?}",
+        out.spill
+    );
+    assert!(
+        out.notes.iter().any(|n| n.contains("digested by plugin")),
+        "the model is told whose words these are: {:?}",
+        out.notes
+    );
+    // And the layer was handed the output whole - a digest of something it never saw would be a
+    // digest of a guess.
+    let asked = host.recorded("digest_compilers");
+    assert_eq!(
+        asked
+            .last()
+            .and_then(|i| i["payload"].as_str())
+            .map(str::len),
+        Some(4000),
+        "{asked:?}"
+    );
+    assert_eq!(asked.last().unwrap()["call"]["name"], json!("loud"));
+}
+
+/// The other half of the same fact: with no digest layer the same output spills, so the test above
+/// is measuring the hook rather than a budget nobody reached.
+#[test]
+fn without_a_digest_layer_the_same_output_spills() {
+    let (root, hub) = hook_project("digest-none", "pane_x", "{}");
+    let rt = loud_runtime(Arc::new(host(&root)), &hub, 4000);
+    let mut sink = letibot_tools::events::RecordingToolSink::new();
+    let out = rt.invoke("t1", &loud_call(), &mut sink);
+    assert!(out.spill.is_some(), "nothing shortened it: {:?}", out.spill);
+    assert!(out.payload.len() < 4000, "and the body is bounded");
+}
+
+/// A digest that traps leaves today's output: the call's own bytes, budgeted as they were, and the
+/// session told once that the layer failed.
+#[test]
+fn a_trapping_digest_layer_leaves_the_output_as_it_was() {
+    let (root, hub) = hook_project("digest-trap", "digest_compilers", "{}");
+    std::fs::write(root.join(".letibot/plugins/digest_compilers/TRAP"), b"").expect("a trap");
+    let host = Arc::new(host(&root));
+    let rt = loud_runtime(host.clone(), &hub, 4000);
+    let mut sink = letibot_tools::events::RecordingToolSink::new();
+    let out = rt.invoke("t1", &loud_call(), &mut sink);
+    assert!(
+        out.spill.is_some(),
+        "the tool's own output is what was budgeted: {:?}",
+        out.spill
+    );
+    assert!(
+        !out.notes.iter().any(|n| n.contains("digested by plugin")),
+        "nothing was digested: {:?}",
+        out.notes
+    );
+    let said = host.take_notices().join("\n");
+    assert!(said.contains("digest_compilers"), "{said}");
+    assert!(said.contains("trapped"), "{said}");
+}
+
+/// A pinned tool layer's `exec` look runs: the capability first, then `admit_unasked` - a look
+/// runs inside a model's call and cannot park it behind a card (X26, §7.11).
+#[test]
+fn a_pinned_tool_layer_runs_an_exec_look_through_admit_unasked() {
+    struct Asked(std::sync::Mutex<Vec<String>>);
+    impl crate::plugins::tool::Decides for Asked {
+        fn admit_unasked(&self, name: &str, access: Access, args: &Value) -> Option<GateDecision> {
+            self.0.lock().unwrap().push(format!(
+                "{name}/{access:?} {}",
+                args["command"].as_str().unwrap_or_default()
+            ));
+            Some(GateDecision::Admit)
+        }
+
+        fn run(&self, argv: &[String]) -> Result<letibot_tools::backend::Output, String> {
+            Ok(letibot_tools::backend::Output {
+                stdout: argv.join(" ").into_bytes(),
+                stderr: Vec::new(),
+                exit: 0,
+            })
+        }
+    }
+
+    let (root, declared) = tool_project(
+        "tool-exec",
+        r#"{"looks": [{"exec": ["sh", "-c", "printf exec-ran"]}]}"#,
+        r#"{"outcome":"ok","payload":"answered"}"#,
+        "\"exec:sh\"",
+    );
+    let hub = Hub::new("s-tool");
+    let host = Arc::new(
+        PluginHost::discover(
+            "s-tool",
+            &root,
+            None,
+            None,
+            Arc::new(RoundLoader),
+            Arc::new(FileBuilder),
+        )
+        .with_trust({
+            let trust = letibot_plugins::Trust::in_memory();
+            trust
+                .pin(
+                    &declared[0].layer,
+                    &root.join(".letibot/plugins").join(&declared[0].layer),
+                )
+                .expect("pinned");
+            trust
+        }),
+    );
+    let slot: Arc<std::sync::Mutex<Option<Arc<PluginHost>>>> =
+        Arc::new(std::sync::Mutex::new(Some(host.clone())));
+    let tool = crate::plugins::tool::PluginTool::new(
+        declared[0].clone(),
+        "s-tool",
+        root.clone(),
+        slot,
+        hub.clone(),
+    );
+    let asked = Asked(std::sync::Mutex::new(Vec::new()));
+    let out = tool.call(Some(&asked), &json!({}));
+    assert_eq!(out.payload, "answered", "{:?}", out.outcome);
+    assert_eq!(
+        *asked.0.lock().unwrap(),
+        vec!["bash/Exec sh -c 'printf exec-ran'".to_string()],
+        "the look was put to the gate without a card, as the call `bash` of that argv would be"
+    );
+    // And what it printed reached the layer: the look's result is the second input.
+    let asked = host.recorded("tool_probe");
+    let look = asked
+        .last()
+        .and_then(|i| i["looks"][0].as_object())
+        .cloned()
+        .expect("the look's result was handed back");
+    assert_eq!(json!(look.get("exit")), json!(0));
+    assert_eq!(json!(look.get("stdout")), json!("sh -c printf exec-ran"));
+}
+
+/// A read look answers what the session's view holds and not the daemon's disk: the file is inside
+/// the session's own root and on the host, the store is on every seat's never-grant list, and the
+/// look is refused in the fence's own words (R121 item 8's family, X26).
+#[test]
+fn a_tool_read_look_in_a_confined_session_reads_the_view_not_the_host() {
+    // The letibot store, inside this session's workspace so that a plain `read` of the file works:
+    // what refuses it is the view and nothing else.
+    let (root, declared) = tool_project(
+        "tool-view",
+        r#"{"looks": [{"read": ".store/sessions/other/secret.json"}]}"#,
+        r#"{"outcome":"ok","payload":"answered"}"#,
+        "\"read\"",
+    );
+    let store = root.join(".store");
+    let secret = store.join("sessions/other/secret.json");
+    std::fs::create_dir_all(secret.parent().unwrap()).expect("the other session's dir");
+    std::fs::write(&secret, "{\"not\":\"for you\"}").expect("a file on the host");
+    let hub = Hub::new("s-tool");
+    let host = Arc::new(
+        PluginHost::discover(
+            "s-tool",
+            &root,
+            None,
+            None,
+            Arc::new(RoundLoader),
+            Arc::new(FileBuilder),
+        )
+        .with_trust({
+            let trust = letibot_plugins::Trust::in_memory();
+            trust
+                .pin(
+                    &declared[0].layer,
+                    &root.join(".letibot/plugins").join(&declared[0].layer),
+                )
+                .expect("pinned");
+            trust
+        }),
+    );
+    let slot: Arc<std::sync::Mutex<Option<Arc<PluginHost>>>> =
+        Arc::new(std::sync::Mutex::new(Some(host.clone())));
+    let mut reg = letibot_tools::runtime::Registry::new();
+    reg.register(Box::new(crate::plugins::tool::PluginTool::new(
+        declared[0].clone(),
+        "s-tool",
+        root.clone(),
+        slot,
+        hub.clone(),
+    )))
+    .expect("the tool is seated");
+    // The fence a confined seat draws: the store reaches this session's own directory and nothing
+    // else, which is the same list a command's view obeys.
+    let fence = letibot_tools::exec::fence::FileFence::default().owning(&store, "s-mine");
+    let backend = letibot_tools::backend::HostBackend::new(&root)
+        .expect("a backend")
+        .with_file_fence(fence);
+    let rt = letibot_tools::runtime::ToolRuntime::new(reg, Box::new(backend))
+        .with_gate(letibot_tools::testing::allow_all());
+    let mut sink = letibot_tools::events::RecordingToolSink::new();
+    let out = rt.invoke(
+        "t1",
+        &letibot_transcript::ToolCall {
+            id: "c1".into(),
+            name: "probe".into(),
+            arguments: "{}".into(),
+        },
+        &mut sink,
+    );
+    assert_eq!(out.payload, "answered", "{:?}", out.outcome);
+    let asked = host.recorded("tool_probe");
+    let look = asked
+        .last()
+        .and_then(|i| i["looks"][0].as_object())
+        .cloned()
+        .expect("the look's result was handed back");
+    assert_eq!(json!(look.get("exit")), json!(1), "{look:?}");
+    let why = look
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        why.contains("filesystem view") && why.contains(&store.display().to_string()),
+        "the boundary's own sentence, naming the store: {why}"
+    );
+    // And the file is readable from here: a look that read the daemon's disk would have answered it.
+    assert!(
+        std::fs::read_to_string(&secret).is_ok(),
+        "the file is on the daemon's disk"
+    );
+}
+
+/// A read look of a path OUTSIDE the session's root is refused the way the file tools refuse it: a
+/// confined seat cannot read past its root, and the daemon's own view of the disk is not the
+/// session's (the bug X26 names).
+#[test]
+fn a_tool_read_look_outside_the_sessions_root_is_refused() {
+    let elsewhere = tempdir("tool-view-outside");
+    let secret = elsewhere.join("secret.json");
+    std::fs::write(&secret, "{\"not\":\"for you\"}").expect("a file on the host");
+    let (root, declared) = tool_project(
+        "tool-view-outside",
+        &format!("{{\"looks\": [{{\"read\": \"{}\"}}]}}", secret.display()),
+        r#"{"outcome":"ok","payload":"answered"}"#,
+        &format!("\"read:{}\"", elsewhere.display()),
+    );
+    let hub = Hub::new("s-tool");
+    let host = Arc::new(
+        PluginHost::discover(
+            "s-tool",
+            &root,
+            None,
+            None,
+            Arc::new(RoundLoader),
+            Arc::new(FileBuilder),
+        )
+        .with_trust({
+            let trust = letibot_plugins::Trust::in_memory();
+            trust
+                .pin(
+                    &declared[0].layer,
+                    &root.join(".letibot/plugins").join(&declared[0].layer),
+                )
+                .expect("pinned");
+            trust
+        }),
+    );
+    let slot: Arc<std::sync::Mutex<Option<Arc<PluginHost>>>> =
+        Arc::new(std::sync::Mutex::new(Some(host.clone())));
+    let mut reg = letibot_tools::runtime::Registry::new();
+    reg.register(Box::new(crate::plugins::tool::PluginTool::new(
+        declared[0].clone(),
+        "s-tool",
+        root.clone(),
+        slot,
+        hub.clone(),
+    )))
+    .expect("the tool is seated");
+    let backend = letibot_tools::backend::HostBackend::new(&root).expect("a rooted backend");
+    let rt = letibot_tools::runtime::ToolRuntime::new(reg, Box::new(backend))
+        .with_gate(letibot_tools::testing::allow_all());
+    let mut sink = letibot_tools::events::RecordingToolSink::new();
+    let out = rt.invoke(
+        "t1",
+        &letibot_transcript::ToolCall {
+            id: "c1".into(),
+            name: "probe".into(),
+            arguments: "{}".into(),
+        },
+        &mut sink,
+    );
+    assert_eq!(out.payload, "answered", "{:?}", out.outcome);
+    let asked = host.recorded("tool_probe");
+    let look = asked
+        .last()
+        .and_then(|i| i["looks"][0].as_object())
+        .cloned()
+        .expect("the look's result was handed back");
+    assert_eq!(json!(look.get("exit")), json!(1), "{look:?}");
+    let why = look
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        why.contains("outside the session root"),
+        "the backend's own sentence: {why}"
+    );
+    assert!(
+        std::fs::read_to_string(&secret).is_ok(),
+        "the file is on the daemon's disk"
+    );
 }

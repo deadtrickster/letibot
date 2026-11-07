@@ -62,8 +62,10 @@ impl App {
     }
 
     /// The links on a finished frame, drawn and recorded (OSC 8), in three passes that are each rano's own
-    /// decision about what a link is: the URLs, then `path:line`, then the words rano recognises. The frame is
-    /// read back for the pairs it carries, since a link is a target only where it was drawn.
+    /// decision about what a link is: the URLs, then `path:line`, then the words rano recognises. A word the
+    /// session's own references do not know is offered to the `link_` layers - ONE call per frame for all of
+    /// them, cached by word (`docs/plugins-plan.md` §4.6) - and the frame is read back afterwards for the
+    /// pairs it carries, since a link is a target only where it was drawn.
     fn draw_links(&mut self, out: &mut [String]) {
         if !self.features.links {
             self.link_targets.clear();
@@ -71,7 +73,15 @@ impl App {
         }
         let root = self.cfg.links.clone();
         let refs = self.gh_refs.clone();
-        for l in out.iter_mut() {
+        // A head with no `link_` layer and no repository references it can name draws no word links at all,
+        // which is every head until one of the two arrives.
+        self.note_link_layers();
+        let by_words = refs.is_some() || self.link_layers_on();
+        // The words no reference of this head's knew, gathered across the frame so the layers are asked
+        // once for all of them rather than once per word.
+        let mut wanted: Vec<String> = Vec::new();
+        let mut rows: Vec<usize> = Vec::new();
+        for (i, l) in out.iter_mut().enumerate() {
             // The URLs first, so a `path:line` inside one is not read as a file: the passes under this one leave
             // text inside a link already drawn alone, which is what makes `https://example.com/x:8080` a URL.
             if l.contains("://") {
@@ -83,10 +93,38 @@ impl App {
             {
                 *l = linked;
             }
-            if let Some(refs) = &refs {
-                let mut url_of = |w: &str| refs.url_of(w);
-                if let Some(linked) = rano::term::links::link_words(l, &mut url_of) {
-                    *l = linked;
+            if !by_words {
+                continue;
+            }
+            let mut fresh = false;
+            let mut url_of = |w: &str| match refs.as_ref().and_then(|r| r.url_of(w)) {
+                Some(url) => Some(url),
+                None => {
+                    wanted.push(w.to_string());
+                    fresh = true;
+                    None
+                }
+            };
+            if let Some(linked) = rano::term::links::link_words(l, &mut url_of) {
+                *l = linked;
+            }
+            if fresh {
+                rows.push(i);
+            }
+        }
+        if !wanted.is_empty() {
+            let answered = self.link_answers(&wanted);
+            for i in rows {
+                let row = out[i].clone();
+                let mut url_of = |w: &str| {
+                    refs.as_ref()
+                        .and_then(|r| r.url_of(w))
+                        .or_else(|| answered.get(w).cloned().flatten())
+                };
+                // `link_words` leaves a word inside a link already drawn alone, so the native links this
+                // frame drew survive and only the words a layer answered are added.
+                if let Some(linked) = rano::term::links::link_words(&row, &mut url_of) {
+                    out[i] = linked;
                 }
             }
         }

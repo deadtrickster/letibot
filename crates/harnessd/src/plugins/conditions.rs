@@ -254,8 +254,9 @@ impl StackOver {
 
 /// What the gate's refusal means, in the sentence the layer is handed. `NotRun` is *this needed a
 /// person and a look cannot reach one* - the program may be fine and the operator could grant it -
-/// while `Denied` is *a rule says no*, which no grant taken from here would change.
-fn said(outcome: &ToolOutcome, tell: &str) -> String {
+/// while `Denied` is *a rule says no*, which no grant taken from here would change. Shared with a
+/// `tool_` look, which is put to the same gate and must read the same answer the same way.
+pub(crate) fn said(outcome: &ToolOutcome, tell: &str) -> String {
     match outcome {
         ToolOutcome::NotRun { why } => why.clone(),
         ToolOutcome::Denied { .. } => {

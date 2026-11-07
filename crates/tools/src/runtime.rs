@@ -814,6 +814,23 @@ pub struct Patched {
     pub note: Option<String>,
 }
 
+/// A hook that sees a tool's output before the spill policy budgets it - the `digest_` seam. A
+/// trait here for the reason [`CallHook`] is one: this crate holds no plugin stack. It cannot make
+/// an output longer, and it cannot hide one: [`Digest`] is what a layer is allowed to say.
+pub trait DigestHook: Send + Sync {
+    /// The output a layer would hand the model instead, or `None` for *nothing said*, which is the
+    /// output the tool produced.
+    fn digest(&self, call: &letibot_plugin::Call, payload: &str) -> Option<Digest>;
+}
+
+/// What a `digest_` layer said about one output, and the layer that said it: the by-line a result
+/// carries, because an output that is not the tool's must not read as though it were.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Digest {
+    pub payload: String,
+    pub by: String,
+}
+
 /// A hook that sees a tool call before the gate, in the crate that owns the path through it.
 /// A trait here for the reason [`Gate`] is one: this crate holds no plugin stack. It cannot
 /// admit anything: the answer says pass, rewrite, refuse or answer, and the rewrite is gated.
@@ -1455,6 +1472,9 @@ pub struct ToolRuntime {
     /// stack, which is every test's and every session the daemon did not open, and then the
     /// call path is exactly what it was before there were plugins.
     pub call_hook: Option<std::sync::Arc<dyn CallHook>>,
+    /// The plugin layer's look at an output, before the spill. `None` in a runtime with no plugin
+    /// stack, and then the bytes budgeted are exactly the bytes the tool produced.
+    pub digest_hook: Option<std::sync::Arc<dyn DigestHook>>,
     /// Where a write's provenance goes: the sha256 of every plugin module and manifest a model
     /// writes is recorded at the write. `None` in a runtime with no daemon behind it, and then
     /// nothing is recorded.
@@ -1508,6 +1528,7 @@ impl ToolRuntime {
             repairs_told: Default::default(),
             one_shot: false,
             call_hook: None,
+            digest_hook: None,
             provenance: None,
             recall: None,
         }
@@ -1532,6 +1553,14 @@ impl ToolRuntime {
     /// did" a property of this field rather than a promise.
     pub fn with_call_hook(mut self, hook: std::sync::Arc<dyn CallHook>) -> Self {
         self.call_hook = Some(hook);
+        self
+    }
+
+    /// Wire the plugin layer that sees an output before the spill budgets it. The daemon installs
+    /// this beside the call hook; `None` is what makes *a session with no layers reads the bytes
+    /// its tools produced* a property of this field rather than a promise.
+    pub fn with_digest_hook(mut self, hook: std::sync::Arc<dyn DigestHook>) -> Self {
+        self.digest_hook = Some(hook);
         self
     }
 
@@ -1612,6 +1641,14 @@ impl ToolRuntime {
             schema,
             note,
         })
+    }
+
+    /// What a `digest_` layer says about this output, or `None` when nothing answers or nothing
+    /// is worth saying. The call is the model's own, so a layer can digest per tool.
+    fn digested(&self, name: &str, args: &Value, payload: &str) -> Option<Digest> {
+        let hook = self.digest_hook.as_ref()?;
+        let call = letibot_plugin::Call::new(name, args.clone());
+        hook.digest(&call, payload)
     }
 
     /// What a plugin layer says about a call, before the gate, reduced to the three things this
@@ -2041,6 +2078,19 @@ impl ToolRuntime {
                     }
                 }
             }
+        }
+
+        // The plugin layer's look at the output, BEFORE the spill: the digest is what the budget
+        // is spent on (X26, §4.5), so a layer that shortens a transcript is shortening what the
+        // model holds rather than what the store keeps.
+        if let Some(digest) = self.digested(&schema.name, &args, &invocation.payload) {
+            let was = invocation.payload.len();
+            invocation.notes.push(format!(
+                "digested by plugin {}: {was} bytes of output became {}",
+                digest.by,
+                digest.payload.len()
+            ));
+            invocation.payload = digest.payload;
         }
 
         // Clause 5, on every payload and not only the ones somebody remembered. The budget

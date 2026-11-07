@@ -8,6 +8,11 @@ use super::*;
 
 /// How often the references are read again.
 const REFS_EVERY_MS: u64 = 60_000;
+
+/// How often a head asks the disk whether any layer answers `link_` - the same window its own
+/// repository references are re-read in, for the same reason: a layer written now answers soon.
+const LINKS_EVERY_MS: u64 = REFS_EVERY_MS;
+
 /// How many commits are kept to recognise a hash by - the newest, every ref's history.
 const COMMITS_KEPT: usize = 20_000;
 
@@ -179,6 +184,60 @@ impl App {
             self.gh_job = Some((dir.clone(), rx));
             self.gh_read = (dir, self.now_ms);
         }
+    }
+
+    /// What this session's `link_` layers say about a frame's words - the words the head's own
+    /// references did not know, asked once for the whole frame and cached by word. A head with no
+    /// such layer answers nothing and builds no plugin stack: the manifests are read, not the
+    /// modules, so the cost of the feature is paid only where it exists.
+    pub(crate) fn link_answers(
+        &mut self,
+        words: &[String],
+    ) -> std::collections::BTreeMap<String, Option<String>> {
+        self.note_link_layers();
+        if !self.link_layers_on() {
+            return std::collections::BTreeMap::new();
+        }
+        let repo = letibot_plugin::link::Repo {
+            slug: self
+                .gh_refs
+                .as_ref()
+                .map(|r| r.slug.clone())
+                .unwrap_or_default(),
+            branches: self
+                .gh_refs
+                .as_ref()
+                .map(|r| r.branches.iter().cloned().collect())
+                .unwrap_or_default(),
+        };
+        let slot = self.plugin_host();
+        match slot.as_ref() {
+            Some(host) => host.links(words, &repo),
+            None => std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Whether any layer on disk answers `link_`, asked at most once a minute: a session that has
+    /// none keeps the head it had, and the answer is a manifest read per layer rather than a
+    /// compiled stack.
+    pub(crate) fn note_link_layers(&mut self) {
+        if self
+            .link_layers
+            .is_some_and(|_| self.now_ms.saturating_sub(self.link_layers_at) < LINKS_EVERY_MS)
+        {
+            return;
+        }
+        let workspace = self.workspace_path();
+        self.link_layers = Some(crate::app::sessions_pane::Host::any_link_layer(
+            &self.session_id,
+            &workspace,
+        ));
+        self.link_layers_at = self.now_ms;
+    }
+
+    /// Whether a `link_` layer is there to ask.
+    pub(crate) fn link_layers_on(&self) -> bool {
+        self.link_layers == Some(true)
     }
 }
 

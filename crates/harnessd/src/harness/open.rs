@@ -2767,6 +2767,12 @@ impl Harness {
                 plugin_slot.clone(),
                 hub.clone(),
             )))
+            // And the layer that sees an output before the spill budgets it: the digest is what the
+            // model's context pays for, so it rides the same slot as the call hook.
+            .with_digest_hook(std::sync::Arc::new(crate::plugins::DigestHooks::new(
+                plugin_slot.clone(),
+                hub.clone(),
+            )))
             // A one-shot's session tells its tools so, which is what makes `bash` refuse
             // `background: true`: there is no later head and no daemon left watching when that
             // job's result arrives. See `InvokeCtx::one_shot`.
