@@ -1241,11 +1241,13 @@ impl Boundary {
             if !self.boundary_refusal(line) {
                 continue;
             }
+            // A "not there" line may come from a container (`-v /tmp:/hosttmp`), so its path counts
+            // only if this host has it; a denial already proves the path exists. A glob never counts.
+            let absent = line_says_absent(line);
             for tok in absolute_paths(line) {
-                // Only a path this host has can be one the view hid. A path printed by a
-                // container (`-v /tmp:/hosttmp`) or an unexpanded glob is nothing to grant.
                 if matches!(self.view.classify(&tok), Presence::Outside)
-                    && is_a_host_path(&tok)
+                    && !has_glob(&tok)
+                    && (!absent || std::fs::symlink_metadata(&tok).is_ok())
                     && !outside.contains(&tok)
                 {
                     outside.push(tok);
@@ -1457,10 +1459,17 @@ fn absolute_paths(line: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Whether `p` names something on this host, with no glob left in it.
-fn is_a_host_path(p: &std::path::Path) -> bool {
-    let shown = p.to_string_lossy();
-    !shown.contains(['*', '?', '[']) && std::fs::symlink_metadata(p).is_ok()
+/// Whether `p` still holds a glob the shell did not expand.
+fn has_glob(p: &std::path::Path) -> bool {
+    p.to_string_lossy().contains(['*', '?', '['])
+}
+
+/// Whether a line says a path is not there, as opposed to denied.
+fn line_says_absent(line: &str) -> bool {
+    line.contains("No such file or directory")
+        || line.contains("ENOENT")
+        || line.contains("not found")
+        || line.contains("cannot find")
 }
 
 /// The program name in a shell's missing-binary line: `cargo: command not found`, and the same
