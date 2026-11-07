@@ -33,9 +33,8 @@ pub const MODE_PATIENCE: Duration = Duration::from_secs(120);
 /// What the bridge holds: one attached head per session it started or joined, by session id.
 /// A `HashMap` behind a mutex rather than an actor: the tools are called one at a time, and the
 /// only concurrency here is each head's own collecting thread.
-#[derive(Default)]
 pub struct Bridge {
-    heads: Mutex<HashMap<String, Arc<Head>>>,
+    heads: Arc<Mutex<HashMap<String, Arc<Head>>>>,
     /// The `claude-code` seat on the host coordinator, opened on first use.
     rooms: crate::rooms::RoomLink,
     /// Push the room's messages to the client as channel notifications (set by `letibot-mcp`).
@@ -48,6 +47,29 @@ pub struct Bridge {
     /// Whether this folder's queues are already being followed: a client that initializes twice
     /// must not leave a second follower saying the same move again.
     queue: Mutex<bool>,
+    /// This seat's todo board, opened on first use - by a todo tool, or by the watcher the client
+    /// starts when it initializes.
+    seat: Mutex<Option<Arc<crate::seat::Seat>>>,
+    /// How long the seat sits quiet before the plan check comes due - [`crate::seat::NAG_AFTER`]
+    /// in every bridge, and a field for a test that must drive a delivery without the minute.
+    seat_window: Duration,
+}
+
+impl Default for Bridge {
+    fn default() -> Bridge {
+        Bridge {
+            heads: Arc::default(),
+            rooms: crate::rooms::RoomLink::default(),
+            stream_rooms: false,
+            names_from: None,
+            push: Mutex::new(None),
+            queue: Mutex::new(false),
+            seat: Mutex::new(None),
+            // Written out rather than derived: a derived `Duration` is zero, and a zero window is
+            // a bridge that nags the moment a row is written.
+            seat_window: crate::seat::NAG_AFTER,
+        }
+    }
 }
 
 impl Bridge {
@@ -121,6 +143,59 @@ impl Bridge {
 
     pub fn rooms(&self) -> &crate::rooms::RoomLink {
         &self.rooms
+    }
+
+    /// A bridge whose seat is already opened - a test's door, and the one that names the handle
+    /// and the window instead of taking them from the room's name and the minute.
+    pub fn with_seat(mut self, seat: crate::seat::Seat) -> Bridge {
+        self.seat = Mutex::new(Some(Arc::new(seat)));
+        self
+    }
+
+    /// A bridge whose plan check comes due `window` after the seat goes quiet - the tests' door,
+    /// for `TodoNagClock::with_window`'s reason.
+    pub fn with_nag_window(mut self, window: Duration) -> Bridge {
+        self.seat_window = window;
+        self
+    }
+
+    /// This seat's todo board, opened on first use: the handle the room knows it by (`cc@<project>`)
+    /// and the store of the folder this bridge serves.
+    pub fn seat(&self) -> Result<Arc<crate::seat::Seat>, String> {
+        let mut g = self.seat.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(seat) = g.as_ref() {
+            return Ok(seat.clone());
+        }
+        let store = match &self.names_from {
+            Some((store, _)) => store.clone(),
+            None => {
+                let here = std::env::current_dir().map_err(|e| e.to_string())?;
+                daemon::resolve(&here)?.store
+            }
+        };
+        let seat = Arc::new(
+            crate::seat::Seat::new(crate::rooms::handle(), store, self.heads.clone())
+                .with_window(self.seat_window),
+        );
+        *g = Some(seat.clone());
+        Ok(seat)
+    }
+
+    /// Push this seat's nags on `tx` from now on: the channel the client opened at `initialize`,
+    /// and the only moment a notification is legal.
+    pub fn push_seat(&self, tx: std::sync::mpsc::Sender<serde_json::Value>) {
+        if let Ok(seat) = self.seat() {
+            crate::seat::Seat::watch(&seat, tx);
+        }
+    }
+
+    /// A tool call is the seat working: it is not idle, and the plan check waits for its end. Never
+    /// opens the seat - a bridge that has never served a todo tool has no board to re-arm.
+    pub fn touch_seat(&self) {
+        let g = self.seat.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(seat) = g.as_ref() {
+            seat.touch();
+        }
     }
 
     pub fn stream_rooms(&self) -> bool {
@@ -1041,7 +1116,44 @@ pub fn list() -> Value {
         ),
     ];
     tools.extend(crate::rooms::tool_list());
+    tools.extend(todo_list());
     json!({ "tools": tools })
+}
+
+/// The seat's board, as three tools: the session's `todo_write` - its own schema and its own
+/// description, so the two runtimes cannot answer the same call differently - and the two the
+/// bridge needs beside it, a read and the operator's answer.
+fn todo_list() -> Vec<Value> {
+    let session_tool = letibot_tools::builtins::todo::TodoWriteTool::new(std::sync::Arc::new(
+        letibot_tools::builtins::todo::TodoBoard::new(Vec::new()),
+    ));
+    let schema = letibot_tools::runtime::Tool::schema(&session_tool);
+    vec![
+        tool("todo_write", &schema.description, schema.parameters),
+        tool(
+            "todos",
+            "This seat's todo board as it stands: every row, its status, its waits and the \
+             version they last moved at. The board is the store's, under this seat's handle, so \
+             it survives a bridge restart - read it back with this rather than from memory.",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool(
+            "todo_answer",
+            "The operator's answer to a question a row waits on them for: `todo_write`'s \
+             `wait_on {operator: {question, options}}` puts the question on the board, you ask \
+             it in the conversation, and this records their reply on the row so the row stops \
+             waiting. The words are theirs, kept as they said them.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "The row, quoted exactly."},
+                    "question": {"type": "string", "description": "The question it waits on."},
+                    "reply": {"type": "string", "description": "What the operator answered, in their words."}
+                },
+                "required": ["content", "question", "reply"]
+            }),
+        ),
+    ]
 }
 
 fn tool(name: &str, description: &str, schema: Value) -> Value {
@@ -1053,8 +1165,12 @@ fn tool(name: &str, description: &str, schema: Value) -> Value {
 pub fn names() -> Vec<&'static str> {
     let mut all = leticode_names();
     all.extend(crate::rooms::TOOLS);
+    all.extend(TODO_TOOLS);
     all
 }
+
+/// The seat's own three verbs, registered here and served by `crate::seat`.
+pub const TODO_TOOLS: [&str; 3] = ["todo_write", "todos", "todo_answer"];
 
 fn leticode_names() -> Vec<&'static str> {
     vec![
@@ -1117,6 +1233,9 @@ fn arg_count(args: &Value, key: &str) -> Result<Option<u64>, String> {
 /// Run one tool. `Err` is a caller's mistake (an argument, a session this bridge does
 /// not hold); a tool that ran and failed says so in its answer with `isError`.
 pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> {
+    // A tool call is the seat working: the plan check waits for its end, exactly as a session's
+    // waits for the end of a turn.
+    bridge.touch_seat();
     match name {
         "leticode_start" => {
             let worktree = arg_str(args, "worktree")?;
@@ -1186,6 +1305,9 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
             bridge.collect(&session, &host, folder.as_deref(), vm)
         }
         "leticode_list" => Ok(bridge.list()),
+        "todo_write" => bridge.seat()?.write(args),
+        "todos" => Ok(bridge.seat()?.board_json()),
+        "todo_answer" => bridge.seat()?.answer(args),
         room if crate::rooms::TOOLS.contains(&room) => {
             crate::rooms::call(bridge.rooms(), room, args)
         }
@@ -1365,7 +1487,7 @@ mod tests {
     fn the_twenty_three_tools_are_listed_with_schemas() {
         let listed = list();
         let tools = listed["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 23, "{listed}");
+        assert_eq!(tools.len(), 26, "{listed}");
         let mut named: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         named.sort_unstable();
         let mut want = names();

@@ -90,6 +90,8 @@ fn read_loop<R: BufRead, W: Write>(
                     bridge.push_sessions(push.clone());
                     // And this folder's queue, so a verdict or a landing needs no waiter either.
                     bridge.push_queue(push.clone());
+                    // And the seat's plan check, whose nag is a channel frame like the rest.
+                    bridge.push_seat(push.clone());
                 }
                 handle(bridge, &request)
             }
@@ -271,7 +273,7 @@ mod tests {
     fn tools_list_lists_the_twenty_three_tools_with_schemas() {
         let answers = run(&[r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#]);
         let tools = answers[0]["result"]["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 23, "{:?}", answers[0]);
+        assert_eq!(tools.len(), 26, "{:?}", answers[0]);
         for t in tools {
             assert!(t["name"].is_string(), "{t}");
             assert!(t["description"].is_string(), "{t}");
