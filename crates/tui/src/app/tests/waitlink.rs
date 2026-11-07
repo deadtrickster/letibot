@@ -43,6 +43,7 @@ fn board() -> App {
         jobs: vec![job("j97", "pg-timing"), job("j96", "bench"), job("j95", "")],
     });
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: vec![
             row(
@@ -349,6 +350,7 @@ fn a_wait_link_on_a_done_row_lands_on_the_row_it_is_drawn_on() {
     // default draws no done row to put one on.
     a.todos_fold_done = false;
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: vec![
             row(

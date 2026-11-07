@@ -78,6 +78,7 @@ fn todos_pane(rows: &[(&str, &str, &str)], repo: Option<&[(&str, &str)]>, w: usi
         Hub::new("s").snapshot(),
     ));
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s".into(),
         todos: rows
             .iter()

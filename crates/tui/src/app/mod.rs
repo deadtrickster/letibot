@@ -746,6 +746,10 @@ pub struct App {
     /// The session's todo list, as the last `TodosUpdated` said it was. Seeded by
     /// the `Todos` reply when the pane first opens; carried forward by the events.
     pub(crate) todos: Vec<letibot_sessionlog::event::TodoEntry>,
+    /// The Claude Code seats' boards the daemon's store holds, drawn under the session's: a seat is
+    /// not a session, so it arrives on the `Todos` read and this head only ever draws it. See
+    /// [`App::seat_board_lines`].
+    pub(crate) seat_boards: Vec<letibot_sessionlog::event::SeatBoard>,
     /// The repo's `TODO.md` as a section map, read once per pane-open. The file
     /// can be longer than the pane and is the operator's to edit; the map is what
     /// a pane can honestly show.
@@ -1401,6 +1405,7 @@ impl App {
             diff_popup: None,
             job_out: None,
             todos: Vec::new(),
+            seat_boards: Vec::new(),
             repo_todos: None,
             repo_todos_at: None,
             todos_sel: 0,

@@ -34,6 +34,9 @@ impl App {
                 // an attach, a re-attach and a return from a switch all land here, and the board may
                 // have moved while the head was away - so it is dropped and asked for again below.
                 self.asks_board = None;
+                // And the seats' boards are the daemon's, so a re-attach asks for them again: the
+                // frame that answers the `ListTodos` below is the one that says what they are now.
+                self.seat_boards.clear();
                 // The daemon has answered, so whatever the head drew while asking is about to be
                 // replaced by the truth (see `attaching`) - unless this is the stop on the way: a head
                 // that asked for a stored session is seated elsewhere first, and that is not the answer.

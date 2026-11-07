@@ -585,6 +585,7 @@ fn the_todo_header_counts_the_rows_the_pane_draws() {
     let mut a = app();
     a.session_id = "s1".into();
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: vec![
             TodoEntry {
@@ -673,6 +674,7 @@ fn a_row_is_set_aside_and_lifted_by_number() {
     let mut a = app();
     a.session_id = "s1".into();
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: vec![TodoEntry {
             content: "push once CI lands".into(),
@@ -747,6 +749,7 @@ fn a_row_the_model_wrote_can_be_set_aside_by_its_words() {
     let mut a = app();
     a.session_id = "s1".into();
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: vec![
             TodoEntry {
@@ -839,6 +842,7 @@ fn a_row_the_model_wrote_can_be_set_aside_by_its_words() {
     // A parent's row is refused by name, because a parent owns its own rows' states and a
     // silence written here would be taken back by the parent's next write.
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: vec![TodoEntry {
             content: "told by the parent".into(),
@@ -864,6 +868,7 @@ fn a_cancelled_row_stays_on_the_board_and_is_not_open_work() {
     let mut a = app();
     a.session_id = "s1".into();
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: vec![
             TodoEntry {
@@ -1309,6 +1314,7 @@ fn an_operators_todo_is_on_the_pane_the_moment_it_is_sent() {
     // holds - the `Todos` arm answers only for the session it is in.
     let sid = a.session_id.clone();
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: sid,
         todos: vec![letibot_sessionlog::event::TodoEntry {
             content: "a model row".into(),
@@ -1339,6 +1345,7 @@ fn an_operators_todo_is_on_the_pane_the_moment_it_is_sent() {
     // `TodosUpdated` lands - in the daemon's own order, possibly reordered - it replaces
     // the union wholesale.
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: a.session_id.clone(),
         todos: vec![letibot_sessionlog::event::TodoEntry {
             content: "the daemon's row".into(),
@@ -1367,6 +1374,7 @@ fn a_condition_is_attached_to_a_row_by_number_and_can_be_taken_off() {
     let mut a = app();
     a.session_id = "s1".into();
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: vec![TodoEntry {
             content: "push once CI lands".into(),
@@ -1478,6 +1486,7 @@ fn a_row_filed_from_the_card_can_carry_a_condition() {
     let mut c = app();
     c.session_id = "s1".into();
     c.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: vec![
             TodoEntry {
@@ -1534,6 +1543,7 @@ fn starter_todos_copy_onto_the_operators_half() {
     // The daemon's answer carries both halves - an operator row it already holds and a
     // model row - so the seed can be seen to ADD to the one and leave the other alone.
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: vec![
             letibot_sessionlog::event::TodoEntry {
@@ -1613,6 +1623,7 @@ fn a_seed_runs_once_per_project() {
         "/home/dead/Projects/y",
     );
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: Vec::new(),
     });
@@ -1624,6 +1635,7 @@ fn a_seed_runs_once_per_project() {
         .filter(|q| matches!(q, Action::SetOperatorTodos { .. }))
         .count();
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: Vec::new(),
     });
@@ -1709,6 +1721,7 @@ fn a_seed_does_not_write_another_heads_dismissals_away() {
     // The seed waits for the board: the head keeps no second list and must not send a half of one
     // it has not read (`todo_seed_pending`).
     b.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s2".into(),
         todos: Vec::new(),
     });
@@ -1734,6 +1747,7 @@ fn template_refusals_are_notes() {
     // No items - a heading is not a checkbox row.
     let mut a = seeded_head(&dir, "## Phase 0\n\nprose only\n", "/home/dead/Projects/z");
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: Vec::new(),
     });
@@ -2005,6 +2019,7 @@ fn a_template_item_over_the_byte_bound_is_not_seeded_and_is_said() {
         "/home/dead/Projects/cap",
     );
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: Vec::new(),
     });
@@ -2463,6 +2478,7 @@ fn an_armed_wait_shows_on_the_row() {
     let mut a = app();
     a.session_id = "s1".into();
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: vec![
             TodoEntry {
@@ -2524,6 +2540,7 @@ fn waiting_board(a: &mut App) {
     use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoNeed, TodoStatus};
     a.session_id = "s1".into();
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: vec![
             TodoEntry {
@@ -2583,6 +2600,7 @@ fn a_board_waiting_on_the_operator_draws_a_resident_line() {
     );
     a.apply(ServerFrame::Settings { rows: Vec::new() });
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: Vec::new(),
     });
@@ -2693,6 +2711,7 @@ fn a_question_the_model_takes_back_takes_its_card_and_its_line_down() {
     );
     // The model detaches: the same rows, the question gone.
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: vec![
             TodoEntry {
@@ -2727,6 +2746,7 @@ fn a_question_the_model_takes_back_takes_its_card_and_its_line_down() {
     a.open_operator_ask(None);
     a.key(Key::Esc);
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: Vec::new(),
     });
@@ -3514,6 +3534,7 @@ fn a_row_waiting_on_another_session_is_drawn_with_the_peer_and_the_ask() {
     let mut a = app();
     a.session_id = "s1".into();
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: vec![
             TodoEntry {
@@ -3562,6 +3583,7 @@ fn a_row_that_owes_an_answer_is_drawn_as_waiting_on_the_person() {
     let mut a = app();
     a.session_id = "s1".into();
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos: vec![TodoEntry {
             content: "`arango` asked you #4211 — wire the port: which port?".into(),

@@ -4787,6 +4787,23 @@ impl SessionSource for StoreSessions {
             .collect()
     }
 
+    /// Every Claude Code seat's board in the same store (`docs/seat-todo.md`), through the one
+    /// conversion a session's rows take, so a head draws a seat's row and a session's alike.
+    fn seat_boards(&self) -> Vec<letibot_sessionlog::event::SeatBoard> {
+        let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        g.seat_boards()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(seat, rows)| letibot_sessionlog::event::SeatBoard {
+                seat,
+                todos: rows
+                    .into_iter()
+                    .map(crate::harness::Harness::todo_entry)
+                    .collect(),
+            })
+            .collect()
+    }
+
     /// Both queues, whole, for a head's pane - every row, the leases with their heartbeats, the
     /// targets' health and the last moves, through this source's handle onto the one connection
     /// the queues' own threads write with.

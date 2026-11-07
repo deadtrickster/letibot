@@ -893,6 +893,9 @@ pub fn serve_conn_rooted(
                 let f = ServerFrame::Todos {
                     session_id: seat.hub.session_id().to_string(),
                     todos: registry.todos(&seat.hub.session_id()),
+                    // The seats' boards are the store's, not this connection's: a seat is not a
+                    // session (`docs/seat-todo.md`), so the daemon answers them with the same read.
+                    seats: registry.seat_boards(),
                 };
                 writer.lock().unwrap().write(&f)?;
             }

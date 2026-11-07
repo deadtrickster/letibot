@@ -42,6 +42,20 @@ impl Store {
         )?;
         Ok(())
     }
+
+    /// Every seat's board, by handle, for a head's pane: a seat is not a session, so this is the
+    /// only read that finds one. A row per seat, in the handles' own order, each with its edges.
+    pub fn seat_boards(&self) -> Result<Vec<(String, Vec<TodoItem>)>> {
+        let conn = self.conn();
+        let mut st = conn.prepare("SELECT seat, todos_json FROM seat_todo ORDER BY seat")?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (seat, json) = row?;
+            out.push((seat, serde_json::from_str(&json)?));
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -85,6 +99,26 @@ mod tests {
             s.seat_todos("cc@other").unwrap().len(),
             1,
             "one seat's write never reaches another's board"
+        );
+    }
+
+    /// Every seat's board comes back by handle, so a head that asks once draws all of them: the
+    /// board the seat wrote, with its edges, and nothing invented for a seat that wrote none.
+    #[test]
+    fn the_seats_boards_are_listed_by_handle() {
+        let s = Store::open_in_memory().unwrap();
+        assert!(s.seat_boards().unwrap().is_empty(), "no seat, no board");
+        s.put_seat_todos("cc@proj", std::slice::from_ref(&row("collect")))
+            .unwrap();
+        s.put_seat_todos("cc@other", std::slice::from_ref(&row("wait for CI")))
+            .unwrap();
+        let boards = s.seat_boards().unwrap();
+        let names: Vec<&str> = boards.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(names, vec!["cc@other", "cc@proj"], "one row per seat");
+        assert_eq!(
+            boards[1].1,
+            vec![row("collect")],
+            "the rows keep the wait on the package"
         );
     }
 

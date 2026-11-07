@@ -316,6 +316,7 @@ fn asks_setting(a: &mut App, value: &str) {
 /// The board, as the daemon publishes it after a row's wait moved.
 fn board(a: &mut App, todos: Vec<TodoEntry>) {
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s1".into(),
         todos,
     });

@@ -449,6 +449,7 @@ fn waiting_board(a: &mut App) {
     use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoNeed, TodoStatus};
     a.session_id = "s".into();
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s".into(),
         todos: vec![TodoEntry {
             content: "pick the db".into(),
@@ -550,6 +551,7 @@ fn a_todo_card_closes_when_its_row_stops_waiting() {
         needs: Vec::new(),
     };
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s".into(),
         todos: vec![done.clone()],
     });

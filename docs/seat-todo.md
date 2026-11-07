@@ -120,11 +120,19 @@ code moved:
   once in the bridge over its packages' open jobs. The daemon passes what it always passed.
 - `TodoBoard` and `OperatorAsk` are already public; the seat uses them.
 
+## How a head sees it
+
+The head's todo pane draws the seats' boards beside the session's. The daemon answers
+`ClientFrame::ListTodos` with `ServerFrame::Todos`, and that frame carries `seats` - one
+`SeatBoard` per handle in `seat_todo`, read by `Store::seat_boards` and converted by
+`Harness::todo_entry`, the same conversion a session's rows take. The field is `serde(default)`,
+so a daemon from before it says nothing and an older head drops it (the version note at
+`PROTOCOL_VERSION` 67). A seat's rows are DRAWN and are not stops: the cursor walks the session's
+rows and the file's, and Enter on a seat's row is nothing, because the seat writes its own board
+and the head has no door to it.
+
 ## Not built here
 
-- **The head's todo pane does not draw a seat's board.** The pane reads a session's board by session
-  id, and a seat is not a session (that is the store's own argument above). Listing a seat beside the
-  sessions is a pane change, and `crates/tui` is outside this brief.
 - **A seat's question has no card.** It shows on the board (`sessions_waiting_on_operator` reads
   session keys, so not even the picker's mark) and in the nag, and it is answered in the
   conversation.

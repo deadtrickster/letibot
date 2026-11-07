@@ -471,6 +471,11 @@ pub trait SessionSource: Send + Sync {
     fn todos(&self, _session_id: &str) -> Vec<crate::event::TodoEntry> {
         Vec::new()
     }
+    /// The boards this daemon's store keeps for Claude Code seats (`docs/seat-todo.md`), for the
+    /// same bootstrap read. Empty for a source with no store, and for one from before the table.
+    fn seat_boards(&self) -> Vec<crate::event::SeatBoard> {
+        Vec::new()
+    }
     /// The review queue and the merge queue, whole, for a head's bootstrap read. The default SAYS
     /// it has no store rather than answering an empty queue.
     fn queues(&self) -> crate::event::QueueSnapshot {
@@ -1849,6 +1854,13 @@ impl Registry {
         self.source()
             .map(|s| s.todos(session_id))
             .unwrap_or_default()
+    }
+
+    /// Every Claude Code seat's board the store holds, for the same read - see
+    /// [`SessionSource::seat_boards`]. A registry with no source has none, which is what a head
+    /// with nothing to draw says.
+    pub fn seat_boards(&self) -> Vec<crate::event::SeatBoard> {
+        self.source().map(|s| s.seat_boards()).unwrap_or_default()
     }
 
     /// The queues' snapshot, for a head's pane - see [`SessionSource::queues`]. A registry with no

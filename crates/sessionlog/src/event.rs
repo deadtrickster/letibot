@@ -159,6 +159,16 @@ pub struct TodoEntry {
     pub needs: Vec<TodoNeed>,
 }
 
+/// A Claude Code seat's own board (`docs/seat-todo.md`), as a head reads it: the handle it is kept
+/// under - `cc@<project>` - and its rows. A seat is not a session, so the head only ever draws one:
+/// the seat writes it, and there is no row here the pane can act on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatBoard {
+    pub seat: String,
+    #[serde(default)]
+    pub todos: Vec<TodoEntry>,
+}
+
 /// What one row's words may cost: the wire's copy of the store's bound, because a head's doors
 /// and the daemon's tool must refuse at the same place. See [`TODO_ROWS_MAX`] for why this
 /// crate has its own copy of the store's constants.

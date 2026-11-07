@@ -12,7 +12,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 66;
+pub const PROTOCOL_VERSION: u32 = 67;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -988,6 +988,11 @@ pub enum ServerFrame {
     Todos {
         session_id: String,
         todos: Vec<crate::event::TodoEntry>,
+        /// The boards the daemon's store holds for Claude Code seats (`docs/seat-todo.md`), read
+        /// with the session's because the pane draws both and asks once. Defaulted, so a daemon
+        /// that predates them says nothing and an older head drops the field it does not know.
+        #[serde(default)]
+        seats: Vec<crate::event::SeatBoard>,
     },
     /// The answer to [`ClientFrame::Settings`], and pushed to every head attached to the session
     /// whenever one of the rows changes: a head draws these, so an unasked frame means what an
@@ -1343,8 +1348,17 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 66,
-            "the match above was last reconciled with the frame list at 66. 66 added \
+            PROTOCOL_VERSION, 67,
+            "the match above was last reconciled with the frame list at 67. 67 gave \
+             `ServerFrame::Todos` a `seats` field: the boards the daemon's store keeps for Claude \
+             Code seats (`docs/seat-todo.md`), which the head's todo pane draws beside the \
+             session's. It is `serde(default)` and no variant is new, so a version-66 head parses \
+             the frame and DROPS the field - which is why the number moves: the pane of a head \
+             that asked for a board would draw the session's alone and never say a seat's was \
+             there, and the operator's own words for this row are *the head's pane for a seat's \
+             board*. A seat is not a session, so the boards cannot ride `TodosUpdated`: the seat \
+             writes its own board in another process and the daemon hears of it only when a head \
+             asks. 66 added \
              `Waiting::Limit`, the usage-limit fact a session's activity carries - `paused until \
              21:02:27 UTC`, or `glm limited until 21:02:27 UTC, on deepseek`. A version-65 head has \
              no arm for the variant and would fail to decode the whole `ActivityChanged` (serde has \
@@ -1871,6 +1885,7 @@ mod tests {
     #[test]
     fn a_todos_frame_round_trips_with_its_statuses() {
         let f = ServerFrame::Todos {
+            seats: Vec::new(),
             session_id: "s-1".into(),
             todos: vec![
                 crate::event::TodoEntry {
@@ -1924,6 +1939,7 @@ mod tests {
     #[test]
     fn a_parents_row_carries_the_authors_own_string_on_the_wire() {
         let f = ServerFrame::Todos {
+            seats: Vec::new(),
             session_id: "s-child".into(),
             todos: vec![
                 crate::event::TodoEntry {
@@ -1959,6 +1975,7 @@ mod tests {
     #[test]
     fn a_todo_condition_is_tagged_on_the_wire_and_survives_the_round_trip() {
         let f = ServerFrame::Todos {
+            seats: Vec::new(),
             session_id: "s-1".into(),
             todos: vec![crate::event::TodoEntry {
                 content: "push once CI lands".into(),
@@ -2024,6 +2041,59 @@ mod tests {
             todos[0].needs.is_empty(),
             "and an absent edge list is no edges — not an error, and not a default need"
         );
+    }
+
+    /// **A `seats` field is what an older head drops.** A version-66 head's `Todos` frame has two
+    /// fields; serde ignores one it has never heard of, so the pane draws the session's board and
+    /// never learns a seat had one - which is the whole of what the bump records, and the reason the
+    /// field could be added without a new variant.
+    #[test]
+    fn an_old_heads_todos_frame_drops_the_seats_it_does_not_know() {
+        /// The version-66 head's reading of the frame, spelled out because that build cannot be
+        /// linked in here: the two fields it has, and nothing for the one it does not.
+        #[derive(serde::Deserialize)]
+        struct OldTodos {
+            session_id: String,
+            todos: Vec<crate::event::TodoEntry>,
+        }
+        let f = ServerFrame::Todos {
+            session_id: "s-1".into(),
+            todos: vec![crate::event::TodoEntry {
+                content: "the session's own row".into(),
+                status: crate::event::TodoStatus::Pending,
+                by: crate::event::TodoBy::Model,
+                when: None,
+                needs: Vec::new(),
+            }],
+            seats: vec![crate::event::SeatBoard {
+                seat: "cc@proj".into(),
+                todos: vec![crate::event::TodoEntry {
+                    content: "collect the package".into(),
+                    status: crate::event::TodoStatus::InProgress,
+                    by: crate::event::TodoBy::Model,
+                    when: None,
+                    needs: vec![crate::event::TodoNeed::Child {
+                        id: "s-1789462738453908838".into(),
+                    }],
+                }],
+            }],
+        };
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(
+            json.contains(r#""seat":"cc@proj""#)
+                && json.contains(r#""kind":"child","id":"s-1789462738453908838""#),
+            "the daemon does say it, so the assertion below is not vacuous: {json}"
+        );
+        let old: OldTodos = serde_json::from_str(&json).expect("an older head parses the frame");
+        assert_eq!(old.session_id, "s-1");
+        assert_eq!(
+            old.todos.len(),
+            1,
+            "the session's own board arrives whole, and the seats are dropped: {:?}",
+            old.todos
+        );
+        // And this head reads its own field back, edge and all.
+        assert_eq!(f, serde_json::from_str::<ServerFrame>(&json).unwrap());
     }
 }
 

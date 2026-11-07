@@ -8,7 +8,8 @@ use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoNeed, TodoStatus};
 use rano::agent::pane;
 use rano::agent::text::clean_line;
 use rano::agent::todos::{RepoRow, TodoLine, TodosPane};
-use rano::render::Line;
+use rano::render::{Line, Span};
+use rano::style::Role;
 
 impl App {
     pub(crate) fn todos_lines(&mut self, w: usize) -> Vec<String> {
@@ -154,6 +155,17 @@ impl App {
         // kept beside the uncut rows because a link's columns are read off the row as rano built it.
         let mut full = pane.content(usize::MAX);
         let group_row = done_group_line(&mut full, group_after, group_done, self.todos_fold_done);
+        // The seats' boards go between the session's plan and the repo's file: a reader passes the
+        // plan, then what the seats' own heads are doing, then what the project intends.
+        let seats = self.seat_board_lines();
+        if !seats.is_empty() {
+            let at = full
+                .lines
+                .iter()
+                .position(|l| l.plain().trim_start().starts_with(SEAT_BEFORE))
+                .unwrap_or(full.lines.len());
+            splice_rows(&mut full, at, seats);
+        }
         let content = full.clone().trimmed(w);
         // The pane row each drawn board row landed on - the block under the add control, with the
         // group line taking a row of its own between the two halves. Everything that reads a row's
@@ -355,6 +367,78 @@ impl App {
             }
             other => need_words(other),
         }
+    }
+
+    /// The seats' boards, as the pane splices them in: one block per seat - its handle, then its rows
+    /// drawn in the session rows' own shape. There is no stop, no number and no cursor in it, because
+    /// the seat in another process writes this board and nothing here can act on a row of it.
+    pub(crate) fn seat_board_lines(&self) -> Vec<Line> {
+        let mut out: Vec<Line> = Vec::new();
+        for (i, board) in self.seat_boards.iter().enumerate() {
+            let (open, postponed) = todo_counts(&board.todos);
+            let also = match postponed {
+                0 => String::new(),
+                n => format!(" · {n} postponed"),
+            };
+            if i > 0 {
+                out.push(Line::default());
+            }
+            out.push(pane::faint(format!(
+                "  {} — a Claude Code seat's board, {open} open{also} — the seat writes it, this \
+                 pane reads it:",
+                clean_line(&board.seat)
+            )));
+            if board.todos.is_empty() {
+                out.push(pane::faint("    none yet."));
+            }
+            for t in &board.todos {
+                out.push(self.seat_row(t));
+            }
+        }
+        if !out.is_empty() {
+            out.push(Line::default());
+        }
+        out
+    }
+
+    /// One seat's row, in the shape rano draws a session's: the same margin, the same mark, the
+    /// author and the wait. rano's `TodoLine` has no fifth state and no author but `you`/`model`, and
+    /// a row of a seat is neither numbered nor the cursor's, so the line is built here from the same
+    /// pieces rather than through rano's stop record.
+    fn seat_row(&self, t: &TodoEntry) -> Line {
+        let mark = match t.status {
+            TodoStatus::Pending => TodoMark::Open,
+            TodoStatus::InProgress => TodoMark::Doing,
+            TodoStatus::Completed => TodoMark::Done,
+            TodoStatus::Postponed | TodoStatus::Cancelled => TodoMark::Postponed,
+        };
+        let words = match t.status {
+            TodoStatus::Cancelled => format!("{} (cancelled)", t.content),
+            _ => t.content.clone(),
+        };
+        let who = if t.by == TodoBy::Operator {
+            "you"
+        } else {
+            "model"
+        };
+        let waits = if asks_operator(t) {
+            Some("you".into())
+        } else {
+            waits_words(t).or_else(|| wait_of(t).map(|w| self.wait_label(&w)))
+        };
+        let waiting = match waits {
+            Some(w) => format!(" · waits on {}", clean_line(&w)),
+            None => String::new(),
+        };
+        Line::new(vec![
+            // The session rows' own margin: two for the row, two for the cursor this row never takes,
+            // and the four the number would stand in - so a seat's row and a session's line up.
+            Span::raw("         "),
+            mark.span(),
+            Span::raw(format!(" {}  ", clean_line(&words))),
+            Span::role(format!("— {who}"), Role::Faint),
+            Span::role(waiting, Role::Faint),
+        ])
     }
 }
 
@@ -564,6 +648,25 @@ fn insert_row(content: &mut rano::agent::pane::PaneLines, at: usize, line: Line)
         }
     }
 }
+
+/// `insert_row` for a block: the seats' boards are several rows at once, and every stop the pane
+/// recorded below them moves down by the count for `insert_row`'s reason.
+fn splice_rows(content: &mut rano::agent::pane::PaneLines, at: usize, rows: Vec<Line>) {
+    let at = at.min(content.lines.len());
+    let n = rows.len();
+    content.lines.splice(at..at, rows);
+    for row in &mut content.stop_rows {
+        if *row >= at {
+            *row += n;
+        }
+    }
+}
+
+/// The line the seats' boards are spliced ABOVE in the pane rano drew: the repo's file comes after
+/// the session's plan and the seats' boards, so the block reads as one more list of plans rather
+/// than as a tail under the file's own note. rano's own words, and a pane that says them otherwise
+/// puts the block at the end instead of dropping it.
+const SEAT_BEFORE: &str = "the repo's TODO.md";
 
 /// The repo's `TODO.md` as a section map with its items under each heading: a parent is DONE when
 /// every child is, and org's own cookie - `[2/7]` - says how far along the rest are. Read fresh on

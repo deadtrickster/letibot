@@ -11,6 +11,7 @@ use letibot_sessionlog::question::QuestionAnswer;
 fn board(a: &mut App, rows: &[(&str, &str)]) {
     a.session_id = "s".into();
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s".into(),
         todos: rows
             .iter()
@@ -130,6 +131,7 @@ fn an_answer_opens_the_next_waiting_row_and_the_last_one_closes_the_card() {
 
     // The board coming back is the truth: the daemon swapped the edges, nothing waits.
     a.apply(ServerFrame::Todos {
+        seats: Vec::new(),
         session_id: "s".into(),
         todos: Vec::new(),
     });

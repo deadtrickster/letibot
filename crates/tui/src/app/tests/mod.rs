@@ -1374,6 +1374,7 @@ mod rooms_push;
 mod rooms_render;
 mod screen;
 mod scroll;
+mod seat_board;
 mod session;
 mod sessions_list;
 mod sessions_override;
