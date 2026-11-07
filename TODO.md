@@ -75,7 +75,6 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
 | R145 | The review queue's session is seated a role its own prompt does not match | Code work | all of it: `Seat::Orchestrator` resolves to `roles::m1_orchestrator`, which holds neither `task_result` nor `task_message`, and the prompt prescribes both |
 | R150 | Plugin extension points: the harness and head open to plugins | Needs the operator | answers to the 13 questions in `docs/plugin-extension-points-wide.md` §8 (each has a default), then the plan's packages K1-K11 with H0, P5, P6 |
-| R151 | Four walls in the plugin extension points | Code work | all four: the unreachable built-in panes, the pane `read` that resolves against the wrong tree, a rebuild that costs a re-pin, and the skill that teaches four hook kinds and not seven |
 | R146 | Room routing: a gatekeeper sits in its project, `to:` is private, host is broadcasts | Code work | the five rules in the say/wake paths; tests per rule, and `to:` on a thread reply is a decision to check with the operator |
 | R148 | A usage limit with a known reset never fails a session | Code work | the build on branch `r148-limit-reset`: wait/switch config, the reset-time parser, the park, the switch and its return, the no-reset retry, the status row and the bridge push |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
@@ -953,15 +952,6 @@ The reviewer's seat (`Role::gatekeeper`, `runtime.rs:1143`) is the other half an
 **Status:** both reviews written. left: the operator's answers (`docs/plugin-extension-points-wide.md` §8, 13 questions with defaults), then the build per its §6.
 
 `docs/plugin-extension-points.md` is the first review, scoped to the room chat: its decisions can be a plugin, its mechanics stay host. Ten host additions (X1-X10: a `chat` feed, a `stream` block, pictures by blob id, theme hues, an input surface, a `complete_` hook, acts in answers, cursor-mode keys, a clock in the input, and dock/built-in/exec/read fixes for the other panes) and packages H0, P5, P6 beside room-tui's P2-P4. The operator's ruling: the native renderer stays only as a safety net until the built-in chat plugin is proven, then goes. The review was too room-focused, so a second one covers the whole harness and head before questions 2-6 are answered.
-
-## R151 - Four walls in the plugin extension points
-
-**Status:** open. left: all four. The evidence is section 2 of `docs/plugin-extension-points.md`, on branch `docs/plugin-extension-points` (not in this checkout); the four below are its findings, each a bug rather than a missing feature.
-
-1. **`/pane irc` and `/pane github` are compiled in but unreachable.** The daemon installs a built-in only when a session declared a tool from it (`PluginHost::install_builtin_tools`, `crates/harnessd/src/plugins.rs:276`), so a built-in that answers a `pane_` hook and declares no tool is never on the stack: `/pane` never lists it and `/pane NAME` says there is no such pane. Done when every built-in pane is listed by `/pane` and opens by its name, whether or not a tool matched.
-2. **A pane's `read` look resolves against the session workspace, not the checkout**, so a pane in a worktree draws `look exit 1`. Done when a relative `read` resolves against the session's checkout and the refusal for a path that is not there names the path it tried.
-3. **Every rebuild (`plugin build`/`plugin load`) unpins the layer** and costs the operator a `/plugin trust` (`Trust::standing` compares the module and the manifest hashes). Done when a rebuild of a layer the operator pinned keeps the pin if the manifest's capabilities did not change, and when they did, the pin is dropped and `load` says the one command that re-pins it and which capability is new.
-4. **`skills/plugin-hooks/SKILL.md` teaches four hook kinds** and omits `tool_`, `command_` and `pane_`, so agents conclude in the room that a plugin cannot add a tool. Done when the skill lists every hook kind the host serves, read from the host's own types with one example each, and a test fails when a hook kind exists in the host and is not named in the skill (the skill is compiled in by `include_str!` in `crates/tools/src/builtins/skill.rs`).
 
 ## R146 - Room routing: a gatekeeper sits in its project, `to:` is private, host is broadcasts
 
