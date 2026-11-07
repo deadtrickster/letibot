@@ -270,7 +270,7 @@ impl App {
 
     /// The room's completion, read off the view: the selected room's roster, the other rooms'
     /// members, this head's own verbs behind the room's, and the bridge's aliases.
-    fn room_completer(&self) -> complete::RoomComplete {
+    pub(crate) fn room_completer(&self) -> complete::RoomComplete {
         let here = match self.rooms.selected() {
             Some(Chan::Room(id)) => Some(id),
             _ => None,
@@ -288,15 +288,18 @@ impl App {
             }
         }
         people.sort_by(|a, b| a.handle.cmp(&b.handle));
-        let mut verbs: Vec<(String, String)> = complete::ROOM_VERBS
-            .iter()
-            .map(|(name, hint)| ((*name).to_string(), (*hint).to_string()))
-            .collect();
-        for (name, hint) in self.command_names() {
-            if verbs.iter().all(|(known, _)| *known != name) {
-                verbs.push((name, hint));
-            }
+        let verbs = self.rooms_verbs();
+        let aliases = self.rooms_aliases();
+        complete::RoomComplete {
+            people,
+            verbs,
+            aliases,
         }
+    }
+
+    /// The bridge's aliases the composer offers: `@cc` hears every folder, and one word per project
+    /// in this room list. One list, for the same reason [`App::rooms_verbs`] is one.
+    pub(crate) fn rooms_aliases(&self) -> Vec<(String, String)> {
         let mut aliases = vec![("@cc".to_string(), "every folder".to_string())];
         for r in &self.rooms.rows {
             if r.id == "host" || r.id == "dm" || r.label.is_empty() {
@@ -307,11 +310,23 @@ impl App {
                 format!("every session in {}", r.label),
             ));
         }
-        complete::RoomComplete {
-            people,
-            verbs,
-            aliases,
+        aliases
+    }
+
+    /// The `/` verbs the room's composer offers: P3's own table, then every head verb it does not
+    /// already name. One list, because the native completion and the chat feed a layer ranks must
+    /// not drift into two sets of verbs.
+    pub(crate) fn rooms_verbs(&self) -> Vec<(String, String)> {
+        let mut verbs: Vec<(String, String)> = complete::ROOM_VERBS
+            .iter()
+            .map(|(name, hint)| ((*name).to_string(), (*hint).to_string()))
+            .collect();
+        for (name, hint) in self.command_names() {
+            if verbs.iter().all(|(known, _)| *known != name) {
+                verbs.push((name, hint));
+            }
         }
+        verbs
     }
 
     /// The name a handle is read as: the roster's label, the session list's title, and the handle

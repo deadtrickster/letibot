@@ -625,6 +625,23 @@ impl App {
         }
     }
 
+    /// A submitted line while the selected channel has gone: the words go back in the composer and
+    /// the sentence names the channel. One rule for the native view and for a layer's input, because
+    /// a layer cannot put a line back - it has no act that writes the composer.
+    pub(crate) fn rooms_hold_gone(&mut self, text: &str) {
+        let which = self
+            .rooms
+            .gone
+            .clone()
+            .unwrap_or_else(|| "the channel".into());
+        // The line is held, not swallowed: nothing was sent, so the words are still the
+        // operator's to send somewhere real.
+        self.set_composer(text.trim());
+        self.say(&format!(
+            "{which} is gone, so nothing is selected - up or down picks a channel"
+        ));
+    }
+
     /// A submitted line while the view is up: a message to the selected channel.
     pub(crate) fn rooms_say(&mut self, text: &str) -> Option<Action> {
         let (thread, body) = split_reply(text.trim());
@@ -632,17 +649,7 @@ impl App {
             return None;
         }
         let Some(chan) = self.rooms.selected() else {
-            let which = self
-                .rooms
-                .gone
-                .clone()
-                .unwrap_or_else(|| "the channel".into());
-            // The line is held, not swallowed: nothing was sent, so the words are still the
-            // operator's to send somewhere real.
-            self.set_composer(text.trim());
-            self.say(&format!(
-                "{which} is gone, so nothing is selected - up or down picks a channel"
-            ));
+            self.rooms_hold_gone(text);
             return None;
         };
         self.rooms.said += 1;

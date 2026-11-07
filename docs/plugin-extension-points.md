@@ -417,6 +417,71 @@ Done when (in `plugins/builtin/chat/src/tests.rs`):
 - and in `crates/tui/src/app/tests/chat_plugin.rs`: `the_builtin_chat_layer_draws_what_the_native_adapter_draws`
   on the 61 fixtures of `crates/tui/src/app/tests/rooms.rs`.
 
+Built. `plugins/builtin/chat` answers the three hooks a chat owns: `pane_chat` (the `stream` block
+and the input surface), `command_chat` (a line becoming `room_say`/`room_dm`, with `thread`), and
+`complete_chat` (the roster first, a prefix before a substring, six in the row). It declares
+`capabilities = []`, `feeds = ["chat"]` and `actions = ["room_say", "room_dm"]`, so a reviewer
+reads the whole of what a typed line can cause. The nine done-tests above pass, and P5's own nine
+still do with the layer installed.
+
+What the facts came to:
+
+- **The parity is whole, not sampled.** `the_builtin_chat_layer_draws_what_the_native_adapter_draws`
+  builds seven scenes of the room from `rooms.rs`'s own fixtures - a run with a mention and a quote, a
+  year/yesterday/today of dividers, the unread mark before the second message and before the first,
+  a system row with a ref, a picture, a DM channel and a project room - and asserts
+  `Stream == Stream` for each: grouping, headers, hues, mentions, dividers, the quote and the empty
+  sentence. `the_builtin_chat_layer_completes_what_the_native_completion_completes` asserts
+  `Completion == Completion` for eight lines, so the layer's Tab is the room's Tab.
+- **The layer is drawn by the same code as the adapter.** Nothing in `ui/chat/**` knows which
+  answered; `App::chat_stream` asks the layer and falls to the adapter in the same frame.
+- **The window's price, through the layer that draws it:** a 200-message window costs
+  **7,270,168 fuel** (lubuntu3, 2026-11-12) against P5's 8,000,000 ceiling, of which 326,221 is the
+  call itself - the view, and a window with nothing in it. Every message of the window is an entry,
+  so the whole window is drawn. Most of the drop from the first measurement is one decision: the
+  layer's input envelope is its own struct over the SDK's `Chat`, so the window is parsed ONCE
+  rather than into a `Value` tree and then again into `Chat` - that single pass was 5.6M fuel.
+- **The module is 220,617 bytes**, inside the band the other five occupy (sessions 187,584 ·
+  github 199,381 · irc 215,676 · **chat 220,617** · room 243,250 · queue 275,714, each in its own
+  profile; a second build of the same source is 24 bytes smaller in every one of them - chat at
+  220,593 - so the band is what is claimed, not the byte). It is one of the larger surfaces of the
+  six - a stream, two hooks and a clock - so its profile takes `opt-level = "z"` and one codegen
+  unit. `the_builtin_chat_module_is_no_bigger_than_the_largest_builtin` pins it inside the band.
+
+Three seams outside P6's own directory were needed, each additive on the wire, and one departure
+inside it:
+
+- **The `chat` feed says what a handle is CALLED** (`Chat.names`, and `ChatMember.connected`). Only
+  the head holds the session list, and a layer that resolved a name itself would rename every
+  session on the screen. `App::rooms_names` is now one rule for every handle - it used to disagree
+  with `rooms_display_name` about which of a roster label and a session title wins, and a name that
+  changes between the stream and the completion row is a bug either way.
+- **The feed says what the composer completes from** (`Chat.verbs`, `Chat.aliases`): the head's own
+  command list and the bridge's `@cc@…` addresses are the head's to know, and a layer that spelled
+  one from a channel's label would offer an address nobody resolves. `App::rooms_verbs` and
+  `App::rooms_aliases` are now the one list each, used by the native completion and the feed both.
+- **`Chat.opened_seen` is `Option<u64>`**: a channel opened with nothing read yet is opened (the
+  mark goes above the first message) and is not the same fact as a channel this head never opened
+  (no mark at all) - the wire said `0` for both, and P2's own test puts `0` there deliberately.
+  `Chat.heard` is the other half of an empty channel: *nothing said yet* and *nobody has answered*
+  are two sentences, and only the head knows which.
+- **The layer reads its own input envelope** ([`Ask`](../../plugins/builtin/chat/src/lib.rs)) rather
+  than the SDK's `pane::Input`: the host's is the whole envelope - state, looks, events, size,
+  folds - with `feeds` as a map of `Value`, and a chat window through it is parsed twice. The
+  PAYLOAD is still the SDK's `Chat` and `complete::Completion`, which is where a renamed field would
+  actually break a layer; the three names the envelope adds (`feeds`, `now_ms`, `utc_offset_s`) are
+  held by the fuel test, which fails if the host stops sending them.
+
+Two things the layer cannot get right, and does not pretend to:
+
+- **A window that spans a DST change.** A guest is handed ONE `utc_offset_s`; the adapter reads the
+  zone per message. Two messages either side of a transition can print an hour apart. The parity
+  test keeps its fixtures inside one offset period for that reason.
+- **A quote cut inside an emoji sequence.** The layer measures columns with a hand-written table
+  (`is_wide`/`is_zero_width`, the blocks a room here is written in) because a guest links no `rano`;
+  a ZWJ emoji is two columns to `rano` and four to the layer. Plain text, CJK and combining marks
+  agree.
+
 ## 6. Open questions
 
 1. Does the native adapter stay forever as the fallback, or go once P6 is proven? Default: stays,

@@ -2,11 +2,14 @@
 //! asks it once per generation, the input's two hooks, the acts an answer performs, and the native
 //! adapter a broken layer falls to in the same frame.
 //!
-//! The layer here is scripted - a `Module` that answers what a test says - because what is being
-//! proved is the HOST's half: a wasm guest that draws a chat is P6's.
+//! Most of the layer here is scripted - a `Module` that answers what a test says - because what is
+//! being proved is the HOST's half. The last section stands this binary's own `chat` layer in
+//! instead (P6): it is what the head draws with, so the parity between what it answers and what the
+//! native adapter builds is proved on the real module, not on a script.
 
 use super::rooms::{history, msg as wire_msg, opened, reply};
 use super::*;
+use crate::app::chat_input::complete::Complete;
 use letibot_plugins::{Capability, Loader, Module, Stack};
 use rano::style::Palette;
 use serde_json::{Value, json};
@@ -614,4 +617,400 @@ fn a_views_own_keys_are_live_only_in_cursor_mode() {
     a.key(Key::Esc);
     assert!(!a.plugin_cursor(), "esc left the mode");
     assert_eq!(a.focused_surface(), Some(Surface::PluginPane));
+}
+
+// ────────────────────── P6: the built-in chat layer itself ──────────────────────
+
+/// The head with this binary's OWN layers at the bottom and rano compiling them: the built-in
+/// `chat` layer, asked the way the head asks it. `None` from [`App::chat_view`] is *the native
+/// adapter drew*, and every test here asserts that it did not.
+fn a_builtin_layer(now: u64) -> App {
+    let mut stack = Stack::discover(
+        None,
+        None,
+        None,
+        Arc::new(crate::app::sessions_pane::RanoLoader),
+    );
+    let failed = letibot_builtins::install(&mut stack);
+    assert!(failed.is_empty(), "the built-in layers install: {failed:?}");
+    let mut a = opened(now);
+    let workspace = a.workspace_path();
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::with_stack(
+        stack, workspace,
+    ));
+    a
+}
+
+/// The stream block a chat layer answered, if it answered one - the same search the head does.
+fn stream_of(view: &letibot_sessionlog::pane::View) -> Option<letibot_sessionlog::pane::Stream> {
+    view.panels
+        .iter()
+        .flat_map(|p| p.summary.iter().chain(p.view.iter()))
+        .find_map(|b| match b {
+            letibot_sessionlog::pane::Block::Stream(s) => Some(s.clone()),
+            _ => None,
+        })
+}
+
+/// One scene of the room, applied to a head: the fixtures `rooms.rs` draws its own tests from, in
+/// the shapes the adapter has a decision for.
+fn scenes() -> Vec<(&'static str, fn(&mut App))> {
+    fn one(kind: &str, seq: u64, author: &str, text: &str) -> Value {
+        json!({"seq": seq, "ts": 1_793_735_794_000u64 + seq * 60_000, "room": "host",
+               "author": author, "kind": kind, "text": text})
+    }
+
+    // A run of one speaker, a mention of the reader, and a reply quoting a message.
+    fn a_run_a_mention_and_a_reply(a: &mut App) {
+        reply(a, super::rooms::rooms_reply(&[("host", 2, 4, 0)]));
+        reply(
+            a,
+            json!({"type": "roster", "room": "host", "rows": [
+                {"name": "s-a", "kind": "session", "connected": true, "project": "", "label": "fix-room-push"},
+                {"name": "s-b", "kind": "session", "connected": false, "project": "other", "label": ""}
+            ]}),
+        );
+        let mut answer = one("session", 4, "s-b", "answered");
+        answer["thread"] = json!(1);
+        reply(
+            a,
+            history(
+                "host",
+                vec![
+                    one(
+                        "session",
+                        1,
+                        "s-a",
+                        "the first line of a run that goes on long enough to be quoted",
+                    ),
+                    one("session", 2, "s-a", "the second line of it"),
+                    one("session", 3, "s-b", "hey @operator and @s-a"),
+                    answer,
+                ],
+            ),
+        );
+    }
+
+    // A year ago, yesterday and today, so every label the divider can say is drawn. The three
+    // instants are a year apart and a day apart on purpose: a layer is handed ONE offset and the
+    // adapter reads the zone per message, so a window that spans a DST change is the one thing the
+    // two cannot agree on - and a test that crossed one would be testing the calendar, not the layer.
+    fn days(a: &mut App) {
+        reply(a, super::rooms::rooms_reply(&[("host", 2, 3, 0)]));
+        reply(
+            a,
+            history(
+                "host",
+                vec![
+                    msg_ts(1, 1_762_171_200_000, "s-a", "last year"),
+                    msg_ts(2, 1_793_735_794_000 - 86_400_000, "s-b", "yesterday"),
+                    msg_ts(3, 1_793_735_794_000, "s-b", "today"),
+                ],
+            ),
+        );
+    }
+
+    // A channel opened with the first message already read: the unread mark goes before the second.
+    fn unread(a: &mut App) {
+        reply(a, super::rooms::rooms_reply(&[("host", 2, 2, 1)]));
+        reply(
+            a,
+            history(
+                "host",
+                vec![
+                    one("session", 1, "s-a", "read already"),
+                    one("session", 2, "s-a", "news"),
+                ],
+            ),
+        );
+        a.rooms.seen.insert("host".into(), 1);
+        a.rooms.opened_seen.insert("host".into(), 1);
+    }
+
+    // The unread mark above the FIRST message, which `opened_seen` 0 is and `None` is not.
+    fn opened_at_nothing(a: &mut App) {
+        reply(a, super::rooms::rooms_reply(&[("host", 2, 1, 1)]));
+        reply(
+            a,
+            history(
+                "host",
+                vec![one("session", 1, "s-b", "the first thing said")],
+            ),
+        );
+        a.rooms.opened_seen.insert("host".into(), 0);
+    }
+
+    // A todo line with a ref, and a message carrying a picture.
+    fn a_system_row_and_a_picture(a: &mut App) {
+        reply(a, super::rooms::rooms_reply(&[("host", 2, 2, 0)]));
+        let mut system = one("system", 1, "letibot", "added a row");
+        system["kind"] = json!("system");
+        system["refs"] = json!([{"kind": "todo", "id": "R150"}]);
+        let mut pictured = one("session", 2, "s-a", "look ![shot](blob:b1)");
+        pictured["attachments"] =
+            json!([{"id": "b1", "mime": "image/png", "name": "shot.png", "bytes": 90}]);
+        reply(a, history("host", vec![system, pictured]));
+    }
+
+    // A direct message channel: the window is the peer's messages, and the reader is one side.
+    fn a_dm(a: &mut App) {
+        reply(a, super::rooms::rooms_reply(&[("host", 1, 0, 0)]));
+        reply(
+            a,
+            history(
+                "dm",
+                vec![
+                    json!({"seq": 5, "ts": 1_793_735_794_000u64, "room": "dm", "author": "operator",
+                   "kind": "operator", "to": "s-b", "text": "psst"}),
+                    json!({"seq": 6, "ts": 1_793_735_800_000u64, "room": "dm", "author": "s-b",
+                   "kind": "session", "to": "operator", "text": "what"}),
+                ],
+            ),
+        );
+        a.rooms.sel = Some(crate::app::rooms::Chan::Dm("s-b".into()));
+    }
+
+    // A project room next to the host room, with its own label and its own members.
+    fn a_project(a: &mut App) {
+        reply(
+            a,
+            super::rooms::rooms_reply(&[("host", 1, 0, 0), ("project/letibot", 2, 2, 0)]),
+        );
+        let mut row = one("session", 1, "s-a", "the project's own line");
+        row["room"] = json!("project/letibot");
+        reply(a, history("project/letibot", vec![row]));
+        a.rooms.sel = Some(crate::app::rooms::Chan::Room("project/letibot".into()));
+    }
+
+    vec![
+        ("a run, a mention and a reply", a_run_a_mention_and_a_reply),
+        ("a year, yesterday and today", days),
+        ("the unread mark", unread),
+        ("a channel opened at nothing", opened_at_nothing),
+        ("a system row and a picture", a_system_row_and_a_picture),
+        ("a direct message", a_dm),
+        ("a project room", a_project),
+    ]
+}
+
+/// One message with an explicit timestamp, so a scene can place it on a day.
+fn msg_ts(seq: u64, ts: u64, author: &str, text: &str) -> Value {
+    json!({"seq": seq, "ts": ts, "room": "host", "author": author, "kind": "session",
+           "text": text})
+}
+
+/// **P6's parity.** For the same `RoomsView`, the stream the built-in layer answers is the stream
+/// the native adapter builds: the same runs and headers, the same hues, the same mentions, the same
+/// dividers and the same quote. It is the whole point of the layer, so it is asserted whole -
+/// `Stream` compares field by field, and a decision that differs shows up as a diff of entries.
+#[test]
+fn the_builtin_chat_layer_draws_what_the_native_adapter_draws() {
+    for (what, scene) in scenes() {
+        let now = 1_793_735_794_500;
+        let mut a = a_builtin_layer(now);
+        scene(&mut a);
+        let Some(chan) = a.rooms.selected() else {
+            panic!("{what}: the scene selects a channel")
+        };
+        let view = a
+            .chat_view()
+            .unwrap_or_else(|| panic!("{what}: the built-in chat layer answered"));
+        assert!(view.input.is_some(), "{what}: the layer owns the composer");
+        let from_layer = stream_of(&view).unwrap_or_else(|| panic!("{what}: a stream block"));
+
+        let names = a.rooms_names();
+        let native = crate::app::chat_adapter::stream(
+            &a.rooms,
+            &chan,
+            &names,
+            crate::app::rooms::OPERATOR,
+            a.now_ms,
+        );
+        assert_eq!(
+            from_layer, native,
+            "{what}: the layer's stream and the adapter's are one"
+        );
+        // And the head draws the layer's: the same stream, through the door the pane uses.
+        assert_eq!(a.chat_stream(&chan, &names), native, "{what}");
+    }
+}
+
+/// The parity test above only means something if the scenes are not empty: two of them share a
+/// header, one has a quote, one has a divider the other has not. This asserts the fixtures do what
+/// their names say, so a scene that stopped drawing anything fails here rather than passing.
+#[test]
+fn the_parity_scenes_draw_runs_dividers_and_a_quote() {
+    let mut drawn = Vec::new();
+    for (what, scene) in scenes() {
+        let mut a = a_builtin_layer(1_793_735_794_500);
+        scene(&mut a);
+        let chan = a.rooms.selected().expect("a channel");
+        let s = a.chat_stream(&chan, &a.rooms_names());
+        assert!(!s.entries.is_empty(), "{what}: something is drawn");
+        drawn.push((what, s));
+    }
+    let stream = |name: &str| {
+        drawn
+            .iter()
+            .find(|(what, _)| *what == name)
+            .map(|(_, s)| s.clone())
+            .expect(name)
+    };
+    let run = stream("a run, a mention and a reply");
+    // A head that has just opened the channel has `opened_seen` 0, so the unread mark is above the
+    // first message: two dividers, four messages, and the second of the run is one of the four.
+    assert_eq!(run.entries.len(), 6, "four messages and two dividers");
+    assert!(
+        run.entries.iter().any(|e| e.quote.is_some()),
+        "the reply quotes what it answers"
+    );
+    assert!(!run.mentions.is_empty(), "the mention is a token");
+    assert_eq!(
+        run.entries.iter().filter(|e| e.is_divider()).count(),
+        2,
+        "one day and one unread"
+    );
+    let unread = stream("the unread mark");
+    assert!(
+        unread.entries.iter().any(|e| e.divider.is_some()),
+        "the unread mark is drawn"
+    );
+}
+
+/// **Completion parity.** Tab on the layer's input ranks what the native completion ranks, for the
+/// same view: the roster first with a prefix ahead of a substring, the head's verbs, and the
+/// bridge's aliases - the layer's answer is the answer a room's own Tab gives.
+#[test]
+fn the_builtin_chat_layer_completes_what_the_native_completion_completes() {
+    let mut a = a_builtin_layer(1_793_735_794_500);
+    reply(
+        &mut a,
+        super::rooms::rooms_reply(&[("host", 2, 0, 0), ("project/letibot", 2, 0, 0)]),
+    );
+    reply(
+        &mut a,
+        json!({"type": "roster", "room": "host", "rows": [
+            {"name": "s-a", "kind": "session", "connected": true, "project": "", "label": "fix-room-push"},
+            {"name": "s-b", "kind": "session", "connected": false, "project": "", "label": ""},
+            {"name": "cc@letibot", "kind": "external", "connected": true, "project": "letibot", "label": ""}
+        ]}),
+    );
+    assert!(a.chat_view().is_some(), "the built-in layer answered");
+
+    for text in ["@", "@fi", "@s", "@zz", "/", "/d", "/re", "plain words"] {
+        let native = a.room_completer().complete(text, text.len());
+        a.set_composer(text);
+        a.key(Key::Tab);
+        let from_layer = a.compose.open.as_ref().map(|o| o.answer.clone());
+        match from_layer {
+            Some(answer) => assert_eq!(answer, native, "`{text}`: one row of candidates"),
+            None => assert!(
+                native.candidates.is_empty(),
+                "`{text}`: the layer offered nothing and the room's own completion had {native:?}"
+            ),
+        }
+        a.set_composer("");
+        a.compose.open = None;
+    }
+}
+
+/// **The 200-message window through the built-in layer.** P5 measured what the boundary costs a
+/// pane on a full window; this is the same window asked of the layer that actually draws a chat,
+/// and the ceiling is P5's. The number is printed so a change that doubles it is visible.
+#[test]
+fn the_builtin_chat_layers_window_answers_under_the_fuel_cap() {
+    let now = 1_793_735_794_500;
+    let mut a = opened(1_000);
+    a.clock(now);
+    let rows: Vec<Value> = (1..=200)
+        .map(|seq| {
+            wire_msg(
+                seq,
+                "host",
+                if seq % 3 == 0 { "s-b" } else { "s-a" },
+                "session",
+                &format!("message {seq} with a line of words in it, long enough to be a message"),
+            )
+        })
+        .collect();
+    reply(&mut a, super::rooms::rooms_reply(&[("host", 2, 200, 0)]));
+    reply(&mut a, history("host", rows));
+    let feed = a.chat_feed();
+    assert_eq!(feed.messages.len(), 200, "the whole window");
+
+    let tmp = std::env::temp_dir().join(format!("letibot-chat-layer-fuel-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("a temp dir");
+    let mut stack = Stack::discover(
+        None,
+        None,
+        None,
+        Arc::new(crate::app::sessions_pane::RanoLoader),
+    );
+    let failed = letibot_builtins::install(&mut stack);
+    assert!(failed.is_empty(), "{failed:?}");
+    let host = crate::app::sessions_pane::Host::with_stack(stack, tmp.clone());
+    // What the call costs with NOTHING in the window: the same feed, the same layer, no messages.
+    // The difference is the price of the window itself, which is the number a ceiling is about.
+    let mut bare = feed.clone();
+    bare.messages.clear();
+    let empty = host.call(
+        "pane_chat",
+        "the chat's window",
+        &json!({"v": letibot_plugin::pane::V, "feeds": {"chat": bare},
+                "now_ms": now, "utc_offset_s": 0}),
+    );
+    let floor = empty.fuel.expect("the engine measured the call");
+    println!("the built-in chat layer, an empty window: {floor} fuel");
+
+    let input = json!({
+        "v": letibot_plugin::pane::V,
+        "size": {"w": 120, "h": 40},
+        "feeds": {"chat": feed},
+        "now_ms": now,
+        "utc_offset_s": crate::app::chat_plugin::utc_offset_s(now),
+    });
+    let answered = host.call("pane_chat", "the chat's window", &input);
+    let fuel = answered.fuel.expect("the engine measured the call");
+    println!("the built-in chat layer, 200 messages: {fuel} fuel ({floor} of it the call)");
+    assert!(
+        fuel > floor && fuel <= FUEL_CEILING,
+        "the layer's window cost {fuel} fuel ({floor} with an empty window), and the ceiling is \
+         {FUEL_CEILING} (P5 measured {FUEL_200} for the boundary alone)"
+    );
+    let view = answered.view.expect("the layer answered a view");
+    assert!(
+        stream_of(&view).is_some_and(|s| s.entries.len() >= 200),
+        "and every message of the window is an entry"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// **The module's size.** A guest is embedded in the binary, so its size is the binary's: this one
+/// is a conversation's worth of policy and must not become the largest of the six.
+#[test]
+fn the_builtin_chat_module_is_no_bigger_than_the_largest_builtin() {
+    let table = letibot_builtins::table();
+    let chat = table
+        .iter()
+        .find(|b| b.name == "chat")
+        .expect("the chat layer");
+    let biggest = table
+        .iter()
+        .filter(|b| b.name != "chat")
+        .max_by_key(|b| b.wasm.len())
+        .expect("the other layers");
+    println!(
+        "chat is {} bytes; the largest other is {} at {} bytes",
+        chat.wasm.len(),
+        biggest.name,
+        biggest.wasm.len()
+    );
+    assert!(
+        chat.wasm.len() <= biggest.wasm.len(),
+        "the chat module is {} bytes and `{}` is {}: a layer is not the binary's biggest cost",
+        chat.wasm.len(),
+        biggest.name,
+        biggest.wasm.len()
+    );
 }

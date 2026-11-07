@@ -338,25 +338,25 @@ impl App {
         lines.into_iter().skip(skip).take(room).collect()
     }
 
-    /// What a session is called: its title or slug in this head's session list, else the
-    /// label the roster carries, else its id.
-    fn rooms_names(&self) -> BTreeMap<String, String> {
-        let mut names = BTreeMap::new();
+    /// What a session is called, by the one rule for every handle ([`App::rooms_display_name`]): a
+    /// chat layer is handed this map and the completion reads that same rule, so two precedences
+    /// for one handle would be a name that changes between the stream and the row.
+    pub(crate) fn rooms_names(&self) -> BTreeMap<String, String> {
+        let mut handles: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for list in self.rooms.roster.values() {
             for m in list {
-                if !m.label.is_empty() {
-                    names.insert(m.name.clone(), m.label.clone());
-                }
+                handles.insert(m.name.as_str());
             }
         }
         for b in &self.sessions {
-            let named = if b.slug.trim().is_empty() {
-                b.title.trim()
-            } else {
-                b.slug.trim()
-            };
-            if !named.is_empty() {
-                names.insert(b.session_id.clone(), named.to_string());
+            handles.insert(b.session_id.as_str());
+        }
+        let mut names = BTreeMap::new();
+        for handle in handles {
+            let name = self.rooms_display_name(handle);
+            // A handle nobody named is the handle: the map says only where it is worth saying.
+            if name != handle {
+                names.insert(handle.to_string(), name);
             }
         }
         names

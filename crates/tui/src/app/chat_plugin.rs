@@ -214,13 +214,33 @@ impl App {
         for (room, list) in &self.rooms.roster {
             feed.roster.insert(
                 room.clone(),
-                list.iter().map(|m| m.name.clone()).collect::<Vec<_>>(),
+                list.iter()
+                    .map(|m| pp::ChatMember {
+                        name: m.name.clone(),
+                        connected: m.connected,
+                    })
+                    .collect::<Vec<_>>(),
             );
         }
+        // What a handle is called, what the composer completes from, and the verbs it offers: the
+        // head's, because only the head holds the session list, the bridge's projects and its own
+        // command table. A layer drawing names from handles would rename every session on screen.
+        feed.names = self.rooms_names();
+        feed.verbs = self
+            .rooms_verbs()
+            .into_iter()
+            .map(|(name, hint)| pp::ChatVerb { name, hint })
+            .collect();
+        feed.aliases = self
+            .rooms_aliases()
+            .into_iter()
+            .map(|(insert, note)| pp::ChatAlias { insert, note })
+            .collect();
+        feed.heard = self.rooms.heard;
         if let Some(c) = &selected {
             let key = RoomsView::key(c);
             feed.seen = self.rooms.seen.get(&key).copied().unwrap_or(0);
-            feed.opened_seen = self.rooms.opened_seen.get(&key).copied().unwrap_or(0);
+            feed.opened_seen = self.rooms.opened_seen.get(&key).copied();
         }
         for s in &self.rooms.sends {
             feed.failed.push(pp::ChatFailed {
@@ -258,6 +278,12 @@ impl App {
     pub(crate) fn chat_command(&mut self, text: &str) -> Option<Action> {
         let view = self.chat_view()?;
         let input = view.input.clone()?;
+        // A channel that vanished is the HEAD's fact and not the layer's: a layer cannot put a line
+        // back in the composer, so the words would be swallowed where the native view holds them.
+        if self.rooms.selected().is_none() {
+            self.rooms_hold_gone(text);
+            return None;
+        }
         let feeds = BTreeMap::from([(pp::Feed::Chat.name().to_string(), json!(self.chat_feed()))]);
         let chips: Vec<String> = self
             .compose
@@ -623,7 +649,7 @@ fn untrusted_sentence(layer: &letibot_plugins::Layer) -> String {
 
 /// The person's local offset from UTC, in seconds east of it - the reading a `HH:MM` needs, which
 /// a guest has no clock to take. `None` for a machine whose zone cannot be read.
-fn utc_offset_s(ms: u64) -> Option<i32> {
+pub(crate) fn utc_offset_s(ms: u64) -> Option<i32> {
     let secs = (ms / 1000) as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     // SAFETY: `localtime_r` writes into `tm` and reads `secs`, both owned here; the `_r` form keeps

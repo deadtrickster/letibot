@@ -485,16 +485,39 @@ pub struct Chat {
     /// The channel whose messages are in `messages`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected: Option<String>,
-    /// Who is in each room, by channel name - what `@` completes from.
+    /// Who is in each room, by channel name and in the room's own order - what `@` completes
+    /// from, and where a member's connectedness comes from. The handle is `name`; what it is
+    /// CALLED is [`Chat::names`], because the host resolves a name from more than the roster.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub roster: std::collections::BTreeMap<String, Vec<String>>,
+    pub roster: std::collections::BTreeMap<String, Vec<ChatMember>>,
+    /// What a handle is called, where the host knows a better name than the handle itself - the
+    /// roster's label, the session list's title, else nothing. The host resolves it because only
+    /// the host holds the session list, and a layer that resolved it would draw its own words.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub names: std::collections::BTreeMap<String, String>,
+    /// The `/` verbs this head's composer offers while a chat pane owns it, the room's own first
+    /// and its own after (`X6`). A `complete_` hook ranks them; the list is the head's because
+    /// the verbs are the head's, and a layer that guessed them would offer a verb nobody answers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verbs: Vec<ChatVerb>,
+    /// The bridge's aliases the composer offers - `@cc` and one word per project (`X6`). Here for
+    /// the reason [`Chat::verbs`] is: which folders a `@cc@…` reaches is the head's to know, and a
+    /// layer that spelled one from a channel's label would offer an address nobody resolves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<ChatAlias>,
     /// The newest `seq` the person has been shown.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub seen: u64,
     /// The newest `seq` that was on screen when the channel was opened: the unread divider sits
-    /// between the two, and it survives the next answer.
-    #[serde(default, skip_serializing_if = "is_zero_u64")]
-    pub opened_seen: u64,
+    /// between the two, and it survives the next answer. `None` is *this head has not opened the
+    /// channel*, which is not `0`: opened with nothing read puts the divider above the first
+    /// message, and never opened puts none at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opened_seen: Option<u64>,
+    /// Whether any answer has arrived since the view opened. It decides one sentence, and only
+    /// the host knows it: an empty channel nobody has answered for yet is *asking*, not empty.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub heard: bool,
     /// Sends that have not landed, so a layer draws them as unsent rather than as sent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed: Vec<ChatFailed>,
@@ -513,6 +536,33 @@ pub struct ChatChannel {
     pub label: String,
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub unread: u64,
+}
+
+/// One member of a room, as the roster lists them: the handle the server resolves, and whether
+/// they are here now - an away member is offered by a completion with a note saying so.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ChatMember {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub connected: bool,
+}
+
+/// One `/` verb the composer offers: the word after the slash, and the line the completion row
+/// draws beside it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ChatVerb {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hint: String,
+}
+
+/// One bridge alias the composer offers: what accepting it inserts (`@cc`, `@cc@letibot:*`) and
+/// what the row says about it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ChatAlias {
+    pub insert: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
 }
 
 /// One send the room did not take. `text` is what the person typed, so it can be offered again.
@@ -574,6 +624,10 @@ pub struct ChatAttachment {
 
 fn is_zero_u64(n: &u64) -> bool {
     *n == 0
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[cfg(test)]
@@ -775,17 +829,24 @@ mod tests {
         );
     }
 
-    /// The `chat` feed's shape: the wire's own fields, a window of messages, and the two marks the
-    /// unread divider sits between. Round-tripped as a whole, because a field that only appears
-    /// inside one message is a field a layer cannot ask for.
+    /// The `chat` feed's shape: the wire's own fields, a window of messages, the roster with what
+    /// each member is called, the verbs a completion ranks, and the two marks the unread divider
+    /// sits between. Round-tripped as a whole, because a field that only appears inside one message
+    /// is a field a layer cannot ask for.
     #[test]
     fn the_chat_feed_carries_what_the_wire_has() {
         let doc = json!({
             "channels": [{"room": "project/letibot", "label": "letibot", "unread": 3}],
             "selected": "project/letibot",
-            "roster": {"project/letibot": ["operator", "fix-room-push"]},
+            "roster": {"project/letibot": [{"name": "operator", "connected": true},
+                                           {"name": "fix-room-push"}]},
+            "names": {"fix-room-push": "fix the room push"},
+            "verbs": [{"name": "dm", "hint": "a direct message"}, {"name": "health"}],
+            "aliases": [{"insert": "@cc", "note": "every folder"},
+                          {"insert": "@cc@letibot:*", "note": "every session in letibot"}],
             "seen": 41,
             "opened_seen": 39,
+            "heard": true,
             "failed": [{"room": "project/letibot", "text": "hi", "why": "refused"}],
             "messages": [{
                 "seq": 41, "ts": 1_762_000_000_000u64, "room": "project/letibot",
@@ -799,7 +860,12 @@ mod tests {
         assert_eq!(feed.channels[0].unread, 3);
         assert_eq!(feed.selected.as_deref(), Some("project/letibot"));
         assert_eq!(feed.roster["project/letibot"].len(), 2);
-        assert_eq!((feed.seen, feed.opened_seen), (41, 39));
+        assert!(feed.roster["project/letibot"][0].connected);
+        assert_eq!(feed.names["fix-room-push"], "fix the room push");
+        assert_eq!(feed.verbs[0].name, "dm");
+        assert_eq!(feed.aliases[1].insert, "@cc@letibot:*");
+        assert_eq!((feed.seen, feed.opened_seen), (41, Some(39)));
+        assert!(feed.heard);
         assert_eq!(feed.failed[0].why, "refused");
         let m = &feed.messages[0];
         assert_eq!((m.seq, m.ts), (41, 1_762_000_000_000));
@@ -809,6 +875,11 @@ mod tests {
         assert_eq!(m.attachments[0].id, "ab12");
         assert_eq!(m.text, "ping @fix-room-push");
         assert_eq!(serde_json::to_value(&feed).unwrap(), doc);
+        // A channel opened with nothing read yet is opened, and 0 is not the same as never: the
+        // divider belongs above the first message.
+        let opened: Chat = serde_json::from_value(json!({"opened_seen": 0})).unwrap();
+        assert_eq!(opened.opened_seen, Some(0));
+        assert_eq!(Chat::default().opened_seen, None);
         // An empty feed is a room with nothing in it, and it says so by saying nothing.
         assert_eq!(serde_json::to_value(Chat::default()).unwrap(), json!({}));
     }
