@@ -4,6 +4,7 @@
 
 mod keys;
 mod render;
+mod web;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -142,11 +143,12 @@ impl Tool for ScreenTool {
              right, or move: true, or scroll: up|down}: cells from 0, only if the program \
              enabled mouse. `read` {id, idle_ms}: rows as text plus a style map (bold, \
              inverse, colors per run), after output settles. `shot` {id}: a PNG of the screen. \
-             `list`, `stop` {id}. Screens end with the session.",
+             `web` {url, width, height, full_page, wait_ms}: a page in headless Chrome as a \
+             PNG; `dom` {url}: its text. `list`, `stop` {id}. Screens end with the session.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "description": "start, keys, mouse, read, shot, list or stop."},
+                    "action": {"type": "string", "description": "start, keys, mouse, read, shot, web, dom, list or stop."},
                     "id": {"type": "integer", "description": "The screen, from start."},
                     "cmd": {"type": "string", "description": "start: a shell line."},
                     "cols": {"type": "integer"},
@@ -158,6 +160,11 @@ impl Tool for ScreenTool {
                     "button": {"type": "string"},
                     "move": {"type": "boolean"},
                     "scroll": {"type": "string"},
+                    "url": {"type": "string", "description": "web, dom: http(s) or file URL."},
+                    "width": {"type": "integer"},
+                    "height": {"type": "integer"},
+                    "full_page": {"type": "boolean"},
+                    "wait_ms": {"type": "integer"},
                     "idle_ms": {"type": "integer", "description": "read, shot: quiet time that counts as settled (default 300)."}
                 },
                 "required": ["action"]
@@ -169,6 +176,7 @@ impl Tool for ScreenTool {
     fn access_for(&self, args: &Value) -> Option<Access> {
         match text(args, "action") {
             Some("read" | "shot" | "list") => Some(Access::Read),
+            Some("web" | "dom") => Some(Access::Network),
             _ => None,
         }
     }
@@ -238,6 +246,8 @@ impl Tool for ScreenTool {
                 inv.media = Some(media);
                 inv
             }),
+            "web" => web::web(ctx, args),
+            "dom" => web::dom(ctx, args),
             "list" => {
                 let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 if st.screens.is_empty() {

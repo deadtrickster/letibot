@@ -42,6 +42,15 @@ key. Send `<C-c>` or the program's quit key, then `read` to see it end. A progra
 a terminal answer (a cursor-position query, an image probe) gets none here, and the head's own
 timeouts apply.
 
+## Web pages
+
+`web {url, width, height, full_page, wait_ms}` renders a page in headless Chrome or Chromium
+and returns a PNG; `dom {url}` returns the page's text after scripts ran (`html: true` for the
+markup). Serve a local page with a background job on 127.0.0.1 or use a `file://` URL. It looks
+only: clicking and typing would need a DevTools session. `full_page` renders a tall window, not a
+measured page height. On macOS the seatbelt seat cannot run Chrome, which needs the window server,
+so the call says so: use a seat with Linux chromium.
+
 ## Limits
 
 - Colours are the sixteen palette slots, bold, faint and inverse. Truecolour and 256-colour

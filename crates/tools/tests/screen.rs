@@ -156,3 +156,113 @@ fn the_skill_is_built_in_and_offered_to_every_seat() {
     let seat = std::collections::BTreeSet::new();
     assert!(skill.unmet(&seat).is_none());
 }
+
+/// Launching a browser can raise windows on the operator's screen, so these tests run only when
+/// asked: `LETIBOT_TEST_CHROME=1`.
+fn has_chrome() -> bool {
+    if std::env::var_os("LETIBOT_TEST_CHROME").is_none() {
+        eprintln!("SKIPPED: set LETIBOT_TEST_CHROME=1 to launch a headless browser");
+        return false;
+    }
+    let known = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ];
+    known.iter().any(|p| std::path::Path::new(p).exists())
+        || [
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium",
+            "chromium-browser",
+        ]
+        .iter()
+        .any(|n| {
+            std::process::Command::new("sh")
+                .args(["-c", &format!("command -v {n}")])
+                .output()
+                .is_ok_and(|o| o.status.success())
+        })
+}
+
+fn png_size(m: &letibot_transcript::media::Media) -> (u32, u32) {
+    (m.width.unwrap(), m.height.unwrap())
+}
+
+#[test]
+fn a_local_page_renders_to_a_png_of_the_requested_size_and_dom_gives_its_text() {
+    if !has_chrome() {
+        eprintln!("SKIPPED: no Chrome or Chromium on this box");
+        return;
+    }
+    let Some(mut h) = seat() else { return };
+    h.write_file(
+        "page.html",
+        "<html><body style='margin:0'><h1>hello chrome</h1><p id=p>x</p>\
+         <script>document.getElementById('p').textContent='js ran'</script></body></html>",
+    );
+    let url = format!("file://{}/page.html", h.root().display());
+    let shot = call(
+        &mut h,
+        serde_json::json!({"action": "web", "url": url, "width": 640, "height": 360}),
+    );
+    assert_eq!(shot.outcome, ToolOutcome::Ok, "{}", shot.payload);
+    assert_eq!(png_size(&shot.media.expect("a picture")), (640, 360));
+    let dom = call(&mut h, serde_json::json!({"action": "dom", "url": url}));
+    assert_eq!(dom.outcome, ToolOutcome::Ok, "{}", dom.payload);
+    assert!(dom.payload.contains("hello chrome"), "{}", dom.payload);
+    assert!(dom.payload.contains("js ran"), "{}", dom.payload);
+    let bad = call(
+        &mut h,
+        serde_json::json!({"action": "web", "url": "javascript:alert(1)"}),
+    );
+    assert!(matches!(bad.outcome, ToolOutcome::Failed { .. }));
+}
+
+#[test]
+fn a_page_served_by_a_session_job_renders() {
+    if !has_chrome() {
+        eprintln!("SKIPPED: no Chrome or Chromium on this box");
+        return;
+    }
+    let Some(mut h) = seat() else { return };
+    h.write_file(
+        "index.html",
+        "<html><body><h1>from a job</h1></body></html>",
+    );
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let started = h.call(
+        "bash",
+        &serde_json::json!({
+            "command": format!("python3 -m http.server {port} --bind 127.0.0.1"),
+            "background": true
+        })
+        .to_string(),
+    );
+    assert!(
+        !matches!(started.outcome, ToolOutcome::Failed { .. }),
+        "{}",
+        started.payload
+    );
+    for _ in 0..50 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let url = format!("http://127.0.0.1:{port}/index.html");
+    let shot = call(
+        &mut h,
+        serde_json::json!({"action": "web", "url": url, "width": 500, "height": 300}),
+    );
+    assert_eq!(shot.outcome, ToolOutcome::Ok, "{}", shot.payload);
+    assert_eq!(png_size(&shot.media.expect("a picture")), (500, 300));
+    let dom = call(&mut h, serde_json::json!({"action": "dom", "url": url}));
+    assert!(dom.payload.contains("from a job"), "{}", dom.payload);
+    if let Some(id) = started.payload.split('`').find(|s| s.starts_with('j')) {
+        h.call("job_kill", &serde_json::json!({"job": id}).to_string());
+    }
+}
