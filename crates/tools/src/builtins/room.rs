@@ -75,7 +75,10 @@ impl Tool for RoomTool {
                  what you hold, `waiting`, `done`, `abandon`, `dispute`, `queue`, `holding`, \
                  `questions`; `rule` is the arbiter's (`retry`, `hand`, `drop`). `say` and `read` talk \
                  in room `project` or `host`: `to` is a private message, `@name` a public mention that \
-                 wakes them where it was said. Answer others only with what they lack. {beat}"
+                 wakes them where it was said. `asks` lists the questions between you and another \
+                 session; `answer` and `decline` settle one - and only those verbs do, so a plain \
+                 thread reply reaches its author without unblocking a plan. Answer others only with \
+                 what they lack. {beat}"
             ),
             json!({
                 "type": "object",
@@ -85,9 +88,9 @@ impl Tool for RoomTool {
                         "enum": [
                             "post", "claim", "claim_item", "beat", "waiting", "done", "abandon",
                             "dispute", "rule", "queue", "holding", "reminders", "questions",
-                            "say", "read", "invite", "leave"
+                            "say", "read", "invite", "leave", "asks", "answer", "decline"
                         ],
-                        "description": "What to do. `post` needs `tag` and `body`; `claim` needs `tag`; `claim_item`, `beat`, `done` need `item`; `waiting` needs `item` and `text`; `abandon` needs `item` and `why`; `dispute` needs `item` and `says`; `rule` needs `question` and `decision`; `queue` needs `tag`; `holding` takes an optional `session`; `reminders` and `questions` take nothing; `say` needs `text` and takes `room`, `to`, `thread`, `todo`, `queue`; `read` takes `room`, `since`, `last`, `thread`; `invite` needs `room` and `session` and lets that session hear and speak in a project room you are a member of; `leave` takes `room` and an optional `session` (yourself when empty)."
+                        "description": "What to do. `post` needs `tag` and `body`; `claim` needs `tag`; `claim_item`, `beat`, `done` need `item`; `waiting` needs `item` and `text`; `abandon` needs `item` and `why`; `dispute` needs `item` and `says`; `rule` needs `question` and `decision`; `queue` needs `tag`; `holding` takes an optional `session`; `reminders`, `questions` and `asks` take nothing; `say` needs `text` and takes `room`, `to`, `thread`, `todo`, `queue`; `read` takes `room`, `since`, `last`, `thread`; `invite` needs `room` and `session` and lets that session hear and speak in a project room you are a member of; `leave` takes `room` and an optional `session` (yourself when empty); `answer` and `decline` need `ask` and `text`."
                     },
                     "tag": {
                         "type": "string",
@@ -101,9 +104,13 @@ impl Tool for RoomTool {
                         "type": "integer",
                         "description": "The item's number, as a reply gave it (`#7`)."
                     },
+                    "ask": {
+                        "type": "integer",
+                        "description": "For `answer` and `decline`: the ask's number, from `asks` or from the row on your board that says it is owed."
+                    },
                     "text": {
                         "type": "string",
-                        "description": "For `waiting`: what you are waiting on. Empty clears it."
+                        "description": "For `waiting`: what you are waiting on. Empty clears it. For `answer` and `decline`: what you tell the session that asked."
                     },
                     "why": {
                         "type": "string",
@@ -333,6 +340,15 @@ fn dispatch(
             }
         }
         "say" if !nonempty(args, "text") => Some("text"),
+        "answer" | "decline" => {
+            if args.get("ask").and_then(|v| v.as_u64()).is_none() {
+                Some("ask")
+            } else if !nonempty(args, "text") {
+                Some("text")
+            } else {
+                None
+            }
+        }
         "invite" if !nonempty(args, "room") => Some("room"),
         "invite" if !nonempty(args, "session") => Some("session"),
         "leave" if !nonempty(args, "room") => Some("room"),
@@ -513,8 +529,51 @@ mod tests {
         let s = tool.schema();
         assert_eq!(s.name, TOOL);
         assert_eq!(crate::schema::lint_description(&s.description), vec![]);
-        assert!(s.description.len() < 900, "{} bytes", s.description.len());
+        assert!(s.description.len() < 1000, "{} bytes", s.description.len());
         assert_eq!(s.access, Access::Session);
+    }
+
+    /// An ask is settled by its own verb and by nothing else: `answer` and `decline` name the ask and
+    /// the words, and a call missing either never reaches the room.
+    #[test]
+    fn answering_needs_the_ask_and_the_words_and_is_named_in_the_schema() {
+        let link = Recorder::new(Ok("ask #4211 settled"));
+        let (ok, text) = invoke(
+            link.clone(),
+            json!({"verb": "answer", "ask": 4211, "text": "5433"}),
+        );
+        assert!(ok, "{text}");
+        assert_eq!(text, "ask #4211 settled");
+        {
+            let seen = link.seen.lock().unwrap();
+            assert_eq!(seen[0].0, "answer");
+            assert_eq!(seen[0].1["ask"], json!(4211));
+        }
+        for (args, field) in [
+            (json!({"verb": "answer", "text": "5433"}), "ask"),
+            (json!({"verb": "decline", "ask": 4211}), "text"),
+        ] {
+            let link = Recorder::new(Ok("never"));
+            let (ok, text) = invoke(link.clone(), args);
+            assert!(!ok, "{text}");
+            assert!(text.contains(field), "{text}");
+            assert!(
+                link.seen.lock().unwrap().is_empty(),
+                "nothing is sent to the room"
+            );
+        }
+        // And the schema names them, so a model reading the tool knows the door exists.
+        let schema = RoomTool::new(Arc::new(NoRoom)).schema();
+        let verbs: Vec<&str> = schema.parameters["properties"]["verb"]["enum"]
+            .as_array()
+            .expect("an enum of verbs")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        for want in ["asks", "answer", "decline"] {
+            assert!(verbs.contains(&want), "`{want}` is not a verb: {verbs:?}");
+        }
+        assert!(schema.parameters["properties"]["ask"].is_object());
     }
 
     /// The beat paragraph is the link's, and the two links say opposite things: the sentence a

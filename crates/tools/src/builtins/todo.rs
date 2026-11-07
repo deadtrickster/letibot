@@ -408,6 +408,127 @@ impl TodoBoard {
         n
     }
 
+    /// Replace the asks this session OWES an answer to: one row per open ask of it, keyed by the
+    /// ask's id on the row (`Owed`). The counterpart of [`TodoBoard::set_room_rows`], and retired by
+    /// its own key: a row the pass wrote for an ask that has ended goes with it, so a board rebuilt
+    /// from the store still finds them - the edge is on the row.
+    pub fn set_ask_rows(&self, rows: Vec<(u64, TodoItem)>) -> usize {
+        let n = rows.len();
+        let mut half = self.todos.lock().unwrap_or_else(|e| e.into_inner());
+        let held: BTreeSet<u64> = rows.iter().map(|(ask, _)| *ask).collect();
+        let before = half.len();
+        half.retain(|t| {
+            owed_asks(t).iter().all(|ask| held.contains(ask))
+        });
+        let mut changed = half.len() != before;
+        for (_, row) in rows {
+            let want = row.content.trim().to_string();
+            let edge: Vec<TodoNeed> = row
+                .needs
+                .iter()
+                .filter(|n| matches!(n, TodoNeed::Owed { .. }))
+                .cloned()
+                .collect();
+            match half.iter_mut().find(|t| t.content.trim() == want) {
+                Some(had) => {
+                    let mut needs: Vec<TodoNeed> = had
+                        .needs
+                        .iter()
+                        .filter(|n| !matches!(n, TodoNeed::Owed { .. }))
+                        .cloned()
+                        .collect();
+                    needs.extend(edge);
+                    if had.needs != needs || had.status != row.status {
+                        had.needs = needs;
+                        had.status = row.status;
+                        changed = true;
+                    }
+                }
+                None => {
+                    half.push(row);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.version.fetch_add(1, Ordering::SeqCst);
+        }
+        n
+    }
+
+    /// Every ask the pass last wrote a row for, on either side. What A's pass compares against the
+    /// asks the room still holds open to decide what to take back.
+    pub fn asks_on_the_board(&self) -> BTreeSet<u64> {
+        let mut out = BTreeSet::new();
+        for half in [&self.todos, &self.operator, &self.parent] {
+            let half = half.lock().unwrap_or_else(|e| e.into_inner());
+            for row in half.iter() {
+                for need in &row.needs {
+                    match need {
+                        TodoNeed::Ask { ask, .. } => {
+                            out.insert(*ask);
+                        }
+                        TodoNeed::Owed { ask } => {
+                            out.insert(*ask);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The open rows (pending or in progress) that carry ask `ask`, by their words: what a settle's
+    /// note names, and what the pass reads BEFORE it settles them.
+    pub fn rows_with_ask(&self, ask: u64) -> Vec<String> {
+        let mut out = Vec::new();
+        for half in [&self.todos, &self.operator, &self.parent] {
+            let half = half.lock().unwrap_or_else(|e| e.into_inner());
+            out.extend(
+                half.iter()
+                    .filter(|t| {
+                        matches!(t.status, TodoStatus::Pending | TodoStatus::InProgress)
+                            && carries_ask(t, ask)
+                    })
+                    .map(|t| t.content.trim().to_string()),
+            );
+        }
+        out
+    }
+
+    /// Raise the operator's question about `ask` on every row that carries it (`on`), or take it
+    /// off. Matched by the question's own words, so a row's own question about the operator is
+    /// never touched by a card the room pass put there. Returns how many rows moved.
+    pub fn escalate_ask(&self, ask: u64, question: &str, on: bool) -> usize {
+        let want = question.trim();
+        let mut moved = 0;
+        for half in [&self.todos, &self.operator, &self.parent] {
+            let mut half = half.lock().unwrap_or_else(|e| e.into_inner());
+            for row in half.iter_mut().filter(|t| carries_ask(t, ask)) {
+                let has = row.needs.iter().any(|n| {
+                    matches!(n, TodoNeed::Operator { question: q, .. } if q.trim() == want)
+                });
+                if on && !has {
+                    row.needs.push(TodoNeed::Operator {
+                        question: want.to_string(),
+                        options: Vec::new(),
+                    });
+                    moved += 1;
+                } else if !on && has {
+                    row.needs.retain(|n| {
+                        !matches!(n, TodoNeed::Operator { question: q, .. } if q.trim() == want)
+                    });
+                    moved += 1;
+                }
+            }
+        }
+        if moved > 0 {
+            self.version.fetch_add(1, Ordering::SeqCst);
+        }
+        moved
+    }
+
     /// A parent's write: an upsert scoped to the parent's own authorship, so the child's rows,
     /// the operator's rows and every other author's are untouched and nothing is deleted. A new
     /// row is resource-checked here, before anything is pushed.
@@ -1119,6 +1240,28 @@ pub fn room_items(row: &TodoItem) -> Vec<u64> {
             _ => None,
         })
         .collect()
+}
+
+/// The asks a row is the pass's own record of - questions somebody else waits on this session to
+/// answer. `TodoBoard::set_ask_rows` retires by this, for [`room_items`]'s reason.
+pub fn owed_asks(row: &TodoItem) -> Vec<u64> {
+    row.needs
+        .iter()
+        .filter_map(|n| match n {
+            TodoNeed::Owed { ask } => Some(*ask),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Does this row carry ask `ask` on either side of it - waiting on an answer (`Ask`) or owing one
+/// (`Owed`)? The one question the room pass asks before it settles a row or escalates one.
+pub fn carries_ask(row: &TodoItem, ask: u64) -> bool {
+    row.needs.iter().any(|n| match n {
+        TodoNeed::Ask { ask: id, .. } => *id == ask,
+        TodoNeed::Owed { ask: id } => *id == ask,
+        _ => false,
+    })
 }
 
 /// Whether a row waits on a job or child that has ended but whose completion the model has not
@@ -2081,7 +2224,9 @@ impl Tool for TodoWriteTool {
                                                     […], at least two) for their answer. A row \
                                                     that names nothing is ready at once; a name \
                                                     matching no row, or two, blocks the row and \
-                                                    the check says which."
+                                                    the check says which. An `ask` is NOT \
+                                                    spellable here: asking a peer is a side \
+                                                    effect, and only `wait_on` may make one."
                                 }
                             },
                             "required": ["content", "status"]
@@ -2115,10 +2260,18 @@ impl Tool for TodoWriteTool {
                                 },
                                 "ask": {
                                     "type": "object",
+                                    "description": "Ask a SESSION a question and wait on its \
+                                                    answer. The room holds the ask and nags the \
+                                                    peer's own board until it answers, so the row \
+                                                    is released by `room`'s `answer` (or `decline`) \
+                                                    and by nothing else - not by chat, not by a \
+                                                    timeout: a peer that stopped is escalated to \
+                                                    the operator, never settled. The same question \
+                                                    asked twice is one ask.",
                                     "properties": {
-                                        "session": {"type": "string"},
-                                        "room": {"type": "string"},
-                                        "question": {"type": "string"}
+                                        "session": {"type": "string", "description": "The peer: a top-level session's id or handle on this host. Not a subagent, the operator, or yourself."},
+                                        "room": {"type": "string", "description": "Where to ask. Omit for the room `say` would use (your project's, or `host` with no project). The peer must be able to see it."},
+                                        "question": {"type": "string", "description": "The question, in your own words. It is said as a message addressed to the peer, and the row keeps it."}
                                     },
                                     "required": ["session", "question"]
                                 },

@@ -138,6 +138,7 @@ pub fn with_session_tools(
     mut reg: Registry,
     board: std::sync::Arc<builtins::todo::TodoBoard>,
     children: Option<std::sync::Arc<dyn builtins::todo::ChildTodos>>,
+    asks: Option<std::sync::Arc<dyn builtins::todo::AskLink>>,
     task_runner: std::sync::Arc<dyn builtins::task::TaskRunner>,
     skills: std::sync::Arc<builtins::skill::SkillRegistry>,
     lsp: std::sync::Arc<builtins::lsp::LspConfig>,
@@ -146,6 +147,12 @@ pub fn with_session_tools(
     let todo = match children {
         Some(children) => builtins::todo::TodoWriteTool::with_children(board, children),
         None => builtins::todo::TodoWriteTool::new(board),
+    };
+    // The room, for the one field that leaves this session: a row that waits on another session's
+    // answer. Additive, so a runtime with no room keeps asking the operator and nothing else.
+    let todo = match asks {
+        Some(asks) => todo.with_asks(asks),
+        None => todo,
     };
     reg.register(Box::new(todo))?;
     // The children read the same corpus as the tool, so a `task {skills}` name is checked
@@ -320,6 +327,7 @@ mod tests {
         let reg = with_session_tools(
             reg,
             std::sync::Arc::new(builtins::todo::TodoBoard::new(Vec::new())),
+            None,
             None,
             std::sync::Arc::new(builtins::task::NoTaskRunner),
             std::sync::Arc::new(builtins::skill::SkillRegistry::default()),
