@@ -1065,14 +1065,29 @@ impl ScopeTree for Cgroup2 {
         prune_at(&self.root, &mut n);
         // The root itself, last and only if everything under it went. `remove_dir` on a populated
         // cgroup fails, so this cannot take a live scope by mistake.
-        if std::fs::remove_dir(&self.root).is_ok() {
+        if !fresh(&self.root) && std::fs::remove_dir(&self.root).is_ok() {
             n += 1;
         }
         n
     }
 }
 
-/// Depth-first: children first, then this one if it holds no process.
+/// How recently a scope must have changed for a prune to leave it. The tree is shared by every
+/// host in a process, and a scope another host has just made holds no process until its job's
+/// directory and process join it; removing it then failed that spawn with ENOENT.
+const PRUNE_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Whether `dir` changed within [`PRUNE_GRACE`]; an unreadable time is fresh, so nothing is
+/// removed on a guess.
+fn fresh(dir: &Path) -> bool {
+    std::fs::metadata(dir)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_none_or(|age| age < PRUNE_GRACE)
+}
+
+/// Depth-first: children first, then this one if it holds no process and is not [`fresh`].
 fn prune_at(dir: &Path, n: &mut usize) {
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
@@ -1081,7 +1096,7 @@ fn prune_at(dir: &Path, n: &mut usize) {
                 prune_at(&child, n);
                 let mut pids = Vec::new();
                 members_at(&child, &mut pids);
-                if pids.is_empty() && std::fs::remove_dir(&child).is_ok() {
+                if pids.is_empty() && !fresh(&child) && std::fs::remove_dir(&child).is_ok() {
                     *n += 1;
                 }
             }
@@ -1521,6 +1536,28 @@ pub const EXIT_NOT_SCOPED: i32 = 125;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scope made moments ago holds no process until its job joins it, and the tree is shared by
+    /// every host in a process: a prune leaves it, and takes an empty one that has been quiet.
+    #[test]
+    fn a_prune_leaves_a_scope_made_moments_ago() {
+        let root = std::env::temp_dir().join(format!("letibot-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (young, old) = (root.join("young"), root.join("old"));
+        std::fs::create_dir_all(&young).unwrap();
+        std::fs::create_dir_all(&old).unwrap();
+        let back = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::open(&old)
+            .unwrap()
+            .set_modified(back)
+            .unwrap();
+        let mut n = 0;
+        prune_at(&root, &mut n);
+        assert!(young.is_dir(), "a scope made moments ago was pruned");
+        assert!(!old.exists(), "an empty scope that has been quiet was kept");
+        assert_eq!(n, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// Memory is said on every settled run, and a kill or a run near its cap is said as such.
     #[test]
