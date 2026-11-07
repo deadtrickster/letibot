@@ -20,6 +20,9 @@ pub struct OperatorSeat {
     /// Each head's inbox cursor, by the id the daemon named it at attach. An entry appears on
     /// the head's first chat request and goes when its connection ends.
     read: Mutex<BTreeMap<String, u64>>,
+    /// How far the operator has read each channel, by channel key. It lives with the daemon, so a
+    /// head that attaches later does not count what was read as unread.
+    marks: Mutex<BTreeMap<String, u64>>,
     /// The daemon's fan-out to the heads that have chatted, handed over by
     /// [`letibot_sessionlog::registry::Registry::set_room_chat`] when it takes this seat. A seat no
     /// daemon installed has none, and then a pushed message goes nowhere.
@@ -32,6 +35,7 @@ impl OperatorSeat {
             socket,
             client: Mutex::new(None),
             read: Mutex::new(BTreeMap::new()),
+            marks: Mutex::new(BTreeMap::new()),
             fanout: Mutex::new(None),
         })
     }
@@ -89,6 +93,23 @@ impl OperatorSeat {
     /// One chat request from one head. `op` is a room `Request`; anything outside the chat set
     /// is refused, so the queue's verbs and `notify` stay out of a head's reach.
     pub fn ask(self: &Arc<Self>, head: &str, op: Value) -> Value {
+        // The marks are this seat's own state, not the coordinator's.
+        let mut marks = self.marks.lock().unwrap_or_else(|e| e.into_inner());
+        match op.get("type").and_then(Value::as_str) {
+            Some("marks") => return json!({"type": "marks", "marks": *marks}),
+            Some("mark") => {
+                if let (Some(key), Some(seq)) = (
+                    op.get("key").and_then(Value::as_str),
+                    op.get("seq").and_then(Value::as_u64),
+                ) {
+                    let at = marks.entry(key.to_string()).or_insert(0);
+                    *at = (*at).max(seq);
+                }
+                return json!({"type": "marked"});
+            }
+            _ => {}
+        }
+        drop(marks);
         let request: Request = match serde_json::from_value(op) {
             Ok(r) => r,
             Err(e) => return json!({"error": format!("not a room request: {e}")}),
@@ -433,6 +454,19 @@ mod tests {
             .and_then(|r| r["unread"].as_u64())
             .unwrap_or(0);
         assert_eq!(unread, 0, "the shared cursor never moved: {after}");
+        server.stop();
+    }
+
+    /// What one head read stays read for the next head of the same daemon.
+    #[test]
+    fn a_mark_outlives_the_head_that_set_it() {
+        let (server, sock) = serve("marks");
+        let seat = OperatorSeat::new(sock);
+        seat.ask("h1", json!({"type": "mark", "key": "host", "seq": 9}));
+        seat.ask("h1", json!({"type": "mark", "key": "host", "seq": 4}));
+        seat.head_gone("h1");
+        let marks = seat.ask("h2", json!({"type": "marks"}));
+        assert_eq!(marks["marks"]["host"], 9, "{marks}");
         server.stop();
     }
 }

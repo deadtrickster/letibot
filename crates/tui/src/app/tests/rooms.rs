@@ -48,6 +48,21 @@ pub(super) fn ops(a: &mut App) -> Vec<Value> {
     a.take_actions()
         .into_iter()
         .filter_map(|x| match x {
+            Action::RoomChat { op, .. }
+                if !matches!(op["type"].as_str(), Some("marks" | "mark")) =>
+            {
+                Some(op)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every chat request, the mark traffic included.
+pub(super) fn raw_ops(a: &mut App) -> Vec<Value> {
+    a.take_actions()
+        .into_iter()
+        .filter_map(|x| match x {
             Action::RoomChat { op, .. } => Some(op),
             _ => None,
         })
@@ -1333,4 +1348,110 @@ fn invite_asks_for_a_guest_and_says_the_answer() {
 
 fn text_of(a: &App) -> String {
     a.notice.clone().unwrap_or_default()
+}
+
+/// A room read to its end is 0 unread, and stays 0 after a poll and after a new head attaches and
+/// is told the daemon's marks. The other channel holds the cursor, so the ack alone cannot do it.
+#[test]
+fn a_read_room_stays_read_after_a_poll_and_a_reattach() {
+    let mut a = opened(1_000);
+    reply(
+        &mut a,
+        rooms_reply(&[("host", 2, 7, 2), (PROJECT, 2, 12, 3)]),
+    );
+    reply(
+        &mut a,
+        history(
+            "host",
+            vec![
+                msg(4, "host", "s-a", "session", "one"),
+                msg(7, "host", "s-b", "session", "two"),
+            ],
+        ),
+    );
+    let sent = raw_ops(&mut a);
+    assert!(
+        sent.contains(&json!({"type": "mark", "key": "host", "seq": 7})),
+        "{sent:?}"
+    );
+    assert_eq!(
+        a.rooms
+            .unread(&crate::app::rooms::Chan::Room("host".into())),
+        0
+    );
+    assert_eq!(
+        a.rooms
+            .unread(&crate::app::rooms::Chan::Room(PROJECT.into())),
+        3
+    );
+    // A poll brings the coordinator's count back, which still holds the room's two.
+    reply(
+        &mut a,
+        rooms_reply(&[("host", 2, 7, 2), (PROJECT, 2, 12, 3)]),
+    );
+    assert_eq!(
+        a.rooms
+            .unread(&crate::app::rooms::Chan::Room("host".into())),
+        0
+    );
+
+    // A head attaching later has no marks of its own until the daemon answers.
+    let mut b = app();
+    b.clock(1_000);
+    b.rooms_poll();
+    reply(&mut b, rooms_reply(&[("host", 2, 7, 2)]));
+    assert_eq!(
+        b.rooms
+            .unread(&crate::app::rooms::Chan::Room("host".into())),
+        2
+    );
+    reply(&mut b, json!({"type": "marks", "marks": {"host": 7}}));
+    assert_eq!(
+        b.rooms
+            .unread(&crate::app::rooms::Chan::Room("host".into())),
+        0
+    );
+    assert_eq!(b.rooms.unread_total(), 0);
+}
+
+/// Only what follows the mark counts when the coordinator's cursor is behind it.
+#[test]
+fn a_new_message_after_the_mark_counts_alone() {
+    let mut a = opened(1_000);
+    reply(&mut a, rooms_reply(&[("host", 2, 7, 2)]));
+    reply(
+        &mut a,
+        history(
+            "host",
+            vec![
+                msg(4, "host", "s-a", "session", "one"),
+                msg(7, "host", "s-b", "session", "two"),
+            ],
+        ),
+    );
+    reply(&mut a, rooms_reply(&[("host", 2, 8, 3)]));
+    assert_eq!(
+        a.rooms
+            .unread(&crate::app::rooms::Chan::Room("host".into())),
+        1
+    );
+}
+
+/// A DM read before a reattach is not unread after it.
+#[test]
+fn a_read_dm_stays_read_after_a_reattach() {
+    let mut b = app();
+    b.clock(1_000);
+    reply(
+        &mut b,
+        history(
+            "dm",
+            vec![json!({"seq": 5, "ts": 1, "room": "dm", "author": "s-a",
+            "kind": "session", "text": "hi", "to": "operator"})],
+        ),
+    );
+    let dm = crate::app::rooms::Chan::Dm("s-a".into());
+    assert_eq!(b.rooms.unread(&dm), 1);
+    reply(&mut b, json!({"type": "marks", "marks": {"dm:s-a": 5}}));
+    assert_eq!(b.rooms.unread(&dm), 0);
 }

@@ -132,6 +132,8 @@ pub(crate) struct RoomsView {
     pub read_to: BTreeMap<String, u64>,
     /// The newest `seq` shown per channel key.
     pub seen: BTreeMap<String, u64>,
+    /// The daemon's marks were asked for: they outlive this head, and seed `seen` once.
+    pub marks_asked: bool,
     /// The channel's `seen` mark at the moment it was opened: the unread divider sits before the
     /// first message newer than it, and stays for as long as the channel is selected.
     #[allow(dead_code)] // P2 reads it to place the divider; P4 fills it.
@@ -245,7 +247,21 @@ impl RoomsView {
                 .iter()
                 .find(|r| &r.id == id)
                 .filter(|r| r.last_seq > seen)
-                .map_or(0, |r| r.unread),
+                .map_or(0, |r| {
+                    // The coordinator counts from one cursor for the whole log, which a held ack
+                    // leaves behind what this head showed: past a known mark only what followed
+                    // it is news.
+                    if seen == 0 {
+                        return r.unread;
+                    }
+                    let loaded = self.msgs.get(id).map_or(&[][..], Vec::as_slice);
+                    let top = loaded.last().map_or(0, |m| m.seq);
+                    let after = loaded
+                        .iter()
+                        .filter(|m| m.author != OPERATOR && m.seq > seen)
+                        .count() as u64;
+                    r.unread.min(after + u64::from(r.last_seq > top))
+                }),
             Chan::Dm(_) => self
                 .messages(c)
                 .iter()
@@ -423,6 +439,7 @@ impl App {
         // went away: `gone` is a state of one selection, not of the view.
         self.rooms.sel.get_or_insert(Chan::Room("host".into()));
         self.rooms.next_poll_ms = self.now_ms.saturating_add(POLL_MS);
+        self.rooms_ask_marks();
         let mut ops = self.rooms.poll_ops().into_iter();
         let first = ops.next()?;
         self.queued
@@ -433,6 +450,17 @@ impl App {
         })
     }
 
+    /// Ask the daemon, once, how far the operator has read each channel: a head that attaches
+    /// later starts with no marks of its own and would count everything unread again.
+    fn rooms_ask_marks(&mut self) {
+        if !std::mem::replace(&mut self.rooms.marks_asked, true) {
+            self.queued.push(Action::RoomChat {
+                op: json!({"type": "marks"}),
+                id: None,
+            });
+        }
+    }
+
     /// Ask again when the interval is up. An open view asks for everything it draws. A closed
     /// one asks for the room list alone, so the unread count stays current.
     pub(crate) fn rooms_poll(&mut self) {
@@ -441,6 +469,7 @@ impl App {
         }
         if !self.is_open(Surface::Rooms) {
             self.rooms.next_poll_ms = self.now_ms.saturating_add(CLOSED_POLL_MS);
+            self.rooms_ask_marks();
             self.queued.push(Action::RoomChat {
                 op: json!({"type": "rooms"}),
                 id: None,
@@ -559,6 +588,15 @@ impl App {
                     self.rooms.roster.insert(room.to_string(), r);
                 }
             }
+            "marks" => {
+                if let Some(m) = reply.get("marks").and_then(Value::as_object) {
+                    for (key, seq) in m {
+                        let seq = seq.as_u64().unwrap_or(0);
+                        let at = self.rooms.seen.entry(key.clone()).or_insert(0);
+                        *at = (*at).max(seq);
+                    }
+                }
+            }
             "said" => {
                 // Only this send's record goes. The footer error is not cleared here: it may be
                 // another send's, and the poll this fires will answer for itself.
@@ -605,7 +643,21 @@ impl App {
         // tail. Taken after, both would already be the channel's newest message.
         self.rooms_opened_note();
         self.rooms_tail_note();
-        if let Some(seq) = self.rooms.shown() {
+        let key = self.rooms.selected().map(|c| RoomsView::key(&c));
+        let before = key.as_ref().and_then(|k| self.rooms.seen.get(k).copied());
+        let acked = self.rooms.shown();
+        // The mark goes to the daemon even when the cursor is held back by another channel: the
+        // cursor is one number for the whole log, the mark is this channel's.
+        if let Some(k) = key
+            && let Some(seq) = self.rooms.seen.get(&k).copied()
+            && Some(seq) != before
+        {
+            self.queued.push(Action::RoomChat {
+                op: json!({"type": "mark", "key": k, "seq": seq}),
+                id: None,
+            });
+        }
+        if let Some(seq) = acked {
             self.queued.push(Action::RoomChat {
                 op: json!({"type": "ack", "seq": seq}),
                 id: None,
