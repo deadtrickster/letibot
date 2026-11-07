@@ -120,6 +120,13 @@ pub enum Slash {
         on: bool,
     },
     Help(String),
+    /// A verb this daemon has not got: `command_<verb>` in the session's own stack is offered the line
+    /// before the sentence that has always answered one (X23). `line` is the rest of the line as
+    /// typed, and `verb` is the word the export is named after.
+    Unknown {
+        verb: String,
+        line: String,
+    },
 }
 
 /// What the operator is asking of the merge queue. A person's verdict on what the review
@@ -474,10 +481,90 @@ impl Slash {
                     )),
                 }
             }
-            Some(other) => Slash::Help(format!("/{other} is not a daemon verb; /help lists the head's")),
+            Some(other) => Slash::Unknown {
+                verb: (*other).to_string(),
+                line: line
+                    .trim()
+                    .strip_prefix(other)
+                    .map(str::trim)
+                    .unwrap_or("")
+                    .to_string(),
+            },
             None => Slash::Help("/help".into()),
         }
     }
+}
+
+/// One `/` line whose verb this daemon has not got: offered to `command_<verb>` in the session's own
+/// stack, and answered with the sentence an unknown verb has always answered when no layer takes it.
+/// A layer that traps, passes or is absent leaves exactly that sentence: the fallback is never
+/// broken by a layer, which is what the shadow gate's replay is for and what a person reading the
+/// head needs.
+pub fn unknown_verb(
+    host: Option<&crate::plugins::PluginHost>,
+    hub: Option<&std::sync::Arc<letibot_sessionlog::hub::Hub>>,
+    session: &str,
+    verb: &str,
+    line: &str,
+) -> SlashReply {
+    let not_a_verb = || SlashReply {
+        lines: vec![format!(
+            "/{verb} is not a daemon verb; /help lists the head's"
+        )],
+        ok: false,
+    };
+    let (Some(host), Some(hub)) = (host, hub) else {
+        return not_a_verb();
+    };
+    let input = letibot_plugin::command::Input {
+        v: letibot_plugin::V,
+        verb: verb.to_string(),
+        line: line.to_string(),
+        session: Some(session.to_string()),
+        feeds: Default::default(),
+    };
+    let Ok(input) = serde_json::to_value(&input) else {
+        return not_a_verb();
+    };
+    let Some(answered) = host
+        .ask(hub, &letibot_plugin::command::hook(verb), &input)
+        .and_then(|r| r.answer)
+    else {
+        return not_a_verb();
+    };
+    // The daemon performs one act: a sentence. Anything else is a layer asking for a verb the daemon
+    // does not have on this side either, and the person is told which rather than left with silence.
+    if let Some(text) = acted(&answered, "say") {
+        let text = text.get("text").and_then(|t| t.as_str()).unwrap_or("");
+        return SlashReply {
+            lines: text.lines().map(str::to_string).collect(),
+            ok: !text.is_empty(),
+        };
+    }
+    if let Some(refusal) = answered.get("refusal").and_then(|r| r.as_str()) {
+        return SlashReply {
+            lines: vec![refusal.to_string()],
+            ok: false,
+        };
+    }
+    let named = answered
+        .get("act")
+        .and_then(|a| a.get("name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("no act at all");
+    SlashReply {
+        lines: vec![format!(
+            "the `{verb}` layer answered `{named}`, and this daemon performs only `say` — \
+             nothing was done"
+        )],
+        ok: false,
+    }
+}
+
+/// The arguments of an answer's act, when the act is the one named.
+fn acted(answer: &serde_json::Value, name: &str) -> Option<serde_json::Value> {
+    let act = answer.get("act")?;
+    (act.get("name")?.as_str()? == name).then(|| act.get("args").cloned().unwrap_or_default())
 }
 
 // ------------------------------------------------------------- flowy

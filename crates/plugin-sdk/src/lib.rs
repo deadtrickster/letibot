@@ -8,8 +8,10 @@
 pub const V: u32 = 1;
 
 pub mod adjudicate;
+pub mod command;
 pub mod complete;
 pub mod condition;
+pub mod lifecycle;
 pub mod notice;
 pub mod pane;
 pub mod tool_call;
@@ -53,6 +55,7 @@ mod tests {
         "tool_",
         "complete_",
         "adjudicate_",
+        "lifecycle_",
     ];
 
     fn admitted(hook: &str) -> bool {
@@ -68,6 +71,10 @@ mod tests {
         assert!(admitted(&condition::hook("coderabbit")));
         assert!(admitted(&complete::hook("chat")));
         assert!(admitted(adjudicate::HOOK), "{}", adjudicate::HOOK);
+        assert!(admitted(&command::hook("standup")));
+        for event in lifecycle::EVENTS {
+            assert!(admitted(&lifecycle::hook(event)), "{event}");
+        }
         assert!(admitted(&pane::hook("chat")));
         for kind in notice::KINDS {
             let hook = notice::hook(kind);

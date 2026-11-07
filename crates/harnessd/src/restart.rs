@@ -550,6 +550,68 @@ const WAKE_TAIL: &str = " If you told the operator you would do something once t
     a restart is not an answer, so do not decide for them or act on an open question. If nothing \
     was waiting on it, end this turn with no reply.";
 
+/// The restart's own sentence, with a layer's half where one answered (X21): `lifecycle_restart` is
+/// asked with the facts, and its `say` becomes the words the model reads before the turn. A layer can
+/// reword what a restart means and CANNOT cancel the wake - the turn runs whatever it answers, which
+/// is the half of `WAKE_TAIL` no release ever let a project change.
+///
+/// One act, not four: a sentence is all a caller that composes text can perform. A row, a monitor or a
+/// room message belongs to a boundary that still has a harness behind it (`open`, `reseat`, `close`).
+pub fn wake_text(
+    host: Option<&crate::plugins::PluginHost>,
+    hub: &std::sync::Arc<letibot_sessionlog::hub::Hub>,
+    session: &str,
+    stop: &Stopped,
+    back_ms: u64,
+    owed: &Owed,
+    restore_within: std::time::Duration,
+) -> String {
+    let mut text = match owed.any() {
+        true => nothing_running_but(stop, back_ms, owed),
+        false => {
+            let now = letibot_sessionlog::event::now_ms();
+            let mut text = header(stop, back_ms, now, restore_within, Outcome::Nothing);
+            if stop.at_ms().is_some() && !stop.restores(now, restore_within) {
+                text.push_str(&format!(
+                    " The stop is older than the {} restore window.",
+                    span(restore_within)
+                ));
+            }
+            text
+        }
+    };
+    let Some(host) = host else {
+        return text;
+    };
+    let input = letibot_plugin::lifecycle::Input {
+        v: letibot_plugin::V,
+        event: "restart".into(),
+        session: session.into(),
+        stale: Default::default(),
+        rows: Vec::new(),
+        now_ms: Some(letibot_sessionlog::event::now_ms()),
+    };
+    let Ok(input) = serde_json::to_value(&input) else {
+        return text;
+    };
+    for (verb, args) in host.lifecycle(hub, "restart", &input).acts {
+        if verb != "say" {
+            continue;
+        }
+        let said = args
+            .get("text")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .trim();
+        if !said.is_empty() {
+            // Before the release's own words, never instead of them: what owed a turn is this
+            // session's fact, and a layer's sentence is what it wants said about it.
+            text = format!("{said} {text}");
+        }
+    }
+    text
+}
+
 /// What a model says when it has put work off until the operator restarts something. A last
 /// message that reads like one of these is waiting on this restart, whatever its age.
 pub const RESTART_PROMISES: &[&str] = &[

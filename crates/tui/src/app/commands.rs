@@ -29,6 +29,21 @@ pub(crate) fn add_todo_words(answer: &serde_json::Value) -> Option<String> {
     (!content.is_empty()).then(|| content.to_string())
 }
 
+/// The words out of a `say` act: a sentence on the head's notice row. The second act a `command_`
+/// layer may ask for, and the whole of what one that only answers something needs.
+fn said_words(answer: &serde_json::Value) -> Option<String> {
+    if act_name(answer)? != "say" {
+        return None;
+    }
+    let text = answer
+        .get("act")?
+        .get("args")?
+        .get("text")?
+        .as_str()?
+        .trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
 /// The act name an answer carries, whatever it is - so the head can say WHICH act it refused
 /// instead of leaving the person with a line that did nothing.
 fn act_name(answer: &serde_json::Value) -> Option<&str> {
@@ -772,11 +787,20 @@ impl App {
                     // the whole provider listing.
                     return Some(Action::Settings);
                 }
-                // Every other verb goes to the daemon and the head keeps no list: a list here would be
-                // a second copy of the daemon's verb table.
                 if self.session_id.is_empty() {
                     self.say("not attached to a session yet");
                     return None;
+                }
+                // X23: a line this head has not got is offered to `command_<verb>` before it is the daemon's. A layer
+                // that answered it owns it; one that passed leaves the line exactly as it was, and the head keeps no list
+                // of the daemon's verbs. The layer is handed the REST of the line, the shape `/todo`'s layer has.
+                let rest = other
+                    .trim()
+                    .strip_prefix(verb)
+                    .map(str::trim)
+                    .unwrap_or_default();
+                if let Some(taken) = self.command_layer(verb, rest) {
+                    return taken;
                 }
                 Some(Action::Slash {
                     line: other.trim().to_string(),
@@ -1057,6 +1081,59 @@ impl App {
         }
         self.echo_operator_todos(mine.clone());
         Some(Action::SetOperatorTodos { items: mine, moved })
+    }
+
+    /// X23: one `/` line the head has not got, offered to `command_<verb>` before the daemon. The outer
+    /// `Option` is *was the line TAKEN* - a layer that answered owns the verb, and the line does not also go
+    /// to the daemon; the inner is what to do about it, `None` when the head said why it would not. A layer
+    /// that passed (`-1`), trapped, or does not exist is `None`, which is the shape every `/unknown` had
+    /// before there was a command hook.
+    fn command_layer(&mut self, verb: &str, line: &str) -> Option<Option<Action>> {
+        let input = serde_json::json!({
+            "v": letibot_plugin::V,
+            "verb": verb,
+            "line": line,
+            "session": &self.session_id,
+            "feeds": self.command_feeds(),
+        });
+        let asked = {
+            let host = self.plugin_host();
+            host.as_ref().map(|h| h.command(verb, &input))
+        };
+        // The layer's failure is said HERE, at the moment it was asked: the stack fell through to the layer below, and a
+        // person whose layer is broken is owed the sentence rather than a silent fall-through.
+        let broke = self.take_sessions_failure();
+        let Some(answer) = asked.and_then(|r| r.answer) else {
+            if let Some(why) = broke {
+                self.say(&why);
+            }
+            return None;
+        };
+        if let Some(content) = add_todo_words(&answer) {
+            let mine = self.operator_todos();
+            self.layer_failure = broke;
+            return Some(self.add_operator_row(content, mine, Vec::new()));
+        }
+        // The other act this head performs: a line said to the person, which is what a verb that
+        // only answers something needs. Anything else is named rather than half-performed.
+        if let Some(text) = said_words(&answer) {
+            if let Some(why) = broke {
+                self.say(&why);
+            }
+            self.say(&text);
+            return Some(None);
+        }
+        if let Some(refusal) = answer.get("refusal").and_then(|r| r.as_str()) {
+            self.say(refusal);
+            return Some(None);
+        }
+        let what = act_name(&answer).unwrap_or("no act at all");
+        let what: String = what.chars().take(40).collect();
+        self.say(&format!(
+            "the `{verb}` layer answered `{what}`, and this head performs only `add_todo` and \
+             `say` — nothing was done, and the line was not sent to the daemon"
+        ));
+        Some(None)
     }
 
     /// What a `command_` layer is handed beside the line - the `feeds` object of

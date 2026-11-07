@@ -1792,12 +1792,22 @@ impl ToolRuntime {
                 payload.push_str("\n\n");
                 payload.push_str(NO_SHELL_HERE);
             }
+            // An operator's verb reached for as a tool is a different miss from a misspelling: it is
+            // a person's act, and the session's own door has another name (X24). Said with the verb
+            // in the reason, so a model that only reads the outcome still learns where to go.
+            let operator = crate::builtins::session_self::operator_verb_note(&call.name);
+            if let Some(note) = &operator {
+                payload.push_str("\n\n");
+                payload.push_str(note);
+            }
+            let reason = match &operator {
+                Some(note) => note.clone(),
+                None => format!("no tool called `{}` is available here", call.name),
+            };
             let r = ToolResult::new(
                 call.id.clone(),
                 call.name.clone(),
-                ToolOutcome::Failed {
-                    reason: format!("no tool called `{}` is available here", call.name),
-                },
+                ToolOutcome::Failed { reason },
             )
             .with_payload(payload);
             sink.emit(finished_event(turn_id, &r));

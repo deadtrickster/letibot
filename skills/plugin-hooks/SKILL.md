@@ -18,6 +18,7 @@ right one is most of the work; after that it is a small wasm module and no relea
 | a call did something the harness should have noticed (a pull request opened and nothing watched it) | **`on_tool_result`** | on a successful result, before the model reads it |
 | the harness said something misleading, or left out what the model needed | **`notice_<kind>`**, as in `notice_monitor` | on every sentence the harness injects of that kind |
 | a monitor watches the wrong thing, or fires for the wrong reason | **`condition_<name>`** | on every poll of a watch |
+| a session's own boundary needs words or a row — it opened, was re-seated, came back after a restart, was closed | **`lifecycle_<event>`** | at that boundary, with the facts of what changed |
 
 The contract for four of these and for a pane is the `plugin_hooks` tool, **read from the host's
 own types**: read it before writing anything, and read it again after a refusal.
@@ -112,6 +113,21 @@ where `from..to` is the span of the line an accepted candidate replaces. Tab ask
 cycles, Enter accepts, Esc closes. Text never reaches the layer per keystroke and the head owns the
 editor: a span outside the line, one that splits a character, or more than eight candidates is
 refused rather than applied.
+
+### `lifecycle_<event>` — a boundary, not a gate
+
+```toml
+name = "what-moved"
+hooks = ["lifecycle_reseat"]
+actions = ["say"]           # `say`, `add_todo`, `arm`, `room_say` — acts, never a veto
+```
+
+The events are `open`, `reseat`, `restart` and `close`, one export each. The input is
+`{"v": 1, "event": …, "session": …, "stale": {"prompt": …|"absent", "tools": […]}, "rows": […], "now_ms": …}`
+and the answer is acts only: `{"acts": [{"verb": "say", "args": {"text": "…"}}]}`. **A layer cannot
+stop the event** — there is no field for it, and the host performs the boundary whatever comes back.
+This is where the wording a release used to carry (`WAKE_TAIL`, `RESTART_PROMISES`) lives, and where
+*what exactly changed* is written down.
 
 ### `tool_<name>` — a tool the model calls
 

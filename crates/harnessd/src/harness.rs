@@ -259,6 +259,10 @@ pub struct Harness {
     /// `Some` when this harness was rebuilt from the store rather than opened fresh.
     /// The daemon prints it; a head is told through the log, by the rows themselves.
     resumed: Option<ResumeReport>,
+    /// What moved under this conversation at open, kept for `lifecycle_open`/`lifecycle_reseat`:
+    /// the event is asked when this session's LAYERS first exist, which is after the harness is
+    /// built, so the fact has to outlive the open. See `Harness::announce_lifecycle`.
+    lifecycle_facts: letibot_plugin::lifecycle::Stale,
     /// What `open` decided that the operator would otherwise learn a turn later, for a session that
     /// was NOT resumed. A one-shot started `--mode allow-all` ran at `writes allowed` because the
     /// project store said so, and the note saying so went into a report nobody printed.

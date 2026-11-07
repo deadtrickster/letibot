@@ -1198,6 +1198,7 @@ impl Harness {
             String,
             Option<String>,
             Option<String>,
+            letibot_plugin::lifecycle::Stale,
         ),
         HarnessError,
     > {
@@ -1383,6 +1384,9 @@ impl Harness {
                         // speaks it: nothing to say to a head that attaches.
                         None,
                         None,
+                        // And a repaired session is not a re-seat either: the same prompt written
+                        // again, so there is nothing a lifecycle layer could name as changed.
+                        Default::default(),
                     )
                 } else {
                     // A transcript whose rows do not rebuild is repaired, not refused for ever:
@@ -1423,6 +1427,9 @@ impl Harness {
                     // finding in the model's own voice, set and cleared with it.
                     let mut stale: Option<String> = None;
                     let mut stale_for_model: Option<String> = None;
+                    // The same facts as a LIST, for a lifecycle layer: a layer that names the tool
+                    // that arrived cannot get it out of a sentence (X21, G4).
+                    let mut stale_facts = letibot_plugin::lifecycle::Stale::default();
 
                     // The prefix the session's own tokens came from - the store's
                     // record, not the daemon's current render. A compaction fork keeps
@@ -1498,6 +1505,18 @@ impl Harness {
                         // tells a head already watching. The model gets its own, shorter sentence.
                         stale = Some(say);
                         stale_for_model = Some(stale_prompt_for_the_model(&added, &gone, &grew));
+                        let mut tools: Vec<String> = added
+                            .iter()
+                            .chain(gone.iter())
+                            .chain(grew.iter())
+                            .cloned()
+                            .collect();
+                        tools.sort();
+                        tools.dedup();
+                        stale_facts = letibot_plugin::lifecycle::Stale {
+                            prompt: stale.clone(),
+                            tools,
+                        };
                     }
 
                     let rows = session.ledger.rows().len();
@@ -1518,6 +1537,7 @@ impl Harness {
                         seated_prefix_id,
                         stale,
                         stale_for_model,
+                        stale_facts,
                     )
                 }
             }
@@ -1613,6 +1633,7 @@ impl Harness {
                     prefix_id,
                     None,
                     None,
+                    Default::default(),
                 )
             }
         })
@@ -1859,6 +1880,15 @@ impl Harness {
                 ))
             })
             .map_err(|e| HarnessError::Setup(format!("registering the plugin tools: {e}")))?;
+        // The model's own verbs on its own session (X24): each one lands in this session's own queue,
+        // so a re-seat happens at the end of the turn that asked for it with no head and no tmux.
+        let self_desk: std::sync::Arc<dyn letibot_tools::builtins::session_self::SessionSelf> =
+            std::sync::Arc::new(crate::selfverbs::SessionAsks::new(
+                cfg.session_id.clone(),
+                hub.clone(),
+            ));
+        letibot_tools::register_self_verbs(&mut registry, self_desk)
+            .map_err(|e| HarnessError::Setup(format!("registering the self verbs: {e}")))?;
         // `task_resume`: registered here rather than in `with_session_tools` because only the
         // daemon's runner records children to bring back, and a registry without one has nothing
         // for the verb to act on.
@@ -2865,17 +2895,26 @@ impl Harness {
         };
         let dialect_sha = hex32(&parts.wiring.spec().template_sha);
 
-        let (transcript_id, session, persisted, resume, prefix, prefix_id, stale, stale_for_model) =
-            Self::open_the_conversation(
-                &store,
-                &stored,
-                &mut engine,
-                parts,
-                &cfg,
-                &prefix,
-                &dialect_sha,
-                &mut notes,
-            )?;
+        let (
+            transcript_id,
+            session,
+            persisted,
+            resume,
+            prefix,
+            prefix_id,
+            stale,
+            stale_for_model,
+            stale_facts,
+        ) = Self::open_the_conversation(
+            &store,
+            &stored,
+            &mut engine,
+            parts,
+            &cfg,
+            &prefix,
+            &dialect_sha,
+            &mut notes,
+        )?;
         // The sentence is left in the registry at the END of `open`, after the stored
         // conversation has been republished - see the comment there.
 
@@ -3033,6 +3072,7 @@ impl Harness {
             system_updates: 0,
             last_turn_id: String::new(),
             resumed: resume,
+            lifecycle_facts: stale_facts.clone(),
             compacting: false,
             swept_calls: Default::default(),
             wall_anchor,
@@ -3177,6 +3217,129 @@ impl Harness {
         // at the seam it arrives at, and said before the rows it would be drawn above the whole conversation.
         self.session_registry
             .set_stale_prefix(&self.cfg.session_id, stale, stale_for_model);
+    }
+
+    /// X21's `open` - or `reseat`, because a resume IS one: the prompt the conversation speaks may
+    /// have moved under it, and that is the fact this event exists to hand over. Asked when the
+    /// session's layers first exist (`Sessions::open_plugins`, which runs after the harness is
+    /// built), and by then everything about the open has happened - so nothing a layer answers can be
+    /// the difference between a session that opened and one that did not.
+    pub(crate) fn announce_lifecycle(&mut self) {
+        let event = if self.resumed.is_some() {
+            "reseat"
+        } else {
+            "open"
+        };
+        let facts = self.lifecycle_facts.clone();
+        self.lifecycle(event, facts);
+    }
+
+    /// One lifecycle event (X21), asked with the facts this session has and its acts performed: a
+    /// sentence the model must see (`say`), a board row (`add_todo`), a monitor (`arm`), a message in
+    /// the session's room (`room_say`). Each is the host's own door, and an act it has not got is said
+    /// by name rather than dropped.
+    pub(crate) fn lifecycle(&mut self, event: &str, stale: letibot_plugin::lifecycle::Stale) {
+        let Some(host) = self.plugin_host() else {
+            return;
+        };
+        let rows = self
+            .todos
+            .snapshot()
+            .into_iter()
+            .map(|t| letibot_plugin::lifecycle::Row {
+                id: t.content.clone(),
+                content: t.content,
+                // The wire's own words, because a layer reads this beside a pane's rows.
+                status: word(&t.status),
+                by: word(&t.by),
+                needs: Vec::new(),
+            })
+            .collect();
+        let input = letibot_plugin::lifecycle::Input {
+            v: letibot_plugin::V,
+            event: event.to_string(),
+            session: self.cfg.session_id.clone(),
+            stale,
+            rows,
+            now_ms: Some(letibot_sessionlog::event::now_ms()),
+        };
+        let Ok(input) = serde_json::to_value(&input) else {
+            return;
+        };
+        let out = host.lifecycle(&self.hub, event, &input);
+        for (verb, args) in out.acts {
+            match verb.as_str() {
+                "say" => {
+                    let text = args
+                        .get("text")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    // Both doors: the log, so a person watching the session sees it, and the model,
+                    // because a `say` is the sentence a release's own wording used to be.
+                    self.hub.warn(format!("lifecycle_{event}"), text.clone());
+                    let _ = self.note_to_model(&text);
+                }
+                "add_todo" => {
+                    let content = args
+                        .get("content")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if content.is_empty() {
+                        continue;
+                    }
+                    let added = self.todos.upsert_model(&[(
+                        content,
+                        letibot_tokencore::store::TodoStatus::Pending,
+                        Vec::new(),
+                    )]);
+                    if added > 0 {
+                        self.flush_todos_or_say(&format!("the row `{event}` added"));
+                    }
+                }
+                "arm" => {
+                    let arm = letibot_plugin::tool_result::Arm::new(
+                        args.get("plugin")
+                            .and_then(|p| p.as_str())
+                            .unwrap_or_default(),
+                        args.get("args").cloned().unwrap_or(serde_json::Value::Null),
+                    );
+                    let said = self.arm_plugin_monitor(&arm);
+                    let _ = self.note_to_model(said.trim());
+                }
+                "room_say" => {
+                    let text = args.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                    let Some(room) = self.room.clone() else {
+                        self.hub.warn(
+                            format!("lifecycle_{event}"),
+                            "a lifecycle layer asked for a room message, and this session has no \
+                             room: nothing was said",
+                        );
+                        continue;
+                    };
+                    let mut said = serde_json::Map::new();
+                    said.insert("text".into(), serde_json::Value::String(text.to_string()));
+                    if let Err(why) = room.call("say", &serde_json::Value::Object(said)) {
+                        self.hub.warn(format!("lifecycle_{event}"), why);
+                    }
+                }
+                other => {
+                    self.hub.warn(
+                        format!("lifecycle_{event}"),
+                        format!(
+                            "a lifecycle layer asked for `{other}`, and an event performs `say`, \
+                             `add_todo`, `arm` and `room_say`: nothing was done"
+                        ),
+                    );
+                }
+            }
+        }
     }
 
     /// A session whose id marks somebody else's conversation reads it in - an opencode
@@ -3734,6 +3897,15 @@ fn unconfined_by_inheritance(store: &Store, from: &StoredSession) -> bool {
     false
 }
 
+/// A todo's state or author as the wire spells it: a lowercase word, or the author string itself
+/// (`Parent <id>`). Serialised rather than matched, so a fifth author needs no edit here.
+fn word<T: serde::Serialize>(v: &T) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod unconfined_by_inheritance_tests {
     use super::unconfined_by_inheritance;
@@ -3846,6 +4018,16 @@ pub(crate) fn role_for(cfg: &Config) -> Role {
 /// which is a daemon-wide flag and deliberately not per session: a shell is not the session's to record.
 pub(crate) fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
     let mut r = base_role_for_seat(seat, cfg);
+    // The model's own verbs on its own session (X24), on every seat that runs a conversation -
+    // a child's included, since a subagent that overran its window is the case the operator named.
+    // Native, so no seat can be without them: a session told its prompt moved with no verb to act on
+    // it is the tmux `send-keys` the doc measured (G3).
+    if !matches!(seat, Seat::Runner | Seat::NotesKeeper) {
+        for verb in letibot_plugin::command::SELF_VERBS {
+            r.tools.push((*verb).to_string());
+        }
+        r.max_tools += letibot_plugin::command::SELF_VERBS.len();
+    }
     // The room: the `flowy` tool is registered by `Sessions` for every root session, and the role names it under the
     // same condition, since `resolve_role` refuses a role naming a tool the session does not have. Always a door for a
     // root, seat or no seat: without one the tool says so and names `/flowy login`.

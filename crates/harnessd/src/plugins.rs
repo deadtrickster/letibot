@@ -118,6 +118,17 @@ struct Open {
     next_at: Option<Instant>,
 }
 
+/// What one lifecycle event came to, for the caller that performs it: the acts a layer asked for,
+/// already checked against its manifest's `actions`. There is no field for stopping the event,
+/// because the answer a layer writes has none - that is what *a layer cannot block a reseat* means.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Lifecycle {
+    /// The layer that answered, when one did. Here so a caller can say whose acts these are.
+    pub by: Option<String>,
+    /// One act per entry: the verb `plugin.toml` declares, and its arguments.
+    pub acts: Vec<(String, Value)>,
+}
+
 /// What one render is: which `look` and `event` the first call is handed, and whether this pass
 /// may run the look the answer asks for.
 struct Req {
@@ -414,6 +425,52 @@ impl PluginHost {
         let resolved = inner.stack.call(hook, input);
         say_failures(hub, &mut inner, &resolved.failures);
         Some(resolved)
+    }
+
+    /// One lifecycle event through this session's stack (X21): the acts a layer asked for, checked
+    /// against its manifest's `actions`, for the caller to perform. Nothing here can stop the event -
+    /// there is no field for it in a [`letibot_plugin::lifecycle::Answer`] - and the event has already
+    /// happened by the time anybody asks.
+    pub fn lifecycle(&self, hub: &Arc<Hub>, event: &str, input: &Value) -> Lifecycle {
+        let mut out = Lifecycle::default();
+        let Some(resolved) = self.ask(hub, &letibot_plugin::lifecycle::hook(event), input) else {
+            return out;
+        };
+        out.by = resolved.by.clone();
+        let Some(answer) = resolved.answer else {
+            return out;
+        };
+        let by = resolved.by.unwrap_or_default();
+        let declared = self
+            .layer(&by)
+            .map(|l| l.manifest.actions)
+            .unwrap_or_default();
+        let parsed = match letibot_plugin::lifecycle::Answer::parse(answer.clone()) {
+            Ok(parsed) => parsed,
+            Err(why) => {
+                self.complain(
+                    hub,
+                    &by,
+                    &format!(
+                        "{why}, and a lifecycle answer is `{{\"acts\": [{{\"verb\": …, \"args\": …}}]}}` \
+                         and nothing else: {answer}"
+                    ),
+                );
+                return out;
+            }
+        };
+        // All or nothing: an answer naming an act the manifest did not declare is the layer's bug,
+        // and it loses the whole answer rather than half of it - the same rule a pane view has.
+        if let Err(why) = parsed.validate_for(&declared) {
+            self.complain(hub, &by, &why);
+            return out;
+        }
+        out.acts = parsed
+            .acts
+            .into_iter()
+            .map(|a| (a.verb, a.args.unwrap_or(Value::Null)))
+            .collect();
+        out
     }
 
     /// One notice through the `notice` hook: the sentence to record, or `None` when a layer dropped

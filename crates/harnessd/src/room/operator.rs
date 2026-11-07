@@ -192,6 +192,8 @@ mod tests {
 
     /// A seat installed on a registry, with the heads `head` given a sink each: what a head's
     /// connection does in `sessionlog`, done here so the fan-out can be read by the test.
+    /// The four-part answer is a listing, not a type: naming it would name the test's own shape.
+    #[allow(clippy::type_complexity)]
     fn seated(
         name: &str,
         heads: &[&str],

@@ -1083,27 +1083,19 @@ impl Harness {
         owed.wake = recent || self.last_words_wait_on_a_restart();
         let owed = &owed;
         // The same sentence, and one clause when the session owes work - a model woken to
-        // *nothing was running* alone could not know why it is reading it now.
-        let text = match owed.any() {
-            true => crate::restart::nothing_running_but(&stop, back_ms, owed),
-            false => {
-                let now = letibot_sessionlog::event::now_ms();
-                let mut text = crate::restart::header(
-                    &stop,
-                    back_ms,
-                    now,
-                    self.cfg.restore_within,
-                    crate::restart::Outcome::Nothing,
-                );
-                if stop.at_ms().is_some() && !stop.restores(now, self.cfg.restore_within) {
-                    text.push_str(&format!(
-                        " The stop is older than the {} restore window.",
-                        crate::restart::span(self.cfg.restore_within)
-                    ));
-                }
-                text
-            }
-        };
+        // *nothing was running* alone could not know why it is reading it now. Composed in `restart`
+        // because a lifecycle layer's `say` is part of it, and a layer may reword the restart without
+        // being able to cancel it (X21).
+        let host = self.plugin_host();
+        let text = crate::restart::wake_text(
+            host.as_deref(),
+            &self.hub,
+            &self.cfg.session_id,
+            &stop,
+            back_ms,
+            owed,
+            self.cfg.restore_within,
+        );
         eprintln!("  {sid} · restart: nothing was running — {text}");
         // One line, not two: in the quiet case the sentence is a transcript row, which the person sees and the
         // model reads at its next turn, and in the owed case it is a restart notice the wake spends a turn on.

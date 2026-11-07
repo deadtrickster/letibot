@@ -3637,3 +3637,211 @@ fn the_builtin_room_layer_answers_its_pane_with_a_real_room_behind_it() {
     server.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ------------------------------------------------------- X23 and X21: command_ and lifecycle_
+
+/// A project with ONE layer that exports `hooks` and answers every one of them with `answer.json` -
+/// and none when the file is not there, which is a layer that traps.
+fn layer_project(
+    tag: &str,
+    hooks: &[&str],
+    actions: &[&str],
+    answer: Option<&str>,
+) -> (PathBuf, Arc<Hub>) {
+    let root = tempdir(tag);
+    let layer = root.join(".letibot/plugins/standup");
+    std::fs::create_dir_all(&layer).expect("the layer dir");
+    let hooks: Vec<String> = hooks.iter().map(|h| format!("\"{h}\"")).collect();
+    let actions: Vec<String> = actions.iter().map(|a| format!("\"{a}\"")).collect();
+    std::fs::write(
+        layer.join("plugin.toml"),
+        format!(
+            "name = \"standup\"\npurpose = \"a project's own verbs and boundaries\"\n\
+             hooks = [{}]\ncapabilities = []\nactions = [{}]\ncontract = 1\n",
+            hooks.join(", "),
+            actions.join(", ")
+        ),
+    )
+    .expect("a manifest");
+    std::fs::write(layer.join("plugin.wasm"), b"a module").expect("a module");
+    if let Some(answer) = answer {
+        std::fs::write(layer.join("answer.json"), answer).expect("an answer");
+    }
+    (root, Hub::new("s-plugins"))
+}
+
+/// `/verb …` through the daemon's unknown-verb fallback, as the answer a person reads.
+fn unknown_verb(host: &PluginHost, hub: &Arc<Hub>, verb: &str, line: &str) -> String {
+    crate::slash::unknown_verb(Some(host), Some(hub), host.session(), verb, line)
+        .lines
+        .join("\n")
+}
+
+/// A `/` verb the daemon has not got is offered to `command_<verb>`, and the act the daemon can
+/// perform - a sentence - is the answer (X23). A verb nothing answers is still the sentence it has
+/// always been.
+#[test]
+fn a_command_layer_answers_an_unknown_verb() {
+    let (root, hub) = layer_project(
+        "command-answered",
+        &["command_standup"],
+        &["say"],
+        Some(r#"{"act":{"name":"say","args":{"text":"standup: yesterday, today, blockers"}}}"#),
+    );
+    let layer = host(&root);
+    assert_eq!(
+        unknown_verb(&layer, &hub, "standup", "yesterday today blockers"),
+        "standup: yesterday, today, blockers"
+    );
+    // A verb this stack has no layer for is the sentence an unknown verb has always answered, and
+    // it is the same function that answered the one above.
+    assert_eq!(
+        unknown_verb(&layer, &hub, "nonesuch", ""),
+        "/nonesuch is not a daemon verb; /help lists the head's"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A layer that traps leaves exactly today's sentence, and says so once: the fallback is never
+/// broken by a layer, and never silently swallowed either.
+#[test]
+fn a_trapping_command_layer_leaves_the_unknown_sentence() {
+    let (root, hub) = layer_project("command-traps", &["command_standup"], &["say"], None);
+    let layer = host(&root);
+    assert_eq!(
+        unknown_verb(&layer, &hub, "standup", "x"),
+        "/standup is not a daemon verb; /help lists the head's"
+    );
+    // The trap is on the session's log rather than swallowed: a broken layer is news the model is
+    // owed, and `plugin load` is where it is fixed.
+    let retained = format!("{:?}", hub.retained());
+    assert!(
+        retained.contains("plugin_layer") && retained.contains("command_standup"),
+        "the trap is said, naming the hook: {retained}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    // An act the daemon does not perform is refused by name, and nothing runs.
+    let (root, hub) = layer_project(
+        "command-unknown-act",
+        &["command_standup"],
+        &["say", "add_todo"],
+        Some(r#"{"act":{"name":"add_todo","args":{"content":"buy milk"}}}"#),
+    );
+    let layer = host(&root);
+    let said = unknown_verb(&layer, &hub, "standup", "buy milk");
+    assert!(said.contains("add_todo"), "the act is named: {said}");
+    assert!(said.contains("only `say`"), "and what it does: {said}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A lifecycle layer cannot block a re-seat (X21). Every shape a hostile layer can answer with is
+/// read as acts to perform or as nothing at all: the answer type has no field for a veto, and the
+/// host's answer for the event carries none either - so a caller that has already re-seated has
+/// nothing to check before deciding it happened.
+#[test]
+fn a_lifecycle_layer_cannot_block_a_reseat() {
+    let input = letibot_plugin::lifecycle::Input {
+        v: letibot_plugin::V,
+        event: "reseat".into(),
+        session: "s-plugins".into(),
+        stale: letibot_plugin::lifecycle::Stale {
+            prompt: Some("the tool list moved: `bash` left the seat".into()),
+            tools: vec!["bash".into()],
+        },
+        rows: Vec::new(),
+        now_ms: Some(1_762_000_000_000),
+    };
+    let input = serde_json::to_value(&input).expect("the input serialises");
+    for (answer, answered) in [
+        // Words that are not a lifecycle answer, and would be a veto if one were possible.
+        (r#"{"block":true}"#, true),
+        (r#"{"pass":false,"refuse":"do not reseat"}"#, true),
+        // `mask` stops the stack below, which is the one thing it does here: the layer answered by
+        // saying nothing below it may answer, and the event still happened.
+        (r#"{"mask":true}"#, false),
+        // A well-formed answer with nothing in it.
+        (r#"{"acts":[]}"#, true),
+    ] {
+        let (root, hub) = layer_project(
+            "lifecycle-hostile",
+            &["lifecycle_reseat"],
+            &["say"],
+            Some(answer),
+        );
+        let layer = host(&root);
+        let id = layer.layer("standup").expect("the layer").id.clone();
+        let out = layer.lifecycle(&hub, "reseat", &input);
+        assert_eq!(
+            layer.recorded("lifecycle_reseat").len(),
+            1,
+            "the layer WAS asked `{answer}`, which is what makes this a test of its answer"
+        );
+        assert_eq!(
+            out.by.as_deref(),
+            answered.then_some(id.as_str()),
+            "`{answer}`: the host read it as an answer (or as a mask cutting off the stack)"
+        );
+        assert!(
+            out.acts.is_empty(),
+            "`{answer}` asks for nothing to be performed: {:?}",
+            out.acts
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // And a layer that answers as designed adds its sentence without the event being anything the
+    // host could hold back: the act comes back for the caller to perform.
+    let (root, hub) = layer_project(
+        "lifecycle-says",
+        &["lifecycle_reseat", "lifecycle_close"],
+        &["say"],
+        Some(
+            r#"{"acts":[{"verb":"say","args":{"text":"the tool list moved: `bash` left the seat"}}]}"#,
+        ),
+    );
+    let layer = host(&root);
+    assert_eq!(
+        layer.lifecycle(&hub, "reseat", &input).acts,
+        vec![(
+            "say".to_string(),
+            serde_json::json!({ "text": "the tool list moved: `bash` left the seat" })
+        )]
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A lifecycle answer naming an act its manifest did not declare is the layer's bug and loses the
+/// whole answer - the same rule a pane's view has, and the reason `actions` is a reviewed list.
+#[test]
+fn a_lifecycle_act_the_manifest_did_not_declare_performs_nothing() {
+    let input = serde_json::json!({ "v": 1, "event": "open", "session": "s-plugins" });
+    let (root, hub) = layer_project(
+        "lifecycle-undeclared",
+        &["lifecycle_open"],
+        &["say"],
+        Some(r#"{"acts":[{"verb":"room_say","args":{"text":"hello"}}]}"#),
+    );
+    let layer = host(&root);
+    let out = layer.lifecycle(&hub, "open", &input);
+    assert!(out.acts.is_empty(), "nothing is performed: {:?}", out.acts);
+    let retained = hub.retained();
+    assert!(
+        format!("{retained:?}").contains("room_say"),
+        "and the person is told which act: {retained:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Every verb the daemon answers is one a layer cannot take: `HOST_VERBS` is checked against the
+/// daemon's own table here, so a new `/verb` cannot arrive without being added to it - the same rule
+/// `HOST_KEYS` has, one namespace over. The head's half of the list is checked in the head's crate.
+#[test]
+fn every_daemon_verb_is_one_a_layer_cannot_take() {
+    for verb in crate::slash::VERBS {
+        assert!(
+            letibot_plugin::command::is_host_verb(verb),
+            "`/{verb}` is a daemon verb and `HOST_VERBS` does not name it"
+        );
+    }
+}

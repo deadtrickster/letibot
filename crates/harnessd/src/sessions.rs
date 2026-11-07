@@ -1084,6 +1084,13 @@ impl<'a> Sessions<'a> {
                 lines: vec![h],
                 ok: false,
             },
+            // A verb this daemon has not got: its `command_<verb>` layer is asked first, and the
+            // sentence an unknown verb has always answered stands when no layer takes the line (X23).
+            Slash::Unknown { verb, line } => {
+                let host = self.plugins.get(session_id).cloned();
+                let hub = self.registry.get(session_id);
+                crate::slash::unknown_verb(host.as_deref(), hub.as_ref(), session_id, &verb, &line)
+            }
             Slash::Gate(verb) => crate::slash::gate(self.base.store.as_deref(), &verb),
             // A fresh conversation for this session - the operator's *"clear context - fresh reseat
             // without loosing session todos and jobs"*.
@@ -2012,8 +2019,12 @@ impl<'a> Sessions<'a> {
         // And the `plugin` tool asks the same host. It was seated when the harness opened before
         // this - a hub and a pane driver exist only here - so it holds a cell and this is the only
         // place that fills one.
-        if let Some(h) = self.open.get(session_id) {
+        if let Some(h) = self.open.get_mut(session_id) {
             *h.plugin_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(host.clone());
+            // X21: `lifecycle_open`, or `lifecycle_reseat` for a resume - asked HERE, where the
+            // session's layers are in force for the first time. `Harness::open` ran before this
+            // session had a stack, so nothing at open could have answered.
+            h.announce_lifecycle();
         }
         self.plugins.insert(session_id.to_string(), host);
     }
@@ -2816,10 +2827,16 @@ impl<'a> Sessions<'a> {
                 panes,
             );
         }
-        let held = self.open.remove(session_id);
+        let mut held = self.open.remove(session_id);
         // The tree table keeps a session's watcher set and slots for as long as it is open, and a
         // session nobody serves has neither: a settlement naming it has nowhere to go.
         self.parts.trees.forget(session_id);
+        // X21's `close`, before the harness and its layer stack go: the last event a layer hears
+        // about this session, and the one that can still write a row or a sentence for whoever
+        // resumes it. Nothing a layer answers can keep the session open.
+        if let Some(h) = held.as_mut() {
+            h.lifecycle("close", Default::default());
+        }
         let said = match &held {
             Some(h) => {
                 h.stop_children();

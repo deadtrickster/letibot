@@ -78,6 +78,7 @@ pub mod progress;
 pub mod prompt;
 pub mod restart;
 pub mod room;
+pub mod selfverbs;
 pub mod sessions;
 pub mod skills_offer;
 pub mod slash;

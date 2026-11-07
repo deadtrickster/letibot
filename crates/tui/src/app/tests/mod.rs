@@ -1325,6 +1325,7 @@ mod cardkeys;
 mod chat_plugin;
 mod cite;
 mod clickables;
+mod command_layer;
 mod commands;
 mod composer;
 mod decisions;

@@ -395,6 +395,69 @@ impl Manifest {
                 ));
             }
         }
+        // A layer may ADD a `/` verb and may never take one. A `command_<verb>` naming a verb the
+        // head or the daemon already answers would be a hook that can never fire, so it is refused
+        // here rather than discovered as a layer that does nothing (X23).
+        for hook in &self.hooks {
+            let Some(verb) = hook.strip_prefix(letibot_plugin::command::PREFIX) else {
+                continue;
+            };
+            if let Some(self_) = letibot_plugin::command::self_verb_for(verb) {
+                return Err(format!(
+                    "the layer `{}` declares `{hook}`: `{verb}` is the operator's own verb, and a \
+                     person's verb is not a layer's to answer. The model's own door is `{self_}`, \
+                     native and scoped to the calling session - a plugin needs no hook for it",
+                    self.name
+                ));
+            }
+            if letibot_plugin::command::is_operator_verb(verb) {
+                return Err(format!(
+                    "the layer `{}` declares `{hook}`: `{verb}` is one of the operator's verbs and \
+                     stays theirs. A layer adds a verb the host has not got; it cannot take one a \
+                     person answers",
+                    self.name
+                ));
+            }
+            if letibot_plugin::command::is_host_verb(verb) {
+                return Err(format!(
+                    "the layer `{}` declares `{hook}`, and `/{verb}` is a verb this host already \
+                     answers - the head's own or the daemon's, which a `HOST_KEYS` key is to a pane. \
+                     Choose a word the host has not got",
+                    self.name
+                ));
+            }
+        }
+        // The acts a manifest asks for: the operator's three are a person's act, and a plugin that
+        // could perform one would be a layer reseating, compacting or ruling on the queue (X24).
+        for act in &self.actions {
+            if letibot_plugin::command::is_operator_act(act) {
+                return Err(format!(
+                    "the layer `{}` lists the act `{act}` in `actions`: that is the operator's own \
+                     act, performed by their head and by nothing else. The model's self-scoped verbs \
+                     (`{}`) are native, and a layer asks for none of them",
+                    self.name,
+                    letibot_plugin::command::SELF_VERBS.join("`, `")
+                ));
+            }
+        }
+        // A `lifecycle_` export names one of the four events; another word is a typo that would
+        // look like a layer and never be asked.
+        for hook in &self.hooks {
+            let Some(event) = hook.strip_prefix(letibot_plugin::lifecycle::PREFIX) else {
+                continue;
+            };
+            if !letibot_plugin::lifecycle::EVENTS.contains(&event) {
+                return Err(format!(
+                    "the layer `{}` declares `{hook}`: the events are {}",
+                    self.name,
+                    letibot_plugin::lifecycle::EVENTS
+                        .iter()
+                        .map(|e| letibot_plugin::lifecycle::hook(e))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
         // The tool half first: its sentence names the tool AND the export, which is what a model
         // about to fix the manifest needs.
         for tool in &self.tools {
@@ -1064,5 +1127,86 @@ contract = 1
                 "and where it goes instead: {why}"
             );
         }
+    }
+
+    /// A layer ADDS a verb the host has not got and never takes one: `HOST_VERBS` is what
+    /// `HOST_KEYS` is to a pane, and the sentence names the word that was already taken.
+    #[test]
+    fn a_layer_cannot_shadow_a_host_verb() {
+        let layer = |hook: &str| {
+            format!(
+                "name = \"standup\"\npurpose = \"a verb the host has not got\"\n\
+                 hooks = [\"{hook}\"]\ncapabilities = []\ncontract = 1\n"
+            )
+        };
+        for (verb, why) in [
+            // The head's.
+            ("help", "already answers"),
+            ("models", "already answers"),
+            ("status", "already answers"),
+            // The daemon's.
+            ("queue", "operator's verbs"),
+            ("flowy", "already answers"),
+            // A door tool, offered as a head verb.
+            ("web-search", "already answers"),
+            // The operator's own, which names the model's door instead.
+            ("reseat", "operator's own verb"),
+            ("compact", "operator's own verb"),
+        ] {
+            let m = Manifest::parse(&layer(&format!("command_{verb}"))).expect("it parses");
+            let said = m
+                .admit(&[format!("command_{verb}")])
+                .expect_err("the verb is the host's");
+            assert!(said.contains(&format!("command_{verb}")), "{said}");
+            assert!(said.contains(why), "`{verb}`: {said}");
+        }
+        // And the sentence for a verb with a self stand-in names it, because the author of a layer
+        // that wants `/reseat` is a session's parent, and the model's own door is what it wants.
+        let m = Manifest::parse(&layer("command_reseat")).expect("it parses");
+        assert!(
+            m.admit(&["command_reseat".to_string()])
+                .unwrap_err()
+                .contains("reseat_self")
+        );
+
+        // A word the host has not got is what `command_` is for, and is admitted.
+        let own = Manifest::parse(&layer("command_standup")).expect("it parses");
+        own.admit(&["command_standup".to_string()])
+            .expect("a new verb is the hook's whole purpose");
+        // And a lifecycle export has to name one of the four events: another word is a typo that
+        // would look like a layer nobody asks.
+        let typo = Manifest::parse(&layer("lifecycle_reseat_now")).expect("it parses");
+        let why = typo
+            .admit(&["lifecycle_reseat_now".to_string()])
+            .expect_err("no such event");
+        assert!(
+            why.contains("lifecycle_open"),
+            "the events are named: {why}"
+        );
+    }
+
+    /// The operator's own acts are not a layer's to perform: `queue_op` is a person's verdict on the
+    /// merge queue, and the three self verbs are the model's own door (X24).
+    #[test]
+    fn a_manifest_asking_for_an_operator_verb_is_refused() {
+        let with_acts = |act: &str| {
+            format!(
+                "name = \"queue\"\npurpose = \"a pane that wants the operator's verdict\"\n\
+                 hooks = [\"pane_queue\"]\ncapabilities = []\nactions = [\"{act}\"]\ncontract = 1\n"
+            )
+        };
+        for act in letibot_plugin::command::OPERATOR_ACTS {
+            let m = Manifest::parse(&with_acts(act)).expect("it parses");
+            let why = m
+                .admit(&["pane_queue".to_string()])
+                .expect_err("an operator act is not a layer's");
+            assert!(why.contains(act), "the act is named: {why}");
+            assert!(why.contains("operator"), "and whose it is: {why}");
+        }
+        // The acts a layer DOES perform are untouched: a `/` verb writing a board row is the
+        // example the whole hook exists for.
+        let mine = Manifest::parse(&with_acts("add_todo")).expect("it parses");
+        mine.admit(&["pane_queue".to_string()])
+            .expect("`add_todo` is a layer's act");
     }
 }

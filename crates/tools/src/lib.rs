@@ -214,7 +214,34 @@ pub fn with_session_tools(
     if reg.get(builtins::host_config::TOOL).is_none() {
         reg.register(Box::new(builtins::host_config::HostConfigTool::nowhere()))?;
     }
+    // The model's own verbs on its own session (X24). Registered here for the reason `room` is: a
+    // role that names one resolves on every registry this crate builds, and the tool then says there
+    // is no session behind it. The daemon seats its own desk at open.
+    register_self_verbs(
+        &mut reg,
+        std::sync::Arc::new(builtins::session_self::NoSession),
+    )?;
     Ok(reg)
+}
+
+/// The three self-scoped verbs over one desk: verbs a session causes on itself, and on no other.
+/// A verb already in the registry is left alone, which is the tree's rule for a stub: the daemon
+/// registers the session's real desk before `with_session_tools` seats the no-session one.
+pub fn register_self_verbs(
+    reg: &mut Registry,
+    desk: std::sync::Arc<dyn builtins::session_self::SessionSelf>,
+) -> Result<(), RegisterError> {
+    for tool in [
+        Box::new(builtins::session_self::ReseatSelf::new(desk.clone())) as Box<dyn Tool>,
+        Box::new(builtins::session_self::CompactSelf::new(desk.clone())) as Box<dyn Tool>,
+        Box::new(builtins::session_self::NagPauseSelf::new(desk)) as Box<dyn Tool>,
+    ] {
+        if reg.get(&tool.schema().name).is_some() {
+            continue;
+        }
+        reg.register(tool)?;
+    }
+    Ok(())
 }
 
 /// Add the tools that need infrastructure this box does not run. Registered, not seated: the registry is
