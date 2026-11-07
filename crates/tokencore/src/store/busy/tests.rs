@@ -402,11 +402,179 @@ fn a_slow_store_call_is_one_line_naming_its_caller() {
     }
     let at = here();
     assert_eq!(
-        super::slow_line(Duration::from_millis(999), 0, at),
+        super::slow_line(Duration::from_millis(999), Duration::ZERO, 0, at),
         None,
         "a call under a second is not logged"
     );
-    let line = super::slow_line(Duration::from_millis(1834), 12, at).expect("a slow call");
+    let line = super::slow_line(
+        Duration::from_millis(1834),
+        Duration::from_millis(1200),
+        12,
+        at,
+    )
+    .expect("a slow call");
     assert!(line.contains("tests.rs:"), "{line}");
-    assert!(line.contains("took 1834 ms (12 busy retries)"), "{line}");
+    assert!(
+        line.contains("took 1834 ms (waited 1200 ms, 12 busy retries)"),
+        "{line}"
+    );
+}
+
+/// The number after `label` in a line: a measurement asserted, not a sentence spelt out.
+fn number_after(line: &str, label: &str) -> u64 {
+    line.split(label)
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no number after {label:?} in {line:?}"))
+}
+
+/// The number just before `label` in a line, for a count that closes a phrase.
+fn number_before(line: &str, label: &str) -> u64 {
+    line.split(label)
+        .next()
+        .and_then(|rest| rest.split_whitespace().next_back())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no number before {label:?} in {line:?}"))
+}
+
+/// P0's done-test: a write serialised behind another connection's transaction reports the WAIT.
+/// The lock is held 300 ms and the body then spends a second of its own, so the line says which
+/// of the two the call spent its time on - and there is one attempt, so no retries to read.
+#[test]
+fn a_lock_wait_is_on_the_line_as_waited_and_the_body_is_not() {
+    let db = TempDb::new("waited");
+    let s = Store::open(&db.0).unwrap();
+    seed(&s);
+    let (release, holder) = hold_write_lock(&db.0);
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        release.send(()).unwrap();
+    });
+    let (out, lines) = super::collecting(|| {
+        s.write_tx(|tx| {
+            tx.execute(
+                "UPDATE session SET title = 'waited' WHERE id = 'sess-busy'",
+                [],
+            )?;
+            std::thread::sleep(Duration::from_millis(1000));
+            Ok(())
+        })
+    });
+    out.expect("the write waited for the other connection and then ran");
+    releaser.join().unwrap();
+    holder.join().unwrap();
+
+    assert_eq!(lines.len(), 1, "one slow call, one line: {lines:?}");
+    let line = &lines[0];
+    eprintln!("lock wait: {line}");
+    let took = number_after(line, "took ");
+    let waited = number_after(line, "waited ");
+    assert!(
+        waited >= 250,
+        "the 300 ms lock wait is on the line as waited {waited} ms: {line}"
+    );
+    assert!(
+        (250..=700).contains(&waited),
+        "and it is the wait, not the whole call: waited {waited} ms of {took} ms: {line}"
+    );
+    assert!(
+        took >= 1200,
+        "the body's own second is in the call: took {took} ms: {line}"
+    );
+    assert!(
+        line.contains("0 busy retries"),
+        "the busy handler absorbed the wait, so no attempt failed: {line}"
+    );
+    assert!(
+        line.contains("busy/tests.rs:"),
+        "the line names the caller's file:line: {line}"
+    );
+}
+
+/// The other half: a call that is slow with nobody to wait for says `waited 0 ms`, which is how
+/// a log tells the disk from a lock.
+#[test]
+fn an_uncontended_slow_call_reports_no_wait() {
+    let db = TempDb::new("uncontended");
+    let s = Store::open(&db.0).unwrap();
+    seed(&s);
+    let (out, lines) = super::collecting(|| {
+        s.write_tx(|tx| {
+            tx.execute(
+                "UPDATE session SET title = 'slow' WHERE id = 'sess-busy'",
+                [],
+            )?;
+            std::thread::sleep(Duration::from_millis(1100));
+            Ok(())
+        })
+    });
+    out.expect("the write ran");
+    assert_eq!(lines.len(), 1, "one slow call, one line: {lines:?}");
+    let line = &lines[0];
+    assert!(number_after(line, "took ") >= 1000, "{line}");
+    assert!(
+        line.contains("(waited 0 ms, 0 busy retries)"),
+        "nothing held the lock, so nothing waited: {line}"
+    );
+}
+
+/// A call under [`super::SLOW_CALL`] writes nothing at all.
+#[test]
+fn a_call_under_the_slow_threshold_writes_nothing() {
+    let db = TempDb::new("quiet");
+    let s = Store::open(&db.0).unwrap();
+    seed(&s);
+    let (out, lines) = super::collecting(|| s.title("sess-busy"));
+    assert!(out.unwrap().is_none(), "the row the read went after");
+    let (out, more) = super::collecting(|| s.list_sessions());
+    assert_eq!(out.unwrap().len(), 1, "and a whole session list");
+    assert!(lines.is_empty() && more.is_empty(), "{lines:?} {more:?}");
+}
+
+/// The other failure the store counts: a write that lost the lock and a filesystem that refused
+/// one are each named on a line of their own, with how many of that kind this site has seen.
+#[test]
+fn a_refused_write_is_counted_by_kind_and_call_site() {
+    fn attempt(code: i32, said: &'static str) -> rusqlite::Result<()> {
+        super::retry_busy(Duration::from_millis(20), is_busy_sql, || {
+            Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(code),
+                Some(said.into()),
+            ))
+        })
+    }
+    let (out, first) =
+        super::collecting(|| attempt(rusqlite::ffi::SQLITE_BUSY, "database is locked"));
+    assert!(out.is_err_and(|e| is_busy_sql(&e)), "it reached the caller");
+    assert_eq!(first.len(), 1, "one line per failed call: {first:?}");
+    let locked = &first[0];
+    assert!(locked.contains("failed after "), "{locked}");
+    assert!(locked.contains("tests.rs:"), "{locked}");
+    assert!(locked.ends_with(": database is locked"), "{locked}");
+    let once = number_before(locked, " at this site");
+    assert_eq!(once, 1, "the first of its kind here: {locked}");
+
+    let (_, second) =
+        super::collecting(|| attempt(rusqlite::ffi::SQLITE_BUSY, "database is locked"));
+    assert_eq!(
+        number_before(&second[0], " at this site"),
+        once + 1,
+        "the second failure at that site counts up: {second:?}"
+    );
+
+    let (out, full) =
+        super::collecting(|| attempt(rusqlite::ffi::SQLITE_FULL, "database or disk is full"));
+    assert!(out.is_err(), "a full disk reaches the caller too");
+    assert_eq!(full.len(), 1, "{full:?}");
+    assert!(
+        full[0].ends_with(": database or disk is full"),
+        "{}",
+        full[0]
+    );
+    assert!(
+        number_before(&full[0], " at this site") == 1,
+        "its own count, apart from the locked one: {}",
+        full[0]
+    );
 }

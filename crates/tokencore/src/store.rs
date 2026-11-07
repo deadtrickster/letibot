@@ -1404,7 +1404,7 @@ impl Store {
 
     /// How long a connection waits for the write lock before giving up: MEASURED, not chosen. On a
     /// box holding hundreds of sessions across many daemons the wait is real, and failing at once
-    /// turns a busy file into a failed turn.
+    /// turns a busy file into a failed turn. Enforced by [`busy::on_busy`], not `busy_timeout`.
     pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
     /// The one place a `Shared` is built, and therefore the one place [`LIVE`] is counted:
@@ -1412,8 +1412,9 @@ impl Store {
     fn from_connection(conn: Connection, path: Option<std::path::PathBuf>) -> Result<Self> {
         // WAL lets readers and the writer run at once, but two WRITERS still serialise - this
         // process's behind the store's lock, another daemon's inside SQLite - and rusqlite's
-        // default is to fail at once rather than wait.
-        conn.busy_timeout(Self::BUSY_TIMEOUT)?;
+        // default is to fail at once rather than wait. The handler sleeps the same schedule
+        // `busy_timeout` does and stops at the same 30 s; it counts the sleep on the way.
+        conn.busy_handler(Some(busy::on_busy))?;
         busy::retry_sql(|| conn.pragma_update(None, "journal_mode", "WAL"))?;
         // The region is volatile by design, so this file is the only copy of the
         // tokens. A lost commit is a lost turn.
@@ -2535,10 +2536,12 @@ impl Store {
     /// thousand-row copy is sixteen commits rather than a thousand.
     pub const APPEND_CHUNK: usize = 64;
 
-    /// Everything needed to rebuild the ledger.
+    /// Everything needed to rebuild the ledger. Timed like a write: a reader never waits for a
+    /// writer in WAL, but it holds the snapshot that keeps a checkpoint from moving the WAL, and
+    /// this is the read that stalls when the disk is saturated.
     pub fn load_transcript(&self, transcript_id: &str) -> Result<LoadedTranscript> {
         let conn = self.conn();
-        Self::load_transcript_on(&conn, transcript_id)
+        busy::retry_store(|| Self::load_transcript_on(&conn, transcript_id))
     }
 
     /// [`Store::load_transcript`] on a connection the caller already holds - the form
@@ -2700,63 +2703,67 @@ impl Store {
         // Count and last activity read the newest `seq` by key: `seq` is dense from 0 and rows are
         // written in time order, so neither needs a row scan. The "current transcript" subquery orders
         // by `created_at DESC, rowid DESC`, because a fork shares its parent's millisecond and needs it.
+        // The session list, timed: it is what a picker, `--sessions` and the fleet view read,
+        // and until this it was one of the reads no instrument could see.
         let conn = self.conn();
-        let mut stmt = conn.prepare(&sessions_sql(filter))?;
-        let mut out: Vec<StoredSession> = stmt
-            .query_map(args, |r| {
-                let created_ms: i64 = r.get(6)?;
-                let last: Option<i64> = r.get(9)?;
-                Ok(StoredSession {
-                    id: r.get(0)?,
-                    title: r.get(1)?,
-                    model_id: r.get(2)?,
-                    dialect_sha: r.get(3)?,
-                    workspace_root: r.get(4)?,
-                    owner: r.get(5)?,
-                    created_ms,
-                    transcript_id: r.get(7)?,
-                    items: r.get::<_, i64>(8)? as u32,
-                    last_activity_ms: last.unwrap_or(created_ms),
-                    role: r.get(10)?,
-                    parent_session_id: r.get(11)?,
-                    context_tokens: r.get::<_, Option<i64>>(12)?.map(|v| v as u64),
-                    context_cached: r.get::<_, Option<i64>>(13)?.map(|v| v as u64),
-                    context_ledger: r.get::<_, Option<i64>>(14)?.map(|v| v as u64),
-                    provider_choice: r.get(15)?,
-                    context_window: r.get::<_, Option<i64>>(16)?.map(|v| v as u64),
-                    auto_compact_stood_down: match (
-                        r.get::<_, Option<i64>>(17)?,
-                        r.get::<_, Option<i64>>(18)?,
-                    ) {
-                        // Half a pair is a store this file never wrote; reading it as
-                        // `Some` would invent the other number, so it reads as no pair.
-                        (Some(resident), Some(after)) => Some((resident as u64, after as u64)),
-                        _ => None,
-                    },
-                    // Index 19, after the stood-down pair at 17 and 18. This list is read BY POSITION and
-                    // both changes appended to it; the pair comes first because it is the older change.
-                    last_item: r
-                        .get::<_, Option<String>>(19)?
-                        .and_then(|j| serde_json::from_str(&j).ok()),
-                    // Index 20, appended for the same reason 19 was. The list is read BY
-                    // POSITION and this is the newest fact on the row; the fingerprint goes
-                    // last so nothing above it shifts.
-                    prefix_fingerprint: r.get(20)?,
-                    // Index 21, appended last for the reason 20 was.
-                    nags_paused_until: r.get(21)?,
-                    // Index 22 and 23, the two columns a migration writes. Appended
-                    // for the reason every index above was: the list is read BY POSITION.
-                    lives_on: r.get(22)?,
-                    moved_ms: r.get(23)?,
-                    // Index 24, appended for the reason 22 and 23 were, and read as a string because the
-                    // vocabulary is `letibot_sessionlog::SessionOrigin`'s and this crate does not depend
-                    // on it. A value this build does not know reads as unknown.
-                    origin: r.get(24)?,
-                })
-            })?
-            .collect::<std::result::Result<_, _>>()?;
-        out.sort_by_key(|s| std::cmp::Reverse(s.last_activity_ms));
-        Ok(out)
+        busy::retry_store(|| {
+            let mut stmt = conn.prepare(&sessions_sql(filter))?;
+            let mut out: Vec<StoredSession> = stmt
+                .query_map(args, |r| {
+                    let created_ms: i64 = r.get(6)?;
+                    let last: Option<i64> = r.get(9)?;
+                    Ok(StoredSession {
+                        id: r.get(0)?,
+                        title: r.get(1)?,
+                        model_id: r.get(2)?,
+                        dialect_sha: r.get(3)?,
+                        workspace_root: r.get(4)?,
+                        owner: r.get(5)?,
+                        created_ms,
+                        transcript_id: r.get(7)?,
+                        items: r.get::<_, i64>(8)? as u32,
+                        last_activity_ms: last.unwrap_or(created_ms),
+                        role: r.get(10)?,
+                        parent_session_id: r.get(11)?,
+                        context_tokens: r.get::<_, Option<i64>>(12)?.map(|v| v as u64),
+                        context_cached: r.get::<_, Option<i64>>(13)?.map(|v| v as u64),
+                        context_ledger: r.get::<_, Option<i64>>(14)?.map(|v| v as u64),
+                        provider_choice: r.get(15)?,
+                        context_window: r.get::<_, Option<i64>>(16)?.map(|v| v as u64),
+                        auto_compact_stood_down: match (
+                            r.get::<_, Option<i64>>(17)?,
+                            r.get::<_, Option<i64>>(18)?,
+                        ) {
+                            // Half a pair is a store this file never wrote; reading it as
+                            // `Some` would invent the other number, so it reads as no pair.
+                            (Some(resident), Some(after)) => Some((resident as u64, after as u64)),
+                            _ => None,
+                        },
+                        // Index 19, after the stood-down pair at 17 and 18. This list is read BY POSITION and
+                        // both changes appended to it; the pair comes first because it is the older change.
+                        last_item: r
+                            .get::<_, Option<String>>(19)?
+                            .and_then(|j| serde_json::from_str(&j).ok()),
+                        // Index 20, appended for the same reason 19 was. The list is read BY
+                        // POSITION and this is the newest fact on the row; the fingerprint goes
+                        // last so nothing above it shifts.
+                        prefix_fingerprint: r.get(20)?,
+                        // Index 21, appended last for the reason 20 was.
+                        nags_paused_until: r.get(21)?,
+                        // Index 22 and 23, the two columns a migration writes. Appended
+                        // for the reason every index above was: the list is read BY POSITION.
+                        lives_on: r.get(22)?,
+                        moved_ms: r.get(23)?,
+                        // Index 24, appended for the reason 22 and 23 were, and read as a string because the
+                        // vocabulary is `letibot_sessionlog::SessionOrigin`'s and this crate does not depend
+                        // on it. A value this build does not know reads as unknown.
+                        origin: r.get(24)?,
+                    })
+                })?
+                .collect::<std::result::Result<_, _>>()?;
+            out.sort_by_key(|s| std::cmp::Reverse(s.last_activity_ms));
+            Ok(out)
+        })
     }
 
     /// The name on disk right now, or `None` for a session nobody has named. Read rather than

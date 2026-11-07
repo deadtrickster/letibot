@@ -124,8 +124,41 @@ copied out of the shared store.
 ## What the daemons logged
 
 `busy::SLOW_CALL` writes one line to a daemon's stderr for a store call that took a second or
-more (`crates/tokencore/src/store/busy.rs:74`). It landed in 571de459 at 09:26 on 2026-11-07, so
+more (`crates/tokencore/src/store/busy.rs`). It landed in 571de459 at 09:26 on 2026-11-07, so
 no log written before that could hold one.
+
+### The line after P0
+
+P0 took `busy_timeout` off the connection and put a busy handler of the store's own in its place
+(`crates/tokencore/src/store/busy.rs`): it sleeps SQLite's own schedule (1, 2, 5, 10, ... 100 ms
+and 100 ms after that), gives up at the same 30 s, and adds every sleep up. The line carries that
+sum as `waited`, so what is left of `took` is the call's own work:
+
+```text
+store: a call at store/procs.rs:345 took 11405 ms (waited 11328 ms, 0 busy retries)
+store: a call at store.rs:3150 failed after 87 ms (waited 0 ms, 2 busy retries, 3 at this site): database is locked
+```
+
+A call over `SLOW_CALL` is the first form. `waited` near `took` is a lock wait; `waited 0 ms` is
+I/O. The retry count stays beside it and means something else - the attempts that spent their
+whole 30 s - which is why a stall can read `0 busy retries` and still be a wait.
+
+The second form is the two failures the store counts by call site, `database is locked` and
+`database or disk is full`. It is logged however fast the call was, and it carries how many of
+that kind have reached a caller at that `file:line` since the process started: the `locked` and
+`or disk is full` columns of the tables below, per site, without the grep.
+
+Two reads are timed too - `Store::load_transcript` and the session list behind
+`Store::list_sessions`, `Store::session` and `Store::children_of` - so a slow read is a line at
+all. A reader never waits for a writer in WAL, so their `waited` should read 0; what they show is
+the disk the split cannot separate.
+
+The tests are in `crates/tokencore/src/store/busy/tests.rs`:
+`a_lock_wait_is_on_the_line_as_waited_and_the_body_is_not` (a lock held 300 ms under a write
+that also spends a second of its own: `waited` is the block, `took` is both),
+`an_uncontended_slow_call_reports_no_wait`, `a_call_under_the_slow_threshold_writes_nothing`,
+`a_slow_store_call_is_one_line_naming_its_caller` and
+`a_refused_write_is_counted_by_kind_and_call_site`.
 
 Where the lines go: the launcher and the bridge send a daemon's stderr to
 `~/logs/harnessd-<folder key>.log` (`scripts/letibot`, `crates/bridge/src/daemon.rs:199`), and
@@ -151,9 +184,10 @@ Seven lines, in five daemons, every one of them with **0 busy retries**:
 | 1527 | `store/procs.rs:345` | `check_process` | `UPDATE` one `process` row | `e1272afc059d` | `~/Projects/serenedb` |
 | 1348 | `store/subagents.rs:510` | `life_beat` | `UPDATE` one `daemon_life` row | `9bae3e9cbc8d` | `wt-r130-remote-secrets` |
 
-Every one is a write, because `exec` and `write_tx` are the only two store calls that go through
-`retry_busy` (`crates/tokencore/src/store.rs:3449`, `:3456`): this instrument cannot see a read at
-all. Four of the seven are single-row `UPDATE`s by primary key — `process` is keyed
+Every one is a write, because `exec` and `write_tx` are the only two store calls that went
+through `retry_busy` (`crates/tokencore/src/store.rs:3449`, `:3456`): this instrument could not
+see a read at all when these lines were written. P0 (§ The line after P0) times two reads; these
+logs predate it. Four of the seven are single-row `UPDATE`s by primary key — `process` is keyed
 `(session_id, handle)` — so the time is not a table scan.
 
 Failures that reached a caller are the other half of the picture, and the same logs carry them.
@@ -193,15 +227,16 @@ the place.** In WAL a reader never waits for a writer; a reader holds a snapshot
 is what stops a checkpoint from moving the WAL's start. That is the reader→writer coupling, and
 the 346 MB WAL that never shrinks is its evidence. The split cuts it per file — a project's
 readers pin only that project's WAL, so each file's checkpoint can finish — and that is the
-strongest argument for the split. It is also entirely outside this instrument: nothing here
-times a read.
+strongest argument for the split. It is also almost entirely outside this instrument: nothing
+here times a read but P0's two, and neither can wait for a writer.
 
 **And the seven slow calls are not shown to be lock waits at all.** Every one reports 0 retries,
-but that is not a clean bill: the connection sets a 30 s busy timeout
-(`crates/tokencore/src/store.rs:1387`), so SQLite absorbs a lock wait of up to 30 s inside one
-attempt and the ladder counts nothing. All seven are under 30 s. "0 retries" means *no attempt
-exhausted its 30 s*, not *nothing waited*. Timing the wait itself is therefore the first package
-below (P0), and this table must not be quoted about locks until it lands.
+but that is not a clean bill: the connection set a 30 s busy timeout
+(`crates/tokencore/src/store.rs`), so SQLite absorbed a lock wait of up to 30 s inside one
+attempt and the ladder counted nothing. All seven are under 30 s. "0 retries" means *no attempt
+exhausted its 30 s*, not *nothing waited*. P0 now times the wait and names it on the line, so the
+next window of logs answers this; these seven are from before it, and stay unanswered — the table
+must not be quoted about locks.
 
 What the split does not separate, and must not be sold as separating: **the disk**. 160 `or disk
 is full` in these logs, 55 of them in today's hour, and on 2026-11-07 a test gate linking on the
@@ -216,13 +251,18 @@ that says it is done. Every test is a new file, so no two packages edit one path
 `sh scripts/check-fmt.sh main`. On this box every build uses
 `CARGO_TARGET_DIR=/build/letibot-r129-target`: the root disk holds the live store.
 
-**P0 — time the wait, not just the retries.** `crates/tokencore/src/store/busy.rs`,
-`crates/tokencore/src/store/busy/tests.rs`. A `busy_handler` that accumulates the milliseconds
-spent waiting and reports them on the same line (`waited N ms, R busy retries`), plus the two or
-three hottest reads (the transcript tail, the session list) routed through `retry_sql` so a read
-can be seen at all. Done-test: one thread holds a write lock for 300 ms while another writes; the
-writer's line reports `waited` ≥ 250 ms and 0 retries; a call under `SLOW_CALL` writes nothing;
-the line still names the caller's `file:line`.
+**P0 — time the wait, not just the retries.** Built. `crates/tokencore/src/store/busy.rs`,
+`crates/tokencore/src/store/busy/tests.rs`, and the one line in `store.rs` that installs the
+handler; the format it writes is in § The line after P0. What the doc asked for and what landed:
+a `busy_handler` that accumulates the milliseconds spent waiting and reports them on the same
+line (`waited N ms, R busy retries`); the two hottest reads (`load_transcript` and the session
+list) routed through the ladder so a read can be seen at all; and `database is locked` and
+`database or disk is full` counted by call site on the same line. Done-tests:
+`a_lock_wait_is_on_the_line_as_waited_and_the_body_is_not` - another connection holds the lock
+300 ms while this one writes, and the writer's line reports `waited` ≥ 250 ms, well under
+`took`, with 0 retries and the caller's `file:line`; `an_uncontended_slow_call_reports_no_wait`;
+`a_call_under_the_slow_threshold_writes_nothing`; and the failure count, which has no test in
+the brief and got one anyway in `a_refused_write_is_counted_by_kind_and_call_site`.
 
 **P1 — two files, one schema each, one writer each.** `crates/tokencore/src/store/split.rs`
 (new), `crates/tokencore/src/store/split_tests.rs` (new), `crates/tokencore/src/store.rs` (the
