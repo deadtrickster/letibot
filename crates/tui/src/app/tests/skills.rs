@@ -312,3 +312,92 @@ fn two_offers_close_together_are_two_rows() {
         screen.join("\n")
     );
 }
+
+/// A head attached before the round draws the offer rows the round appends, as they arrive, at the
+/// rung that hides the head's working: offers are the operator's, like a delivery.
+#[test]
+fn offer_rows_appended_live_are_drawn_without_a_snapshot() {
+    use super::redcard::rows_with;
+    use letibot_sessionlog::event::SessionEvent;
+    use letibot_sessionlog::protocol::ServerFrame;
+    use letibot_transcript::{OfferKind, Speaker, TranscriptItem, UserPart};
+    let mut a = app();
+    // The operator's rung: conversation plus edits, the one that hides the head's working.
+    a.visibility = Visibility::of(Profile::READ_EDITS);
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Event(env_at(
+        1,
+        1_000,
+        SessionEvent::TurnStarted {
+            turn_id: "r1".into(),
+            model: "m".into(),
+            ledger_head: "0000".into(),
+            began_ms: Some(1_000),
+        },
+    )));
+    let rows = [
+        (
+            "user",
+            TranscriptItem::User {
+                speaker: Speaker::Operator,
+                parts: vec![UserPart::Text {
+                    text: "first question".into(),
+                }],
+            },
+        ),
+        (
+            "offer",
+            TranscriptItem::Offer {
+                kind: OfferKind::Skill,
+                title: "skill offered: docx (0.19)".into(),
+                body: "Step one".into(),
+            },
+        ),
+        (
+            "offer",
+            TranscriptItem::Offer {
+                kind: OfferKind::Note,
+                title: "note offered: build.md (0.33)".into(),
+                body: "a note".into(),
+            },
+        ),
+    ];
+    let mut seq = 2;
+    for (n, (kind, item)) in rows.into_iter().enumerate() {
+        let id = format!("s#t1:{n}");
+        a.apply(ServerFrame::Event(env(
+            seq,
+            SessionEvent::TranscriptAppended {
+                item_id: id.clone(),
+                kind: kind.into(),
+                ledger_head: String::new(),
+                item: None,
+                body_bytes: 0,
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            seq + 1,
+            SessionEvent::TranscriptContent {
+                item_id: id,
+                item: Box::new(item),
+            },
+        )));
+        seq += 2;
+    }
+    let screen = a.screen(100, 30);
+    let drawn = screen.join("\n");
+    assert_eq!(
+        rows_with(&screen, "skill offered: docx (0.19)").len(),
+        1,
+        "{drawn}"
+    );
+    assert_eq!(
+        rows_with(&screen, "note offered: build.md (0.33)").len(),
+        1,
+        "{drawn}"
+    );
+}

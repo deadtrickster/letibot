@@ -74,10 +74,11 @@ impl Verbosity {
             return true;
         }
         // A delivery is the conversation too: the session being told what happened between turns is
-        // not the model's working, so no rung may hide it.
+        // not the model's working, so no rung may hide it. An offer is shown to the operator about
+        // the model's context, so it is theirs as well.
         matches!(
             item,
-            T::User { .. } | T::Assistant { .. } | T::Notice { .. }
+            T::User { .. } | T::Assistant { .. } | T::Notice { .. } | T::Offer { .. }
         )
     }
 }
