@@ -79,8 +79,10 @@ impl SessionFeed for RegistryFeed {
 
 impl RegistryFeed {
     fn build_rows(&self) -> Vec<Value> {
-        self.registry
-            .list()
+        let briefs = letibot_plugin::pane::cap_session_rows(self.registry.list(), |b| {
+            (b.live || b.status.running || b.status.heads > 0, b.moved_ms)
+        });
+        briefs
             .into_iter()
             .map(|b| {
                 let workspace = b.wiring.workspace.clone();
