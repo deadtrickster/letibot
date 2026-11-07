@@ -317,6 +317,9 @@ pub fn repo_of_workspace(workspace: &Path) -> Option<PathBuf> {
     if let Ok(top) = repo_root(workspace) {
         return Some(top);
     }
+    if !leticode_config::workspace::adopts_children(workspace) {
+        return None;
+    }
     let is_repo = |d: &Path| d.join(".git").exists();
     if let Some(name) = workspace.file_name() {
         let same_named = workspace.join(name);
@@ -345,6 +348,9 @@ pub fn repo_of_workspace(workspace: &Path) -> Option<PathBuf> {
 pub fn repos_of_workspace(workspace: &Path) -> Vec<PathBuf> {
     if let Some(one) = repo_of_workspace(workspace) {
         return vec![one];
+    }
+    if !leticode_config::workspace::adopts_children(workspace) {
+        return Vec::new();
     }
     let mut children: Vec<PathBuf> = workspace
         .read_dir()

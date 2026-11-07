@@ -39,6 +39,12 @@ impl App {
             self.git_job = None;
             return;
         }
+        if crate::gitfield::plain_home(&ws) {
+            self.git_job = None;
+            self.git_state = None;
+            self.apply_git_format();
+            return;
+        }
         // Which repository, in a workspace of several: the pinned one, else the one the work is
         // in (see `followed_repo`). The reading's key carries it, so following another repository
         // reads at once, and a reading of the one the field has left is dropped.
@@ -203,7 +209,15 @@ impl App {
         self.git = self
             .git_state
             .as_ref()
-            .map(|s| crate::gitfield::git_pieces(s, &format));
+            .map(|s| crate::gitfield::git_pieces(s, &format))
+            .or_else(|| {
+                crate::gitfield::plain_home(&self.wiring.workspace).then(|| {
+                    vec![(
+                        crate::gitfield::PLAIN_HOME.to_string(),
+                        crate::gitfield::GitRole::BranchClean,
+                    )]
+                })
+            });
     }
 
     pub fn load_prefs(&mut self) {

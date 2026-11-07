@@ -966,3 +966,45 @@ fn a_dirty_checkout_stops_every_checkout_from_following() {
     std::fs::write(second.join("a.txt"), "one\n").unwrap();
     follow_checkouts(&repo, "main", &old, &new).unwrap();
 }
+
+fn folder(name: &str, repos: &[&str]) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("hr-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    for r in repos {
+        std::fs::create_dir_all(d.join(r).join(".git")).unwrap();
+    }
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+/// A fake home never adopts a child repository, one or several; a plain folder with one still
+/// does, and the `[project] repository = false` key turns that off.
+#[test]
+fn home_adopts_no_child_repository() {
+    static HOME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = HOME.lock().unwrap_or_else(|e| e.into_inner());
+    let one = folder("home-one", &[".emacs.d"]);
+    let many = folder("home-many", &[".emacs.d", "dots"]);
+    let was = std::env::var_os("HOME");
+    for home in [&one, &many] {
+        // SAFETY: serialised by HOME above; restored below.
+        unsafe { std::env::set_var("HOME", home) };
+        assert_eq!(repo_of_workspace(home), None);
+        assert!(repos_of_workspace(home).is_empty());
+    }
+    unsafe {
+        match was {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+    let other = folder("other-one", &["proj"]);
+    assert_eq!(repo_of_workspace(&other), Some(other.join("proj")));
+    std::fs::write(
+        other.join("leticode.toml"),
+        "[project]\nrepository = false\n",
+    )
+    .unwrap();
+    assert_eq!(repo_of_workspace(&other), None);
+    assert!(repos_of_workspace(&other).is_empty());
+}
