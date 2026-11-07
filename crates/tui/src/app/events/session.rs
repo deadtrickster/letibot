@@ -17,6 +17,7 @@ impl App {
                 if let Some(row) = self.sessions.iter_mut().find(|s| s.session_id == id) {
                     row.title = title.clone();
                 }
+                self.rooms_sync_sessions();
                 // Said out loud, because the header changes under the operator and an
                 // unexplained change of the one label that identifies where you are
                 // is worse than no label.

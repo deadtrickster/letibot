@@ -695,6 +695,8 @@ impl App {
             match rx.try_recv() {
                 Ok(read) => {
                     self.fleet = read.rows;
+                    self.fleet_mine = read.mine;
+                    self.rooms_sync_sessions();
                     self.fleet_unlisted = read.unlisted;
                     self.fleet_job = None;
                     self.fleet_read = self.now_ms;
@@ -710,7 +712,7 @@ impl App {
         let Some(reader) = self.fleet_reader.clone() else {
             return;
         };
-        if !self.is_open(Surface::Picker)
+        if !(self.is_open(Surface::Picker) || self.sidebar.on || self.is_open(Surface::Rooms))
             || self.now_ms.saturating_sub(self.fleet_read) < FLEET_REFRESH_MS
                 && self.fleet_read != 0
         {

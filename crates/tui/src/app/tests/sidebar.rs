@@ -301,3 +301,101 @@ fn a_queue_orchestrator_and_a_package_session_are_not_listed() {
     let ids: Vec<&str> = a.rooms.sessions.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, ["s-op"]);
 }
+
+/// The operator's `~` session lives in another daemon, renamed: it is listed from the fleet scan.
+#[test]
+fn a_renamed_operator_session_of_another_daemon_is_listed() {
+    let mut a = app();
+    a.fleet_mine = vec![letibot_sessionlog::FleetRow {
+        id: "s-1793187533079211000".into(),
+        title: "home".into(),
+        workspace: "/Users/dead".into(),
+        model: "m".into(),
+        placement: None,
+        state: letibot_sessionlog::FleetState::Idle,
+    }];
+    a.rooms_sync_sessions();
+    let s = a
+        .rooms
+        .sessions
+        .iter()
+        .find(|s| s.id == "s-1793187533079211000")
+        .expect("home is listed");
+    assert_eq!((s.name.as_str(), s.state), ("home", "idle"));
+    a.sidebar_command("on");
+    let rows = a.screen(160, 24);
+    assert!(rows.iter().any(|r| r.contains("home")), "{rows:#?}");
+}
+
+/// A rename of this session shows in the list without waiting for the next session list.
+#[test]
+fn a_rename_reaches_the_sessions_section() {
+    let mut a = sidebar_with_rooms();
+    a.event(
+        letibot_sessionlog::event::SessionEvent::SessionRenamed {
+            title: "renamed".into(),
+        },
+        0,
+    );
+    assert!(a.rooms.sessions.iter().any(|s| s.name == "renamed"));
+}
+
+/// One highlight for the whole list: a click on a session moves it off the room.
+#[test]
+fn the_highlight_follows_the_last_click() {
+    let mut a = sidebar_with_rooms();
+    let rows = a.screen(160, 24);
+    let (x, y) = pos(&rows, "#ab12cd34ef56", true);
+    a.key(Key::Click { x, y });
+    let rows = a.screen(160, 24);
+    assert!(
+        rows.iter().any(|r| r.contains("▸ #ab12cd34ef56")),
+        "{rows:#?}"
+    );
+
+    let (x, y) = pos(&rows, "alpha", true);
+    a.key(Key::Click { x, y });
+    let rows = a.screen(160, 24);
+    let marked: Vec<&String> = rows.iter().filter(|r| r.contains('▸')).collect();
+    assert_eq!(marked.len(), 1, "{rows:#?}");
+    assert!(marked[0].contains("▸ alpha"), "{rows:#?}");
+}
+
+fn cells_of(row: &str) -> Vec<char> {
+    crate::app::keyhints::cells(row)
+}
+
+/// A hover is the surface's own: lighting a row of the transcript leaves the sidebar's cells
+/// alone, and the other way round.
+#[test]
+fn a_hover_does_not_cross_the_sidebars_border() {
+    let mut a = sidebar_with_rooms();
+    a.screen(160, 24);
+    let border = 160 - a.sidebar.last_w - 1;
+    let plain = a.screen(160, 24);
+    // A transcript hover with no columns of its own, on a row the sidebar also draws on.
+    let y = plain.iter().position(|r| r.contains("alpha")).unwrap();
+    a.pointer_at = Some((3, y as u16));
+    a.hovered = Some(crate::app::pointer::Hovered {
+        rows: vec![(y, None)],
+    });
+    let mut lit = plain.clone();
+    a.paint_pointer(&mut lit);
+    assert_ne!(lit[y], plain[y], "the hover painted nothing");
+    let (c0, c1) = (cells_of(&plain[y]), cells_of(&lit[y]));
+    assert_eq!(c0, c1, "same text");
+    // The sidebar side of the row is byte for byte the unlit one.
+    let side = |r: &str| r.split('│').next_back().unwrap_or("").to_string();
+    assert_eq!(side(&lit[y]), side(&plain[y]), "border {border}");
+
+    // And a hover on the sidebar row leaves the transcript side as it was.
+    a.pointer_at = Some((border as u16 + 3, y as u16));
+    a.hovered = Some(crate::app::pointer::Hovered {
+        rows: vec![(y, None)],
+    });
+    let mut lit = plain.clone();
+    a.paint_pointer(&mut lit);
+    assert_ne!(lit[y], plain[y]);
+    let main = |r: &str| r.rsplit_once('│').map_or(r, |(m, _)| m).to_string();
+    assert_eq!(main(&lit[y]), main(&plain[y]));
+}

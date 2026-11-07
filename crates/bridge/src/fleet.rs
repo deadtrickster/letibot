@@ -53,10 +53,26 @@ pub fn scan_in(
 ) -> Result<Fleet, String> {
     let store = letibot_tokencore::store::Store::open(store).map_err(|e| e.to_string())?;
     let mut stored = store.list_sessions().map_err(|e| e.to_string())?;
+    let origin_of = |s: &letibot_tokencore::store::StoredSession| {
+        s.origin
+            .as_deref()
+            .and_then(SessionOrigin::parse)
+            .unwrap_or_default()
+    };
+    // The same test the picker and `--continue` use for the operator's own.
+    let is_mine = |s: &letibot_tokencore::store::StoredSession| {
+        letibot_sessionlog::is_operator_top_level(&letibot_sessionlog::GroupRow {
+            id: &s.id,
+            parent: s.parent_session_id.as_deref(),
+            origin: origin_of(s),
+            role: s.role.as_deref(),
+            title: s.title.as_deref().unwrap_or(""),
+        })
+    };
     stored.retain(|s| {
         s.parent_session_id.is_none()
-            && s.origin.as_deref().and_then(SessionOrigin::parse) == Some(SessionOrigin::Package)
             && Path::new(&s.workspace_root) != own
+            && (origin_of(s) == SessionOrigin::Package || is_mine(s))
     });
     stored.sort_by_key(|s| std::cmp::Reverse(s.last_activity_ms));
     let mut by_workspace: BTreeMap<String, Vec<usize>> = BTreeMap::new();
@@ -68,6 +84,7 @@ pub fn scan_in(
     }
     let mut out: Vec<Option<FleetRow>> = vec![None; stored.len()];
     let mut unlisted = 0usize;
+    let mut mine = vec![false; stored.len()];
     for (workspace, members) in &by_workspace {
         let socket = socket_in(rundir, &key(Path::new(workspace)));
         let placement = letibot_sessionlog::placement::read(&socket);
@@ -78,8 +95,11 @@ pub fn scan_in(
         };
         for &i in members {
             let s = &stored[i];
+            mine[i] = is_mine(s);
             if live.is_none() && now.saturating_sub(s.last_activity_ms) > STOPPED_WINDOW_MS {
-                unlisted += 1;
+                if !mine[i] {
+                    unlisted += 1;
+                }
                 continue;
             }
             let state = match &live {
@@ -101,8 +121,20 @@ pub fn scan_in(
             });
         }
     }
+    let mut rows = Vec::new();
+    let mut operators = Vec::new();
+    for (i, row) in out.into_iter().enumerate() {
+        if let Some(row) = row {
+            if mine[i] {
+                operators.push(row);
+            } else {
+                rows.push(row);
+            }
+        }
+    }
     Ok(Fleet {
-        rows: out.into_iter().flatten().collect(),
+        rows,
+        mine: operators,
         unlisted,
     })
 }
@@ -271,5 +303,30 @@ mod tests {
         assert_eq!((fresh.rows.len(), fresh.unlisted), (3, 0));
         drop(holder);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The operator's own session in another folder (the `~` session, renamed) is listed beside the
+    /// packages and apart from them. The queue's and a child's are not.
+    #[test]
+    fn a_renamed_operator_session_of_another_folder_is_listed_as_theirs() {
+        let dir = std::env::temp_dir().join(format!("fleet-mine-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("sessions.db");
+        let run = dir.join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        {
+            let s = Store::open(&db).unwrap();
+            put(&s, "s-home", "/home/dead", "operator", None);
+            put(&s, "s-gatekeeper-c2f63a0e6a17", "/w/one", "operator", None);
+            put(&s, "s-q", "/w/one", "queue", None);
+            put(&s, "s-kid", "/w/one", "operator", Some("s-home"));
+            put(&s, "s-pkg", "/w/two", "package", None);
+        }
+        let fleet =
+            scan_in(&db, Path::new("/w/here"), &run, now_ms(), ATTACH_TIMEOUT).expect("scan");
+        let mine: Vec<&str> = fleet.mine.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(mine, ["s-home"]);
+        let packages: Vec<&str> = fleet.rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(packages, ["s-pkg"]);
     }
 }

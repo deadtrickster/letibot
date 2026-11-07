@@ -1049,7 +1049,12 @@ impl App {
     /// Go to another session: the one door every switch goes through, and the reason the wait is a state and not a
     /// gap. A `Switch` is a round trip, so until the second `Hello` lands the screen holds the session being left,
     pub(crate) fn switch_to(&mut self, id: String) -> Option<Action> {
-        if let Some(f) = self.fleet.iter().find(|f| f.id == id) {
+        if let Some(f) = self
+            .fleet
+            .iter()
+            .chain(self.fleet_mine.iter())
+            .find(|f| f.id == id)
+        {
             // Another daemon holds it, and this head is attached to one socket: the command is the
             // way in.
             let said = format!("{} - {}", f.state.word(), f.attach_command());

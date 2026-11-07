@@ -13,7 +13,7 @@ pub(crate) struct Hovered {
 }
 
 impl Hovered {
-    fn one(y: usize, cols: Option<(usize, usize)>) -> Hovered {
+    pub(crate) fn one(y: usize, cols: Option<(usize, usize)>) -> Hovered {
         Hovered {
             rows: vec![(y, cols)],
         }
@@ -439,6 +439,7 @@ impl App {
     pub(crate) fn selected_text(&self) -> Option<String> {
         let ((x0, y0), (x1, y1)) = self.selection_span()?;
         let gutter = Self::gutter(self.term_cols);
+        let (lo, hi) = self.surface_columns(x0);
         let mut lines = Vec::new();
         for y in y0..=y1 {
             let Some(row) = self.hint_rows.get(y) else {
@@ -449,6 +450,7 @@ impl App {
             let Some((s, e)) = content_span(&cs, gutter) else {
                 continue;
             };
+            let (s, e) = (s.max(lo), e.min(hi));
             let from = if y == y0 { x0.max(s) } else { s };
             let to = if y == y1 { (x1 + 1).min(e) } else { e };
             let line: String = cs
@@ -498,15 +500,31 @@ impl App {
 
     /// The hover mark and the selection, painted onto the finished frame - the last thing a
     /// frame does, so no renderer has to know about the pointer.
+    /// The columns of the surface the pointer's `x` is in: the whole frame, or with the sidebar
+    /// beside the transcript, whichever side of its border `x` is. A mark stays inside them.
+    fn surface_columns(&self, x: usize) -> (usize, usize) {
+        if !self.sidebar.drawn {
+            return (0, usize::MAX);
+        }
+        let border = self.sidebar.term_w - self.sidebar.last_w - 1;
+        if x < border {
+            (0, border)
+        } else {
+            (border + 1, usize::MAX)
+        }
+    }
+
     pub(crate) fn paint_pointer(&self, frame: &mut [String]) {
         if let Some(((x0, y0), (x1, y1))) = self.selection_span() {
             let gutter = Self::gutter(self.term_cols);
+            let (lo, hi) = self.surface_columns(x0);
             for y in y0..=y1.min(frame.len().saturating_sub(1)) {
                 // Only the row's content is marked - the frame is not selectable (see
                 // `content_span`), so the bars a selection crosses stay as they are drawn.
                 let Some((s, e)) = content_span(&keyhints::cells(&frame[y]), gutter) else {
                     continue;
                 };
+                let (s, e) = (s.max(lo), e.min(hi));
                 let from = if y == y0 { x0.max(s) } else { s };
                 let to = if y == y1 { (x1 + 1).min(e) } else { e };
                 if from < to {
@@ -516,13 +534,27 @@ impl App {
             return;
         }
         if let Some(h) = &self.hovered {
+            // A hover belongs to the surface under the pointer: its text span is cut to that
+            // surface's columns, so a card in the transcript does not light the sidebar's row.
+            let (lo, hi) = self.surface_columns(self.pointer_at.map_or(0, |p| usize::from(p.0)));
             for (y, cols) in &h.rows {
                 let Some(row) = frame.get_mut(*y) else {
                     continue;
                 };
-                let cols = cols.or_else(|| text_span(&keyhints::cells(row)));
+                let cols = cols.or_else(|| {
+                    let mut cells = keyhints::cells(row);
+                    for (i, c) in cells.iter_mut().enumerate() {
+                        if i < lo || i >= hi {
+                            *c = ' ';
+                        }
+                    }
+                    text_span(&cells)
+                });
                 if let Some((a, b)) = cols {
-                    *row = brighten(row, a, b);
+                    let (a, b) = (a.max(lo), b.min(hi));
+                    if a < b {
+                        *row = brighten(row, a, b);
+                    }
                 }
             }
         }
