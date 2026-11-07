@@ -970,7 +970,7 @@ fn the_environment_is_cleared_so_a_token_is_absent_rather_than_filtered() {
 #[test]
 fn a_secret_crosses_the_boundary_without_being_on_the_command_line() {
     let _only_one = ENV.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = std::env::temp_dir().join(format!("letibot-secret-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("letibot-secret-fd-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("dir");
     let secret = (
         "LETIBOT_PROBE_TOKEN".to_string(),
