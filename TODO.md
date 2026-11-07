@@ -56,7 +56,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R116 | Claude Code as a merge-queue reviewer through headless `claude -p` | Code work | all of it - no `claude -p`, `--json-schema` or `structured_output` use exists under `crates/` |
 | R117 | The leticode MCP bridge pushes package and queue events into Claude Code as a channel | Code work | queue events on the channel (rooms and held sessions already push), and the plugin; a self-published channel plugin still needs `--dangerously-load-development-channels` during the preview |
 | R127 | The idle nag names every free head of the plan, so independent rows run in parallel | Code work | all of it - `the_row_to_name` (`crates/tools/src/builtins/todo.rs:1333`) picks one ready row; postponed by the operator on 2026-11-07 |
-| R129 | One store file per project and a shared file, so one daemon's write cannot stall another's | Code work | the design's last edit (decisions live only in project files), the slow-call logs read across the daemons, and all of the build; the proposal is `docs/store-split.md` on branch `docs/store-split`, not merged |
+| R129 | One store file per project and a shared file, so one daemon's write cannot stall another's | Code work | the build, in five packages at the end of `docs/store-split.md` (P0 first: the instrument cannot yet tell a lock wait from I/O); the design, the measurement and the build plan are in the doc on branch `r129-store-split`, not merged |
 | R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | the operator rotates the token; a command this box spawns and a remote placement both keep every secret off every argv now |
 | R132 | `skills_path.rs` refuses its own session as written by another process, once under load | Code work | the root cause; seen once in a full gate, 6 reruns and the next gate passed |
 | R133 | The one-shot env report prints its lines out of order | Code work | a reproduction and the fix |
@@ -800,12 +800,12 @@ The plan is a DAG and the check exists to keep it moving. Today `unfinished_plan
 
 ## R129 - One store file per project and a shared file
 
-**Status:** proposal. left: the design's last edit and all of the build. The proposal is `docs/store-split.md` on branch `docs/store-split`.
+**Status:** proposal, design settled, nothing built. left: the build, P0-P4 at the end of the doc. `docs/store-split.md` on branch `r129-store-split`.
 
 Every daemon writes one `sessions.db` (9.4 GB on 2026-11-06, a WAL that reached 346 MB while long readers held snapshots). Writes retry on busy for up to 60 s, so one slow writer stalls every daemon. The proposal puts each project's sessions, transcripts, jobs and decisions in `projects/<key>.db`, written by that folder's daemon only, and the index, writer leases, queues and host leases in `shared.db`.
 
-- Left in the design: decisions live only in project files. Only the `decisions` tool and the start-up counts read the corpus, and `Store::corpus()` is used only in tests, so no shared copy is needed.
-- First step, built: every store call over 1 s writes `store: a call at <file>:<line> took N ms (R busy retries)` to the daemon's log (`busy::SLOW_CALL`). Left: collect a few days of those lines across the daemons on lab2x1, and check that the split separates the writers they name.
+- Settled: decisions live only in project files, with no slim copy in `shared.db`. The readers are the `decisions` tool, the start-up counts, and `/gate` (which calls `Store::corpus()` beside `tokencore`'s own tests, so the first draft of this item was one call site short); a corpus-wide read sweeps every project file read-only and a scoped read opens one.
+- Measured 2026-11-07 (the step is built, `busy::SLOW_CALL`): 7 lines in ~65 minutes of one 9.4 GB file shared by 16 daemons, every one a write with 0 busy retries, and 328 `database is locked` plus 154 `database or disk is full` failures in the per-folder logs. The split separates the locked writes by construction and the readers' WAL effect by construction; it cannot separate the disk. Left: time the wait itself (P0), because a 30 s busy timeout absorbs a lock wait inside one attempt and the retry counter sees nothing.
 - A saturated disk stalls both files alike: on 2026-11-07 a test gate linking on the root disk blocked every daemon's reads. Builds on lab2x1 now go to `/build`.
 
 ## R130 - The seat's `GH_TOKEN` is readable in `ps`
