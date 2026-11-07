@@ -174,6 +174,8 @@ impl App {
         match k {
             Key::Esc => {
                 self.sidebar.focus = false;
+                // Leaving the list also leaves a room that is open: back to the transcript.
+                self.close_surface(Surface::Rooms);
                 ControlFlow::Break(None)
             }
             Key::Up | Key::Down => {

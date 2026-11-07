@@ -105,3 +105,76 @@ fn a_narrow_terminal_collapses_to_a_strip_that_says_so() {
     assert!(rows[0].contains("collapsed"), "{:?}", rows[0]);
     assert!(matches!(a.sidebar_fit(160), Fit::Wide(_)));
 }
+
+fn pos(rows: &[String], needle: &str, from_right: bool) -> (u16, u16) {
+    let y = rows
+        .iter()
+        .position(|r| r.contains(needle))
+        .unwrap_or_else(|| panic!("no `{needle}` in {rows:#?}"));
+    let i = if from_right {
+        rows[y].rfind(needle)
+    } else {
+        rows[y].find(needle)
+    }
+    .unwrap();
+    (rows[y][..i].chars().count() as u16, y as u16)
+}
+
+fn sidebar_with_rooms() -> App {
+    let mut a = app();
+    a.session_id = "s-cur".into();
+    a.sessions = vec![
+        brief("s-cur", "current", false),
+        brief("s-x", "alpha", false),
+    ];
+    a.rooms_sync_sessions();
+    reply(
+        &mut a,
+        rooms_reply(&[("host", 2, 7, 0), ("project/ab12cd34ef56", 2, 9, 0)]),
+    );
+    a.sidebar_command("on");
+    a
+}
+
+/// A room picked in the sidebar does not trap the head: a session row leaves it, the one already
+/// on screen included, and Esc from the list is back to the transcript.
+#[test]
+fn a_session_row_leaves_a_room_and_so_does_esc() {
+    let mut a = sidebar_with_rooms();
+    let rows = a.screen(160, 24);
+    let (x, y) = pos(&rows, "#ab12cd34ef56", true);
+    a.key(Key::Click { x, y });
+    assert!(a.is_open(Surface::Rooms), "the room did not open");
+
+    // The session this head is on: no switch to make, and the room view goes.
+    let rows = a.screen(160, 24);
+    let (x, y) = pos(&rows, "│  current", true);
+    let x = x + 3;
+    assert_eq!(a.key(Key::Click { x, y }), None);
+    assert!(
+        !a.is_open(Surface::Rooms),
+        "still in the room: {x},{y} {rows:#?}"
+    );
+
+    // Another session: switched to, and the room view goes.
+    let rows = a.screen(160, 24);
+    let (x, y) = pos(&rows, "#ab12cd34ef56", true);
+    a.key(Key::Click { x, y });
+    assert!(a.is_open(Surface::Rooms));
+    let rows = a.screen(160, 24);
+    let (x, y) = pos(&rows, "alpha", true);
+    assert_eq!(
+        a.key(Key::Click { x, y }),
+        Some(Action::Switch("s-x".into()))
+    );
+    assert!(!a.is_open(Surface::Rooms));
+
+    // Esc from the focused list.
+    a.rooms_go(Chan::Room("host".into()));
+    a.sidebar_act(Chan::Room("host".into()));
+    a.screen(160, 24);
+    a.key(Key::AltJ);
+    assert!(a.is_open(Surface::Rooms) && a.sidebar.focus);
+    a.key(Key::Esc);
+    assert!(!a.is_open(Surface::Rooms) && !a.sidebar.focus);
+}

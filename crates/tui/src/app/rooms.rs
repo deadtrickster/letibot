@@ -925,6 +925,13 @@ impl App {
 
     /// Enter on a session row: this head moves to that session, as picking it in the session list.
     pub(crate) fn rooms_switch_session(&mut self, id: String) -> Option<Action> {
+        // Going to a session leaves the rooms view, including the session already on screen: the
+        // transcript is what is behind the view.
+        self.close_surface(Surface::Rooms);
+        self.sidebar.focus = false;
+        if id == self.session_id {
+            return None;
+        }
         self.switch_to(id)
     }
 
