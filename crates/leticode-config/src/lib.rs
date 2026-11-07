@@ -3572,7 +3572,7 @@ mod tests {
             (
                 "qmute_entry",
                 "\n[queue]\nmute = [\"a\", 3]\n",
-                "mute holds integer",
+                "mute holds a whole number",
                 3,
             ),
             (
