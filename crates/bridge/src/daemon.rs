@@ -282,6 +282,9 @@ fn daemon_args(d: &Daemon, model: Option<&str>, mode: &str, placement: &Placemen
         "--bash".into(),
         // See this function's doc: a package's daemon serves no queue.
         "--no-queue".into(),
+        // A package is this seat's child, not a top-level service, so it stays out of the room.
+        "--parent-seat".into(),
+        crate::rooms::handle(),
     ];
     if let Some(host) = placement.host() {
         args.push("--host".into());
@@ -744,6 +747,22 @@ mod tests {
                 "a daemon started without --no-queue claims the repository's lease: {args:?}"
             );
         }
+    }
+
+    /// A package is the seat's child: every daemon the bridge starts names the seat, so its
+    /// sessions are not top-level services and never join the room.
+    #[test]
+    fn every_daemon_the_bridge_starts_names_its_parent_seat() {
+        let d = a_daemon();
+        let args = daemon_args(&d, None, "writes-allowed", &Placement::Host);
+        let at = args
+            .iter()
+            .position(|a| a == "--parent-seat")
+            .unwrap_or_else(|| panic!("no --parent-seat: {args:?}"));
+        assert!(
+            args.get(at + 1).is_some_and(|h| h.starts_with("cc@")),
+            "{args:?}"
+        );
     }
 
     /// A provider is `--provider NAME`; anything else is the local binding `--model`. A bridge

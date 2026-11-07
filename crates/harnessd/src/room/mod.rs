@@ -73,3 +73,37 @@ pub fn tag_of(session: &str) -> Option<String> {
 pub fn socket_exists() -> bool {
     socket_path().map(|p| p.exists()).unwrap_or(false)
 }
+
+/// Whether a session is a top-level service, the kind that joins the room. A subagent speaks
+/// through its parent, and so does a package a Claude Code seat started (`--parent-seat`).
+/// A tag's agent is the exception: a child that holds a seat of its own.
+pub fn is_top_level(cfg: &crate::config::Config) -> bool {
+    if cfg.parent_seat.is_some() {
+        return false;
+    }
+    match cfg.parent_session_id {
+        None => true,
+        Some(_) => tag_of(&cfg.session_id).is_some(),
+    }
+}
+
+#[cfg(test)]
+mod top_level_tests {
+    use super::is_top_level;
+
+    #[test]
+    fn a_package_of_a_seat_is_not_top_level() {
+        let mut cfg = crate::config::Config::for_this_box("/tmp/w");
+        assert!(is_top_level(&cfg));
+        cfg.parent_seat = Some("cc@letibot".into());
+        assert!(!is_top_level(&cfg));
+    }
+
+    #[test]
+    fn a_subagent_is_not_top_level() {
+        let mut cfg = crate::config::Config::for_this_box("/tmp/w");
+        cfg.parent_session_id = Some("s-parent".into());
+        cfg.session_id = "s-child".into();
+        assert!(!is_top_level(&cfg));
+    }
+}

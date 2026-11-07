@@ -368,6 +368,9 @@ pub struct Config {
     /// session. Recorded into the store so a subagent tree is a fact on disk, not an
     /// id convention a picker has to reverse-engineer.
     pub parent_session_id: Option<String>,
+    /// The Claude Code seat (`cc@<project>`) whose package this daemon serves. Its sessions are
+    /// that seat's children, not top-level services, so they stay out of the room.
+    pub parent_seat: Option<String>,
     /// How deep in a subagent tree this session sits - zero for a root. A config fact, not a
     /// seat fact, because the seat table can express two depths and the ruling wants a configured
     /// number between. Incremented once, at spawn, and read where `task` is seated.
@@ -1488,6 +1491,7 @@ impl Config {
             store: None,
             session_id: format!("s-{}", now_ns()),
             parent_session_id: None,
+            parent_seat: None,
             depth: 0,
             http: None,
             ledger_scale: None,

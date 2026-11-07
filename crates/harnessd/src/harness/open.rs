@@ -1845,10 +1845,7 @@ impl Harness {
         // The host's room, registered before `with_session_tools` so the real link is the one
         // seated. Two conditions are the design: a coordinator exists on this box, and this session
         // is top-level, since a subagent speaks through its parent. A tag's agent is the exception.
-        let top_level = match cfg.parent_session_id {
-            None => true,
-            Some(_) => crate::room::tag_of(&cfg.session_id).is_some(),
-        };
+        let top_level = crate::room::is_top_level(&cfg);
         //
         // A connection that cannot be made is said once and is not fatal: a session whose room is
         // unreachable is a session that works, and its `room` tool refuses by name.

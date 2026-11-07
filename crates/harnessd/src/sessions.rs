@@ -1123,6 +1123,8 @@ impl<'a> Sessions<'a> {
             &id,
             if sessions.base.one_shot {
                 SessionOrigin::OneShot
+            } else if sessions.base.parent_seat.is_some() {
+                SessionOrigin::Package
             } else {
                 registry.origin_of(&id)
             },
@@ -2135,6 +2137,9 @@ impl<'a> Sessions<'a> {
                         SessionOrigin::Queue
                     } else if self.base.one_shot {
                         SessionOrigin::OneShot
+                    } else if self.base.parent_seat.is_some() {
+                        // A seat's child: grouped with the packages, never in the operator's list.
+                        SessionOrigin::Package
                     } else {
                         self.registry.origin_of(session_id)
                     },

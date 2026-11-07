@@ -308,6 +308,9 @@ fn usage() -> String {
      \x20 --idle-exit 3600          seconds with no head, turn, job, subagent, monitor\n\
      \x20                           or queue work after which the daemon exits; its\n\
      \x20                           sessions stay in the store. 0 never exits\n\
+      \x20 --parent-seat cc@proj     this daemon's sessions are children of that\n\
+      \x20                           Claude Code seat, not top-level services: they\n\
+      \x20                           do not join the box's room\n\
       \x20 --no-queue                serve NO merge or review queue: no lease is\n\
       \x20                           claimed, no target gated and no branch landed\n\
       \x20                           here, and this daemon's sessions are told no\n\
@@ -832,6 +835,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             // session daemons, so a daemon the Claude Code bridge starts in a package's worktree is
             // one of them by construction, and a daemon started there must be able to opt out.
             "--no-queue" => cfg.serve_queues = false,
+            // The seat that started this daemon: its sessions are that seat's children.
+            "--parent-seat" => cfg.parent_seat = Some(next()?).filter(|h| !h.is_empty()),
             // The box's room coordinator (the room's slice 2). A whole daemon whose only job is
             // the room: its own socket, no store, no project, and one session of its own that
             // arbitrates the queues.
