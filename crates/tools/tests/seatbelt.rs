@@ -1070,3 +1070,41 @@ fn sqlite_readonly_answers_on_a_live_wal_store_in_both_seats() {
         assert_eq!((rc, out.trim()), (0, "3"), "tight={tight}: {out}");
     }
 }
+
+// ------------------------------------------------------ firecode from the seat
+
+/// A VM boots from the top-level seat (`firecode exec`) and not from a child's: Virtualization
+/// needs its XPC services and `ps`, which only the wide profile grants.
+#[test]
+fn firecode_boots_a_vm_from_the_wide_seat_and_the_tight_seat_cannot() {
+    let firecode = ["/opt/homebrew/bin/firecode"]
+        .into_iter()
+        .find(|p| Path::new(p).exists());
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "firecode, which boots a guest through Virtualization.framework",
+        firecode.is_some(),
+    ) else {
+        return;
+    };
+    let f = Fixture::new("firecode");
+    let cmd = "/opt/homebrew/bin/firecode exec echo firecode-ok 2>&1";
+    let host = || Egress::Host { why: "test".into() };
+    // The project sits in the writable scratch: firecode copies the VM's result out beside it.
+    let proj = f.root.join("tmp/project");
+    std::fs::create_dir_all(&proj).expect("a project in the scratch");
+    std::fs::write(proj.join("a.txt"), "hello\n").expect("a file in it");
+    let view = ViewSpec::project_only(proj.clone())
+        .with_home(HomeView::Dir(real_home()))
+        .with_tmp(TmpView::Session(f.root.join("tmp")));
+    let wide_seat = Seatbelt::probe_as(view, host(), vec![], real_home())
+        .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+    let (rc, out) = run_in(&wide_seat, &proj, cmd);
+    assert_eq!(rc, 0, "{out}");
+    assert!(out.contains("firecode-ok"), "{out}");
+
+    let tight = Seatbelt::probe_as(f.view(), host(), vec![f.denied()], real_home())
+        .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+    let (rc, out) = run_in(&tight, &f.project(), cmd);
+    assert_ne!(rc, 0, "a child's seat booted a VM: {out}");
+    assert!(!out.contains("firecode-ok"), "{out}");
+}
