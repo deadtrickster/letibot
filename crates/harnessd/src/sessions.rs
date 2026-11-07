@@ -3724,10 +3724,29 @@ impl<'a> Sessions<'a> {
                                 letibot_sessionlog::event::TodoNeed::Answered {
                                     question,
                                     reply,
+                                    ask,
                                 } => letibot_tokencore::store::TodoNeed::Answered {
                                     question: question.clone(),
                                     reply: reply.clone(),
+                                    ask: *ask,
                                 },
+                                // An ask crosses whole, id and words alike: the head echoes its
+                                // rows back, and an edge it dropped would release a row the peer is
+                                // still being nagged about.
+                                letibot_sessionlog::event::TodoNeed::Ask {
+                                    ask,
+                                    of,
+                                    room,
+                                    question,
+                                } => letibot_tokencore::store::TodoNeed::Ask {
+                                    ask: *ask,
+                                    of: of.clone(),
+                                    room: room.clone(),
+                                    question: question.clone(),
+                                },
+                                letibot_sessionlog::event::TodoNeed::Owed { ask } => {
+                                    letibot_tokencore::store::TodoNeed::Owed { ask: *ask }
+                                }
                                 letibot_sessionlog::event::TodoNeed::Unknown => {
                                     letibot_tokencore::store::TodoNeed::Unknown
                                 }

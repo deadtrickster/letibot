@@ -258,7 +258,8 @@ fn every_answer_shape_unblocks_its_row_and_tells_the_model() {
             needs_of(&path, &id, row),
             vec![TodoNeed::Answered {
                 question: question.into(),
-                reply: reply.into()
+                reply: reply.into(),
+                ask: None,
             }],
             "{row}: unblocked, with the reply attached"
         );

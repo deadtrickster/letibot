@@ -169,6 +169,7 @@ mod tests {
             vec![TodoNeed::Answered {
                 question: "which db?".into(),
                 reply: "the operator chose \"postgres\"".into(),
+                ask: None,
             }],
         );
         // The model took it back: the edge is simply gone.

@@ -83,7 +83,8 @@ fn an_answer_given_mid_turn_rides_the_step_boundary() {
         board.snapshot()[0].needs,
         vec![TodoNeed::Answered {
             question: QUESTION.into(),
-            reply: "the operator chose \"postgres\" (note: the shared one)".into()
+            reply: "the operator chose \"postgres\" (note: the shared one)".into(),
+            ask: None,
         }]
     );
 }

@@ -1012,8 +1012,28 @@ pub enum TodoNeed {
         options: Vec<String>,
     },
     /// An [`TodoNeed::Operator`] edge the operator has ANSWERED: met, always, and kept on the row
-    /// as the reply, so a submitted row becomes unblocked with its answer attached.
-    Answered { question: String, reply: String },
+    /// as the reply, so a submitted row becomes unblocked with its answer attached. `ask` is the
+    /// room's id when the reply is a peer's rather than the operator's - it is what a settle is
+    /// matched on, and `default` so every edge written before asks existed reads back.
+    Answered {
+        question: String,
+        reply: String,
+        #[serde(default)]
+        ask: Option<u64>,
+    },
+    /// A question to another session, carried by the room as ask `ask`: the edge is A's side of
+    /// an ask, and only the room settles it. `of` is the target's handle and `room` the room it
+    /// was asked in, so the row says who is being waited on without asking the room again.
+    Ask {
+        ask: u64,
+        of: String,
+        room: String,
+        question: String,
+    },
+    /// The other side: the ask `ask` somebody made of THIS session, waiting for its answer. Met,
+    /// always - the asker waits, not this board - and it is the room pass's key for its own row,
+    /// the way [`TodoNeed::Room`] keys a reminder row.
+    Owed { ask: u64 },
     /// A kind this build does not know: a need written by a newer build. It is a variant because
     /// the alternative is worse - a resumed session's board would lose the row - and a need
     /// nobody can evaluate must never read as met.

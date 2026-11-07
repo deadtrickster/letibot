@@ -218,8 +218,24 @@ pub enum TodoNeed {
         options: Vec<String>,
     },
     /// An operator edge the operator has answered - met, and kept as the reply so the row still
-    /// records what it waited for.
-    Answered { question: String, reply: String },
+    /// records what it waited for. `ask` is the room's id when the reply came from a peer session.
+    Answered {
+        question: String,
+        reply: String,
+        #[serde(default)]
+        ask: Option<u64>,
+    },
+    /// A question this session asked another one, carried by the room as ask `ask`: the row waits
+    /// on a peer, and only the room's settle ends it. `of` is the peer's handle, `room` the room.
+    Ask {
+        ask: u64,
+        of: String,
+        room: String,
+        question: String,
+    },
+    /// The ask `ask` somebody made of THIS session: met, always, and the pass's key for the row
+    /// that nags the person it was asked of.
+    Owed { ask: u64 },
     /// A kind this build does not know. Kept rather than refused, because a plan is what would be
     /// lost.
     #[serde(other)]

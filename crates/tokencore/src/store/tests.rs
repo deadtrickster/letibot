@@ -1933,6 +1933,7 @@ fn an_operator_question_round_trips_and_the_store_counts_who_is_waiting() {
     let answered = TodoNeed::Answered {
         question: "which db?".into(),
         reply: "the operator chose \"postgres\"".into(),
+        ask: None,
     };
     s.put_todos(
         "waits",
@@ -1955,6 +1956,88 @@ fn an_operator_question_round_trips_and_the_store_counts_who_is_waiting() {
     assert_eq!(waiting.get("waits"), Some(&1));
     assert!(!waiting.contains_key("quiet"));
     assert_eq!(operator_asks(&back).len(), 1);
+}
+
+/// Both sides of one ask survive the store: the asker's edge and the row on the target's board
+/// that says the question is owed. The settled form keeps the room's id, and an `answered` edge
+/// written before that field existed reads back with none - which is every row already on a board.
+#[test]
+fn an_ask_and_an_owed_edge_round_trip_and_an_old_answer_reads() {
+    let s = store();
+    let _seeded = seeded(&s);
+    let row = |content: &str, needs: Vec<TodoNeed>| TodoItem {
+        content: content.into(),
+        status: TodoStatus::Pending,
+        by: TodoBy::Model,
+        when: None,
+        needs,
+    };
+    let ask = TodoNeed::Ask {
+        ask: 4211,
+        of: "serenedb".into(),
+        room: "host".into(),
+        question: "which port?".into(),
+    };
+    let owed = TodoNeed::Owed { ask: 4211 };
+    let settled = TodoNeed::Answered {
+        question: "which port?".into(),
+        reply: "`serenedb` answered: 5433".into(),
+        ask: Some(4211),
+    };
+    s.put_todos(
+        "sess-1",
+        &[
+            row("wire the port", vec![ask.clone(), settled.clone()]),
+            row("answer arango", vec![owed.clone()]),
+        ],
+    )
+    .unwrap();
+    let back = s.todos("sess-1").unwrap();
+    assert_eq!(back[0].needs, vec![ask, settled.clone()]);
+    assert_eq!(back[1].needs, vec![owed]);
+
+    // The tagged spelling is what a reader of the raw column sees, so the two sides of one ask
+    // are told apart there rather than guessed at from the payload.
+    let raw: String = s
+        .conn()
+        .query_row(
+            "SELECT todos_json FROM todo WHERE session_id = ?1",
+            params!["sess-1"],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        raw.contains(r#"{"kind":"ask","ask":4211,"of":"serenedb","room":"host""#),
+        "an ask is its own kind on the wire between this crate and `sqlite3`: {raw}"
+    );
+    assert!(
+        raw.contains(r#"{"kind":"owed","ask":4211}"#),
+        "and the row on the other board holds the same id under its own kind: {raw}"
+    );
+
+    // A row an older build wrote: an answer with no `ask` at all. The same board, overwritten -
+    // what is being read is the column's shape, not a second session.
+    s.conn()
+        .execute(
+            "INSERT INTO todo (session_id, todos_json, updated_ms) VALUES (?1, ?2, 0) \
+             ON CONFLICT(session_id) DO UPDATE SET todos_json = ?2",
+            params![
+                "sess-1",
+                r#"[{"content":"deploy","status":"pending","by":"model","when":null,
+                     "needs":[{"kind":"answered","question":"which db?","reply":"postgres"}]}]"#
+            ],
+        )
+        .unwrap();
+    let back = s.todos("sess-1").unwrap();
+    assert_eq!(
+        back[0].needs,
+        vec![TodoNeed::Answered {
+            question: "which db?".into(),
+            reply: "postgres".into(),
+            ask: None,
+        }],
+        "an operator's answer written before asks existed still reads, with no room id"
+    );
 }
 
 /// A `n`-row run continuing `ledger`, as [`Store::append_items`] takes it.

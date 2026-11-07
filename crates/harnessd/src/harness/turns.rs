@@ -3390,8 +3390,30 @@ impl Harness {
                     letibot_tokencore::store::TodoNeed::Operator { question, options } => {
                         letibot_sessionlog::event::TodoNeed::Operator { question, options }
                     }
-                    letibot_tokencore::store::TodoNeed::Answered { question, reply } => {
-                        letibot_sessionlog::event::TodoNeed::Answered { question, reply }
+                    letibot_tokencore::store::TodoNeed::Answered {
+                        question,
+                        reply,
+                        ask,
+                    } => letibot_sessionlog::event::TodoNeed::Answered {
+                        question,
+                        reply,
+                        ask,
+                    },
+                    // The ask's id, target and room travel verbatim: the id is what the room's
+                    // settle is matched on, and the words are what the row draws while it waits.
+                    letibot_tokencore::store::TodoNeed::Ask {
+                        ask,
+                        of,
+                        room,
+                        question,
+                    } => letibot_sessionlog::event::TodoNeed::Ask {
+                        ask,
+                        of,
+                        room,
+                        question,
+                    },
+                    letibot_tokencore::store::TodoNeed::Owed { ask } => {
+                        letibot_sessionlog::event::TodoNeed::Owed { ask }
                     }
                     letibot_tokencore::store::TodoNeed::Unknown => {
                         letibot_sessionlog::event::TodoNeed::Unknown
