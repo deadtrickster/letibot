@@ -136,18 +136,21 @@ fn linux_image() -> Result<Option<Vec<u8>>, String> {
 #[cfg(target_os = "macos")]
 #[cfg_attr(test, allow(dead_code))]
 fn applescript_data(class: &str) -> Result<Option<Vec<u8>>, String> {
-    let out = Command::new("osascript")
-        .arg("-e")
-        .arg(format!("the clipboard as {class}"))
-        .output()
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => {
-                "no `osascript` on this box, so the clipboard cannot be read — copy the file's \
-                 path and paste that instead"
-                    .to_string()
-            }
-            _ => format!("the clipboard could not be read: {e}"),
-        })?;
+    let mut cmd = Command::new("osascript");
+    cmd.arg("-e").arg(format!("the clipboard as {class}"));
+    let out = crate::gitfield::output_until(cmd, CLIPBOARD_DEADLINE).map_err(|e| match e {
+        Some(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            "no `osascript` on this box, so the clipboard cannot be read — copy the file's \
+             path and paste that instead"
+                .to_string()
+        }
+        Some(e) => format!("the clipboard could not be read: {e}"),
+        None => format!(
+            "`osascript` did not answer within {}s, so nothing was pasted - the program that \
+             owns the clipboard may be stuck",
+            CLIPBOARD_DEADLINE.as_secs()
+        ),
+    })?;
     if !out.status.success() {
         // A refusal is not an empty clipboard: `missing value` with exit 0 means no picture, and a
         // non-zero exit is `osascript` saying why it could not read. Answering `Ok(None)` to that

@@ -503,6 +503,62 @@ pub fn run_until(mut cmd: Command, limit: std::time::Duration) -> Ran {
     }
 }
 
+/// [`run_until`], keeping stderr and the exit status, for a caller that has to tell a refusal from
+/// an empty answer. `Err(None)` is the deadline passing, and the program was killed.
+pub fn output_until(
+    mut cmd: Command,
+    limit: std::time::Duration,
+) -> Result<std::process::Output, Option<std::io::Error>> {
+    use std::io::Read;
+    let mut child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(Some)?;
+    let read = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let out = read(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let err = read(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let until = std::time::Instant::now() + limit;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < until => {
+                std::thread::sleep(std::time::Duration::from_millis(10))
+            }
+            // Killed, and the readers are not joined, for the reason `run_until` gives.
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(None);
+            }
+        }
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: out.join().unwrap_or_default(),
+        stderr: err.join().unwrap_or_default(),
+    })
+}
+
 #[cfg(test)]
 mod deadline_tests {
     use super::run_with_deadline;
@@ -513,6 +569,22 @@ mod deadline_tests {
         let mut c = Command::new("sh");
         c.args(["-c", script]);
         c
+    }
+
+    #[test]
+    fn output_until_keeps_stderr_and_status_and_kills_at_the_deadline() {
+        let out = super::output_until(
+            sh("printf out; printf err >&2; exit 3"),
+            Duration::from_secs(5),
+        )
+        .expect("it ran");
+        assert_eq!(out.stdout, b"out");
+        assert_eq!(out.stderr, b"err");
+        assert_eq!(out.status.code(), Some(3));
+        let started = Instant::now();
+        let late = super::output_until(sh("sleep 30"), Duration::from_millis(200));
+        assert!(matches!(late, Err(None)), "{late:?}");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

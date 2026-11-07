@@ -60,7 +60,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | a remote placement: its keep-list and `plan.env` go into the ssh command line (`EnvSource::Remote`), where `ps` on both boxes reads them; and the operator rotates the token |
 | R131 | `cargo clippy -- -D warnings` fails on main | Code work | `mergequeue/capacity.rs:19` (`neg_cmp_op_on_partial_ord`) and `mergequeue/review/placement_tests.rs:66` (useless `format!`) |
 | R132 | `skills_path.rs` refuses its own session as written by another process, once under load | Code work | the root cause; seen once in a full gate, 6 reruns and the next gate passed |
-| R133 | The head's small hangs and orderings | Code work | the 30 s attach wait (`crates/tui/src/head.rs:240`) with no word on screen, the one-shot env report's order, the macOS `osascript` clipboard read with no deadline |
+| R133 | The one-shot env report prints its lines out of order | Code work | a reproduction and the fix |
 | R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | a reproduction: whether it happens only while a turn or job runs, and at which row; `walking_down_from_far_up_a_long_session_reaches_the_tail_while_rows_arrive` passes on main |
 | T16 | W9's open questions | Code work | item 7 (call ids are positional per turn); unclear: item 6 asked lubuntu3 whether RAGFlow signals "no coverage" in a field, no answer is recorded |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
@@ -820,13 +820,11 @@ Every daemon writes one `sessions.db` (9.4 GB on 2026-11-06, a WAL that reached 
 
 `an_unknown_skill_name_is_refused_and_runs_nothing` failed once in a full gate with `session s-skills-path is being written by another process` naming the test's own pid, 0 s ago. Six reruns and the next full gate passed. The writer lease is read while the same process still holds it from an earlier open.
 
-## R133 - The head's small hangs and orderings
+## R133 - The one-shot env report prints its lines out of order
 
-**Status:** open. left: three items.
+**Status:** open. left: a reproduction and the fix.
 
-- The attach wait (`ATTACH_WAIT`, 30 s, `crates/tui/src/head.rs:240`) shows nothing while it runs.
-- The one-shot env report prints its lines out of order.
-- The macOS clipboard read through `osascript` has no deadline, so a stuck pasteboard owner freezes the head (the Linux read got a 3 s deadline in `c9c8fbca`).
+The environment trailer a one-shot command appends (`shell::oneshot_trailer`) was seen reporting its lines out of order. The other two items once filed here are closed: the attach wait draws the attach screen and answers keys while it runs, and the macOS clipboard read now has the same 3 s deadline as the Linux readers.
 
 ## R134 - Scrolling stops at a line above the tail
 
