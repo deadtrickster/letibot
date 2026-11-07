@@ -34,6 +34,62 @@ done, postponed or cancelled on a session's board, and a review or merge queue r
 post one short line to that session's project room (or the host room when the session has no project)
 with a `ref` to the row. Nothing else is copied: the todo board and the merge queue stay where they are.
 
+### Asking another session a question
+
+A row can wait on another session's ANSWER, and the room holds the wait: it is the one process that
+sees both connections and outlives either daemon. The ask is made by `todo_write`, which talks to the
+room before it writes the edge, so every refusal reaches the model in the same call:
+
+```text
+todo_write {"wait_on": [{"content": "wire the port",
+             "ask": {"session": "serenedb", "room": "host", "question": "which port?"}}]}
+```
+
+`room` defaults the way `say` does, to the asker's project room. The question is posted as a message
+addressed to the target, with a `ref` `{"kind": "ask", "id": <seq>}`, and that `seq` is the ask's id —
+the thread its answer goes in and the number `read {"thread": N}` shows. A top-level session is a
+SERVICE: it is expected to be running and one that stopped is a fault the operator repairs, so
+liveness never settles an ask — it only escalates. A subagent, the operator, this very session, an
+unknown or ambiguous handle and another host's session are refused by name, and so is a target that
+cannot see the room (the refusal points at `host` or `invite`). The same asker, target and question
+already open is THAT ask and not a second one, so several rows carry one id and one settle releases
+them all.
+
+The asked session is woken once by the question and then nagged by its OWN BOARD: the room pass puts a
+row on it naming the asker, the ask, the question and both verbs. It answers with `room`:
+
+```text
+room {"verb": "answer", "ask": 4211, "text": "5433"}
+room {"verb": "decline", "ask": 4211, "text": "not my area"}
+room {"verb": "asks"}
+```
+
+Only `answer` and `decline` settle an ask. A plain thread reply reaches the asker as ordinary chat and
+unblocks nothing, and marking the row done does nothing — the next pass puts it back while the ask is
+open. The answer is a thread reply in the ask's room addressed to the asker, and it becomes the words
+the asker's row keeps: `` `serenedb` answered: 5433 ``, or `` `serenedb` declined: … ``.
+
+The asker's pass reads `asks` every five seconds and applies what settled, so a settle that landed
+while its daemon was away is applied on its first pass back. That same pass takes a question back when
+its row is done, cancelled, detached or re-worded, and raises the operator's card:
+
+- The target has held no connection for `ASK_GRACE_MS` — five minutes, shortened by
+  `LETIBOT_ROOM_ASK_GRACE_MS` for a test: the ask stays OPEN and the operator is asked to restart it,
+  *"`serenedb` stopped and `arango` waits on its answer to \"which port?\" — please restart it"*. A
+  restart inside the grace is invisible, and the card is withdrawn the moment the target reconnects.
+- The asker gone is the same, from the other side: the target's row says the asker is not running and
+  the operator is asked to restart it. The target can still answer, and the answer waits in the room.
+
+An ask ends in exactly these ways: the target answers or declines; the asker withdraws it because its
+row stopped waiting; the operator withdraws it; or the target's session is DELETED, which is the one
+`DOWN` — a daemon exit, a `--stop`, a crash or a reboot is a restart the operator owes and settles
+nothing. A deleted asker withdraws its own asks the same way. The room being unreachable settles
+nothing either: room down is not the target down.
+
+Asks live in the chat store (records `ask` and `ask_state`), and a settled one is kept 24 hours; an
+open one is never dropped. Grace clocks restart with the coordinator, so a room restarted while an ask
+was open brings the ask back and asks nothing of the operator until the grace has run again.
+
 ### The operator's view: `/rooms`
 
 `/rooms` opens the chat as the operator, from any head. Channels are on the left: the host room,
@@ -272,6 +328,19 @@ name.
 | `roster {room}` | `roster {room, rows}` | `name`, `kind`, `connected`, `project`, `label` |
 | `inbox {attention?, limit?}` | `inbox {rows, skipped, cursor, head}` | what was missed since the cursor. Moves nothing |
 | `ack {seq}` | `acked {cursor}` | moves the cursor forward only, never past the head |
+| `ask {id, room, to, question}` | `asked {id, ask}` | posts the question as a `say` addressed to `to` with a ref `{"kind": "ask", "id": <seq>}` and holds the ask. `room` empty is the project room. A session connection only; the same asker, target and question already open answers the SAME ask |
+| `reply {id, ask, text}` | `asked {id, ask}` | the target's answer: a thread reply in the ask's room addressed to the asker, and the ask becomes `answered`. Only the target may send it, and only while the ask is open |
+| `decline {id, ask, text}` | `asked {id, ask}` | the target will not answer. Posted like a `reply`; the ask becomes `declined` |
+| `withdraw {id, ask}` | `asked {id, ask}` | the asker, or the operator's seat, takes the ask back. A `system` note in the thread says so |
+| `retire {id, session}` | `asks {by_me, of_me}` | the session named is deleted, so every open ask of it ends `down` and every ask it made is withdrawn. That session's own connection only, sent before it closes |
+| `asks` | `asks {by_me, of_me}` | this session's asks, both halves, settled ones included, oldest first. A read |
+
+An ask is `{"seq", "room", "asker", "target", "question", "asked_ms", "gone_since_ms", "escalated", "state"}`,
+where `state` is `open`, `answered {text, ms}`, `declined {text, ms}`, `down {ms}` or
+`withdrawn {by, ms}`. `gone_since_ms` and `escalated` describe the OTHER end of the ask — the target's
+in `by_me`, the asker's in `of_me` — and are derived from the connection the room can see, never kept:
+a reconnect clears them. An unknown ask is `unknown_ask`, a reply from anybody but the target is
+`ask_not_the_target`, and an ended ask takes no second answer (`ask_settled`).
 
 A repeated `say`, `dm` or `notify` with the same `(author, id)` returns the first message and appends
 nothing, inside a window of 256 requests. Refusals are `refused {id, why}`; a room a connection may not
@@ -366,8 +435,10 @@ chatted. `message` is the room `Message` as JSON. A head merges it as though a `
 
 ### Versions
 
-`ROOM_PROTOCOL_VERSION` is 9, the room's own number: 9 added the blob store and `attachments` on a `say`,
-so a version-8 coordinator would drop a picture in silence and the skew is refused instead.
+`ROOM_PROTOCOL_VERSION` is 10, the room's own number: 10 added the ask — `ask`, `reply`, `decline`,
+`withdraw`, `retire` and `asks` — so a question put to a version-9 coordinator is refused by name
+instead of being read as a session that cannot be asked. 9 had added the blob store and `attachments`
+on a `say`, for the same reason: a skew is refused rather than obeyed halfway.
 `PROTOCOL_VERSION` (head to daemon) is 65: 65 added `ServerFrame::RoomChatPushed`.
 
 ### What is kept from flowy, and what is not
@@ -429,6 +500,14 @@ Tools:
 | `room_dm` | `{to, text, thread}` | the message, in room `dm` |
 | `room_roster` | `{room}` | who is in the room |
 | `room_inbox` | `{attention, limit, ack}` | what was missed since the cursor, `to_me` by default. `ack: true` moves the cursor past the rows returned |
+| `room_asks` | - | the asks between this seat and the other sessions: `of_me` (owed an answer) and `by_me`, with `state` and `lines` |
+| `room_answer` | `{ask, text}` | answers the ask: a thread reply in its room, and the asker's row is released |
+| `room_decline` | `{ask, text}` | declines it, saying why. A different outcome from an answer, and the asker's row reads which |
+
+**Being asked.** A Claude Code seat has no board, so an ask of it is nagged by the channel push of the
+question plus the operator's card when it is gone - and settled by `room_answer` or `room_decline`, which
+send `reply` and `decline` over the seat's own connection (the room refuses an answer from anybody but the
+target). `room_asks` is what it reads to see what it owes; a plain chat reply settles nothing.
 
 **The stream.** The bridge declares `capabilities.experimental["claude/channel"]`. After
 `notifications/initialized` it starts a supervisor that keeps the seat connected. Each pushed message

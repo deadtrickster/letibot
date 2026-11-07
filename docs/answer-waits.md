@@ -1,6 +1,14 @@
 # Answer waits - a row that waits on another session's answer
 
-Status: design, not built.
+Status: built, all eight steps. The room holds the ask at `ROOM_PROTOCOL_VERSION` 10
+(`crates/room/src/chat.rs`, `server.rs`, `wire.rs`), the edges are step 2's and 3's, the verbs and the
+link are `crates/harnessd/src/room/link.rs`, the passes are `crates/harnessd/src/room/asks.rs`, and
+the end-to-end test is `crates/harnessd/tests/room_asks_e2e.rs`. `docs/room.md` and TODO.md's R136 row
+are the operator's half. What is NOT built: a control in a head's ask list for the operator's own
+withdrawal - the operator's seat can send `withdraw` over the wire and no pane offers it yet.
+
+The plan below is the one that was followed, step by step, so the numbered sections are history as
+much as design.
 
 A row on session A's board waits on an answer from session B, asked in a room. B gets a row on its
 own board saying A asked and A waits, and is nagged until it answers or declines. If B's daemon goes

@@ -60,7 +60,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | the operator rotates the token; a command this box spawns and a remote placement both keep every secret off every argv now |
 | R132 | `skills_path.rs` refuses its own session as written by another process, once under load | Code work | the root cause; seen once in a full gate, 6 reruns and the next gate passed |
 | R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | the next stop's line from `~/.local/state/letibot/scroll-stalls.log`, which the head now writes at each stop |
-| R136 | Answer waits: a row waits on another top-level session's answer | Code work | plan steps 1, 4, 5, 7, 8 (the room's asks, the `answer`/`decline` verbs, the passes, end to end, docs) on room protocol 10; steps 2, 3, 6 (the todo side and the head) are landed |
+| R136 | Answer waits: a row waits on another top-level session's answer | Landed | all eight steps of `docs/answer-waits.md` on room protocol 10: the room's ask state, the `wait_on` edge, the `answer`/`decline` verbs, the passes, the end-to-end test and the docs |
 | R137 | Todo graphs that span projects | Code work | the design; an answer-wait ask is the first cross-project edge |
 | R138 | Stable session identities across hosts, through migrations | Code work | the design; until then asks are same-host only |
 | R144 | The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag | Code work | the head's pane for a seat's board; the board, its waits and its nag are landed |
@@ -883,11 +883,14 @@ The two negatives over the floor are `"the enormous amount of context-only messa
 
 ## R136 - Answer waits: a row waits on another top-level session's answer
 
-**Status:** open. left: the build, steps 1, 4, 5, 7 and 8 of `docs/answer-waits.md`; steps 2, 3 and 6 are built on branch `remote/83414738`.
+**Status:** built, all eight steps: the room's ask (protocol 10), the `Ask`/`Owed`/`Answered` edges and
+`wait_on`'s `ask`, the `room` `answer`/`decline`/`asks` verbs with `Retire` on a deleted session, the
+room pass that writes `Owed` rows and applies what settled, the two-session end-to-end test with the grace
+from `LETIBOT_ROOM_ASK_GRACE_MS`, and `docs/room.md`.
 
 The design is `docs/answer-waits.md`. A's row carries an `Ask` edge, the room holds the ask, B gets a row on its own board saying A waits, and only B's explicit `answer` or `decline` settles it. The contract under it: top-level sessions are services. A session gone for 5 minutes raises an operator ask to restart it and settles nothing. An ask ends only by answer, decline, withdrawal by A or the operator, or B's session being deleted (`Retire`, the one `DOWN`). Claude Code seats are asked through bridge tools `room_answer`, `room_decline`, `room_asks`.
 
-Built here: `TodoNeed::Ask { ask, of, room, question }`, `TodoNeed::Owed { ask }` and `Answered.ask` in the store, the wire and both conversions; `wait_on`'s `ask` through a new `crates/tools` seat, `AskLink`/`AskMade`, that `harnessd`'s room link is to implement (`fn ask(of, room, question) -> Result<AskMade, String>)`, with `needs`' refusal of `ask`, `keep_answers` keeping an ask through a restatement, `detach`, `NeedFate::PeerAsked` as a root of the check, `TodoBoard::settle_ask` and the four settle sentences in `AskSettle::reply`; and the head drawing of both shapes. Still open: the room's own state and frames (step 1), the link and verbs (step 4), the passes that write `Owed` rows and apply settles (step 5), the two-daemon end-to-end test (step 7), and `docs/room.md` (step 8).
+Built here: `TodoNeed::Ask { ask, of, room, question }`, `TodoNeed::Owed { ask }` and `Answered.ask` in the store, the wire and both conversions; `wait_on`'s `ask` through a new `crates/tools` seat, `AskLink`/`AskMade`, that `harnessd`'s room link is to implement (`fn ask(of, room, question) -> Result<AskMade, String>)`, with `needs`' refusal of `ask`, `keep_answers` keeping an ask through a restatement, `detach`, `NeedFate::PeerAsked` as a root of the check, `TodoBoard::settle_ask` and the four settle sentences in `AskSettle::reply`; and the head drawing of both shapes. Built on top of that, all of it in this tree: the room holds the ask (`chat::AskView`/`AskState`, the `Ask`/`AskState` store records, `Server`'s `gone_since` and derived `escalated`) and answers the six frames `ask`, `reply`, `decline`, `withdraw`, `retire`, `asks` at `ROOM_PROTOCOL_VERSION` 10; the daemon's link implements the `AskLink` seat and carries `answer`/`decline`/`asks`, and `harnessd --delete` sends `Retire`; `crates/harnessd/src/room/asks.rs` is the pass (owed rows, settles, withdrawals, the operator's card on `escalated`) on the existing five-second room pass; the bridge serves `room_answer`, `room_decline`, `room_asks`. The person withdrawing an ask from a head's ask list is not built: the operator's seat can `withdraw` over the wire, and no pane offers it.
 
 ## R137 - Todo graphs that span projects
 
