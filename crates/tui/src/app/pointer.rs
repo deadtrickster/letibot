@@ -111,11 +111,11 @@ pub(crate) fn restyle(row: &str, x0: usize, x1: usize, on: &str, off: &str) -> S
     out
 }
 
-/// Cells `x0..x1` of a frame row, a tad brighter: normal intensity and bold, so a faint hint and an
-/// ordinary row both lift, re-applied after every style change inside the run. Where the run ends
-/// the row's own style is put back exactly, so nothing after the mark is brightened.
+/// Cells `x0..x1` of a frame row, lit up: faint text goes to normal intensity and nothing turns
+/// bold, so a hover is a subtle lift and the hand pointer says the rest. Re-applied after every
+/// style change inside the run, and the row's own style is put back exactly where the run ends.
 pub(crate) fn brighten(row: &str, x0: usize, x1: usize) -> String {
-    const ON: &str = "\x1b[22;1m";
+    const ON: &str = "\x1b[22m";
     let mut out = String::with_capacity(row.len() + 24);
     let mut seen = String::new();
     let mut col = 0usize;
@@ -525,7 +525,7 @@ mod tests {
         // A faint hint: brightened through its own reset, and the separator after it faint again.
         let row = "\x1b[2mesc closes\x1b[0m\x1b[2m · tab\x1b[0m";
         let b = brighten(row, 0, 10);
-        assert!(b.starts_with("\x1b[2m\x1b[22;1mesc closes"), "{b:?}");
+        assert!(b.starts_with("\x1b[2m\x1b[22mesc closes"), "{b:?}");
         let sep = b.find(" · tab").expect("the separator");
         assert!(
             b[..sep].ends_with("\x1b[0m\x1b[2m"),

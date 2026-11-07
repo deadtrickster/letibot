@@ -1125,7 +1125,7 @@ fn hover_marks_a_button_a_still_press_clicks_and_a_drag_copies() {
     });
     let marked = a.screen(100, 40);
     assert!(
-        marked[hy].contains("\x1b[22;1m") && !marked[hy].contains("\x1b[4m"),
+        marked[hy].contains("\x1b[22m") && !marked[hy].contains("\x1b[4m"),
         "not brightened (or underlined): {:?}",
         marked[hy]
     );
@@ -1389,7 +1389,7 @@ fn hovering_an_edit_card_brightens_all_of_its_rows() {
     // Every row of the card with something on it - a blank spacer has nothing to brighten.
     for r in rows.iter().filter(|r| !screen[top + **r].trim().is_empty()) {
         assert!(
-            screen[top + r].contains("\x1b[22;1m"),
+            screen[top + r].contains("\x1b[22m"),
             "row {r} of the card is not lit: {:?}",
             screen[top + r]
         );
@@ -1484,7 +1484,7 @@ fn a_click_that_opens_the_popup_leaves_no_light_on_it() {
     let y = (top + y) as u16;
     a.key(Key::Hover { x: 10, y });
     assert!(
-        a.screen(100, 40)[y as usize].contains("\x1b[22;1m"),
+        a.screen(100, 40)[y as usize].contains("\x1b[22m"),
         "the premise: the card is lit"
     );
     assert_eq!(a.key(Key::Click { x: 10, y }), None);
@@ -1492,7 +1492,7 @@ fn a_click_that_opens_the_popup_leaves_no_light_on_it() {
     let popup = a.screen(100, 40);
     for (i, l) in popup.iter().enumerate() {
         assert!(
-            !l.contains("\x1b[22;1m"),
+            !l.contains("\x1b[22m"),
             "row {i} of the popup is lit: {l:?}"
         );
     }
