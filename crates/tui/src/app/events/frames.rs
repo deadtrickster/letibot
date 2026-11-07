@@ -127,6 +127,9 @@ impl App {
                 // frame REPLACES `self.sessions`, which is what [`App::fold_subagents`] folds the
                 // subagent rows and the composer's count from, so a stale pane would outlive the list.
                 self.fold_subagents();
+                if self.picker_seat_pending && self.is_open(Surface::Picker) {
+                    self.seat_picker();
+                }
                 match created {
                     // A session was made *because this head asked*. Going there is
                     // what was meant - `/new` that leaves you where you were is a

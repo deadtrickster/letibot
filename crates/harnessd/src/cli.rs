@@ -3014,6 +3014,22 @@ fn is_conversation(s: &letibot_tokencore::store::StoredSession) -> bool {
             .is_some_and(|t| t.starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX))
 }
 
+/// Is this row the operator's own top-level session - what `--continue` reopens. A package's,
+/// a one-shot's, the queue's and a subagent's are conversations to name, never to continue.
+fn is_operators(s: &letibot_tokencore::store::StoredSession) -> bool {
+    letibot_sessionlog::is_operator_top_level(&letibot_sessionlog::GroupRow {
+        id: &s.id,
+        parent: s.parent_session_id.as_deref(),
+        origin: s
+            .origin
+            .as_deref()
+            .and_then(letibot_sessionlog::SessionOrigin::parse)
+            .unwrap_or_default(),
+        role: s.role.as_deref(),
+        title: s.title.as_deref().unwrap_or(""),
+    })
+}
+
 /// The stored sessions, in the groups a person reads them in - `mine` first, then one
 /// entry per automatic kind, each with its members in the store's own order (newest
 /// activity first).
@@ -3083,7 +3099,7 @@ fn newest_conversation(
     let mut empty = 0usize;
     let mut rows = Vec::with_capacity(all.len());
     for s in all {
-        if !is_conversation(&s) {
+        if !is_conversation(&s) || !is_operators(&s) {
             hidden += 1;
         } else if s.items == 0 {
             empty += 1;
@@ -4193,5 +4209,37 @@ mod tests {
             Some("s-here"),
             "the subtree match is a fallback, not a licence to reach past a closer answer"
         );
+    }
+
+    /// The queue's own session is seated as an orchestrator and titled by its board, so no seat
+    /// or title mark names it. Its id does, and it must not be the one `--continue` reopens.
+    #[test]
+    fn continue_skips_the_queues_own_session_by_id() {
+        let (store, _d) = store_with(&[]);
+        session_row(
+            &store,
+            "s-mine",
+            "/ws",
+            Some("mine"),
+            Some("leticode"),
+            None,
+        );
+        let mine = rows_for(&store, "s-mine", 2, 0);
+        session_row(
+            &store,
+            "s-gatekeeper-c2f63a0e6a17",
+            "/ws",
+            Some("the review queue"),
+            Some("orchestrator"),
+            None,
+        );
+        let gk = rows_for(&store, "s-gatekeeper-c2f63a0e6a17", 5, mine);
+        assert!(gk > mine, "the queue's session has to be the newer row");
+
+        let latest = newest_conversation(
+            store.list_sessions().expect("listing"),
+            Some(std::path::Path::new("/ws")),
+        );
+        assert_eq!(latest.pick.as_ref().map(|s| s.id.as_str()), Some("s-mine"));
     }
 }

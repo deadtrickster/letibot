@@ -216,6 +216,7 @@ impl App {
                 if n == 0 {
                     return ControlFlow::Continue(());
                 }
+                self.picker_seat_pending = false;
                 self.picker_sel = step(self.picker_sel.min(n - 1), n, up);
             }
             // The view follows the config cursor, its `from …` line too (`config_follow`).

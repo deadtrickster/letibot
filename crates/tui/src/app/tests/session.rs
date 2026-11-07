@@ -2804,3 +2804,29 @@ fn a_replayed_model_set_does_not_outrank_the_settings_row() {
         "a switch from before the attach outranked the row the head holds: {h}"
     );
 }
+
+/// A picker opened before its list holds this session seats the cursor when the list lands, instead of
+/// leaving it on whatever row is first (a group line).
+#[test]
+fn a_picker_opened_before_this_session_is_listed_seats_on_it_when_it_is() {
+    let mut a = app();
+    a.apply(hello(
+        "s2",
+        vec![brief("s1", "one", false)],
+        Hub::new("s2").snapshot(),
+    ));
+    a.command("sessions");
+    assert!(a.picker_seat_pending, "this session is not listed yet");
+    a.apply(ServerFrame::Sessions {
+        sessions: vec![brief("s1", "one", false), brief("s2", "two", false)],
+        current: "s2".into(),
+        created: None,
+    });
+    assert!(!a.picker_seat_pending);
+    let row = a.picker_rows()[a.picker_sel].clone();
+    assert_eq!(
+        row.session.map(|i| a.sessions[i].session_id.clone()),
+        Some("s2".to_string()),
+        "the cursor is on the session this head is in"
+    );
+}

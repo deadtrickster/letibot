@@ -199,6 +199,9 @@ pub struct App {
     /// Which picker row the cursor is on. It starts on the session this head is already in, so
     /// an untouched list answers Enter with a no-op rather than a surprise.
     pub(crate) picker_sel: usize,
+    /// The picker opened before the cursor could be seated on this session (its list had not
+    /// landed, or lacked it). The next list seats it; any cursor move cancels.
+    pub(crate) picker_seat_pending: bool,
     /// The home this head shortens paths against, `$HOME`, read once at construction: three
     /// places draw a path and a per-frame read would make the picture depend on the process's
     /// environment, which no test can pin. A test sets this field.
@@ -1209,6 +1212,7 @@ impl App {
             plugin_detail: None,
             plugin_sent: None,
             picker_sel: 0,
+            picker_seat_pending: false,
             home: std::env::var("HOME").unwrap_or_default(),
             sessions_host: std::cell::RefCell::new(None),
             picker_folds: std::collections::BTreeMap::new(),
