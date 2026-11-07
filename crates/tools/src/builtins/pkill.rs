@@ -1,6 +1,7 @@
 //! `pkill`: find processes by a pattern, and kill them by pid, never by the pattern.
 //! A pattern also matches the shell that ran the command, so listing and killing are two steps,
-//! and a kill re-checks each pid. A job of this session is refused: `job_kill` reaps its cgroup.
+//! and a kill re-checks each pid. A job of this session is never refused: a session may always stop
+//! what it started.
 
 use std::time::Duration;
 
@@ -23,7 +24,7 @@ impl Tool for Pkill {
              kill them BY PID. `action: \"list\"` (the default) shows every match — \
              pid, age, command line — with PROTECTED beside this daemon, its \
              ancestors and the model server, and `job <id>` beside a job of this \
-             session (use `job_kill` for those). `action: \"kill\"` takes `pids` \
+             session (those are always yours to stop). `action: \"kill\"` takes `pids` \
              from that listing and `signal` (`term` default, `int`, `hup`, `kill`), \
              checks each pid still matches the pattern and is not protected, sends \
              the signal, waits two seconds and reports which are gone. The pattern \
@@ -62,9 +63,16 @@ impl Tool for Pkill {
             .unwrap_or_default();
         let jobs: Vec<(u32, String)> = host
             .map(|h| {
+                // The leader and every process in the job's scope: a job's children are the
+                // session's own too.
                 h.jobs()
                     .into_iter()
-                    .map(|j| (j.pid, j.id.0.clone()))
+                    .filter(|j| j.state.is_running())
+                    .flat_map(|j| {
+                        let mut v = vec![(j.pid, j.id.0.clone())];
+                        v.extend(h.job_pids(&j.id).into_iter().map(|p| (p, j.id.0.clone())));
+                        v
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -111,15 +119,11 @@ impl Tool for Pkill {
                         ));
                         continue;
                     };
-                    if let Some((_, why)) = protected.iter().find(|(pp, _)| *pp == pid) {
+                    // A session may always stop what it started, so a job's process is never
+                    // refused as protected, whatever port it holds.
+                    let own = jobs.iter().any(|(jp, _)| *jp == pid);
+                    if !own && let Some((_, why)) = protected.iter().find(|(pp, _)| *pp == pid) {
                         report.push_str(&format!("  {pid}: REFUSED — PROTECTED: {why}\n"));
-                        continue;
-                    }
-                    if let Some((_, job)) = jobs.iter().find(|(jp, _)| *jp == pid) {
-                        report.push_str(&format!(
-                            "  {pid}: REFUSED — it is job `{job}` of this session; `job_kill` \
-                             reaps it with its cgroup\n"
-                        ));
                         continue;
                     }
                     match procs::kill_exact(p.pid, p.start, signal) {
@@ -197,10 +201,10 @@ fn listing(
     );
     for p in found {
         s.push_str(&p.line());
-        if let Some((_, why)) = protected.iter().find(|(pp, _)| *pp == p.pid) {
+        if let Some((_, job)) = jobs.iter().find(|(jp, _)| *jp == p.pid) {
+            s.push_str(&format!("   job `{job}` of this session - yours to stop"));
+        } else if let Some((_, why)) = protected.iter().find(|(pp, _)| *pp == p.pid) {
             s.push_str(&format!("   PROTECTED — {why}"));
-        } else if let Some((_, job)) = jobs.iter().find(|(jp, _)| *jp == p.pid) {
-            s.push_str(&format!("   job `{job}` of this session — use job_kill"));
         }
         s.push('\n');
     }
@@ -258,7 +262,7 @@ mod tests {
             "{l}"
         );
         assert!(
-            l.contains("job `job-7` of this session — use job_kill"),
+            l.contains("job `job-7` of this session - yours to stop"),
             "{l}"
         );
         assert!(l.contains("     11     1m30s  sleep 30\n"), "{l}");

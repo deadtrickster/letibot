@@ -1174,6 +1174,13 @@ impl SettlementQueue {
         self.ring(&self.owner);
     }
 
+    /// The durable row without a notice or a bell.
+    fn record_only(&self, c: &JobCompletion) {
+        if let Some(rec) = &self.recorder {
+            rec.record(c);
+        }
+    }
+
     /// The bell, rung for the session that has to act on the settlement - its owner, or
     /// the level above when the owner has stopped. Never for a session that is neither
     /// a ring is a promise that somebody can be woken by it.
@@ -1455,6 +1462,63 @@ fn fate_of(word: &str) -> (letibot_tokencore::store::ProcState, Option<i32>) {
     (ProcState::Stopped, None)
 }
 
+/// What a `job_kill` settles a job as: the session's own act, already reported in its result.
+const OWN_KILL: &str = "killed by job_kill";
+
+/// How long a kill's own verification (the group is killed, then waited on) may take before the
+/// watcher stops waiting for it.
+const KILL_VERIFY: Duration = Duration::from_secs(8);
+
+/// `None` when the kill held and every process of the job is gone. Else what is still alive: the
+/// kill reopened the job, or its processes are still in the scope when the wait ran out.
+fn own_kill_survivors(host: &dyn ProcessHost, job: &JobId) -> Option<String> {
+    let until = std::time::Instant::now() + KILL_VERIFY;
+    loop {
+        if host.job(job).is_some_and(|v| v.state.is_running()) {
+            break;
+        }
+        if host.job_pids(job).is_empty() {
+            return None;
+        }
+        if std::time::Instant::now() >= until {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let pids = host.job_pids(job);
+    if pids.is_empty() {
+        return None;
+    }
+    Some(
+        pids.iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
+fn survivor_notice(
+    owner: &str,
+    job: &str,
+    view: &Option<letibot_tools::exec::JobView>,
+    pids: String,
+) -> JobCompletion {
+    JobCompletion {
+        memory: None,
+        kind: BackgroundKind::Job,
+        owner: owner.to_string(),
+        job: job.to_string(),
+        command: view.as_ref().map(|v| v.command.clone()).unwrap_or_default(),
+        slug: view.as_ref().and_then(|v| v.slug.clone()),
+        state: format!("kill did not take: pid {pids} still alive; it is still yours to stop"),
+        produced: view.as_ref().map(|v| v.produced).unwrap_or(0),
+        elapsed_ms: 0,
+        detail: String::new(),
+        arrived: SystemTime::now(),
+        later: false,
+    }
+}
+
 fn watch_one(
     host: Weak<dyn ProcessHost>,
     hub: Weak<Hub>,
@@ -1480,6 +1544,19 @@ fn watch_one(
                     .map(|s: JobState| s.word())
                     .or_else(|| view.as_ref().map(|v| v.state.word()))
                     .unwrap_or_else(|| "gone".to_string());
+                // The session's own `job_kill` already told the model the outcome in its result.
+                // News is only a kill that did not hold.
+                let mut quiet = false;
+                if word == OWN_KILL {
+                    match own_kill_survivors(host.as_ref(), &JobId(job.clone())) {
+                        None => quiet = true,
+                        Some(left) => {
+                            queue.push(survivor_notice(&queue.owner, &job, &view, left));
+                            hub.refresh_activity();
+                            continue;
+                        }
+                    }
+                }
                 let produced = view.as_ref().map(|v| v.produced).unwrap_or(0);
                 let elapsed_ms = view
                     .as_ref()
@@ -1508,7 +1585,7 @@ fn watch_one(
                 });
                 // And the model, which the event does not reach. Queued on THIS session's
                 // own queue - the one that backgrounded it.
-                queue.push(JobCompletion {
+                let completion = JobCompletion {
                     memory,
                     kind: BackgroundKind::Job,
                     owner: queue.owner.clone(),
@@ -1521,7 +1598,12 @@ fn watch_one(
                     detail,
                     arrived: SystemTime::now(),
                     later: false,
-                });
+                };
+                if quiet {
+                    queue.record_only(&completion);
+                } else {
+                    queue.push(completion);
+                }
                 settled.lock().expect("job watchers").insert(&job);
                 // And what the session is waiting on has moved: the job is still in `watching` but its
                 // ending is on the queue now, which is `Delivery`.

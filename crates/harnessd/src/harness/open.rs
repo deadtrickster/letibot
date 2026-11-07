@@ -1078,7 +1078,7 @@ impl Harness {
             // What this daemon manages, declared before any tool runs: the model server it talks
             // to. `pkill` refuses it by name and a `process` monitor never finds it.
             if let Some(h) = backend.host_processes() {
-                h.protect_listener(
+                h.protect_model_server(
                     cfg.endpoint.port,
                     format!(
                         "the model server this session talks to, on {}",

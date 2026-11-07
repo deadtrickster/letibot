@@ -818,6 +818,38 @@ pub fn hand_over(from: &dyn ProcessHost, to: &dyn ProcessHost) -> Vec<Handover> 
         .collect()
 }
 
+/// What a kill that did not finish says: the pids and what they run, and whose they still are.
+fn still_alive_note(pids: &[u32], command: &str) -> String {
+    let who: Vec<String> = pids
+        .iter()
+        .map(|p| {
+            let r = super::scope::Reaped::observe(*p);
+            format!("{p} {}", r.label())
+        })
+        .collect();
+    format!(
+        "NOT killed: still alive after the kill: {} (job `{command}`). It is still the session's to stop.",
+        who.join(", ")
+    )
+}
+
+/// Whether a command line is a local model server. The program name is the evidence, not the
+/// port it listens on.
+pub fn model_server_command(cmdline: &str) -> bool {
+    const NAMES: [&str; 8] = [
+        "llama-server",
+        "llama.cpp",
+        "llama-cpp",
+        "mlx_lm",
+        "ollama",
+        "vllm",
+        "koboldcpp",
+        "text-generation",
+    ];
+    let lower = cmdline.to_lowercase();
+    NAMES.iter().any(|n| lower.contains(n))
+}
+
 /// A record's scope spelling back into the two things a cgroup needs, with the conservative
 /// answer for a word this build does not know: the session, which is where a background job lives.
 /// A guess that widened a job's lifetime would keep it alive past its reaper.
@@ -1179,6 +1211,30 @@ impl HostProcesses {
         outlives: bool,
     ) -> Option<u32> {
         let pid = listener_pid(port)?;
+        self.protect_with(pid, why.into(), outlives);
+        Some(pid)
+    }
+
+    /// Protect the model server on `port`, by what it is: the listener's command must look like
+    /// a model server, and a process that is one of this host's jobs is never it. A port alone
+    /// names whoever bound it, which may be the session's own `http.server`.
+    pub fn protect_model_server(
+        &self,
+        port: u16,
+        why: impl Into<String>,
+        outlives: bool,
+    ) -> Option<u32> {
+        let pid = listener_pid(port)?;
+        let is_job = self.jobs.lock().expect("jobs").iter().any(|j| {
+            j.pid == pid
+                || self
+                    .tree
+                    .members(&j.lifetime().scope)
+                    .is_ok_and(|m| m.contains(&pid))
+        });
+        if is_job || !model_server_command(&Reaped::observe(pid).cmdline) {
+            return None;
+        }
         self.protect_with(pid, why.into(), outlives);
         Some(pid)
     }
@@ -1665,6 +1721,9 @@ impl ProcessHost for HostProcesses {
             // Masked as the bytes arrive, so the window and the spill file are one set of bytes.
             .with_secret_mask(&secret_env),
         );
+        if let Some(p) = super::procs::read(pid) {
+            job.set_identity(format!("start:{}", p.start));
+        }
         // Armed after the masker and before the first drain starts, so no byte can reach the
         // ring without first passing the trailer out of the stream.
         if let Some(mark) = &trailer {
@@ -1872,6 +1931,10 @@ impl ProcessHost for HostProcesses {
             DEFAULT_CAPTURE_BYTES,
             super::jobs::Stdin::none(),
         ));
+        job.set_identity(a.identity.clone());
+        // The restart lost the tree's memory of this job's processes. Re-find them from the
+        // leader's pid and start time, or `job_kill` observes nothing and says the job is gone.
+        self.tree.claim(&job.lifetime().scope, a.pid, &a.identity);
         self.by_id
             .lock()
             .expect("jobs by id")
@@ -1893,6 +1956,11 @@ impl ProcessHost for HostProcesses {
                         Some(p) if identity == format!("start:{}", p.start) && p.state != 'Z' => {}
                         // Gone, or the number belongs to somebody else now: either way this job's
                         // process is not there.
+                        // A leader that exited while its group lives on is not a dead job.
+                        _ if !tree
+                            .members(&watched.lifetime().scope)
+                            .unwrap_or_default()
+                            .is_empty() => {}
                         _ => {
                             watched.settle(JobState::Dead);
                             settle_scope(tree.as_ref(), &kept, &watched.lifetime().scope);
@@ -2092,7 +2160,17 @@ impl ProcessHost for HostProcesses {
         if running {
             job.settle(JobState::Killed { by: by.to_string() });
         }
-        let mut r = self.tree.end(&job.lifetime().scope);
+        let scope = job.lifetime().scope;
+        // A restart can have emptied the scope's memory of a live process: look again by pid
+        // and start time before concluding there is nothing to kill.
+        if running && self.tree.members(&scope).unwrap_or_default().is_empty() {
+            self.tree.claim(&scope, job.pid, &job.identity());
+        }
+        let mut r = self.tree.end(&scope);
+        if running && !r.survivors.is_empty() {
+            job.reopen();
+            r.note = Some(still_alive_note(&r.survivors, &job.command));
+        }
         if !running && r.observed.is_empty() {
             r.note = Some(format!(
                 "`{id}` had already {} when the kill arrived; nothing was running to kill",
@@ -2104,15 +2182,37 @@ impl ProcessHost for HostProcesses {
     }
 
     fn end_scope(&self, scope: &ScopeId) -> Result<Reaping, ExecError> {
-        let r = self.tree.end(scope);
-        // Every job whose cgroup was under this scope stopped because we stopped
-        // it, and its state must say that rather than `signalled 9`.
-        for j in self.jobs.lock().expect("jobs").iter() {
-            if j.lifetime().scope.path.starts_with(&scope.path) && j.state().is_running() {
-                j.settle(JobState::Killed {
-                    by: format!("the {} scope ending", scope.kind.as_str()),
-                });
+        // Marked before the kill, like `kill_job_as`: the waiter would otherwise settle the
+        // job as the signal it saw. A job whose processes survive is reopened below.
+        let marked: Vec<Arc<Job>> = self
+            .jobs
+            .lock()
+            .expect("jobs")
+            .iter()
+            .filter(|j| j.lifetime().scope.path.starts_with(&scope.path) && j.state().is_running())
+            .cloned()
+            .collect();
+        for j in &marked {
+            j.settle(JobState::Killed {
+                by: format!("the {} scope ending", scope.kind.as_str()),
+            });
+        }
+        let mut r = self.tree.end(scope);
+        // Only said once its processes are gone: a survivor is still the session's to stop.
+        let mut alive = Vec::new();
+        for j in &marked {
+            let left = self.tree.members(&j.lifetime().scope).unwrap_or_default();
+            if !left.is_empty() {
+                j.reopen();
+                alive.push(still_alive_note(&left, &j.command));
             }
+        }
+        if !alive.is_empty() {
+            let n = alive.join("; ");
+            r.note = Some(match r.note.take() {
+                Some(o) => format!("{o}; {n}"),
+                None => n,
+            });
         }
         // The watchers go with the scope, because a monitor that merely stopped being polled
         // would look exactly like one whose condition never fired.
@@ -4010,5 +4110,217 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
             "a partial command must not have its text extended by machinery"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A tree whose kill leaves a process behind: the daemon cannot make a stubborn one, so the
+    /// tree lies about membership the way a failed kill would find it.
+    struct Stubborn {
+        inner: DirScopes,
+        pid: u32,
+    }
+
+    impl super::super::scope::ScopeTree for Stubborn {
+        fn describe(&self) -> String {
+            "a tree that cannot kill".into()
+        }
+        fn open(
+            &self,
+            kind: ScopeKind,
+            name: &str,
+            parent: Option<&ScopeId>,
+        ) -> Result<ScopeId, ExecError> {
+            self.inner.open(kind, name, parent)
+        }
+        fn members(&self, _scope: &ScopeId) -> Result<Vec<u32>, ExecError> {
+            Ok(vec![self.pid])
+        }
+        fn end(&self, scope: &ScopeId) -> Reaping {
+            let mut r = self.inner.end(scope);
+            r.survivors = vec![self.pid];
+            r
+        }
+        fn migrate(&self, from: &ScopeId, to: &ScopeId) -> Result<Migration, ExecError> {
+            self.inner.migrate(from, to)
+        }
+        fn list(&self) -> Vec<ScopeId> {
+            Vec::new()
+        }
+    }
+
+    fn adopt_sleep(h: &HostProcesses, handle: &str) -> (std::process::Child, JobId) {
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("a child to adopt");
+        let start = super::super::procs::read(child.id())
+            .expect("the child is visible")
+            .start;
+        let id = h
+            .adopt(&Adopted {
+                handle: handle.into(),
+                command: "sleep 30".into(),
+                slug: None,
+                cwd: "/tmp".into(),
+                pid: child.id(),
+                identity: format!("start:{start}"),
+                scope: "session.test".into(),
+                scope_dir: None,
+                owner_dir: None,
+            })
+            .expect("adopted");
+        (child, id)
+    }
+
+    /// A kill that left a process must not be reported as a kill, by `job_kill` or by a scope's end.
+    #[test]
+    fn a_kill_that_left_a_process_says_so_and_the_job_stays_running() {
+        let dir = std::env::temp_dir().join(format!("letibot-stubborn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("root");
+        let mut probe = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("probe");
+        let h = HostProcesses::with_tree(
+            "/tmp",
+            Box::new(Stubborn {
+                inner: DirScopes(dir.clone()),
+                pid: probe.id(),
+            }),
+        );
+        let (mut child, id) = adopt_sleep(&h, "h-stubborn");
+        let r = h.kill_job(&id).expect("a kill is recorded");
+        let note = r.note.expect("the survivor is named");
+        assert!(
+            note.contains("NOT killed") && note.contains(&probe.id().to_string()),
+            "{note}"
+        );
+        assert!(h.job(&id).unwrap().state.is_running(), "reported killed");
+        let own_scope = h.job(&id).unwrap().scope;
+        let r = h.end_scope(&own_scope).expect("a scope end is recorded");
+        assert!(r.note.unwrap_or_default().contains("NOT killed"));
+        assert!(
+            h.job(&id).unwrap().state.is_running(),
+            "a scope ending was announced over a live process"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = probe.kill();
+        let _ = probe.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The daemon restarted: a new tree root knows nothing of the old scope's group files, and
+    /// the job is re-found from its pid and start time.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_job_kill_reaches_a_process_a_restarted_daemon_never_saw() {
+        use std::os::unix::process::CommandExt;
+        let parent = std::env::temp_dir().join(format!("letibot-restart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("a job to outlive its daemon");
+        let h = HostProcesses::with_tree(
+            "/tmp",
+            Box::new(super::super::scope::ProcessGroups::probe_under(&parent).unwrap()),
+        );
+        let start = super::super::procs::read(child.id()).unwrap().start;
+        let id = h
+            .adopt(&Adopted {
+                handle: "h-restarted".into(),
+                command: "sleep 30".into(),
+                slug: None,
+                cwd: "/tmp".into(),
+                pid: child.id(),
+                identity: format!("start:{start}"),
+                scope: "explicit.site-server".into(),
+                scope_dir: None,
+                owner_dir: None,
+            })
+            .expect("adopted");
+        let r = h.kill_job(&id).expect("killed");
+        assert_eq!(r.observed.len(), 1, "observed 0: {}", r.summary());
+        assert!(r.survivors.is_empty(), "{}", r.summary());
+        let _ = child.wait();
+        assert!(!super::super::darwin::alive(child.id()));
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn only_a_model_servers_own_command_is_one() {
+        assert!(model_server_command("llama-server -m x.gguf --port 8080"));
+        assert!(!model_server_command(
+            "python3 -m http.server 8080 --bind 127.0.0.1"
+        ));
+    }
+
+    fn listener(tag: &str) -> (std::process::Child, u16) {
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+            l.local_addr().unwrap().port()
+        };
+        let child = std::process::Command::new("python3")
+            .args([
+                "-c",
+                "import socket,sys,time\ns=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\ns.bind(('127.0.0.1',int(sys.argv[1])));s.listen(1);time.sleep(60)",
+            ])
+            .arg(port.to_string())
+            .arg(tag)
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("python3");
+        for _ in 0..100 {
+            if listener_pid(port).is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        (child, port)
+    }
+
+    /// A port is not an identity: a session's own server on the model's port is not refused, a
+    /// real model server is, and a job is never one even when its command says so.
+    #[test]
+    fn the_model_server_is_found_by_what_it_is_and_not_by_its_port() {
+        let (h, dir) = host_and_root("model-server");
+        let (mut http, port) = listener("http.server");
+        if listener_pid(port).is_none() {
+            eprintln!("listener not resolvable here");
+            let _ = http.kill();
+            return;
+        }
+        assert_eq!(h.protect_model_server(port, "model", true), None);
+        assert!(h.protected().iter().all(|p| p.pid != http.id()));
+        let _ = http.kill();
+        let _ = http.wait();
+
+        let (mut real, port) = listener("llama-server");
+        assert_eq!(h.protect_model_server(port, "model", true), Some(real.id()));
+        let _ = real.kill();
+        let _ = real.wait();
+
+        let (mut job, port) = listener("llama-server");
+        let start = super::super::procs::read(job.id()).unwrap().start;
+        h.adopt(&Adopted {
+            handle: "h-port".into(),
+            command: "serve".into(),
+            slug: None,
+            cwd: "/tmp".into(),
+            pid: job.id(),
+            identity: format!("start:{start}"),
+            scope: "session.test".into(),
+            scope_dir: None,
+            owner_dir: None,
+        })
+        .expect("adopted");
+        assert_eq!(h.protect_model_server(port, "model", true), None);
+        let _ = job.kill();
+        let _ = job.wait();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

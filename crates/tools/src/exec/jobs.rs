@@ -834,6 +834,9 @@ pub struct Job {
     /// holding the counters can be ended. `None` on a tree with no memory controller, and while
     /// the job runs.
     memory_used: Mutex<Option<super::scope::MemoryUse>>,
+    /// `start:<n>` of the leader at spawn or adoption: what tells this process from a later one
+    /// with its number. Empty when unread.
+    identity: Mutex<String>,
 }
 
 /// The cap a job was started under, as three different facts: nobody asked, capped, and asked
@@ -876,7 +879,16 @@ impl Job {
             stdin,
             memory_cap: MemoryCap::NotAsked,
             memory_used: Mutex::new(None),
+            identity: Mutex::new(String::new()),
         }
+    }
+
+    pub fn set_identity(&self, identity: String) {
+        *self.identity.lock().expect("job identity") = identity;
+    }
+
+    pub fn identity(&self) -> String {
+        self.identity.lock().expect("job identity").clone()
     }
 
     /// The job, started under `cap`. A builder rather than a ninth argument to [`Job::new`]:
@@ -982,6 +994,12 @@ impl Job {
         }
         *self.state.lock().expect("job state") = state;
         self.finished.notify_all();
+    }
+
+    /// Undo a settlement that a kill could not make true: the process is still there.
+    pub fn reopen(&self) {
+        *self.settled_at.lock().expect("job settled_at") = None;
+        *self.state.lock().expect("job state") = JobState::Running;
     }
 
     /// When the job settled, or `None` while it is running.

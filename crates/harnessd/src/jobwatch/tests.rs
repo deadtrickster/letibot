@@ -1658,3 +1658,40 @@ fn a_read_settlement_is_delivered_in_the_store_only_when_its_turn_ends() {
     assert_eq!(untold(), 0, "the turn ended: delivered");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The session's own `job_kill` is told in its result, so the later settlement is not a second
+/// message; a scope ending is news the session lacks.
+#[test]
+fn an_own_kill_is_not_announced_and_a_scope_ending_is() {
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "a process-lifetime tree (cgroup v2; process groups on macOS)",
+        letibot_tools::host_tree().is_ok(),
+    ) else {
+        return;
+    };
+    let hub = Hub::new("s-jobs");
+    let host = a_host();
+    let watchers = JobWatchers::new(&(host.clone() as Arc<dyn ProcessHost>), &hub, None);
+
+    let mine = spawn_a_short_job(&host, "60");
+    watchers.watch(mine.0.clone());
+    std::thread::sleep(Duration::from_millis(300));
+    let rk = host.kill_job(&mine).expect("killed");
+    eprintln!("REAP {} state={:?}", rk.summary(), host.job(&mine).map(|v| v.state));
+    let (state, _, _) = wait_for_settlement(&hub, &mine.0);
+    assert_eq!(state, "killed by job_kill", "the head still shows the row");
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(
+        watchers.take_completions().is_empty(),
+        "the model was told twice about its own kill"
+    );
+
+    let other = spawn_a_short_job(&host, "60");
+    watchers.watch(other.0.clone());
+    std::thread::sleep(Duration::from_millis(300));
+    let owner = host.job(&other).expect("job").owner;
+    host.end_scope(&owner).expect("scope ended");
+    let c = wait_for_completion(&watchers);
+    assert_eq!(c.job, other.0);
+    assert!(c.state.contains("scope ending"), "{}", c.state);
+}
