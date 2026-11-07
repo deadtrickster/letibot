@@ -75,6 +75,7 @@ impl App {
     /// on. A group's line FOLDS, since a group has no session to mark for a later Enter - a click
     /// that only moved the cursor would do nothing. A session's row marks; Enter switches.
     pub(crate) fn click_picker(&mut self, k: usize) {
+        self.picker_seat_pending = false;
         self.picker_sel = k;
         let Some(row) = self.picker_row() else {
             return;

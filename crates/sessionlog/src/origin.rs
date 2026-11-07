@@ -184,6 +184,12 @@ pub fn group_of(rows: &[GroupRow<'_>], id: &str) -> SessionGroup {
     }
 }
 
+/// Is this row one of the operator's own top-level sessions - the ones `--continue` reopens and
+/// a Sessions list shows? One test, so the launcher, the picker and the sidebar cannot differ.
+pub fn is_operator_top_level(row: &GroupRow<'_>) -> bool {
+    row.parent.is_none() && !is_queue_work(row) && row.origin == SessionOrigin::Operator
+}
+
 /// Is this row the review queue's work? - three marks, and a row needs one: the
 /// recorded origin, the id (the fallback for rows older than the column), and the seat or
 /// the title of a reviewer parented elsewhere.
@@ -240,6 +246,28 @@ mod tests {
                 title: &s.title,
             })
             .collect()
+    }
+
+    #[test]
+    fn only_a_top_level_operator_row_off_the_queue_is_theirs() {
+        let all = [
+            seed("s-op", None, SessionOrigin::Operator),
+            seed("s-pkg", None, SessionOrigin::Package),
+            seed("s-one", None, SessionOrigin::OneShot),
+            seed("s-child", Some("s-op"), SessionOrigin::Operator),
+            seed("s-gatekeeper-c2f63a0e6a17", None, SessionOrigin::Operator),
+            seed("s-q", None, SessionOrigin::Queue),
+            seated(
+                seed("s-seat", None, SessionOrigin::Operator),
+                crate::GATEKEEPER_SEAT,
+            ),
+        ];
+        let mine: Vec<&str> = rows(&all)
+            .iter()
+            .filter(|r| is_operator_top_level(r))
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(mine, ["s-op"]);
     }
 
     #[test]
