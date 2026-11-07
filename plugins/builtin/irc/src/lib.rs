@@ -10,7 +10,6 @@
 use letibot_guest_abi as abi;
 use letibot_plugin::pane::{Act, Cell, Event, Role, Size};
 use serde::{Deserialize, Serialize};
-use serde_json::value::RawValue;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -172,9 +171,8 @@ struct Session {
     repo: String,
 }
 
-/// The slice of the input envelope this layer reads. The `sessions` feed stays raw until it is
-/// parsed into [`Feed`]: building a `Value` tree first costs more fuel than the whole list, and a
-/// daemon that has held thousands of sessions runs out of the hook's budget there.
+/// The slice of the input envelope this layer reads, with the `sessions` feed parsed straight
+/// into [`Feed`]: a `Value` tree of every session first costs more fuel than the list itself.
 #[derive(Deserialize)]
 struct Env {
     #[serde(default)]
@@ -184,26 +182,55 @@ struct Env {
     #[serde(default)]
     size: Size,
     #[serde(default)]
-    feeds: BTreeMap<String, Box<RawValue>>,
+    feeds: Feeds,
+}
+
+#[derive(Default, Deserialize)]
+struct Feeds {
+    #[serde(default)]
+    sessions: Option<Feed>,
+}
+
+/// The same envelope read loosely, for a feed whose shape the typed read refused: whatever the
+/// host sent that this layer does not understand is defaulted, never a trap.
+#[derive(Deserialize)]
+struct LooseEnv {
+    #[serde(default)]
+    state: Option<Value>,
+    #[serde(default)]
+    event: Option<Event>,
+    #[serde(default)]
+    size: Size,
+    #[serde(default)]
+    feeds: BTreeMap<String, Value>,
 }
 
 /// The pane's answer for one call: the state to keep and the view to draw.
 fn answer(bytes: &[u8]) -> Option<String> {
-    let mut input: Env = serde_json::from_slice(bytes).ok()?;
-    let mut st = match input.state.take() {
+    let (state, event, size, feed) = match serde_json::from_slice::<Env>(bytes) {
+        Ok(e) => (e.state, e.event, e.size, e.feeds.sessions),
+        Err(_) => {
+            let mut e: LooseEnv = serde_json::from_slice(bytes).ok()?;
+            let feed = e
+                .feeds
+                .remove("sessions")
+                .map(|v| serde_json::from_value(v).unwrap_or_default());
+            (e.state, e.event, e.size, feed)
+        }
+    };
+    let mut st = match state {
         Some(value) => serde_json::from_value::<State>(value).unwrap_or_default(),
         None => State::default(),
     };
-    let rect = input.size.w as usize;
-    if let Some(event) = &input.event {
+    let rect = size.w as usize;
+    if let Some(event) = &event {
         st.apply(&event.action, rect);
     }
     // **A feed the host did not hand is a screen that says so.** The layer passed would draw
     // nothing at all, and a pane that vanishes is a pane somebody thinks they closed.
-    let Some(value) = input.feeds.remove("sessions") else {
+    let Some(feed) = feed else {
         return serde_json::to_string(&no_feed()).ok();
     };
-    let feed: Feed = serde_json::from_str(value.get()).unwrap_or_default();
     let view = if st.hidden {
         strip(&feed, &st, rect)
     } else {
