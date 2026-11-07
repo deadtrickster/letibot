@@ -63,7 +63,8 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R136 | Answer waits: a row waits on another top-level session's answer | Code work | plan steps 1, 4, 5, 7, 8 (the room's asks, the `answer`/`decline` verbs, the passes, end to end, docs) on room protocol 10; steps 2, 3, 6 (the todo side and the head) are landed |
 | R137 | Todo graphs that span projects | Code work | the design; an answer-wait ask is the first cross-project edge |
 | R138 | Stable session identities across hosts, through migrations | Code work | the design; until then asks are same-host only |
-| R140 | Room UI P1: live chat push to the head, agents attach pictures | Code work | all of it; P0 (attachments, blob store, push frame, stubs) is landed |
+| R140 | Room UI P1: live chat push to the head, agents attach pictures | Code work | built and tested on the branch: the seat's `on_chat` fan-out to the heads that have chatted, the head's merge with a 15 s safety poll and a fast one after a `seq` gap, and `attachments: [path]` on a session's `say` and the bridge's `room_say`; left: the merge queue's gate after R139 |
+| R139 | Room UI P0: attachment and blob wire, the head push frame, stubs for P1-P4 | Code work | built and tested on the branch: `Attachment` + coordinator blob store, room protocol 9, `ServerFrame::RoomChatPushed` + sessionlog 65, the seat's blob allowlist, and the TUI's five stub modules with the room keys dispatching to them; left: the merge queue's gate once the branch is approved |
 | R141 | Room UI P2: message rendering (markdown, code colours, grouping, speaker colours, names, unread divider, pictures) | Code work | all of it, after R139 |
 | R142 | Room UI P3: composer (`@` completion, room `/` verbs, history and drafts, reply, pasted pictures) | Code work | all of it, after R139 |
 | R143 | Room UI P4: navigation (message cursor, jump to unread, `Ctrl+K` switcher, search, picture cache) | Code work | all of it, after R139 |
@@ -906,9 +907,11 @@ A session's identity is stable on its host only. Answer waits (R136) assume a st
 
 ## R139 to R143 - The room in the TUI, as good as flowy's chat
 
-**Status:** P0 (R139) built and tested on its branch; P1 to P4 open. left: P0's landing through the merge queue, then P1 to P4.
+**Status:** P0 (R139) and P1 (R140) built and tested on their branches; P2 to P4 open. left: their landing through the merge queue, then P2 to P4.
 
 The design and the five packages are `docs/room-tui.md`, from a study of flowy's web console and Go TUI. P0 (R139) lands first and alone: `Attachment` and a coordinator blob store, `ROOM_PROTOCOL_VERSION` 9, `ServerFrame::RoomChatPushed` with sessionlog protocol 65, and the TUI stub modules and key bindings so P1 to P4 never edit one file. P1 (R140) pushes chat to heads, P2 (R141) renders messages, P3 (R142) is the composer, P4 (R143) is navigation and the picture cache. Each package names its done-tests in the doc. Defaults taken on the doc's open questions: bump the protocol, blobs on the coordinator (8 MiB each), no reactions, no thread folding, search within the 500-message ring, agents see a picture's name and size only. Answer waits (R136) take room protocol 10.
+
+P1 (R140) is the live half. The operator's seat installs an `on_chat` hook, and `Registry::set_room_chat` hands it the daemon's fan-out through `RoomChatSeat::attach` — it takes `self: &Arc<Self>` now, so `cli.rs` did not change — and only heads whose connection has sent a `RoomChat` frame are pushed. The room never pushes a message to its author's connection and every head shares the operator's one connection, so the seat also fans a head's own `Said` reply out to the other heads; without that, one head's words would reach another only on a poll. On the head a push merges like a `read` row, and the poll slows to 15 s while pushes arrive. A `seq` that skips one already read sets the poll to 0 and re-asks from the last contiguous seq, so the hole is filled rather than skipped. Agent-side, `say` in the `room` tool and `room_say` in the bridge take `attachments: [path]`: the tool resolves each path against the session's workspace and refuses one outside it, the daemon or the bridge reads the bytes, uploads them in the room's 512 KiB parts, and references each as `![name](blob:ID)` in the text it sends.
 
 ## R144 - The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag
 
