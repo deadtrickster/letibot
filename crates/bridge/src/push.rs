@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::head::{Attention, Head};
+use crate::head::{Attention, Head, LimitNews};
 
 /// How long one `wait` blocks before the watcher checks that its head is still held.
 const WAIT: Duration = Duration::from_secs(30);
@@ -25,13 +25,29 @@ pub fn watch(head: &Arc<Head>, tx: Sender<Value>) {
 
 fn run(weak: Weak<Head>, tx: Sender<Value>) {
     let mut last: Option<String> = None;
+    let mut last_limit = 0u64;
     loop {
         let Some(head) = weak.upgrade() else {
             return;
         };
         let attention = head.wait(Instant::now() + WAIT);
+        // The limit is reported before the attention, and from its own counter: a session that was
+        // parked and resumed is quiet, and a `wait` would answer with the turn rather than with the
+        // provider's clock - `limited until X`, `switched to Y`, `resumed`.
+        let (limits, news) = crate::head::limit_news(&head);
+        let limit = news
+            .filter(|_| limits != last_limit)
+            .map(|n| limit_event(&head, &n));
+        last_limit = limits;
         let event = event(&head, &attention);
         drop(head);
+        if let Some((key, note)) = limit {
+            if tx.send(note).is_err() {
+                return;
+            }
+            last = Some(key);
+            continue;
+        }
         match event {
             Some((key, note)) if last.as_deref() != Some(key.as_str()) => {
                 if tx.send(note).is_err() {
@@ -43,6 +59,27 @@ fn run(weak: Weak<Head>, tx: Sender<Value>) {
             _ => std::thread::sleep(Duration::from_secs(1)),
         }
     }
+}
+
+/// A limit's channel notification: `limited until X`, `switched to Y`, or the daemon's own words
+/// for a resume. Keyed by the fact itself, so one park is one message.
+pub fn limit_event(head: &Head, news: &LimitNews) -> (String, Value) {
+    let who = format!("leticode `{}` ({})", head.session, head.worktree.display());
+    let line = news.line();
+    let key = format!("limit:{}:{line}", news.kind);
+    let content = match news.kind {
+        "resumed" => format!("{who} resumed: {line}"),
+        _ => format!("{who} {line}"),
+    };
+    let note = json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/claude/channel",
+        "params": {
+            "content": content,
+            "meta": { "source": "leticode", "session": head.session, "event": news.kind },
+        },
+    });
+    (key, note)
 }
 
 /// The event's identity (what makes it news) and its notification. `None` for a timeout.
@@ -74,11 +111,27 @@ pub fn event(head: &Head, attention: &Attention) -> Option<(String, Value)> {
         ),
         Attention::Trouble(t) => (
             "trouble",
-            format!("trouble:{}:{}", t.kind, t.count),
-            format!(
-                "{who} is stuck on its provider ({} on {}, {} in a row): {}",
-                t.kind, t.model, t.count, t.detail
-            ),
+            format!("trouble:{}:{}:{:?}", t.kind, t.count, t.reset_ms),
+            // A limit with an instant on it is not a failure and not weather: the session acts
+            // again at that time, or has already moved to another model until it.
+            match (t.reset_ms, t.switched_to.as_deref()) {
+                (Some(at), Some(to)) => format!(
+                    "{who} is limited on {} until {}, and switched to {to}: {}",
+                    t.model,
+                    crate::head::utc_clock(at),
+                    t.detail
+                ),
+                (Some(at), None) => format!(
+                    "{who} is limited on {} until {}, and resumes by itself: {}",
+                    t.model,
+                    crate::head::utc_clock(at),
+                    t.detail
+                ),
+                (None, _) => format!(
+                    "{who} is stuck on its provider ({} on {}, {} in a row): {}",
+                    t.kind, t.model, t.count, t.detail
+                ),
+            },
         ),
     };
     let note = json!({

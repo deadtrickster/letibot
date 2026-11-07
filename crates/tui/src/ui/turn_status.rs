@@ -107,6 +107,11 @@ impl App {
         if list.is_empty() {
             return String::new();
         }
+        // A limit alone is its own sentence - `paused until 21:02:27 UTC` - and `waiting on:` in
+        // front of it would read as if the session were waiting for the limit rather than held by it.
+        if let [Waiting::Limit(words)] = list {
+            return words.clone();
+        }
         // Grouped by KIND in first-seen order, which is the daemon's order - a run of one kind is
         // what the count is about, and a `Waiting` the daemon sent out of order still groups.
         let mut groups: Vec<(&'static str, Vec<&Waiting>)> = Vec::new();

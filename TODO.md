@@ -76,6 +76,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R150 | Plugin extension points: the harness and head open to plugins | Needs the operator | answers to the 13 questions in `docs/plugin-extension-points-wide.md` §8 (each has a default), then the plan's packages K1-K11 with H0, P5, P6 |
 | R151 | Four plugin walls that are bugs: unreachable built-in panes, `read` against the workspace, the pin lost on rebuild, the hooks skill's missing kinds | Code work | all of it |
 | R146 | Room routing: a gatekeeper sits in its project, `to:` is private, host is broadcasts | Code work | the five rules in the say/wake paths; tests per rule, and `to:` on a thread reply is a decision to check with the operator |
+| R148 | A usage limit with a known reset never fails a session | Code work | the build on branch `r148-limit-reset`: wait/switch config, the reset-time parser, the park, the switch and its return, the no-reset retry, the status row and the bridge push |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
 | R100 | A remote session in a firecode VM: `--host` and `--vm` as one placement | Needs the operator | the live proof on lab2x1: a real `firecode` copy carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, the copy-out's cost |
 | R59 | The context wall's denominator moves a third between firings | Needs the operator | the operator's ruling on smoothing the ratio (the tree keeps it per round, as recommended) |
@@ -973,6 +974,25 @@ Where it lands: `crates/room/src/server.rs` (`resolve_name`, `own_room_or`, `Inv
 **Target:** a test per rule; the tool answer for a `to:` say says it went to dm; an `@` of an outsider invites them and the invite is in the roster; an old chat store replays.
 
 **A decision the operator has not made:** a `say` with both `to` and `thread` asks for two things the rules do not both allow - `to` is private, a reply stays in its root's room, which may be public. Taken the strict way (2026-11-08, this branch): it is refused, and the refusal names `dm` with the same `thread` as the private way and `@name` in the text as the public one. If the operator would rather it picked one, that is a change of the refusal alone.
+
+## R148 - A usage limit with a known reset never fails a session
+
+**Status:** built on branch `r148-limit-reset`, not merged. left: nothing on this branch; the merge queue lands it.
+
+Held by `crates/harnessd/tests/limits.rs` (six scenarios on fake providers and a clock the test moves: a park and its resume, a switch and the way back, a fallback that is limited too being skipped, a no-instant 429's long beat twice, the prose park, a prompt queued while parked), `crates/http/src/reset.rs` (the GLM text, the HTTP-date forms), `leticode-config`'s `[provider]` tests and `crates/bridge/src/head.rs`'s `LimitNews` words. `PROTOCOL_VERSION` 65: `Waiting::Limit` is a new variant on the activity.
+
+A session whose provider answered a usage limit ended the day as `FAILED - tried 6 times over 31s, then gave up: … http 429: Usage limit reached for 5 hour. Your limit will reset at 2026-11-07 21:02:27`. The operator's ruling is that a session never fails on a limit with a known reset: it either waits for it or switches models.
+
+```toml
+[provider]
+on_limit = "switch"   # or "wait"
+fallback = ["deepseek", "glm-coding/glm-5.3"]
+```
+
+- `switch` (the default when a fallback list is set): on a 429 with a reset, the session moves to the next fallback model it is not limited on, re-runs the same turn there, and moves back after the reset. A fallback that is itself limited is skipped. The status row and the session's own notes say `glm limited until 21:02, on deepseek`.
+- `wait` (the default when nothing is set): the session is parked until the reset plus a little jitter and resumes the same turn by itself. The status row says `paused until 21:02:27`, the idle plan-check is silent while parked and the session is not reported as stalled, and a prompt the operator sends meanwhile is queued and says what it waits for.
+- A 429 with no reset keeps the retry ladder, then waits five minutes and tries again instead of failing; after a few such rounds it fails as before.
+- The bridge's push (`crates/bridge/src/push.rs`) reports `limited until X`, `switched to Y` and `resumed` as channel events for held sessions.
 
 ## R134 - Scrolling stops at a line above the tail
 

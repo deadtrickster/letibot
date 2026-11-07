@@ -463,6 +463,10 @@ pub struct State {
     pub spent: Meter,
     /// How many rounds `spent` sums.
     pub rounds: u64,
+    /// The last thing a provider limit did to this session, and how many such facts have landed -
+    /// the shape `leticode_status` answers with, and the source of the channel push.
+    pub limit: Option<LimitNews>,
+    pub limits: u64,
     /// The verdict on the last ending: whether this prompt extended the one before it,
     /// which is what tells a slot that did not hold the history from a prompt of ours that
     /// diverged. `None` is a daemon older than the field.
@@ -554,8 +558,56 @@ fn trouble_word(kind: &str) -> &'static str {
     }
 }
 
-/// A provider's trouble, kept whole: the free fields of the daemon's typed event, so
-/// `leticode_status` can answer *what happened and when does it lift* without re-reading a ring.
+/// What a provider LIMIT did to this session: the fact the channel push reports and the status
+/// row repeats - `limited until X`, `switched to Y`, `resumed`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LimitNews {
+    /// `limited`, `switched` or `resumed` - the three things a limit does to a session.
+    pub kind: &'static str,
+    /// What was limited, as `/models` spells it.
+    pub model: String,
+    /// When the limit lifts, Unix millis, when the provider named it.
+    pub until_ms: Option<u64>,
+    /// Where the daemon moved the session, when it moved it.
+    pub switched_to: Option<String>,
+    /// The daemon's own sentence, one line.
+    pub said: String,
+}
+
+impl LimitNews {
+    /// The channel line: `limited until 21:02:27 UTC`, `switched to deepseek/deepseek-flash`, or
+    /// the daemon's own words for a resume.
+    pub fn line(&self) -> String {
+        match (self.kind, self.switched_to.as_deref()) {
+            ("limited", Some(to)) => {
+                format!("{}{}, switched to {to}", self.words(), self.until())
+            }
+            ("limited", None) => format!("{}{}", self.words(), self.until()),
+            (_, _) => self.said.clone(),
+        }
+    }
+
+    fn words(&self) -> String {
+        format!("{} limited", self.model)
+    }
+
+    /// ` until 21:02:27 UTC`, or nothing when the provider named no instant.
+    fn until(&self) -> String {
+        match self.until_ms {
+            Some(at) => format!(" until {}", utc_clock(at)),
+            None => String::new(),
+        }
+    }
+}
+
+/// `21:02:27 UTC` for Unix millis - the same words the daemon's own status row uses, so a person
+/// reading the channel and the head is reading one fact.
+pub fn utc_clock(ms: u64) -> String {
+    let secs = ms / 1000;
+    let (h, m, s) = ((secs / 3600) % 24, (secs / 60) % 60, secs % 60);
+    format!("{h:02}:{m:02}:{s:02} UTC")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Trouble {
     /// `rate_limit`, `quota`, `timeout`, `stall`, or a word this build does not know.
@@ -570,6 +622,14 @@ pub struct Trouble {
     pub count: u32,
     /// Where the daemon's own fallback policy moved the session, when it did.
     pub switched_to: Option<String>,
+}
+
+/// The last limit fact this head folded, and how many have landed - the channel push's own
+/// source, apart from `wait`, because a resumed session is quiet and a wait would answer with the
+/// turn rather than with the limit that ended.
+pub fn limit_news(head: &Head) -> (u64, Option<LimitNews>) {
+    let g = head.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+    (g.limits, g.limit.clone())
 }
 
 impl Trouble {
@@ -1109,6 +1169,25 @@ impl State {
                     self.slash = Some(SlashSaid::of(&detail, code == "slash"));
                     self.slashes += 1;
                 }
+                // A limit the provider put a time on, and the daemon's own answer to it, are news
+                // of their own: the channel push reports `limited until X` and `resumed`.
+                if matches!(
+                    code.as_str(),
+                    "limit_park" | "limit_resumed" | "limit_returned"
+                ) {
+                    self.limit = Some(LimitNews {
+                        kind: if code == "limit_park" {
+                            "limited"
+                        } else {
+                            "resumed"
+                        },
+                        model: self.model.clone(),
+                        until_ms: None,
+                        switched_to: None,
+                        said: one_line(&detail, LINE),
+                    });
+                    self.limits += 1;
+                }
                 self.events.push(
                     Entry::of("warning", "")
                         .coded(code)
@@ -1135,6 +1214,20 @@ impl State {
                     .coded(kind.clone());
                 if let Some(at) = reset_ms {
                     entry = entry.lifting_at(at);
+                    // A limit with an instant on it is the channel's own event, and it is not a
+                    // failure: the session acts again at that time, or has already moved.
+                    self.limit = Some(LimitNews {
+                        kind: if switched_to.is_some() {
+                            "switched"
+                        } else {
+                            "limited"
+                        },
+                        model: model.clone(),
+                        until_ms: Some(at),
+                        switched_to: switched_to.clone(),
+                        said: one_line(&detail, LINE),
+                    });
+                    self.limits += 1;
                 }
                 self.events.push(entry);
                 // Where the daemon's own policy moved the session, said as one more line: a caller
@@ -1499,6 +1592,8 @@ impl Head {
             asks: g.asks.clone(),
             todos: g.todos.clone(),
             meter: g.meter,
+            limit: g.limit.clone(),
+            limits: g.limits,
             spent: g.spent,
             rounds: g.rounds,
             // Carried: `leticode_status` answers both, and neither is a payload.
@@ -2176,6 +2271,44 @@ pub fn create_session_in(d: &Daemon, title: &str, workspace: &str) -> Result<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The three things a limit does to a session, in the words the channel carries: an instant the
+    /// provider named, the model the daemon moved to, and the resume it made by itself.
+    #[test]
+    fn a_limit_reads_as_limited_until_switched_to_or_resumed() {
+        let news = LimitNews {
+            kind: "limited",
+            model: "glm/glm-5.3".into(),
+            until_ms: Some(1_794_085_347_000),
+            switched_to: None,
+            said: "the provider put a time on its limit".into(),
+        };
+        assert_eq!(news.line(), "glm/glm-5.3 limited until 21:02:27 UTC");
+        let moved = LimitNews {
+            switched_to: Some("deepseek/deepseek-flash".into()),
+            ..news.clone()
+        };
+        assert_eq!(
+            moved.line(),
+            "glm/glm-5.3 limited until 21:02:27 UTC, switched to deepseek/deepseek-flash"
+        );
+        let resumed = LimitNews {
+            kind: "resumed",
+            until_ms: None,
+            switched_to: None,
+            said: "the limit on glm/glm-5.3 lifted".into(),
+            ..news.clone()
+        };
+        assert_eq!(resumed.line(), "the limit on glm/glm-5.3 lifted");
+        // A park names no model move and still says when.
+        let waiting = LimitNews {
+            kind: "limited",
+            until_ms: Some(1_794_085_347_000),
+            said: String::new(),
+            ..news.clone()
+        };
+        assert_eq!(waiting.line(), "glm/glm-5.3 limited until 21:02:27 UTC");
+    }
 
     /// A daemon on an older protocol number is named in the status, and a line this build cannot
     /// read is counted there instead of vanishing.
