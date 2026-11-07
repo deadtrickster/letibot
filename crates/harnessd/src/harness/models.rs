@@ -165,6 +165,19 @@ impl Harness {
         Ok(line)
     }
 
+    /// Say on the status row that the conversation is being re-rendered for other weights, and
+    /// when it is done. It holds the worker, so a prompt sent meanwhile reads `queued behind` this
+    /// rather than a bare `queued` that looks like a hang.
+    fn say_rerendering(&self, items: usize, done: bool) {
+        let total = items as u64;
+        self.hub.publish(letibot_sessionlog::SessionEvent::Filling {
+            what: "re-rendering the conversation for the new weights".into(),
+            unit: "items".into(),
+            done: if done { total } else { 0 },
+            total,
+        });
+    }
+
     /// The cross-weights switch: the arm that makes `/models local.glm` work from a daemon started on the qwen
     /// weights. The order is what leaves a session that still works on failure: vocabulary loaded, fork written, engine
     /// moved last.
@@ -309,6 +322,7 @@ impl Harness {
             fidelity: None,
         };
         self.compacting = true;
+        self.say_rerendering(items.len(), false);
         let forked = self.fork_to_summary(
             &outcome,
             Some(&next),
@@ -320,6 +334,7 @@ impl Harness {
             },
         );
         self.compacting = false;
+        self.say_rerendering(items.len(), true);
         let fork = forked?;
         self.adopt_reseat(Some((next, next_id)));
 
@@ -819,6 +834,7 @@ impl Harness {
             fidelity: None,
         };
         self.compacting = true;
+        self.say_rerendering(items.len(), false);
         let forked = self.fork_to_summary(
             &outcome,
             Some(&next),
@@ -830,6 +846,7 @@ impl Harness {
             },
         );
         self.compacting = false;
+        self.say_rerendering(items.len(), true);
         // The engine moved first, so a fork failure here would leave the session rendering the own dialect over a
         // foreign-rendered ledger, the corruption this file refuses. The fork cannot fail halfway, so this names the
         // state rather than papering over it.

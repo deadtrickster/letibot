@@ -535,6 +535,7 @@ fn local_glm_from_a_qwen_daemon_switches_weights_dialect_and_comes_back() {
     cfg.vocab_gguf = Some(qwen);
     let parts = Parts::load(&cfg).expect("the qwen vocabulary must load");
     let hub = Hub::new("switch-live-glm");
+    let watched = hub.clone();
     let mut h = Harness::open(&parts, cfg, hub).expect("the session must open");
     let own_line = h.provider_line();
 
@@ -593,6 +594,22 @@ fn local_glm_from_a_qwen_daemon_switches_weights_dialect_and_comes_back() {
     assert!(
         said.contains("re-rendered") && said.contains("fork "),
         "the re-render is disclosed with its cost: {said}"
+    );
+    // And while it ran, the status row said so: a prompt sent meanwhile reads `queued behind`
+    // the re-render, and the line clears when it is done.
+    let fills: Vec<(u64, u64)> = watched
+        .retained()
+        .into_iter()
+        .filter_map(|e| match e.event {
+            letibot_sessionlog::SessionEvent::Filling {
+                what, done, total, ..
+            } if what.contains("re-rendering") => Some((done, total)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        fills.first().is_some_and(|(d, _)| *d == 0) && fills.last().is_some_and(|(d, t)| d == t),
+        "the re-render was not said and then cleared: {fills:?}"
     );
     assert_eq!(
         h.provider_line(),

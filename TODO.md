@@ -56,7 +56,6 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R116 | Claude Code as a merge-queue reviewer through headless `claude -p` | Code work | all of it - no `claude -p`, `--json-schema` or `structured_output` use exists under `crates/` |
 | R117 | The leticode MCP bridge pushes package and queue events into Claude Code as a channel | Code work | queue events on the channel (rooms and held sessions already push), and the plugin; a self-published channel plugin still needs `--dangerously-load-development-channels` during the preview |
 | R127 | The idle nag names every free head of the plan, so independent rows run in parallel | Code work | all of it - `the_row_to_name` (`crates/tools/src/builtins/todo.rs:1333`) picks one ready row; postponed by the operator on 2026-11-07 |
-| R128 | A model switch says it is re-rendering, and a prompt sent meanwhile says why it waits | Code work | all of it - the re-render is in the daemon log only, and the head shows the prompt as `queued` with no reason |
 | R129 | One store file per project and a shared file, so one daemon's write cannot stall another's | Code work | the design's last edit (decisions live only in project files) and all of the build; the proposal is `docs/store-split.md` on branch `docs/store-split`, not merged |
 | R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | a remote placement: its keep-list and `plan.env` go into the ssh command line (`EnvSource::Remote`), where `ps` on both boxes reads them; and the operator rotates the token |
 | R131 | `cargo clippy -- -D warnings` fails on main | Code work | `mergequeue/capacity.rs:19` (`neg_cmp_op_on_partial_ord`) and `mergequeue/review/placement_tests.rs:66` (useless `format!`) |
@@ -788,12 +787,6 @@ The plan is a DAG and the check exists to keep it moving. Today `unfinished_plan
 - The idle clock compares the check's text, so a list that changes when a row closes is a new check at the base window. That is wanted: closing a row is progress.
 - The head folds the check on its sentences (`crates/tui/src/ui/transcript/notice_card.rs:212`), and the fold changes with the text.
 - A row matching a running job's description is still left out, row by row rather than silencing the whole check.
-
-## R128 - A model switch says it is re-rendering
-
-**Status:** not started. left: all of it.
-
-A switch to a model with another tokenizer re-renders every stored item (`Its N item(s) were RE-RENDERED` in the daemon log; 50 to 812 items seen on lab2x1). A prompt sent during it sits `queued` in the head with no reason, which reads as a hang. The `Filling` event already draws a progress line; the re-render should publish it, and the queued prompt should say it goes when the re-render ends.
 
 ## R129 - One store file per project and a shared file
 
