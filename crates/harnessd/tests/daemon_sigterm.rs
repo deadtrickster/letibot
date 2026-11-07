@@ -4,7 +4,7 @@
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 /// How long the daemon may take to bind its socket.
 const PATIENCE: Duration = Duration::from_secs(60);
@@ -88,14 +88,7 @@ fn start(dir: &Path) -> (Daemon, PathBuf) {
 
 #[test]
 fn one_sigterm_stops_a_daemon_whose_stderr_cannot_be_written() {
-    let dir = letibot_sessionlog::testing::scratch_root().join(format!(
-        "letibot-daemon-sigterm-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock before epoch")
-            .as_nanos()
-    ));
+    let dir = letibot_sessionlog::testing::scratch("letibot-daemon-sigterm");
     std::fs::create_dir_all(&dir).expect("temp dir");
     let (mut d, socket) = start(&dir);
 

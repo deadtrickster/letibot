@@ -73,14 +73,7 @@ impl Adjudicator for NeverAsked {
 }
 
 fn socket_path(tag: &str) -> std::path::PathBuf {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    letibot_sessionlog::testing::scratch_root().join(format!(
-        "letibot-bang-{tag}-{}-{n}.sock",
-        std::process::id()
-    ))
+    letibot_sessionlog::testing::scratch(&format!("letibot-bang-{tag}")).with_extension("sock")
 }
 
 /// The whole run: a `!` line becomes two rows, the command actually ran, and no

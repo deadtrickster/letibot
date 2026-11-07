@@ -48,14 +48,7 @@ fn the_books_path() -> &'static Path {
 impl Tmp {
     fn new(tag: &str) -> Tmp {
         the_books_path();
-        let path = std::env::temp_dir().join(format!(
-            "letibot-plugins-tool-{tag}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
+        let path = letibot_sessionlog::testing::scratch(&format!("letibot-plugins-tool-{tag}"));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(path.join("project")).expect("the temp tree");
         std::fs::create_dir_all(path.join("plugins")).expect("the session's plugin dir");
@@ -914,14 +907,7 @@ fn opening_a_session_through_sessions_fills_the_plugin_slot() {
     use letibot_harnessd::Sessions;
     use letibot_sessionlog::registry::Registry;
     let cfg = byte_config("s-plugins-slot", letibot_harnessd::config::Seat::default());
-    let store = std::env::temp_dir().join(format!(
-        "letibot-plugins-slot-{}-{}.db",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
+    let store = letibot_sessionlog::testing::scratch("letibot-plugins-slot").with_extension("db");
     let mut cfg = cfg;
     cfg.store = Some(store.clone());
     cfg.socket = store.with_extension("sock");

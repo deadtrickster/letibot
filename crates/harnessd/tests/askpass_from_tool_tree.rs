@@ -16,14 +16,8 @@ use letibot_sessionlog::server::serve_registry;
 const PATIENCE: Duration = Duration::from_secs(60);
 
 fn socket_path(tag: &str) -> std::path::PathBuf {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    letibot_sessionlog::testing::scratch_root().join(format!(
-        "letibot-askpass-tree-{tag}-{}-{n}.sock",
-        std::process::id()
-    ))
+    letibot_sessionlog::testing::scratch(&format!("letibot-askpass-tree-{tag}"))
+        .with_extension("sock")
 }
 
 /// The helper, as `sudo` runs it: its prompt on argv and the session's socket in its environment,

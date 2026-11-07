@@ -111,14 +111,7 @@ const FAKE_SSH_ANSWERS: &str = "#!/bin/bash\n\
 
 impl Rig {
     fn new(name: &str, ssh_body: &str) -> Rig {
-        let dir = std::env::temp_dir().join(format!(
-            "letibot-gate-host-{name}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
+        let dir = letibot_sessionlog::testing::scratch(&format!("letibot-gate-host-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).expect("bin");
         let home = dir.join("home");

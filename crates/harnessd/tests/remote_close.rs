@@ -22,14 +22,7 @@ struct Rig {
 
 impl Rig {
     fn new() -> Rig {
-        let dir = std::env::temp_dir().join(format!(
-            "letibot-close-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
+        let dir = letibot_sessionlog::testing::scratch("letibot-close");
         std::fs::create_dir_all(dir.join("bin")).expect("bin");
         std::fs::create_dir_all(dir.join("home")).expect("home");
         // Resolved, because the remote resolves it: `pwd -P` on the far side turns `/var` into

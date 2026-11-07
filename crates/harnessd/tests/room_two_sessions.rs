@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use letibot_harnessd::config::{Config, Seat};
 use letibot_harnessd::room::coordinator::Coordinator;
@@ -58,14 +58,7 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(tag: &str) -> Self {
-        let path = letibot_sessionlog::testing::scratch_root().join(format!(
-            "{tag}-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .expect("clock before epoch")
-                .as_nanos()
-        ));
+        let path = letibot_sessionlog::testing::scratch(tag);
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("the temp dir");
         Self(path)

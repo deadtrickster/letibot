@@ -23,11 +23,7 @@ struct TempDir(std::path::PathBuf);
 
 impl TempDir {
     fn new(tag: &str) -> TempDir {
-        let p = letibot_sessionlog::testing::scratch_root().join(format!(
-            "harnessd-reseat-carry-{tag}-{}-{}",
-            std::process::id(),
-            letibot_harnessd::config::now_ns()
-        ));
+        let p = letibot_sessionlog::testing::scratch(&format!("harnessd-reseat-carry-{tag}"));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).expect("temp dir");
         TempDir(p)

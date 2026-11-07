@@ -58,7 +58,8 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R127 | The idle nag names every free head of the plan, so independent rows run in parallel | Code work | all of it - `the_row_to_name` (`crates/tools/src/builtins/todo.rs:1333`) picks one ready row; postponed by the operator on 2026-11-07 |
 | R129 | One store file per project and a shared file, so one daemon's write cannot stall another's | Code work | the build, in five packages at the end of `docs/store-split.md` (P0 first: the instrument cannot yet tell a lock wait from I/O); the design, the measurement and the build plan are in the doc on branch `r129-store-split`, not merged |
 | R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | the operator rotates the token; a command this box spawns and a remote placement both keep every secret off every argv now |
-| R132 | `skills_path.rs` refuses its own session as written by another process, once under load | Code work | the root cause; seen once in a full gate, 6 reruns and the next gate passed |
+| R132 | `skills_path.rs` refuses its own session as written by another process, once under load | Done | the fix; two fixtures in one process minted one `TempDir` name, because the clock's tick here is ~40 ns and the tests are released together |
+| R133 | The one-shot env report prints its lines out of order | Code work | a reproduction and the fix |
 | R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | the next stop's line from `~/.local/state/letibot/scroll-stalls.log`, which the head now writes at each stop |
 | R136 | Answer waits: a row waits on another top-level session's answer | Landed | all eight steps of `docs/answer-waits.md` on room protocol 10: the room's ask state, the `wait_on` edge, the `answer`/`decline` verbs, the passes, the end-to-end test and the docs |
 | R137 | Todo graphs that span projects | Code work | the design; an answer-wait ask is the first cross-project edge |
@@ -856,12 +857,15 @@ Every daemon writes one `sessions.db` (9.4 GB on 2026-11-06, a WAL that reached 
 
 ## R132 - `skills_path.rs` refuses its own session once under load
 
-**Status:** open. left: the root cause.
+**Status:** closed - two fixtures in one process minted the same `TempDir` name.
 
 `an_unknown_skill_name_is_refused_and_runs_nothing` failed once in a full gate with `session s-skills-path is being written by another process` naming the test's own pid, 0 s ago. Six reruns and the next full gate passed.
 
-- A second claim from one process is refused by design (`writer::me` suffixes the owner with a nanosecond, so two claims in one process are two claims), so the refusal means a claim on that store was still held.
-- Two candidates, neither confirmed: an earlier `Claim` in the same test not yet dropped when the dispatch reopened the session, or two fixtures in parallel getting the same `TempDir` name (`harnessd-skills-path-store-<pid>-<now_ns>`), the second wiping and reusing the first's store. An atomic counter in that name rules out the second for nothing.
+- The Claim-on-reopen candidate is not it. The claim is taken once, in `Harness::open` (`writer::claim`, `harness/open.rs`), and lives in the harness; the dispatch path (`Sessions::turn`) MOVES the harness out of `self.open` and back and never drops it, and `harness_as` claims only when the session is absent, so nothing in this test reopens it.
+- It is the name. Two of the four tests in the binary, both threads released together from the vocabulary cache's mutex, minted one `harnessd-skills-path-store-<pid>-<ns>`: the clock's tick on this box is ~40 ns, and a probe of the real shape (`remove_dir_all` + `create_dir_all` then `SystemTime::now()`, 4 threads, 20 000 rounds) got equal nanoseconds in 143 of 120 000 pairings - about once per 1000, or ~0.7% per run of the 4-test binary. The second fixture then opens the first's store and is refused by a claim its own pid holds, which is exactly the sentence in the row. Forcing the collision reproduces it byte for byte.
+- The fix is `letibot_sessionlog::testing::scratch(prefix)`: `<prefix>-<pid>-<clock ns>-<counter>`, with the counter as the guarantee and a test that two calls never meet. Every pid-and-clock scratch name in `crates/harnessd/tests` - directories, sockets, one store file - now goes through it (48 sites in 45 files); the ten that already carried a hand-written counter were left as they are, and the pid-ONLY names were left too: they race on nothing, their hazard is a test calling its own helper twice.
+- Proof, after the fix: 50 consecutive rounds, each running 4 copies of the `skills_path` binary at `--test-threads 4` beside 4 `yes` burners - 200 runs, 200 logs reading `test result: ok. 4 passed`, 0 panics, at load average 9.8-15.0 on a 32-core box.
+- Proof, before it: the same 50 rounds against a binary whose name was minted the old way (pid + `now_ns`, no counter, the same source otherwise) failed 6 of its 200 runs - rounds 12, 13, 22, 23 and 45 - each one two tests sharing a directory: `the task did not start: no skill named handover`, `the child was never handed the skill's body`, `the load runs a turn`. The store-claim sentence the row reports is the same collision landing on `store` instead of `ws`, and forcing it reproduces that sentence byte for byte.
 
 ## R135 - The context-claim detector's `carry` anchor is not calibrated
 

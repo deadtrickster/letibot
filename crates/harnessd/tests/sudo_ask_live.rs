@@ -44,14 +44,7 @@ fn the_process_the_daemon_may_not_read() {
 
 /// A temp directory for this run's socket, store and log - never the live store.
 fn scratch(tag: &str) -> PathBuf {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = letibot_sessionlog::testing::scratch_root().join(format!(
-        "letibot-sudo-ask-live-{tag}-{}-{n}",
-        std::process::id()
-    ));
+    let dir = letibot_sessionlog::testing::scratch(&format!("letibot-sudo-ask-live-{tag}"));
     std::fs::create_dir_all(&dir).expect("temp dir");
     dir
 }

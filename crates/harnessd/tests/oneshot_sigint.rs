@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use letibot_tokencore::store::Store;
 use letibot_transcript::TranscriptItem;
@@ -30,14 +30,7 @@ struct TempDir {
 
 impl TempDir {
     fn new(tag: &str) -> Self {
-        let path = letibot_sessionlog::testing::scratch_root().join(format!(
-            "letibot-{tag}-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock before epoch")
-                .as_nanos()
-        ));
+        let path = letibot_sessionlog::testing::scratch(&format!("letibot-{tag}"));
         std::fs::create_dir_all(&path).expect("temp dir");
         Self { path }
     }

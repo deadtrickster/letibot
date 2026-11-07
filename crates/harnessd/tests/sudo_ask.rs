@@ -131,14 +131,7 @@ fn parts(cfg: &Config) -> Parts {
 }
 
 fn socket_path(tag: &str) -> PathBuf {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    letibot_sessionlog::testing::scratch_root().join(format!(
-        "letibot-sudo-ask-{tag}-{}-{n}.sock",
-        std::process::id()
-    ))
+    letibot_sessionlog::testing::scratch(&format!("letibot-sudo-ask-{tag}")).with_extension("sock")
 }
 
 /// The shape of `sudo -A`, as a script: the helper's stdout is a pipe this process blocks

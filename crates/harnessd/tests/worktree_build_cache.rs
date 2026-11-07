@@ -63,14 +63,7 @@ struct Scratch {
 
 impl Scratch {
     fn new(tag: &str, tracked: bool) -> Scratch {
-        let root = letibot_sessionlog::testing::scratch_root().join(format!(
-            "{tag}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let root = letibot_sessionlog::testing::scratch(tag);
         let repo = root.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         git(&repo, &["init", "-q", "-b", "main"]);

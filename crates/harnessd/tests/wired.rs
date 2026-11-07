@@ -154,14 +154,7 @@ fn a_layer_in_force_seats_its_tool_and_no_layer_seats_none() {
     };
     // A project of its own: this test is about a layer on disk, and the repository it runs in may
     // have plugins of its own (a `.letibot/plugins` is a thing a session's project has).
-    let project = std::env::temp_dir().join(format!(
-        "letibot-wired-layer-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
+    let project = letibot_sessionlog::testing::scratch("letibot-wired-layer");
     std::fs::create_dir_all(&project).expect("a project dir");
 
     let seated_with = |session: &str| {

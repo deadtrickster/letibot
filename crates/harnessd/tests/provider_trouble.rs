@@ -351,14 +351,7 @@ fn now_ms() -> u64 {
 
 #[test]
 fn the_four_provider_troubles_reach_the_wire_as_types() {
-    let scratch = letibot_sessionlog::testing::scratch_root().join(format!(
-        "letibot-provider-trouble-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let scratch = letibot_sessionlog::testing::scratch("letibot-provider-trouble");
     std::fs::create_dir_all(scratch.join("letibot")).expect("the scratch config dir");
     // SAFETY: this binary has one test, and everything below runs in sequence on this thread or on
     // threads it starts afterwards; nothing reads the environment concurrently with these calls.

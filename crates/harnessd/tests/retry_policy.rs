@@ -331,14 +331,7 @@ where
 fn what_is_retryable_and_what_the_operator_is_told() {
     // The operator's `providers.toml` must not be touched: point the config home at a scratch
     // directory for this process, and take the keys this file writes out of anybody else's reach.
-    let scratch = letibot_sessionlog::testing::scratch_root().join(format!(
-        "letibot-retry-policy-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let scratch = letibot_sessionlog::testing::scratch("letibot-retry-policy");
     std::fs::create_dir_all(scratch.join("letibot")).expect("the scratch config dir");
     // SAFETY: this test binary has one test, and everything below runs in sequence on this thread
     // or on threads it starts afterwards; nothing reads the environment concurrently.

@@ -58,14 +58,8 @@ fn parts(cfg: &Config) -> Parts {
 }
 
 fn socket_path(tag: &str) -> std::path::PathBuf {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    letibot_sessionlog::testing::scratch_root().join(format!(
-        "letibot-promote-midflight-{tag}-{}-{n}.sock",
-        std::process::id()
-    ))
+    letibot_sessionlog::testing::scratch(&format!("letibot-promote-midflight-{tag}"))
+        .with_extension("sock")
 }
 
 /// A model server that refuses in the one way the retry rule respects - a 400 is *the

@@ -52,14 +52,7 @@ fn asked_with() -> serde_json::Value {
 }
 
 fn tempdir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "letibot-builtin-{tag}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
+    let dir = letibot_sessionlog::testing::scratch(&format!("letibot-builtin-{tag}"));
     std::fs::create_dir_all(&dir).expect("a temp dir");
     dir
 }

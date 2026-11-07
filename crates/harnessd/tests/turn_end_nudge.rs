@@ -2,8 +2,6 @@
 //! with no call that a nudge continues, and a loop that returns between rounds. In both, the hub
 //! says in flight until the one frame with `ends_turn`, and that frame is published exactly once.
 
-use std::time::SystemTime;
-
 use letibot_harnessd::Parts;
 use letibot_harnessd::config::{Config, ProviderConfig, Seat};
 use letibot_harnessd::harness::{Harness, Reply};
@@ -126,14 +124,7 @@ struct TempDir {
 
 impl TempDir {
     fn new(tag: &str) -> Self {
-        let path = letibot_sessionlog::testing::scratch_root().join(format!(
-            "{tag}-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock before epoch")
-                .as_nanos()
-        ));
+        let path = letibot_sessionlog::testing::scratch(tag);
         std::fs::create_dir_all(&path).expect("creating the temp dir");
         Self { path }
     }

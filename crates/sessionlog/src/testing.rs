@@ -603,6 +603,23 @@ fn short_alias_at(temp: std::path::PathBuf, link: &str) -> std::path::PathBuf {
     }
 }
 
+/// A scratch name under [`scratch_root`] that no other call in this process can mint:
+/// `<prefix>-<pid>-<clock ns>-<counter>`. The counter is the guarantee and the clock is only the
+/// record of when: this box's clock ticks in ~40 ns steps, so two tests released together do read
+/// the same nanosecond (measured at ~1 in 1000 pairings), and two fixtures handed one name share
+/// one session store - the second open then refuses a claim its own pid holds (R132). The pid is no
+/// guarantee either: a later run can reuse it, so a caller wanting an empty directory clears the
+/// name first. Nothing is created here, because a caller may want a socket or a file, not a dir.
+pub fn scratch(prefix: &str) -> std::path::PathBuf {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    scratch_root().join(format!("{prefix}-{}-{ns}-{n}", std::process::id()))
+}
+
 /// Where a test binds `dir`'s socket: `dir/<name>` when that fits `sun_path`, otherwise the
 /// same file reached through a short symlink in `/tmp`. The limit is the kernel's, so the product
 /// refusing such a path is correct and the fix belongs here.
@@ -658,6 +675,25 @@ fn sweep_dead_links(prefix: &str) {
 /// A tree root no real process descends from, for `serve_registry_rooted`: a test that serves
 /// in-process and runs a head as its own child must not have that child judged a tool call.
 pub const FOREIGN_TREE: i32 = i32::MAX;
+
+#[cfg(test)]
+mod scratch_tests {
+    use super::{scratch, scratch_root};
+
+    /// Two names minted one after the other are two names, which the clock alone cannot promise.
+    #[test]
+    fn two_names_from_one_process_never_meet() {
+        let a = scratch("letibot-scratch-test");
+        let b = scratch("letibot-scratch-test");
+        assert_ne!(a, b);
+        assert!(a.starts_with(scratch_root()));
+        assert!(b.starts_with(scratch_root()));
+        // The clock is one segment of the name and the counter another, so a leftover in /tmp can
+        // still be dated by a person reading it.
+        let name = a.file_name().unwrap().to_str().unwrap();
+        assert!(name.split('-').count() >= 4, "{}", a.display());
+    }
+}
 
 #[cfg(test)]
 mod socket_path_tests {

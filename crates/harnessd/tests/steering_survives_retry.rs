@@ -105,14 +105,7 @@ fn a_follow_up_taken_by_a_failed_round_is_in_the_retried_round() {
     let Some(gguf) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    let scratch = letibot_sessionlog::testing::scratch_root().join(format!(
-        "letibot-steer-retry-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-    ));
+    let scratch = letibot_sessionlog::testing::scratch("letibot-steer-retry");
     std::fs::create_dir_all(scratch.join("letibot")).expect("the scratch config dir");
     // SAFETY: one test in this binary; nothing reads the environment concurrently.
     unsafe {

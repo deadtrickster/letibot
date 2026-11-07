@@ -3,7 +3,7 @@
 //! another session's wait.
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use letibot_harnessd::config::{Config, ProviderConfig, Seat};
 use letibot_harnessd::{Dialect, Outcome, Parts, Sessions};
@@ -158,14 +158,7 @@ struct TempDir {
 
 impl TempDir {
     fn new(tag: &str) -> Self {
-        let path = letibot_sessionlog::testing::scratch_root().join(format!(
-            "{tag}-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock before epoch")
-                .as_nanos()
-        ));
+        let path = letibot_sessionlog::testing::scratch(tag);
         std::fs::create_dir_all(&path).expect("creating the temp dir");
         Self { path }
     }

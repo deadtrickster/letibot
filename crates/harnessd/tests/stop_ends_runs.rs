@@ -39,14 +39,7 @@ const PATIENCE: Duration = Duration::from_secs(90);
 const STOP_BUDGET: Duration = Duration::from_secs(20);
 
 fn scratch(tag: &str) -> PathBuf {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = letibot_sessionlog::testing::scratch_root().join(format!(
-        "letibot-stop-runs-{tag}-{}-{n}",
-        std::process::id()
-    ));
+    let dir = letibot_sessionlog::testing::scratch(&format!("letibot-stop-runs-{tag}"));
     std::fs::create_dir_all(&dir).expect("temp dir");
     dir
 }

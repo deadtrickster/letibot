@@ -105,14 +105,7 @@ fn layer(root: &Path, name: &str, hook: &str, feeds: &[&str]) -> PathBuf {
 }
 
 fn tempdir(tag: &str) -> PathBuf {
-    let dir = letibot_sessionlog::testing::scratch_root().join(format!(
-        "pane-feeds-{tag}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
+    let dir = letibot_sessionlog::testing::scratch(&format!("pane-feeds-{tag}"));
     std::fs::create_dir_all(&dir).expect("a temp dir");
     dir
 }

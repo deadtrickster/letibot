@@ -23,14 +23,8 @@ use letibot_tools::{AdjudicatedGate, Gate};
 const PATIENCE: Duration = Duration::from_secs(20);
 
 fn socket_path(tag: &str) -> std::path::PathBuf {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    letibot_sessionlog::testing::scratch_root().join(format!(
-        "letibot-memory-card-{tag}-{}-{n}.sock",
-        std::process::id()
-    ))
+    letibot_sessionlog::testing::scratch(&format!("letibot-memory-card-{tag}"))
+        .with_extension("sock")
 }
 
 /// The ask, out of the box's own numbers: `uncapped` is the ask the rule never grants without a

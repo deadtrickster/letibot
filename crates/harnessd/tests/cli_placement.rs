@@ -6,14 +6,7 @@ use std::path::PathBuf;
 
 /// A fixture home, a `hosts.toml` naming `lab2x1`, and nothing else.
 fn fixture() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "letibot-cli-placement-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
+    let dir = letibot_sessionlog::testing::scratch("letibot-cli-placement");
     let config = dir.join(".config").join("letibot");
     std::fs::create_dir_all(&config).expect("the config directory");
     std::fs::write(
