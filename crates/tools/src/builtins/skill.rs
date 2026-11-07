@@ -1023,6 +1023,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The `plugin-hooks` skill teaches every hook kind the host asks, one example each - the wall
+    /// was a skill naming four kinds and leaving out `tool_`, `command_` and `pane_`, so agents
+    /// concluded in the room that a plugin cannot add a tool (R151).
+    #[test]
+    fn the_plugin_hooks_skill_names_every_hook_kind_the_host_serves() {
+        let built = SkillRegistry::built_in();
+        let skill = built
+            .iter()
+            .find(|s| s.name == "plugin-hooks")
+            .expect("the plugin-hooks skill");
+        for kind in letibot_plugins::SERVED_KINDS {
+            assert!(
+                skill.body.contains(&format!("`{kind}")),
+                "the host asks `{kind}` and the skill never names it"
+            );
+        }
+        // The two lists together are the host's prefixes, so a new kind cannot arrive without a
+        // decision about this skill: it must be served (and taught) or named as never asked.
+        let mut listed: Vec<&str> = letibot_plugins::SERVED_KINDS
+            .iter()
+            .chain(letibot_plugins::UNSERVED_KINDS.iter())
+            .copied()
+            .collect();
+        listed.sort_unstable();
+        let mut prefixes = letibot_plugins::HOOK_PREFIXES.to_vec();
+        prefixes.sort_unstable();
+        assert_eq!(
+            listed, prefixes,
+            "every prefix the host recognises is either served or named unserved"
+        );
+    }
+
     /// A project's skill is the project's, and an installed one is nobody's words: the two facts
     /// the index's labels exist for, over real directories.
     #[test]

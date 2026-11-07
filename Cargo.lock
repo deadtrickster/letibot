@@ -1678,6 +1678,7 @@ dependencies = [
  "letibot-embeddings",
  "letibot-metrics",
  "letibot-plugin",
+ "letibot-plugins",
  "letibot-tokencore",
  "letibot-tools",
  "letibot-transcript",

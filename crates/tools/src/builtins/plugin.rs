@@ -179,7 +179,7 @@ impl Tool for PluginTool {
                     "hook": {
                         "type": "string",
                         "enum": ["pane", "notice", "on_tool_call", "on_tool_result", "condition"],
-                        "description": "scaffold: the hook kind to answer. `pane` is drawn by a head; the other four patch what the host does at a call, at a result, at a notice it says, and at a watch's firing. `plugin_hooks` has the contract for each."
+                        "description": "scaffold: the hook kind to answer. `pane` is drawn by a head; the other four patch what the host does at a call, at a result, at a notice it says, and at a watch's firing. `plugin_hooks` has the contract for each, and a layer can also ADD a `tool_<name>` or a `command_<verb>` — the `plugin-hooks` skill has both shapes."
                     },
                     "input": {
                         "type": "object",
@@ -319,13 +319,15 @@ impl Tool for PluginHooksTool {
              answer, and the rule that keeps it honest — a notice may be reworded but not dropped \
              where the model is owed it, a call hook may narrow and never admit, a result hook sees \
              only successes, and a condition declares its looks instead of running them. Read this \
-             before writing a layer with `plugin`.",
+             before writing a layer with `plugin`. The two kinds with no page here are the ones a \
+             layer ADDS: `tool_<name>` and `command_<verb>`, whose shapes are the `plugin-hooks` \
+             skill.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "hook": {
                         "type": "string",
-                        "description": "Only this hook kind: `pane`, `notice`, `on_tool_call`, `on_tool_result` or `condition`. Omit for every kind this host runs."
+                        "description": "Only this hook kind: `pane`, `notice`, `on_tool_call`, `on_tool_result` or `condition`. Omit for every kind this host runs; `tool_` and `command_` are the `plugin-hooks` skill, not a page here."
                     }
                 }
             }),

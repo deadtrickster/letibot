@@ -76,3 +76,6 @@ letibot-tools = { path = ".", features = ["testing"] }
 # A real second tier over a tiny model, so the blend's tests run the crate's own path
 # instead of a fake that agrees with them.
 letibot-embeddings = { path = "../embeddings", features = ["testing"] }
+# The host's own hook-kind list, so the `plugin-hooks` skill is held to what the daemon asks
+# instead of to a second copy of that list written here.
+letibot-plugins = { path = "../plugins" }
