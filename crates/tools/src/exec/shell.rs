@@ -222,16 +222,16 @@ pub const BASE_BYTES: usize = ENV_BYTES * 2;
 ///
 /// Two passes: first what differs from `base` (the session's own exports), then the rest, so
 /// a large inherited environment cannot spend the caps before the session's own names. With no
-/// `base` array declared every name is in the first pass.
+/// `base` string every name is in the first pass. `base` is a space-delimited `NAME=value ` list
+/// rather than an associative array, so bash 3.2 (macOS `/bin/sh`) runs it too.
 fn env_dump_fn(env_fn: &str, base: &str) -> String {
     format!(
-        "{env_fn}() {{ command -v compgen >/dev/null 2>&1 || return; local n v p h=0 c=0 b=0; \
-         case \"$(declare -p {base} 2>/dev/null)\" in \"declare -A\"*) h=1;; esac; \
+        "{env_fn}() {{ command -v compgen >/dev/null 2>&1 || return; local n v p s c=0 b=0; \
          for p in 1 2; do for n in $(compgen -e); do \
          case \"${{!n}}\" in \"\"|*[!{plain}]*) continue;; esac; v=${{!n}}; \
          [ ${{#v}} -gt {value} ] && continue; \
-         if [ $h = 1 ] && [ \"${{{base}[$n]+x}}\" ] && [ \"${{{base}[$n]}}\" = \"$v\" ]; \
-         then [ $p = 1 ] && continue; else [ $p = 2 ] && continue; fi; \
+         case \"${{{base}}}\" in *\" $n=$v \"*) s=1;; *) s=0;; esac; \
+         if [ $s = 1 ]; then [ $p = 1 ] && continue; else [ $p = 2 ] && continue; fi; \
          printf \"%s=%s;\" \"$n\" \"$v\"; c=$((c+1)); b=$((b+${{#n}}+${{#v}}+2)); \
          [ $c -ge {pairs} ] && return; [ $b -ge {bytes} ] && return; done; done; }}",
         plain = PLAIN,
@@ -251,12 +251,14 @@ pub fn trailer_definition(fn_name: &str) -> String {
     let base = format!("{fn_name}_base");
     // The environment the session started with, so the dump can tell its own exports apart.
     format!(
-        "declare -gA {base}=() 2>/dev/null && for __lt_n in $(compgen -e); do \
-         {base}[$__lt_n]=${{!__lt_n}}; done; unset __lt_n\n\
+        "{base}=' '; for __lt_n in $(compgen -e 2>/dev/null); do \
+         case \"${{!__lt_n}}\" in \"\"|*[!{plain}]*) ;; *) {base}=\"${{{base}}}$__lt_n=${{!__lt_n}} \";; esac; \
+         done; unset __lt_n\n\
          {}\n\
          {fn_name}() {{ printf '\\033]1337;letibot;%s;%s;%s\n' \"$LETIBOT_MARK\" \"$?\" \"$PWD\"; \
          {env_fn}; printf '\\007'; }}",
-        env_dump_fn(&env_fn, &base)
+        env_dump_fn(&env_fn, &base),
+        plain = PLAIN,
     )
 }
 
@@ -274,13 +276,13 @@ pub fn oneshot_trailer(mark: &str, started_with: &[(String, String)]) -> String 
          command -v bash >/dev/null 2>&1 && bash -c '{decl}; {dump}; \
          __lt_end_{mark}() {{ printf \"\\033]1337;letibot;{mark};%s;%s\\n\" \"$1\" \"$2\"; \
          __lt_dump_{mark}; printf \"\\007\"; }}; \
-         __lt_end_{mark} \"$1\" \"$2\"' letibot-trailer \"${saved}\" \"$PWD\"\n\
+         __lt_end_{mark} \"$1\" \"$2\"' letibot-trailer \"${saved}\" \"$PWD\" 2>/dev/null\n\
          exit \"${saved}\"",
         decl = base_declaration(&base, started_with)
     )
 }
 
-/// The `declare -A` the one-shot dump compares against, so a name is in the first pass only when
+/// The `NAME=value ` list the one-shot dump compares against, so a name is in the first pass only when
 /// the command exported it. A pair left out here (a name that is not an identifier, a value that
 /// is not one plain word, one past the bounds) simply stays in the first pass: a value this build
 /// could not carry is not one it can compare against either. `intent::env` holds the same three
@@ -290,7 +292,7 @@ pub fn oneshot_trailer(mark: &str, started_with: &[(String, String)]) -> String 
 /// the caps decide what is CARRIED, so a base the size of the report would make the tail of a large
 /// inherited environment read as the command's own export - the misorder it exists to prevent.
 fn base_declaration(base: &str, started_with: &[(String, String)]) -> String {
-    let mut decl = format!("declare -A {base}=()");
+    let mut list = String::from(" ");
     let mut pairs = 0usize;
     let mut bytes = 0usize;
     for (name, value) in started_with {
@@ -303,11 +305,11 @@ fn base_declaration(base: &str, started_with: &[(String, String)]) -> String {
         {
             continue;
         }
-        decl.push_str(&format!(";{base}[{name}]={value}"));
+        list.push_str(&format!("{name}={value} "));
         pairs += 1;
         bytes += name.len() + value.len() + 2;
     }
-    decl
+    format!("{base}=\"{list}\"")
 }
 
 /// The characters a value may hold and still be carried - the set
@@ -1198,6 +1200,46 @@ mod tests {
             .output()
             .expect("a /bin/sh -c run");
         (out.stdout, out.status.code())
+    }
+
+    /// The trailer runs under POSIX-mode shells and bash 3.2 (macOS `/bin/sh`) with no associative
+    /// arrays: nothing reaches stderr or the payload, and the exports still carry over.
+    #[test]
+    fn a_oneshot_trailer_is_silent_and_complete_under_posix_shells() {
+        if !oneshot_bash() {
+            return;
+        }
+        for shell in [vec!["/bin/sh"], vec!["/bin/bash", "--posix"]] {
+            let mark = nonce();
+            let path = "/usr/bin:/bin".to_string();
+            let started = vec![
+                ("PATH".to_string(), path.clone()),
+                ("LT_SEED".to_string(), "/s".to_string()),
+            ];
+            let composed = format!("export LT_POSIX=/p\n{}", oneshot_trailer(&mark, &started));
+            let out = std::process::Command::new(shell[0])
+                .args(&shell[1..])
+                .arg("-c")
+                .arg(&composed)
+                .env_clear()
+                .env("PATH", path)
+                .env("LT_SEED", "/s")
+                .current_dir("/")
+                .output()
+                .expect("a shell run");
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(stderr.is_empty(), "{shell:?} wrote to stderr: {stderr}");
+            assert!(
+                !String::from_utf8_lossy(&out.stdout).contains("letibot-trailer:"),
+                "{shell:?} leaked into the payload"
+            );
+            let mut buf = out.stdout.clone();
+            let turn = take_turn(&mut buf, &mark)
+                .expect("a whole trailer")
+                .expect("it arrived");
+            assert!(turn.env.contains("LT_POSIX=/p;"), "{shell:?}: {}", turn.env);
+            assert!(turn.env.contains("LT_SEED=/s;"), "{shell:?}: {}", turn.env);
+        }
     }
 
     /// A bash these tests can drive: the child the trailer runs in needs `compgen -e`.
