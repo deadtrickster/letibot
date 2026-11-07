@@ -54,23 +54,19 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R114 | Embeddings as the second similarity tier, for every similarity caller | Code work | item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase case scored against the worst measured negative, the per-round cost on lab2x1 |
 | R118 | A GitHub reviewer seat: `letibot attach github` reviews every PR and answers as @letibot | Code work | the seat in the daemon so the pane has a feed, a mirror per repository, the review panel, R116's verdict, R114's similarity offers |
 | R116 | Claude Code as a merge-queue reviewer through headless `claude -p` | Code work | all of it - no `claude -p`, `--json-schema` or `structured_output` use exists under `crates/` |
-| R117 | The leticode MCP bridge pushes package and queue events into Claude Code as a channel | Code work | the plugin; a self-published channel plugin still needs `--dangerously-load-development-channels` during the preview |
+| R117 | The leticode MCP bridge pushes package and queue events into Claude Code as a channel | Code work | the Claude Code plugin around the bridge; package, queue, seat-nag and work events already reach the channel, and a self-published channel plugin still needs `--dangerously-load-development-channels` during the preview |
 | R127 | The idle nag names every free head of the plan, so independent rows run in parallel | Code work | all of it - `the_row_to_name` (`crates/tools/src/builtins/todo.rs:1333`) picks one ready row; postponed by the operator on 2026-11-07 |
 | R129 | One store file per project and a shared file, so one daemon's write cannot stall another's | Code work | the build, in five packages at the end of `docs/store-split.md` (P0 first: the instrument cannot yet tell a lock wait from I/O); the design, the measurement and the build plan are in the doc on branch `r129-store-split`, not merged |
-| R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | the operator rotates the token; a command this box spawns and a remote placement both keep every secret off every argv now |
-| R132 | `skills_path.rs` refuses its own session as written by another process, once under load | Done | the fix; two fixtures in one process minted one `TempDir` name, because the clock's tick here is ~40 ns and the tests are released together |
-| R133 | The one-shot env report prints its lines out of order | Code work | a reproduction and the fix |
+| R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | the operator rotates `GH_TOKEN`; a command this box spawns and a remote placement keep every secret off every argv |
 | R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | the next stop's line from `~/.local/state/letibot/scroll-stalls.log`, which the head now writes at each stop |
-| R136 | Answer waits: a row waits on another top-level session's answer | Landed | all eight steps of `docs/answer-waits.md` on room protocol 10: the room's ask state, the `wait_on` edge, the `answer`/`decline` verbs, the passes, the end-to-end test and the docs |
 | R137 | Todo graphs that span projects | Code work | the design; an answer-wait ask is the first cross-project edge |
 | R138 | Stable session identities across hosts, through migrations | Code work | the design; until then asks are same-host only |
 | R144 | The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag | Code work | the head's pane for a seat's board; the board, its waits and its nag are landed |
 | R152 | `tests/launcher.sh` stubs outlived their run, and four of its cases had drifted | Code work | putting `tests/launcher.sh` in the merge gate |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
-| R153 | Placing a session on a busy host times out at 20 s | Code work | all of it |
-| R154 | The channel push says turns, not work: idle-with-open-work and a held job's exit are silent, and a lost turn end is never replayed | Code work | all of it |
+| R153 | Placing a session on a busy host times out at 20 s | Code work | a placement's one-off steps sized for a loaded host, one ssh connection per host (`ControlMaster`), and a timed-out status poll not counted as a failed round; the 2 s poll floor is landed |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
-| R150 | Plugin extension points: the harness and head open to plugins | Needs the operator | answers to the 13 questions in `docs/plugin-extension-points-wide.md` §8 (each has a default), then packages K1-K11, P5 and P6; H0 (the pane contract types), the room UI P0-P4 and K9 (the config keys) are landed |
+| R150 | Plugin extension points: the harness and head open to plugins | Needs the operator | the operator's answers to the 13 questions in `docs/plugin-extension-points-wide.md` §8 (each has a default and is built on it meanwhile); K2-K6, K11 and P6 to build; H0, P5, K7, K8, K9, K10 are landed and K1 is in flight |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
 | R100 | A remote session in a firecode VM: `--host` and `--vm` as one placement | Needs the operator | the live proof on lab2x1: a real `firecode` copy carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, the copy-out's cost |
 | R59 | The context wall's denominator moves a third between firings | Needs the operator | the operator's ruling on smoothing the ratio (the tree keeps it per round, as recommended) |
@@ -855,19 +851,6 @@ Every daemon writes one `sessions.db` (9.4 GB on 2026-11-06, a WAL that reached 
 - Tests: `remote_confine.rs` (a confined command and a confined job) and `remote_hosts.rs` (a host with no boundary) assert the token is on neither the ssh argv nor the helper's, that the far command still receives it in its environment, and that a command reading stdin reads its own.
 - Left: the token was readable while the old binary ran, so the operator rotates it.
 
-## R132 - `skills_path.rs` refuses its own session once under load
-
-**Status:** closed - two fixtures in one process minted the same `TempDir` name.
-
-`an_unknown_skill_name_is_refused_and_runs_nothing` failed once in a full gate with `session s-skills-path is being written by another process` naming the test's own pid, 0 s ago. Six reruns and the next full gate passed.
-
-- The Claim-on-reopen candidate is not it. The claim is taken once, in `Harness::open` (`writer::claim`, `harness/open.rs`), and lives in the harness; the dispatch path (`Sessions::turn`) MOVES the harness out of `self.open` and back and never drops it, and `harness_as` claims only when the session is absent, so nothing in this test reopens it.
-- It is the name. Two of the four tests in the binary, both threads released together from the vocabulary cache's mutex, minted one `harnessd-skills-path-store-<pid>-<ns>`: the clock's tick on this box is ~40 ns, and a probe of the real shape (`remove_dir_all` + `create_dir_all` then `SystemTime::now()`, 4 threads, 20 000 rounds) got equal nanoseconds in 143 of 120 000 pairings - about once per 1000, or ~0.7% per run of the 4-test binary. The second fixture then opens the first's store and is refused by a claim its own pid holds, which is exactly the sentence in the row. Forcing the collision reproduces it byte for byte.
-- The fix is `letibot_sessionlog::testing::scratch(prefix)`: `<prefix>-<pid>-<clock ns>-<counter>`, with the counter as the guarantee and a test that two calls never meet. Every pid-and-clock scratch name in `crates/harnessd/tests` - directories, sockets, one store file - now goes through it (48 sites in 45 files); the ten that already carried a hand-written counter were left as they are, and the pid-ONLY names were left too: they race on nothing, their hazard is a test calling its own helper twice.
-- Proof, after the fix: 50 consecutive rounds, each running 4 copies of the `skills_path` binary at `--test-threads 4` beside 4 `yes` burners - 200 runs, 200 logs reading `test result: ok. 4 passed`, 0 panics, at load average 9.8-15.0 on a 32-core box.
-- Proof, before it: the same 50 rounds against a binary whose name was minted the old way (pid + `now_ns`, no counter, the same source otherwise) failed 6 of its 200 runs - rounds 12, 13, 22, 23 and 45 - each one two tests sharing a directory: `the task did not start: no skill named handover`, `the child was never handed the skill's body`, `the load runs a turn`. The store-claim sentence the row reports is the same collision landing on `store` instead of `ws`, and forcing it reproduces that sentence byte for byte.
-- `cargo test -p letibot-sessionlog -p letibot-harnessd`: 141 test-target results, 9 targets red, none for a reason this change can cause. Eight are the box's own: `bwrap: Creating new namespace failed … (ENOSPC)`, so a session asking for the wide or confined seat refuses to open - `clear_context`, `oneshot_sigint`, `prefix_fingerprint`, `restart_restore`, `run_off_worker`, `stop_ends_runs`, `wired`, `worktree_build_cache`, each failing at "the session opens". The ninth is `config::tests::a_first_use_fetch_does_not_hold_the_daemon_start`, in a file this change does not touch: a 10 s wait for a background embedder fetch, under load. The same box fact is why the gate runs on lab2x1.
-
 ## R135 - The context-claim detector's `carry` anchor is not calibrated
 
 **Status:** SETTLED 2026-11-07. Measured on this box's store, read once and read-only (4,316,024 sentences of assistant and reasoning prose, 1,421 of them scorable), every scorable sentence labelled by hand - 141 claims, 1,280 not - into `~/.local/share/letibot/calibration/context_claim_sentences.tsv` on lab2x1 (session text, kept out of the public repository; the test skips where it is absent). left: nothing.
@@ -886,17 +869,6 @@ A session stopped at 842k of 1M with five rows open, saying *"I'm at the end of 
 | 0.40 (above every negative) | 59/141 | 0/1280 | 1.000 | 0.418 |
 
 The two negatives over the floor are `"the enormous amount of context-only messages"` (0.391) and `"the spike used a fresh context per configuration"` (0.367) - code-sense collisions no word gate separates; 0.40, above every negative, costs a third of the recall. Test: `context_claim::tests::the_floor_is_measured_on_the_labelled_sentences`, which asserts these counts; the module doc carries the same measurement.
-
-## R136 - Answer waits: a row waits on another top-level session's answer
-
-**Status:** built, all eight steps: the room's ask (protocol 10), the `Ask`/`Owed`/`Answered` edges and
-`wait_on`'s `ask`, the `room` `answer`/`decline`/`asks` verbs with `Retire` on a deleted session, the
-room pass that writes `Owed` rows and applies what settled, the two-session end-to-end test with the grace
-from `LETIBOT_ROOM_ASK_GRACE_MS`, and `docs/room.md`.
-
-The design is `docs/answer-waits.md`. A's row carries an `Ask` edge, the room holds the ask, B gets a row on its own board saying A waits, and only B's explicit `answer` or `decline` settles it. The contract under it: top-level sessions are services. A session gone for 5 minutes raises an operator ask to restart it and settles nothing. An ask ends only by answer, decline, withdrawal by A or the operator, or B's session being deleted (`Retire`, the one `DOWN`). Claude Code seats are asked through bridge tools `room_answer`, `room_decline`, `room_asks`.
-
-Built here: `TodoNeed::Ask { ask, of, room, question }`, `TodoNeed::Owed { ask }` and `Answered.ask` in the store, the wire and both conversions; `wait_on`'s `ask` through a new `crates/tools` seat, `AskLink`/`AskMade`, that `harnessd`'s room link is to implement (`fn ask(of, room, question) -> Result<AskMade, String>)`, with `needs`' refusal of `ask`, `keep_answers` keeping an ask through a restatement, `detach`, `NeedFate::PeerAsked` as a root of the check, `TodoBoard::settle_ask` and the four settle sentences in `AskSettle::reply`; and the head drawing of both shapes. Built on top of that, all of it in this tree: the room holds the ask (`chat::AskView`/`AskState`, the `Ask`/`AskState` store records, `Server`'s `gone_since` and derived `escalated`) and answers the six frames `ask`, `reply`, `decline`, `withdraw`, `retire`, `asks` at `ROOM_PROTOCOL_VERSION` 10; the daemon's link implements the `AskLink` seat and carries `answer`/`decline`/`asks`, and `harnessd --delete` sends `Retire`; `crates/harnessd/src/room/asks.rs` is the pass (owed rows, settles, withdrawals, the operator's card on `escalated`) on the existing five-second room pass; the bridge serves `room_answer`, `room_decline`, `room_asks`. The person withdrawing an ask from a head's ask list is not built: the operator's seat can `withdraw` over the wire, and no pane offers it.
 
 ## R137 - Todo graphs that span projects
 
@@ -966,26 +938,6 @@ On 2026-11-07 four placements failed at the same step while their host was build
 
 
 A second budget did the same to running sessions (`cc@serenedb`, room #861, two sessions on 2026-11-07): a remote job's status poll was given what the caller's wait had left, 0.03 to 1.1 s, so on a loaded host every poll timed out, the job read as running, the progress check stopped the turn and the model concluded the host was unreachable. A poll now gets at least 2 s (`remote::POLL_FLOOR`, `poll_budget`). Left from that report: a status query that timed out should not count as a failed round in the progress check.
-## R154 - The channel push says turns, not work, and a lost event is never replayed
-
-**Status:** fixed. left: nothing.
-
-Built, in `crates/bridge/src/push.rs`: a per-session outbox at `<rundir>/<folder key>.push-<session>`
-holding the key of every fact said, the frames a client has not taken, and the cursor it has been
-told up to (written through a temp name and a rename, so a killed bridge leaves the old one).
-`tools.rs` keeps one outbox per held session, so a client that connects again is handed what it
-missed instead of starting a second watcher, and a bridge restarted on the same folder resumes
-where the first one stopped. Two events are new: `idle_with_work` - the session reads `idle` with
-jobs the daemon still lists running or with pending/in-progress todo rows, keyed by that work so a
-change is one message and a poll is none - and `job_ended`, with the job and the state the daemon
-settled it with, read from the progress ring because `JobSettled` never wakes `wait`. A turn end is
-now keyed by the daemon's `turn_id`, so two turns with the same words are two events. And
-`leticode_stop` marks the head it stopped, so the `Bye` behind that close is no longer pushed as
-`failed: the daemon closed this connection`. Tests: seven in `push.rs`, and
-`tests/push_work.rs`, `tests/push_replay.rs`, `tests/push_stop.rs`, `tests/push_bye.rs`.
-
-Reported 2026-11-07 by `cc@serenedb` (room #831) with five placed children, and seen here with twelve. The bridge pushes a held session's turn end, ask and failure (`crates/bridge/src/push.rs`), but nothing when a session goes idle while it still has open jobs or pending rows, and nothing when a held job exits: a child waiting on job `j82015` sat idle with no event, and one of this session's packages sat three hours on a stuck job. And one `turn_ended` never reached the channel at all, found only through `leticode_list`. Wanted: an event on a held session going idle with `jobs_open` or pending rows, and on a held job exiting (with its exit); a per-bridge cursor over the pushed events with replay on reconnect, or a periodic digest of idle sessions with open work. The workaround in use is a Monitor polling `/proc` per placement.
-
 ## R134 - Scrolling stops at a line above the tail
 
 **Status:** not reproduced. left: a reproduction from the operator.
