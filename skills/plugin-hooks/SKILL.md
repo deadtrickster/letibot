@@ -5,22 +5,50 @@ description: Fix the harness's own behaviour from inside a session — pick the 
 
 # Patch the harness from inside this session
 
-The operator's complaint is usually one of four shapes, and each is a hook. When it is not, it is
-one of three things a layer can **add**: a pane, a `/` verb, or a tool. Seven kinds, and finding the
+The operator's complaint is usually one of five shapes, and each is a hook. When it is not, it is
+one of three things a layer can **add**: a pane, a `/` verb, or a tool. Eight kinds, and finding the
 right one is most of the work; after that it is a small wasm module and no release.
 
-## The four patch points
+## The five patch points
 
 | what went wrong | the kind | runs |
 |---|---|---|
 | the model made a call it should not have, or with the wrong arguments | **`on_tool_call`** | before the gate — it may refuse, rewrite or answer the call |
+| the gate settles a call this project wants a person to see | **`adjudicate_floor`** | inside the gate, after layer A — it may only raise the tier |
 | a call did something the harness should have noticed (a pull request opened and nothing watched it) | **`on_tool_result`** | on a successful result, before the model reads it |
 | the harness said something misleading, or left out what the model needed | **`notice_<kind>`**, as in `notice_monitor` | on every sentence the harness injects of that kind |
 | a monitor watches the wrong thing, or fires for the wrong reason | **`condition_<name>`** | on every poll of a watch |
 
-The contract for each of these four and for a pane is the `plugin_hooks` tool, **read from the
-host's own types**: read it before writing anything, and read it again after a refusal.
-`plugin_hooks {"hook":"condition"}` is one kind; no argument is all of them.
+The contract for four of these and for a pane is the `plugin_hooks` tool, **read from the host's
+own types**: read it before writing anything, and read it again after a refusal.
+`plugin_hooks {"hook":"condition"}` is one kind; no argument is all of them. `adjudicate_floor`,
+like `tool_` and `command_`, is written out below: the host has no page for it yet.
+
+### `adjudicate_floor` — the gate's floor
+
+```toml
+name = "prod-floor"
+hooks = ["adjudicate_floor"]
+capabilities = []
+```
+
+The input is the action as layer A read it — `{"v": 1, "action": {"tool": "bash", "intents": ["network"],
+"tier": "may_approve", "program": "ssh", "paths": [], "regions": ["remote:prod-1"], "mode":
+"writes allowed", "project": "/work"}}`. The answer is the names you give it and the rung you
+require: `{"intents": ["prod-host"], "floor": "ask"}`, where a floor is `auto`, `may_approve`, `ask`
+(`always_ask`) or `deny` (`blocked`).
+
+**It can only raise.** Your floor is merged through the strictest tier, so `auto` over a call layer A
+already found disclosing changes nothing, and no field admits a call. A `deny` refuses it before the
+point is even consulted; an `ask` is an ordinary always-ask card. A trap, a timeout or an answer the
+host cannot parse is the **strictest** tier, not a skip — a floor that cannot answer has not said
+the call is fine. The names you give (`prod-host`) reach the card and the audit row and decide
+nothing; the floor does.
+
+Only a **built-in, user or project** layer answers: never a session's own, which is refused at load
+and never asked on the stack. This hook is *reviewed policy* — a project's production hosts, its own
+secret stores — so it belongs in the project's `.letibot/plugins` or the operator's `~/.config`, not
+in the layer of the session it governs.
 
 ## The three surfaces a layer can add
 
@@ -119,6 +147,9 @@ seated when the layer applies: a tool a session has not loaded is not in the mod
 - **`on_tool_call` can never admit anything.** It runs before the gate: a rewritten call is what the
   gate then adjudicates, the tool's name is not yours to change, and there is no field that says
   *allow*. Narrow, rewrite, refuse, answer — that is the whole vocabulary.
+- **`adjudicate_floor` can never admit either, and a session cannot write one.** It tightens only,
+  and a session layer that declares it is refused — reviewed policy is the project's or the
+  operator's.
 - **A result hook only sees results that happened** (`ok`, `backgrounded`). A failed call is the
   failure's own words and the model reads them exactly.
 - **A notice hook is named after the notice's kind** — `notice_monitor`, `notice_job` — because

@@ -125,13 +125,20 @@ pub const HOOK_PREFIXES: &[&str] = &[
 /// The hook kinds this host asks: every prefix of [`HOOK_PREFIXES`] something in this tree builds a
 /// hook name with. The `plugin-hooks` skill teaches one example of each, and a test fails when a
 /// kind is here and the skill never names it.
-pub const SERVED_KINDS: &[&str] = &["on_", "pane_", "condition_", "notice_", "command_", "tool_"];
+pub const SERVED_KINDS: &[&str] = &[
+    "on_",
+    "pane_",
+    "condition_",
+    "notice_",
+    "command_",
+    "tool_",
+    "adjudicate_",
+];
 
 /// The prefixes the runtime recognises and this host never asks: rano's own (`provider_open`,
-/// `digest_…`, `link_…`), or a seam with no session behind it yet (`adjudicate_floor`, K7: held
-/// closed by the stack and answered by nothing until a host installs the hook). Named so that these
-/// two lists are the whole of [`HOOK_PREFIXES`]: a new prefix forces a decision about the skill.
-pub const UNSERVED_KINDS: &[&str] = &["provider_", "digest_", "link_", "complete_", "adjudicate_"];
+/// `digest_…`, `link_…`). Named so that these two lists are the whole of [`HOOK_PREFIXES`]: a new
+/// prefix forces a decision about the skill.
+pub const UNSERVED_KINDS: &[&str] = &["provider_", "digest_", "link_", "complete_"];
 
 /// The module a layer directory holds when its manifest names none.
 pub const WASM: &str = "plugin.wasm";

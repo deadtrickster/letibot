@@ -2261,6 +2261,61 @@ impl PluginHost {
             ),
         }
     }
+
+    /// One call through the `adjudicate_` floor: the names a layer gives the action and the rung it
+    /// requires, or `Pass` when nothing answered. A trap or a bad answer is `Trapped`, which the gate
+    /// reads as the strictest tier - a floor that cannot answer has not said the call is fine.
+    pub fn adjudicate(
+        &self,
+        hub: &Arc<Hub>,
+        action: &letibot_plugin::adjudicate::Action,
+    ) -> letibot_tools::adjudicate::Floored {
+        use letibot_plugin::adjudicate::{AdjudicateIn, AdjudicateOut, Floor};
+        use letibot_tools::adjudicate::Floored;
+        let input = AdjudicateIn::new(action.clone());
+        let Ok(input) = serde_json::to_value(&input) else {
+            return Floored::Trapped {
+                by: String::new(),
+                why: "the action this host built is not expressible as JSON".into(),
+            };
+        };
+        let Some(resolved) = self.ask(hub, letibot_plugin::adjudicate::HOOK, &input) else {
+            return Floored::Pass;
+        };
+        if let Some((by, why)) = resolved.refused {
+            let said = format!("it could not answer, so the call is at the strictest tier: {why}");
+            self.complain(hub, &by, &said);
+            return Floored::Trapped { by, why };
+        }
+        let Some(answer) = resolved.answer else {
+            return Floored::Pass;
+        };
+        let by = self.layer_sentence(&resolved.by.unwrap_or_default());
+        match serde_json::from_value::<AdjudicateOut>(answer.clone()) {
+            // A layer that names nothing and asks for nothing is silence, not an answer.
+            Ok(out) if out.says_nothing() => Floored::Pass,
+            Ok(out) => {
+                // Read before the names move: the rung is what the gate acts on, the names do not.
+                let floor = out.required().unwrap_or(Floor::Auto);
+                Floored::Raised {
+                    intents: out.intents,
+                    floor,
+                    by,
+                }
+            }
+            Err(why) => {
+                let said = format!(
+                    "its answer was {answer}, which is not a floor (`intents` and `floor` are the \
+                     whole of it): {why}"
+                );
+                self.complain(hub, &by, &said);
+                Floored::Trapped {
+                    by,
+                    why: format!("its answer is not the contract: {why}"),
+                }
+            }
+        }
+    }
 }
 
 /// A rewrite may only make a call smaller: the tool is fixed by the contract, and no argument
@@ -2324,6 +2379,32 @@ impl letibot_tools::runtime::CallHook for CallHooks {
             by: answered.by,
             note,
         })
+    }
+}
+
+/// The gate's `adjudicate_` floor, backed by one session's plugin host. A slot rather than the host
+/// for the reason [`CallHooks`] holds one: the gate is built when the harness opens and the host
+/// when the daemon opens the session, so a session nobody serves decides exactly as it did.
+pub struct FloorHooks {
+    slot: Arc<Mutex<Option<Arc<PluginHost>>>>,
+    hub: Arc<Hub>,
+}
+
+impl FloorHooks {
+    pub fn new(slot: Arc<Mutex<Option<Arc<PluginHost>>>>, hub: Arc<Hub>) -> FloorHooks {
+        FloorHooks { slot, hub }
+    }
+}
+
+impl letibot_tools::adjudicate::FloorHook for FloorHooks {
+    fn floor(
+        &self,
+        action: &letibot_plugin::adjudicate::Action,
+    ) -> letibot_tools::adjudicate::Floored {
+        let Some(host) = self.slot.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+            return letibot_tools::adjudicate::Floored::Pass;
+        };
+        host.adjudicate(&self.hub, action)
     }
 }
 

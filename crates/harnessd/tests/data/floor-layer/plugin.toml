@@ -1,0 +1,5 @@
+name = "prod-floor"
+purpose = "a project's own reviewed floor: its production hosts ask, whatever the point says"
+hooks = ["adjudicate_floor"]
+capabilities = []
+contract = 1

@@ -2538,7 +2538,14 @@ impl Harness {
                     .with_denial_sink(Box::new(HubDenials::new(hub.clone())))
                     // And the other direction: a call the gate admitted without asking
                     // is told, not only recorded - see [`Harness::flush_gate_admissions`].
-                    .with_admission_sink(Box::new(HubAdmissions::new(gate_admissions.clone())));
+                    .with_admission_sink(Box::new(HubAdmissions::new(gate_admissions.clone())))
+                    // The `adjudicate_` floor: the one seam that can raise a tier after layer A, and
+                    // a slot for the same reason `on_tool_call`'s is one - the daemon fills it when it
+                    // opens this session's layers, so a session nobody serves decides as it did.
+                    .with_floor_hook(std::sync::Arc::new(crate::plugins::FloorHooks::new(
+                        plugin_slot.clone(),
+                        hub.clone(),
+                    )));
                 let g = match advisor {
                     // A point whose decider is the MODEL starts supervised: `Decider::Model` is the
                     // whole content of the point, and a session that opened at automode with the
@@ -4585,5 +4592,223 @@ mod linux_wide_seat_tests {
             }
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+}
+
+#[cfg(test)]
+mod floor_layer_tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::sync::mpsc::{Receiver, channel};
+    use std::time::{Duration, Instant};
+
+    use letibot_sessionlog::Registry;
+    use letibot_sessionlog::client::{HeadClient, Inbound, pump};
+    use letibot_sessionlog::event::SessionEvent;
+    use letibot_sessionlog::protocol::{Caps, ServerFrame};
+    use letibot_sessionlog::server::serve_registry;
+    use letibot_tools::{Access, GateCall, GateDecision};
+
+    use crate::config::{Config, ProviderConfig, Seat};
+    use crate::sessions::Sessions;
+
+    /// How long a card may take. The head adjudicator's own budget is longer, so a wait that runs
+    /// out here is this fixture failing rather than the product timing out.
+    const PATIENCE: Duration = Duration::from_secs(20);
+
+    /// A scratch workspace, carrying the committed `prod-floor` layer in the PROJECT scope when
+    /// `with_layer` - `.letibot/plugins` is where a project's reviewed policy lives.
+    fn workspace(tag: &str, with_layer: bool) -> PathBuf {
+        let dir = letibot_sessionlog::testing::scratch_root().join(format!(
+            "letibot-floor-{tag}-{}-{}",
+            std::process::id(),
+            letibot_sessionlog::registry::now_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a workspace");
+        if with_layer {
+            let layer = dir.join(".letibot/plugins/prod-floor");
+            std::fs::create_dir_all(&layer).expect("the layer's directory");
+            let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/floor-layer");
+            for file in ["plugin.toml", "plugin.wasm"] {
+                std::fs::copy(fixture.join(file), layer.join(file)).expect("the fixture");
+            }
+        }
+        dir
+    }
+
+    /// The config `plugins_tool.rs` opens with: the byte vocabulary, a provider that is named and
+    /// never called, and the point that admits a write inside the workspace without asking.
+    fn config(session: &str, ws: &Path) -> Config {
+        let mut cfg = Config::for_this_box(ws);
+        cfg.seat = Seat::Leticode;
+        cfg.session_id = session.to_string();
+        cfg.vocab_gguf = None;
+        cfg.provider = Some(ProviderConfig {
+            name: "deepseek".into(),
+            model: None,
+            api_key: Some("sk-not-used".into()),
+            thinking: false,
+        });
+        cfg.web_search = None;
+        cfg.permission = Vec::new();
+        cfg.mode = letibot_tools::mode::Mode::WRITES_ALLOWED;
+        let scratch = letibot_sessionlog::testing::scratch_root();
+        cfg.store = Some(scratch.join(format!("{session}.db")));
+        cfg.socket = scratch.join(format!("{session}.sock"));
+        cfg
+    }
+
+    /// A session the daemon opened, its config, and the registry its socket is served from. The
+    /// `Parts` is leaked because a `Sessions` borrows it for its whole life, which is the shape the
+    /// daemon's own loop has: there is one, and it outlives every session.
+    fn opened(tag: &str, with_layer: bool) -> (Sessions<'static>, Config, Arc<Registry>) {
+        let ws = workspace(tag, with_layer);
+        let cfg = config(&format!("s-floor-{tag}"), &ws);
+        let parts: &'static crate::Parts = Box::leak(Box::new(
+            crate::Parts::load(&cfg).expect("the byte vocabulary loads"),
+        ));
+        let registry = Registry::new();
+        registry
+            .create(cfg.session_id.clone(), "", Sessions::wiring(&cfg))
+            .expect("a fresh registry");
+        let sessions =
+            Sessions::open_first(parts, cfg.clone(), registry.clone()).expect("the session opens");
+        (sessions, cfg, registry)
+    }
+
+    /// The call both tests make: a write inside the session's own workspace, which at
+    /// `writes allowed` is settled by the point and asks nobody.
+    fn a_write(ws: &Path) -> (String, serde_json::Value) {
+        let path = ws.join("notes.md").display().to_string();
+        (ws.display().to_string(), serde_json::json!({"path": path}))
+    }
+
+    /// Wait for a card and answer it with `option`, handing back the event it was posed as.
+    fn answer_a_card(rx: &Receiver<Inbound>, head: &mut HeadClient, option: &str) -> SessionEvent {
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(inbound) => {
+                    let ServerFrame::Event(envelope) = inbound.frame() else {
+                        continue;
+                    };
+                    if let SessionEvent::DecisionRequested { req_id, .. } = &envelope.event {
+                        head.answer(req_id, option)
+                            .expect("the head answers the card");
+                        return envelope.event;
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(e) => panic!("the head's pump died: {e}"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no card arrived within {PATIENCE:?}"
+            );
+        }
+    }
+
+    /// The floor at a session the daemon opened: the project's layer says its production hosts ask,
+    /// and a write the point would have settled becomes a card a head answers.
+    #[test]
+    fn a_project_layers_floor_raises_a_daemon_sessions_call_to_a_card() {
+        let (sessions, cfg, registry) = opened("card", true);
+        let server = serve_registry(registry, &cfg.socket).expect("the socket binds");
+        let caps = Caps {
+            can_decide: true,
+            ..Caps::default()
+        };
+        let (mut head, _hello, reader) =
+            HeadClient::attach(&cfg.socket, &cfg.session_id, 0, "tui", "dead", caps)
+                .expect("a head attach");
+        let (tx, rx) = channel();
+        std::thread::spawn(move || pump(reader, tx));
+        // The head's half on its own thread: the gate's is the one that blocks on the answer.
+        let answering = std::thread::spawn(move || answer_a_card(&rx, &mut head, "deny"));
+
+        let h = sessions
+            .harness_of(&cfg.session_id)
+            .expect("the session the daemon holds");
+        let (workspace, args) = a_write(&cfg.workspace);
+        let call = GateCall {
+            name: "write",
+            access: Access::Write,
+            args: &args,
+            turn_id: "t1",
+            call_id: "c1",
+            workspace: &workspace,
+            target_exists: Some(true),
+            scripts: &[],
+        };
+        let decision = h
+            .runtime
+            .gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .admit(&call);
+        assert!(
+            matches!(decision, GateDecision::Refuse { .. }),
+            "the head denied the card the floor raised: {decision:?}"
+        );
+
+        let Some(SessionEvent::DecisionRequested {
+            kind,
+            options,
+            summary,
+            ..
+        }) = Some(answering.join().expect("the head's thread"))
+        else {
+            panic!("the floor's raise was not posed as a permission card");
+        };
+        assert_eq!(kind, "permission", "a raised call is a permission card");
+        let ids: Vec<&str> = options.iter().map(|o| o.option_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["allow_once", "deny", "deny_and_tell"],
+            "the always-ask ladder, which is what a floor at `ask` merges to"
+        );
+        assert!(
+            summary.contains("notes.md"),
+            "the card names the file it is about: {summary}"
+        );
+        drop(server);
+    }
+
+    /// And the control: the same session, the same call, no layer - the point settles it, nobody is
+    /// asked, and the gate's own answer is what it was before this seam existed. A session whose
+    /// gate asked anyway would fail here, because its adjudicator is a head and no head is attached.
+    #[test]
+    fn a_session_with_no_floor_layer_decides_as_it_did() {
+        let (sessions, cfg, _registry) = opened("bare", false);
+        let h = sessions
+            .harness_of(&cfg.session_id)
+            .expect("the session the daemon holds");
+        assert!(
+            h.plugin_host().is_some(),
+            "the daemon's own host is on the slot, which is what the floor is read through"
+        );
+        let (workspace, args) = a_write(&cfg.workspace);
+        let call = GateCall {
+            name: "write",
+            access: Access::Write,
+            args: &args,
+            turn_id: "t1",
+            call_id: "c1",
+            workspace: &workspace,
+            target_exists: Some(true),
+            scripts: &[],
+        };
+        let decision = h
+            .runtime
+            .gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .admit(&call);
+        assert_eq!(
+            decision,
+            GateDecision::Admit,
+            "no layer, no floor: the point settles a write inside the workspace"
+        );
     }
 }
