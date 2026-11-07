@@ -3006,7 +3006,11 @@ fn resolve_session_name(
 /// reopen *your conversation*, and a store holds three kinds of row that are sessions
 /// without being one
 fn is_conversation(s: &letibot_tokencore::store::StoredSession) -> bool {
+    // The queue's own session is known by its id, which never changes: its seat is a default one
+    // and its title may be re-worded, so neither can tell it from the operator's conversation.
     s.parent_session_id.is_none()
+        && !letibot_sessionlog::is_gatekeeper_session(&s.id)
+        && !matches!(s.origin.as_deref(), Some("queue" | "package" | "one_shot"))
         && s.role.as_deref() != Some(crate::config::Seat::Gatekeeper.as_str())
         && !s
             .title
@@ -4193,5 +4197,33 @@ mod tests {
             Some("s-here"),
             "the subtree match is a fallback, not a licence to reach past a closer answer"
         );
+    }
+
+    /// `--continue` in a folder whose review queue spoke last reopens the operator's own
+    /// conversation, not the queue's session: the queue is seated read-only, so taking it lost
+    /// every mutating tool. Its title is re-worded and its seat is a default one, so the rule is its id.
+    #[test]
+    fn the_queue_session_is_never_the_conversation_to_continue() {
+        let (store, _d) = store_with(&[]);
+        session_row(&store, "s-mine", "/ws", Some("arango work"), None, None);
+        let mine = rows_for(&store, "s-mine", 2, 0);
+        let queue = letibot_sessionlog::gatekeeper_session(std::path::Path::new("/ws"));
+        session_row(
+            &store,
+            &queue,
+            "/ws",
+            Some("review the fuzz branch"),
+            None,
+            None,
+        );
+        let q = rows_for(&store, &queue, 3, mine);
+        assert!(q > mine, "the queue's session is the newer row");
+
+        let latest = newest_conversation(
+            store.list_sessions().expect("listing"),
+            Some(std::path::Path::new("/ws")),
+        );
+        assert_eq!(latest.pick.as_ref().map(|s| s.id.as_str()), Some("s-mine"));
+        assert_eq!(latest.hidden, 1, "the queue's session is counted as hidden");
     }
 }
