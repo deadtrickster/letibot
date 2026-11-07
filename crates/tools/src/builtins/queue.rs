@@ -21,6 +21,15 @@ pub trait QueueDesk: Send + Sync {
     fn status(&self, all: bool, repository: Option<&str>) -> Result<String, String>;
     /// Gate a target's tip again. `None`s are the session's repository and its project's target.
     fn regate(&self, repository: Option<&str>, target: Option<&str>) -> Result<String, String>;
+    /// Put a pushed branch of this session's repository up for review. `None` target is the
+    /// project's; `why` is the ask or work the branch is for.
+    fn enqueue(
+        &self,
+        branch: &str,
+        target: Option<&str>,
+        why: &str,
+        repository: Option<&str>,
+    ) -> Result<String, String>;
     /// A parked row back in line.
     fn restart(&self, id: &str) -> Result<String, String>;
     /// A row out of its queue, with the words why.
@@ -39,6 +48,15 @@ impl QueueDesk for NoQueue {
         Err(Self::WHY.into())
     }
     fn regate(&self, _r: Option<&str>, _t: Option<&str>) -> Result<String, String> {
+        Err(Self::WHY.into())
+    }
+    fn enqueue(
+        &self,
+        _b: &str,
+        _t: Option<&str>,
+        _w: &str,
+        _r: Option<&str>,
+    ) -> Result<String, String> {
         Err(Self::WHY.into())
     }
     fn restart(&self, _id: &str) -> Result<String, String> {
@@ -67,7 +85,35 @@ impl QueueTool {
     }
 }
 
-const ACTIONS: &str = "\"status\", \"regate\", \"restart\", \"withdraw\" or \"propose_target\"";
+const ACTIONS: &str = "\"status\", \"explain\", \"enqueue\", \"regate\", \"restart\", \"withdraw\" or \"propose_target\"";
+
+/// How the queue works, for a session that must not have to ask a model. `queue` `explain` prints it.
+pub const EXPLAIN: &str = "\
+The merge queue, in two queues and a lease.\n\
+\n\
+ENTRY. One branch headed for a target. It has a REVIEW row (the first queue) and, once approved, a \
+LANDING row (the second). `status` lists both with the reason each is where it is.\n\
+\n\
+REVIEW ROW states: waiting (for a reviewer slot), reviewing (a reviewer child holds it until a \
+deadline), approved (handed to the landing queue), rejected (back to the author), cannot_decide \
+(a person rules), blocked (the review could not run). A VERDICT is the reviewer's own call \
+(`review_verdict`: accept, reject or needs_human) bound to the head it judged. A branch that moves \
+after a verdict goes back to waiting. A red target halts review of ordinary branches.\n\
+\n\
+LANDING ROW states: queued (held until the target is gated green at its current tip), gating (the \
+queue rebased it and runs the gate, one at a time per repository), landed, landed_local (push \
+failed), failed (gate red), timed_out, conflict (rebase), blocked. The gate is the target's \
+`## Merge gate` in AGENTS.md. A tip that is red lands nothing but its fix.\n\
+\n\
+LEASES. One per repository: the daemon that holds it serves both queues. It beats every few \
+seconds and is replaced after ninety seconds of silence. A review claim is a lease too (owner and \
+deadline); a landing claim guards the one gate.\n\
+\n\
+WHO MOVES WHAT. The queue's clock moves rows on its own. You: `enqueue` a pushed branch (needs \
+`branch` and `why`, optional `target`), `regate` a target once a red cause is gone, `restart` a \
+parked row, `withdraw` a stale one, `propose_target`. Only the operator approves over a reviewer \
+(`/queue approve`), vetoes, or changes the target. A reviewer's verdict is the reviewer's alone. \
+Nothing you write edits a row's state.";
 
 fn text<'a>(args: &'a Value, field: &str) -> Option<&'a str> {
     args.get(field)
@@ -80,9 +126,11 @@ impl Tool for QueueTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             TOOL,
-            "The merge queue of this project, SCOPED TO IT. `status` prints this session's \
-             repository — its target and the gate's evidence, what each queue holds by state, and \
-             the ten rows somebody must act on first; `all: true` prints one line per repository \
+            "The merge queue of this project, SCOPED TO IT. `explain` says how entries, rows, \
+             leases and verdicts work and who moves each. `enqueue` puts a pushed `branch` up \
+             for review onto `target` (default: the project's), `why` naming the work. `status` \
+             prints this session's repository — its target, each entry with why it is where it \
+             is, the leases, and what happens next; `all: true` prints one line per repository \
              on the box; `repository: \"<path, path's tail or directory name>\"` prints one \
              repository in full. Every answer's first line says which scope it printed. Then the \
              verbs: gate the target's tip again once the cause of a red or timed-out gate is gone \
@@ -95,13 +143,14 @@ impl Tool for QueueTool {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["status", "regate", "restart", "withdraw", "propose_target"],
+                        "enum": ["status", "explain", "enqueue", "regate", "restart", "withdraw", "propose_target"],
                         "description": "What to do."
                     },
                     "id": {"type": "string", "description": "restart / withdraw: the row's id, as `status` shows it (a unique prefix will do)."},
-                    "target": {"type": "string", "description": "regate: the target branch (default: the project's). propose_target: the branch the project should land on."},
+                    "branch": {"type": "string", "description": "enqueue: the pushed local branch to put up for review."},
+                    "target": {"type": "string", "description": "enqueue / regate: the target branch (default: the project's). propose_target: the branch the project should land on."},
                     "repository": {"type": "string", "description": "status: the repository to print in full — a path, a path's tail or its directory name (default: this session's, briefly). regate: the repository's path, when it is not this session's."},
-                    "why": {"type": "string", "description": "withdraw / propose_target: your reason, in a sentence the operator reads."},
+                    "why": {"type": "string", "description": "enqueue: the ask or work the branch is for. withdraw / propose_target: your reason, in a sentence the operator reads."},
                     "all": {"type": "boolean", "description": "status: one line per repository on the box, instead of this session's repository in detail."}
                 },
                 "required": ["action"]
@@ -114,8 +163,10 @@ impl Tool for QueueTool {
     /// nothing the operator owns. Narrowing only, per the trait.
     fn access_for(&self, args: &Value) -> Option<Access> {
         match args.get("action").and_then(|v| v.as_str()) {
-            Some("status") => Some(Access::Read),
-            Some("regate") | Some("restart") | Some("propose_target") => Some(Access::Session),
+            Some("status") | Some("explain") => Some(Access::Read),
+            Some("enqueue") | Some("regate") | Some("restart") | Some("propose_target") => {
+                Some(Access::Session)
+            }
             _ => None,
         }
     }
@@ -148,6 +199,14 @@ impl Tool for QueueTool {
                 args.get("all").and_then(|v| v.as_bool()).unwrap_or(false),
                 text(args, "repository"),
             ),
+            "explain" => Ok(EXPLAIN.to_string()),
+            "enqueue" => match (need("branch"), need("why")) {
+                (Ok(branch), Ok(why)) => {
+                    self.desk
+                        .enqueue(branch, text(args, "target"), why, text(args, "repository"))
+                }
+                (Err(refused), _) | (_, Err(refused)) => return *refused,
+            },
             "regate" => self
                 .desk
                 .regate(text(args, "repository"), text(args, "target")),
@@ -205,6 +264,19 @@ mod tests {
                 .push(format!("regate {r:?} {t:?}"));
             Ok("gated again".into())
         }
+        fn enqueue(
+            &self,
+            b: &str,
+            t: Option<&str>,
+            w: &str,
+            _r: Option<&str>,
+        ) -> Result<String, String> {
+            self.said
+                .lock()
+                .unwrap()
+                .push(format!("enqueue {b} {t:?} {w}"));
+            Ok("queued".into())
+        }
         fn restart(&self, id: &str) -> Result<String, String> {
             self.said.lock().unwrap().push(format!("restart {id}"));
             Ok("back in line".into())
@@ -230,10 +302,23 @@ mod tests {
         assert_eq!(t.schema().access, Access::Write);
         let a = |action: &str| t.access_for(&serde_json::json!({ "action": action }));
         assert_eq!(a("status"), Some(Access::Read));
+        assert_eq!(a("explain"), Some(Access::Read));
+        assert_eq!(a("enqueue"), Some(Access::Session));
         assert_eq!(a("regate"), Some(Access::Session));
         assert_eq!(a("restart"), Some(Access::Session));
         assert_eq!(a("propose_target"), Some(Access::Session));
         assert_eq!(a("withdraw"), None, "the schema's Write stands");
+    }
+
+    /// The model of the queue is in the tool, and says who may move what.
+    #[test]
+    fn explain_states_the_model_and_the_description_fits() {
+        for word in ["ENTRY", "REVIEW ROW", "LANDING ROW", "VERDICT", "LEASES", "WHO MOVES WHAT"] {
+            assert!(EXPLAIN.contains(word), "{word}");
+        }
+        let d = QueueTool::new(Arc::new(NoQueue)).schema().description;
+        assert_eq!(crate::schema::lint_description(&d), vec![]);
+        assert!(d.len() < 1200, "{} bytes", d.len());
     }
 
     /// Each verb reaches the desk; a missing argument is refused by name; and `withdraw` goes
@@ -267,6 +352,15 @@ mod tests {
             .outcome
         };
         assert!(matches!(call(r#"{"action": "status"}"#), ToolOutcome::Ok));
+        assert!(matches!(call(r#"{"action": "explain"}"#), ToolOutcome::Ok));
+        assert!(matches!(
+            call(r#"{"action": "enqueue", "branch": "feat/x", "why": "the ask"}"#),
+            ToolOutcome::Ok
+        ));
+        assert!(matches!(
+            call(r#"{"action": "enqueue", "branch": "feat/x"}"#),
+            ToolOutcome::Failed { .. }
+        ));
         assert!(matches!(
             call(r#"{"action": "regate", "target": "main"}"#),
             ToolOutcome::Ok
@@ -294,6 +388,7 @@ mod tests {
             *desk.said.lock().unwrap(),
             vec![
                 "status false None".to_string(),
+                "enqueue feat/x None the ask".into(),
                 "regate None Some(\"main\")".into(),
                 "restart r-1".into(),
                 "propose feat/x it lands there".into(),

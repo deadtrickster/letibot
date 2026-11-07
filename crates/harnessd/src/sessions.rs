@@ -2612,10 +2612,13 @@ impl<'a> Sessions<'a> {
             return Ok(false);
         }
         // Where its reviewers will run, decided HERE because the session has to be TOLD.
-        let prompt = gatekeeper::prompt(&gatekeeper::reviewer_placement(
-            self.base.reviewers == crate::config::Reviewers::Vm,
-            letibot_tools::firecode::firecode_available(),
-        ));
+        let prompt = gatekeeper::prompt_as(
+            &gatekeeper::reviewer_placement(
+                self.base.reviewers == crate::config::Reviewers::Vm,
+                letibot_tools::firecode::firecode_available(),
+            ),
+            &gatekeeper::room_handle(&self.base.workspace),
+        );
         if self.registry.get(&queue).is_none() {
             // Resumed, or made, and the store is what decides which. The stored row carries the
             // title a person may have renamed; a session nobody has ever opened gets the hardcoded

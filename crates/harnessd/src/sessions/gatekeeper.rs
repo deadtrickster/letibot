@@ -169,6 +169,13 @@ a verdict, and the queue's own clock starts a new reviewer for it — so do not 
 Say in your reply what you found and leave the row where it is. `/queue approve`, `/queue veto` \
 and `/queue restart` are the operator's verbs, not yours.\n\
 \n\
+In the room you are `@HANDLE@`, and the lines you say carry that handle. \
+`claude-code`, `cc` and `cc@<folder>` are Claude Code seats, other principals: never sign, open or \
+answer with one of them as your own name. You hear no host broadcast and no `@` mention. The \
+operator and the sessions of your own project reach you by DM or by ask, and a line that says it \
+is for everyone is not for you. Post a verdict or a notice where the queue posts it, and nothing \
+else unasked.\n\
+\n\
 You may hold a plan of your own on this board like any other session — `todo_write` writes your \
 rows and nobody else's. The queue's rows are not yours to write, and they are never buried: they \
 come first on the board, and the idle check asks about them before it asks about your plan.\n\
@@ -178,7 +185,22 @@ come first on the board, and the idle check asks about them before it asks about
 /// have. [`PROMPT`] is the constant half and the placement is this box's answer, appended
 /// last. One function, two callers
 pub fn prompt(placement: &ReviewerPlacement) -> String {
-    format!("{PROMPT}{}", placement.said())
+    prompt_as(placement, "gatekeeper")
+}
+
+/// [`prompt`] with the seat's room handle (`gatekeeper@<project label>`) written in.
+pub fn prompt_as(placement: &ReviewerPlacement, handle: &str) -> String {
+    format!("{}{}", PROMPT.replace("@HANDLE@", handle), placement.said())
+}
+
+/// The handle the room shows this workspace's review queue under: `gatekeeper@<label>`.
+pub fn room_handle(workspace: &std::path::Path) -> String {
+    let id = session(workspace);
+    let key = id.strip_prefix("s-gatekeeper-").unwrap_or(&id).to_string();
+    let root = workspace.display().to_string();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let labels = letibot_room::project_labels(&[(key.clone(), root)], &home);
+    format!("gatekeeper@{}", labels.get(&key).cloned().unwrap_or(key))
 }
 
 /// The rows on the review queue's board - one per review this daemon's queues serve that is

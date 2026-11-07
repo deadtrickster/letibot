@@ -271,6 +271,11 @@ struct Lease {
     /// only one there is, and a guest that read its own would be a trap.
     #[serde(default)]
     heartbeat_ms: u64,
+    /// How long this holder has had it, and the ms until it lapses without another beat.
+    #[serde(default)]
+    held_ms: u64,
+    #[serde(default)]
+    expires_ms: i64,
     #[serde(default)]
     stale: bool,
 }
@@ -699,8 +704,13 @@ fn chrome(feed: &Feed) -> Vec<Value> {
         } else {
             lines.push(json!({
                 "label": format!("{} is served by {who}", l.repository),
-                "value": "its last heartbeat",
-                "tail": format!("{} ago", age(l.heartbeat_ms)),
+                "value": format!(
+                    "held {}, lapses in {} without a beat; it guards claiming reviews, the one \
+                     gate and landings",
+                    age(l.held_ms),
+                    age(l.expires_ms.max(0) as u64)
+                ),
+                "tail": format!("beat {} ago", age(l.heartbeat_ms)),
                 "role": "faint",
             }));
         }

@@ -78,7 +78,7 @@ impl Tool for RoomTool {
                  wakes them where it was said. `asks` lists the questions between you and another \
                  session; `answer` and `decline` settle one - and only those verbs do, so a plain \
                  thread reply reaches its author without unblocking a plan. Answer others only with \
-                 what they lack. {beat}"
+                 what they lack. `claude-code` and `cc@...` are other seats, never your name. {beat}"
             ),
             json!({
                 "type": "object",

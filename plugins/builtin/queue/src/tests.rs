@@ -450,12 +450,13 @@ fn a_healthy_lease_names_its_owner_and_its_heartbeat() {
     let view = view_of(&a_queue(), &[]);
     let lease = chrome_line(&view, "letibot is served by mac (pid 4242, 0.5.1)")
         .expect("a line for the repository");
-    assert_eq!(
-        lease["value"], "its last heartbeat",
-        "the holder is on the label, so the value is the one fact left"
+    let value = lease["value"].as_str().expect("a value");
+    assert!(
+        value.contains("held") && value.contains("lapses in") && value.contains("one gate"),
+        "since when, until when, and what it guards: {value}"
     );
     assert_eq!(
-        lease["tail"], "4s ago",
+        lease["tail"], "beat 4s ago",
         "and how long since it last said so"
     );
     // **And no stale line** - the legend names the word, so the chrome is what is asked.

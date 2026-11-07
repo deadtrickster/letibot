@@ -323,6 +323,10 @@ pub enum Refused {
         session: String,
         room: String,
     },
+    /// A queue seat (gatekeeper, reviewer) answers only its own project's sessions and the operator.
+    QueueSeatOwnProject {
+        session: String,
+    },
     /// Nobody on this host answers to the name, and these are the top-level sessions that do.
     AskUnknown {
         name: String,
@@ -524,6 +528,12 @@ impl fmt::Display for Refused {
                 "`{session}` cannot see `{room}`, so the question would be said where it cannot \
                  read it - ask in `host`, which every session on the box reads, or `invite` it \
                  there first"
+            ),
+            Refused::QueueSeatOwnProject { session } => write!(
+                f,
+                "`{session}` is a merge-queue seat: it hears the operator and sessions of its own \
+                 project by DM or ask, and no broadcast. Ask a session of that project, or the \
+                 operator, to put the question to it"
             ),
             Refused::AskUnknown { name, known } => write!(
                 f,
