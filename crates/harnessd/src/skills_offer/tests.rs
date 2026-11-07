@@ -525,3 +525,39 @@ fn a_skill_the_seat_cannot_use_is_not_offered() {
     let cu = skills.iter().find(|s| s.name == "computer-use").unwrap();
     assert!(cu.unmet(&seat).is_none(), "present tools satisfy it");
 }
+
+/// The operator's real synced Claude Code skills, when this box has them: a plain seat is offered
+/// none that name tools it lacks. Skips loudly where the files are absent.
+#[test]
+fn the_real_synced_claude_skills_are_not_offered_to_a_plain_seat() {
+    let Some(home) = std::env::var_os("HOME") else {
+        eprintln!("SKIPPED: no HOME");
+        return;
+    };
+    let synced = PathBuf::from(home).join(".claude/skills/synced");
+    let roots: Vec<PathBuf> = std::fs::read_dir(&synced)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    let loaded = SkillRegistry::load_from_dirs(&roots);
+    let skills = loaded.live_skills();
+    let seat: std::collections::BTreeSet<String> = ["bash", "read"].map(String::from).into();
+    let mut checked = 0;
+    for name in ["computer-use", "chrome-browser", "docs"] {
+        match skills.iter().find(|s| s.name == name) {
+            Some(skill) => {
+                checked += 1;
+                let why = skill.unmet(&seat);
+                assert!(why.is_some(), "{name} would be offered to a plain seat");
+                eprintln!("{name}: {}", why.unwrap());
+            }
+            None => eprintln!("SKIPPED: {name} is not under {}", synced.display()),
+        }
+    }
+    if checked == 0 {
+        eprintln!("SKIPPED: no synced Claude Code skills on this box");
+    }
+}
