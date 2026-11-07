@@ -98,6 +98,9 @@ pub struct SeatView {
     /// [`super::seatbelt::deny_under_home`] names, joined to `home`. A wide view holds all of them; a
     /// tight one holds the few a grant lets in, and a test holds the two renderings' lists equal.
     pub masked: Vec<PathBuf>,
+    /// The entries of `masked` that `[boundary] hide` wrote, with the file and line: a refusal
+    /// for one of them names that key instead of blaming a credential store.
+    pub hidden: Vec<(PathBuf, super::boundary::Origin)>,
 }
 
 /// How much of the machine a session's commands see. A session nobody started on the operator's
@@ -139,6 +142,7 @@ pub fn seat_for_level<S: AsRef<str>>(
                 env: Vec::new(),
                 home: Some(operator_home.to_path_buf()),
                 masked,
+                hidden: Vec::new(),
                 secret_env: gh_token.map(github_env).unwrap_or_default(),
             }
         }
@@ -485,6 +489,7 @@ pub fn seat_view<S: AsRef<str>>(
         env,
         home: None,
         masked: masked_under_home(false, operator_home),
+        hidden: Vec::new(),
         secret_env: SecretEnv::default(),
     }
 }

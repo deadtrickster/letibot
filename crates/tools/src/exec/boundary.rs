@@ -251,13 +251,21 @@ pub fn apply(mut seat: SeatView, r: &Resolved) -> SeatView {
     seat.masked.extend(r.hide.iter().map(|(p, _)| p.clone()));
     seat.masked.sort();
     seat.masked.dedup();
+    seat.hidden = r.hide.clone();
     seat.env
         .extend(r.env.iter().map(|(k, v, _)| (k.clone(), v.clone())));
     seat
 }
 
 /// What a command gets, for `/boundary` and `letibot boundary`. Secret values never print.
-pub fn report(seat: &SeatView, r: &Resolved, level: &str) -> Vec<String> {
+/// `probe` is the boundary a live session MEASURED; a report with none says so rather than
+/// leaving a reader to assume the config was checked.
+pub fn report(
+    seat: &SeatView,
+    r: &Resolved,
+    level: &str,
+    probe: Option<&super::confine::Boundary>,
+) -> Vec<String> {
     let mut out = vec![format!("{level} perimeter")];
     out.push(format!(
         "home: {}",
@@ -314,7 +322,87 @@ pub fn report(seat: &SeatView, r: &Resolved, level: &str) -> Vec<String> {
          Never granted, whatever config says: ~/.ssh and every store under hidden."
             .into(),
     );
+    out.push(String::new());
+    match probe {
+        Some(b) => out.extend(probe_lines(b)),
+        None => out.push(
+            "probe: not measured here — `/boundary` in a session prints what that session's own \
+             probe measured; `letibot boundary` reads the config and starts nothing."
+                .into(),
+        ),
+    }
     out
+}
+
+/// What the probe measured, in three lines: the mechanism and when, the namespaces (or the
+/// policy's properties), and the seals. The words are [`super::confine::Boundary::describe`]'s,
+/// so a report cannot disagree with the disclosure the model is told.
+pub fn probe_lines(b: &super::confine::Boundary) -> Vec<String> {
+    use super::confine::{Mechanism, Namespace, Prop, PropState, Seal, SealKind};
+    let verdict = if b.complete() && !b.partial() {
+        "confined"
+    } else if b.complete() {
+        "confined, PARTIALLY"
+    } else {
+        "NOT CONFINED"
+    };
+    let mut out = vec![format!(
+        "probe: {verdict}, by {}, measured {}",
+        b.mechanism,
+        age_of(b.measured_at)
+    )];
+    let mut measured: Vec<String> = Vec::new();
+    match b.platform {
+        Mechanism::Namespaces => {
+            for n in Namespace::ALL {
+                let state =
+                    b.ns.get(&n)
+                        .cloned()
+                        .unwrap_or_else(|| super::confine::NsState::NotEntered {
+                            why: "never measured".into(),
+                        });
+                measured.push(format!("{n} {}", state.line()));
+            }
+        }
+        Mechanism::Policy => {
+            for p in Prop::ALL {
+                let state = b
+                    .props
+                    .get(&p)
+                    .cloned()
+                    .unwrap_or_else(|| PropState::Unverified {
+                        why: "never measured".into(),
+                    });
+                measured.push(format!("{p} {}", state.line()));
+            }
+        }
+    }
+    out.push(format!("  {}", measured.join(", ")));
+    let seals: Vec<String> = SealKind::ALL
+        .iter()
+        .map(|k| {
+            let seal = b.seals.get(k).cloned().unwrap_or_else(|| Seal::Unverified {
+                why: "never tested".into(),
+            });
+            format!("{k} {}", seal.line())
+        })
+        .collect();
+    out.push(format!("  seals: {}", seals.join(", ")));
+    out
+}
+
+/// How long ago a measurement was taken, in the unit a reader needs: the age is what says
+/// whether the boundary was measured for this session or one that has since gone.
+fn age_of(at: std::time::SystemTime) -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(at)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    match secs {
+        0..=90 => format!("{secs}s ago"),
+        91..=5400 => format!("{}m ago", secs / 60),
+        _ => format!("{}h ago", secs / 3600),
+    }
 }
 
 #[cfg(test)]
@@ -476,11 +564,12 @@ mod tests {
                 .env
                 .contains(&("RUST_LOG".to_string(), "info".to_string()))
         );
-        let said = report(&tight, &r, "child").join("\n");
+        let said = report(&tight, &r, "child", None).join("\n");
         assert!(
             said.contains("absent") && said.contains("`[boundary] hide`"),
             "{said}"
         );
+        assert!(said.contains("probe: not measured here"), "{said}");
 
         let wide = apply(
             seat::seat_for_level(
@@ -500,10 +589,63 @@ mod tests {
         assert!(wide.masked.contains(&data.join("private")));
         assert!(!wide.masked.iter().any(|p| p.ends_with(".config/gh")));
         assert!(wide.secret_env.0.iter().any(|(k, _)| k == "GH_TOKEN"));
-        let said = report(&wide, &r, "top-level").join("\n");
+        let said = report(&wide, &r, "top-level", None).join("\n");
         assert!(said.contains("GH_TOKEN=<redacted>"), "{said}");
         assert!(!said.contains("ghp_secretsecret"), "{said}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What the probe measured is three lines: the mechanism and the age, the table of
+    /// namespaces (or the policy's properties), and the seals. A fixture with nothing in it
+    /// says "never measured" rather than printing nothing, and does not panic.
+    #[test]
+    fn the_probe_lines_say_what_was_measured() {
+        use crate::exec::confine::{Boundary, Namespace, NsState, Seal, SealKind, ViewSpec};
+        let view = ViewSpec::project_only("/p").wide();
+        let mut ns = std::collections::BTreeMap::new();
+        for n in Namespace::ALL {
+            ns.insert(
+                n,
+                NsState::Entered {
+                    inode: format!("user:[{}]", n.proc_name()),
+                },
+            );
+        }
+        let mut seals = std::collections::BTreeMap::new();
+        for k in SealKind::ALL {
+            seals.insert(
+                k,
+                Seal::Held {
+                    how: "tested".into(),
+                },
+            );
+        }
+        let measured = Boundary::namespaces(
+            "bubblewrap 0.11.1",
+            view.clone(),
+            crate::exec::confine::Egress::Denied,
+            ns,
+            seals,
+        );
+        let said = probe_lines(&measured).join("\n");
+        assert!(said.contains("by bubblewrap 0.11.1"), "{said}");
+        assert!(said.contains("measured 0s ago"), "{said}");
+        assert!(said.contains("mnt entered"), "{said}");
+        assert!(
+            said.contains("seals:") && said.contains("held (tested)"),
+            "{said}"
+        );
+
+        let bare = Boundary::namespaces(
+            "nothing",
+            view,
+            crate::exec::confine::Egress::Denied,
+            Default::default(),
+            Default::default(),
+        );
+        let said = probe_lines(&bare).join("\n");
+        assert!(said.contains("NOT CONFINED"), "{said}");
+        assert!(said.contains("never measured"), "{said}");
     }
 
     /// `hide` is rendered after the grant it covers, so the view cannot reach what is hidden.

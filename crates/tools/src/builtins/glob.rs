@@ -55,6 +55,12 @@ impl Tool for Glob {
             .map(|n| n as usize)
             .unwrap_or(200);
 
+        // A fenced scope is not an empty directory: a walk whose every `list` refused would
+        // report "nothing matched" about a path this session's boundary denies.
+        if let Some(why) = ctx.backend.file_refusal(&scope) {
+            return Invocation::failed(why, String::new());
+        }
+
         let (entries, truncated) = walk(
             ctx.backend,
             &scope,

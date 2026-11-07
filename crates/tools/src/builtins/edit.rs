@@ -147,6 +147,13 @@ impl Tool for Edit {
                      relative to it.",
                 );
             }
+            Err(e @ BackendError::Fenced(_)) => {
+                return Invocation::failed(
+                    e.to_string(),
+                    "Nothing was changed. What is outside this session's view is the \
+                     operator's to grant, in their `leticode.toml`.",
+                );
+            }
             Err(e) => return Invocation::failed(e.to_string(), String::new()),
         };
 

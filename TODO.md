@@ -48,7 +48,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 |---|---|---|---|
 | R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement) |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | leticl's `:turn-finished` arm (`src/session/seq-gap.lisp:254`) does not read `ends_turn`, so every round's end is drawn as the turn's end |
-| R121 | What a command boundary holds is hardcoded and invisible | Code work | items 5-8 (perimeters as config, children narrow and widening is an ask, file tools obey the perimeter), item 3's probe line, item 4's tool refusals |
+| R121 | What a command boundary holds is hardcoded and invisible | Code work | items 5-7 (perimeters as config, children narrow and widening is an ask) — items 1-4 and 8, including the file tools' fence and the probe line, are built |
 | R126 | Reviewers fan out to the declared hosts, opt-in | Needs the operator | setting `[queue] reviewer_hosts` in the operator's `leticode.toml` and one live review on lab2x1 (the fan-out is landed and tested against fakes, never against a real host) |
 | R125 | Script plugin layers: where a JavaScript engine comes from, and the JS-side contract | Needs the operator | the two decisions, then `docs/plugins-plan.md` step 11: no JavaScript engine is available offline here, and a vendored one compiled in would run freely as a built-in |
 | R114 | Embeddings as the second similarity tier, for every similarity caller | Code work | item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase case scored against the worst measured negative, the per-round cost on lab2x1 |
@@ -618,7 +618,7 @@ Heads: this one reads it in `turn_busy` and the bridge gates `Turn::Idle` on it.
 
 ## R121 - What a command boundary holds is hardcoded and invisible
 
-Status: OPEN, filed 2026-11-04 by the operator. Items 1 (grants_ro, grants_rw, hide, env), 2 and 3 are built on branch z-r121; 4 is built for paths. left: items 5-8, item 3's probe line, item 4's tool refusals. The macOS seatbelt suite passed on the Mac (22 tests, including the new hide test).
+Status: OPEN, filed 2026-11-04 by the operator. Items 1-4 and 8 are built: 1-4 (except 4's tool half) on branch z-r121, their remainders and 8 on the branch this row was rewritten on. left: items 5-7, the two seat levels as configurable perimeters. The macOS seatbelt suite passed on the Mac (22 tests, including the new hide test).
 
 The paths a confined command sees are two constant lists: `GRANT_CANDIDATES` in
 `crates/tools/src/exec/confine.rs` (`~/.cargo`, `~/.rustup`, `~/.local/bin`, mise's data and
@@ -688,16 +688,50 @@ Closed on z-r121 (docs/boundary-and-adjudication.md section 4m):
 - Item 4: the absence note names `[boundary] grants_ro` / `grants_rw`, or says a never-granted path
   has no key (`an_absence_note_names_the_boundary_key_or_says_none_grants_it`).
 
+Closed after z-r121, on R121's own branch (item 3's probe line, item 4's tool half, item 8):
+
+- Item 8: the file tools obey the shell's perimeter. `crates/tools/src/exec/fence.rs` (`FileFence`)
+  is built from the seat and the view that were MEASURED at open - one list, so it cannot drift
+  from the shell's - and `HostBackend` applies it in its own operations (`read`, `write`, `list`,
+  `stat`, plus `ExecBackend::file_refusal`, which `grep` and `glob` ask before they walk, because a
+  walk whose every `list` refused reports "nothing matched" about a denied path). Three rules: a
+  masked path is denied (the credential stores, the profiles, every `[boundary] hide`); a tight
+  view holds nothing else, so a path outside it is denied and a write under a read-only grant is
+  denied while its read is not; and the letibot store is denied except this session's own
+  `sessions/<id>/`, where its plugins live. Wired in
+  `crates/harnessd/src/harness/open.rs::place_the_tools`, from the backend's measured boundary and
+  `cfg.session_id`. Tests: `crates/tools/tests/file_fence.rs`,
+  `read_write_edit_grep_and_glob_refuse_the_store_outside_the_sessions_own_folder`,
+  `a_tight_seat_refuses_outside_its_view_naming_the_key`.
+- Item 4's tool half: a file tool's denial is the sentence a command's absence note gives, and it
+  names the key. `a_tool_refusal_names_its_boundary_key`: a `[boundary] hide` path names the key
+  with the file and line that wrote it, a path outside a tight view names `grants_ro` /
+  `grants_rw`, and a credential store or the store itself says no key reaches it - the answer a
+  model can act on, which is the difference between a refusal it retries and one it does not.
+- Item 3's probe line: `boundary::probe_lines` renders what a MEASURED boundary says - the
+  mechanism and the age of the measurement, the namespace table (or a policy's properties), and
+  the seals - in `Boundary::describe`'s own words. `perimeter::lines_with_probe` puts it last in the
+  report, and `Harness::boundary_lines` hands it `ExecBackend::boundary()`, so `/boundary` shows
+  the boundary this session actually got. `letibot boundary` has no session, so it prints "probe:
+  not measured here" and names the command that does measure one. Tests:
+  `the_probe_lines_say_what_was_measured` and `the_report_shows_what_the_probe_measured`.
+
 Open:
 
 - `grants_rw` is the user file's alone: a project file is editable by a session, and a writable
   grant is a widening. Operator ruling 2026-11-05: user file only, as built.
-- Item 3: the view does not print what the probe measured; it needs the live session's boundary.
-- Item 4: only a path is refused with the key. A tool outside the view is not.
-- Items 5-8 are untouched. A child reads the same `[boundary]` as its parent and nothing is passed
+- Item 3: the view prints what the probe measured, from the live session's boundary (closed
+  above).
+- Item 4: a path is refused with its key, and so is a file tool's path (closed above).
+- Items 5-7 are untouched. A child reads the same `[boundary]` as its parent and nothing is passed
   at spawn, so no child can be wider yet; the narrow-only rule and the widening ask have nothing to
   attach to until perimeters are config. Secrets per perimeter (`GH_TOKEN` and the credential
   helper) stay coded. Operator ruling 2026-11-05: keep them as coded, top-level only.
+- Item 8's fence is this process's, not a sandbox: it refuses a path a file tool is asked for, and
+  a session that runs its own code goes round it by construction - that is the shell's view's job,
+  which is why the fence is built from the same view. A `leticode` seat that seats no shell has no
+  boundary at all, so its file tools keep the whole host (item 5's territory). `read_many` over a
+  remote or VM backend is not fenced: those substrates have their own view.
 - `load_user` in `leticode-config` reads the user file as `Level::Project`; `perimeter::load` uses
   `load_as(.., Level::User)` instead. Left alone.
 - The R95 seam: `boundary::env_refusal` is the env deny-list. R95's carry-over should call it.

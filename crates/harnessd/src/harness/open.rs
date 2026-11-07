@@ -760,23 +760,25 @@ impl Harness {
     /// The default local seat for a `leticode` session: commands inside the seat's boundary over
     /// the checkout, file tools still rooted at `/`. `None` where the seat asks for no command, and
     /// a machine with no boundary fails closed on Linux and falls back to unconfined on a Mac.
+    /// The seat comes back with the backend because the file tools obey the same fence.
     fn wide_seat(
         cfg: &Config,
         hub: &Arc<Hub>,
         may_exec: bool,
-    ) -> Result<Option<HostBackend>, HarnessError> {
+    ) -> Result<Option<(HostBackend, letibot_tools::exec::seat::SeatView)>, HarnessError> {
         if !(cfg.unconfined && cfg.allow_bash && may_exec) {
             return Ok(None);
         }
+        let seat = Self::default_seat(cfg, hub)?;
         let built = HostBackend::confined_over(
             "/",
             &cfg.workspace,
             confined_grants(cfg, cfg.landing_root.as_deref()),
-            Self::default_seat(cfg, hub)?,
+            seat.clone(),
         )
         .and_then(|b| b.with_cwd(&cfg.workspace));
         match built {
-            Ok(b) => Ok(Some(b)),
+            Ok(b) => Ok(Some((b, seat))),
             Err(e) => Err(HarnessError::Setup(Self::say_wide_seat_refused(hub, &e))),
         }
     }
@@ -827,6 +829,9 @@ impl Harness {
             hub.warn(WORKSPACE_GONE, said.clone());
             return Err(HarnessError::Setup(said));
         }
+        // Set by the two arms whose commands run inside a boundary on this box: the seat that
+        // fence was built from, so the file tools are fenced with the same one.
+        let mut seat: Option<letibot_tools::exec::seat::SeatView> = None;
         // `backend_confined` is the VM's and nothing else here, and it stops being a guess the line
         // after the substrate is chosen. A remote placement confines nothing by itself, so claiming
         // it did made `Prereq::Confinement` pass for a session that had no boundary.
@@ -840,7 +845,8 @@ impl Harness {
             // `SshBackend::place` below, which probes the host.
             HostBackend::new(&cfg.workspace)
                 .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?
-        } else if let Some(b) = Self::wide_seat(cfg, hub, may_exec)? {
+        } else if let Some((b, seat_of)) = Self::wide_seat(cfg, hub, may_exec)? {
+            seat = Some(seat_of);
             b
         } else if cfg.unconfined {
             // A `leticode` seat asks for no boundary, and this session seats no shell for one to
@@ -867,13 +873,17 @@ impl Harness {
                 HarnessError::Setup(format!("workspace {:?} as cwd: {e}", cfg.workspace))
             })?
         } else if cfg.seat.needs_exec_backend() && may_exec {
+            let seat_of = Self::local_seat(cfg)?;
             let built = HostBackend::confined_granting(
                 &cfg.workspace,
                 confined_grants(cfg, cfg.landing_root.as_deref()),
-                Self::local_seat(cfg)?,
+                seat_of.clone(),
             );
             match built {
-                Ok(b) => b,
+                Ok(b) => {
+                    seat = Some(seat_of);
+                    b
+                }
                 Err(e) => {
                     let said = format!(
                         "the `{}` role needs a confined execution backend and one could not be \
@@ -943,6 +953,21 @@ impl Harness {
         let backend = backend
             .with_session_tmp(&session_tmp)
             .map_err(|e| HarnessError::Setup(format!("this session's /tmp: {e}")))?;
+        // R121 item 8: the file tools obey the perimeter the shell's view draws, so a path a
+        // command cannot reach is refused to `read` and `write` in the same words. The letibot
+        // store is reachable only where this session's own `sessions/<id>/` is.
+        let backend = match (&seat, backend.boundary()) {
+            (Some(seat_of), Some(measured)) => {
+                let mut fence = letibot_tools::exec::fence::FileFence::of(seat_of, &measured.view)
+                    .allowing(&scratch)
+                    .allowing(&session_tmp);
+                if let Some(store) = crate::mergequeue::git::letibot_data_dir() {
+                    fence = fence.owning(&store, &cfg.session_id);
+                }
+                backend.with_file_fence(fence)
+            }
+            _ => backend,
+        };
         if backend.boundary().is_some() {
             cfg.session_scratch = Some(session_tmp.clone());
         }

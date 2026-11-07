@@ -100,6 +100,12 @@ impl Tool for Grep {
             .map(|n| (n as usize).min(MAX_CONTEXT))
             .unwrap_or(0);
 
+        // Before the miss below: a fenced path is denied, not absent, and the difference is the
+        // whole answer - one says the boundary decided, the other says nothing is there.
+        if let Some(why) = ctx.backend.file_refusal(&scope) {
+            return Invocation::failed(why, String::new());
+        }
+
         // A `path` naming a file would otherwise search nothing: `walk` lists its root, `list` on a
         // file errors, and zero entries come back, which the ladder reports as "matched nothing"
         // about a file that is there. Scoping to one file is an obvious ask, so it is done.

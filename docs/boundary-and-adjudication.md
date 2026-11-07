@@ -924,6 +924,28 @@ env = { RUST_LOG = "info" }          # constants handed to every command
 - `/boundary` in a head and `letibot boundary` draw what a command gets: paths with the key that
   granted them, network, env (secrets redacted), hidden paths.
 
+### The file tools obey the same perimeter
+
+A view a command cannot reach is a view `read`, `write`, `edit`, `grep` and `glob` cannot reach
+either (`crates/tools/src/exec/fence.rs`). The fence is built from the seat and the view that were
+MEASURED at open, so it cannot be a second list that drifts from the shell's, and it is applied in
+`HostBackend`'s own operations (`read`, `write`, `list`, `stat`) rather than in each tool — with
+`ExecBackend::file_refusal` for the two that walk instead of read, because a walk whose every
+`list` refused reports "nothing matched" about a path that is denied.
+
+- A masked path is denied: the credential stores, the profiles, and every `[boundary] hide`.
+- A tight view holds nothing else, so a path outside it is denied too, and a write under a
+  read-only grant is denied while the read is not.
+- The letibot store is the daemon's and every session's, so it is denied except this session's own
+  `sessions/<id>/` — where its plugins live, and the session is the one that writes them.
+- A refusal is the sentence a command's absence note gives, and it names the key that would change
+  the answer: `[boundary] hide` with the file and line that wrote it, `grants_ro`/`grants_rw` for a
+  path outside a tight view, or the fact that no key reaches a credential store or the store itself.
+  A refusal the model cannot act on is a refusal it retries.
+
+Where a session has no boundary at all — a `leticode` seat with no shell — there is no seat to
+build a fence from, and the file tools keep the whole host the disclosure says they have.
+
 ## 4l. The order the gate decides in
 
 `AdjudicatedGate::admit`, in order. Each arm is a rule, not an implementation detail:

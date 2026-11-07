@@ -84,6 +84,13 @@ impl Tool for Write {
                      relative to it.",
                 );
             }
+            Err(e @ BackendError::Fenced(_)) => {
+                return Invocation::failed(
+                    e.to_string(),
+                    "Nothing was written. Adding it is the operator's call, not this \
+                     session's: it is a `[boundary]` key in their `leticode.toml`.",
+                );
+            }
             Err(e) => return Invocation::failed(e.to_string(), String::new()),
         };
 

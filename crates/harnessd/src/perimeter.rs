@@ -48,8 +48,19 @@ pub fn seat_for(
 }
 
 /// What a command gets at `level`, as lines. No token is asked for: the wide view says it is
-/// injected when `gh auth token` answers.
+/// injected when `gh auth token` answers. No probe either: nothing here has a session to measure.
 pub fn lines(level: Level, mode: &Mode, workspace: &Path) -> Vec<String> {
+    lines_with_probe(level, mode, workspace, None)
+}
+
+/// [`lines`] with the boundary a LIVE session measured, for `/boundary`: the config says what a
+/// command was meant to get, and the probe says what one got.
+pub fn lines_with_probe(
+    level: Level,
+    mode: &Mode,
+    workspace: &Path,
+    probe: Option<&letibot_tools::exec::Boundary>,
+) -> Vec<String> {
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
@@ -60,7 +71,7 @@ pub fn lines(level: Level, mode: &Mode, workspace: &Path) -> Vec<String> {
                 Level::Wide => "top-level",
                 Level::Tight => "subagent",
             };
-            let mut out = boundary::report(&view, &r, name);
+            let mut out = boundary::report(&view, &r, name, probe);
             if level == Level::Wide {
                 out.push("GH_TOKEN is set when `gh auth token` answers at session start.".into());
             }
@@ -120,6 +131,54 @@ mod tests {
         assert!(said.starts_with("boundary config refused"), "{said}");
         assert!(said.contains("leticode.toml:3:"), "{said}");
         assert!(!said.contains("paths:"), "{said}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 3's last clause: the report prints what the probe MEASURED, not only what the config
+    /// asked for - and says so when nothing was measured.
+    #[test]
+    fn the_report_shows_what_the_probe_measured() {
+        use letibot_tools::exec::confine::{
+            Boundary, Egress, Namespace, NsState, Seal, SealKind, ViewSpec,
+        };
+        let dir = workspace("probe", "[boundary]\ngrants_ro = [\"/opt/data\"]\n");
+        let mut ns = std::collections::BTreeMap::new();
+        for n in Namespace::ALL {
+            ns.insert(
+                n,
+                NsState::Entered {
+                    inode: format!("user:[{}]", n.proc_name()),
+                },
+            );
+        }
+        let mut seals = std::collections::BTreeMap::new();
+        for k in SealKind::ALL {
+            seals.insert(
+                k,
+                Seal::Held {
+                    how: "tested".into(),
+                },
+            );
+        }
+        let measured = Boundary::namespaces(
+            "bubblewrap 0.11.1",
+            ViewSpec::project_only(&dir).wide(),
+            Egress::Denied,
+            ns,
+            seals,
+        );
+        let said =
+            lines_with_probe(Level::Wide, &Mode::WRITES_ALLOWED, &dir, Some(&measured)).join("\n");
+        assert!(
+            said.contains("probe: confined, by bubblewrap 0.11.1, measured"),
+            "{said}"
+        );
+        assert!(said.contains("mnt entered"), "{said}");
+        assert!(said.contains("seals:"), "{said}");
+        assert!(!said.contains("not measured here"), "{said}");
+
+        let none = lines(Level::Wide, &Mode::WRITES_ALLOWED, &dir).join("\n");
+        assert!(none.contains("probe: not measured here"), "{none}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

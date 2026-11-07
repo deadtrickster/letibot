@@ -90,6 +90,11 @@ impl Tool for Read {
                      to it.",
                 );
             }
+            // The sentence already names the path, the reason and the key that would change
+            // it, and it is the one a command's own absence note gives.
+            Err(e @ BackendError::Fenced(_)) => {
+                return Invocation::failed(e.to_string(), String::new());
+            }
             Err(e) => {
                 // A path that does not exist reaches here on some backends; treat
                 // any read failure on a non-existent path as the miss it is.

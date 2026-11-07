@@ -61,6 +61,9 @@ pub enum BackendError {
     NotFound(String),
     /// The path resolves outside the backend's root.
     Outside(String),
+    /// The path is inside this session's boundary but masked by it: the sentence says why and
+    /// names the key that would change it, so a tool and a command refuse a path alike.
+    Fenced(String),
     NotADirectory(String),
     IsADirectory(String),
     /// Named, so the M2 swap is visible rather than mysterious.
@@ -73,6 +76,7 @@ impl std::fmt::Display for BackendError {
         match self {
             BackendError::NotFound(p) => write!(f, "no such path: {p}"),
             BackendError::Outside(p) => write!(f, "path resolves outside the session root: {p}"),
+            BackendError::Fenced(why) => write!(f, "{why}"),
             BackendError::NotADirectory(p) => write!(f, "not a directory: {p}"),
             BackendError::IsADirectory(p) => write!(f, "is a directory: {p}"),
             BackendError::Unsupported(w) => write!(f, "this backend cannot do that: {w}"),
@@ -158,6 +162,13 @@ pub trait ExecBackend: Send + Sync {
         false
     }
 
+    /// Why this session's boundary denies a file tool `path`, in the boundary's own words. The
+    /// file operations above refuse with it; a tool that walks asks here FIRST, because a walk
+    /// whose every `list` failed reads as an empty directory and not as a refusal.
+    fn file_refusal(&self, _path: &str) -> Option<String> {
+        None
+    }
+
     /// The backend's root as a path a caller may compare an argument against. `None` by
     /// default, because a substrate with no host path would make
     /// [`crate::runtime::GateCall::path_is_inside`] answer about a filesystem it is not looking at.
@@ -207,6 +218,9 @@ pub trait ExecBackend: Send + Sync {
         limit: usize,
         skip: &dyn Fn(&DirEntry) -> bool,
     ) -> Result<(Vec<DirEntry>, bool), BackendError> {
+        if let Some(why) = self.file_refusal(root) {
+            return Err(BackendError::Fenced(why));
+        }
         let mut out = Vec::new();
         let mut queue = std::collections::VecDeque::from([root.to_string()]);
         let mut truncated = false;
@@ -281,6 +295,9 @@ pub struct HostBackend {
     /// This session's `/tmp`, when its commands run inside a boundary, so that closing the
     /// session can remove what its commands left behind.
     session_tmp: Option<PathBuf>,
+    /// The paths this session's boundary denies, applied to the file tools too (R121 item 8).
+    /// Empty where the session has no boundary: with no view there is nothing to refuse.
+    fence: Option<crate::exec::fence::FileFence>,
 }
 
 impl HostBackend {
@@ -300,6 +317,7 @@ impl HostBackend {
             processes: None,
             scratch: None,
             session_tmp: None,
+            fence: None,
         })
     }
 
@@ -405,6 +423,7 @@ impl HostBackend {
                 env: Vec::new(),
                 home: None,
                 masked: Vec::new(),
+                hidden: Vec::new(),
                 secret_env: Default::default(),
             },
         )
@@ -554,6 +573,21 @@ impl HostBackend {
         self
     }
 
+    /// Give the file tools the same fence the shell has: a path the view masks is denied to
+    /// `read`, `write`, `edit`, `grep` and `glob` too, with the boundary's own words.
+    pub fn with_file_fence(mut self, fence: crate::exec::fence::FileFence) -> Self {
+        self.fence = (!fence.is_empty()).then_some(fence);
+        self
+    }
+
+    /// Why the boundary denies this path to a file tool, resolved the way an operation would.
+    fn fenced(&self, p: &Path, write: bool) -> Result<(), BackendError> {
+        match self.fence.as_ref().and_then(|f| f.refusal(p, write)) {
+            Some(why) => Err(BackendError::Fenced(why)),
+            None => Ok(()),
+        }
+    }
+
     /// Resolve a tool-supplied path inside the root, following symlinks as it goes: a check
     /// `canonicalize` skips for a path that does not exist is not a check. Lexical normalisation
     /// first, then [`resolve_under`] walks down from the root requiring containment at each step.
@@ -685,6 +719,7 @@ impl ExecBackend for HostBackend {
 
     fn read(&self, path: &str) -> Result<Vec<u8>, BackendError> {
         let p = self.resolve(path)?;
+        self.fenced(&p, false)?;
         if p.is_dir() {
             return Err(BackendError::IsADirectory(path.to_string()));
         }
@@ -718,6 +753,7 @@ impl ExecBackend for HostBackend {
         if target.is_dir() {
             return Err(BackendError::IsADirectory(path.to_string()));
         }
+        self.fenced(&target, true)?;
         let Some(dir) = target.parent() else {
             return Err(BackendError::Io(format!("{path} has no parent directory")));
         };
@@ -779,6 +815,13 @@ impl ExecBackend for HostBackend {
         self.writable
     }
 
+    fn file_refusal(&self, path: &str) -> Option<String> {
+        let resolved = self.resolve(path).ok()?;
+        self.fence
+            .as_ref()
+            .and_then(|f| f.refusal(&resolved, false))
+    }
+
     fn root_path(&self) -> Option<String> {
         Some(self.root.to_string_lossy().to_string())
     }
@@ -812,6 +855,7 @@ impl ExecBackend for HostBackend {
 
     fn list(&self, path: &str) -> Result<Vec<DirEntry>, BackendError> {
         let p = self.resolve(path)?;
+        self.fenced(&p, false)?;
         let rd = std::fs::read_dir(&p).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => BackendError::NotFound(path.to_string()),
             std::io::ErrorKind::NotADirectory => BackendError::NotADirectory(path.to_string()),
@@ -832,8 +876,11 @@ impl ExecBackend for HostBackend {
         Ok(out)
     }
 
+    /// A fenced path is absent here as it is absent from the shell's view: `None` and not an
+    /// error, because every caller of this asks whether a path exists.
     fn stat(&self, path: &str) -> Option<DirEntry> {
         let p = self.resolve(path).ok()?;
+        self.fenced(&p, false).ok()?;
         let meta = std::fs::metadata(&p).ok()?;
         Some(DirEntry {
             path: self.display(&p),
