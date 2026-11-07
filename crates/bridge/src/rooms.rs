@@ -892,22 +892,26 @@ pub fn tool_list() -> Vec<Value> {
         tool(
             "room_say",
             &format!(
-                "Say something in a room, as `{me}`. The author and kind come from this \
-             connection, never from arguments. `to` names one session, `operator` or a handle: \
-             a session named wakes and starts a turn. `@session-id` in the text does the same. \
-             `cc` or `claude-code` names the one connected Claude Code bridge and is refused, \
-             listing the full `cc@<folder>:<name>` names, when several are connected. `cc@<name>` \
-             names the one bridge with that name, and `cc@<folder>` every bridge of that folder. \
-             `thread` answers a message by its seq. `refs` points at a todo (`<session>/<title>`) \
-             or a queue row. Text is at most 4000 bytes and is refused, never cut. {}",
+                "Say something as `{me}`. The author and kind come from this connection, never \
+             from arguments. `to` makes it a PRIVATE message to one session, `operator` or a handle: \
+             it goes to the dm between you and is written in no room, so only the two of you read \
+             it, and the one named wakes. `@session-id` in the text is a MENTION: it stays in the \
+             room you named and wakes them there; anyone named who cannot see that room is invited \
+             into it, so the mention reaches them with its thread. `cc` or `claude-code` names the \
+             one connected Claude Code bridge and is refused, listing the full `cc@<folder>:<name>` \
+             names, when several are connected. `cc@<name>` names the one bridge with that name, and \
+             `cc@<folder>` every bridge of that folder. `thread` answers a message by its seq, and \
+             the reply stays in that message's room, so it takes no `to`. `refs` points at a todo \
+             (`<session>/<title>`) or a queue row. Text is at most 4000 bytes and is refused, never \
+             cut. {}",
                 etiquette(&me)
             ),
             json!({
                 "type": "object",
                 "properties": {
-                    "room": { "type": "string", "description": "`host` (default) or `project/<key>`." },
+                    "room": { "type": "string", "description": "`host` (default) or `project/<key>`. No room is written when `to` is given, and a reply stays in its root's room." },
                     "text": { "type": "string" },
-                    "to": { "type": "string", "description": "The one principal this is for." },
+                    "to": { "type": "string", "description": "The one principal this is for, PRIVATELY: a dm between the two of you, written in no room." },
                     "thread": { "type": "integer", "description": "The seq this answers." },
                     "refs": {
                         "type": "array",
@@ -927,7 +931,8 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_dm",
-            "A direct message to one session, `operator` or a handle. Only you and `to` can read it.",
+            "A direct message to one session, `operator` or a handle. The same as `room_say` with \
+             `to`: only you and `to` can read it, and no room holds it.",
             json!({
                 "type": "object",
                 "properties": {

@@ -75,7 +75,9 @@ impl Tool for RoomTool {
                  need, `claim` a tag's head, `beat` what you hold, `waiting` what you are waiting \
                  on, `done`, `abandon`, `dispute`, `queue`, `holding`, `questions`, and `rule` — the \
                  arbiter's verb — to answer with `retry`, `hand` or `drop`. `say` and `read` talk to the \
-                 operator and other sessions in room `project` or `host`; answer others' messages only if you hold what they lack. {beat}"
+                 operator and other sessions in room `project` or `host`; `to` is a private message and \
+                 `@name` is a public mention that wakes them where it was said. Answer others' \
+                 messages only if you hold what they lack. {beat}"
             ),
             json!({
                 "type": "object",
@@ -124,11 +126,11 @@ impl Tool for RoomTool {
                     },
                     "to": {
                         "type": "string",
-                        "description": "For `say`: the session id the message asks for a reply. Every message wakes every session in the room; only one addressed here or by `@<session id>` in the text asks for a reply. For `rule` with `decision: \"hand\"`: the session that gets the claim. It must be a top-level session the room has met."
+                        "description": "For `say`: the one principal this is for, and the message is PRIVATE — it goes to the dm between the two of you and is written in no room; only you and they read it. For a public message that asks someone, leave `to` off and `@name` them in the text: it stays in the room where you said it, it wakes them, and if they could not see that room they are invited into it. For `rule` with `decision: \"hand\"`: the session that gets the claim. It must be a top-level session the room has met."
                     },
                     "room": {
                         "type": "string",
-                        "description": "For `say` and `read`: `project` (the default) is the room of your project, `host` is the room every session on this machine is in, `dm` (read only) is your direct messages, and `project/<key>` is a project room you were invited into. For `invite` and `leave`: the project room, as `project/<key>` or its label."
+                        "description": "For `say` and `read`: `project` (the default) is the room of your project, `host` is the room every session on this machine is in, `dm` (read only) is your direct messages, and `project/<key>` is a project room you were invited into. A `say` with `to` writes no room at all, and a reply (`thread`) stays in its root's room whatever this names. For `invite` and `leave`: the project room, as `project/<key>` or its label."
                     },
                     "since": {
                         "type": "integer",
@@ -140,7 +142,7 @@ impl Tool for RoomTool {
                     },
                     "thread": {
                         "type": "integer",
-                        "description": "For `say`: the number of the message you answer. For `read`: that message and its replies."
+                        "description": "For `say`: the number of the message you answer. The reply stays in that message's room and names its author, so it takes no `to` — `@name` in the text if you need someone else to see it. For `read`: that message and its replies."
                     },
                     "todo": {
                         "type": "string",

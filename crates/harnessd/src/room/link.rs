@@ -80,6 +80,11 @@ pub struct SessionRoom {
     bell: Arc<dyn Fn(&str) + Send + Sync>,
     /// The newest chat this session heard, for the pane and for `room read`'s tail. Bounded.
     recent: Arc<Mutex<std::collections::VecDeque<letibot_room::Message>>>,
+    /// The rooms this session sits in besides its own: the ones it was invited into, from the
+    /// room's own `rooms` answer. What a wake is allowed to come from.
+    invited: Arc<Mutex<std::collections::BTreeSet<String>>>,
+    /// The one room its project makes, or the host room when it has no project.
+    mine: String,
     /// Each todo row's last seen status, by content. `None` until the first update, which is
     /// the board as it was and not news.
     todo_seen: Mutex<Option<std::collections::BTreeMap<String, String>>>,
@@ -243,15 +248,35 @@ impl SessionRoom {
         let named = letibot_room::room_name(&key, project);
         let client = Client::connect_named(socket, Speaker::top_level(session), named, wake)
             .map_err(|e| e.to_string())?;
-        // Chat: kept for the feed, and every message someone else wrote wakes a turn; only one
-        // addressed to this session asks for a reply (`wake::chat_sentence`). The room's own
-        // system facts wake only the session they name. A tag's agent and the
-        // arbiter work the queue and are never woken by chat.
+        // Chat: kept for the feed, and a message wakes a turn when it names this session, comes
+        // from the operator, or is said to a room it sits in. A tag's agent and the arbiter work
+        // the queue and are never woken by chat.
         let recent: Arc<Mutex<std::collections::VecDeque<letibot_room::Message>>> = Arc::default();
+        let invited: Arc<Mutex<std::collections::BTreeSet<String>>> = Arc::default();
+        // The room its project makes - the host room for a session in no project, which is the
+        // coordinator's own. Rule: a session is woken by its own rooms, never by host chatter
+        // between others.
+        let mine = if project.is_empty() {
+            letibot_room::chat::HOST_ROOM.to_string()
+        } else {
+            letibot_room::chat::project_room(project)
+        };
         {
             let recent = Arc::clone(&recent);
+            let invited = Arc::clone(&invited);
             let bell = Arc::clone(&bell);
             let me = me.clone();
+            let sits_in = {
+                let invited = Arc::clone(&invited);
+                let mine = mine.clone();
+                move |room: &str| {
+                    room == mine
+                        || invited
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .contains(room)
+                }
+            };
             let plain = letibot_room::tag_of_session(&key, session).is_none() && !arbiter;
             client.on_chat(Arc::new(move |m: &letibot_room::Message, names: bool| {
                 {
@@ -264,7 +289,7 @@ impl SessionRoom {
                 // The room's own facts (a todo row done, a queue move) are kind `system` and
                 // wake only the session they are addressed to; a session woke on its own rows.
                 let wakes = m.kind != letibot_room::Seat::System || names;
-                if plain && wakes && m.attends(&me, letibot_room::Attention::All) {
+                if plain && wakes && m.wakes(&me, names, &sits_in) {
                     wake::push_chat(&me, m.seq, wake::chat_sentence(m, names));
                     bell(&me);
                 } else if !wake::seen_meanwhile(&me, m.seq) {
@@ -276,6 +301,8 @@ impl SessionRoom {
         let plain = letibot_room::tag_of_session(&key, session).is_none() && !arbiter;
         let room = Arc::new(SessionRoom {
             recent,
+            invited,
+            mine,
             todo_seen: Mutex::new(None),
             plain,
             client,
@@ -440,6 +467,19 @@ impl SessionRoom {
     /// A room that cannot be read is not an error here: the snapshot's `unreadable` carries the
     /// sentence, because the pane must draw *nobody answered* rather than an empty queue.
     fn read_room(&self) -> RoomSnapshot {
+        // Which rooms this session is in, asked on the same tick as the rest: an invitation is the
+        // room's to give, and a session woken by a room it was invited to needs to know which.
+        if let Ok(Response::Rooms { rows }) = self.client.request(&Request::Rooms) {
+            let mut invited = self.invited.lock().unwrap_or_else(|e| e.into_inner());
+            invited.clear();
+            // Its own room is not an invitation, and neither is the host room: every session may
+            // read host, and reading it is not sitting in it (rule 5).
+            invited.extend(
+                rows.into_iter()
+                    .map(|r| r.id)
+                    .filter(|id| id != &self.mine && id != letibot_room::chat::HOST_ROOM),
+            );
+        }
         let welcome = self.client.welcome();
         let base = RoomSnapshot {
             lease_ms: welcome.lease_ms,
@@ -1114,6 +1154,15 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
             )
         }
         Response::Event { event } => format!("the room said: {event:?}"),
+        // A `to` is a private message, and the answer has to say so: a model that believed it had
+        // spoken in the room would wait for an audience that never read a word of it.
+        Response::Said { message, .. } if message.room == letibot_room::chat::DM_ROOM => format!(
+            "said in dm: {} — a private message to `{}`: only the two of you read it, and nothing \
+             was said in a room. To ask the same thing where everyone can see it, `say` it to the \
+             room and `@name` them in the text.",
+            message.line(),
+            message.to.as_deref().unwrap_or("its addressee"),
+        ),
         // Every member is woken, but only an addressed message asks for a reply, so a model that
         // wrote "arango session: ..." is told it asked nobody.
         Response::Said { message, .. }
@@ -1121,8 +1170,8 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
         {
             format!(
                 "said: {}\nit names no session: everyone in the room reads it and nobody is \
-                 asked to reply. To ask one session, `say` again with its id in `to` or an \
-                 `@<session id>` in the text.",
+                 asked to reply. To ask one session, `say` again with an `@<session id>` in the \
+                 text for a public ask, or its id in `to` for a private one.",
                 message.line()
             )
         }
@@ -1413,6 +1462,121 @@ mod tests {
             "the taken note never reached the room as a seen mark"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Rule 5, end to end: a session is woken by its own room, by a dm to it and by the operator's
+    /// own words - and not by the host room's talk between two others.
+    #[test]
+    fn a_host_line_between_others_does_not_wake_a_project_session() {
+        let me_id = "s-a-routing";
+        let same_id = "s-a2-routing";
+        let other_id = "s-b-routing";
+        let (key_a, key_b) = ("aaaaaaaaaaaa", "bbbbbbbbbbbb");
+        let dir = std::env::temp_dir().join(format!("letibot-room-routing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
+            .expect("a room to talk to");
+        let bell: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|_: &str| {});
+        let me = SessionRoom::connect(me_id, &path, key_a, None, bell.clone(), None)
+            .expect("my own room's session");
+        let same = SessionRoom::connect(same_id, &path, key_a, None, bell.clone(), None)
+            .expect("the other session of my project");
+        let other = SessionRoom::connect(other_id, &path, key_b, None, bell, None)
+            .expect("a session of another project");
+        let operator = letibot_room::client::Client::connect_as(
+            &path,
+            Speaker::top_level(letibot_room::OPERATOR),
+            server.name(),
+            letibot_room::Seat::Operator,
+            Arc::new(|_: &letibot_room::Event| {}),
+        )
+        .expect("the operator's seat");
+
+        // My own project's room, said to the room: it wakes me.
+        same.call(
+            "say",
+            &serde_json::json!({"room": "project", "text": "the build is red"}),
+        )
+        .expect("a say");
+        let line = until_note(me_id, "the build is red");
+        assert!(line.contains("to everyone - no reply asked"), "{line}");
+
+        // The host room's chatter between two others: a broadcast, and a mention of the third
+        // session. Neither is mine, and neither is a room I sit in.
+        other
+            .call(
+                "say",
+                &serde_json::json!({"room": "host", "text": "anyone seen the fleet key?"}),
+            )
+            .expect("a say");
+        other
+            .call(
+                "say",
+                &serde_json::json!({"room": "host", "text": format!("@{same_id} did you see that?")}),
+            )
+            .expect("a say");
+        // The one it names is woken where it was named; the bystander of another project is not.
+        let named = until_note(same_id, "did you see that?");
+        assert!(named.contains("for you"), "{named}");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert_eq!(
+            wake::waiting(me_id),
+            0,
+            "host chatter between others woke `{me_id}`: {:?}",
+            wake::take(me_id)
+        );
+
+        // A `to` is a private message: the tool answer says where it went, and it wakes the one.
+        let answer = other
+            .call(
+                "say",
+                &serde_json::json!({"to": me_id, "text": "just between us"}),
+            )
+            .expect("a say");
+        assert!(answer.contains("said in dm"), "{answer}");
+        assert!(answer.contains("only the two of you read it"), "{answer}");
+        let line = until_note(me_id, "just between us");
+        assert!(
+            line.contains("a private message for you"),
+            "a dm does not read as private: {line}"
+        );
+
+        // And the operator's own words reach a session wherever they are said.
+        let said = operator
+            .request(&letibot_room::Request::Say {
+                id: "op1".into(),
+                room: letibot_room::chat::HOST_ROOM.into(),
+                text: "everyone: the box restarts at six".into(),
+                to: None,
+                thread: None,
+                refs: Vec::new(),
+            })
+            .expect("the operator says");
+        assert!(
+            matches!(said, letibot_room::Response::Said { .. }),
+            "{said:?}"
+        );
+        let line = until_note(me_id, "restarts at six");
+        assert!(line.contains("to everyone"), "{line}");
+
+        drop((me, same, other));
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The sentence `session` is woken by that carries `needle`, or a panic naming what it got.
+    fn until_note(session: &str, needle: &str) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut said: Vec<String> = Vec::new();
+        while std::time::Instant::now() < deadline {
+            said.extend(wake::take(session));
+            if let Some(line) = said.iter().find(|s| s.contains(needle)) {
+                return line.clone();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("`{session}` was never woken by `{needle}`: {said:?}");
     }
 
     /// The wake, end to end minus the harness: a real server, two real connections, and the

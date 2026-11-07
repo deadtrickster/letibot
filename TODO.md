@@ -75,6 +75,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R145 | The review queue's session is seated a role its own prompt does not match | Code work | all of it: `Seat::Orchestrator` resolves to `roles::m1_orchestrator`, which holds neither `task_result` nor `task_message`, and the prompt prescribes both |
 | R150 | Plugin extension points: the harness and head open to plugins | Needs the operator | answers to the 13 questions in `docs/plugin-extension-points-wide.md` §8 (each has a default), then the plan's packages K1-K11 with H0, P5, P6 |
 | R151 | Four plugin walls that are bugs: unreachable built-in panes, `read` against the workspace, the pin lost on rebuild, the hooks skill's missing kinds | Code work | all of it |
+| R146 | Room routing: a gatekeeper sits in its project, `to:` is private, host is broadcasts | Code work | the five rules in the say/wake paths; tests per rule, and `to:` on a thread reply is a decision to check with the operator |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
 | R100 | A remote session in a firecode VM: `--host` and `--vm` as one placement | Needs the operator | the live proof on lab2x1: a real `firecode` copy carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, the copy-out's cost |
 | R59 | The context wall's denominator moves a third between firings | Needs the operator | the operator's ruling on smoothing the ratio (the tree keeps it per round, as recommended) |
@@ -954,6 +955,24 @@ The reviewer's seat (`Role::gatekeeper`, `runtime.rs:1143`) is the other half an
 **Status:** open. left: all of it.
 
 From the review's evidence (section 2): `/pane irc` and `/pane github` are compiled in but unreachable, because the daemon installs a built-in only on a tool match (`crates/harnessd/src/plugins.rs:276-301`) and the head never asks `pane_nicks`; a pane's `read` resolves against the session workspace, not the checkout, so a pane in a worktree draws `look exit 1`; every rebuild unpins the layer and costs a `/plugin trust`; the `plugin-hooks` skill teaches four hook kinds and omits `tool_`, `command_` and `pane_`, so agents conclude in the room that a plugin cannot add a tool.
+
+## R146 - Room routing: a gatekeeper sits in its project, `to:` is private, host is broadcasts
+
+**Status:** open. left: the five rules in the say and wake paths, one test each, plus the old store replaying.
+
+The host room is crowded: cross-project talk and the gatekeepers all sit there. The operator's rules, 2026-11-08:
+
+1. Gatekeepers sit in their project room: `gatekeeper@serenedb` is in `project/serenedb`, not `host`.
+2. `to: X` is a PRIVATE message: it goes to the dm channel between sender and X, never into host or a project room; only the two see it. `@X` in the text is a MENTION: the message stays public in the room where it was said, and it wakes X. If X cannot see that room, X is invited into it (the existing `Invite`), so the mention reaches X with its thread.
+3. Host keeps broadcasts (no `to`, no `@`) and the operator's messages (to and from the operator).
+4. A thread reply stays in its root's room.
+5. A session is woken only by rooms it sits in or was invited to, not by host chatter between others.
+
+Where it lands: `crates/room/src/server.rs` (`resolve_name`, `own_room_or`, `Invite`, `may_see`, the `say`/`dm` handlers, and how a coordinator's own project-less sessions get only host), `crates/room/src/chat.rs` (the wake predicate and the thread lookup), `crates/harnessd/src/room/link.rs` and `wake.rs` (`on_chat`, `names_you`, the wake), `crates/tools/src/builtins/room.rs` (the schema text says what `to` and `@` do), `crates/bridge/src/rooms.rs` (`room_say` for `cc@` seats follows the same rules). R139 is editing `server.rs`, `chat.rs` and `wire.rs` for attachments at the same time: keep the changes in the routing paths, add no wire field, and keep any wire change additive. The one added variant, `Refused::PrivateToAPublicReply`, rides R139's protocol 9.
+
+**Target:** a test per rule; the tool answer for a `to:` say says it went to dm; an `@` of an outsider invites them and the invite is in the roster; an old chat store replays.
+
+**A decision the operator has not made:** a `say` with both `to` and `thread` asks for two things the rules do not both allow - `to` is private, a reply stays in its root's room, which may be public. Taken the strict way (2026-11-08, this branch): it is refused, and the refusal names `dm` with the same `thread` as the private way and `@name` in the text as the public one. If the operator would rather it picked one, that is a change of the refusal alone.
 
 ## R134 - Scrolling stops at a line above the tail
 

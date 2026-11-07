@@ -277,6 +277,21 @@ impl Message {
                 .any(|m| m == who || group_names(m, who))
     }
 
+    /// Does this message start a turn for `who`? `named` is the room's own answer to *does it name
+    /// you* (which counts a reply to your own message). The operator wakes wherever they speak; a
+    /// room line wakes that room's own sessions; talk between two others wakes nobody else.
+    pub fn wakes(&self, who: &str, named: bool, sits_in: impl Fn(&str) -> bool) -> bool {
+        if self.author == who {
+            return false;
+        }
+        named
+            || self.kind == Seat::Operator
+            || (self.to.is_none()
+                && self.thread.is_none()
+                && mentions(&self.text).is_empty()
+                && sits_in(&self.room))
+    }
+
     /// Does `attention` let this message through to `who`? Their own never pass.
     pub fn attends(&self, who: &str, attention: Attention) -> bool {
         if self.author == who {
@@ -761,6 +776,21 @@ impl Chat {
         Ok(m)
     }
 
+    /// The root a reply hangs from, in any room `see` lets the reader read: a reply stays in its
+    /// root's room, so the room is looked up rather than taken from the request.
+    pub fn thread_root(&self, thread: u64, see: impl Fn(&Message) -> bool) -> Option<Message> {
+        self.rings
+            .values()
+            .flatten()
+            .find(|m| m.seq == thread && see(m))
+            .cloned()
+    }
+
+    /// Who wrote `seq` in `room` - the one a reply there answers.
+    pub fn author_of(&self, room: &str, seq: u64) -> Option<String> {
+        self.find(room, seq).map(|m| m.author.clone())
+    }
+
     fn find(&self, room: &str, seq: u64) -> Option<&Message> {
         self.rings.get(room)?.iter().find(|m| m.seq == seq)
     }
@@ -1011,6 +1041,114 @@ mod tests {
         assert_eq!(mentions("@s-a look, @Op"), vec!["s-a", "op"]);
         assert!(mentions("mail me at x@y.z").is_empty());
         assert!(mentions("a @ b").is_empty());
+    }
+
+    fn at(
+        room: &str,
+        who: &str,
+        kind: Seat,
+        to: Option<&str>,
+        thread: Option<u64>,
+        text: &str,
+    ) -> Message {
+        Message {
+            seq: 7,
+            ts: 0,
+            room: room.into(),
+            author: who.into(),
+            kind,
+            to: to.map(str::to_string),
+            thread,
+            refs: Vec::new(),
+            text: text.into(),
+        }
+    }
+
+    /// Who a message wakes: the one it names, everyone in a room that is theirs, and nobody at all
+    /// for talk between two others - which is what left the host room a room of strangers.
+    #[test]
+    fn a_wake_is_a_name_a_room_of_ones_own_or_the_operators_words() {
+        let a = "project/aaaaaaaaaaaa";
+        let b = "project/bbbbbbbbbbbb";
+        // The session sits in its project's room and was invited into none.
+        let sits_in = |room: &str| room == a;
+
+        let broadcast = at(
+            a,
+            "s-b",
+            Seat::Session,
+            None,
+            None,
+            "anyone seen the build?",
+        );
+        assert!(broadcast.wakes("s-a", false, sits_in), "a room of mine");
+        assert!(
+            !broadcast.wakes("s-b", false, sits_in),
+            "my own never wakes me"
+        );
+
+        let other_room = at(b, "s-b", Seat::Session, None, None, "build talk");
+        assert!(
+            !other_room.wakes("s-a", false, sits_in),
+            "a room I am not in is somebody else's"
+        );
+        let host = at(HOST_ROOM, "s-b", Seat::Session, None, None, "build talk");
+        assert!(
+            !host.wakes("s-a", false, sits_in),
+            "host chatter between others"
+        );
+        assert!(
+            host.wakes("s-a", true, sits_in),
+            "unless the room says it names me"
+        );
+
+        let mention = at(a, "s-b", Seat::Session, None, None, "@s-a look");
+        assert!(mention.wakes("s-a", true, sits_in), "a mention names me");
+        assert!(
+            !mention.wakes("s-c", false, sits_in),
+            "a mention of somebody else wakes nobody"
+        );
+
+        let reply = at(a, "s-b", Seat::Session, None, Some(3), "answered");
+        assert!(
+            !reply.wakes("s-c", false, sits_in),
+            "a reply is for its root's author"
+        );
+        assert!(reply.wakes("s-a", true, sits_in), "and the room says so");
+
+        let private = at(DM_ROOM, "s-b", Seat::Session, Some("s-a"), None, "just us");
+        assert!(private.wakes("s-a", true, sits_in), "a dm names its reader");
+
+        let operator = at(HOST_ROOM, OPERATOR, Seat::Operator, None, None, "all hands");
+        assert!(
+            operator.wakes("s-a", false, sits_in),
+            "the operator's words reach every session"
+        );
+    }
+
+    /// A reply is looked up in any room its reader may see, so a thread told to a session in
+    /// another room is found there rather than refused.
+    #[test]
+    fn a_thread_root_is_found_where_it_was_said() {
+        let mut c = Chat::new();
+        let root = say(
+            &mut c,
+            "1",
+            "project/aaaaaaaaaaaa",
+            "s-a",
+            Seat::Session,
+            "root",
+        );
+        assert_eq!(
+            c.thread_root(root.seq, |_| true).map(|m| m.room),
+            Some("project/aaaaaaaaaaaa".to_string())
+        );
+        assert!(c.thread_root(root.seq, |_| false).is_none());
+        assert!(c.thread_root(99, |_| true).is_none());
+        assert_eq!(
+            c.author_of("project/aaaaaaaaaaaa", root.seq).as_deref(),
+            Some("s-a")
+        );
     }
 
     #[test]

@@ -217,17 +217,20 @@ fn dms_mentions_threads_and_the_inbox() {
     let root = said(a1.say("2", "", "plain"));
     assert!(!a2.next().1);
 
-    // A reply hangs from its root, and a read by thread returns both.
+    // A reply hangs from its root, and a read by thread returns both. It names its reader in the
+    // text: a reply stays in its root's room, so `to` would be a private message and is refused.
     let reply = said(a2.call(Request::Say {
         id: "3".into(),
         room: String::new(),
-        text: "answer".into(),
-        to: Some("s-a1".into()),
+        text: "@s-a1 answer".into(),
+        to: None,
         thread: Some(root.seq),
         refs: Vec::new(),
         attachments: Vec::new(),
     }));
     assert_eq!(reply.thread, Some(root.seq));
+    assert_eq!(reply.room, project_room(A));
+    assert!(a1.next_seq(reply.seq).1, "a reply names its root's author");
     match a1.call(Request::Read {
         room: String::new(),
         since: 0,
@@ -1090,4 +1093,345 @@ fn a_review_queue_reads_and_answers_as_gatekeeper_at_its_project() {
         ),
         other => panic!("{other:?}"),
     }
+}
+
+/// A `to` is a private message: it goes to the dm between the two, no room holds a copy, and a
+/// bystander of either project never sees it.
+#[test]
+fn a_to_is_a_private_message_and_no_room_holds_a_copy() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let a1 = seat(&server, "s-a1", A, Seat::Session);
+    let a2 = seat(&server, "s-a2", A, Seat::Session);
+    let b1 = seat(&server, "s-b1", B, Seat::Session);
+    let op = seat(&server, OPERATOR, "", Seat::Operator);
+
+    // Named `to` in the host room: the room is not written to and the bystanders hear nothing.
+    let m = said(a1.call(Request::Say {
+        id: "1".into(),
+        room: HOST_ROOM.into(),
+        text: "just us".into(),
+        to: Some("s-a2".into()),
+        thread: None,
+        refs: Vec::new(),
+    }));
+    assert_eq!(m.room, "dm", "a `to` say is a dm, not a host line");
+    assert_eq!(m.to.as_deref(), Some("s-a2"));
+    let (heard, names) = a2.next_seq(m.seq);
+    assert!(names, "the addressee is named: {heard:?}");
+    assert_eq!(heard.text, "just us");
+    b1.silent();
+    op.silent();
+    assert!(
+        match op.call(Request::Read {
+            room: HOST_ROOM.into(),
+            since: 0,
+            last: None,
+            thread: None,
+            before: None,
+        }) {
+            Response::History(h) => h.rows.iter().all(|r| r.text != "just us"),
+            other => panic!("{other:?}"),
+        },
+        "nothing of a dm is written in host"
+    );
+
+    // A room the sender cannot see is no obstacle to a private message: nothing is written there.
+    let m = said(a1.call(Request::Say {
+        id: "2".into(),
+        room: project_room(B),
+        text: "over to your project".into(),
+        to: Some("s-b1".into()),
+        thread: None,
+        refs: Vec::new(),
+    }));
+    assert_eq!(m.room, "dm");
+    assert_eq!(b1.next_seq(m.seq).0.text, "over to your project");
+
+    // The operator is one of the two of a dm to them.
+    let m = said(a1.call(Request::Say {
+        id: "3".into(),
+        room: String::new(),
+        text: "a question for you".into(),
+        to: Some(OPERATOR.into()),
+        thread: None,
+        refs: Vec::new(),
+    }));
+    assert_eq!(m.room, "dm");
+    assert_eq!(op.next_seq(m.seq).0.text, "a question for you");
+    // And a connection that is neither author nor addressee reads neither dm.
+    let a3 = seat(&server, "s-a3", A, Seat::Session);
+    match a3.call(Request::Read {
+        room: "dm".into(),
+        since: 0,
+        last: None,
+        thread: None,
+        before: None,
+    }) {
+        Response::History(h) => assert!(h.rows.is_empty(), "{:?}", h.rows),
+        other => panic!("{other:?}"),
+    }
+    // And b1 reads the one dm it is the addressee of, and no other.
+    match b1.call(Request::Read {
+        room: "dm".into(),
+        since: 0,
+        last: None,
+        thread: None,
+        before: None,
+    }) {
+        Response::History(h) => assert_eq!(
+            h.rows.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(),
+            vec!["over to your project"]
+        ),
+        other => panic!("{other:?}"),
+    }
+
+    // A `to` that names the sender is refused, as a dm to yourself is.
+    assert!(matches!(
+        refused(say_to(&a1, "4", "s-a1", "note to self")),
+        Refused::UnknownAddressee { .. }
+    ));
+}
+
+/// An `@` of somebody who cannot see the room invites them: the message stays where it was said,
+/// the mention arrives there with its thread, and the roster says how they got in.
+#[test]
+fn an_at_of_an_outsider_invites_them_into_the_room() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let room_a = project_room(A);
+    let a1 = seat(&server, "s-a1", A, Seat::Session);
+    let b1 = seat(&server, "s-b1", B, Seat::Session);
+
+    let root = said(a1.say("1", "", "the parser question"));
+    assert_eq!(root.room, room_a);
+    b1.silent();
+    assert!(!b1.rooms().contains(&room_a), "not in it yet");
+
+    // A reply naming an outsider: it stays where the root was said, and the outsider is brought in.
+    let m = said(a1.call(Request::Say {
+        id: "2".into(),
+        room: String::new(),
+        text: "@s-b1 have a look".into(),
+        to: None,
+        thread: Some(root.seq),
+        refs: Vec::new(),
+    }));
+    assert_eq!(m.room, room_a, "a mention does not move the message");
+    assert_eq!(m.to, None, "nothing about a mention is private");
+    let (heard, names) = b1.next_seq(m.seq);
+    assert!(names, "the mention names the outsider: {heard:?}");
+    assert_eq!(heard.thread, Some(root.seq), "it arrives with its thread");
+    assert!(b1.rooms().contains(&room_a), "invited: {:?}", b1.rooms());
+    match a1.call(Request::Roster {
+        room: room_a.clone(),
+    }) {
+        Response::Roster { rows, .. } => assert!(
+            rows.iter().any(|r| r.id == "s-b1" && r.label == "guest"),
+            "the invitation is in the roster: {rows:?}"
+        ),
+        other => panic!("{other:?}"),
+    }
+    // And the thread reads whole for the one who was brought in.
+    match b1.call(Request::Read {
+        room: room_a.clone(),
+        since: 0,
+        last: None,
+        thread: Some(root.seq),
+        before: None,
+    }) {
+        Response::History(h) => assert_eq!(
+            h.rows.iter().map(|m| m.seq).collect::<Vec<_>>(),
+            vec![root.seq, m.seq]
+        ),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A reply stays in its root's room whatever room the frame names, and a `to` beside it is refused
+/// rather than turned into a private message that leaves the thread.
+#[test]
+fn a_reply_stays_in_its_roots_room() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let room_a = project_room(A);
+    let a1 = seat(&server, "s-a1", A, Seat::Session);
+    let a2 = seat(&server, "s-a2", A, Seat::Session);
+
+    let root = said(a1.say("1", "", "the parser question"));
+    let reply = said(a2.call(Request::Say {
+        id: "2".into(),
+        room: HOST_ROOM.into(),
+        text: "answered there".into(),
+        to: None,
+        thread: Some(root.seq),
+        refs: Vec::new(),
+    }));
+    assert_eq!(reply.room, room_a, "the root's room, not the one named");
+    assert!(a1.next_seq(reply.seq).1, "a reply names its root's author");
+
+    // `to` beside a thread is the one combination the rules do not both allow.
+    match refused(a2.call(Request::Say {
+        id: "3".into(),
+        room: String::new(),
+        text: "privately".into(),
+        to: Some("s-a1".into()),
+        thread: Some(root.seq),
+        refs: Vec::new(),
+    })) {
+        Refused::PrivateToAPublicReply { thread } => assert_eq!(thread, root.seq),
+        other => panic!("{other:?}"),
+    }
+    // A thread nobody can read is refused, not silently said somewhere else.
+    assert!(matches!(
+        refused(a2.call(Request::Say {
+            id: "4".into(),
+            room: String::new(),
+            text: "to nobody".into(),
+            to: None,
+            thread: Some(9_999),
+            refs: Vec::new(),
+        })),
+        Refused::UnknownThread { thread: 9_999 }
+    ));
+
+    // A dm thread stays a dm: the reply is private and only the other party reads it.
+    let dm = said(a1.call(Request::Dm {
+        id: "5".into(),
+        to: "s-a2".into(),
+        text: "one thing".into(),
+        thread: None,
+    }));
+    let back = said(a2.call(Request::Say {
+        id: "6".into(),
+        room: String::new(),
+        text: "and another".into(),
+        to: None,
+        thread: Some(dm.seq),
+        refs: Vec::new(),
+    }));
+    assert_eq!(back.room, "dm");
+    assert_eq!(back.to.as_deref(), Some("s-a1"));
+    assert_eq!(a1.next_seq(back.seq).0.text, "and another");
+    // A dm cannot hang from a public root: that is the same rule from the other side.
+    assert!(matches!(
+        refused(a2.call(Request::Dm {
+            id: "7".into(),
+            to: "s-a1".into(),
+            text: "privately".into(),
+            thread: Some(root.seq),
+        })),
+        Refused::PrivateToAPublicReply { .. }
+    ));
+}
+
+/// A gatekeeper sits in its project's room and not in the host room: the queue is one of
+/// serenedb's members, a `to` to it is a private message, and nothing of it is written in host.
+#[test]
+fn a_gatekeeper_sits_in_its_project_room_and_not_in_host() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let root = dir.0.join("serenedb");
+    std::fs::create_dir_all(&root).unwrap();
+    let key = letibot_room::project_key(&root.display().to_string());
+    let gk_id = format!("s-gatekeeper-{key}");
+    let gk = seat(&server, &gk_id, &key, Seat::Session);
+    gk.call(Request::Members {
+        rows: Vec::new(),
+        root: root.display().to_string(),
+    });
+    let a1 = seat(&server, "s-a1", &key, Seat::Session);
+
+    let roster = |room: &str| match a1.call(Request::Roster {
+        room: room.to_string(),
+    }) {
+        Response::Roster { rows, .. } => rows,
+        other => panic!("{other:?}"),
+    };
+    let host = roster(HOST_ROOM);
+    assert!(
+        !host.iter().any(|r| r.id == gk_id),
+        "the host room holds the queue: {host:?}"
+    );
+    let project = roster("");
+    assert!(
+        project
+            .iter()
+            .any(|r| r.id == gk_id && r.name == "gatekeeper@serenedb"),
+        "its own room does not: {project:?}"
+    );
+
+    // A `to` to the queue is a private message, and no host line carries it.
+    let m = said(say_to(&a1, "1", "gatekeeper@serenedb", "review mine"));
+    assert_eq!(m.room, "dm");
+    assert_eq!(m.to.as_deref(), Some("gatekeeper@serenedb"));
+    assert!(gk.next_seq(m.seq).1, "the queue is named");
+    match a1.call(Request::Read {
+        room: HOST_ROOM.into(),
+        since: 0,
+        last: None,
+        thread: None,
+        before: None,
+    }) {
+        Response::History(h) => assert!(h.rows.is_empty(), "{:?}", h.rows),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A store written by the old build - a `to` inside a room, before `to` was a dm - replays: the
+/// lines read back as they were written, the count carries on, and an old invitation still holds.
+#[test]
+fn an_old_chat_store_replays() {
+    let dir = Scratch::new();
+    let room_a = project_room(A);
+    let path = dir.0.join("room.chat");
+    let old = [
+        serde_json::json!({"msg": {"request": "1", "message": {
+            "seq": 1, "ts": 1, "room": HOST_ROOM, "author": "s-old", "kind": "session",
+            "to": "s-a1", "thread": null, "refs": [], "text": "for you, in the room"}}}),
+        serde_json::json!({"msg": {"request": "2", "message": {
+            "seq": 2, "ts": 2, "room": room_a, "author": "s-a1", "kind": "session",
+            "to": null, "thread": null, "refs": [], "text": "said in the project"}}}),
+        serde_json::json!({"guest": {"room": room_a, "name": "s-b1", "on": true}}),
+        serde_json::json!({"seen": {"name": "s-a1", "seq": 2}}),
+    ]
+    .iter()
+    .map(|r| r.to_string())
+    .collect::<Vec<_>>()
+    .join("\n");
+    std::fs::write(&path, format!("{old}\n")).expect("a store to replay");
+
+    let server = coordinator(&dir);
+    server.with_chat_store(&path);
+    let a1 = seat(&server, "s-a1", A, Seat::Session);
+    let b1 = seat(&server, "s-b1", B, Seat::Session);
+    let _ = drained(&a1);
+    let _ = drained(&b1);
+
+    match a1.call(Request::Read {
+        room: HOST_ROOM.into(),
+        since: 0,
+        last: None,
+        thread: None,
+        before: None,
+    }) {
+        Response::History(h) => {
+            assert_eq!(h.rows.len(), 1, "{:?}", h.rows);
+            assert_eq!(h.rows[0].seq, 1);
+            assert_eq!(h.rows[0].text, "for you, in the room");
+            assert_eq!(
+                h.rows[0].to.as_deref(),
+                Some("s-a1"),
+                "an old in-room `to` still reads as its author wrote it"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let m = said(a1.say("n1", "", "after the restart"));
+    assert_eq!(m.seq, 3, "the count carries on from the store");
+    assert!(
+        b1.rooms().contains(&room_a),
+        "the store's invitation still holds: {:?}",
+        b1.rooms()
+    );
 }

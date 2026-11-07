@@ -1443,15 +1443,16 @@ impl Server {
         crate::project_labels(&rows, &std::env::var("HOME").unwrap_or_default())
     }
 
-    /// Who is in a chat room: the tree's top-level sessions, whoever is connected, and the wide
-    /// seats, which are in every room.
+    /// Who is in a chat room: the tree's top-level sessions of its project, whoever is connected
+    /// to it, and the wide seats, which are in every room. The host room's project is the empty
+    /// one, so a gatekeeper of serenedb is in serenedb's roster and not in host's.
     pub fn roster_of(&self, room: &str) -> Vec<chat::Presence> {
         let key = chat::project_of_room(room);
         let mut rows: BTreeMap<String, chat::Presence> = BTreeMap::new();
         {
             let rooms = self.inner.rooms.lock().expect("the rooms lock");
             for (project, r) in rooms.iter() {
-                if project.is_empty() || key.is_some_and(|k| k != project) {
+                if project.as_str() != key.unwrap_or(crate::DEFAULT_PROJECT) {
                     continue;
                 }
                 for m in r.members().iter().filter(|m| m.group == crate::Group::Top) {
@@ -1493,8 +1494,14 @@ impl Server {
         }
         for c in self.conn_list() {
             let name = c.who.session.clone();
-            let in_room =
-                c.seat.is_wide() || key.is_none_or(|k| k == c.project) || guests.contains(&name);
+            // The host room is the room of the sessions in no project; a session of a project is
+            // in that project's room, and connected to the host room only to read it.
+            let in_room = c.seat.is_wide()
+                || match key {
+                    Some(k) => k == c.project,
+                    None => c.project.is_empty(),
+                }
+                || guests.contains(&name);
             if !in_room {
                 continue;
             }
@@ -1588,54 +1595,19 @@ impl Server {
                 to,
                 thread,
                 refs,
+            } => self.route_say(
+                project,
+                seat,
+                name,
+                id,
+                room,
+                text,
+                to.as_deref(),
+                *thread,
+                refs,
                 attachments,
-            } => {
-                let room = match room.trim() {
-                    "" => Self::default_chat_room(seat, project),
-                    r => r.to_string(),
-                };
-                if !self.may_see(name, seat, project, &room) {
-                    return refuse(Some(id), crate::Refused::UnknownChatRoom { room });
-                }
-                let to = to
-                    .as_deref()
-                    .map(|t| t.trim().trim_start_matches('@').to_string())
-                    .filter(|t| !t.is_empty());
-                let to = match to.map(|t| self.resolve_name(project, &t).map_err(|c| (t, c))) {
-                    Some(Err((name, candidates))) => {
-                        return refuse(Some(id), crate::Refused::Ambiguous { name, candidates });
-                    }
-                    other => other.and_then(Result::ok),
-                };
-                let text = &match self.resolve_mentions(project, text) {
-                    Ok(t) => t,
-                    Err(why) => return refuse(Some(id), why),
-                };
-                if let Some(t) = &to
-                    && !self.is_known(t)
-                {
-                    return refuse(
-                        Some(id),
-                        crate::Refused::UnknownAddressee { name: t.clone() },
-                    );
-                }
-                let attachments = match self.attach_blobs(attachments) {
-                    Ok(a) => a,
-                    Err(why) => return refuse(Some(id), why),
-                };
-                self.append_and_push(
-                    id,
-                    &room,
-                    name,
-                    seat,
-                    to,
-                    *thread,
-                    refs.clone(),
-                    attachments,
-                    text,
-                    now,
-                )
-            }
+                now,
+            ),
             Request::Dm {
                 id,
                 to,
@@ -1667,6 +1639,29 @@ impl Server {
                     Ok(a) => a,
                     Err(why) => return refuse(Some(id), why),
                 };
+                // A dm hangs only from a dm. One answering a public message is still private: it
+                // goes to the dm channel and names the thread it answers, so the reader can find it.
+                let mut text = text.clone();
+                let mut thread = *thread;
+                if let Some(root) = thread.and_then(|t| {
+                    let found: Vec<chat::Message> = {
+                        let chat = self.inner.chat.lock().expect("the chat lock");
+                        chat.thread_root(t, |_| true).into_iter().collect()
+                    };
+                    found
+                        .into_iter()
+                        .next()
+                        .filter(|m| self.visible(name, seat, project, m))
+                }) {
+                    if root.room != chat::DM_ROOM {
+                        text = Self::linked_to(&root, &text);
+                        thread = None;
+                    }
+                } else if let Some(t) = thread {
+                    return refuse(Some(id), crate::Refused::UnknownThread { thread: t });
+                }
+                let text = &text;
+                let thread = &thread;
                 self.append_and_push(
                     id,
                     chat::DM_ROOM,
@@ -1929,6 +1924,201 @@ impl Server {
         }
     }
 
+    /// Route a `say`: a `to` is a private message, a reply stays in its root's room, and anything
+    /// else is said in the room named - where an `@` of someone outside it invites them in, so a
+    /// mention reaches them where it was said, with the thread it sits in.
+    #[allow(clippy::too_many_arguments)]
+    fn route_say(
+        &self,
+        project: &str,
+        seat: Seat,
+        name: &str,
+        id: &str,
+        room: &str,
+        text: &str,
+        to: Option<&str>,
+        thread: Option<u64>,
+        refs: &[chat::Ref],
+        attachments: &[String],
+        now: u64,
+    ) -> Response {
+        let refuse = |why: crate::Refused| Response::Refused {
+            id: Some(id.to_string()),
+            why,
+        };
+        let text = match self.resolve_mentions(project, text) {
+            Ok(t) => t,
+            Err(why) => return refuse(why),
+        };
+        let attachments = match self.attach_blobs(attachments) {
+            Ok(a) => a,
+            Err(why) => return refuse(why),
+        };
+        let to = match to
+            .map(|t| t.trim().trim_start_matches('@'))
+            .filter(|t| !t.is_empty())
+        {
+            None => None,
+            Some(t) => match self.resolve_name(project, t) {
+                Ok(full) => Some(full),
+                Err(candidates) => {
+                    return refuse(crate::Refused::Ambiguous {
+                        name: t.to_string(),
+                        candidates,
+                    });
+                }
+            },
+        };
+        if let Some(t) = &to
+            && (t == name || !self.is_known(t))
+        {
+            return refuse(crate::Refused::UnknownAddressee { name: t.clone() });
+        }
+        // Looked up before the room: a reply stays in its root's room, so the frame's room does
+        // not decide where it lands. The chat lock is released first - a lock held across another
+        // lock is how two threads find each other.
+        let root = thread.and_then(|t| {
+            let found: Vec<chat::Message> = {
+                let chat = self.inner.chat.lock().expect("the chat lock");
+                chat.thread_root(t, |_| true).into_iter().collect()
+            };
+            found
+                .into_iter()
+                .next()
+                .filter(|m| self.visible(name, seat, project, m))
+        });
+        if let Some(root) = root {
+            // A private answer to a public message goes to the dm channel, naming the thread.
+            if let Some(to) = to.clone()
+                && root.room != chat::DM_ROOM
+            {
+                let text = Self::linked_to(&root, &text);
+                return self.append_and_push(
+                    id,
+                    chat::DM_ROOM,
+                    name,
+                    seat,
+                    Some(to),
+                    None,
+                    refs.to_vec(),
+                    attachments,
+                    &text,
+                    now,
+                );
+            }
+            // A reply in a dm thread is still a dm: the other party is the root's addressee, or
+            // its author when somebody answers this session's own message.
+            let other = match root.room == chat::DM_ROOM {
+                false => None,
+                true => {
+                    let other = if root.author == name {
+                        root.to.clone()
+                    } else {
+                        Some(root.author.clone())
+                    };
+                    match other.filter(|t| t != name) {
+                        Some(t) => Some(t),
+                        None => {
+                            return refuse(crate::Refused::UnknownAddressee { name: root.room });
+                        }
+                    }
+                }
+            };
+            let room = root.room;
+            // A mention in a reply brings the one it names in, exactly as one in a room line does.
+            if room != chat::DM_ROOM {
+                self.invite_the_named(&room, project, &text);
+            }
+            self.append_and_push(
+                id,
+                &room,
+                name,
+                seat,
+                other,
+                Some(root.seq),
+                refs.to_vec(),
+                attachments,
+                &text,
+                now,
+            )
+        } else if let Some(thread) = thread {
+            refuse(crate::Refused::UnknownThread { thread })
+        } else if let Some(to) = to {
+            // `to` is a private message: it goes to the dm channel between the two, and the room
+            // the frame named is not written to at all.
+            self.append_and_push(
+                id,
+                chat::DM_ROOM,
+                name,
+                seat,
+                Some(to),
+                None,
+                refs.to_vec(),
+                attachments,
+                &text,
+                now,
+            )
+        } else {
+            let room = match room.trim() {
+                "" => Self::default_chat_room(seat, project),
+                r => r.to_string(),
+            };
+            if !self.may_see(name, seat, project, &room) {
+                return refuse(crate::Refused::UnknownChatRoom { room });
+            }
+            self.invite_the_named(&room, project, &text);
+            self.append_and_push(
+                id,
+                &room,
+                name,
+                seat,
+                None,
+                None,
+                refs.to_vec(),
+                attachments,
+                &text,
+                now,
+            )
+        }
+    }
+
+    /// A dm answering a public message, with the thread it answers in front: `re #12 in host: …`.
+    fn linked_to(root: &chat::Message, text: &str) -> String {
+        format!("re #{} in {}: {text}", root.seq, root.room)
+    }
+
+    /// Invite into `room` everyone its text names who could not see it: a mention stays public
+    /// where it was said, and the one it names is brought in rather than left outside looking in.
+    fn invite_the_named(&self, room: &str, project: &str, text: &str) {
+        for m in chat::mentions(text) {
+            let Ok(who) = self.resolve_name(project, &m) else {
+                continue;
+            };
+            if who == chat::OPERATOR || !self.is_known(&who) {
+                continue;
+            }
+            let (seat, theirs) = self.seat_and_project_of(&who);
+            if !self.may_see(&who, seat, &theirs, room) {
+                self.set_guest(room, &who, true);
+            }
+        }
+    }
+
+    /// Who a principal is as a room sees it: the seat and room its connection says, else a session
+    /// of the project the tree puts it in, else a session in no project at all.
+    fn seat_and_project_of(&self, name: &str) -> (Seat, String) {
+        if let Some(c) = self.conn_list().into_iter().find(|c| c.who.session == name) {
+            return (c.seat, c.project.clone());
+        }
+        let rooms = self.inner.rooms.lock().expect("the rooms lock");
+        let key = rooms
+            .iter()
+            .find(|(k, r)| !k.is_empty() && r.members().iter().any(|m| m.session == name))
+            .map(|(k, _)| k.clone())
+            .unwrap_or_default();
+        (Seat::Session, key)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn append_and_push(
         &self,
@@ -1964,8 +2154,16 @@ impl Server {
                 };
             }
         };
-        // Pushed after the log lock is released. A repeat of `id` pushes again: a reader that
-        // already has the seq drops it, and one that missed it gets it.
+        // Pushed after the log lock is released, and a repeat of `id` pushes again. A reply answers
+        // its root's author, who is the one the room names: the root may be in another room, so
+        // nothing in the text says so.
+        let answered = message.thread.and_then(|t| {
+            self.inner
+                .chat
+                .lock()
+                .expect("the chat lock")
+                .author_of(&message.room, t)
+        });
         let mut here: BTreeSet<String> = BTreeSet::new();
         let handles = self.handles();
         for c in self.conn_list() {
@@ -1975,7 +2173,7 @@ impl Server {
                 continue;
             }
             c.send(Response::Chat {
-                names_you: message.names(name),
+                names_you: message.names(name) || answered.as_deref() == Some(name),
                 message: self.shown(message.clone(), &handles),
             });
             // A session's daemon marks what its model took, with `Ack`: a push it dropped, or held

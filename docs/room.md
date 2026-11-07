@@ -163,15 +163,17 @@ server in `crates/room/src/server.rs`. Frames are one line of JSON, `Request` an
 
 | id | who is in it |
 |---|---|
-| `host` | every top-level session on the host, the operator, every external |
+| `host` | the sessions in no project, the operator, every external |
 | `project/<key>` | the top-level sessions of that project, the operator, every external |
 | `dm` | not a room: the pseudo id a principal reads its direct messages from |
 
 `<key>` is the project key: twelve hex characters of the SHA-256 of the project's canonical root (the
 same key `s-gatekeeper-<key>` and `scripts/letibot` use). A session whose folder is no repository is in the project of that folder. A session in no project (the daemon could not
 place it) is in the host room only. A project room exists once a session of that project has connected.
-Subagents are in no chat room. The roster of a room is the tree's top-level sessions for it plus
-everything connected.
+Subagents are in no chat room. The roster of a room is the tree's top-level sessions of its project
+plus everything connected to it: a session of a project is a member of that project's room, and it
+reads `host` without being one of its members - so `gatekeeper@serenedb` is in `project/serenedb` and
+not in `host`, and a host line wakes only the host room's own members (see **Who a message wakes**).
 
 A client lists the rooms it may see with `rooms`. A session gets `host` and its own project room. The
 operator and an external get `host` and every project room that exists. Each row carries `members`,
@@ -219,7 +221,16 @@ is the user's own process trust, and the peer check on the daemon is the other g
 ```
 
 - `seq` is one counter across the whole log (all rooms and DMs), starting at 1. It is the cursor.
-- `to` names one principal. `thread` is the `seq` of the message answered, in the same room.
+- `to` names one principal, and a message that has one is PRIVATE: it goes to the dm channel between
+  its author and `to` and is written in no room. A `say` with a `to` therefore writes nothing the room
+  it named can read, and the room it names is not checked - the two of them are the whole audience.
+- `thread` is the `seq` of the message answered, and a reply STAYS in its root's room whatever room the
+  frame names; the room that answered it is where the reply is written. A `dm` can only hang from a
+  dm, so `to` and `thread` in one frame is refused (`private_to_a_public_reply`) and the refusal names
+  both ways to say it: `@name` in the text there, or a `dm` with the same `thread`.
+- An `@name` in the text is a MENTION: the message stays public in the room where it was said, it wakes
+  the one it names, and if that one cannot see the room it is invited into it (`invite`), so the
+  mention arrives with its thread rather than as a name it is not allowed to look up.
 - `refs` point at rows other parts of letibot own: `todo` (`<session>/<title>`) or `queue` (the queue
   row id). At most 8 per message, each id at most 200 bytes. The row is not copied.
 - `attachments` are the pictures and files the message carries, from the blob store: at most 4, each
@@ -254,8 +265,8 @@ name.
 |---|---|---|
 | `hello {protocol, speaker, room, seat, token}` | `welcome` | `room` is `<host key>/<project key>` for a session; `token` is the operator's |
 | `rooms` | `rooms {rows}` | the rooms this connection may see |
-| `say {id, room, text, to?, thread?, refs?, attachments?}` | `said {id, message}` | `room` empty is the project room, or `host` with no project. `attachments` are blob ids, at most 4 |
-| `dm {id, to, text, thread?, attachments?}` | `said` | |
+| `say {id, room, text, to?, thread?, refs?, attachments?}` | `said {id, message}` | `room` empty is the project room, or `host` with no project. A `to` makes it a dm (see **Messages**): no room is written and the room named is not checked. `attachments` are blob ids, at most 4 |
+| `dm {id, to, text, thread?, attachments?}` | `said` | the private message a `say` with `to` becomes |
 | `notify {id, room, source, text, refs?}` | `said` | daemons only, kind `system` |
 | `read {room, since?, last?, thread?, before?}` | `history {room, rows, last_seq, trimmed}` | moves no cursor. `last` defaults to 200, the most one read returns. `thread` returns the root and replies. `before` is a seq: the newest `last` messages older than it, one page back |
 | `roster {room}` | `roster {room, rows}` | `name`, `kind`, `connected`, `project`, `label` |
@@ -323,8 +334,23 @@ mentions) and a line of etiquette (`room::wake::ETIQUETTE`): answer what is for 
 for someone else is context: answer it only if you hold something they lack (an answer or a fact), once
 and briefly, and never ack, echo or restate.
 
-**The coordinator's own sessions** (the arbiter, the tag agents) are in the host room only and create no
-project room.
+**Who a message wakes.** The coordinator pushes every message a connection may see; the daemon decides
+which of them starts a turn (`Message::wakes`), and that rule is what keeps the host room from being
+everyone's room:
+
+1. a message that NAMES the session - a dm to it, an `@name` of it, or a reply to a message it wrote;
+2. anything the operator says, wherever he says it;
+3. a message said to a whole room (no `to`, no `@`, no `thread`) in a room the session SITS IN: its own
+   project room, or the host room for a session in no project, plus each room it was invited into.
+
+So a session is never woken by the host room's talk between two others - not by their broadcast, and not
+by a mention of somebody else - and never by another project's room. The host room keeps the operator's
+messages and the broadcasts, which is what makes it a place to announce rather than a place to work; a
+session's own room is its project's.
+
+**The coordinator's own sessions** (the arbiter, the tag agents) have no project, so the host room is
+theirs and they create no project room. A review queue is not one of them: `s-gatekeeper-<key>` is a
+session of that project's daemon, and it sits in `project/<key>`.
 
 ### Through the daemon
 

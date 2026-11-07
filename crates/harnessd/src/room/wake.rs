@@ -170,7 +170,14 @@ pub fn chat_sentence(m: &letibot_room::Message, names_you: bool) -> String {
             named.push(n);
         }
     }
-    let tail = if names_you {
+    let tail = if m.room == letibot_room::chat::DM_ROOM && names_you {
+        // A dm is private, and the reply to it is a `dm` too: `to` on a `say` is the same thing.
+        format!(
+            "a private message for you - only the two of you read it; reply with `room say`, \
+             `to` `{}`, and nobody else sees that either.",
+            m.author
+        )
+    } else if names_you {
         format!("for you - reply with `room say`, `to` `{}`.", m.author)
     } else if named.is_empty() {
         "to everyone - no reply asked; act on it if it bears on your work.".to_string()
