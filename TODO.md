@@ -69,6 +69,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R142 | Room UI P3: composer (`@` completion, room `/` verbs, history and drafts, reply, pasted pictures) | Code work | all of it, after R139 |
 | R143 | Room UI P4: navigation (message cursor, jump to unread, `Ctrl+K` switcher, search, picture cache) | Code work | all of it, after R139 |
 | R144 | The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag | Code work | the design and the build |
+| R152 | `tests/launcher.sh` stubs outlived their run, and four of its cases had drifted | Code work | nothing; the file is not in the merge gate, which is how the drift went unseen |
 | R147 | A grant card is raised for a container's path or a glob | Code work | nothing: a card now needs a path this host has, with no glob left |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
@@ -995,6 +996,12 @@ fallback = ["deepseek", "glm-coding/glm-5.3"]
 - `wait` (the default when nothing is set): the session is parked until the reset plus a little jitter and resumes the same turn by itself. The status row says `paused until 21:02:27`, the idle plan-check is silent while parked and the session is not reported as stalled, and a prompt the operator sends meanwhile is queued and says what it waits for.
 - A 429 with no reset keeps the retry ladder, then waits five minutes and tries again instead of failing; after a few such rounds it fails as before.
 - The bridge's push (`crates/bridge/src/push.rs`) reports `limited until X`, `switched to Y` and `resumed` as channel events for held sessions.
+
+## R152 - `tests/launcher.sh` stubs outlived their run, and four of its cases had drifted
+
+**Status:** fixed. left: putting `tests/launcher.sh` in the merge gate.
+
+Twenty `python3 /tmp/tmp.*/bin/harnessd` stubs were still listening on lab2x1 on 2026-11-07, 20 to 27 days old - all from before `0f9ddad8` gave the file its EXIT-trap cleanup. The trap does not run on SIGKILL (a runner's timeout), so the python stubs now poll `LBT_OWNER`, the test script's pid, and leave once it is gone. The same run showed four cases failing on `main` before this change: the python start stub crashed on the launcher's `--resolve-session` store query (no `--socket`), `daemon_argv` counted that query as a daemon start, and `scripts/migrate-notes.sh` was missing from the bash-3.2 guard. All cases pass now. Nothing runs this file in the gate, so the drift went unseen.
 
 ## R134 - Scrolling stops at a line above the tail
 

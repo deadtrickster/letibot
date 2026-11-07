@@ -27,6 +27,9 @@ cleanup() {
   rm -rf "$T"
 }
 trap cleanup EXIT
+# The python stubs poll this and leave once it is gone, so a run killed past its trap (SIGKILL, a
+# runner's timeout) does not leave them listening for weeks.
+export LBT_OWNER=$$
 
 mkdir -p "$T/bin" "$T/home/.config/letibot" "$T/run" "$T/ws"
 # **A coordinator stub, and it really binds.** `docs/room.md` § *Still owed* item 4: the launcher
@@ -51,7 +54,19 @@ s = socket.socket(socket.AF_UNIX); s.bind(p); s.listen(4)
 now = int(time.time() * 1000)
 with open(p[:-5] + ".lease", "w") as f:
     f.write("box/%d/1\t%d\t%d\t%d\n" % (os.getpid(), os.getpid(), now, now))
-while True: time.sleep(0.2)
+def owner_alive():
+    o = os.environ.get("LBT_OWNER")
+    if not o:
+        return True
+    try:
+        os.kill(int(o), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
+while owner_alive():
+    time.sleep(0.2)
 STUB
 cat > "$T/bin/harnessd" << 'STUB'
 #!/usr/bin/env bash
@@ -140,7 +155,7 @@ refuse() { # refuse NAME OUTPUT PATTERN -- the output must not match
 # `scripts/letibot`/`leticode` use it deliberately. The 3.2 hazard beside it is *expanding*
 # an empty array under `set -u` — `EXTRA_ARGS[@]: unbound variable`, which killed the first
 # macOS start — and no grep can see that, so the `--help` run at the end is what covers it.
-BASH32="scripts/letibot scripts/leticode scripts/etalon-snapshot scripts/headwatch.sh scripts/rrun tests/launcher.sh tests/rrun.sh"
+BASH32="scripts/letibot scripts/leticode scripts/etalon-snapshot scripts/headwatch.sh scripts/migrate-notes.sh scripts/rrun tests/launcher.sh tests/rrun.sh"
 POSIX_SH="scripts/check-dist-names.sh scripts/check-fmt.sh scripts/check-host-runtime.sh scripts/check-provider-models.sh scripts/check-tag.sh scripts/check-test-attrs.sh scripts/clippy-gate.sh scripts/install-gate-build.sh scripts/make-dist.sh scripts/refresh-models-snapshot.sh install.sh"
 # The bash-4 spellings as one extended regex: associative arrays (`declare`/`local`/`typeset`
 # `-A`), namerefs (`-n`), `declare -g`, `mapfile`/`readarray`, `coproc`, `wait -n`, `[[ -v ]]`,
@@ -597,12 +612,28 @@ if command -v python3 > /dev/null 2>&1; then
   cat > "$T/bin/harnessd" << 'STUB'
 #!/usr/bin/env python3
 import os, socket, sys, time
+# Only a start names a socket; the launcher's other calls (a store query) answer and exit.
+if "--socket" not in sys.argv:
+    print("harnessd", *sys.argv[1:], flush=True)
+    sys.exit(0)
 p = sys.argv[sys.argv.index("--socket") + 1]
 try: os.unlink(p)
 except FileNotFoundError: pass
 s = socket.socket(socket.AF_UNIX); s.bind(p); s.listen(1)
 print("harnessd", *sys.argv[1:], flush=True)
-while True: time.sleep(0.2)
+def owner_alive():
+    o = os.environ.get("LBT_OWNER")
+    if not o:
+        return True
+    try:
+        os.kill(int(o), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
+while owner_alive():
+    time.sleep(0.2)
 STUB
   chmod +x "$T/bin/harnessd"
 
@@ -720,7 +751,18 @@ except FileNotFoundError:
 s = socket.socket(socket.AF_UNIX)
 s.bind(p)
 s.listen(4)
-while True:
+def owner_alive():
+    o = os.environ.get("LBT_OWNER")
+    if not o:
+        return True
+    try:
+        os.kill(int(o), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
+while owner_alive():
     time.sleep(0.2)
 STUB
   # The head the operator quits: it records what it was handed and exits at once. `--probe` is the
@@ -733,7 +775,8 @@ echo "letibot-tui: THE HEAD RAN"
 STUB
   chmod +x "$T/bin/harnessd" "$T/bin/letibot-tui"
 
-  daemon_argv() { grep '^harnessd ' "$T/argv.log" 2> /dev/null || true; }
+  # A `--resolve-session` call is the launcher's store query, not a daemon start.
+  daemon_argv() { grep '^harnessd ' "$T/argv.log" 2> /dev/null | grep -v -- '--resolve-session' || true; }
   head_argv() { grep '^tui ' "$T/argv.log" 2> /dev/null || true; }
   # **`printf '%s'`, with no newline**: the launcher hashes the workspace path with nothing
   # appended (`launcher.rs`'s `key`, and the `printf '%s' | sha256sum` the shell has always
@@ -916,7 +959,18 @@ def bye(_sig, _frm):
     # A daemon that never goes: it is stuck INSIDE a step, which is what `--force` is for.
     time.sleep(600)
 signal.signal(signal.SIGTERM, bye)
-while True:
+def owner_alive():
+    o = os.environ.get("LBT_OWNER")
+    if not o:
+        return True
+    try:
+        os.kill(int(o), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
+while owner_alive():
     time.sleep(0.2)
 STUB
   chmod +x "$T/bin/harnessd"
