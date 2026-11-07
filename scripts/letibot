@@ -2685,6 +2685,17 @@ SESSIONS_EOF
     fi
     exit 0
     ;;
+  browser)
+    # The Chrome extension's bridge (docs/browser.md). Bare or with its flags only, so a prompt
+    # that starts with the word stays a prompt.
+    case "${2:-}" in
+      "" | --port | --help | -h)
+        [ -x "$BIN/letibot" ] || die "no letibot at $BIN"
+        shift
+        exec "$BIN/letibot" browser "$@"
+        ;;
+    esac
+    ;;
   notes)
     # Only with one of its verbs after it, so a prompt that starts with the word stays a prompt.
     case "${2:-}" in

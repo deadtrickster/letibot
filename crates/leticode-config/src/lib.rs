@@ -539,6 +539,8 @@ pub struct LeticodeConfig {
     pub fallback_after_timeouts: Option<u32>,
     /// The `[notes]` table: where the notes checkout is and the remote it pushes to.
     pub notes: NotesKeys,
+    /// The `[browser]` table: the port and extension `letibot browser` serves.
+    pub browser: BrowserKeys,
     /// The `[exec]` table: the foreground threshold and whether passing it backgrounds.
     pub exec: ExecKeys,
     /// The `[provider]` table: what a session does when its provider says the model is limited.
@@ -873,6 +875,52 @@ fn notes_keys(value: &toml::Value) -> Result<NotesKeys, String> {
     Ok(NotesKeys {
         repo: t.repo.as_deref().and_then(non_empty),
         remote: t.remote.as_deref().and_then(non_empty),
+    })
+}
+
+/// `[browser]` in a `leticode.toml`: where `letibot browser` listens and which extension it
+/// answers. Read from the user file only, because a project file is writable by its sessions
+/// and must not choose who may prompt them.
+///
+/// ```toml
+/// [browser]
+/// port = 8790
+/// extension_id = "kbaoealgdkldcgaojgdehmdaaekkmffd"
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BrowserKeys {
+    pub port: Option<u16>,
+    pub extension_id: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserTable {
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(default)]
+    extension_id: Option<String>,
+}
+
+fn browser_keys(value: &toml::Value) -> Result<BrowserKeys, String> {
+    let t: BrowserTable = value.clone().try_into().map_err(|e| {
+        format!("[browser]: {e}; the keys are `port` (1-65535) and `extension_id` (32 letters a-p)")
+    })?;
+    if t.port == Some(0) {
+        return Err("[browser]: `port = 0` is not a port; leave it out for 8790".into());
+    }
+    let extension_id = t.extension_id.as_deref().and_then(non_empty);
+    if let Some(id) = &extension_id
+        && (id.len() != 32 || !id.bytes().all(|b| (b'a'..=b'p').contains(&b)))
+    {
+        return Err(format!(
+            "[browser]: extension_id `{id}` is not an extension id: 32 letters a-p, as \
+             chrome://extensions shows it"
+        ));
+    }
+    Ok(BrowserKeys {
+        port: t.port,
+        extension_id,
     })
 }
 
@@ -1697,6 +1745,10 @@ impl LeticodeConfig {
                 Some(v) => notes_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
                 None => NotesKeys::default(),
             },
+            browser: match &file.browser {
+                Some(v) => browser_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
+                None => BrowserKeys::default(),
+            },
             exec: match &file.exec {
                 Some(v) => exec_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
                 None => ExecKeys::default(),
@@ -1853,6 +1905,14 @@ impl LeticodeConfig {
                     .exec
                     .foreground_seconds
                     .or(self.exec.foreground_seconds),
+            },
+            // The user's only: see [`BrowserKeys`].
+            browser: if other.level == Level::User {
+                other.browser.clone()
+            } else if self.level == Level::User {
+                self.browser.clone()
+            } else {
+                BrowserKeys::default()
             },
             // The user's over the project's, the reverse of the models: see [`NotesKeys`].
             notes: NotesKeys {
@@ -2166,6 +2226,9 @@ struct LeticodeConfigFile {
     /// The `[notes]` table, see [`NotesKeys`].
     #[serde(default)]
     notes: Option<toml::Value>,
+    /// The `[browser]` table, see [`BrowserKeys`].
+    #[serde(default)]
+    browser: Option<toml::Value>,
 }
 
 /// The fallback list as the file wrote it: an array of model names, in the order they are
@@ -2366,6 +2429,32 @@ mod tests {
         // names - `Level::Builtin` is the default variant for exactly this reason.
         assert_eq!(precedence(None, None, None), None);
         assert_eq!(Level::default(), Level::Builtin);
+    }
+
+    /// `[browser]` decides who may prompt sessions, so a project file's copy is ignored.
+    #[test]
+    fn browser_keys_are_read_checked_and_taken_from_the_user_file_only() {
+        let u = project_dir("browser_user");
+        let p = project_dir("browser_project");
+        let user = LeticodeConfig::load_as(
+            &write_file(
+                &u,
+                "[browser]\nport = 8791\nextension_id = \"kbaoealgdkldcgaojgdehmdaaekkmffd\"\n",
+            ),
+            Level::User,
+        )
+        .expect("the user file parses");
+        assert_eq!(user.browser.port, Some(8791));
+        let project =
+            LeticodeConfig::load_as(&write_file(&p, "[browser]\nport = 9999\n"), Level::Project)
+                .expect("the project file parses");
+        assert_eq!(user.overridden_by(&project).browser, user.browser);
+        let bad = write_file(&p, "[browser]\nextension_id = \"nope\"\n");
+        let e = LeticodeConfig::load_as(&bad, Level::User).expect_err("not an id");
+        assert!(e.contains("extension_id"), "{e}");
+        let bad = write_file(&p, "[browser]\nhost = \"0.0.0.0\"\n");
+        let e = LeticodeConfig::load_as(&bad, Level::User).expect_err("no such key");
+        assert!(e.contains("[browser]"), "{e}");
     }
 
     /// The user level is the same file at a fixed path, read by the same call, so the two

@@ -53,6 +53,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 mod boundary;
+mod browser;
 mod github;
 pub mod launcher;
 pub mod migrate;
@@ -287,6 +288,8 @@ fn main() -> ExitCode {
                     boundary::run(&tail())
                 } else if word == "notes" {
                     notes::run(&tail())
+                } else if word == "browser" {
+                    browser::run(&tail())
                 } else if word == "fb" {
                     stats::run_fb(&tail())
                 } else if word == "migrate" || word == "--migrate" {
@@ -346,6 +349,7 @@ VERBS
                               turns, feedback, session ID, sql
   boundary [--mode NAME]      what a command gets: paths, network, env, hidden
   notes path|push             the notes checkout, and the one step that pushes it
+  browser [--port N]          the Chrome extension's bridge on 127.0.0.1 (docs/browser.md)
   fb --session S [+|-] NOTE   mark a session's last turn from a shell
   migrate SESSION --to HOST   move a session's whole daemon to a host, or back with
                               `--to local` (`letibot --migrate` is the same verb)
