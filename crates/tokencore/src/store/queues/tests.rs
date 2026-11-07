@@ -215,6 +215,36 @@ fn a_move_from_a_state_the_row_left_is_refused_and_every_real_move_is_recorded()
     );
 }
 
+/// The read a follower takes: every move after its own place, oldest first, one repository's
+/// rows no more special than another's - the caller's cursor is what passes a move it does not
+/// want, so a move of another folder's queue is never read a second time.
+#[test]
+fn the_moves_after_a_cursor_are_read_once_and_in_order() {
+    let d = TempDir::new("after");
+    let s = Store::open(&d.db()).unwrap();
+    assert_eq!(s.last_transition_seq().unwrap(), 0, "a fresh store");
+    s.enqueue_review(&review("r1", "/repo"), "test", 10)
+        .unwrap();
+    s.enqueue_review(&review("r2", "/other"), "test", 11)
+        .unwrap();
+    s.enqueue_review(&review("r3", "/repo"), "test", 12)
+        .unwrap();
+    let last = s.last_transition_seq().unwrap();
+    assert_eq!(last, 3);
+
+    let ids = |after: i64, limit: usize| -> Vec<String> {
+        s.transitions_after(after, limit)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.entry_id)
+            .collect()
+    };
+    assert_eq!(ids(0, 10), vec!["r1", "r2", "r3"], "oldest first");
+    assert_eq!(ids(1, 10), vec!["r2", "r3"], "a cursor is not re-read");
+    assert_eq!(ids(0, 2), vec!["r1", "r2"], "one pass reads what fits");
+    assert!(ids(3, 10).is_empty(), "nothing after the last");
+}
+
 /// A move may only write the columns the queue names. A typo is a refusal, not SQL.
 #[test]
 fn a_move_cannot_write_a_column_outside_its_list() {

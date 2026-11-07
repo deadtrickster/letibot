@@ -45,6 +45,9 @@ pub struct Bridge {
     names_from: Option<(std::path::PathBuf, std::path::PathBuf)>,
     /// Where held sessions' events go once the client can take channel notifications.
     push: Mutex<Option<std::sync::mpsc::Sender<serde_json::Value>>>,
+    /// Whether this folder's queues are already being followed: a client that initializes twice
+    /// must not leave a second follower saying the same move again.
+    queue: Mutex<bool>,
 }
 
 impl Bridge {
@@ -226,6 +229,33 @@ impl Bridge {
             crate::push::watch(h, tx.clone());
         }
         *self.push.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+    }
+
+    /// Push the queues' moves for this bridge's folder on `tx` from now on: the same channel as
+    /// the held sessions', because a landing and a verdict are what an orchestrator waits for.
+    pub fn push_queue(&self, tx: std::sync::mpsc::Sender<serde_json::Value>) {
+        // The store and folder a test names win, exactly as `resolve_session` takes them; a
+        // running bridge asks the daemon of the folder it was started in.
+        let (store, folder, socket) = match &self.names_from {
+            Some((store, folder)) => (store.clone(), folder.clone(), None),
+            None => match std::env::current_dir()
+                .map_err(|e| e.to_string())
+                .and_then(|here| daemon::resolve(&here))
+            {
+                Ok(d) => (d.store, d.workspace, Some(d.socket)),
+                // A folder with no daemon yet has no queue to follow; the tools still work, and
+                // `leticode_start` will start one.
+                Err(_) => return,
+            },
+        };
+        {
+            let mut following = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+            if *following {
+                return;
+            }
+            *following = true;
+        }
+        crate::queue::watch(&store, &folder, socket.as_deref(), tx);
     }
 
     /// Join a session this bridge did not start - `leticode_attach`. It joins a running

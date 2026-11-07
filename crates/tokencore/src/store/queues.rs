@@ -1116,6 +1116,30 @@ impl Store {
         Ok(rows)
     }
 
+    /// The moves after `after_seq`, oldest first, at most `limit` - a follower's cursor read.
+    /// Every repository's moves come back: the caller filters, so a cursor can pass a move it
+    /// does not want without that move being read again.
+    pub fn transitions_after(&self, after_seq: i64, limit: usize) -> Result<Vec<QueueTransition>> {
+        let conn = self.conn();
+        let mut st = conn.prepare(
+            "SELECT seq, queue, entry_id, repository, from_state, to_state, at_ms, by, why
+               FROM queue_transition WHERE seq > ?1 ORDER BY seq LIMIT ?2",
+        )?;
+        let rows = st
+            .query_map(params![after_seq, limit as i64], transition_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// The highest move recorded so far, `0` on a store that has never moved a row.
+    pub fn last_transition_seq(&self) -> Result<i64> {
+        Ok(self.conn().query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM queue_transition",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
     /// The last `limit` moves across every queue, newest LAST.
     pub fn recent_transitions(&self, limit: usize) -> Result<Vec<QueueTransition>> {
         let conn = self.conn();

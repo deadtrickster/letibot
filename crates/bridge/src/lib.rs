@@ -24,6 +24,7 @@ pub mod head;
 pub mod mcp;
 pub mod names;
 pub mod push;
+pub mod queue;
 pub mod report;
 pub mod rooms;
 pub mod rows;

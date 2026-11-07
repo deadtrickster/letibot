@@ -88,6 +88,8 @@ fn read_loop<R: BufRead, W: Write>(
                     }));
                     // And the sessions this bridge holds, so no `leticode-wait` is needed.
                     bridge.push_sessions(push.clone());
+                    // And this folder's queue, so a verdict or a landing needs no waiter either.
+                    bridge.push_queue(push.clone());
                 }
                 handle(bridge, &request)
             }
