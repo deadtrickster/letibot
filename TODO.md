@@ -59,7 +59,6 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R129 | One store file per project and a shared file, so one daemon's write cannot stall another's | Code work | the build, in five packages at the end of `docs/store-split.md` (P0 first: the instrument cannot yet tell a lock wait from I/O); the design, the measurement and the build plan are in the doc on branch `r129-store-split`, not merged |
 | R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | the operator rotates the token; a command this box spawns and a remote placement both keep every secret off every argv now |
 | R132 | `skills_path.rs` refuses its own session as written by another process, once under load | Code work | the root cause; seen once in a full gate, 6 reruns and the next gate passed |
-| R133 | The one-shot env report prints its lines out of order | Code work | a reproduction and the fix |
 | R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | the next stop's line from `~/.local/state/letibot/scroll-stalls.log`, which the head now writes at each stop |
 | R136 | Answer waits: a row waits on another top-level session's answer | Code work | all of the build, per `docs/answer-waits.md` (operator's rulings 2026-11-07 are in it) |
 | R137 | Todo graphs that span projects | Code work | the design; an answer-wait ask is the first cross-project edge |
@@ -831,12 +830,6 @@ Every daemon writes one `sessions.db` (9.4 GB on 2026-11-06, a WAL that reached 
 
 - A second claim from one process is refused by design (`writer::me` suffixes the owner with a nanosecond, so two claims in one process are two claims), so the refusal means a claim on that store was still held.
 - Two candidates, neither confirmed: an earlier `Claim` in the same test not yet dropped when the dispatch reopened the session, or two fixtures in parallel getting the same `TempDir` name (`harnessd-skills-path-store-<pid>-<now_ns>`), the second wiping and reusing the first's store. An atomic counter in that name rules out the second for nothing.
-
-## R133 - The one-shot env report prints its lines out of order
-
-**Status:** open. left: a reproduction and the fix.
-
-The environment trailer a one-shot command appends (`shell::oneshot_trailer`) was seen reporting its lines out of order. The other two items once filed here are closed: the attach wait draws the attach screen and answers keys while it runs, and the macOS clipboard read now has the same 3 s deadline as the Linux readers.
 
 ## R135 - The context-claim detector's `carry` anchor is not calibrated
 

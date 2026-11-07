@@ -621,7 +621,10 @@ the dump runs in a child `bash -c` that inherits exactly what the command export
 `$?` is saved before anything of ours runs and the last line exits with it, so the call's answer
 stays the command's own; and a `bash` that is not on the pinned `PATH` prints nothing, so the
 command's output and status are exactly what they would have been without the append. The dump body
-is the one function the `!` shell's trailer uses, so the two filters cannot drift.
+is the one function the `!` shell's trailer uses, so the two filters cannot drift - and the one-shot
+trailer declares the base that body compares against (§4j.2's two passes) from the pairs the spawn
+itself applied, so its report lists what the command exported before what it started with. A secret's
+value is left out of that base, because the base is text in the child's argv.
 
 The report comes back out of the stream where the bytes arrive (`exec::jobs::Capture`), before the
 secret masker, so the window, the spill file and the `produced` count never carry machinery the

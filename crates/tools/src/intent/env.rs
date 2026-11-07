@@ -217,7 +217,8 @@ pub fn denied(name: &str) -> bool {
 
 /// Whether a name is a shell variable name: `[A-Za-z_][A-Za-z0-9_]*`, the trailer's
 /// grammar and the resolver's alike. The value is a different question, [`is_plain`].
-fn is_name(name: &str) -> bool {
+/// `pub(crate)` because the one-shot trailer's base is written with the same two filters.
+pub(crate) fn is_name(name: &str) -> bool {
     let mut cs = name.chars();
     match cs.next() {
         Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
@@ -229,7 +230,7 @@ fn is_name(name: &str) -> bool {
 /// Whether the shell would deliver this value as exactly one plain word: the set
 /// [`crate::exec::shell::PLAIN`] names for a bracket expression, restated as characters a
 /// `contains` can test, so this and `intent::parameters::as_one_word` cannot drift apart.
-fn is_plain(v: &str) -> bool {
+pub(crate) fn is_plain(v: &str) -> bool {
     !v.is_empty()
         && v.chars()
             .all(|c| c.is_ascii_alphanumeric() || "_-./:@%,".contains(c))

@@ -208,6 +208,14 @@ pub const ENV_PAIRS: usize = 64;
 /// still leaves room for the rest.
 pub const ENV_BYTES: usize = 16384;
 
+/// How many names and bytes the one-shot trailer's base may carry, which is what the spawn handed
+/// the command rather than what one report carries. Four of [`ENV_PAIRS`] and two of [`ENV_BYTES`]
+/// bounds a pathological spawn without letting a merely large one misclassify its own tail.
+pub const BASE_PAIRS: usize = ENV_PAIRS * 4;
+
+/// See [`BASE_PAIRS`].
+pub const BASE_BYTES: usize = ENV_BYTES * 2;
+
 /// The function body that dumps the exported environment, shared by the persistent shell's
 /// trailer and the one-shot call's so the two filters are one list: the `compgen` guard, the
 /// plain-word case and the three caps are written once here.
@@ -255,17 +263,51 @@ pub fn trailer_definition(fn_name: &str) -> String {
 /// The lines appended to a one-shot `bash` call so it reports its own environment on the way out.
 /// The dump runs in a child `bash` that inherits exactly what the command exported; the command's
 /// `$?` is saved and the last line exits with it, and `mark` is the nonce that takes it back out.
-pub fn oneshot_trailer(mark: &str) -> String {
+/// `started_with` is what the spawn handed the command, so the report can list what the command
+/// itself exported before what it inherited - the order the persistent trailer's base gives.
+pub fn oneshot_trailer(mark: &str, started_with: &[(String, String)]) -> String {
     let saved = format!("__lt_s_{mark}");
-    let dump = env_dump_fn(&format!("__lt_dump_{mark}"), &format!("__lt_base_{mark}"));
+    let base = format!("__lt_base_{mark}");
+    let dump = env_dump_fn(&format!("__lt_dump_{mark}"), &base);
     format!(
         "{saved}=$?\n\
-         command -v bash >/dev/null 2>&1 && bash -c '{dump}; \
+         command -v bash >/dev/null 2>&1 && bash -c '{decl}; {dump}; \
          __lt_end_{mark}() {{ printf \"\\033]1337;letibot;{mark};%s;%s\\n\" \"$1\" \"$2\"; \
          __lt_dump_{mark}; printf \"\\007\"; }}; \
          __lt_end_{mark} \"$1\" \"$2\"' letibot-trailer \"${saved}\" \"$PWD\"\n\
-         exit \"${saved}\""
+         exit \"${saved}\"",
+        decl = base_declaration(&base, started_with)
     )
+}
+
+/// The `declare -A` the one-shot dump compares against, so a name is in the first pass only when
+/// the command exported it. A pair left out here (a name that is not an identifier, a value that
+/// is not one plain word, one past the bounds) simply stays in the first pass: a value this build
+/// could not carry is not one it can compare against either. `intent::env` holds the same three
+/// filters, and this text is argv, so the caller hands no secret's value to it.
+///
+/// The bounds are [`BASE_PAIRS`] and [`BASE_BYTES`], not the report's: the base decides ORDER and
+/// the caps decide what is CARRIED, so a base the size of the report would make the tail of a large
+/// inherited environment read as the command's own export - the misorder it exists to prevent.
+fn base_declaration(base: &str, started_with: &[(String, String)]) -> String {
+    let mut decl = format!("declare -A {base}=()");
+    let mut pairs = 0usize;
+    let mut bytes = 0usize;
+    for (name, value) in started_with {
+        if pairs >= BASE_PAIRS || bytes >= BASE_BYTES {
+            break;
+        }
+        if !crate::intent::env::is_name(name)
+            || !crate::intent::env::is_plain(value)
+            || value.len() > crate::intent::env::ENV_VALUE
+        {
+            continue;
+        }
+        decl.push_str(&format!(";{base}[{name}]={value}"));
+        pairs += 1;
+        bytes += name.len() + value.len() + 2;
+    }
+    decl
 }
 
 /// The characters a value may hold and still be carried - the set
@@ -1136,14 +1178,21 @@ mod tests {
 
     /// Run one command under `/bin/sh -c` with the one-shot trailer appended, the way the
     /// host composes a model's `bash` call, and answer with the whole stdout and the status.
+    /// `env` is both what the run is handed and what the trailer is told it started with.
     fn run_oneshot(command: &str, env: &[(String, String)]) -> (Vec<u8>, Option<i32>) {
         let mark = nonce();
-        let composed = format!("{command}\n{}", oneshot_trailer(&mark));
+        // The spawn's own list: `PATH` first, then the pairs, which is what the host hands both
+        // the trailer and the child.
+        let path = ("PATH".to_string(), "/usr/bin:/bin".to_string());
+        let applied: Vec<(String, String)> = std::iter::once(path.clone())
+            .chain(env.iter().cloned())
+            .collect();
+        let composed = format!("{command}\n{}", oneshot_trailer(&mark, &applied));
         let out = std::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(&composed)
             .env_clear()
-            .env("PATH", "/usr/bin:/bin")
+            .env(path.0, path.1)
             .envs(env.iter().cloned())
             .current_dir("/")
             .output()
@@ -1158,6 +1207,64 @@ mod tests {
             Path::new("/bin/bash").exists(),
         )
         .is_some()
+    }
+
+    /// A one-shot report lists what the command itself exported before what it started with, and
+    /// that export is not lost when the inherited environment alone would spend the caps. The dump's
+    /// two passes are the rule the persistent trailer's base gives; without a base the one-shot
+    /// reported in `compgen -e` order, so the export landed wherever the hash put it and a large
+    /// enough inherited set pushed it past `ENV_PAIRS` and out of the report altogether.
+    #[test]
+    fn a_oneshot_report_lists_the_calls_own_export_before_what_it_started_with() {
+        if !oneshot_bash() {
+            return;
+        }
+        let inherited: Vec<(String, String)> = (0..(ENV_PAIRS + 8))
+            .map(|i| (format!("AA_INHERITED_{i:03}"), "x".repeat(300)))
+            .collect();
+        let (stdout, _) = run_oneshot("export ZZ_MINE=/from/the/call", &inherited);
+        let mark = trailer_mark_of(&stdout);
+        let mut buf = stdout.clone();
+        let turn = take_turn(&mut buf, &mark)
+            .expect("a whole trailer")
+            .expect("it arrived");
+        let pairs: Vec<&str> = turn.env.split(';').filter(|p| !p.is_empty()).collect();
+        let mine = pairs
+            .iter()
+            .position(|p| *p == "ZZ_MINE=/from/the/call")
+            .unwrap_or_else(|| panic!("the call's own export is not in the report: {}", turn.env));
+        let first_inherited = pairs
+            .iter()
+            .position(|p| p.starts_with("AA_INHERITED_"))
+            .expect("the environment it started with is reported too");
+        assert!(
+            mine < first_inherited,
+            "the export came after what it started with: {}",
+            turn.env
+        );
+    }
+
+    /// A value the trailer cannot carry is not one its base can compare against: the pair is left
+    /// out of the base and simply stays in the first pass, so the report is still complete.
+    #[test]
+    fn a_base_pair_the_report_could_not_carry_does_not_hide_the_name() {
+        if !oneshot_bash() {
+            return;
+        }
+        let (stdout, _) = run_oneshot(
+            "export ZZ_MINE=/from/the/call",
+            &[("LT_SPACE".to_string(), "/a b".to_string())],
+        );
+        let mark = trailer_mark_of(&stdout);
+        let mut buf = stdout.clone();
+        let turn = take_turn(&mut buf, &mark)
+            .expect("a whole trailer")
+            .expect("it arrived");
+        assert!(
+            turn.env.split(';').any(|p| p == "ZZ_MINE=/from/the/call"),
+            "the report: {}",
+            turn.env
+        );
     }
 
     /// The one-shot trailer reports what the command exported, keeps the command's own
@@ -1209,7 +1316,7 @@ mod tests {
     fn a_oneshot_trailer_without_bash_prints_nothing_and_changes_nothing() {
         let out = std::process::Command::new("/bin/sh")
             .arg("-c")
-            .arg(format!("echo hi\n{}", oneshot_trailer("none")))
+            .arg(format!("echo hi\n{}", oneshot_trailer("none", &[])))
             .env_clear()
             .env("PATH", "/nonexistent")
             .output()
@@ -1252,7 +1359,7 @@ mod tests {
     #[test]
     fn the_two_trailers_share_one_dump_body() {
         let persistent = trailer_definition("__lt_end_x");
-        let oneshot = oneshot_trailer("x");
+        let oneshot = oneshot_trailer("x", &[]);
         let body = env_dump_fn("SHARED", "SHARED_base");
         let shell_body = body.replace("SHARED", "");
         for fragment in [

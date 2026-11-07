@@ -1464,13 +1464,58 @@ impl ProcessHost for HostProcesses {
         // The waiter owns the token below; this side keeps the path for the refusal that kills a
         // process which never joined its scope.
         let token_path = token.clone();
+        // What this spawn hands the command: ONE list, read by the child's environment below and
+        // by the trailer, which names what the command started with. Two spellings would let the
+        // report compare against an environment the run never had.
+        let applied: Vec<(String, String)> = {
+            let prefix = self
+                .path_prefix
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let path = match prefix {
+                Some(p) => format!("{p}:{}", self.pinned_path),
+                None => self.pinned_path.clone(),
+            };
+            let standing = self
+                .standing_env
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            // The four names bash sources unasked are dropped from the session's pairs too, so a
+            // command cannot set `BASH_ENV` for itself.
+            let keep = |(k, _): &(String, String)| {
+                !matches!(
+                    k.as_str(),
+                    "BASH_ENV" | "ENV" | "SHELLOPTS" | "BASHOPTS" | "PATH"
+                )
+            };
+            std::iter::once(("PATH".to_string(), path))
+                .chain(standing)
+                .chain(plan_env.iter().cloned())
+                .filter(keep)
+                .collect()
+        };
         // The environment trailer, appended only where the caller armed one, the run has no
         // terminal of its own, and the command parses as a WHOLE program: text after a dangling `|`
         // or an unterminated heredoc would be rewritten by the append, so that command gets no report.
         let whole_program = !letibot_code::shell::normalise(&req.command).partial;
         let trailer = (req.env_trailer && !req.tty && whole_program).then(super::shell::nonce);
         let run_command = match &trailer {
-            Some(mark) => format!("{}\n{}", req.command, super::shell::oneshot_trailer(mark)),
+            Some(mark) => {
+                // A secret's value stays out: the trailer is text in the child's argv, and an
+                // argv is what `ps` shows. Its name then lands in the first pass, which is honest.
+                let started_with: Vec<(String, String)> = applied
+                    .iter()
+                    .filter(|(k, _)| !secret_env.0.iter().any(|(secret, _)| secret == k))
+                    .cloned()
+                    .collect();
+                format!(
+                    "{}\n{}",
+                    req.command,
+                    super::shell::oneshot_trailer(mark, &started_with)
+                )
+            }
             None => req.command.clone(),
         };
         let mut cmd = std::process::Command::new("/bin/sh");
@@ -1547,33 +1592,11 @@ impl ProcessHost for HostProcesses {
             cmd.process_group(0);
         }
         // Env hygiene: the environment is cleared before anything is set, so `PATH` is the
-        // pinned one and a bare name resolves through nothing else. The four names below are then
-        // dropped from the session's pairs too, because bash sources `$BASH_ENV` unasked.
+        // pinned one and a bare name resolves through nothing else. `applied` already dropped the
+        // four names bash sources unasked.
         cmd.env_clear();
-        let prefix = self
-            .path_prefix
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        cmd.env(
-            "PATH",
-            match prefix {
-                Some(p) => format!("{p}:{}", self.pinned_path),
-                None => self.pinned_path.clone(),
-            },
-        );
-        let standing = self
-            .standing_env
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        for (k, v) in standing.iter().chain(plan_env.iter()) {
-            if !matches!(
-                k.as_str(),
-                "BASH_ENV" | "ENV" | "SHELLOPTS" | "BASHOPTS" | "PATH"
-            ) {
-                cmd.env(k, v);
-            }
+        for (k, v) in &applied {
+            cmd.env(k, v);
         }
 
         // A confined command's secrets go on a descriptor, not in bwrap's argv (`SECRET_FD`).
