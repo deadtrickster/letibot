@@ -151,6 +151,8 @@ pub(crate) struct RoomsView {
     /// The last draw's member column: its x offset in the pane, its width, and the handle
     /// on each row, so a click is answered from the frame and not recomputed.
     pub member_col: (usize, usize),
+    /// The channel list's rows as the last frame drew them: the pane row and the channel on it.
+    pub chan_rows: Vec<(usize, Chan)>,
     pub member_rows: Vec<(usize, String)>,
     /// Rooms whose oldest stored message is on screen, so asking further back finds nothing.
     pub oldest_known: BTreeSet<String>,
@@ -793,6 +795,20 @@ impl App {
         self.rooms.sel = Some(all[next].clone());
         self.rooms.gone = None;
         self.scroll_rooms_to_tail();
+        self.rooms.next_poll_ms = 0;
+        self.rooms_shown();
+    }
+
+    /// Enter a channel: select it and start reading it at the tail. The switcher's Enter and a
+    /// click on a channel's name are this one act.
+    pub(crate) fn rooms_go(&mut self, c: Chan) {
+        self.rooms.sel = Some(c);
+        self.rooms.gone = None;
+        // A channel is a different stream: the cursor, the search and the tail mark all belong
+        // to the one being left.
+        self.rooms_cursor_set(None);
+        self.nav.search = None;
+        self.rooms_to_tail();
         self.rooms.next_poll_ms = 0;
         self.rooms_shown();
     }

@@ -107,15 +107,7 @@ pub(super) fn key(a: &mut App, k: &Key) -> std::ops::ControlFlow<Option<Action>>
             let Some(row) = listed.into_iter().nth(at) else {
                 return ControlFlow::Break(None);
             };
-            a.rooms.sel = Some(row.chan);
-            a.rooms.gone = None;
-            // A channel is a different stream: the cursor, the search and the tail mark all belong
-            // to the one being left.
-            a.rooms_cursor_set(None);
-            a.nav.search = None;
-            a.rooms_to_tail();
-            a.rooms.next_poll_ms = 0;
-            a.rooms_shown();
+            a.rooms_go(row.chan);
             return ControlFlow::Break(None);
         }
         // Every other key is spent on the list being open: a `q` that fell through would start a

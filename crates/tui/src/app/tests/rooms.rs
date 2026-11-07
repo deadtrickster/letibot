@@ -1455,3 +1455,41 @@ fn a_read_dm_stays_read_after_a_reattach() {
     reply(&mut b, json!({"type": "marks", "marks": {"dm:s-a": 5}}));
     assert_eq!(b.rooms.unread(&dm), 0);
 }
+
+/// A click on a channel's name enters it as Enter in the switcher does, the pointer is a hand over
+/// the name, and a click one cell past it does nothing.
+#[test]
+fn a_click_on_a_channel_name_enters_it() {
+    let mut a = opened(1_000);
+    reply(
+        &mut a,
+        rooms_reply(&[("host", 2, 7, 0), (PROJECT, 2, 12, 3)]),
+    );
+    let rows = screen(&mut a, 120);
+    let label = a.rooms_name(&crate::app::rooms::Chan::Room(PROJECT.into()));
+    let y = rows
+        .iter()
+        .position(|r| r.contains(&label))
+        .expect("the project row");
+    let x = rows[y].chars().position(|c| c == '#').unwrap() as u16;
+    // The cell right after the list column is the separator's, one past the row's rectangle.
+    let w = rows[y].chars().position(|c| c == '│').unwrap() as u16;
+    assert_eq!(
+        a.rooms.selected(),
+        Some(crate::app::rooms::Chan::Room("host".into()))
+    );
+    a.hover_at(x, y as u16);
+    assert_eq!(a.take_pointer(), Some(true), "no hand over the name");
+    // One cell outside the list column is the separator, not the row.
+    a.key(Key::Click { x: w, y: y as u16 });
+    assert_eq!(
+        a.rooms.selected(),
+        Some(crate::app::rooms::Chan::Room("host".into())),
+        "a click past the name entered the room"
+    );
+    a.key(Key::Click { x, y: y as u16 });
+    assert_eq!(
+        a.rooms.selected(),
+        Some(crate::app::rooms::Chan::Room(PROJECT.into()))
+    );
+}

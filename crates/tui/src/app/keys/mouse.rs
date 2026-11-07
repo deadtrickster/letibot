@@ -25,7 +25,7 @@ impl App {
         match t {
             Target::Surface(s) => self.focused_surface() == Some(s),
             Target::TodoWait => self.focused_surface() == Some(Surface::Todos),
-            Target::RoomMember => self.focused_surface() == Some(Surface::Rooms),
+            Target::RoomMember | Target::RoomChan => self.focused_surface() == Some(Surface::Rooms),
             Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture => {
                 self.drawn() == Drawn::Conversation
             }
@@ -202,6 +202,12 @@ impl App {
                 }
                 return ControlFlow::Break(None);
             }
+            (Target::RoomChan, Some(k)) => {
+                if let Some((_, c)) = self.rooms.chan_rows.get(k).cloned() {
+                    self.rooms_go(c);
+                }
+                return ControlFlow::Break(None);
+            }
             (Target::RoomMember, Some(k)) => {
                 self.rooms_mention(k);
                 return ControlFlow::Break(None);
@@ -298,7 +304,8 @@ impl App {
             return ControlFlow::Continue(());
         }
         match target {
-            Target::Surface(_) | Target::TodoWait | Target::PluginPanel | Target::RoomMember => {
+            Target::Surface(_) | Target::TodoWait | Target::PluginPanel | Target::RoomMember
+            | Target::RoomChan => {
                 self.scroll_pane(up, NOTCH)
             }
             // A window, not an open run - a run is the conversation's own rows and the

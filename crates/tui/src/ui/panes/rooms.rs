@@ -316,12 +316,13 @@ impl RoomsView {
 }
 
 impl App {
-    fn rooms_left(&self, lw: usize, room: usize) -> Vec<Line> {
+    fn rooms_left(&mut self, lw: usize, room: usize) -> Vec<Line> {
         let channels = self.rooms.channels();
         let picked = self.rooms.selected();
         let mut lines = vec![padded(pane::faint(trim_to("channels", lw)), lw)];
         let mut sel_row = 0;
         let mut dm_heading = false;
+        let mut at: Vec<(usize, Chan)> = Vec::new();
         for c in channels.iter() {
             if matches!(c, Chan::Dm(_)) && !dm_heading {
                 dm_heading = true;
@@ -332,9 +333,14 @@ impl App {
                 sel_row = lines.len();
             }
             let unread = if is_sel { 0 } else { self.rooms.unread(c) };
+            at.push((lines.len(), c.clone()));
             lines.push(entry(&self.rooms, c, is_sel, unread, lw));
         }
         let skip = (sel_row + 1).saturating_sub(room);
+        self.rooms.chan_rows = at
+            .into_iter()
+            .filter_map(|(r, c)| r.checked_sub(skip).filter(|d| *d < room).map(|d| (d, c)))
+            .collect();
         lines.into_iter().skip(skip).take(room).collect()
     }
 
@@ -423,6 +429,7 @@ impl App {
         let palette = self.cfg.palette();
         self.rooms.member_rows.clear();
         self.rooms.member_col = (0, 0);
+        self.rooms.chan_rows.clear();
         if room < 3 || w < 24 {
             self.pane_len = 0;
             self.pane_room = room;
