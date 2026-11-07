@@ -82,19 +82,18 @@ fn sessions_the_operator_and_the_daemons_facts_share_the_rooms() {
         "an author is not woken by itself"
     );
 
-    // Unaddressed session chatter wakes the others, and asks none of them to reply.
+    // A session's unaddressed line in the host room wakes no other session: the host room is
+    // nobody's own room, so chatter there is read when it is read, not a turn for everyone.
     a1.call(
         "say",
         &json!({"room": "host", "text": "just thinking aloud"}),
     )
     .unwrap();
-    let woken = wait_for("b1 woken by chatter", || {
-        let got = wake::take("s-chat-b1");
-        (!got.is_empty()).then_some(got)
-    });
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let woken = wake::take("s-chat-b1");
     assert!(
-        woken[0].contains("just thinking aloud") && woken[0].contains("no reply asked"),
-        "{woken:?}"
+        !woken.iter().any(|l| l.contains("just thinking aloud")),
+        "host chatter woke a session of another project: {woken:?}"
     );
 
     // The operator's unaddressed word in the host room wakes both.
@@ -112,10 +111,11 @@ fn sessions_the_operator_and_the_daemons_facts_share_the_rooms() {
 
     // A session reads its own project's room by default, never the other's.
     let r = a1.call("read", &json!({"room": "host"})).unwrap();
-    assert!(
-        r.contains("status?") && r.contains("who has the disk?"),
-        "{r}"
-    );
+    assert!(r.contains("status?"), "{r}");
+    // The line with a `to` was a private message, so it is in the dm, not the host room.
+    assert!(!r.contains("who has the disk?"), "{r}");
+    let dm = a1.call("read", &json!({"room": "dm"})).unwrap();
+    assert!(dm.contains("who has the disk?"), "{dm}");
     let err = a1
         .call("read", &json!({"room": project_room(B)}))
         .expect_err("another project's room is refused");
