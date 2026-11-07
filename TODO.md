@@ -59,8 +59,9 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R129 | One store file per project and a shared file, so one daemon's write cannot stall another's | Code work | the build, in five packages at the end of `docs/store-split.md` (P0 first: the instrument cannot yet tell a lock wait from I/O); the design, the measurement and the build plan are in the doc on branch `r129-store-split`, not merged |
 | R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | the operator rotates `GH_TOKEN`; a command this box spawns and a remote placement keep every secret off every argv |
 | R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | the next stop's line from `~/.local/state/letibot/scroll-stalls.log`, which the head now writes at each stop |
-| R137 | Todo graphs that span projects | Code work | the design; an answer-wait ask is the first cross-project edge |
-| R138 | Stable session identities across hosts, through migrations | Code work | the design; until then asks are same-host only |
+| R137 | Todo graphs that span projects | Code work | the build of `docs/cross-project-todo.md` (P1-P6) and its four open questions |
+| R138 | Stable session identities across hosts, through migrations | Code work | the build of `docs/cross-host-identity.md` (Q1-Q7) and its five open questions; until then asks are same-host only |
+| R136 | Answer waits: a row waits on another top-level session's answer | Landed | all eight steps of `docs/answer-waits.md` on room protocol 10: the room's ask state, the `wait_on` edge, the `answer`/`decline` verbs, the passes, the end-to-end test and the docs |
 | R144 | The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag | Code work | the head's pane for a seat's board; the board, its waits and its nag are landed |
 | R152 | `tests/launcher.sh` stubs outlived their run, and four of its cases had drifted | Code work | putting `tests/launcher.sh` in the merge gate |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
@@ -872,13 +873,17 @@ The two negatives over the floor are `"the enormous amount of context-only messa
 
 ## R137 - Todo graphs that span projects
 
-**Status:** open. left: the design.
+**Status:** designed in `docs/cross-project-todo.md`. left: the build, packages P1-P6, and the operator's answers to its open questions.
+
+No bare `row` edge across boards. A row of another session is waited on as a room-held ask of kind `row`: B's pass tags B's existing row with `Owed`, and the row being done settles it. Same host only, protocol 11.
 
 Today a board's edges stay inside one session tree. An answer-wait ask (R136) is the first edge from one project's board to another's. Consider whether rows in one project may need rows in another directly, how the head draws such a graph, and how the idle check treats a cross-project edge.
 
 ## R138 - Stable session identities across hosts, through migrations
 
-**Status:** open. left: the design.
+**Status:** designed in `docs/cross-host-identity.md`. left: the build, packages Q1-Q7, and the operator's answers to its open questions. After R137's P1.
+
+The session id is the identity. The hub room (the box holding the `lives_on` index) holds the fleet directory and every cross-host ask, and dials the host rooms. Migration gains a fifth move: hand off, journal, re-home, clear.
 
 A session's identity is stable on its host only. Answer waits (R136) assume a stable graph of services, so they refuse targets on other hosts. A session that migrates between hosts must keep its name and its open asks, both as asker and target, for asks to cross hosts.
 
