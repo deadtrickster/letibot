@@ -764,7 +764,7 @@ impl App {
                 .map(|p| p.name.clone())
                 .unwrap_or_default()
         };
-        let sessions: Vec<Value> = self
+        let kept: Vec<(usize, &_)> = self
             .sessions
             .iter()
             .enumerate()
@@ -772,6 +772,16 @@ impl App {
             // its numbering agree with the head's own walk by construction: one predicate
             // (`App::removed_chain`), two drawings.
             .filter(|(i, _)| !self.removed_chain(*i))
+            .collect();
+        // Capped before the rows are built: the feed's cost to a guest is its size.
+        let kept = letibot_plugin::pane::cap_session_rows(kept, |(_, s)| {
+            (
+                s.live || s.status.running || s.status.heads > 0 || s.session_id == self.session_id,
+                s.moved_ms,
+            )
+        });
+        let sessions: Vec<Value> = kept
+            .into_iter()
             .map(|(i, s)| {
                 json!({
                     "id": s.session_id,
@@ -1546,5 +1556,47 @@ mod tests {
         // And a stack whose built-ins DID install says nothing at all.
         let mut good = Stack::discover(None, None, None, Arc::new(RanoLoader));
         assert_eq!(install_builtins(&mut good), None);
+    }
+
+    /// A store that has held thousands of sessions hands the head's list a capped feed, and the
+    /// built-in layers answer it inside the hook's fuel budget (they trapped past ~1000 rows).
+    #[test]
+    fn the_builtin_layers_draw_a_full_session_feed_inside_their_fuel() {
+        use letibot_plugin::pane::SESSION_FEED_ROWS;
+        let rows: Vec<Value> = (0..SESSION_FEED_ROWS)
+            .map(|i| {
+                json!({"id": format!("s-{i:04}-aaaaaaaa"), "title": format!("session number {i}"),
+                       "slug": "x", "parent": null, "origin": "user", "live": i % 3 == 0,
+                       "running": i % 7 == 0, "heads": i % 2, "items": 10, "stored": 10,
+                       "model": "glm", "workspace": format!("/p/repo/worktrees/w{}", i % 40),
+                       "waits_on": 0, "nags_paused": false, "moved_ms": 1_000 + i,
+                       "project": "/p/repo", "project_name": "repo", "bucket": "recent",
+                       "system": null, "repo": "/p/repo"})
+            })
+            .collect();
+        let input = json!({"v": 1, "feeds": {"sessions": {"sessions": rows,
+            "here": "s-0001-aaaaaaaa", "home": "/h", "now": 9_000_000}}});
+        for (name, hook, needle) in [("irc", "pane_nicks", "nicks"), ("sessions", HOOK, "")] {
+            let wasm = letibot_builtins::table()
+                .iter()
+                .find(|b| b.name == name)
+                .expect("the layer is built in")
+                .wasm;
+            let module = RanoLoader
+                .load_bytes(name, wasm, &[])
+                .expect("the module loads");
+            let answered = module
+                .call(hook, &input.to_string())
+                .unwrap_or_else(|why| panic!("{name} trapped: {why}"));
+            assert!(
+                answered.is_some_and(|a| a.contains(needle)),
+                "{name} draws the pane"
+            );
+            assert!(
+                module.fuel() < 45_000_000,
+                "{name} burned {} of 50M",
+                module.fuel()
+            );
+        }
     }
 }
