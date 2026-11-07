@@ -73,6 +73,11 @@ pub struct PluginHost {
     /// The daemon's host does ([`PluginHost::production`]); a host built on a test's loader cannot,
     /// because a fake loader has no engine for a module held in memory.
     install_builtin_panes: bool,
+    /// A head has arrived and the built-in panes are wanted; the next [`PluginHost::tick`] compiles
+    /// them on a thread, so the attach itself never waits seconds for a compiler.
+    builtins_wanted: std::sync::atomic::AtomicBool,
+    /// The compile has been started once; it is not started twice.
+    builtins_started: std::sync::atomic::AtomicBool,
 }
 
 struct Inner {
@@ -185,6 +190,8 @@ impl PluginHost {
             sessions: None,
             room: Mutex::new(None),
             install_builtin_panes: false,
+            builtins_wanted: std::sync::atomic::AtomicBool::new(false),
+            builtins_started: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -325,6 +332,17 @@ impl PluginHost {
     /// Install the binary's built-in pane layers the first time a head comes through a door that
     /// needs them - a module costs seconds to compile, and a session nobody attached to must not pay
     /// for one. Every built-in pane is then listed by `/pane`, tool declared or not.
+    /// Whether a head asked for the built-in panes and their compile has not started yet.
+    fn builtins_due(&self) -> bool {
+        self.install_builtin_panes
+            && self
+                .builtins_wanted
+                .load(std::sync::atomic::Ordering::SeqCst)
+            && !self
+                .builtins_started
+                .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     fn ensure_builtin_panes(&self) {
         if !self.install_builtin_panes {
             return;
@@ -500,6 +518,9 @@ impl PluginHost {
     /// When this host next has something to do: the next poll or the earliest pane refresh - or
     /// nothing, for a session with no layers at all.
     pub fn next_at(&self) -> Option<Instant> {
+        if self.builtins_due() {
+            return Some(Instant::now());
+        }
         let inner = self.lock();
         if inner.stack.layers().is_empty() {
             // A session with no layers is not on the clock at all: polling three directories that
@@ -518,6 +539,20 @@ impl PluginHost {
     /// come round. Only the cheap half runs here - a stat per layer - and a change starts a thread
     /// because the gate runs `cargo` and a turn must not wait for a compiler.
     pub fn tick(self: Arc<Self>, hub: Arc<Hub>) {
+        if self.builtins_due()
+            && !self
+                .builtins_started
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            let me = Arc::clone(&self);
+            let ring = Arc::clone(&hub);
+            let _ = std::thread::Builder::new()
+                .name("plugin-builtins".into())
+                .spawn(move || {
+                    me.ensure_builtin_panes();
+                    me.announce(&ring);
+                });
+        }
         // The trust book moves under us: a pin taken in the head is in force here at the next
         // tick, and a layer rebuilt after its pin stops being free at once, gate or no gate.
         let broken = {
@@ -1768,9 +1803,10 @@ fn pane_list(panes: &[String]) -> String {
 
 impl PaneDriver for PluginHost {
     fn attach(&self, _session_id: &str, hub: &Arc<Hub>) {
-        // The built-in panes are installed at this door: a head arriving is the first moment a pane
-        // is worth a compile (see [`PluginHost::ensure_builtin_panes`]).
-        self.ensure_builtin_panes();
+        // A head arriving is the first moment a built-in pane is worth a compile, but the compile
+        // costs seconds, so it is only asked for here and runs on the next tick's thread.
+        self.builtins_wanted
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.announce(hub);
     }
 

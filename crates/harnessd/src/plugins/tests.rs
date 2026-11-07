@@ -1053,14 +1053,20 @@ fn a_session_that_declared_no_tool_installs_no_builtin_layer() {
 #[test]
 fn every_builtin_pane_is_listed_and_opens_with_no_tool_declared() {
     let workspace = tempdir("builtin-panes");
-    let host = PluginHost::production("s-panes", &workspace);
+    let host = Arc::new(PluginHost::production("s-panes", &workspace));
     let hub = Hub::new("s-panes");
     assert!(
         host.panes().is_empty(),
         "no head, no compile: {:?}",
         host.panes()
     );
-    PaneDriver::attach(&host, "s-panes", &hub);
+    PaneDriver::attach(&*host, "s-panes", &hub);
+    // The attach only asks; the compile runs on the next tick's thread, so the head never waits.
+    assert!(
+        host.next_at().is_some(),
+        "a wanted compile puts the host on the clock"
+    );
+    Arc::clone(&host).tick(Arc::clone(&hub));
     // Read off the binary's own table, not written down here: a second list drifts.
     let want: Vec<String> = letibot_builtins::table()
         .iter()
@@ -1077,6 +1083,10 @@ fn every_builtin_pane_is_listed_and_opens_with_no_tool_declared() {
         })
         .collect();
     assert!(want.len() >= 2, "the binary carries panes: {want:?}");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while !want.iter().all(|p| host.panes().contains(p)) && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     let listed = host.panes();
     for pane in &want {
         assert!(
