@@ -2,12 +2,28 @@
 
 Status: design, not built.
 
-A row on session A's board waits on an answer from session B, asked in a room. B is nagged until it
-answers. If B's daemon goes away and does not come back within a grace, A is told B is gone and the
-row is released, the way an Erlang monitor delivers `DOWN`. The operator's words: *"that <session
-name> in <room name> gets the nag. If that waited-on session stops (harnessd exits), then it is the
-usual thing - a notification that the session is gone and no answer will arrive. Can be done with a
-timeout of say 2 minutes, so restarts are possible."*
+A row on session A's board waits on an answer from session B, asked in a room. B gets a row on its
+own board saying A asked and A waits, and is nagged until it answers or declines. If B's daemon goes
+away for 5 minutes, the operator is asked to restart B. The ask stays open. It ends only by B's
+answer or decline, by A or the operator withdrawing it, or by B being shut down for good (its
+session deleted), which is the one `DOWN`.
+
+The assumption is that agent graphs are stable structures on one host, with something like a
+service agreement between their members: a stopped agent is a fault to repair, not an answer.
+Timeouts only escalate to the operator, they never settle. Cross-host identities are not stable yet
+(see the TODO row on migrations), so asks are same-host only.
+
+<!-- Later: todo graphs that span projects, an ask edge being the first cross-project edge. TODO R137. -->
+
+The operator's rulings, 2026-11-07:
+
+1. Only the explicit `answer` verb settles. B must know it was asked and that A waits, so the ask
+   becomes a todo row on B's board.
+2. B may decline.
+3. Claude Code seats can be asked, through a bridge `room_answer` tool.
+4. and 5. No settling timeout. After 5 minutes gone, an operator ask: *B stopped, please restart
+   it*. The same for an asker gone for long. A waits-on-B edge goes away only by explicit cleanup
+   (A or the operator) or B's explicit shutdown.
 
 ## Decisions
 
@@ -27,18 +43,24 @@ on the ask, so a trimmed ring loses nothing.
 
 ```text
 AskView { seq, room, asker, target, question, asked_ms,
-          state: Open | Answered { text, ms, late } | Down { gone_since_ms, ms } | Withdrawn { ms } }
+          gone_since_ms: Option<u64>, escalated: bool,
+          state: Open | Answered { text, ms } | Declined { text, ms } | Down { ms }
+               | Withdrawn { by, ms } }
 ```
 
 ### Wire
 
-`ROOM_PROTOCOL_VERSION` moves to 9. Four frames:
+`ROOM_PROTOCOL_VERSION` moves to 9. Six frames:
 
 - `Ask { id, room, to, question }` - posts the question as a `Say` to B (kind `session`, `to: B`, a
   ref `{kind: "ask"}`) and records the ask. Answered with `Asked { id, ask: AskView }`.
 - `Reply { id, ask, text }` - B's answer. Posted as a thread reply to `seq`, addressed to A, and the
   ask becomes `Answered`. Only the target may send it.
-- `Withdraw { id, ask }` - the asker takes it back. A system thread note tells B.
+- `Decline { id, ask, text }` - B will not answer. Posted the same way, the ask becomes `Declined`.
+  Only the target may send it.
+- `Withdraw { id, ask }` - the asker or the operator takes it back. A system thread note tells B.
+- `Retire { id, session }` - B's daemon says B is shut down for good (session deleted). Every open
+  ask of B settles `Down`. Sent only by the daemon that owns B.
 - `Asks` (a read) - `{ by_me: Vec<AskView>, of_me: Vec<AskView> }` for the calling session.
 
 ### Spelling and storage on A's row
@@ -72,7 +94,9 @@ already exists, with its render, restatement and check paths. The reply says whi
 
 ```text
 `serenedb` answered: 5433
-`serenedb` is gone - its room connection closed at 14:02 and did not come back within 2 minutes; no answer will arrive
+`serenedb` declined: not my area, ask arango
+`serenedb` was shut down for good (its session was deleted) - no answer will arrive
+the ask was withdrawn by the operator
 ```
 
 ### Board and check on A's side
@@ -90,18 +114,27 @@ The question is addressed to B, so it wakes B once (`wake::chat_sentence`, `name
 (`Harness::fill_room_board`, every 5 s) from `Asks.of_me`:
 
 ```text
-answer `s-a`'s question #4211 - which port?    (yours, in progress)
+`arango` asked you #4211 and its row "wire the port" waits on your answer: which port?
+answer with `room answer {"ask": 4211, ...}` or decline with `room decline`    (yours, in progress)
 ```
+
+The row names the asker by its handle, the asker's waiting row, and both verbs, so B knows a
+peer is blocked on it, not just that a message arrived.
 
 The row carries a new met edge `TodoNeed::Owed { ask: u64 }`, the pass's key for it, the way
 `Room { item }` keys a reminder row. `set_room_rows` retires by either key. The row is ready, so the
 idle check nags it on the existing `TodoNagClock`: armed on idle, said once per change. No second
 clock and no room-side reminder. Reason: one nag mechanism, already rate limited.
 
-B answers with a new `room` verb, `answer {"ask": 4211, "text": "5433"}`, which sends `Reply`. A plain
-thread reply does not settle the ask. Reason: *looking at it* must not unblock a plan. It still
-reaches A as ordinary chat. The nag row's text names the verb. Marking the row done without answering
-does nothing: the next pass puts it back while the ask is open.
+B answers with a new `room` verb, `answer {"ask": 4211, "text": "5433"}`, which sends `Reply`, or
+declines with `decline {"ask": 4211, "text": "..."}`, which sends `Decline`. A plain thread reply does
+not settle the ask. Reason: *looking at it* must not unblock a plan. It still reaches A as ordinary
+chat. Marking the row done without answering does nothing: the next pass puts it back while the ask
+is open.
+
+A Claude Code seat (`cc@...`) can be asked. It has no board, so the bridge gets `room_answer` and
+`room_decline` tools and `room_asks` lists what it owes. Its nag is the channel push of the question
+plus the operator escalation below.
 
 ### A learns the answer from its pass
 
@@ -114,30 +147,42 @@ The same pass withdraws: an open ask in `by_me` that no open row of A's carries 
 cancelled, detached or re-worded) gets a `Withdraw`. That is the counterpart of the operator flow's
 *the model took its question back*.
 
-### DOWN
+### Top-level sessions are services
 
-Gone means B holds no room connection. The connection is the daemon's liveness: B's daemon holds one
-connection per top-level session, it closes when the daemon exits, and it closes when B's session is
-closed (its `Client` is dropped). Not `session_writer` (its `heartbeat_ms` is the claim time, not a beat) and not `daemon_life`
-(per daemon, and a live daemon may have closed B).
+This design rests on one contract: a top-level session is a service. It has a stable name on its
+host, it is expected to be running, and a stopped one is a fault the operator repairs. Subagents
+are not services: they are owned by their parent and cannot be asked.
 
-The server keeps `gone_since: BTreeMap<session, ms>`, set when a session's last connection closes and
-cleared when it connects. The existing 5 s clock settles an open ask `Down` when its target has been
-gone for `ASK_GRACE_MS = 120_000`. A restart inside the grace is invisible. On a coordinator start
-every target not yet connected starts its grace at the start time, since the room did not see when it
-left.
+So liveness never settles an ask. It only escalates.
 
-A late answer: B returns after `Down` and sends `Reply`. It is accepted and posted to A. The ask
-becomes `Answered { late: true }`, and A's pass replaces the gone edge's reply with the answer if the
-row still carries it. Erlang delivers messages after `DOWN` too. B returning without answering
-changes nothing: the ask is settled and B's nag row is retired.
+Gone means the session holds no room connection. The connection is the daemon's liveness: B's
+daemon holds one connection per top-level session, it closes when the daemon exits, and it closes
+when B's session is closed (its `Client` is dropped). Not `session_writer` (its `heartbeat_ms` is
+the claim time, not a beat) and not `daemon_life` (per daemon, and a live daemon may have closed B).
 
-The asker going away does not withdraw the ask, because its row is persisted and the answer is still
-wanted. But `Asks.of_me` leaves out asks whose asker has been gone past the grace, so B is not nagged
-for a session that is not there. The row comes back when A reconnects.
+The server keeps `gone_since: BTreeMap<session, ms>`, set when a session's last connection closes
+and cleared when it connects. The existing 5 s clock marks an open ask `escalated` when its target
+has been gone for `ASK_GRACE_MS = 300_000`, and raises an operator ask: *`serenedb` stopped and
+`arango` waits on its answer to "which port?" - please restart it.* A restart inside the grace is
+invisible. When B reconnects the escalation is cleared and its card withdrawn. On a coordinator
+start every target not yet connected starts its grace at the start time.
 
-The room itself being unreachable settles nothing. Room down is not B down. A's row stays blocked and
-the check says the room is unreachable.
+The asker gone is the same: after the grace the operator is asked to restart A, and B's row stays,
+marked *the asker is not running*. B can still answer, the answer waits in the room for A's pass.
+
+An ask ends in exactly these ways:
+
+- B answers (`Reply`) or declines (`Decline`).
+- A withdraws it: its row was done, cancelled, detached or re-worded, and A's pass sends `Withdraw`.
+- The operator withdraws it, from the escalation card or the head's ask list.
+- B is shut down for good: its session is deleted, and its daemon sends `Retire` before closing.
+  This is the only `DOWN`. A deleted asker withdraws its asks the same way.
+
+A daemon exit, `--stop`, a crash or a reboot is not a shutdown for good. Those are restarts the
+operator owes.
+
+The room itself being unreachable settles nothing. Room down is not B down. A's row stays blocked
+and the check says the room is unreachable.
 
 ## Edge cases
 
@@ -147,16 +192,17 @@ the check says the room is unreachable.
 | Unknown handle | Refused with the known top-level handles. `resolve_name` passes an unknown name through for `say`, so `Ask` also requires a tree member. |
 | Ambiguous handle | Refused with the candidates `resolve_name` returns. |
 | B is the operator | Refused, pointing to the `operator` wait. |
-| B is an external (`cc@...`) | Refused for now: no board to nag and no `answer` verb on the bridge. |
+| B is an external (`cc@...`) | Accepted. The bridge's `room_answer`, `room_decline` and `room_asks` serve it. No board row, the channel push is its nag. |
 | B or A is a subagent | Refused: a subagent has no room connection. A child waits on its parent's answer through its parent. |
 | B cannot see the room | Refused, naming `host` or an `Invite`. |
 | B not connected at ask time | Accepted. The grace starts at the ask, and the reply says B is not connected now. |
+| B on another host | Refused: identities are not stable across hosts yet (TODO R138). |
 | Same asker, target and question, open | The room returns the existing ask. Several rows carry one id and one settle releases all of them. |
 | Another asker, same question | A separate ask and a separate row on B's board. |
 | A restarts | The edge is on the persisted board, and the first pass after reconnect applies what settled meanwhile. |
 | Room restarts | Asks come back from the chat store. Grace clocks restart at the room's start. |
-| Room ran with no store, or pruned the ask | The pass finds an id the room does not know and settles it: *the room no longer knows this question*. |
-| Settled asks | Kept 24 h after settling, then dropped at the chat store's rewrite. |
+| Room ran with no store, or pruned the ask | The pass finds an id the room does not know and raises an operator ask rather than settling. |
+| Settled asks | Kept 24 h after settling, then dropped at the chat store's rewrite. Open asks are never dropped. |
 
 ## Relation to existing waits
 
@@ -169,11 +215,13 @@ precedent. Nothing is duplicated, `Ask` and `Owed` are new keys on existing path
 Each step lands red tests first.
 
 1. **Room state.** `crates/room/src/chat.rs` (records, `AskView`, store restore and rewrite),
-   `server.rs` (`gone_since`, clock sweep, dedup), `wire.rs` (four frames, version 9). Tests in
+   `server.rs` (`gone_since`, clock sweep, escalation, dedup), `wire.rs` (six frames, version 9). Tests in
    `crates/room`: an ask settles `Answered` on `Reply` and refuses a `Reply` from anyone else. A
-   target closed and back within the grace stays open. A target gone past the grace settles `Down`
-   (clock injected, no sleeping). Asks survive a server restart over a store. A duplicate returns the
-   same id. Self, unknown, ambiguous, operator, external and subagent targets are refused.
+   target closed and back within the grace stays open. A target gone past the grace stays open and
+   is `escalated`, and the escalation clears on reconnect (clock injected, no sleeping). `Decline`
+   settles. `Retire` settles every open ask of that session `Down`, and only its own daemon may send
+   it. Asks survive a server restart over a store. A duplicate returns the same id. Self, unknown,
+   ambiguous, operator, subagent and other-host targets are refused.
 2. **TodoNeed.** `tokencore/src/store.rs`, `sessionlog/src/event.rs`, the conversions in
    `harnessd/src/sessions.rs` and `harness/turns.rs`, `Answered.ask`. Tests: round trip through
    `needs_json`, and an old row without `ask` reads.
@@ -182,26 +230,18 @@ Each step lands red tests first.
    `render`, `blocked_line`, `all_on_the_operator`, `settle_ask`. Tests in a new `todo/tests/ask.rs`
    modelled on `operator.rs`, with a fake link.
 4. **Room link and verb.** `harnessd/src/room/link.rs` (`request_of`, `answer_sentence` for
-   `answer` and `Asks`), `crates/tools/src/builtins/room.rs` (the verb and its schema text). Test:
-   the verb becomes a `Reply` frame.
+   `answer`, `decline` and `Asks`), `Retire` sent when a session is deleted,
+   `crates/tools/src/builtins/room.rs` (the verbs and their schema text), and the bridge's
+   `room_answer`, `room_decline`, `room_asks` in `crates/bridge`. Tests: the verbs become `Reply`
+   and `Decline` frames, and deleting a session sends `Retire`.
 5. **Passes.** `harnessd/src/harness/room.rs` and `room/remind.rs`: `Owed` rows from `of_me`,
-   settles and withdrawals from `by_me`, the note and bell. Tests: pure functions over `AskView`
+   settles and withdrawals from `by_me`, the note and bell, and the operator ask raised and
+   withdrawn on `escalated`. Tests: pure functions over `AskView`
    lists, in the style of `remind::rows`.
 6. **Heads.** `crates/tui/src/ui/panes/todos.rs` and `app/todos.rs`: draw `Ask` and `Owed`.
 7. **End to end.** Two sessions in two daemons against one coordinator in a scratch dir. A asks, B
-   answers, A's row is released. Then B's daemon is killed, and A's row is released with the gone
-   reply after the grace. The grace comes from config so the test runs in seconds.
+   answers, A's row is released. Then B's daemon is killed: after the grace the operator ask is
+   raised and A's row stays blocked. B restarts and answers, the card goes and A's row is released.
+   Then B's session is deleted and a second ask settles `Down`. The grace comes from config so the
+   test runs in seconds.
 8. **Docs.** `docs/room.md` (the verbs) and the `todo_write` schema text.
-
-## Open questions for the operator
-
-1. Should a plain thread reply from B also settle, or only the explicit `answer` verb? The draft says
-   only the verb.
-2. May B decline (*I will not answer this*), settling like an abstention? The draft has no decline.
-   B can answer with words that say so.
-3. Externals (`cc@...`): refused for now. Do you want a bridge `room_answer` tool so Claude Code
-   seats can be asked?
-4. Is 2 minutes right for every target, or should `gatekeeper@<project>` and other system agents,
-   which are reseated rather than restarted, get their own grace?
-5. Should an asker gone for a long time (days) withdraw its asks, or are they kept open for ever
-   while its row is?
