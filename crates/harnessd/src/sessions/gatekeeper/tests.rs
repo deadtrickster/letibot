@@ -914,3 +914,20 @@ fn the_queue_seat_resolves_to_the_queue_role() {
         delta()
     );
 }
+
+/// The seat's room context names it by its own handle, and Claude Code's names appear only as
+/// other principals it must not use.
+#[test]
+fn the_gatekeepers_room_context_never_claims_claude_codes_name() {
+    let said = prompt(&ReviewerPlacement::Host);
+    assert!(said.contains("`gatekeeper@<your project's label>`"), "{said}");
+    for line in said.lines().flat_map(|l| l.split(". ")) {
+        if line.contains("claude-code") {
+            assert!(
+                line.contains("other principals") || line.contains("never sign"),
+                "claude-code read as self: {line}"
+            );
+        }
+    }
+    assert!(!said.contains("claude-code here"), "{said}");
+}
