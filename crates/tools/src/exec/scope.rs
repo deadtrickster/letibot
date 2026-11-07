@@ -1064,8 +1064,8 @@ impl ScopeTree for Cgroup2 {
         let mut n = 0;
         prune_at(&self.root, &mut n);
         // The root itself, last and only if everything under it went. `remove_dir` on a populated
-        // cgroup fails, so this cannot take a live scope by mistake.
-        if !fresh(&self.root) && std::fs::remove_dir(&self.root).is_ok() {
+        // cgroup fails, and a live host always holds its session under it, so no grace is needed.
+        if std::fs::remove_dir(&self.root).is_ok() {
             n += 1;
         }
         n
