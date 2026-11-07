@@ -20,6 +20,17 @@ const DEFAULT_OUTPUT_BYTES: usize = 60_000;
 const MAX_WAIT_MS: u64 = 900_000;
 const DEFAULT_WAIT_MS: u64 = 60_000;
 
+/// What a wait says when the host answered none of its status queries about the job. The progress
+/// check reads it (`ProgressDetector::observe`): such a result says nothing about the work, so the
+/// round it was in is neither progress nor a stalled one.
+pub const UNANSWERED_STATUS: &str = "no status query about it was answered during this wait";
+
+/// Did a tool result come from a status query that timed out, and nothing else? Read off the
+/// payload, which is where the wait says it, so a detector needs no second channel into the job.
+pub fn status_went_unanswered(payload: &str) -> bool {
+    payload.contains(UNANSWERED_STATUS)
+}
+
 fn no_process_host(ctx: &InvokeCtx<'_>) -> Invocation {
     Invocation::failed(
         "this session's backend cannot start processes, so it has no jobs",
@@ -828,20 +839,22 @@ fn wait_on_job(
             took,
             produced,
             since_last_output,
+            silent,
         } => Invocation {
             outcome: letibot_transcript::ToolOutcome::Timeout,
             payload: format!(
                 "`{label}` is STILL RUNNING after {}. This is not a failure and it is \
-                 not a completion.\n  command: {}\n  produced: {produced} bytes so \
-                 far\n  last wrote: {}\n\nIt was not killed. Wait again with a longer \
-                 `timeout_ms`, read what it has with `job_output`, or stop it with \
-                 `job_kill`.",
+                     not a completion.\n  command: {}\n  produced: {produced} bytes so \
+                     far\n  last wrote: {}\n\n{}It was not killed. Wait again with a \
+                     longer `timeout_ms`, read what it has with `job_output`, or stop it with \
+                     `job_kill`.",
                 secs(took),
                 clip(&before.command, 160),
                 match since_last_output {
                     Some(d) => format!("{} ago", secs(d)),
                     None => "never — it has written nothing".into(),
-                }
+                },
+                unmeasured_note(silent)
             ),
             notes: vec![],
             edit: None,
@@ -855,6 +868,19 @@ fn wait_on_job(
     }
 }
 
+/// What a wait that asked and was never answered says, or nothing when the host answered. The
+/// sentence carries [`UNANSWERED_STATUS`], which is how the progress check reads this result as
+/// one it cannot judge.
+fn unmeasured_note(silent: bool) -> String {
+    if !silent {
+        return String::new();
+    }
+    format!(
+        "  {UNANSWERED_STATUS}, so nothing here says the job is stuck: that machine did not \
+         answer, and this is a fact about the connection rather than the work.\n\n"
+    )
+}
+
 /// Spend `timeout` on `jid` in slices, watching the promote channel between them.
 /// `Ok(None)` means the operator asked for the floor before the job settled.
 fn wait_greedily(
@@ -865,6 +891,9 @@ fn wait_greedily(
 ) -> Result<Option<Waited>, crate::exec::ExecError> {
     const SLICE: Duration = Duration::from_millis(250);
     let started = std::time::Instant::now();
+    // Every slice asked, and every slice answered: a wait whose slices were all silence learnt
+    // nothing about the job, and the result carries that so the progress check can read it.
+    let (mut asked, mut answered) = (false, false);
     loop {
         // Checked before the first slice as well as between them: a request that arrived
         // while the model was choosing this tool is early, not stale.
@@ -880,11 +909,16 @@ fn wait_greedily(
                 took: started.elapsed(),
                 produced: j.as_ref().map(|v| v.produced).unwrap_or(0),
                 since_last_output: j.as_ref().and_then(|v| v.since_last_output),
+                silent: asked && !answered,
             }));
         }
         match host.wait_job(jid, left.min(SLICE))? {
             // A slice that expired is not the wait expiring; go round again.
-            Waited::Deadline { .. } => continue,
+            Waited::Deadline { silent, .. } => {
+                asked = true;
+                answered |= !silent;
+                continue;
+            }
             settled => return Ok(Some(settled)),
         }
     }
@@ -1337,6 +1371,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The mark a wait leaves when the host answered no status query, and the fact that a result
+    /// without it is a wait that did learn something. `harnessd`'s progress check reads the first.
+    #[test]
+    fn a_wait_nobody_answered_says_so_and_a_wait_that_did_does_not() {
+        let silent = unmeasured_note(true);
+        assert!(!silent.is_empty());
+        assert!(status_went_unanswered(&silent), "{silent}");
+        assert!(
+            silent.contains("the connection") && silent.contains("not"),
+            "it says what it is about instead: {silent}"
+        );
+        assert!(!status_went_unanswered(&unmeasured_note(false)));
+        assert!(!status_went_unanswered(
+            "`x` is STILL RUNNING after 2s. This is not a failure and it is not a completion."
+        ));
     }
 
     /// A job, as the table holds it - every field a resolver does not read filled with

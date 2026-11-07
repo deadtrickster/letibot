@@ -293,6 +293,7 @@ fn spec_for(fake: &Fake, repo: &Path, paths: &Paths, bound: Duration) -> SshSpec
         ssh: Some(fake.program.clone()),
         paths: Some(paths.clone()),
         bound: Some(bound),
+        place_bound: None,
         egress: Egress::Denied,
         confine: Some(false),
         vm: false,
@@ -1194,6 +1195,7 @@ fn six_packages_on_a_real_host_at_once_are_never_refused() {
             ssh: None,
             paths: Some(paths.clone()),
             bound: Some(Duration::from_secs(120)),
+            place_bound: None,
             egress: Egress::Denied,
             // Production's own answer: ask the host whether it can confine, and use what it says.
             confine: None,

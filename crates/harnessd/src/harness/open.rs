@@ -1039,6 +1039,9 @@ impl Harness {
                 // The bound every call that is not a command carries ([`STEP_BOUND`]): a session's
                 // tools must not be able to hold the daemon on a host that has stopped answering.
                 bound: None,
+                // The bound an arranging step carries ([`PLACE_STEP_BOUND`], a minute): these run
+                // while that machine may be building, and four placements died at 20 s there.
+                place_bound: None,
                 egress: letibot_tools::exec::seat::network_rule(&cfg.mode, &host.name),
                 // Ask the host, which is what production always does. A placement probes once
                 // per host (cached), and a host that cannot answer runs unconfined with the reason

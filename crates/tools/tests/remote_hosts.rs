@@ -162,6 +162,7 @@ impl Rig {
             ssh: Some(self.ssh.clone()),
             paths: Some(self.paths.clone()),
             bound: Some(Duration::from_secs(30)),
+            place_bound: None,
             // This fixture's host confines nothing, and says so: the probe would run on the
             // machine behind the fake, so an unpinned answer would mean two things on two boxes.
             egress: Egress::Denied,
@@ -781,6 +782,7 @@ fn a_plain_folder_is_refused_for_remote_placement() {
         ssh: Some(rig.ssh.clone()),
         paths: Some(rig.paths.clone()),
         bound: Some(Duration::from_secs(5)),
+        place_bound: None,
         egress: Egress::Denied,
         confine: Some(false),
         vm: false,
@@ -1096,6 +1098,7 @@ fn spec_for(fake: &Fake, repo: &Path, paths: &Paths, bound: Duration) -> SshSpec
         ssh: Some(fake.program.clone()),
         paths: Some(paths.clone()),
         bound: Some(bound),
+        place_bound: None,
         egress: Egress::Denied,
         confine: Some(false),
         vm: false,
@@ -1851,6 +1854,7 @@ fn place_spec_for_test(program: &Path, repo: &Path, paths: &Paths, host: Host) -
         ssh: Some(program.to_path_buf()),
         paths: Some(paths.clone()),
         bound: Some(Duration::from_secs(3)),
+        place_bound: None,
         egress: Egress::Denied,
         confine: Some(false),
         vm: false,
@@ -2263,6 +2267,146 @@ fn concurrent_calls_to_one_host_queue_at_the_session_bound() {
         letibot_tools::rpc::MAX_SESSIONS_PER_HOST
     );
     let _ = std::fs::remove_dir_all(&fake.dir);
+}
+
+/// One ssh connection per host, and a socket only this user can enter. Every call of one host
+/// multiplexes over ONE `ControlPath` - sshd counts connections, and its `MaxStartups` did drop
+/// three packages' calls at once - and the directory that path is in is 0700.
+#[test]
+fn concurrent_calls_to_one_host_open_one_connection_in_a_private_directory() {
+    let fake = Fake::new("one-connection", "exec bash -lc \"$last\"");
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = std::sync::Arc::new(
+        place_patiently(&spec_for(&fake, &repo, &paths, Duration::from_secs(10))).expect("placed"),
+    );
+
+    let before = fake.calls().len();
+    let mut threads = Vec::new();
+    for _ in 0..8 {
+        let b = b.clone();
+        threads.push(std::thread::spawn(move || b.stat("README").is_some()));
+    }
+    for t in threads {
+        assert!(t.join().expect("the thread ran"), "every call answered");
+    }
+
+    // A fake ssh runs each call as its own process, so the `ControlPath=` it was handed is the fact
+    // that they multiplex over one connection: one path for all of them, or one per call. Only the
+    // calls made above are counted; the placement arranged this host before them.
+    let calls = fake.calls();
+    let sockets: Vec<String> = calls[before..]
+        .iter()
+        .filter_map(|line| {
+            let at = line.find("ControlPath=")? + "ControlPath=".len();
+            let rest = &line[at..];
+            Some(rest[..rest.find(char::is_whitespace).unwrap_or(rest.len())].to_string())
+        })
+        .collect();
+    assert_eq!(
+        sockets.len(),
+        8,
+        "every one of the eight calls carried the socket: {sockets:?}"
+    );
+    let mut unique = sockets.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(
+        unique.len(),
+        1,
+        "one connection per host, not one per call: {unique:?}"
+    );
+    assert_eq!(
+        unique[0],
+        letibot_tools::remote::control_path(&fake.name, std::process::id())
+            .display()
+            .to_string(),
+        "the socket is the one this daemon reaches this host by"
+    );
+    assert!(
+        fake.calls()
+            .iter()
+            .all(|c| c.contains("-o ControlMaster=auto")),
+        "every call may open or use that master"
+    );
+
+    // And the directory it lives in is this user's alone: a socket name another user of the box
+    // could take is that user's copy of every session's connection.
+    let socket = PathBuf::from(&unique[0]);
+    assert!(
+        socket.starts_with(letibot_tools::remote::rundir()),
+        "a host name this short keeps its socket in the runtime directory: {}",
+        socket.display()
+    );
+    let dir = socket.parent().expect("a parent");
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(dir)
+        .expect("the socket's directory")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700, "{} is {mode:o}", dir.display());
+}
+
+/// A wait whose every status query the host left unanswered says it learnt nothing about the job,
+/// and never says the job is stuck: on 2026-11-07 a loaded host's silence was read as one, and a
+/// turn was stopped for it.
+#[test]
+fn a_wait_no_status_query_answered_does_not_claim_the_job_is_stuck() {
+    let bound = Duration::from_secs(2);
+    let silent = PathBuf::from(format!(
+        "/tmp/letibot-silent-wait-{}.marker",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&silent);
+    let fake = Fake::new(
+        "silentwait",
+        &format!(
+            "if [ -f '{m}' ]; then sleep 30; fi\n\
+             exec bash -lc \"$last\"",
+            m = silent.display()
+        ),
+    );
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = place_patiently(&spec_for(&fake, &repo, &paths, bound)).expect("placed");
+    let host = b.processes_arc().expect("this backend starts processes");
+    let id = host
+        .spawn(&SpawnRequest {
+            command: "sleep 60".into(),
+            slug: None,
+            cwd: String::new(),
+            scope: ScopeKind::Session,
+            scope_name: None,
+            background: true,
+            env: Vec::new(),
+            tty: false,
+            memory: None,
+            env_trailer: false,
+        })
+        .expect("the job starts");
+    assert!(
+        host.job(&id).expect("known").pid > 1,
+        "a pid, before it goes quiet"
+    );
+
+    std::fs::write(&silent, b"stop answering").expect("the marker");
+    let went = host
+        .wait_job(&id, Duration::from_secs(1))
+        .expect("a wait answers even when nothing else does");
+    assert!(
+        matches!(went, Waited::Deadline { silent: true, .. }),
+        "no status query was answered, so the wait learnt nothing about the job: {went:?}"
+    );
+
+    // The other half: with the host answering again the same wait is NOT marked. The mark is a
+    // measurement of this wait's queries, not a property every deadline has.
+    std::fs::remove_file(&silent).expect("the host answers again");
+    let again = host
+        .wait_job(&id, Duration::from_secs(1))
+        .expect("a wait answers");
+    assert!(
+        matches!(again, Waited::Deadline { silent: false, .. }),
+        "the status queries were answered, so the silence would be the job's: {again:?}"
+    );
+    let _ = host.kill_job_as(&id, "the test asking");
 }
 
 /// An auth refusal is definite: said in those words, never retried, exactly one invocation. The

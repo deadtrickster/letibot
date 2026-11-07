@@ -109,6 +109,7 @@ fn spec_for(repo: &Path, paths: &Paths, program: &Path) -> SshSpec {
         ssh: Some(program.to_path_buf()),
         paths: Some(paths.clone()),
         bound: Some(Duration::from_secs(10)),
+        place_bound: None,
         egress: Egress::Denied,
         confine: Some(false),
         vm: false,

@@ -83,6 +83,10 @@ pub enum Round {
     /// Nothing in the round returned a result that was not already in hand.
     /// One of these is normal. A run of them is the stop condition.
     Stalled,
+    /// The round's calls returned results nothing can be judged by - a status query that timed
+    /// out because the host never answered - so it is neither progress nor a stalled round. The
+    /// run of stalled rounds is unchanged: a loaded remote host must not read as a stuck turn.
+    Unmeasured,
 }
 
 /// One tool result, as the detector saw it. Kept only for the stalled window, so
@@ -122,6 +126,9 @@ pub struct ProgressDetector {
     payloads: HashSet<String>,
     /// Results observed since the last [`ProgressDetector::end_round`].
     pending: Vec<Observation>,
+    /// A result since the last round could not be judged: it came from a status query nobody
+    /// answered. See [`Round::Unmeasured`].
+    unmeasured: bool,
     /// Consecutive stalled rounds, ending at the last one observed.
     run: usize,
     /// The observations that make up the current stalled run. Cleared by progress.
@@ -138,6 +145,7 @@ impl ProgressDetector {
             calls: HashMap::new(),
             payloads: HashSet::new(),
             pending: Vec::new(),
+            unmeasured: false,
             run: 0,
             window: Vec::new(),
             nudged: false,
@@ -152,6 +160,12 @@ impl ProgressDetector {
 
     /// One tool result, as it came back. Call order, in call order.
     pub fn observe(&mut self, call: &ToolCall, outcome: &ToolOutcome, payload: &str) {
+        // A status query about a remote job that timed out says nothing about the work - the host
+        // did not answer - so it counts as neither progress nor a stalled round.
+        if letibot_tools::builtins::jobs::status_went_unanswered(payload) {
+            self.unmeasured = true;
+            return;
+        }
         let key =
             letibot_turn::events::args_digest(&format!("{}\u{0}{}", call.name, call.arguments));
         let entry = self
@@ -178,6 +192,12 @@ impl ProgressDetector {
     /// Close the round and score it. Call once per round that ran tools.
     pub fn end_round(&mut self) -> Round {
         let pending = std::mem::take(&mut self.pending);
+        // A round whose every result was a status query nobody answered is not scored either way:
+        // the run of stalled rounds it would extend or clear is left exactly as it was.
+        if pending.is_empty() && std::mem::take(&mut self.unmeasured) {
+            return Round::Unmeasured;
+        }
+        self.unmeasured = false;
         // The rule, in one line: an `Ok` carrying bytes this turn has not seen - or a round that
         // STARTED A BACKGROUND JOB.
         if pending
@@ -415,6 +435,57 @@ mod tests {
         // read correctly rather than a leniency: that round told the model `j7` exists, and
         // the two after it told it the same thing again.
         assert_eq!(d.stalled_run(), 2, "identical bytes are not progress");
+    }
+
+    /// A status query nobody answered is not a stalled round and not progress: it said nothing
+    /// about the work, so a turn waiting on a loaded remote host is never cut for it.
+    #[test]
+    fn a_wait_whose_status_queries_all_timed_out_is_neither_progress_nor_a_stall() {
+        let mut d = ProgressDetector::new(2);
+        let silent = format!(
+            "`build` is STILL RUNNING after 60s.\n\n  {}, so nothing here says the job is \
+             stuck.\n\nIt was not killed.",
+            letibot_tools::builtins::jobs::UNANSWERED_STATUS
+        );
+        for i in 0..6 {
+            d.observe(
+                &call("job_wait", r#"{"job":"j1"}"#),
+                &ToolOutcome::Timeout,
+                &silent,
+            );
+            assert_eq!(d.end_round(), Round::Unmeasured, "round {i}");
+        }
+        assert_eq!(d.stalled_run(), 0, "no stalled round was counted");
+        assert!(!d.exhausted(), "a loaded host is not a stuck turn");
+
+        // And the same outcome WITHOUT the mark is a stalled round, which is the defect the mark
+        // is narrow enough to leave alone: a wait that timed out against a host that answered is
+        // evidence, and a run of them is the stop.
+        let mut plain = ProgressDetector::new(2);
+        for _ in 0..2 {
+            plain.observe(
+                &call("job_wait", r#"{"job":"j1"}"#),
+                &ToolOutcome::Timeout,
+                "`build` is STILL RUNNING after 60s. It was not killed.",
+            );
+            assert_eq!(plain.end_round(), Round::Stalled);
+        }
+        assert!(plain.exhausted());
+    }
+
+    /// A round that was unmeasured in part is judged on its other results: the wait it held is not
+    /// counted either way, and a real result beside it still decides the round.
+    #[test]
+    fn an_unmeasured_wait_beside_a_real_result_does_not_hide_it() {
+        let mut d = ProgressDetector::new(2);
+        d.observe(
+            &call("job_wait", r#"{"job":"j1"}"#),
+            &ToolOutcome::Timeout,
+            &format!("  {}", letibot_tools::builtins::jobs::UNANSWERED_STATUS),
+        );
+        d.observe(&call("read", r#"{"path":"a"}"#), &ok(), "new bytes");
+        assert_eq!(d.end_round(), Round::Progress);
+        assert_eq!(d.stalled_run(), 0);
     }
 
     #[test]

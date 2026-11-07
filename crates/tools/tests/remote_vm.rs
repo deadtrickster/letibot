@@ -140,6 +140,7 @@ impl Rig {
             ssh: Some(self.ssh.clone()),
             paths: Some(self.paths.clone()),
             bound: Some(Duration::from_secs(10)),
+            place_bound: None,
             egress: Egress::Denied,
             // A VM is the boundary, so nothing is probed for `bwrap`: `Some(false)` says do not
             // ask this box what it can confine.

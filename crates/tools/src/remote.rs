@@ -766,6 +766,9 @@ pub fn git_control_path(host: &str, pid: u32) -> PathBuf {
     control_path_for(host, pid, "git")
 }
 
+/// A socket name has a hard length bound, so a long host name falls back to `/tmp` itself. That
+/// directory is shared with every user of the box and is not ours to tighten: ssh makes these
+/// sockets 0600, and `daemon_sockets` looks for them here.
 fn control_path_for(host: &str, pid: u32, role: &str) -> PathBuf {
     let short = sanitise(host);
     let preferred = rundir().join(format!("ssh-{short}-{pid}-{role}.sock"));
@@ -773,6 +776,19 @@ fn control_path_for(host: &str, pid: u32, role: &str) -> PathBuf {
         return preferred;
     }
     PathBuf::from("/tmp").join(format!("letibot-ssh-{pid}-{short}-{role}.sock"))
+}
+
+/// Make [`rundir`] a directory only this user can enter. The `ControlMaster` socket in it is a
+/// handle on every session's connection to that host, and `rundir` is a directory in a shared
+/// `/tmp` whenever `XDG_RUNTIME_DIR` is unset.
+fn private_rundir() {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let dir = rundir();
+    let _ = std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir);
+    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
 }
 
 /// The host's `path` list as the export a remote command starts with, or `None` when the file
@@ -845,6 +861,12 @@ impl Host {
 /// write, a listing, a poll, a probe, a kill. None is work the operator asked to run, so a call past
 /// this bound has its local ssh killed and the operation fails, naming the host and the step.
 pub const STEP_BOUND: Duration = Duration::from_secs(20);
+
+/// How long one ARRANGING step gets: the one-off work a placement does before any call of a
+/// model's - the root, the mirror, the bundle, the checkout. A minute and not [`STEP_BOUND`],
+/// because on 2026-11-07 four placements died at 20 s while their host was building and a retry
+/// minutes later always worked.
+pub const PLACE_STEP_BOUND: Duration = Duration::from_secs(60);
 
 /// A remote call that has run this long is reported to the session. Short against [`STEP_BOUND`]
 /// (20 s) because a read or write on a healthy host answers in milliseconds, so a few seconds of
@@ -1313,6 +1335,12 @@ pub struct Ssh {
     /// The wall clock on every call that is not a command - [`STEP_BOUND`] unless a caller (a test,
     /// mostly) names another.
     bound: Duration,
+    /// The wall clock on an arranging step - [`PLACE_STEP_BOUND`], and the one budget a placement's
+    /// own work gets. [`Ssh::must`] is that door.
+    arrange: Duration,
+    /// The arranging steps that ran past [`Ssh::slow_after`], as sentences for a placement's
+    /// notes: mid-placement there is no [`SlowSink`] yet, so nobody else would hear about them.
+    slow_steps: Arc<Mutex<Vec<String>>>,
     /// Where the remote command's work is, as an absolute path on that machine: the checkout once a
     /// placement has made one, and the host's `root` before that. It is `mise exec -C <dir>`'s argument,
     /// because a toolchain is pinned by a `mise.toml` in the tree the work is in.
@@ -1343,9 +1371,10 @@ impl Ssh {
         }
         let control = control_path(&host.name, std::process::id());
         let git_control = git_control_path(&host.name, std::process::id());
-        // The socket's directory has to exist or ssh cannot make the master, and a missing master is
-        // not an error, it is a handshake per command, which nobody asked for. A failure here is not
-        // fatal: ssh says so on its own stderr.
+        // The socket's directory has to exist, or ssh makes no master and every command pays a
+        // handshake. It is made this user's alone: every placement to a host multiplexes over the
+        // one socket in it, so a name another user of the box could take is their connection too.
+        private_rundir();
         for socket in [&control, &git_control] {
             if let Some(dir) = socket.parent() {
                 let _ = std::fs::create_dir_all(dir);
@@ -1359,6 +1388,8 @@ impl Ssh {
             git_control,
             paths,
             bound: STEP_BOUND,
+            arrange: PLACE_STEP_BOUND,
+            slow_steps: Arc::new(Mutex::new(Vec::new())),
             dir: None,
             vm: None,
             mark: None,
@@ -1398,6 +1429,45 @@ impl Ssh {
     pub fn with_bound(mut self, within: Duration) -> Ssh {
         self.bound = within;
         self
+    }
+
+    /// The wall clock an arranging step gets. A test measures a fake's silence in seconds where a
+    /// loaded host needs a minute.
+    pub fn with_arrange_bound(mut self, within: Duration) -> Ssh {
+        self.arrange = within;
+        self
+    }
+
+    /// The arranging steps that ran past [`Ssh::slow_after`], and are nobody's warning yet.
+    fn slow_steps(&self) -> Vec<String> {
+        std::mem::take(&mut *self.slow_steps.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// An arranging step that took its time says how long it took. Mid-placement there is no sink
+    /// yet - [`Ssh::on_slow`] is set once [`SshBackend::place`] has returned - so the note is the
+    /// only place a session learns that the host was slow rather than broken.
+    fn note_how_long(&self, step: &str, took: Duration, within: Duration) {
+        if took < self.slow_after(within) {
+            return;
+        }
+        if self
+            .slow
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
+            return;
+        }
+        self.slow_steps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(format!(
+                "`{step}` on {} took {:.1} s. An arranging step is given {:.0} s because it runs \
+                 while that machine may be building: a loaded host, not a broken one.",
+                self.host.name,
+                took.as_secs_f32(),
+                within.as_secs_f32()
+            ));
     }
 
     /// Say every call that runs past [`Ssh::slow_after`] to `sink`, once per call.
@@ -1937,9 +2007,9 @@ impl Ssh {
     }
 
     /// The same call, but a non-zero exit is an error carrying what the host said. Used by everything
-    /// that is arranging rather than running the model's work.
+    /// that is arranging rather than running the model's work, so it carries [`Ssh::arrange`].
     fn must(&self, what: &str, script: &str) -> Result<String, BackendError> {
-        self.must_within(what, script, Retry::Once, self.bound)
+        self.must_within(what, script, Retry::Once, self.arrange)
     }
 
     /// [`Ssh::must`] for a step that must not be retried, and with its own bound.
@@ -1950,6 +2020,7 @@ impl Ssh {
         retry: Retry,
         within: Duration,
     ) -> Result<String, BackendError> {
+        let began = Instant::now();
         let (out, stderr, exit) =
             match self.call(what, script, retry, within, Reported::Always, None)? {
                 Call::Answered(out, stderr, exit) => (out, stderr, exit),
@@ -1978,6 +2049,7 @@ impl Ssh {
                 }
             )));
         }
+        self.note_how_long(what, began.elapsed(), within);
         Ok(out)
     }
 
@@ -3118,6 +3190,10 @@ pub struct SshSpec {
     /// is [`STEP_BOUND`]. A test's door: a fake ssh that never answers should be measured in a
     /// second rather than in twenty.
     pub bound: Option<Duration>,
+    /// The wall clock an ARRANGING step is given, when the caller names one. `None` is
+    /// [`PLACE_STEP_BOUND`]: these are the steps a loaded host makes wait. A test's door, measured in
+    /// seconds where production gives a minute.
+    pub place_bound: Option<Duration>,
     /// The session's network rule, as the confined view expresses it. A field rather than a
     /// constant, because the answer is a decision made above this file: a mode that admits
     /// `web_fetch` must not have its `curl` fail after the gate said yes, and the reverse holds too.
@@ -3224,6 +3300,7 @@ impl SshBackend {
         if let Some(within) = spec.bound {
             ssh = ssh.with_bound(within);
         }
+        ssh = ssh.with_arrange_bound(spec.place_bound.unwrap_or(PLACE_STEP_BOUND));
         // Every command from here carries the mark, arranging steps included. It names the placement,
         // not only the session: two daemons can place one session id on a host.
         static MARKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -3562,6 +3639,9 @@ impl SshBackend {
             ));
         }
         let confined_env = toolchain_env(confine.as_ref());
+        // Every arranging step has run by now, and one that took its time says how long it took: no
+        // sink was listening while the placement was being arranged, so the notes are the report.
+        notes.extend(ssh.slow_steps());
 
         let processes = if spec.exec {
             // The same connection, cloned: one ControlPath and one identity file, so a job `ssh`
@@ -4975,10 +5055,11 @@ impl RemoteProcesses {
     }
 
     /// [`RemoteProcesses::refresh`] with the caller's remaining time, so a `job_wait` honours its own
-    /// deadline even when the host has stopped answering.
-    fn refresh_within(&self, job: &RemoteJob, within: Duration) {
+    /// deadline even when the host has stopped answering. `false` is *this status query got no answer*,
+    /// which a wait has to keep apart from *the job is still running*.
+    fn refresh_within(&self, job: &RemoteJob, within: Duration) -> bool {
         if !job.is_running() {
-            return;
+            return true;
         }
         let script = format!(
             "e=; if [ -f {exit} ]; then e=$(cat {exit}); fi\n\
@@ -4996,7 +5077,7 @@ impl RemoteProcesses {
             .ssh
             .sh_poll_within("asking about a job", &script, within)
         else {
-            return;
+            return false;
         };
         // `trim_end`, not `trim`: the fields are tab-separated and the first is EMPTY until the job
         // writes its exit status, so `trim()` ate that leading tab and every running job read as
@@ -5004,7 +5085,7 @@ impl RemoteProcesses {
         let mut parts = line.trim_end_matches(['\n', '\r']).split('\t');
         let (Some(code), Some(alive), Some(produced)) = (parts.next(), parts.next(), parts.next())
         else {
-            return;
+            return true;
         };
         if let Ok(n) = produced.trim().parse::<u64>() {
             *job.produced.lock().unwrap_or_else(|e| e.into_inner()) = n;
@@ -5040,7 +5121,7 @@ impl RemoteProcesses {
             let Ok((said, _, _)) = again else {
                 // A look that did not answer is not evidence either way; the next tick asks
                 // again. Settling here would be inventing a kill out of a dropped connection.
-                return;
+                return false;
             };
             let again = said.trim();
             if !again.is_empty() {
@@ -5050,7 +5131,7 @@ impl RemoteProcesses {
                         code: again.parse().unwrap_or(-1),
                     },
                 );
-                return;
+                return true;
             }
             // No exit file, and the pid we saw is gone: something on that machine ended
             // it and it never wrote a status. Said as that, not as a graceful exit it
@@ -5065,6 +5146,7 @@ impl RemoteProcesses {
                 });
             self.settle(job, JobState::Killed { by });
         }
+        true
     }
 
     /// Everything the files say, for a view.
@@ -5607,6 +5689,9 @@ impl ProcessHost for RemoteProcesses {
         // Polled, and the interval is the trade: every check is a round trip to another
         // machine, so 120 ms is the fastest that does not cost more than the work.
         let tick = Duration::from_millis(120);
+        // Every status query this wait made, and how many of them the host answered: a wait that
+        // asked and was never answered learnt nothing, and says so as `silent`.
+        let (mut asked, mut answered) = (0u32, 0u32);
         loop {
             let left = deadline.saturating_sub(started.elapsed());
             if left.is_zero() {
@@ -5614,9 +5699,13 @@ impl ProcessHost for RemoteProcesses {
                     took: started.elapsed(),
                     produced: job.produced(),
                     since_last_output: None,
+                    silent: asked > 0 && answered == 0,
                 });
             }
-            self.refresh_within(&job, poll_budget(left, self.ssh.poll_bound()));
+            asked += 1;
+            if self.refresh_within(&job, poll_budget(left, self.ssh.poll_bound())) {
+                answered += 1;
+            }
             if !job.is_running() {
                 return Ok(Waited::Happened {
                     state: Some(job.state()),
@@ -5628,6 +5717,7 @@ impl ProcessHost for RemoteProcesses {
                     took: started.elapsed(),
                     produced: job.produced(),
                     since_last_output: None,
+                    silent: asked > 0 && answered == 0,
                 });
             }
             std::thread::sleep(tick);
@@ -5649,6 +5739,7 @@ impl ProcessHost for RemoteProcesses {
                 waited_for_presence: started.elapsed(),
             });
         }
+        let (mut asked, mut answered) = (0u32, 0u32);
         loop {
             let left = deadline.saturating_sub(started.elapsed());
             if left.is_zero() {
@@ -5656,10 +5747,14 @@ impl ProcessHost for RemoteProcesses {
                     took: started.elapsed(),
                     produced: mine.iter().map(|j| j.produced()).sum(),
                     since_last_output: None,
+                    silent: asked > 0 && answered == 0,
                 });
             }
             for j in &mine {
-                self.refresh_within(j, poll_budget(left, self.ssh.poll_bound()));
+                asked += 1;
+                if self.refresh_within(j, poll_budget(left, self.ssh.poll_bound())) {
+                    answered += 1;
+                }
             }
             if mine.iter().all(|j| !j.is_running()) {
                 return Ok(Waited::Happened {
@@ -5672,6 +5767,7 @@ impl ProcessHost for RemoteProcesses {
                     took: started.elapsed(),
                     produced: mine.iter().map(|j| j.produced()).sum(),
                     since_last_output: None,
+                    silent: asked > 0 && answered == 0,
                 });
             }
             std::thread::sleep(Duration::from_millis(120));

@@ -85,6 +85,10 @@ pub enum Waited {
         took: Duration,
         produced: u64,
         since_last_output: Option<Duration>,
+        /// Not one status query about the thing was answered during the wait, so the wait learnt
+        /// nothing about it: a loaded host, not a stuck job. [`crate::builtins::jobs::UNANSWERED_STATUS`]
+        /// is how a result says so, and the progress check reads it.
+        silent: bool,
     },
     /// Presence was never observed, so the absence proves nothing. A boot window,
     /// not a finish.
@@ -1959,6 +1963,8 @@ impl ProcessHost for HostProcesses {
                     took: started.elapsed(),
                     produced: agg.produced(),
                     since_last_output: agg.since_last_output(),
+                    // An aggregate's own state is this process's: there is no query to time out.
+                    silent: false,
                 }),
             };
         }
@@ -1971,6 +1977,8 @@ impl ProcessHost for HostProcesses {
                 took: started.elapsed(),
                 produced: cap.produced(),
                 since_last_output: cap.since_last(),
+                // A local job's status is a file this process holds: nothing can go unanswered.
+                silent: false,
             });
         }
         Ok(Waited::Happened {
@@ -2009,6 +2017,8 @@ impl ProcessHost for HostProcesses {
             took: started.elapsed(),
             produced: 0,
             since_last_output: None,
+            // A scope of this process's own tree, asked with no network in it.
+            silent: false,
         })
     }
 

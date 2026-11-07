@@ -78,7 +78,9 @@ effort**: the gate refuses one whose words name an absolute path into it, but a 
 One TCP connection per host **per daemon**: `ControlMaster=auto`, `ControlPersist=120`, and a `ControlPath`
 under letibot's runtime directory named by the host **and the daemon's pid** - `ssh-<host>-<pid>-call.sock`,
 with `ssh-<host>-<pid>-git.sock` beside it for the `git fetch` this process does not start and so cannot
-count (R99). A command costs a round trip rather than a handshake, no two daemons queue for the same ten
+count (R99). That directory is created 0700 (`remote::private_rundir`): the socket is a handle on every
+session's connection to that host, and the runtime directory is `/tmp/letibot` when `XDG_RUNTIME_DIR` is
+unset. A command costs a round trip rather than a handshake, no two daemons queue for the same ten
 sessions, and git cannot be the ninth session on the call master.
 
 `BatchMode=yes` and `StrictHostKeyChecking=yes`: a host that wants a password or a host-key confirmation is
@@ -228,9 +230,13 @@ way appears as `<checkout>-<stamp>`, and the close's sentence gives the `git fet
 ssh is the transport, the ControlMaster is the connection pool, the remote shell is the server.
 
 1. **A deadline on every call**, enforced by killing the local ssh and never by trusting the remote:
-   `STEP_BOUND` 20 s for every call that is not a command (a model's `run` carries it too), `CANCEL_BOUND`
-   10 s for the extra call that kills a group, `POLL_BOUND` 5 s for a job's status poll, `GIT_BOUND` 5 min
-   for a whole fetch - its slot wait, its run and its retry together - `MASTER_BOUND` 3 s for an `-O check`.
+   `STEP_BOUND` 20 s for every call that is not a command (a model's `run` carries it too),
+   `PLACE_STEP_BOUND` 60 s for a step that is **arranging** rather than serving the session - the root, the
+   mirror, the bundle hand-off, the checkout - because those wait on a host that may be building (R153),
+   `CANCEL_BOUND` 10 s for the extra call that kills a group, `POLL_BOUND` 5 s for a job's status poll,
+   `GIT_BOUND` 5 min for a whole fetch - its slot wait, its run and its retry together - `MASTER_BOUND` 3 s
+   for an `-O check`. A step that takes longer than half its budget (at most 8 s) is said: to the session's
+   warnings when it is serving one, and to the placement's notes when no sink exists yet (R153).
 2. **Failure detection** by `ServerAliveInterval`/`ServerAliveCountMax`; a stale ControlMaster is checked and
    replaced (`ssh -O check`, then the socket is removed so the next call dials afresh).
 3. **Retries follow idempotency.** `read`, `stat`, `list`, `list_tree`, `workdir`, a probe, `job_output` and

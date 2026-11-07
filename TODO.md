@@ -64,7 +64,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R144 | The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag | Code work | nothing - settled; the entry is kept for the operator's archive |
 | R152 | `tests/launcher.sh` stubs outlived their run, and four of its cases had drifted | Code work | putting `tests/launcher.sh` in the merge gate |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
-| R153 | Placing a session on a busy host times out at 20 s | Code work | a placement's one-off steps sized for a loaded host, one ssh connection per host (`ControlMaster`), and a timed-out status poll not counted as a failed round; the 2 s poll floor is landed |
+| R153 | Placing a session on a busy host times out at 20 s | Needs the operator | the live proof on a loaded lab2x1: a placement there while the host is building, and a session's `job_wait` against it; the minute-long arranging budget, the one connection per host and the round a timed-out status query is not are landed |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
 | R150 | Plugin extension points: the harness and head open to plugins | Needs the operator | the operator's answers to the 13 questions in `docs/plugin-extension-points-wide.md` §8 (each has a default and is built on it meanwhile); K2-K6, K11 and P6 to build; H0, P5, K7, K8, K9, K10 are landed and K1 is in flight |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
@@ -961,12 +961,49 @@ K8 (X26 of the second review): the two reserved prefixes nothing asked now have 
 
 ## R153 - Placing a session on a busy host times out at 20 s
 
-**Status:** open. left: all of it.
+**Status:** fixed here. left: the live proof on a loaded lab2x1 - a placement there while the host is building, and a remote session's `job_wait` against it.
 
 On 2026-11-07 four placements failed at the same step while their host was building: `making the mirror` and `handing the bundle to the remote repository` got no answer within 20 s, the ssh was killed and the daemon shut down before the brief was sent. A retry minutes later always worked. Also seen: an ssh `Connection closed` on lubuntu3 while three packages opened connections at once (sshd `MaxStartups`), and `remote_call_slow` warnings with budgets under a tenth of a second. The placement's one-off steps should take a budget sized for a loaded host, and the link should reuse one ssh connection per host (`ControlMaster`) instead of opening one per call. Beside R149, which sizes the build width.
 
 
 A second budget did the same to running sessions (`cc@serenedb`, room #861, two sessions on 2026-11-07): a remote job's status poll was given what the caller's wait had left, 0.03 to 1.1 s, so on a loaded host every poll timed out, the job read as running, the progress check stopped the turn and the model concluded the host was unreachable. A poll now gets at least 2 s (`remote::POLL_FLOOR`, `poll_budget`). Left from that report: a status query that timed out should not count as a failed round in the progress check.
+
+**Built (2026-11, R153 seat).**
+
+- **A minute for a step that is arranging, 20 s for every other call.** `PLACE_STEP_BOUND` (60 s) is
+  `Ssh::arrange`, the budget of `Ssh::must` - the one door a placement's own steps go through (the
+  root, the mirror, the bundle hand-off, the checkout, the exclude) - while a read, a write, a
+  listing, a poll and a probe keep `STEP_BOUND`. `SshSpec::place_bound` names one for a test.
+  Measured by `a_slow_arranging_step_is_given_its_own_budget_and_says_how_long_it_took`: a fake
+  host that takes 4.5 s at `making the mirror` while every other call of the placement is held to
+  2 s - the budget that step used to die at - and the placement completes. The bundle UPLOAD keeps
+  `write_bound` (the bound plus a second per 512 KiB), which already scaled with the payload.
+- **A step that took its time says how long.** `Ssh::note_how_long` puts "`making the mirror` on X
+  took 41.2 s ... given 60 s" into the placement's notes for a step that passes `Ssh::slow_after`
+  (min(8 s, half its budget)). Mid-placement no `on_slow` sink exists yet - the daemon sets one
+  after `place` has returned - so a warning there reached nobody; the note is warned with
+  `REMOTE_PLACEMENT` when the session opens.
+- **One connection per host was already there; its socket's directory was not private.**
+  `ControlMaster=auto`, a `ControlPath` per (daemon pid, host, role), `ControlPersist=120`, an
+  `-O check` before a call and a master torn down only after its last user had all landed. What was
+  missing is the DIRECTORY: `rundir()` (`$XDG_RUNTIME_DIR/letibot`, and `/tmp/letibot` when that is
+  unset - a shared `/tmp`) was created 0755, so another user of the box could take the name of every
+  session's connection. `remote::private_rundir` makes it 0700 at `Ssh::connect`. A host name too
+  long for the socket path still falls back to a socket directly in `/tmp`, where ssh's own 0600 is
+  what protects it and `daemon_sockets` is what finds it. Measured by
+  `concurrent_calls_to_one_host_open_one_connection_in_a_private_directory` (eight calls at once,
+  one `ControlPath`, the directory 0700); the one-connection-for-six-placements proof was already
+  `six_sessions_at_once_on_one_host_all_place_over_one_connection`.
+- **A status query that timed out is not a stalled round.** `Waited::Deadline` carries `silent` -
+  not one status query about the job was answered during the wait - counted per wait by
+  `RemoteProcesses::wait_job`/`wait_scope` (every poll, every answered poll) and accumulated over the
+  slices `job_wait` waits in. A silent deadline says so in its result
+  (`builtins::jobs::UNANSWERED_STATUS`, which `ProgressDetector::observe` reads) and that round is
+  scored `Round::Unmeasured`: the run of stalled rounds is neither extended nor cleared. A deadline
+  against a host that DID answer is still a stalled round and still stops a turn. Measured both ways
+  by `a_wait_whose_status_queries_all_timed_out_is_neither_progress_nor_a_stall`, and the production
+  half by `a_wait_no_status_query_answered_does_not_claim_the_job_is_stuck`.
+
 ## R134 - Scrolling stops at a line above the tail
 
 **Status:** not reproduced. left: a reproduction from the operator.

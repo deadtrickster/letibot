@@ -161,6 +161,7 @@ impl Rig {
             ssh: Some(self.ssh.clone()),
             paths: Some(self.paths.clone()),
             bound: Some(Duration::from_secs(10)),
+            place_bound: None,
             egress,
             // Asked, which is production's own value: `None`. The fake remote answers with its
             // `bwrap`, and a rig built without one answers that it has none.
