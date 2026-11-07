@@ -1242,7 +1242,11 @@ impl Boundary {
                 continue;
             }
             for tok in absolute_paths(line) {
-                if matches!(self.view.classify(&tok), Presence::Outside) && !outside.contains(&tok)
+                // Only a path this host has can be one the view hid. A path printed by a
+                // container (`-v /tmp:/hosttmp`) or an unexpanded glob is nothing to grant.
+                if matches!(self.view.classify(&tok), Presence::Outside)
+                    && is_a_host_path(&tok)
+                    && !outside.contains(&tok)
                 {
                     outside.push(tok);
                 }
@@ -1451,6 +1455,12 @@ fn absolute_paths(line: &str) -> Vec<PathBuf> {
             }
         })
         .collect()
+}
+
+/// Whether `p` names something on this host, with no glob left in it.
+fn is_a_host_path(p: &std::path::Path) -> bool {
+    let shown = p.to_string_lossy();
+    !shown.contains(['*', '?', '[']) && std::fs::symlink_metadata(p).is_ok()
 }
 
 /// The program name in a shell's missing-binary line: `cargo: command not found`, and the same
@@ -3882,6 +3892,23 @@ mod tests {
     }
 
     /// The note promises a grant, so the door that raises grants must name the same path. A
+    /// A container's own paths are not this host's: `ls /hosttmp/c-*` failing inside
+    /// `docker run -v /tmp:/hosttmp` must not ask the operator to grant `/hosttmp/c-*`.
+    #[test]
+    fn a_path_this_host_does_not_have_raises_no_grant_card() {
+        let project =
+            std::env::temp_dir().join(format!("letibot-view-host-{}", std::process::id()));
+        std::fs::create_dir_all(&project).expect("fixture project");
+        let b = a_boundary_over(&project);
+        for said in [
+            "ls: cannot access '/hosttmp/c-*': No such file or directory",
+            "cat: /letibot-no-such-dir-anywhere/x: No such file or directory",
+        ] {
+            assert!(b.outside_paths(said).is_empty(), "{said}");
+        }
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
     /// missing program folded into the note and not into the ask leaves the model waiting for a
     /// decision nobody was asked for.
     #[test]
