@@ -82,14 +82,20 @@ fn sessions_the_operator_and_the_daemons_facts_share_the_rooms() {
         "an author is not woken by itself"
     );
 
-    // Unaddressed session chatter is recorded and does not start a turn.
+    // Unaddressed session chatter wakes the others, and asks none of them to reply.
     a1.call(
         "say",
         &json!({"room": "host", "text": "just thinking aloud"}),
     )
     .unwrap();
-    std::thread::sleep(Duration::from_millis(300));
-    assert!(wake::take("s-chat-b1").is_empty());
+    let woken = wait_for("b1 woken by chatter", || {
+        let got = wake::take("s-chat-b1");
+        (!got.is_empty()).then_some(got)
+    });
+    assert!(
+        woken[0].contains("just thinking aloud") && woken[0].contains("no reply asked"),
+        "{woken:?}"
+    );
 
     // The operator's unaddressed word in the host room wakes both.
     let r = seat.ask(
