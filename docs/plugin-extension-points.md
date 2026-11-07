@@ -407,3 +407,17 @@ Done when (in `plugins/builtin/chat/src/tests.rs`):
 6. The trust round trip on every rebuild (W4): pin a session layer automatically when the session
    that built it loads it? Default: no; a session pin stays the operator's, but `load` says the
    one command to type.
+
+## 7. Decisions
+
+2026-11-07, the operator:
+
+- Question 1: the native renderer stays only as a safety net. It is kept until the built-in chat
+  plugin (P6) has run without traps for a while, then deleted. It is not a second product: P2-P4
+  build it as the adapter, and P5-P6 put the plugin on it.
+- This review was scoped too tightly on rooms. A second review covers the whole harness and head
+  (`docs/plugin-extension-points-wide.md`); questions 2-6 are answered after it, against both.
+- Started now, independent of both reviews: the four walls of section 2 that are bugs, not design
+  (TODO R151): built-in panes unreachable by `/pane`, `read` resolved against the workspace not the
+  checkout, the pin lost on every rebuild, and the `plugin-hooks` skill missing `tool_`, `command_`
+  and `pane_`.

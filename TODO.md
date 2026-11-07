@@ -73,6 +73,8 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
 | R145 | The review queue's session is seated a role its own prompt does not match | Code work | all of it: `Seat::Orchestrator` resolves to `roles::m1_orchestrator`, which holds neither `task_result` nor `task_message`, and the prompt prescribes both |
+| R150 | Plugin extension points: the head's UI moves out to plugins | Code work | the wide review (`docs/plugin-extension-points-wide.md`), then the operator's answers to questions 2-6 of `docs/plugin-extension-points.md`, then the packages |
+| R151 | Four plugin walls that are bugs: unreachable built-in panes, `read` against the workspace, the pin lost on rebuild, the hooks skill's missing kinds | Code work | all of it |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
 | R100 | A remote session in a firecode VM: `--host` and `--vm` as one placement | Needs the operator | the live proof on lab2x1: a real `firecode` copy carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, the copy-out's cost |
 | R59 | The context wall's denominator moves a third between firings | Needs the operator | the operator's ruling on smoothing the ratio (the tree keeps it per round, as recommended) |
@@ -940,6 +942,18 @@ The fix is a purpose-built role: M1's set plus `task_result` and `task_message`,
 The reviewer's seat (`Role::gatekeeper`, `runtime.rs:1143`) is the other half and must not move: `bash` behind the daemon's flag, `review_verdict`, and no `task_result`.
 
 **Done when**: the queue's session resolves to the new role, a session next door in the same workspace still resolves to M1, and a test over both roles names the delta between them.
+
+## R150 - Plugin extension points: the head's UI moves out to plugins
+
+**Status:** reviewing. left: the wide review, the operator's answers, the build.
+
+`docs/plugin-extension-points.md` is the first review, scoped to the room chat: its decisions can be a plugin, its mechanics stay host. Ten host additions (X1-X10: a `chat` feed, a `stream` block, pictures by blob id, theme hues, an input surface, a `complete_` hook, acts in answers, cursor-mode keys, a clock in the input, and dock/built-in/exec/read fixes for the other panes) and packages H0, P5, P6 beside room-tui's P2-P4. The operator's ruling: the native renderer stays only as a safety net until the built-in chat plugin is proven, then goes. The review was too room-focused, so a second one covers the whole harness and head before questions 2-6 are answered.
+
+## R151 - Four plugin walls that are bugs
+
+**Status:** open. left: all of it.
+
+From the review's evidence (section 2): `/pane irc` and `/pane github` are compiled in but unreachable, because the daemon installs a built-in only on a tool match (`crates/harnessd/src/plugins.rs:276-301`) and the head never asks `pane_nicks`; a pane's `read` resolves against the session workspace, not the checkout, so a pane in a worktree draws `look exit 1`; every rebuild unpins the layer and costs a `/plugin trust`; the `plugin-hooks` skill teaches four hook kinds and omits `tool_`, `command_` and `pane_`, so agents conclude in the room that a plugin cannot add a tool.
 
 ## R134 - Scrolling stops at a line above the tail
 
