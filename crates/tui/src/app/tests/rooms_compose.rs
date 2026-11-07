@@ -392,13 +392,14 @@ fn alt_enter_adds_a_line_and_enter_sends_both() {
 #[test]
 fn a_pasted_picture_becomes_a_chip_and_a_blob_reference() {
     let mut a = opened(1_000);
-    // P4's upload is the stub in this tree: it answers no chip, so nothing is put in the line and
-    // nothing is named - a paste that uploaded nothing must not look like one that did.
-    assert!(!a.rooms_paste_picture(vec![0x89, b'P', b'N', b'G'], "shot.png"));
-    assert_eq!(a.input(), "");
-    assert!(a.compose.chips.is_empty());
+    // P4's upload queues the parts and answers the chip at once; its blob id arrives with the
+    // room's reply, so the chip is in the line before it names anything.
+    assert!(a.rooms_paste_picture(vec![0x89, b'P', b'N', b'G'], "shot.png"));
+    assert!(a.input().starts_with("[image 1 · png"), "{}", a.input());
+    assert_eq!(a.compose.chips.len(), 1);
 
-    // The chip's half is P3's, and the words and the blob id are what P4 will hand it.
+    // A chip whose id is known goes out as a blob reference with the id on the say.
+    let mut a = opened(1_000);
     a.rooms_chip("[shot.png]", Some(BLOB), "shot.png");
     assert_eq!(a.input(), "[shot.png]", "the chip is in the line");
     let (line, blobs) = a.rooms_outgoing("[shot.png] the gate");
