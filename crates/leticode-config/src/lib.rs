@@ -1815,24 +1815,7 @@ impl LeticodeConfig {
             roles.insert(role.clone(), settings);
         }
 
-        if let Some(v) = &file.project {
-            let user = level == Level::User;
-            let table = table_at(v, path, &text, "project", "the key is `repository`")?;
-            for (key, v) in table {
-                let from = at(path, &text, key, user);
-                match (key.as_str(), v.as_bool()) {
-                    ("repository", Some(_)) => {}
-                    ("repository", None) => {
-                        return Err(format!("{from}: [project] repository is true or false"));
-                    }
-                    _ => {
-                        return Err(format!(
-                            "{from}: [project] has no key `{key}`; it is `repository`"
-                        ));
-                    }
-                }
-            }
-        }
+        workspace::validate(file.project.as_ref(), path, &text, level == Level::User)?;
         let mut config = LeticodeConfig {
             main_model: file.main_model.as_deref().and_then(non_empty),
             subagent_model: file.subagent_model.as_deref().and_then(non_empty),

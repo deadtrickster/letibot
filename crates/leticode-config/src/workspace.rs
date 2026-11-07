@@ -5,6 +5,38 @@ use std::path::{Path, PathBuf};
 
 use crate::LeticodeConfig;
 
+/// Check a `[project]` table: the only key is `repository`, a boolean. The error names the line.
+pub(crate) fn validate(
+    table: Option<&toml::Value>,
+    path: &Path,
+    text: &str,
+    user: bool,
+) -> Result<(), String> {
+    let Some(v) = table else { return Ok(()) };
+    let Some(t) = v.as_table() else {
+        return Err(format!(
+            "{}:{}: [project] is a table; the key is `repository`",
+            path.display(),
+            crate::line_of(text, "project")
+        ));
+    };
+    for (key, v) in t {
+        let from = crate::at(path, text, key, user);
+        match (key.as_str(), v.as_bool()) {
+            ("repository", Some(_)) => {}
+            ("repository", None) => {
+                return Err(format!("{from}: [project] repository is true or false"));
+            }
+            _ => {
+                return Err(format!(
+                    "{from}: [project] has no key `{key}`; it is `repository`"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The home directory, from `$HOME`. `None` when unset.
 pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
