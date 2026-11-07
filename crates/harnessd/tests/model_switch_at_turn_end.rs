@@ -81,10 +81,9 @@ const TOOL_FILE: &str = "notes.txt";
 /// would close before a line could be queued.
 const REFUSAL_HOLD_MS: u64 = 900;
 
-/// The provider's own words, as they arrived. The retry policy reads this: a 429 whose body names
-/// money is refused at once, because no wait can lift a quota, and this one names a reset time.
-const REFUSAL_BODY: &str = "{\"error\":{\"message\":\"Weekly/Monthly Limit Exhausted. \
-                             Your limit will reset at 2026-10-12 15:01:48.\"}}";
+/// The provider's own words, as they arrived. No reset time on purpose: a 429 that names one parks
+/// the session until then (R148), and this file measures a turn that FAILS while a switch waits.
+const REFUSAL_BODY: &str = "{\"error\":{\"message\":\"Weekly/Monthly Limit Exhausted.\"}}";
 
 // ---------------------------------------------------------------------------
 // The two stubs
@@ -551,6 +550,8 @@ fn config(
     // No ladder unless a scenario asks for one. A 429 that names a reset time is not something
     // to wait out: the turn ends, which is what these scenarios need to see.
     cfg.http_retries = 0;
+    // A limit with no reset is retried later rather than failed (R148); this file's turns fail.
+    cfg.limit_retry_rounds = 0;
     cfg
 }
 
