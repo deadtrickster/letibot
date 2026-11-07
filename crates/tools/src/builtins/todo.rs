@@ -2150,14 +2150,9 @@ impl TodoWriteTool {
         };
         // The list back to the model, as it now stands - so the next call is written against what
         // the pane shows, not against what the model believes it wrote.
-        // A full list is answered in full, so the edges it wrote are read back. A call that only
-        // moved rows is answered with what is left to do.
         let board = self.board.snapshot();
-        let mut out = if list_sent {
-            render(&board)
-        } else {
-            render_answer(&board)
-        };
+        let wrote: Vec<&str> = rows.iter().map(|(c, _, _)| c.as_str()).collect();
+        let mut out = render_answer(&board, &wrote);
         if !updates.is_empty() {
             out.push_str(&format!(
                 "\nof your own rows you named, {} changed status{}.\n",
@@ -2367,7 +2362,8 @@ impl TodoWriteTool {
                 );
             }
         };
-        let mut out = render(&self.board.snapshot());
+        let wrote: Vec<&str> = plan.iter().map(|(c, _)| c.as_str()).collect();
+        let mut out = render_answer(&self.board.snapshot(), &wrote);
         out.push_str(&format!(
             "\nwaits changed on {mine} of your rows and {theirs} of the operator's (the rest \
              already said that). A row waiting on a running job or a subagent is not asked about \
@@ -2880,18 +2876,24 @@ fn waits(t: &TodoItem) -> bool {
 
 /// What a `todo_write` answers with: the rows there is work on now. Finished and waiting rows are
 /// counted, not listed, or a long plan closed one row at a time reads the whole board back per row.
-fn render_answer(todos: &[TodoItem]) -> String {
+/// A waiting row this call `wrote` is listed, so the model reads back the wait it just set.
+fn render_answer(todos: &[TodoItem], wrote: &[&str]) -> String {
+    let wrote_it = |t: &TodoItem| wrote.iter().any(|w| w.trim() == t.content.trim());
     let done = todos
         .iter()
         .filter(|t| t.status == TodoStatus::Completed)
         .count();
     let waiting = todos
         .iter()
-        .filter(|t| matches!(t.status, TodoStatus::Pending | TodoStatus::InProgress) && waits(t))
+        .filter(|t| {
+            matches!(t.status, TodoStatus::Pending | TodoStatus::InProgress)
+                && waits(t)
+                && !wrote_it(t)
+        })
         .count();
     let mut out = render_rows(todos, |t| match t.status {
         TodoStatus::Completed => false,
-        TodoStatus::Pending | TodoStatus::InProgress => !waits(t),
+        TodoStatus::Pending | TodoStatus::InProgress => !waits(t) || wrote_it(t),
         TodoStatus::Postponed | TodoStatus::Cancelled => true,
     });
     if done + waiting > 0 {
