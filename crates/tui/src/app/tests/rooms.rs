@@ -717,7 +717,7 @@ fn a_mention_is_a_name_not_a_prefix() {
 
 const WIDTHS: [usize; 2] = [80, 120];
 
-fn screen(a: &mut App, cols: usize) -> Vec<String> {
+pub(super) fn screen(a: &mut App, cols: usize) -> Vec<String> {
     a.screen(cols, 24)
 }
 

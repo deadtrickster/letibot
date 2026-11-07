@@ -114,6 +114,16 @@ pub(crate) enum Chan {
     Session(String),
 }
 
+/// What a row of the left list stands for when it is clicked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ListRow {
+    Chan(Chan),
+    /// A repository's queue row, by the repository key the queue snapshot uses.
+    Queue(String),
+    /// The mute checkbox of that repository's queue row.
+    Mute(String),
+}
+
 /// A top-level session of the operator's, as the Sessions section lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessInfo {
@@ -166,7 +176,15 @@ pub(crate) struct RoomsView {
     /// The operator's top-level sessions, kept in step with the head's session list.
     pub sessions: Vec<SessInfo>,
     /// The channel list's rows as the last frame drew them: the pane row and the channel on it.
-    pub chan_rows: Vec<(usize, Chan)>,
+    pub chan_rows: Vec<(usize, ListRow)>,
+    /// Sessions the review queue runs (the gatekeeper and its reviewers): what they say is a queue
+    /// event, counted on the Queues rows, and never a room message.
+    pub queue_authors: BTreeSet<String>,
+    /// The newest queue move each repository's row has shown, by repository key.
+    pub queue_seen: BTreeMap<String, u64>,
+    /// The newest `seq` of a queue post dropped from each room, so reading the room to its end
+    /// still reaches the room's last `seq`.
+    pub hidden: BTreeMap<String, u64>,
     pub member_rows: Vec<(usize, String)>,
     /// Rooms whose oldest stored message is on screen, so asking further back finds nothing.
     pub oldest_known: BTreeSet<String>,
@@ -285,7 +303,10 @@ impl RoomsView {
                         return r.unread;
                     }
                     let loaded = self.msgs.get(id).map_or(&[][..], Vec::as_slice);
-                    let top = loaded.last().map_or(0, |m| m.seq);
+                    let top = loaded
+                        .last()
+                        .map_or(0, |m| m.seq)
+                        .max(self.hidden.get(id).copied().unwrap_or(0));
                     let after = loaded
                         .iter()
                         .filter(|m| m.author != OPERATOR && m.seq > seen)
@@ -339,6 +360,11 @@ impl RoomsView {
         let list = self.msgs.entry(room.to_string()).or_default();
         for m in rows {
             *cursor = (*cursor).max(m.seq);
+            if self.queue_authors.contains(&m.author) || m.author.starts_with("s-gatekeeper-") {
+                let at = self.hidden.entry(room.to_string()).or_insert(0);
+                *at = (*at).max(m.seq);
+                continue;
+            }
             if list.iter().all(|x| x.seq != m.seq) {
                 list.push(m);
             }
@@ -398,7 +424,12 @@ impl RoomsView {
     /// holds the cursor - it may not pass a message this head has not drawn anywhere.
     pub(crate) fn shown(&mut self) -> Option<u64> {
         let c = self.selected()?;
-        let top = self.messages(&c).last().map(|m| m.seq)?;
+        let shown = self.messages(&c).last().map(|m| m.seq)?;
+        // A queue post the room dropped is not news to read, so reading to the end passes it.
+        let top = match &c {
+            Chan::Room(id) => shown.max(self.hidden.get(id).copied().unwrap_or(0)),
+            _ => shown,
+        };
         self.seen.insert(Self::key(&c), top);
         let undrawn = |c: &Chan| -> bool {
             let seen = self.seen.get(&Self::key(c)).copied().unwrap_or(0);
@@ -869,6 +900,27 @@ impl App {
             })
             .collect();
         self.rooms.sessions = mine;
+        // The queue's own sessions: a queue-origin session and whatever it spawned (its reviewers).
+        let queue: BTreeSet<String> = self
+            .sessions
+            .iter()
+            .filter(|b| {
+                let mut cur = Some(*b);
+                for _ in 0..8 {
+                    let Some(s) = cur else { break };
+                    if s.origin == letibot_sessionlog::SessionOrigin::Queue {
+                        return true;
+                    }
+                    cur = s
+                        .parent_session_id
+                        .as_deref()
+                        .and_then(|p| self.sessions.iter().find(|x| x.session_id == p));
+                }
+                false
+            })
+            .map(|b| b.session_id.clone())
+            .collect();
+        self.rooms.queue_authors = queue;
     }
 
     /// Enter on a session row: this head moves to that session, as picking it in the session list.

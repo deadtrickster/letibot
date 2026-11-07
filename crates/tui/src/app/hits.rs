@@ -197,12 +197,16 @@ impl App {
                 // The channel list's rows, exactly where the draw put them.
                 if s == Surface::Rooms {
                     let w = self.rooms_left_w;
-                    for (k, (row, _)) in self.rooms.chan_rows.clone().into_iter().enumerate() {
+                    for (k, (row, kind)) in self.rooms.chan_rows.clone().into_iter().enumerate() {
+                        let (hx, hw) = match kind {
+                            crate::app::rooms::ListRow::Mute(_) => (x + w.saturating_sub(3), 3),
+                            _ => (x, w),
+                        };
                         self.hits.push(Hit {
                             rect: Rect {
-                                x,
+                                x: hx,
                                 y: top + row,
-                                w,
+                                w: hw,
                                 h: 1,
                             },
                             target: Target::RoomChan,

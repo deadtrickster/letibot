@@ -5,7 +5,7 @@
 
 use std::ops::ControlFlow;
 
-use crate::app::rooms::Chan;
+use crate::app::rooms::{Chan, ListRow};
 use crate::app::*;
 
 /// The columns the transcript keeps before the sidebar gives way.
@@ -13,18 +13,12 @@ pub(crate) const MAIN_MIN: usize = 72;
 /// The narrowest sidebar worth drawing.
 pub(crate) const SIDE_MIN: usize = 18;
 
-/// One row of the sidebar as the last frame drew it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SideRow {
-    Chan(Chan),
-}
-
 #[derive(Debug, Default)]
 pub(crate) struct Sidebar {
     pub on: bool,
     pub focus: bool,
     /// The rows of the last frame, by screen row.
-    pub rows: Vec<(usize, SideRow)>,
+    pub rows: Vec<(usize, ListRow)>,
 }
 
 /// How the sidebar sits in a frame of `term_w` columns.
@@ -107,12 +101,17 @@ impl App {
                     }
                 }
                 let x = main_w + 1;
-                for (k, (r, _)) in self.sidebar.rows.clone().into_iter().enumerate() {
+                for (k, (r, row)) in self.sidebar.rows.clone().into_iter().enumerate() {
+                    // The checkbox is the last three cells of its line, a target of its own.
+                    let (hx, hw) = match row {
+                        ListRow::Mute(_) => (x + sbw - 3, 3),
+                        _ => (x, sbw),
+                    };
                     self.hits.push(Hit {
                         rect: Rect {
-                            x,
+                            x: hx,
                             y: r,
-                            w: sbw,
+                            w: hw,
                             h: 1,
                         },
                         target: Target::SideRow,
@@ -220,7 +219,7 @@ impl App {
 
     /// A click on row `k` of the sidebar.
     pub(crate) fn sidebar_click(&mut self, k: usize) -> Option<Action> {
-        let (_, SideRow::Chan(c)) = self.sidebar.rows.get(k).cloned()?;
-        self.sidebar_act(c)
+        let (_, row) = self.sidebar.rows.get(k).cloned()?;
+        self.list_row_act(row)
     }
 }

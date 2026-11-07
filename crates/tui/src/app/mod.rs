@@ -1626,6 +1626,7 @@ mod plugin;
 mod pointer;
 mod prefs;
 mod queue_pane;
+pub(crate) mod queue_rows;
 mod reach;
 mod removal;
 pub(crate) mod reseat;

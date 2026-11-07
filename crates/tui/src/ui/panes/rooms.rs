@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::app::chat_adapter;
-use crate::app::rooms::{Chan, Member, OPERATOR, RoomsView, Send, SessInfo};
+use crate::app::rooms::{Chan, ListRow, Member, OPERATOR, RoomsView, Send, SessInfo};
 use crate::app::*;
 use crate::ui::chat::{ChatCtx, chat_blocks};
 use crate::ui::render::{row_strings, trim_to, visible_width, wrap};
@@ -347,12 +347,63 @@ impl App {
         let saved = std::mem::take(&mut self.rooms.chan_rows);
         let lines = self.rooms_left(w, h);
         let drawn = std::mem::replace(&mut self.rooms.chan_rows, saved);
-        self.sidebar.rows = drawn
-            .into_iter()
-            .map(|(r, c)| (r, crate::app::sidebar::SideRow::Chan(c)))
-            .collect();
+        self.sidebar.rows = drawn.into_iter().collect();
         let lines: Vec<Line> = lines.into_iter().map(|l| padded(l, w)).collect();
         row_strings(&lines, palette)
+    }
+
+    /// The Queues section: a heading and two lines a repository. The first is health, name and the
+    /// unread queue moves, the second the counts and the mute checkbox at its right edge.
+    fn queue_section(&self, lines: &mut Vec<Line>, at: &mut Vec<(usize, ListRow)>, lw: usize) {
+        let repos = self.queue_repos();
+        if repos.is_empty() {
+            return;
+        }
+        lines.push(padded(pane::faint("Queues"), lw));
+        for r in repos {
+            let (dot, role) = match r.health {
+                crate::app::queue_rows::Health::Green => ("●", Role::Success),
+                crate::app::queue_rows::Health::Red => ("●", Role::Failure),
+                crate::app::queue_rows::Health::Unjudged => ("○", Role::Faint),
+            };
+            let count = if r.unread > 0 {
+                r.unread.to_string()
+            } else {
+                String::new()
+            };
+            let name = cut_keeping_ends(&r.name, lw.saturating_sub(count.len() + 3).max(3));
+            let mut l = Line::new(vec![
+                Span::raw("  "),
+                Span::role(dot, role),
+                Span::raw(format!(" {name}")),
+            ]);
+            let pad = lw.saturating_sub(l.width() + count.len());
+            l.push(Span::raw(" ".repeat(pad)));
+            l.push(Span::role(count, Role::Attention));
+            at.push((lines.len(), ListRow::Queue(r.repo.clone())));
+            lines.push(l);
+            let facts = format!("  {}w {}g {}p", r.waiting, r.gating, r.person);
+            let check = if r.muted { "[x]" } else { "[ ]" };
+            let mut l2 = Line::new(vec![Span::role(
+                trim_to(&facts, lw.saturating_sub(4)),
+                Role::Faint,
+            )]);
+            let pad = lw.saturating_sub(l2.width() + 3);
+            l2.push(Span::raw(" ".repeat(pad)));
+            l2.push(Span::role(
+                check,
+                if r.muted {
+                    Role::Attention
+                } else {
+                    Role::Faint
+                },
+            ));
+            // The row opens the queue, the checkbox mutes it: the checkbox is the later, narrower
+            // hit, so it wins its three cells.
+            at.push((lines.len(), ListRow::Queue(r.repo.clone())));
+            at.push((lines.len(), ListRow::Mute(r.repo)));
+            lines.push(l2);
+        }
     }
 
     fn rooms_left(&mut self, lw: usize, room: usize) -> Vec<Line> {
@@ -361,7 +412,7 @@ impl App {
         let mut lines = vec![padded(pane::faint(trim_to("Rooms", lw)), lw)];
         let mut sel_row = 0;
         let mut dm_heading = false;
-        let mut at: Vec<(usize, Chan)> = Vec::new();
+        let mut at: Vec<(usize, ListRow)> = Vec::new();
         let mut sess_heading = false;
         for c in channels.iter() {
             if matches!(c, Chan::Session(_)) && !sess_heading {
@@ -379,19 +430,20 @@ impl App {
                 sel_row = lines.len();
             }
             let unread = if is_sel { 0 } else { self.rooms.unread(c) };
-            at.push((lines.len(), c.clone()));
+            at.push((lines.len(), ListRow::Chan(c.clone())));
             lines.push(entry(&self.rooms, c, is_sel, unread, lw));
             if let Chan::Session(id) = c
                 && let Some(s) = self.rooms.sessions.iter().find(|s| &s.id == id)
             {
                 // The facts are the same row's: a click on either line is the session's.
-                at.push((lines.len(), c.clone()));
+                at.push((lines.len(), ListRow::Chan(c.clone())));
                 lines.push(padded(
                     pane::faint(trim_to(&format!("  {}", session_facts(s)), lw)),
                     lw,
                 ));
             }
         }
+        self.queue_section(&mut lines, &mut at, lw);
         let skip = (sel_row + 1).saturating_sub(room);
         self.rooms.chan_rows = at
             .into_iter()

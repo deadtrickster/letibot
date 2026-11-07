@@ -207,11 +207,16 @@ impl App {
                 return ControlFlow::Break(self.sidebar_click(k));
             }
             (Target::RoomChan, Some(k)) => {
-                if let Some((_, c)) = self.rooms.chan_rows.get(k).cloned() {
-                    if let crate::app::rooms::Chan::Session(id) = c {
-                        return ControlFlow::Break(self.rooms_switch_session(id));
+                if let Some((_, row)) = self.rooms.chan_rows.get(k).cloned() {
+                    match row {
+                        crate::app::rooms::ListRow::Chan(c) => {
+                            if let crate::app::rooms::Chan::Session(id) = c {
+                                return ControlFlow::Break(self.rooms_switch_session(id));
+                            }
+                            self.rooms_go(c);
+                        }
+                        other => return ControlFlow::Break(self.list_row_act(other)),
                     }
-                    self.rooms_go(c);
                 }
                 return ControlFlow::Break(None);
             }
