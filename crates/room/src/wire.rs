@@ -11,8 +11,9 @@ use crate::room::{
 
 /// The room's protocol version, and the room's alone - see the module header. The number moves at
 /// RELEASE POINTS: a frame added mid-series rides the next number with whatever else lands first.
-/// 9 is the blob store and `attachments` on a say: a version-8 coordinator would drop them silently.
-pub const ROOM_PROTOCOL_VERSION: u16 = 9;
+/// 10 is the ask: a version-9 coordinator knows no `Ask`, and would answer one with a refusal a
+/// session would read as *this peer cannot be asked*.
+pub const ROOM_PROTOCOL_VERSION: u16 = 10;
 
 /// The sentence a protocol mismatch is refused with, or `None` when the two agree. One function because
 /// two doors refuse it - a [`crate::Server`]'s and [`crate::Room::answer_traced`]'s - and two sentences
@@ -226,6 +227,31 @@ pub enum Request {
     Reminders,
     /// The open questions, oldest first - what the tie-breaker is asked.
     Questions,
+    /// Ask `to` `question` in a room, and hold the ask: its id is the `seq` the question is said
+    /// with, and the room answers with [`Response::Asked`]. `room` empty is the room `say` would
+    /// default to. The same asker, target and question already open is that ask, not a second one.
+    Ask {
+        id: String,
+        #[serde(default)]
+        room: String,
+        to: String,
+        question: String,
+    },
+    /// The target's answer to ask `ask` - a thread reply in the ask's room, addressed to the asker.
+    /// Only the target may send it, and only while the ask is open.
+    Reply { id: String, ask: u64, text: String },
+    /// The target will not answer. Posted the same way as a [`Request::Reply`].
+    Decline { id: String, ask: u64, text: String },
+    /// The asker - or the operator's seat - takes the ask back. A note in the thread tells the
+    /// target, so a question it was nagged about does not simply vanish.
+    Withdraw { id: String, ask: u64 },
+    /// `session` is shut down for good: its session was deleted, so every open ask of it and by it
+    /// ends. Sent by the daemon that owns it, for that session only, before its connection closes.
+    /// This is the only `DOWN`: a daemon exit or a crash is a restart the operator owes.
+    Retire { id: String, session: String },
+    /// What this session made (`by_me`) and what it was asked (`of_me`), settled ones included -
+    /// the one read the room pass applies. A read: it moves nothing.
+    Asks,
     /// The whole room in one read - what a PANE is drawn from. [`Request::Queue`] answers one tag, and a
     /// pane that draws the queues per tag would have to ask for a tag whose name it does not know. A read,
     /// adding no state: the pane it serves is a view of the same in-memory room.
@@ -252,10 +278,16 @@ impl Request {
             | Request::Members { .. }
             | Request::PutBlob { .. }
             | Request::GetBlob { .. }
-            | Request::Room => None,
+            | Request::Room
+            | Request::Asks => None,
             Request::Say { id, .. }
             | Request::Dm { id, .. }
             | Request::Notify { id, .. }
+            | Request::Ask { id, .. }
+            | Request::Reply { id, .. }
+            | Request::Decline { id, .. }
+            | Request::Withdraw { id, .. }
+            | Request::Retire { id, .. }
             | Request::Post { id, .. }
             | Request::Claim { id, .. }
             | Request::ClaimItem { id, .. }
@@ -398,6 +430,17 @@ pub enum Response {
         message: crate::chat::Message,
     },
     History(crate::chat::History),
+    /// The ask a frame made or settled, as the room holds it now - the answer to [`Request::Ask`],
+    /// [`Request::Reply`], [`Request::Decline`] and [`Request::Withdraw`].
+    Asked {
+        id: String,
+        ask: crate::chat::AskView,
+    },
+    /// The answer to [`Request::Asks`]: this session's own asks, both halves, oldest first.
+    Asks {
+        by_me: Vec<crate::chat::AskView>,
+        of_me: Vec<crate::chat::AskView>,
+    },
     Roster {
         room: String,
         rows: Vec<crate::chat::Presence>,
@@ -645,6 +688,12 @@ impl Room {
             | Request::Invite { .. }
             | Request::PutBlob { .. }
             | Request::GetBlob { .. }
+            | Request::Ask { .. }
+            | Request::Reply { .. }
+            | Request::Decline { .. }
+            | Request::Withdraw { .. }
+            | Request::Retire { .. }
+            | Request::Asks
             | Request::Leave { .. } => Answer::quiet(Response::Refused {
                 id: request.request_id().map(str::to_string),
                 why: Refused::ChatIsTheServers,
@@ -696,21 +745,25 @@ impl Room {
 mod tests {
     use super::*;
 
-    /// The number is the contract: a version-8 coordinator parses a `say` with attachments and
-    /// drops them in silence, so the bump is what turns that into the refusal below.
+    /// The number is the contract: a version-9 coordinator knows no `ask`, and would answer one
+    /// with a refusal a session would read as *this peer cannot be asked*.
     #[test]
-    fn the_protocol_is_nine() {
-        assert_eq!(ROOM_PROTOCOL_VERSION, 9);
-        assert_eq!(crate::server::protocol(), 9);
-        assert_eq!(protocol_refusal(9), None, "the same build speaks to itself");
-        let older = protocol_refusal(8).expect("a version-8 client is told");
-        assert!(older.contains("this room speaks protocol 9"), "{older}");
+    fn the_protocol_is_ten() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 10);
+        assert_eq!(crate::server::protocol(), 10);
+        assert_eq!(
+            protocol_refusal(10),
+            None,
+            "the same build speaks to itself"
+        );
+        let older = protocol_refusal(9).expect("a version-9 client is told");
+        assert!(older.contains("this room speaks protocol 10"), "{older}");
         assert!(older.contains("the client is the older"), "{older}");
         assert!(older.contains(CLIENT_UPGRADE), "{older}");
-        let newer = protocol_refusal(10).expect("a newer client is told");
+        let newer = protocol_refusal(11).expect("a newer client is told");
         assert!(newer.contains(ROOM_UPGRADE), "{newer}");
         // And an old client's frame is still a frame: the attachments it cannot know are defaulted,
-        // so a version-8 head reading a 9 daemon's `say` sees exactly what it always saw.
+        // so a version-9 head reading a 10 daemon's `say` sees exactly what it always saw.
         let old: Request = serde_json::from_str(r#"{"type":"say","id":"1","text":"hi"}"#).unwrap();
         match old {
             Request::Say { attachments, .. } => assert!(attachments.is_empty()),

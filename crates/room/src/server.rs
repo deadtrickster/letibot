@@ -24,6 +24,12 @@ use crate::wire::{Answer, ROOM_PROTOCOL_VERSION, Request, Response};
 /// beat stopped is taken back promptly and a beat that is one pass late is not mistaken for death.
 pub const DEFAULT_SWEEP_EVERY_MS: u64 = 5_000;
 
+/// How long an ask's other end may be gone before the operator is asked to restart it. Five
+/// minutes: a restart inside the grace is invisible, and a longer wait would leave a plan blocked
+/// on a machine nobody was told to fix. It never settles anything - only the explicit verbs and a
+/// deleted session do that.
+pub const ASK_GRACE_MS: u64 = 300_000;
+
 /// How many frames one connection may have waiting for its writer thread: roughly a megabyte at a
 /// chat message's 4 000 bytes each. That is the slack a reader may fall behind by, and past it the
 /// connection is not reading any more.
@@ -156,6 +162,14 @@ struct Inner {
     /// The token a connection must present to be the operator, minted at [`Server::with_options`]
     /// and written beside the socket in mode 0600. The seat is a file, not a word in a frame.
     operator_token: String,
+    /// When each session's last room connection closed, by session: the room's one answer to *is
+    /// this session running now*. Set on the last close and cleared by the next `Hello`, because a
+    /// connection is the daemon's liveness and a session that closed its own is not a session that
+    /// crashed.
+    gone_since: Mutex<BTreeMap<String, u64>>,
+    /// How long a session may be gone before the operator is asked to restart it -
+    /// [`ASK_GRACE_MS`], or what a test set. A liveness fact never settles an ask; it escalates.
+    ask_grace_ms: AtomicU64,
     /// The pictures and files a message carries, in `room-<host key>.blobs` beside the socket. Always
     /// present: the directory is made by the first upload, so a room with no pictures touches no disk.
     blobs: Mutex<crate::blob::Blobs>,
@@ -246,6 +260,8 @@ impl Server {
                 pending: Mutex::new(BTreeMap::new()),
                 principals: AtomicUsize::new(MAX_PRINCIPALS),
                 operator_token,
+                gone_since: Mutex::new(BTreeMap::new()),
+                ask_grace_ms: AtomicU64::new(ASK_GRACE_MS),
                 blobs: Mutex::new(crate::blob::Blobs::open(&path.with_extension("blobs"))),
                 blob_rewrites: AtomicU64::new(0),
                 stop: AtomicBool::new(false),
@@ -446,6 +462,29 @@ impl Server {
             .principals
             .store(principals.max(1), Ordering::SeqCst);
         self
+    }
+
+    /// Set how long a gone session's ask may stand before the operator is asked to restart it -
+    /// [`ASK_GRACE_MS`], or a test's seconds. The clock that reads it is the room's own.
+    pub fn with_ask_grace(&self, ms: u64) -> &Self {
+        self.inner.ask_grace_ms.store(ms, Ordering::SeqCst);
+        self
+    }
+
+    /// The grace an ask's other end has before the operator is owed a restart.
+    pub fn ask_grace_ms(&self) -> u64 {
+        self.inner.ask_grace_ms.load(Ordering::SeqCst)
+    }
+
+    /// When `session`'s last connection closed, `None` while it is connected or was never gone -
+    /// the one liveness fact an ask escalates on.
+    pub fn gone_since(&self, session: &str) -> Option<u64> {
+        self.inner
+            .gone_since
+            .lock()
+            .expect("the gone-since lock")
+            .get(session)
+            .copied()
     }
 
     pub fn started_ms(&self) -> u64 {
@@ -735,7 +774,42 @@ impl Server {
             self.route(&project, &events);
             all.extend(events);
         }
+        // The asks' own clock: a session that is gone starts its grace here rather than only on
+        // the `Ask` that asked it, so a room restarted under an open ask counts from its start,
+        // and a settle that has been kept long enough goes.
+        self.sweep_asks(now);
         all
+    }
+
+    /// The ask half of the clock: note every absent end of an open ask, and drop settled asks past
+    /// their keep window. Nothing is settled here - liveness only escalates.
+    fn sweep_asks(&self, now: u64) {
+        let here: BTreeSet<String> = self
+            .conn_list()
+            .iter()
+            .map(|c| c.who.session.clone())
+            .collect();
+        let (absent, pruned) = {
+            let mut chat = self.inner.chat.lock().expect("the chat lock");
+            let peers: BTreeSet<String> = chat
+                .asks_by_any()
+                .into_iter()
+                .filter(|a| a.open())
+                .flat_map(|a| [a.asker, a.target])
+                .filter(|p| !here.contains(p))
+                .collect();
+            let pruned = chat.prune_asks(now);
+            (peers, pruned)
+        };
+        if !absent.is_empty() {
+            let mut gone = self.inner.gone_since.lock().expect("the gone-since lock");
+            for peer in absent {
+                gone.entry(peer).or_insert(now);
+            }
+        }
+        if pruned > 0 {
+            eprintln!("room: dropped {pruned} settled ask(s) older than the keep window");
+        }
     }
 
     /// The open questions, oldest first - what the tie-breaker is prompted with, from EVERY room,
@@ -1713,6 +1787,22 @@ impl Server {
                     now,
                 )
             }
+            Request::Ask {
+                id,
+                room,
+                to,
+                question,
+            } => self.ask_asked(project, seat, name, id, room, to, question, now),
+            Request::Reply { id, ask, text } | Request::Decline { id, ask, text } => {
+                let answer = matches!(frame, Request::Reply { .. });
+                self.ask_settled(name, seat, id, *ask, text, answer, now)
+            }
+            Request::Withdraw { id, ask } => self.ask_withdrawn(name, seat, id, *ask, now),
+            Request::Retire { id, session } => self.ask_retired(name, id, session, now),
+            Request::Asks => {
+                let (by_me, of_me) = self.asks_for(name, now);
+                Response::Asks { by_me, of_me }
+            }
             Request::Read {
                 room,
                 since,
@@ -2158,6 +2248,16 @@ impl Server {
         // Pushed after the log lock is released, and a repeat of `id` pushes again. A reply answers
         // its root's author, who is the one the room names: the root may be in another room, so
         // nothing in the text says so.
+        self.deliver(&message, now);
+        Response::Said {
+            id: id.to_string(),
+            message: self.shown(message, &self.handles()),
+        }
+    }
+
+    /// Everything a message does once it is in the log: pushed to whoever may see it, kept for
+    /// whoever may not and will be here later, and the blobs nothing names any more collected.
+    fn deliver(&self, message: &chat::Message, now: u64) {
         let answered = message.thread.and_then(|t| {
             self.inner
                 .chat
@@ -2170,7 +2270,7 @@ impl Server {
         for c in self.conn_list() {
             let name = c.who.session.as_str();
             here.insert(name.to_string());
-            if name == message.author || !self.visible(name, c.seat, &c.project, &message) {
+            if name == message.author || !self.visible(name, c.seat, &c.project, message) {
                 continue;
             }
             c.send(Response::Chat {
@@ -2189,12 +2289,362 @@ impl Server {
         }
         // And a member with no connection is told nothing by a push. It is not lost: the message is
         // kept for it and delivered when it next connects, and its inbox cursor counts it unread.
-        self.remember_for_absent(&message, &here);
+        self.remember_for_absent(message, &here);
         self.gc_blobs(now);
-        Response::Said {
-            id: id.to_string(),
-            message: self.shown(message, &handles),
+    }
+
+    // ===== Asks =====
+
+    /// The asks `me` made and the asks `me` was asked, each view carrying what the room knows about
+    /// the OTHER end: gone since when, and whether that is past the grace. That is the whole of the
+    /// escalation, and it is why a reconnect clears it without any bookkeeping beyond `gone_since`.
+    fn asks_for(&self, me: &str, now: u64) -> (Vec<chat::AskView>, Vec<chat::AskView>) {
+        let (by_me, of_me) = {
+            let chat = self.inner.chat.lock().expect("the chat lock");
+            (chat.asks_by(me), chat.asks_of(me))
+        };
+        (
+            by_me.iter().map(|a| self.ask_view(a, me, now)).collect(),
+            of_me.iter().map(|a| self.ask_view(a, me, now)).collect(),
+        )
+    }
+
+    /// One ask as `me` reads it: the peer's absence, and whether it has gone on too long.
+    fn ask_view(&self, ask: &chat::AskView, me: &str, now: u64) -> chat::AskView {
+        let peer = ask.peer_of(me);
+        let gone = self.gone_since(&peer);
+        chat::AskView {
+            gone_since_ms: gone,
+            escalated: ask.open()
+                && gone.is_some_and(|g| now.saturating_sub(g) >= self.ask_grace_ms()),
+            ..ask.clone()
         }
+    }
+
+    /// The top-level sessions this box has, as a reader names them - the list a refusal about an
+    /// unknown handle hands back.
+    fn top_handles(&self) -> Vec<String> {
+        let mut known: Vec<String> = self.handles().into_values().collect();
+        known.sort();
+        known.dedup();
+        known
+    }
+
+    /// The parent of `session` when it is a subagent: a subagent has no room connection, so nothing
+    /// asked of it could ever be delivered.
+    fn subagent_parent(&self, session: &str) -> Option<String> {
+        let rooms = self.inner.rooms.lock().expect("the rooms lock");
+        rooms.values().find_map(|r| {
+            r.members()
+                .iter()
+                .find(|m| m.session == session && m.group == crate::Group::Sub)
+                .map(|m| m.parent.clone().unwrap_or_default())
+        })
+    }
+
+    /// `ask`: hold a question between two sessions. Every refusal the design names is decided here,
+    /// before anything is written, because the asking session must learn it in the same call.
+    #[allow(clippy::too_many_arguments)]
+    fn ask_asked(
+        &self,
+        project: &str,
+        seat: Seat,
+        name: &str,
+        id: &str,
+        room: &str,
+        to: &str,
+        question: &str,
+        now: u64,
+    ) -> Response {
+        let refuse = |why: crate::Refused| Response::Refused {
+            id: Some(id.to_string()),
+            why,
+        };
+        // An ask is a wait on another board, so only a session has one to wait on.
+        if seat != Seat::Session {
+            return refuse(crate::Refused::AskNotASession);
+        }
+        let asked = to.trim().trim_start_matches('@');
+        let target = match self.resolve_name(project, asked) {
+            Ok(t) => t,
+            Err(candidates) => {
+                return refuse(crate::Refused::Ambiguous {
+                    name: asked.to_string(),
+                    candidates,
+                });
+            }
+        };
+        if target == name {
+            return refuse(crate::Refused::AskSelf);
+        }
+        if target == chat::OPERATOR {
+            return refuse(crate::Refused::AskOperator);
+        }
+        if let Some(parent) = self.subagent_parent(&target) {
+            return refuse(crate::Refused::AskSubagent {
+                session: target,
+                parent,
+            });
+        }
+        if !self.is_known(&target) {
+            // A name of the shape `<session>@<host>` is another box's, and an ask is this box's
+            // room: say which of the two refusals this is instead of calling it unknown.
+            if asked.contains('@') && chat::bridge_parts(asked).is_none() {
+                return refuse(crate::Refused::AskOtherHost {
+                    name: asked.to_string(),
+                });
+            }
+            return refuse(crate::Refused::AskUnknown {
+                name: asked.to_string(),
+                known: self.top_handles(),
+            });
+        }
+        let question = question.trim();
+        if question.is_empty() {
+            return refuse(crate::Refused::ChatEmpty);
+        }
+        let room = match room.trim() {
+            "" => Self::default_chat_room(seat, project),
+            r => r.to_string(),
+        };
+        if room == chat::DM_ROOM || !self.may_see(name, seat, project, &room) {
+            return refuse(crate::Refused::UnknownChatRoom { room });
+        }
+        let (tseat, tproject) = self.seat_and_project_of(&target);
+        if !self.may_see(&target, tseat, &tproject, &room) {
+            return refuse(crate::Refused::AskCannotSee {
+                session: target,
+                room,
+            });
+        }
+        // The same question already open is THAT ask: several rows carry one id and one settle
+        // releases them all, so a second copy would be a second nag for one question.
+        let existing = {
+            let chat = self.inner.chat.lock().expect("the chat lock");
+            chat.open_ask(name, &target, question)
+        };
+        let fresh = existing.is_none();
+        let ask = match existing {
+            Some(ask) => ask,
+            None => {
+                let appended = self
+                    .inner
+                    .chat
+                    .lock()
+                    .expect("the chat lock")
+                    .append_ask(now, id, &room, name, &target, question);
+                match appended {
+                    Ok(ask) => ask,
+                    Err(why) => return refuse(why),
+                }
+            }
+        };
+        // A push is a wake, not the record: the target's own pass reads the ask from `Asks`. So
+        // the message goes out even when it repeats an open ask, and the target learns the ask
+        // exists here rather than only in the ring.
+        if fresh {
+            let carried = self.inner.chat.lock().expect("the chat lock").read(
+                &room,
+                ask.seq.saturating_sub(1),
+                None,
+                None,
+                None,
+                |m| m.seq == ask.seq,
+            );
+            if let Some(message) = carried.rows.first() {
+                self.deliver(message, now);
+            }
+        }
+        // The grace starts at the ask when the target is not connected now, so the operator is
+        // told at the same distance from the asking either way.
+        if !self.conn_list().iter().any(|c| c.who.session == target) {
+            self.inner
+                .gone_since
+                .lock()
+                .expect("the gone-since lock")
+                .entry(target.clone())
+                .or_insert(now);
+        }
+        Response::Asked {
+            id: id.to_string(),
+            ask: self.ask_view(&ask, name, now),
+        }
+    }
+
+    /// `reply` and `decline`: the target's answer. Posted as a thread reply in the ask's room,
+    /// addressed to the asker, and only then does the ask settle - a plain thread reply does not.
+    #[allow(clippy::too_many_arguments)]
+    fn ask_settled(
+        &self,
+        name: &str,
+        seat: Seat,
+        id: &str,
+        ask: u64,
+        text: &str,
+        answered: bool,
+        now: u64,
+    ) -> Response {
+        let refuse = |why: crate::Refused| Response::Refused {
+            id: Some(id.to_string()),
+            why,
+        };
+        let Some(found) = self.inner.chat.lock().expect("the chat lock").ask(ask) else {
+            return refuse(crate::Refused::UnknownAsk { ask });
+        };
+        if found.target != name {
+            return refuse(crate::Refused::AskNotTheTarget {
+                ask,
+                target: found.target,
+            });
+        }
+        if !found.open() {
+            return refuse(crate::Refused::AskSettled {
+                ask,
+                state: found.state.line(),
+            });
+        }
+        let text = text.trim();
+        if text.is_empty() {
+            return refuse(crate::Refused::ChatEmpty);
+        }
+        let state = match answered {
+            true => chat::AskState::Answered {
+                text: text.to_string(),
+                ms: now,
+            },
+            false => chat::AskState::Declined {
+                text: text.to_string(),
+                ms: now,
+            },
+        };
+        let appended = self.inner.chat.lock().expect("the chat lock").append(
+            now,
+            id,
+            &found.room,
+            name,
+            seat,
+            Some(found.asker.clone()),
+            Some(found.seq),
+            Vec::new(),
+            Vec::new(),
+            text,
+        );
+        let message = match appended {
+            Ok(m) => m,
+            Err(why) => return refuse(why),
+        };
+        self.inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .settle_ask(ask, state);
+        self.deliver(&message, now);
+        let settled = self
+            .inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .ask(ask)
+            .unwrap_or(found);
+        Response::Asked {
+            id: id.to_string(),
+            ask: self.ask_view(&settled, name, now),
+        }
+    }
+
+    /// `withdraw`: the asker or the operator takes the question back, and the thread says so.
+    fn ask_withdrawn(&self, name: &str, seat: Seat, id: &str, ask: u64, now: u64) -> Response {
+        let refuse = |why: crate::Refused| Response::Refused {
+            id: Some(id.to_string()),
+            why,
+        };
+        let Some(found) = self.inner.chat.lock().expect("the chat lock").ask(ask) else {
+            return refuse(crate::Refused::UnknownAsk { ask });
+        };
+        if found.asker != name && seat != Seat::Operator {
+            return refuse(crate::Refused::AskNotYours {
+                ask,
+                asker: found.asker,
+            });
+        }
+        if !found.open() {
+            return refuse(crate::Refused::AskSettled {
+                ask,
+                state: found.state.line(),
+            });
+        }
+        let by = if found.asker == name {
+            name.to_string()
+        } else {
+            chat::OPERATOR.to_string()
+        };
+        self.inner.chat.lock().expect("the chat lock").settle_ask(
+            ask,
+            chat::AskState::Withdrawn {
+                by: by.clone(),
+                ms: now,
+            },
+        );
+        // A system note in the thread, so a question the target was nagged about does not simply
+        // vanish from under it.
+        let note = self.inner.chat.lock().expect("the chat lock").append(
+            now,
+            id,
+            &found.room,
+            chat::DIGEST_AUTHOR,
+            Seat::System,
+            None,
+            Some(found.seq),
+            Vec::new(),
+            Vec::new(),
+            &format!("ask #{ask} was withdrawn by {by}"),
+        );
+        if let Ok(message) = note {
+            self.deliver(&message, now);
+        }
+        let settled = self
+            .inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .ask(ask)
+            .unwrap_or(found);
+        Response::Asked {
+            id: id.to_string(),
+            ask: self.ask_view(&settled, name, now),
+        }
+    }
+
+    /// `retire`: a session is deleted, so nothing asked of it or by it can ever be answered. The one
+    /// `DOWN`, and the only ending a liveness fact may cause - a crash is a restart, not a goodbye.
+    fn ask_retired(&self, name: &str, id: &str, session: &str, now: u64) -> Response {
+        let session = session.trim();
+        if session != name {
+            return Response::Refused {
+                id: Some(id.to_string()),
+                why: crate::Refused::NotTheOwners {
+                    session: session.to_string(),
+                },
+            };
+        }
+        let (of_me, by_me) = {
+            let chat = self.inner.chat.lock().expect("the chat lock");
+            (chat.asks_of(session), chat.asks_by(session))
+        };
+        for ask in of_me.iter().filter(|a| a.open()) {
+            self.inner
+                .chat
+                .lock()
+                .expect("the chat lock")
+                .settle_ask(ask.seq, chat::AskState::Down { ms: now });
+        }
+        // A deleted asker withdraws its asks: its rows are going with it, so nothing is left to
+        // wait, and the target's nag ends with the note that it was taken back.
+        for ask in by_me.iter().filter(|a| a.open()) {
+            self.ask_withdrawn(session, Seat::Session, id, ask.seq, now);
+        }
+        let (by_me, of_me) = self.asks_for(name, now);
+        Response::Asks { by_me, of_me }
     }
 
     // ===== The threads =====
@@ -2357,6 +2807,13 @@ impl Server {
                     .expect("the connections lock")
                     .insert(id, Arc::clone(&conn));
                 me.inner.served.fetch_add(1, Ordering::SeqCst);
+                // A connection IS the session's liveness: one just arrived, so it is not gone and
+                // every ask on it stops escalating now.
+                me.inner
+                    .gone_since
+                    .lock()
+                    .expect("the gone-since lock")
+                    .remove(&speaker.session);
                 me.inner
                     .chat
                     .lock()
@@ -2442,6 +2899,20 @@ impl Server {
                     .lock()
                     .expect("the connections lock")
                     .remove(&id);
+                // The last connection closing is what *gone* means, and it is the only liveness
+                // fact an ask escalates on. A name with another connection left (a bridge and its
+                // waiter) is still here.
+                if !me
+                    .conn_list()
+                    .iter()
+                    .any(|c| c.who.session == speaker.session)
+                {
+                    me.inner
+                        .gone_since
+                        .lock()
+                        .expect("the gone-since lock")
+                        .insert(speaker.session.clone(), now_ms());
+                }
                 // An external that has gone is not known any more: the set is what keeps `say to`
                 // from refusing a name that can answer, and a name with no connection and no tree
                 // row answers nothing. Its next `Hello` adds it back.
@@ -2698,6 +3169,12 @@ fn is_chat_frame(frame: &Request) -> bool {
             | Request::Invite { .. }
             | Request::PutBlob { .. }
             | Request::GetBlob { .. }
+            | Request::Ask { .. }
+            | Request::Reply { .. }
+            | Request::Decline { .. }
+            | Request::Withdraw { .. }
+            | Request::Retire { .. }
+            | Request::Asks
             | Request::Leave { .. }
     )
 }
@@ -3172,14 +3649,14 @@ mod tests {
     /// spells the number rather than the constant, so a wire change that misses a pin is a quiet lie
     /// about what two binaries share.
     #[test]
-    fn the_room_speaks_protocol_nine() {
-        assert_eq!(ROOM_PROTOCOL_VERSION, 9);
+    fn the_room_speaks_protocol_ten() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 10);
         // And the refusal names which side is older, in both directions.
-        let old = crate::wire::protocol_refusal(8).expect("8 is not 9");
+        let old = crate::wire::protocol_refusal(9).expect("9 is not 10");
         assert!(old.contains("the client is the older"), "{old}");
-        let new = crate::wire::protocol_refusal(10).expect("10 is not 9");
+        let new = crate::wire::protocol_refusal(11).expect("11 is not 10");
         assert!(new.contains("this room is the older"), "{new}");
-        assert_eq!(crate::wire::protocol_refusal(9), None);
+        assert_eq!(crate::wire::protocol_refusal(10), None);
         assert!(
             new.contains("letibot --room --stop && letibot --room"),
             "{new}"

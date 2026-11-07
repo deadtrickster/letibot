@@ -453,6 +453,115 @@ pub struct History {
     pub trimmed: bool,
 }
 
+/// How long a settled ask is kept. An OPEN ask is never dropped: it is the whole of *A waits on
+/// B*, and A's board is a file on another machine that may be a day behind.
+pub const ASK_SETTLED_KEEP_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// One ask between two sessions, as the room holds it and as its two ends read it. The room keeps
+/// it because it is the one process that outlives either daemon and sees both connections: the
+/// Erlang monitor, not the two processes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskView {
+    /// The `seq` of the message that carried the question - the ask's id, its thread and what
+    /// `read {thread}` shows, one number for all three.
+    pub seq: u64,
+    /// The room it was asked in.
+    pub room: String,
+    /// The session that asked.
+    pub asker: String,
+    /// The session (or external seat) that was asked.
+    pub target: String,
+    /// The question, kept here as well as in the message, so a trimmed ring loses nothing.
+    pub question: String,
+    pub asked_ms: u64,
+    /// When the OTHER end of this ask was last seen by its connection, as THIS reader is told it:
+    /// the target's for `by_me`, the asker's for `of_me`. The room fills it; the store never keeps it.
+    #[serde(default)]
+    pub gone_since_ms: Option<u64>,
+    /// That other end has been gone past the grace, so the operator is owed a restart. Derived from
+    /// `gone_since_ms`, never stored.
+    #[serde(default)]
+    pub escalated: bool,
+    pub state: AskState,
+}
+
+impl AskView {
+    /// Is this ask still waiting for an answer?
+    pub fn open(&self) -> bool {
+        matches!(self.state, AskState::Open)
+    }
+
+    /// The other end of the ask: who this reader is waiting on.
+    pub fn peer_of(&self, me: &str) -> String {
+        if self.asker == me {
+            self.target.clone()
+        } else {
+            self.asker.clone()
+        }
+    }
+
+    /// One line, as a board row or a bell says it: `#4211 in host: arango asks serenedb "which port?"`.
+    pub fn line(&self) -> String {
+        format!(
+            "#{} in {}: {} asks {} \"{}\" - {}",
+            self.seq,
+            self.room,
+            self.asker,
+            self.target,
+            self.question.trim(),
+            self.state.line()
+        )
+    }
+}
+
+/// How an ask ended - the whole of what a settle may say.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AskState {
+    /// Waiting for the target's answer.
+    Open,
+    Answered {
+        text: String,
+        ms: u64,
+    },
+    Declined {
+        text: String,
+        ms: u64,
+    },
+    /// The target was shut down for good: its session was deleted. Liveness alone never settles.
+    Down {
+        ms: u64,
+    },
+    Withdrawn {
+        by: String,
+        ms: u64,
+    },
+}
+
+impl AskState {
+    /// The state as one clause, for a line a model or a pane reads.
+    pub fn line(&self) -> String {
+        match self {
+            AskState::Open => "open".to_string(),
+            AskState::Answered { text, .. } => format!("answered: {text}"),
+            AskState::Declined { text, .. } => format!("declined: {text}"),
+            AskState::Down { .. } => "was shut down for good".to_string(),
+            AskState::Withdrawn { by, .. } => format!("withdrawn by {by}"),
+        }
+    }
+
+    /// When it settled, for the keep window; `None` while it is open.
+    pub fn settled_ms(&self) -> Option<u64> {
+        match self {
+            AskState::Open => None,
+            AskState::Answered { ms, .. }
+            | AskState::Declined { ms, .. }
+            | AskState::Down { ms }
+            | AskState::Withdrawn { ms, .. } => Some(*ms),
+        }
+    }
+}
+
 /// One line of the chat store. The file is append-only and rewritten whole when it outgrows the live
 /// state, so replaying it from the top rebuilds the rings, the dedup window and the cursors.
 #[derive(Debug, Serialize, Deserialize)]
@@ -481,6 +590,17 @@ enum Record {
         name: String,
         on: bool,
     },
+    /// An ask, as it was made: its durable half only, so a restart brings the ask back and the
+    /// grace clocks start again at the room's own start.
+    Ask {
+        ask: AskView,
+    },
+    /// How an ask ended. An ask is written once and settled once, so a replay is a write and a
+    /// later write over it, and an open ask needs no record of its own.
+    AskState {
+        seq: u64,
+        state: AskState,
+    },
 }
 
 /// The file chat is kept in, and the size it had at the last write.
@@ -500,6 +620,9 @@ pub struct Chat {
     store: Option<Store>,
     /// Each project room's invited sessions, by room.
     guests: BTreeMap<String, BTreeSet<String>>,
+    /// Every ask the room holds, by its id (the `seq` of the question). Settled ones stay for
+    /// [`ASK_SETTLED_KEEP_MS`]; open ones never go.
+    asks: BTreeMap<u64, AskView>,
     /// How many times the store has been rewritten from live state: the one moment the ring's
     /// answer to *what does a message still name* is exact, so it is when blobs are collected.
     rewrites: u64,
@@ -535,6 +658,18 @@ impl Chat {
                     *d = (*d).max(seq);
                 }
                 Ok(Record::Guest { room, name, on }) => c.note_guest(&room, &name, on),
+                Ok(Record::Ask { mut ask }) => {
+                    // The two fields about a connection are the SERVER's, and a restart is the
+                    // moment no connection is older than the process: they begin empty.
+                    ask.gone_since_ms = None;
+                    ask.escalated = false;
+                    c.asks.insert(ask.seq, ask);
+                }
+                Ok(Record::AskState { seq, state }) => {
+                    if let Some(ask) = c.asks.get_mut(&seq) {
+                        ask.state = state;
+                    }
+                }
                 Err(e) => eprintln!(
                     "room: chat store {} line {} is not a record ({e}); skipped",
                     path.display(),
@@ -652,6 +787,15 @@ impl Chat {
                 });
             }
         }
+        for ask in self.asks.values() {
+            records.push(Record::Ask {
+                ask: AskView {
+                    gone_since_ms: None,
+                    escalated: false,
+                    ..ask.clone()
+                },
+            });
+        }
         let mut buf = String::new();
         for r in &records {
             if let Ok(line) = serde_json::to_string(r) {
@@ -734,7 +878,7 @@ impl Chat {
         }
         if refs.len() > MAX_REFS
             || refs.iter().any(|r| {
-                !matches!(r.kind.as_str(), "todo" | "queue")
+                !matches!(r.kind.as_str(), "todo" | "queue" | "ask")
                     || r.id.trim().is_empty()
                     || r.id.len() > MAX_REF_ID
             })
@@ -774,6 +918,146 @@ impl Chat {
             message: m.clone(),
         }]);
         Ok(m)
+    }
+
+    /// Append a question and record it as an ask, whose id is the `seq` the message got. One act in
+    /// one place, because an ask whose id names no message is a thread nobody can read.
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_ask(
+        &mut self,
+        now: u64,
+        request: &str,
+        room: &str,
+        asker: &str,
+        target: &str,
+        question: &str,
+    ) -> Result<AskView, Refused> {
+        // A repeat of the request is answered with the ask it made, never a second one.
+        if let Some((_, seq)) = self
+            .said
+            .iter()
+            .find(|((who, r), _)| who == asker && r == request)
+            && let Some(ask) = self.asks.get(seq)
+        {
+            return Ok(ask.clone());
+        }
+        self.next += 1;
+        let seq = self.next;
+        let message = Message {
+            seq,
+            ts: now,
+            room: room.to_string(),
+            author: asker.to_string(),
+            kind: Seat::Session,
+            to: Some(target.to_string()),
+            thread: None,
+            // The ref is how a reader sees that this line is a question with a row behind it, and
+            // the ask's own number is its id - the one number `room read {thread}` takes.
+            refs: vec![Ref {
+                kind: "ask".to_string(),
+                id: seq.to_string(),
+            }],
+            attachments: Vec::new(),
+            text: question.trim().to_string(),
+        };
+        self.rings
+            .entry(room.to_string())
+            .or_default()
+            .push_back(message.clone());
+        self.trim(room);
+        self.said
+            .push_back(((asker.to_string(), request.to_string()), seq));
+        while self.said.len() > REPLAY {
+            self.said.pop_front();
+        }
+        let ask = AskView {
+            seq,
+            room: room.to_string(),
+            asker: asker.to_string(),
+            target: target.to_string(),
+            question: question.trim().to_string(),
+            asked_ms: now,
+            gone_since_ms: None,
+            escalated: false,
+            state: AskState::Open,
+        };
+        self.asks.insert(seq, ask.clone());
+        self.write(&[
+            Record::Msg {
+                request: request.to_string(),
+                message,
+            },
+            Record::Ask { ask: ask.clone() },
+        ]);
+        Ok(ask)
+    }
+
+    /// The open ask `asker` already has of `target` with these words, if there is one: the dedup
+    /// the design asks for, so two rows carrying one question carry one ask.
+    pub fn open_ask(&self, asker: &str, target: &str, question: &str) -> Option<AskView> {
+        self.asks
+            .values()
+            .find(|a| {
+                a.open()
+                    && a.asker == asker
+                    && a.target == target
+                    && a.question.trim() == question.trim()
+            })
+            .cloned()
+    }
+
+    /// One ask the room holds, by its id.
+    pub fn ask(&self, seq: u64) -> Option<AskView> {
+        self.asks.get(&seq).cloned()
+    }
+
+    /// Every ask the room holds, open or settled, oldest first - the clock's own read.
+    pub fn asks_by_any(&self) -> Vec<AskView> {
+        self.asks.values().cloned().collect()
+    }
+
+    /// The asks `name` made, oldest first, settled ones included.
+    pub fn asks_by(&self, name: &str) -> Vec<AskView> {
+        self.asks
+            .values()
+            .filter(|a| a.asker == name)
+            .cloned()
+            .collect()
+    }
+
+    /// The asks `name` was asked, oldest first, settled ones included.
+    pub fn asks_of(&self, name: &str) -> Vec<AskView> {
+        self.asks
+            .values()
+            .filter(|a| a.target == name)
+            .cloned()
+            .collect()
+    }
+
+    /// Settle `seq` with `state`, if it is still open. `false` when the ask is gone, or ended
+    /// already: a second answer to one question is not a second settle.
+    pub fn settle_ask(&mut self, seq: u64, state: AskState) -> bool {
+        let Some(ask) = self.asks.get_mut(&seq) else {
+            return false;
+        };
+        if !ask.open() {
+            return false;
+        }
+        ask.state = state.clone();
+        self.write(&[Record::AskState { seq, state }]);
+        true
+    }
+
+    /// Drop settled asks past [`ASK_SETTLED_KEEP_MS`]. Open ones are never dropped. Returns how
+    /// many went, so the caller can say a rewrite is worth it.
+    pub fn prune_asks(&mut self, now: u64) -> usize {
+        let before = self.asks.len();
+        self.asks.retain(|_, a| {
+            a.state
+                .settled_ms()
+                .is_none_or(|ms| now.saturating_sub(ms) < ASK_SETTLED_KEEP_MS)
+        });
+        before - self.asks.len()
     }
 
     /// The root a reply hangs from, in any room `see` lets the reader read: a reply stays in its
@@ -1494,5 +1778,94 @@ mod store_tests {
         let written = std::fs::read_to_string(&p).expect("the store");
         assert!(!written.contains("attachments"), "{written}");
         let _ = std::fs::remove_file(&p);
+    }
+
+    /// An ask is two store lines - the ask and, later, how it ended - and a replay brings both back
+    /// with the message that carries the question. The two fields about a connection are the
+    /// server's and begin empty at every start.
+    #[test]
+    fn an_ask_round_trips_through_the_store_with_its_question() {
+        let p = path("asks");
+        let mut c = Chat::open(&p);
+        let open = c
+            .append_ask(1_000, "q1", HOST_ROOM, "s-a", "s-b", "which port?")
+            .expect("an ask");
+        let settled = c
+            .append_ask(1_000, "q2", HOST_ROOM, "s-a", "s-b", "and the user?")
+            .expect("a second ask");
+        assert!(c.settle_ask(
+            settled.seq,
+            AskState::Answered {
+                text: "admin".into(),
+                ms: 2_000
+            }
+        ));
+        // The question is a message of the room, addressed to the target, with the ask's own ref.
+        let rows = c.read(HOST_ROOM, 0, None, None, None, |_| true).rows;
+        let question = rows
+            .iter()
+            .find(|m| m.seq == open.seq)
+            .expect("the question");
+        assert_eq!(question.to.as_deref(), Some("s-b"));
+        assert_eq!(question.refs[0].kind, "ask");
+        assert_eq!(question.refs[0].id, open.seq.to_string());
+
+        let again = Chat::open(&p);
+        let by = again.asks_by("s-a");
+        assert_eq!(by.len(), 2, "{by:?}");
+        let reopened = by.iter().find(|a| a.seq == open.seq).expect("the open one");
+        assert!(reopened.open());
+        assert_eq!(reopened.gone_since_ms, None);
+        assert!(!reopened.escalated);
+        let reanswered = by
+            .iter()
+            .find(|a| a.seq == settled.seq)
+            .expect("the settle");
+        assert!(matches!(
+            &reanswered.state,
+            AskState::Answered { text, .. } if text == "admin"
+        ));
+        // A second settle is not a settle: the ask already ended.
+        let mut again = again;
+        assert!(!again.settle_ask(settled.seq, AskState::Down { ms: 3_000 }));
+        assert_eq!(again.asks_of("s-b").len(), 2, "the target's half too");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// The keep window: a settled ask goes after it, and an open one never does - it is the whole
+    /// of *A waits on B*, and A's board may be a day behind.
+    #[test]
+    fn a_settled_ask_is_dropped_after_its_keep_window_and_an_open_one_never_is() {
+        let mut c = Chat::new();
+        let open = c
+            .append_ask(1_000, "q1", HOST_ROOM, "s-a", "s-b", "which port?")
+            .expect("an ask");
+        let settled = c
+            .append_ask(1_000, "q2", HOST_ROOM, "s-a", "s-b", "and the user?")
+            .expect("a second ask");
+        c.settle_ask(
+            settled.seq,
+            AskState::Declined {
+                text: "no".into(),
+                ms: 5_000,
+            },
+        );
+        assert_eq!(
+            c.prune_asks(5_000 + ASK_SETTLED_KEEP_MS - 1),
+            0,
+            "still inside"
+        );
+        assert_eq!(
+            c.prune_asks(5_000 + ASK_SETTLED_KEEP_MS),
+            1,
+            "the settled one goes"
+        );
+        assert_eq!(c.ask(settled.seq), None);
+        assert!(c.ask(open.seq).is_some_and(|a| a.open()));
+        assert_eq!(
+            c.prune_asks(u64::MAX / 2),
+            0,
+            "an open ask is never dropped, however long"
+        );
     }
 }

@@ -17,8 +17,9 @@ pub mod wire;
 pub use agent::{AgentLedger, TagAgent};
 pub use blob::Blobs;
 pub use chat::{
-    Attachment, Attention, Chat, DM_ROOM, HOST_ROOM, History, MAX_ATTACHMENTS, MAX_TEXT, Message,
-    OPERATOR, Presence, RING, Ref, RoomInfo, Seat, is_member_handle, project_room, valid_handle,
+    ASK_SETTLED_KEEP_MS, AskState, AskView, Attachment, Attention, Chat, DM_ROOM, HOST_ROOM,
+    History, MAX_ATTACHMENTS, MAX_TEXT, Message, OPERATOR, Presence, RING, Ref, RoomInfo, Seat,
+    is_member_handle, project_room, valid_handle,
 };
 pub use item::{Abandonment, Claim, Item, Speaker, State, Wait, Why, duration};
 pub use lease::{

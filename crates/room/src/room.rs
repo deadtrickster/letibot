@@ -305,6 +305,54 @@ pub enum Refused {
         max: u64,
         got: u64,
     },
+    /// A session asked itself: a row waiting on its own answer would wait for ever.
+    AskSelf,
+    /// The operator cannot be asked through the room - `wait_on` has their own door.
+    AskOperator,
+    /// A subagent has no room connection, so nothing asked of it could ever be delivered.
+    AskSubagent {
+        session: String,
+        parent: String,
+    },
+    /// Another host's session. Handles are this box's, and cross-host identities are not stable yet.
+    AskOtherHost {
+        name: String,
+    },
+    /// The target may not see the room the question would be asked in.
+    AskCannotSee {
+        session: String,
+        room: String,
+    },
+    /// Nobody on this host answers to the name, and these are the top-level sessions that do.
+    AskUnknown {
+        name: String,
+        known: Vec<String>,
+    },
+    /// Only a session connection asks: an ask is a wait between two top-level sessions.
+    AskNotASession,
+    /// A `Reply` or `Decline` from somebody other than the session that was asked.
+    AskNotTheTarget {
+        ask: u64,
+        target: String,
+    },
+    /// The ask has already ended, and an ended ask takes no second answer.
+    AskSettled {
+        ask: u64,
+        state: String,
+    },
+    /// No ask with this id: the room was restarted empty, or the id is not one.
+    UnknownAsk {
+        ask: u64,
+    },
+    /// Only the asker - or the operator's seat - may take an ask back.
+    AskNotYours {
+        ask: u64,
+        asker: String,
+    },
+    /// A `Retire` for a session this connection does not speak for. B's daemon retires B.
+    NotTheOwners {
+        session: String,
+    },
 }
 
 impl fmt::Display for Refused {
@@ -449,6 +497,70 @@ impl fmt::Display for Refused {
             Refused::TooManyAttachments { max, got } => write!(
                 f,
                 "a message carries at most {max} attachments and this one names {got}"
+            ),
+            Refused::AskSelf => write!(
+                f,
+                "you cannot wait on your own answer - ask another top-level session, or `wait_on` \
+                 with `operator` to ask the person"
+            ),
+            Refused::AskOperator => write!(
+                f,
+                "the operator answers through `wait_on`, not through the room: a row that needs \
+                 their answer spells `operator` there, and this box's person is asked directly"
+            ),
+            Refused::AskSubagent { session, parent } => write!(
+                f,
+                "`{session}` is a subagent of `{parent}` and has no room connection, so nothing \
+                 asked of it could be delivered - ask its parent, which is a service"
+            ),
+            Refused::AskOtherHost { name } => write!(
+                f,
+                "`{name}` is not a session of this host: an ask is carried by this box's room, \
+                 and identities are not stable across hosts yet. Ask the session here that \
+                 drives that machine."
+            ),
+            Refused::AskCannotSee { session, room } => write!(
+                f,
+                "`{session}` cannot see `{room}`, so the question would be said where it cannot \
+                 read it - ask in `host`, which every session on the box reads, or `invite` it \
+                 there first"
+            ),
+            Refused::AskUnknown { name, known } => write!(
+                f,
+                "nobody on this host answers to `{name}`, so an ask of it would wait for ever. \
+                 The top-level sessions here are: {}",
+                if known.is_empty() {
+                    "(none - no daemon has reported a tree to the room yet)".to_string()
+                } else {
+                    known.join(", ")
+                }
+            ),
+            Refused::AskNotASession => write!(
+                f,
+                "only a top-level session asks: an ask is a wait between two of them, and this \
+                 seat has no board to wait on"
+            ),
+            Refused::AskNotTheTarget { ask, target } => write!(
+                f,
+                "ask #{ask} was put to `{target}`, and only `{target}` may answer or decline it"
+            ),
+            Refused::AskSettled { ask, state } => write!(
+                f,
+                "ask #{ask} is {state} already - an ended ask takes no second answer"
+            ),
+            Refused::UnknownAsk { ask } => write!(
+                f,
+                "there is no ask #{ask} in this room - `room asks` lists the ones that are yours"
+            ),
+            Refused::AskNotYours { ask, asker } => write!(
+                f,
+                "ask #{ask} is `{asker}`'s: only the session that asked - or the operator's seat - \
+                 can take it back"
+            ),
+            Refused::NotTheOwners { session } => write!(
+                f,
+                "`{session}` is not the session this connection speaks for: `retire` is sent by a \
+                 session's own daemon, for itself, when its session is deleted"
             ),
         }
     }
