@@ -12,8 +12,17 @@ use letibot_tokencore::store::{
 };
 use serde_json::{Value, json};
 
+use crate::builtins::jobs::{JobLookup, JobTable};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
+
+/// The idle plan check's schedule, beside the board it reads: a harnessd session and a bridge seat
+/// serve the same rule, so neither keeps a copy (`docs/seat-todo.md`).
+pub mod nag;
+pub use nag::{
+    NAG_REPEAT_CAP, NagHold, OPERATOR_ADD_NAG_AFTER, QueueNews, STUCK_REPEAT, TODO_NAG_AFTER,
+    TodoNagClock, nag_should_arm, the_check_may_ask_about, the_plan_as_checked,
+};
 
 /// The session's todo list, shared between the tool that writes it and the
 /// harness that persists and announces it.
@@ -1958,7 +1967,7 @@ impl Tool for TodoWriteTool {
         // The session's job table, read once: `wait_on` checks a handle against it and a `job`
         // need in `todos` is resolved through it - the same rule both ways.
         let jobs = ctx.backend.processes().map(|host| host.jobs());
-        self.write(args, jobs.as_deref())
+        self.write(args, jobs.as_ref().map(|t| t as &dyn JobTable))
     }
 }
 
@@ -1966,7 +1975,7 @@ impl TodoWriteTool {
     /// The whole of `todo_write`, over a job table in hand - `invoke` is this with the
     /// session's own table. A parameter rather than a read, as [`Self::wait_on`]'s is, so the
     /// rules that read the table are assertable without a cgroup tree.
-    pub(crate) fn write(&self, args: &Value, jobs: Option<&[crate::exec::JobView]>) -> Invocation {
+    pub fn write(&self, args: &Value, jobs: Option<&dyn JobTable>) -> Invocation {
         // An unknown top-level field is refused by name: three of these fields are easy to confuse
         // and `target` aims at another session's board, so a field silently ignored is how a wrong
         // write becomes a quiet one.
@@ -2202,7 +2211,7 @@ impl TodoWriteTool {
     /// `wait_on`: mark rows already on the board as waiting on a job or a subagent, or take that
     /// off. The handle is checked here against what this session actually has - a wait nothing will
     /// ever end would not even keep the row quiet - and anything else is refused by name.
-    fn wait_on(&self, v: &Value, jobs: Option<&[crate::exec::JobView]>) -> Invocation {
+    pub fn wait_on(&self, v: &Value, jobs: Option<&dyn JobTable>) -> Invocation {
         let refused = |what: String, why: String| {
             Invocation::failed(what, format!("**nothing was written.** {why}"))
         };
@@ -2299,26 +2308,29 @@ impl TodoWriteTool {
                                 .into(),
                         );
                     };
-                    let job = match crate::builtins::jobs::resolve_job_in(table, asked) {
-                        Ok(job) => job,
-                        Err(inv) => return inv,
-                    };
-                    if !job.state.is_running() {
-                        return refused(
-                            format!(
-                                "`{asked}` has already ended ({}) — there is nothing to wait for",
-                                job.state.word()
-                            ),
-                            format!(
-                                "read what it said with `job_output {}` and act on the row now.",
-                                job.id.0
-                            ),
-                        );
+                    match table.look(asked) {
+                        // The full handle goes on the row, whatever the call spelled: it is what
+                        // `job_fate` and `RunningJobs` are asked about, and a name is the agent's
+                        // word for a job while it is in the table - not a key that survives a restart.
+                        Ok(found) if found.running => Wait::On(TodoNeed::Job {
+                            handle: found.handle,
+                        }),
+                        Ok(found) => {
+                            return refused(
+                                format!(
+                                    "`{asked}` has already ended ({}) — there is nothing to wait \
+                                     for",
+                                    found.word
+                                ),
+                                format!(
+                                    "read what it said with `job_output {}` and act on the row now.",
+                                    found.handle
+                                ),
+                            );
+                        }
+                        Err(JobLookup::Several(_)) => return table.several(asked),
+                        Err(JobLookup::Unknown) => return table.unknown(asked),
                     }
-                    // The full handle goes on the row, whatever the call spelled: it is what
-                    // `job_fate` and `RunningJobs` are asked about, and a name is the agent's word
-                    // for a job while it is in the table - not a key that survives a restart.
-                    Wait::On(TodoNeed::Job { handle: job.id.0 })
                 }
                 _ => {
                     let Some(asked) = obj.get("child").and_then(|c| c.as_str()) else {
@@ -2561,7 +2573,7 @@ fn parse_moves(v: Option<&Value>, field: &str) -> Result<Vec<(String, TodoStatus
 #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn resolve_job_needs(
     rows: &mut [(String, TodoStatus, Vec<TodoNeed>)],
-    jobs: Option<&[crate::exec::JobView]>,
+    jobs: Option<&dyn JobTable>,
 ) -> Result<(), Invocation> {
     let Some(table) = jobs else {
         return Ok(());
@@ -2571,37 +2583,31 @@ fn resolve_job_needs(
             let TodoNeed::Job { handle } = need else {
                 continue;
             };
-            if let Some(j) = table.iter().find(|j| j.id.0 == *handle) {
-                *handle = j.id.0.clone();
-                continue;
-            }
-            let named: Vec<&crate::exec::JobView> = table
-                .iter()
-                .filter(|j| j.slug.as_deref() == Some(handle.as_str()))
-                .collect();
-            match named.as_slice() {
-                [one] => *handle = one.id.0.clone(),
-                [] if job_handle_shaped(handle) => {}
-                _ => {
-                    let inv = match crate::builtins::jobs::resolve_job_in(table, handle) {
-                        Err(inv) => inv,
-                        Ok(_) => unreachable!("resolved above"),
+            match table.look(handle) {
+                Ok(found) => *handle = found.handle,
+                // A handle this table does not hold is kept: it may be one the daemon ran before a
+                // restart. A NAME it does not hold is a wait nothing would ever end.
+                Err(JobLookup::Unknown) if job_handle_shaped(handle) => {}
+                Err(why) => {
+                    let refusal = match why {
+                        JobLookup::Several(_) => table.several(handle),
+                        JobLookup::Unknown => table.unknown(handle),
                     };
                     return Err(Invocation::failed(
                         format!(
                             "nothing was written: the row `{content}` needs a job `{handle}`, \
                              and {}",
-                            if named.is_empty() {
-                                "no job of this session has that name or handle".to_string()
-                            } else {
-                                format!("{} jobs have that name", named.len())
+                            match why {
+                                JobLookup::Several(n) => format!("{n} jobs have that name"),
+                                JobLookup::Unknown =>
+                                    "no job of this session has that name or handle".to_string(),
                             }
                         ),
                         format!(
                             "a `job` need names a job by the handle `bash` and `job_list` print \
                              (`j…`), or by the name it was started under while it is in this \
                              session's table; the handle is what goes on the row.\n\n{}",
-                            inv.payload
+                            refusal.payload
                         ),
                     ));
                 }
@@ -2618,15 +2624,10 @@ fn resolve_job_needs(
 fn resolve_child_needs(
     rows: &mut [(String, TodoStatus, Vec<TodoNeed>)],
     children: Option<&dyn ChildTodos>,
-    jobs: Option<&[crate::exec::JobView]>,
+    jobs: Option<&dyn JobTable>,
 ) -> Result<(), Invocation> {
     // A `job` need that names a job of this session stays a job need, whatever a child is called.
-    let a_job = |name: &str| {
-        jobs.is_some_and(|t| {
-            t.iter()
-                .any(|j| j.id.0 == name || j.slug.as_deref() == Some(name))
-        })
-    };
+    let a_job = |name: &str| jobs.is_some_and(|t| t.knows(name));
     let Some(children) = children else {
         return Ok(());
     };

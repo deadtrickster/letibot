@@ -124,6 +124,94 @@ pub(crate) fn resolve_job_in(jobs: &[JobView], asked: &str) -> Result<JobView, I
     }
 }
 
+/// A job a [`JobTable`] resolved: the handle a row stores, and what the table knew of it.
+pub struct Found {
+    /// The handle the daemon minted, which is what `RunningJobs` and `job_fate` are asked about.
+    pub handle: String,
+    /// Whether it still runs. A `job` wait on one that has ended is refused, not armed.
+    pub running: bool,
+    /// The listing's word for it, for the refusal that says it is over.
+    pub word: String,
+}
+
+/// Why a table could not say which job was meant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobLookup {
+    /// Nothing in the table has that id and nothing carries that name.
+    Unknown,
+    /// `n` jobs answer to that name, so it names none of them.
+    Several(usize),
+}
+
+/// A job table a board's `job` waits are resolved against. Two runtimes write a board - the daemon,
+/// whose table is its process host's listing, and a Claude Code seat, whose jobs belong to the
+/// sessions it holds - and the refusals are built from these questions so the words a caller reads
+/// are the same whoever answers.
+pub trait JobTable {
+    /// The one job `asked` names, by the id the daemon mints or the name it was started under.
+    fn look(&self, asked: &str) -> Result<Found, JobLookup>;
+    /// Whether `name` is a handle or a name this table knows at all, running or ended: a `job` need
+    /// naming one stays a job need and is not read as a child.
+    fn knows(&self, name: &str) -> bool;
+    /// The refusal for a name nothing here holds, in this table's own words - its listing is the
+    /// useful half, and only the table can write it.
+    fn unknown(&self, asked: &str) -> Invocation;
+    /// The refusal for a name more than one job answers to.
+    fn several(&self, asked: &str) -> Invocation;
+}
+
+impl JobTable for [JobView] {
+    fn look(&self, asked: &str) -> Result<Found, JobLookup> {
+        match pick_job(self, asked) {
+            Picked::One(i) => Ok(Found {
+                handle: self[i].id.0.clone(),
+                running: self[i].state.is_running(),
+                word: self[i].state.word(),
+            }),
+            Picked::Unknown => Err(JobLookup::Unknown),
+            Picked::Ambiguous(ids) => Err(JobLookup::Several(ids.len())),
+        }
+    }
+
+    fn knows(&self, name: &str) -> bool {
+        self.iter()
+            .any(|j| j.id.0 == name || j.slug.as_deref() == Some(name))
+    }
+
+    fn unknown(&self, asked: &str) -> Invocation {
+        unknown_job(self, asked)
+    }
+
+    fn several(&self, asked: &str) -> Invocation {
+        match pick_job(self, asked) {
+            Picked::Ambiguous(ids) => ambiguous_job(self, asked, &ids),
+            // `several` is only asked after `look` said so, and the table cannot change between.
+            _ => unknown_job(self, asked),
+        }
+    }
+}
+
+/// The same table as a `Vec` - and the impl that makes a caller's `Some(&host.jobs())` compile: a
+/// `&[JobView]` is itself a fat pointer, so it cannot unsize into `&dyn JobTable`, and a `&Vec`
+/// can.
+impl JobTable for Vec<JobView> {
+    fn look(&self, asked: &str) -> Result<Found, JobLookup> {
+        self.as_slice().look(asked)
+    }
+
+    fn knows(&self, name: &str) -> bool {
+        self.as_slice().knows(name)
+    }
+
+    fn unknown(&self, asked: &str) -> Invocation {
+        self.as_slice().unknown(asked)
+    }
+
+    fn several(&self, asked: &str) -> Invocation {
+        self.as_slice().several(asked)
+    }
+}
+
 /// The refusal for a name that fits more than one job: guessing would act on a job the
 /// caller did not name, so both ids are listed and the name is kept as it was asked for.
 fn ambiguous_job(jobs: &[JobView], asked: &str, ids: &[JobId]) -> Invocation {
