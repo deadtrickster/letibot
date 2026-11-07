@@ -22,6 +22,9 @@ pub(crate) struct PaneDraw<'a> {
     blobs: Option<&'a std::collections::BTreeMap<String, Blob>>,
     selected: Option<&'a str>,
     highlight: Option<&'a str>,
+    /// The rows a panel of the overview occupies, when the pane is a dashboard: `None` draws each
+    /// panel as tall as its data, which is right for a document that IS one panel (the queue).
+    panel_rows: Option<usize>,
 }
 
 /// The picture cache of a head that holds none: a picture draws its one-row fallback.
@@ -37,7 +40,14 @@ impl<'a> PaneDraw<'a> {
             blobs: None,
             selected: None,
             highlight: None,
+            panel_rows: None,
         }
+    }
+
+    /// Give every panel of the overview the same height: the constant shape a dashboard is read by.
+    pub(crate) fn keeping_panels(mut self, rows: usize) -> PaneDraw<'a> {
+        self.panel_rows = Some(rows);
+        self
     }
 
     /// What the head draws a pane with, from the frame's own facts.
@@ -52,6 +62,7 @@ impl<'a> PaneDraw<'a> {
             blobs: Some(blobs),
             selected: None,
             highlight: None,
+            panel_rows: None,
         }
     }
 
@@ -296,8 +307,17 @@ fn first_line(s: &str) -> &str {
 
 /// One step of the walk over a screen: a panel's title, a block's own header, or an item.
 enum Walk<'a> {
-    Panel { index: usize, panel: &'a pv::Panel },
-    Block { block: &'a pv::Block },
+    Panel {
+        index: usize,
+        panel: &'a pv::Panel,
+    },
+    /// A block, with the address its stops need: a tree's rows and a stream's entries are drawn by
+    /// their block, so the stop a row is cannot be recovered from the item alone.
+    Block {
+        panel: usize,
+        block: usize,
+        kind: &'a pv::Block,
+    },
     Item(Item<'a>),
 }
 
@@ -334,7 +354,11 @@ fn each<'a>(view: &'a pv::View, screen: Screen, f: &mut impl FnMut(Walk<'a>)) {
 
 fn blocks<'a>(panel: usize, list: &'a [pv::Block], f: &mut impl FnMut(Walk<'a>)) {
     for (block, b) in list.iter().enumerate() {
-        f(Walk::Block { block: b });
+        f(Walk::Block {
+            panel,
+            block,
+            kind: b,
+        });
         match b {
             pv::Block::Lines(lines) => {
                 for (item, line) in lines.iter().enumerate() {
@@ -454,6 +478,12 @@ pub(crate) fn stops(view: &pv::View, screen: Screen) -> Vec<Stop> {
 /// view is replaced wholesale on every look, and the cursor can outlive a row.
 pub(crate) fn target_of(view: &pv::View, screen: Screen, index: usize) -> Option<Target<'_>> {
     let stop = *stops(view, screen).get(index)?;
+    target_of_stop(view, screen, stop)
+}
+
+/// A stop by what it IS, the way the drawing recorded it: a panel cut to its budget drops the stops
+/// it did not draw, so a position in the walk would name a row nobody is looking at.
+pub(crate) fn target_of_stop(view: &pv::View, screen: Screen, stop: Stop) -> Option<Target<'_>> {
     Some(match stop {
         Stop::Finding(i) => Target::Finding(view.findings.get(i)?),
         Stop::Item { panel, block, item } => {
@@ -788,12 +818,18 @@ fn summary_line(view: &pv::View) -> Option<Line> {
 /// against what was drawn.
 pub(crate) struct Content {
     pub(crate) lines: PaneLines,
+    /// The stops the drawing drew, one for each entry of `lines.stop_rows`, in the same order: the
+    /// arrows and a click read this list, so a stop a panel's budget cut is not one of them.
+    pub(crate) stops: Vec<Stop>,
     /// `(pane row, panel index)` for every panel title drawn.
     pub(crate) panels: Vec<(usize, usize)>,
     /// `(pane row, legend key)` for every line or row whose label the view's legend documents - the
     /// record a hover reads, written where the row is drawn, because only the draw knows which row
     /// the pointer's row became.
     pub(crate) legend: Vec<(usize, String)>,
+    /// The pane rows a panel's counted seam was drawn on: the row that says how much is out of view.
+    /// Not stops, and a click on one is nobody's.
+    pub(crate) seams: Vec<usize>,
 }
 
 /// The rows of a screen, and where each stop landed - what the pane draws, the arrows scroll by,
@@ -815,6 +851,13 @@ pub(crate) fn content_with(
     let mut out = PaneLines::new();
     let mut panels: Vec<(usize, usize)> = Vec::new();
     let mut legend: Vec<(usize, String)> = Vec::new();
+    // The stops this drawing drew, in the order `out.stop_rows` records their rows: a panel closed at
+    // its budget drops the stops it could not draw, and the pane's cursor walks what was drawn.
+    let mut stopped: Vec<Stop> = Vec::new();
+    // Where the panel being drawn started, while the overview is drawn and it is still open.
+    let mut open: Option<usize> = None;
+    // The rows the counted seams were drawn on, in the content's own numbering.
+    let mut seams: Vec<usize> = Vec::new();
     // The screen's own head, above the walk.
     match screen {
         Screen::Overview => {
@@ -861,8 +904,27 @@ pub(crate) fn content_with(
     };
     each(view, screen, &mut |walk| match walk {
         Walk::Panel { index, panel } => {
+            // The panel above is finished: its rows are cut to the overview's constant height before
+            // the next one's blank separator goes in, so the blank is not spent out of its budget.
+            if let Some(rows) = draw.panel_rows
+                && let Some(start) = open.take()
+                && let Some(seam) = close_panel(
+                    &mut out,
+                    &mut stopped,
+                    &mut panels,
+                    &mut legend,
+                    start,
+                    w,
+                    rows,
+                )
+            {
+                seams.push(seam);
+            }
             if out.lines.len() > before {
                 out.blank();
+            }
+            if screen == Screen::Overview && draw.panel_rows.is_some() {
+                open = Some(out.lines.len());
             }
             panels.push((out.lines.len(), index));
             out.push(panel_title(panel));
@@ -883,13 +945,13 @@ pub(crate) fn content_with(
         }
         // A block's own header: a table's column names, a tree's whole stand of rows, and the kind
         // of a block this host does not draw - one muted line naming it, which is C3's rule.
-        Walk::Block { block } => {
+        Walk::Block { panel, block, kind } => {
             // The tree is drawn HERE, as one list, and its rows are skipped below: rano's list draws
             // a mark per row from one `selected`, so it has to see the whole stand at once, and the
             // pane's stop counter is advanced here instead of once per item below.
-            in_tree = matches!(block, pv::Block::Tree(_));
-            in_stream = matches!(block, pv::Block::Stream(_));
-            match block {
+            in_tree = matches!(kind, pv::Block::Tree(_));
+            in_stream = matches!(kind, pv::Block::Stream(_));
+            match kind {
                 pv::Block::Table(t) if !t.columns.is_empty() => {
                     let cells: Vec<String> = t.columns.iter().map(|c| clean_line(c)).collect();
                     out.push(pane::faint(format!(
@@ -923,6 +985,11 @@ pub(crate) fn content_with(
                             out.push(line);
                         } else {
                             out.push_stop(line);
+                            stopped.push(Stop::Item {
+                                panel,
+                                block,
+                                item: next_row,
+                            });
                         }
                         // A row whose first cell the legend documents answers on hover, exactly
                         // as a line does: the record is written where the row is drawn.
@@ -994,6 +1061,11 @@ pub(crate) fn content_with(
                             row = rano::render::truncate(&row, w);
                             if li == 0 && stop {
                                 out.push_stop(row);
+                                stopped.push(Stop::Item {
+                                    panel,
+                                    block,
+                                    item: i,
+                                });
                             } else {
                                 out.push(row);
                             }
@@ -1106,8 +1178,9 @@ pub(crate) fn content_with(
             // Only an item the walk calls a stop is RECORDED as one: `push_stop` writes into
             // `stop_rows`, and a click's index is a position there while the cursor's is a position
             // in [`stops`] - two counts, so a drawn line that is no stop shifts every stop below it.
-            if it.stop().is_some() {
+            if let Some(stop) = it.stop() {
                 out.push_stop(first);
+                stopped.push(stop);
             } else {
                 out.push(first);
             }
@@ -1130,6 +1203,21 @@ pub(crate) fn content_with(
         }
     });
 
+    // The last panel, closed like every one before it.
+    if let Some(rows) = draw.panel_rows
+        && let Some(start) = open.take()
+        && let Some(seam) = close_panel(
+            &mut out,
+            &mut stopped,
+            &mut panels,
+            &mut legend,
+            start,
+            w,
+            rows,
+        )
+    {
+        seams.push(seam);
+    }
     if screen == Screen::Findings && view.findings.is_empty() {
         out.push(pane::faint("  none — nothing tripped, nothing missing"));
     }
@@ -1141,9 +1229,60 @@ pub(crate) fn content_with(
     }
     Content {
         lines: out,
+        stops: stopped,
         panels,
         legend,
+        seams,
     }
+}
+
+/// The rows a dashboard's panel occupies, whatever its data does this tick - the constant shape a
+/// dashboard is read by: a frame that changes height when a job ends has to be re-read from the top.
+/// A panel shorter than this is padded; a longer one spends the last row on rano's counted seam, and
+/// the detail it had to leave out belongs behind its key, in its own screen.
+pub(crate) const PANEL_ROWS: usize = 8;
+
+/// Close one overview panel at `rows`, through rano's window: it pads a short panel and spends the
+/// last row of a long one on the count of what is out of view, so the seam and the pads are drawn by
+/// the crate that owns the sentence. The records move with the rows - a stop, a legend label or a
+/// panel title the window did not draw leaves the record, which is what makes a click on the seam
+/// select nothing. The seam's row comes back for the caller to record.
+fn close_panel(
+    out: &mut PaneLines,
+    stopped: &mut Vec<Stop>,
+    panels: &mut Vec<(usize, usize)>,
+    legend: &mut Vec<(usize, String)>,
+    start: usize,
+    w: usize,
+    rows: usize,
+) -> Option<usize> {
+    let mut body = PaneLines::new();
+    body.lines = out.lines.split_off(start);
+    let win = pane::window(body, w, 0, rows);
+    // Where content row `k` of this panel landed: the window draws `shown` of them, and a seam at the
+    // head would push them down one. At scroll 0 that seam is never drawn, and it is read off the
+    // record rather than assumed all the same.
+    let shown = pane::shown(rows, win.len);
+    let head = usize::from(matches!(win.seam, Some(s) if s.row == 0));
+    let moved = |row: usize| -> Option<usize> {
+        row.checked_sub(start)
+            .map_or(Some(row), |k| (k < shown).then_some(start + head + k))
+    };
+    let mut kept_rows = Vec::with_capacity(out.stop_rows.len());
+    let mut kept: Vec<Stop> = Vec::with_capacity(stopped.len());
+    for (i, row) in out.stop_rows.iter().enumerate() {
+        if let Some(at) = moved(*row) {
+            kept_rows.push(at);
+            // The two records are written together, one entry each, in the same order.
+            kept.extend(stopped.get(i).copied());
+        }
+    }
+    out.stop_rows = kept_rows;
+    *stopped = kept;
+    legend.retain_mut(|(row, _)| moved(*row).map(|at| *row = at).is_some());
+    panels.retain_mut(|(row, _)| moved(*row).map(|at| *row = at).is_some());
+    out.lines.extend(win.lines);
+    win.seam.map(|s| start + s.row)
 }
 
 /// A legend's `label  meaning` rows: the documentation of every label in the pane.
@@ -1170,10 +1309,11 @@ fn legend_rows(view: &pv::View, w: usize, out: &mut PaneLines) {
 
 /// One stop read whole - what Enter opens: the row's own words, and for a finding the numbers behind
 /// it, what to do, and how to check it. `screen` is the screen the stop was selected on: a detail is
-/// a surface of its own, and the row it reads is the one under it.
-pub(crate) fn detail(view: &pv::View, screen: Screen, index: usize, w: usize) -> PaneLines {
+/// a surface of its own, and the row it reads is the one under it. The stop is passed as the frame
+/// recorded it, because a panel cut to its budget means an index into the walk is not the row.
+pub(crate) fn detail(view: &pv::View, screen: Screen, stop: Option<Stop>, w: usize) -> PaneLines {
     let mut out = PaneLines::new();
-    let target = target_of(view, screen, index);
+    let target = stop.and_then(|s| target_of_stop(view, screen, s));
     out.push(pane::title(cut(
         &target.as_ref().map(|t| t.label()).unwrap_or_default(),
         w,

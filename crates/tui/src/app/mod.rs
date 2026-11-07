@@ -174,8 +174,15 @@ pub struct App {
     /// Which of that pane's screens is drawn: the overview, one panel's view behind its key,
     /// the findings, or the legend.
     pub(crate) plugin_screen: crate::ui::panes::plugin::Screen,
-    /// An index into [`App::plugin_stops`]: the row the cursor is on.
+    /// An index into [`App::plugin_drawn`]: the row the cursor is on.
     pub(crate) plugin_sel: usize,
+    /// The stops the last frame drew, in the order the cursor walks them - `plugin_stop_rows`' sibling,
+    /// written by the same draw. A panel cut to its budget drops the stops it could not draw, so the
+    /// walk over the view would name rows nobody is looking at.
+    pub(crate) plugin_drawn: Vec<crate::ui::panes::plugin::Stop>,
+    /// Which screen that record is of. A frame drawn for the findings is not a record of the
+    /// overview, and reading it as one would name a different row.
+    pub(crate) plugin_drawn_for: Option<crate::ui::panes::plugin::Screen>,
     /// The pane row each plugin stop was drawn on, the record the arrows scroll by and a click
     /// is tested against. See [`App::jobs_stop_rows`].
     pub(crate) plugin_stop_rows: Vec<usize>,
@@ -188,10 +195,18 @@ pub struct App {
     /// The same record in screen rows, translated where the pane's top and scroll are known
     /// ([`App::record_main_hits`]): a pointer arrives with a screen row and nothing else.
     pub(crate) plugin_legend_at: Vec<(usize, String)>,
-    /// The stop a detail overlay was opened on: the screen it was read out of, and its index in
-    /// that screen's stops. A value, because the overlay covers the pane and the pane's own
-    /// screen never becomes the detail's.
-    pub(crate) plugin_detail: Option<(crate::ui::panes::plugin::Screen, usize)>,
+    /// The pane rows a panel's counted seam was drawn on: the rows that say how much is out of view.
+    /// Not stops, and a click on one is nobody's - the block above them may not reach across.
+    pub(crate) plugin_seam_rows: Vec<usize>,
+    /// The same record in screen rows, translated like the legend's.
+    pub(crate) plugin_seam_at: Vec<usize>,
+    /// The stop a detail overlay was opened on: the screen it was read out of, and the stop itself -
+    /// never an index into the walk, which a panel cut to its budget makes a different row. A value,
+    /// because the overlay covers the pane and the pane's own screen never becomes the detail's.
+    pub(crate) plugin_detail: Option<(
+        crate::ui::panes::plugin::Screen,
+        crate::ui::panes::plugin::Stop,
+    )>,
     /// What this head last told the daemon about a pane's rectangle. The rectangle is only known
     /// while drawing, so the open sends its best value and the frame that draws corrects it: a
     /// frame per draw would be a frame per keystroke.
@@ -1200,10 +1215,14 @@ impl App {
             plugin_open: None,
             plugin_screen: Default::default(),
             plugin_sel: 0,
+            plugin_drawn: Vec::new(),
+            plugin_drawn_for: None,
             plugin_stop_rows: Vec::new(),
             plugin_panel_rows: Vec::new(),
             plugin_legend_rows: Vec::new(),
             plugin_legend_at: Vec::new(),
+            plugin_seam_rows: Vec::new(),
+            plugin_seam_at: Vec::new(),
             plugin_detail: None,
             plugin_sent: None,
             picker_sel: 0,

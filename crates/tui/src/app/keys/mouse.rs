@@ -85,9 +85,16 @@ impl App {
         // Anywhere on an entry is the entry - its second line too (a subagent's facts), the
         // same block that lights up under the pointer. See `App::stop_block`.
         let row = usize::from(y);
-        let stop = hit
-            .stop_at(row)
-            .or_else(|| self.stop_block(&hit, row).map(|(s, _)| s));
+        let stop = hit.stop_at(row).or_else(|| {
+            // Except on the seam that counts what a panel could not draw: it is nobody's row, and a
+            // block reaching across it would make a click on the count select the row above.
+            if hit.target == Target::Surface(Surface::PluginPane)
+                && self.plugin_seam_at.contains(&row)
+            {
+                return None;
+            }
+            self.stop_block(&hit, row).map(|(s, _)| s)
+        });
         let target = hit.target;
         if !self.still_drawn(target) {
             return ControlFlow::Break(None);

@@ -541,18 +541,21 @@ fn the_wheel_over_the_pane_scrolls_the_pane() {
 #[test]
 fn a_tree_block_draws_its_rows_indented_under_their_parent() {
     let mut a = tree_opened();
-    assert_eq!(
-        a.plugin_lines(60),
-        vec![
-            "a plan",
-            "",
-            "p plan",
-            "▸ the plan 2/3",
-            "  step a done",
-            "  step b blocked",
-            "    the reason io",
-        ]
-    );
+    let mut want: Vec<String> = [
+        "a plan",
+        "",
+        "p plan",
+        "▸ the plan 2/3",
+        "  step a done",
+        "  step b blocked",
+        "    the reason io",
+    ]
+    .map(String::from)
+    .to_vec();
+    // The panel is the dashboard's constant height: its five rows and then pads, so the frame under
+    // it does not move when the tree grows or shrinks.
+    want.extend(std::iter::repeat_n(" ".repeat(60), PANEL_ROWS - 5));
+    assert_eq!(a.plugin_lines(60), want);
 }
 
 /// A tree's rows are its stops, in reading order, and the selected row's two acts still work: Enter
@@ -693,5 +696,138 @@ fn a_row_with_no_enter_act_still_opens_its_detail() {
         a.focused_surface(),
         Some(Surface::PluginDetail),
         "the row read whole, as it always did"
+    );
+}
+
+use crate::ui::panes::plugin::PANEL_ROWS;
+
+/// A view whose two panels hold `first` and `second` summary lines - the fixture the budget's three
+/// tests are measured on, because a panel's height must come from the budget and not from this.
+fn stacked(first: usize, second: usize) -> serde_json::Value {
+    let lines = |n: usize, tag: &str| {
+        serde_json::Value::Array(
+            (0..n)
+                .map(|i| {
+                    serde_json::json!({"label": format!("{tag} {i}"), "value": "1/2",
+                                       "id": format!("{tag}{i}")})
+                })
+                .collect(),
+        )
+    };
+    serde_json::json!({
+        "title": "a stack",
+        "panels": [
+            {"id": "one", "key": "t", "title": "one",
+             "summary": [{"lines": lines(first, "a")}]},
+            {"id": "two", "key": "h", "title": "two",
+             "summary": [{"lines": lines(second, "b")}]}
+        ]
+    })
+}
+
+/// A head holding `stacked(first, second)`, the pane open.
+fn stacked_open(first: usize, second: usize) -> App {
+    let mut a = holding(stacked(first, second));
+    let asked = a.command(&format!("pane {PANE}"));
+    assert!(asked.is_some(), "the pane opens: {:?}", a.plugin_why());
+    a
+}
+
+/// The rows between two panels on the drawn screen: a panel is the budget's height whatever its data
+/// does, so the second title lands on the same row whether the first panel holds one line or five.
+/// A frame that changed height when a job ended would have to be re-read from the top every refresh.
+#[test]
+fn a_panel_shorter_than_its_budget_is_padded_to_it() {
+    let mut short = stacked_open(1, 1);
+    let mut near = stacked_open(1, PANEL_ROWS - 3);
+    let (a, b) = (short.screen(110, 40), near.screen(110, 40));
+    let at = |screen: &[String]| find(screen, "h two").1;
+    assert_eq!(
+        at(&a),
+        at(&b),
+        "a panel's height is its budget's, not its data's:\n{}\n---\n{}",
+        a.join("\n"),
+        b.join("\n")
+    );
+    // And the pads are rows the first panel occupies: its one line, then blanks, then the next title.
+    let first = find(&a, "t one").1 as usize;
+    assert_eq!(
+        at(&a) as usize - first,
+        PANEL_ROWS + 1,
+        "a title, the budget in rows and the blank between panels:\n{}",
+        a.join("\n")
+    );
+}
+
+/// A panel that does not fit spends its last row on rano's seam, which counts what is out of view:
+/// a count and not "there is more", because one row missing and four hundred are different facts.
+#[test]
+fn a_panel_longer_than_its_budget_shows_a_counted_seam() {
+    let lines = PANEL_ROWS + 6;
+    let mut a = stacked_open(lines, 1);
+    let screen = a.screen(110, 40);
+    let first = find(&screen, "t one").1 as usize;
+    let next = find(&screen, "h two").1 as usize;
+    assert_eq!(
+        next - first,
+        PANEL_ROWS + 1,
+        "the long panel is the same height as a short one:\n{}",
+        screen.join("\n")
+    );
+    let seam = screen
+        .iter()
+        .position(|l| l.contains("line(s) out of view"))
+        .unwrap_or_else(|| panic!("no seam:\n{}", screen.join("\n")));
+    assert_eq!(
+        seam,
+        first + PANEL_ROWS - 1,
+        "the seam is the budget's LAST row, spent out of the room:\n{}",
+        screen.join("\n")
+    );
+    assert!(screen[seam].contains("pgdn scrolls"), "{}", screen[seam]);
+    // The count is the rows it could not draw: the panel's title takes one of the budget, the seam
+    // another, so `PANEL_ROWS - 2` lines are drawn and the rest are counted.
+    let out = lines - (PANEL_ROWS - 2);
+    assert!(
+        screen[seam].contains(&format!("{out} line(s) out of view")),
+        "it counts them: {}",
+        screen[seam]
+    );
+}
+
+/// The seam is not a stop: a click on it selects nothing and opens nothing. A press that landed on
+/// a row the pane had to leave out would act on a row nobody is looking at.
+#[test]
+fn a_click_on_the_seam_selects_nothing() {
+    let mut a = stacked_open(PANEL_ROWS + 6, 1);
+    let screen = a.screen(110, 40);
+    let first = find(&screen, "t one").1 as usize;
+    let seam = screen
+        .iter()
+        .position(|l| l.contains("line(s) out of view"))
+        .expect("the panel's seam");
+    assert_eq!(seam, first + PANEL_ROWS - 1, "{}", screen.join("\n"));
+    // A stop on the first panel, so a selection exists and staying on it means something.
+    a.key(Key::Down);
+    let before = a.plugin_sel;
+    a.key(Key::Click {
+        x: 12,
+        y: seam as u16,
+    });
+    assert_eq!(
+        a.plugin_sel,
+        before,
+        "a click on the seam is not a click on a row:\n{}",
+        screen.join("\n")
+    );
+    assert_eq!(
+        a.focused_surface(),
+        Some(Surface::PluginPane),
+        "and it opens nothing"
+    );
+    assert_eq!(
+        a.top_surface(),
+        Some(Surface::PluginPane),
+        "the pane is where the reader still is"
     );
 }

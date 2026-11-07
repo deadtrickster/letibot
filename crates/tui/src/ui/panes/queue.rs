@@ -159,11 +159,16 @@ impl App {
                 // The stop whose row IS the open entry. The feed carries the id as `open`, so the
                 // layer draws the row even when it has left the live list; a row that is gone
                 // altogether is the renderer's own "that row is gone".
-                let n = crate::ui::panes::plugin::stops(&v, screen).len();
-                let at = (0..n).find(|&i| {
+                let all = crate::ui::panes::plugin::stops(&v, screen);
+                let at = (0..all.len()).find(|&i| {
                     crate::ui::panes::plugin::target_of(&v, screen, i).is_some_and(|t| t.id() == id)
                 });
-                crate::ui::panes::plugin::detail(&v, screen, at.unwrap_or(usize::MAX), w)
+                crate::ui::panes::plugin::detail(
+                    &v,
+                    screen,
+                    at.and_then(|i| all.get(i).copied()),
+                    w,
+                )
             }
             None => {
                 let mut out = PaneLines::new();

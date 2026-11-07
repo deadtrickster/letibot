@@ -239,6 +239,16 @@ impl App {
                                 .map(|d| (top + d, key.clone()))
                         })
                         .collect();
+                    // The counted seams, the same way: not stops, so a click on one is nobody's.
+                    self.plugin_seam_at = self
+                        .plugin_seam_rows
+                        .iter()
+                        .filter_map(|row| {
+                            row.checked_sub(self.pane_scroll)
+                                .filter(|d| *d < room)
+                                .map(|d| top + d)
+                        })
+                        .collect();
                 }
             }
             Drawn::Conversation => {

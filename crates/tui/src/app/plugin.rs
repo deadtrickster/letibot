@@ -117,7 +117,8 @@ impl App {
     /// on a stop rather than on an index that no longer exists.
     pub(crate) fn plugin_selected(&self) -> Option<view::Target<'_>> {
         let v = self.plugin_view()?;
-        view::target_of(v, self.plugin_screen, self.plugin_sel)
+        let stop = self.plugin_stop_at(self.plugin_sel)?;
+        view::target_of_stop(v, self.plugin_screen, stop)
     }
 
     /// The legend's words for the row the pointer is over: a legend documents every label, and
@@ -135,11 +136,32 @@ impl App {
     }
 
     /// The stops of the screen on the screen - the list the arrows walk, Enter acts on, and a
-    /// click is measured against.
+    /// click is measured against. The frame's own record when it has one, because a panel closed at
+    /// its budget drew fewer stops than the view has; the walk when it does not, which is a pane no
+    /// frame has drawn yet and the screen a key is pressed on.
     pub(crate) fn plugin_stops(&self) -> Vec<view::Stop> {
-        match self.plugin_view() {
-            Some(v) => view::stops(v, self.plugin_screen),
-            None => Vec::new(),
+        match (self.plugin_view(), self.drawn_stops()) {
+            (Some(v), None) => view::stops(v, self.plugin_screen),
+            (_, Some(drawn)) => drawn.to_vec(),
+            (None, None) => Vec::new(),
+        }
+    }
+
+    /// The record, if it is this screen's: a frame drawn for the findings is not a record of the
+    /// overview, and reading it as one would name a different row.
+    fn drawn_stops(&self) -> Option<&[view::Stop]> {
+        (self.plugin_drawn_for == Some(self.plugin_screen) && !self.plugin_drawn.is_empty())
+            .then_some(self.plugin_drawn.as_slice())
+    }
+
+    /// The stop at `index`, out of the frame's record or, before a frame has drawn this screen, out
+    /// of the walk.
+    fn plugin_stop_at(&self, index: usize) -> Option<view::Stop> {
+        match self.drawn_stops() {
+            Some(drawn) => drawn.get(index).copied(),
+            None => view::stops(self.plugin_view()?, self.plugin_screen)
+                .get(index)
+                .copied(),
         }
     }
 
@@ -382,7 +404,8 @@ impl App {
             }
             // A row with no act, or one this surface cannot perform: the detail.
             Some(pv::Act::Fold { .. }) | None => {
-                self.plugin_detail = Some((self.plugin_screen, self.plugin_sel));
+                let stop = self.plugin_stop_at(self.plugin_sel)?;
+                self.plugin_detail = Some((self.plugin_screen, stop));
                 self.push_surface(Surface::PluginDetail);
                 None
             }
@@ -393,9 +416,9 @@ impl App {
     /// was opened FROM (a value, kept at open: the overlay is not the pane's screen and never
     /// becomes it). `None` when the view moved under the overlay and its row is gone.
     pub(crate) fn plugin_detail_lines(&self, w: usize) -> Option<Vec<rano::render::Line>> {
-        let (screen, index) = self.plugin_detail?;
+        let (screen, stop) = self.plugin_detail?;
         let v = self.plugin_view()?;
-        Some(view::detail(v, screen, index, w).lines)
+        Some(view::detail(v, screen, Some(stop), w).lines)
     }
 
     /// A click on panel `i`'s title, or that panel's key - one door for the two, so a
@@ -440,6 +463,8 @@ impl App {
             // head cannot read look identical on a screen and mean opposite things.
             self.plugin_stop_rows.clear();
             self.plugin_panel_rows.clear();
+            self.plugin_drawn.clear();
+            self.plugin_seam_rows.clear();
             let why = self
                 .plugin_why()
                 .map(|w| w.to_string())
@@ -477,13 +502,24 @@ impl App {
             }
         }
         let picture = |blob: &str| self.room_picture(blob);
-        let selected = self.plugin_selected().map(|t| t.id().to_string());
+        // The frame's own record, and the walk only until there is one: the first frame of a pane is
+        // drawn before any record exists, and a mark on a row the window did not draw cannot appear.
+        let selected = self
+            .plugin_selected()
+            .or_else(|| view::target_of(v, self.plugin_screen, self.plugin_sel))
+            .map(|t| t.id().to_string());
         let draw = view::PaneDraw::new(&self.cfg, &picture, &blobs)
-            .selected(selected.as_deref().filter(|id| !id.is_empty()));
+            .selected(selected.as_deref().filter(|id| !id.is_empty()))
+            // A dashboard's panels keep one height whatever their data does; the seam says what is out
+            // of view. The queue pane draws one document through the same renderer and asks for none.
+            .keeping_panels(view::PANEL_ROWS);
         let content = view::content_with(v, self.plugin_screen, self.plugin_sel, w, &draw);
         self.plugin_stop_rows = content.lines.stop_rows.clone();
+        self.plugin_drawn = content.stops;
+        self.plugin_drawn_for = Some(self.plugin_screen);
         self.plugin_panel_rows = content.panels;
         self.plugin_legend_rows = content.legend;
+        self.plugin_seam_rows = content.seams;
         row_strings(&content.lines.lines, self.cfg.palette())
     }
 
