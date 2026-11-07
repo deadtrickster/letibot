@@ -417,9 +417,7 @@ impl TodoBoard {
         let mut half = self.todos.lock().unwrap_or_else(|e| e.into_inner());
         let held: BTreeSet<u64> = rows.iter().map(|(ask, _)| *ask).collect();
         let before = half.len();
-        half.retain(|t| {
-            owed_asks(t).iter().all(|ask| held.contains(ask))
-        });
+        half.retain(|t| owed_asks(t).iter().all(|ask| held.contains(ask)));
         let mut changed = half.len() != before;
         for (_, row) in rows {
             let want = row.content.trim().to_string();
@@ -506,9 +504,9 @@ impl TodoBoard {
         for half in [&self.todos, &self.operator, &self.parent] {
             let mut half = half.lock().unwrap_or_else(|e| e.into_inner());
             for row in half.iter_mut().filter(|t| carries_ask(t, ask)) {
-                let has = row.needs.iter().any(|n| {
-                    matches!(n, TodoNeed::Operator { question: q, .. } if q.trim() == want)
-                });
+                let has = row.needs.iter().any(
+                    |n| matches!(n, TodoNeed::Operator { question: q, .. } if q.trim() == want),
+                );
                 if on && !has {
                     row.needs.push(TodoNeed::Operator {
                         question: want.to_string(),
