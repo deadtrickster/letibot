@@ -752,11 +752,12 @@ impl Accumulator {
         let tool_calls = self
             .calls
             .into_iter()
-            .enumerate()
-            .filter(|(_, (_, name, _))| !name.is_empty())
-            .map(|(i, (id, name, arguments))| ToolCall {
+            .filter(|(_, name, _)| !name.is_empty())
+            .map(|(id, name, arguments)| ToolCall {
+                // A server that named the call is echoed back by that name; one that did not gets a
+                // minted id, so two turns cannot both claim `call_0`.
                 id: if id.is_empty() {
-                    format!("call_{i}")
+                    letibot_transcript::mint_call_id()
                 } else {
                     id
                 },
@@ -884,6 +885,49 @@ mod tests {
                 "the dump quoted content ({secret}): {dump}"
             );
         }
+    }
+
+    /// A reply that names no call gets an id no other turn holds. The positional `call_{i}` named
+    /// the first call of EVERY turn `call_0`, which is one id for a whole session; a name the server
+    /// does give is still the one carried.
+    #[test]
+    fn two_replies_without_call_ids_mint_different_ones() {
+        let creds = Credentials {
+            key: "k".into(),
+            from: "test".into(),
+            prices: Default::default(),
+            url: None,
+        };
+        let id_of = |named: Option<&str>, creds: &Credentials| {
+            let mut a = Accumulator::default();
+            let call = match named {
+                Some(id) => {
+                    json!({"index": 0, "id": id, "function": {"name": "read", "arguments": "{}"}})
+                }
+                None => json!({"index": 0, "function": {"name": "read", "arguments": "{}"}}),
+            };
+            a.absorb(&json!({"choices": [{"delta": {"tool_calls": [call]}}]}));
+            a.finish(
+                "m",
+                creds,
+                1,
+                &crate::presets::DEEPSEEK,
+                &crate::catalogue::Catalogue::default(),
+            )
+            .tool_calls
+            .into_iter()
+            .next()
+            .expect("one call")
+            .id
+        };
+        let first = id_of(None, &creds);
+        let second = id_of(None, &creds);
+        assert_ne!(first, second, "the same id in two turns");
+        assert_eq!(
+            id_of(Some("call_srv_1"), &creds),
+            "call_srv_1",
+            "a server's own id is kept: the next request echoes it"
+        );
     }
 
     #[test]

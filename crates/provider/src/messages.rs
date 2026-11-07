@@ -966,6 +966,59 @@ mod tests {
         assert_eq!(m2.len(), 2);
     }
 
+    /// A transcript written before ids were minted holds the positional `call_0` in every turn.
+    /// That history still replays: each turn's call and its result survive with the ids they were
+    /// stored under - the pairing window is the assistant message, not a session-wide id index, so a
+    /// repeated id must not orphan a result or rewrite a call.
+    #[test]
+    fn a_stored_transcript_with_positional_ids_still_replays() {
+        let turn = |text: &str, out: &str| {
+            vec![
+                TranscriptItem::User {
+                    speaker: Default::default(),
+                    parts: vec![UserPart::Text { text: text.into() }],
+                },
+                TranscriptItem::Assistant {
+                    text: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: "call_0".into(),
+                        name: "glob".into(),
+                        arguments: "{}".into(),
+                    }],
+                    truncated: false,
+                },
+                TranscriptItem::ToolResult {
+                    call_id: "call_0".into(),
+                    name: "glob".into(),
+                    outcome: ToolOutcome::Ok,
+                    payload: out.into(),
+                    edit: None,
+                    origin: None,
+                    media: None,
+                },
+            ]
+        };
+        let mut items = turn("first", "one");
+        items.extend(turn("second", "two"));
+        let m = convert("be terse", &items, false);
+        let calls: Vec<&Value> = m
+            .iter()
+            .filter_map(|r| r.get("tool_calls").and_then(|c| c.as_array()))
+            .flatten()
+            .collect();
+        assert_eq!(calls.len(), 2, "both turns' calls: {m:?}");
+        assert!(calls.iter().all(|c| c["id"] == "call_0"), "{calls:?}");
+        let results: Vec<&Value> = m.iter().filter(|r| r["role"] == "tool").collect();
+        assert_eq!(
+            results.len(),
+            2,
+            "no result was dropped as an orphan: {m:?}"
+        );
+        assert!(results.iter().all(|r| r["tool_call_id"] == "call_0"));
+        assert_eq!(results[0]["content"], "one");
+        assert_eq!(results[1]["content"], "two");
+    }
+
     /// A picture a call read comes out as a picture, on this backend: a `messages` provider does
     /// not take media inside a tool message, so the tool result carries its text and the image
     /// follows as an ordinary user message.

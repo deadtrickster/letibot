@@ -71,7 +71,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R144 | The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag | Code work | the design and the build |
 | R147 | A grant card is raised for a container's path or a glob | Code work | nothing: a card now needs a path this host has, with no glob left |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
-| T16 | W9's open questions | Code work | item 7 (call ids are positional per turn); unclear: item 6 asked lubuntu3 whether RAGFlow signals "no coverage" in a field, no answer is recorded |
+| T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
 | R100 | A remote session in a firecode VM: `--host` and `--vm` as one placement | Needs the operator | the live proof on lab2x1: a real `firecode` copy carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, the copy-out's cost |
 | R59 | The context wall's denominator moves a third between firings | Needs the operator | the operator's ruling on smoothing the ratio (the tree keeps it per round, as recommended) |
@@ -900,7 +900,7 @@ Seen twice in the arango window: the view scrolls up and down but not below one 
 
 ## T16 - W9's open questions
 
-**Status:** items 1 to 6 are fixed (66077505, d81863e8, 229555bf, c44d41e7; item 3 has no test). left: item 7 - call ids are positional per turn (`call_{n}` at `crates/turn/src/items.rs:175`, `call_{i}` at `crates/provider/src/openai.rs:681`), so an id repeats across turns; unclear: item 6 asked lubuntu3 whether RAGFlow signals "no coverage" in a field, no answer is recorded.
+**Status:** item 7 is fixed (minted call ids); items 1 to 6 are fixed (66077505, d81863e8, 229555bf, c44d41e7; item 3 has no test). left: unclear - item 6 asked lubuntu3 whether RAGFlow signals "no coverage" in a field, no answer is recorded.
 
 From the tool runtime, in descending order of consequence.
 
@@ -961,10 +961,16 @@ From the tool runtime, in descending order of consequence.
    — ✓ fixed in c44d41e7, test `a_session_with_nothing_attached_discloses_only_retrieval`:
    retrieval is disclosed as `INERT` under its own name (T16.6) and an answer with no
    citations comes back `NO_RESULT` (`crates/tools/src/builtins/external/mod.rs:173-200`).
-7. **Call ids are positional per turn** (`call_0`; GLM carries none), so an id-derived
-   mark repeats across turns. Fine now, wrong once a head correlates across a session.
-   — OPEN: still positional — `crates/turn/src/items.rs:175` mints `call_{n}` per round and
-   `crates/provider/src/openai.rs:624` mints `call_{i}`, so an id still repeats across turns.
+7. **Call ids were positional per turn** (`call_0`; GLM carries none), so an id repeated across
+   turns. A head or a store correlating rows by id saw one call where the session made two.
+   — ✓ fixed: `letibot_transcript::mint_call_id` is one per-process nonce and counter, used where
+   `crates/turn/src/items.rs` and `crates/provider/src/openai.rs` used to mint positionally, so an
+   id is unique across a session's turns and across a restart (a nonce minted once per process is
+   never re-minted); a server's own id is kept exactly as given, and a stored transcript's
+   positional ids still replay, because the pairing window is the assistant message and not a
+   session-wide id index. Tests `two_minted_call_ids_differ_and_are_not_positional`,
+   `two_turns_with_tool_calls_mint_different_ids`, `two_replies_without_call_ids_mint_different_ones`,
+   `a_stored_transcript_with_positional_ids_still_replays`.
 
 ---
 

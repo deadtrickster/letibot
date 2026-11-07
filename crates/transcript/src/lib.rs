@@ -286,6 +286,27 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
+/// An id for a call the model did not name, which two things need and neither may spell its own
+/// way: GLM's text form carries none and a streamed reply may leave one out. Positional naming
+/// (`call_0`) repeats the same id in every turn, so a head or a store correlating rows by id sees
+/// one call per session; this is a per-process nonce and a counter instead, and the nonce is minted
+/// once per process so an id from a transcript this daemon wrote before a restart is never minted
+/// again. A model's own id is kept exactly as given - it is what the next request must echo.
+pub fn mint_call_id() -> String {
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    static NONCE: OnceLock<String> = OnceLock::new();
+    let nonce = NONCE.get_or_init(|| {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("{:x}{t:x}", std::process::id())
+    });
+    format!("call_{nonce}_{}", NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
 /// How a command came to be running in the background rather than inline. Three ways in and
 /// no fourth, because the distinction decides whether the model already knows and whether
 /// there is somebody to attribute it to.
@@ -370,6 +391,22 @@ pub enum UserPart {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two minted ids differ, and neither is a positional name: a `call_0` in every turn is one id
+    /// for a whole session, which is what a reader correlating a call with its result cannot use.
+    #[test]
+    fn two_minted_call_ids_differ_and_are_not_positional() {
+        let a = mint_call_id();
+        let b = mint_call_id();
+        assert_ne!(a, b);
+        for id in [&a, &b] {
+            assert!(id.starts_with("call_"), "{id}");
+            assert!(
+                id.trim_start_matches("call_").chars().any(|c| c == '_'),
+                "no nonce in {id}"
+            );
+        }
+    }
 
     #[test]
     fn reasoning_is_a_sibling_not_a_field() {

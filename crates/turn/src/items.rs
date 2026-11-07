@@ -164,10 +164,10 @@ pub fn produce(
             } => {
                 let group =
                     assistant.get_or_insert_with(|| (String::new(), Vec::new(), covered_to));
-                // GLM's wire format carries no call id, so the harness assigns one.
-                // Positional and stable within the turn.
+                // GLM's wire format carries no call id, so the harness mints one: unique across
+                // this session's turns, which a positional name is not.
                 group.1.push(ToolCall {
-                    id: id.unwrap_or_else(|| format!("call_{}", group.1.len())),
+                    id: id.unwrap_or_else(letibot_transcript::mint_call_id),
                     name,
                     arguments,
                 });
@@ -377,6 +377,30 @@ mod tests {
         };
         assert_eq!(text, "again");
         rows_cover_every_token(&p).unwrap();
+    }
+
+    /// A tool call this dialect cannot name gets an id that no other turn holds. Two produces of
+    /// the same shape used to both say `call_0`, so a head or a store that keys a call by its id
+    /// saw one call where the session made two.
+    #[test]
+    fn two_turns_with_tool_calls_mint_different_ids() {
+        let one_call = [
+            CALL_OPEN, 3, KEY_OPEN, 4, KEY_CLOSE, VAL_OPEN, 5, VAL_CLOSE, CALL_CLOSE, EOT,
+        ];
+        let id_of = |p: Produced| {
+            let Some(ProducedItem {
+                item: TranscriptItem::Assistant { tool_calls, .. },
+                ..
+            }) = p.items.into_iter().next()
+            else {
+                panic!("an assistant item with a call");
+            };
+            tool_calls.into_iter().next().expect("one call").id
+        };
+        let first = id_of(produce_with(&[ASSISTANT], &one_call));
+        let second = id_of(produce_with(&[ASSISTANT], &one_call));
+        assert_ne!(first, second, "the same call id in two turns");
+        assert_ne!(first, "call_0", "minted positionally: {first}");
     }
 
     #[test]

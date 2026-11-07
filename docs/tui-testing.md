@@ -78,9 +78,10 @@ in `turn_started` / `prompt_progress` / `turn_finished`, and emit `tool_call_pro
 Get the ordering right or the fixture tests a head nobody runs: the engine invokes every call in a
 round *before* appending any of the round's result rows, so a `ToolFinished` always precedes its own
 row's `TranscriptAppended`. The head reads that ordering to carry a call's duration onto its settled
-card, so getting it backwards silently loses the field. Call ids are positional *within a round*
-(`call_0`, `call_1`, …), so a fourteen-round turn has fourteen calls named `call_0` - which is why a
-fixture taken from the store is worth more than a synthetic one.
+card, so getting it backwards silently loses the field. A call id is minted per call and unique in
+its session (`letibot_transcript::mint_call_id`), so a round's call and the row it answers name each
+other and nothing else - which is why a fixture taken from the store is still worth more than a
+synthetic one: it carries the ids that were really minted.
 
 ## Waiting: two loops, in that order
 
