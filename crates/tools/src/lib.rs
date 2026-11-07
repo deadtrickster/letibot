@@ -250,8 +250,18 @@ pub fn coder_tools(
 pub fn runner_tools(
     retrieval: std::sync::Arc<dyn builtins::retrieval::Retrieval>,
 ) -> Result<Registry, RegisterError> {
+    runner_tools_with(retrieval, builtins::bash::ForegroundPolicy::default())
+}
+
+/// [`runner_tools`] with `bash` under the given foreground policy.
+pub fn runner_tools_with(
+    retrieval: std::sync::Arc<dyn builtins::retrieval::Retrieval>,
+    foreground: builtins::bash::ForegroundPolicy,
+) -> Result<Registry, RegisterError> {
     let mut reg = read_only_tools(retrieval)?;
-    reg.register(Box::new(builtins::bash::Bash::default()))?;
+    reg.register(Box::new(
+        builtins::bash::Bash::default().with_foreground(foreground),
+    ))?;
     reg.register(Box::new(builtins::jobs::JobList))?;
     reg.register(Box::new(builtins::jobs::JobOutput))?;
     reg.register(Box::new(builtins::jobs::JobWait))?;

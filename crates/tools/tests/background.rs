@@ -1014,3 +1014,46 @@ fn a_named_job_is_called_by_its_name_and_its_id_still_resolves() {
 
     let _ = h.call("job_kill", &serde_json::json!({"job": id}).to_string());
 }
+
+// ------------------------------------------------- automatic promotion past the threshold
+
+fn policy(auto: bool, ms: u64) -> letibot_tools::builtins::bash::ForegroundPolicy {
+    letibot_tools::builtins::bash::ForegroundPolicy {
+        auto_background: auto,
+        threshold: std::time::Duration::from_millis(ms),
+    }
+}
+
+/// Past the threshold the call is moved with no explicit deadline, which the default would have
+/// killed it at; the model is told the runtime did it.
+#[test]
+fn a_call_past_the_threshold_is_promoted_when_auto_background_is_on() {
+    let Ok(mut h) = letibot_tools::testing::runner_harness_foreground(policy(true, 700)) else {
+        return letibot_tokencore::apparatus::absent("a cgroup v2 subtree this user may write");
+    };
+    let r = h.call(
+        "bash",
+        &serde_json::json!({"command": "sleep 30"}).to_string(),
+    );
+    match &r.outcome {
+        ToolOutcome::Backgrounded { how, .. } => assert_eq!(*how, Backgrounding::Promoted),
+        other => panic!("{other:?}: {}", r.render()),
+    }
+    assert!(r.render().contains("did not ask"), "{}", r.render());
+    let id = job_id_anywhere(&r.payload).expect("a job id");
+    let host = h.processes.clone().unwrap();
+    assert!(host.job(&JobId(id)).unwrap().state.is_running());
+}
+
+/// With the setting off the call keeps today's behaviour: not moved, killed at its deadline.
+#[test]
+fn a_call_past_the_threshold_is_not_moved_when_auto_background_is_off() {
+    let Ok(mut h) = letibot_tools::testing::runner_harness_foreground(policy(false, 200)) else {
+        return letibot_tokencore::apparatus::absent("a cgroup v2 subtree this user may write");
+    };
+    let r = h.call(
+        "bash",
+        &serde_json::json!({"command": "sleep 30", "timeout_ms": 1200}).to_string(),
+    );
+    assert_eq!(r.outcome, ToolOutcome::Timeout, "{}", r.render());
+}

@@ -490,6 +490,73 @@ pub struct LeticodeConfig {
     pub fallback_after_timeouts: Option<u32>,
     /// The `[notes]` table: where the notes checkout is and the remote it pushes to.
     pub notes: NotesKeys,
+    /// The `[exec]` table: the foreground threshold and whether passing it backgrounds.
+    pub exec: ExecKeys,
+}
+
+/// `[exec]` in a `leticode.toml`.
+///
+/// ```toml
+/// [exec]
+/// auto_background = true   # move a call to the background past the threshold (default)
+/// foreground_seconds = 60 # the threshold
+/// ```
+///
+/// `false` keeps the advice only. The project's file wins over the user's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExecKeys {
+    pub auto_background: Option<bool>,
+    pub foreground_seconds: Option<u64>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecTable {
+    #[serde(default)]
+    auto_background: Option<bool>,
+    #[serde(default)]
+    foreground_seconds: Option<u64>,
+}
+
+fn exec_keys(value: &toml::Value) -> Result<ExecKeys, String> {
+    let t: ExecTable = value.clone().try_into().map_err(|e| {
+        format!("[exec]: {e}; the keys are `auto_background` (bool) and `foreground_seconds`")
+    })?;
+    if t.foreground_seconds == Some(0) {
+        return Err("[exec] foreground_seconds must be at least 1".into());
+    }
+    Ok(ExecKeys {
+        auto_background: t.auto_background,
+        foreground_seconds: t.foreground_seconds,
+    })
+}
+
+/// The foreground policy a session's `bash` runs under: defaults, then the user file, then the
+/// nearest project file.
+pub fn foreground_policy(
+    user: &LeticodeConfig,
+    workspace: &Path,
+    read_project: bool,
+) -> letibot_tools::builtins::bash::ForegroundPolicy {
+    let mut p = letibot_tools::builtins::bash::ForegroundPolicy::default();
+    let mut apply = |k: &ExecKeys| {
+        if let Some(a) = k.auto_background {
+            p.auto_background = a;
+        }
+        if let Some(s) = k.foreground_seconds {
+            p.threshold = std::time::Duration::from_secs(s);
+        }
+    };
+    apply(&user.exec);
+    if read_project && let Some(path) = LeticodeConfig::discover(workspace) {
+        match LeticodeConfig::load(&path) {
+            Ok(project) => apply(&project.exec),
+            Err(why) => {
+                eprintln!("  leticode.toml: {why} - this session's [exec] is the level below")
+            }
+        }
+    }
+    p
 }
 
 /// `[notes]` in a `leticode.toml`: the git checkout notes are written into, outside every
@@ -936,6 +1003,10 @@ impl LeticodeConfig {
                 Some(v) => notes_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
                 None => NotesKeys::default(),
             },
+            exec: match &file.exec {
+                Some(v) => exec_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
+                None => ExecKeys::default(),
+            },
         };
 
         // One seat, two answers. The guard and the adjudicator are one oracle in this
@@ -1038,6 +1109,13 @@ impl LeticodeConfig {
             fallback_after_timeouts: other
                 .fallback_after_timeouts
                 .or(self.fallback_after_timeouts),
+            exec: ExecKeys {
+                auto_background: other.exec.auto_background.or(self.exec.auto_background),
+                foreground_seconds: other
+                    .exec
+                    .foreground_seconds
+                    .or(self.exec.foreground_seconds),
+            },
             // The user's over the project's, the reverse of the models: see [`NotesKeys`].
             notes: NotesKeys {
                 repo: self.notes.repo.clone().or_else(|| other.notes.repo.clone()),
@@ -1204,6 +1282,9 @@ struct LeticodeConfigFile {
     /// The `[boundary]` table, see [`boundary_keys`].
     #[serde(default)]
     boundary: Option<toml::Value>,
+    /// The `[exec]` table, see [`ExecKeys`].
+    #[serde(default)]
+    exec: Option<toml::Value>,
     /// The fallback list and its budget, see [`fallback_list`] and [`fallback_timeouts`].
     /// Raw here so a value of the wrong shape is refused by name rather than by serde's
     /// message, which names the table and not the key the operator wrote.
@@ -1919,6 +2000,29 @@ mod tests {
         let path = write_file(&dir, "judge_model = \"glm-5.3-flash\"\n");
         let cfg = LeticodeConfig::load(&path).expect("one word is enough");
         assert_eq!(cfg.judge_model.as_deref(), Some("glm-5.3-flash"));
+    }
+
+    /// `[exec]` sets the threshold and the switch; absent is on at 60 s; a zero or unknown key
+    /// refuses the file.
+    #[test]
+    fn exec_keys_set_the_foreground_policy() {
+        let dir = project_dir("exec_keys");
+        let none = LeticodeConfig::default();
+        let p = foreground_policy(&none, &dir, true);
+        assert!(p.auto_background);
+        assert_eq!(p.threshold, std::time::Duration::from_secs(60));
+        write_file(
+            &dir,
+            "[exec]\nauto_background = false\nforeground_seconds = 7\n",
+        );
+        let p = foreground_policy(&none, &dir, true);
+        assert!(!p.auto_background);
+        assert_eq!(p.threshold, std::time::Duration::from_secs(7));
+        assert!(foreground_policy(&none, &dir, false).auto_background);
+        let path = write_file(&dir, "[exec]\nforeground_seconds = 0\n");
+        assert!(LeticodeConfig::load(&path).is_err());
+        let path = write_file(&dir, "[exec]\nauto_bg = true\n");
+        assert!(LeticodeConfig::load(&path).unwrap_err().contains("[exec]"));
     }
 
     /// The project's `[memory] default` beats the box-wide one for a session in it, and the

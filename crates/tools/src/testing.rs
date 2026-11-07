@@ -283,6 +283,20 @@ pub fn runner_harness() -> Result<Harness, crate::exec::ExecError> {
 pub fn runner_harness_with_gate(
     gate: Option<Box<dyn crate::runtime::Gate>>,
 ) -> Result<Harness, crate::exec::ExecError> {
+    runner_harness_with(gate, Default::default())
+}
+
+/// A runner whose `bash` runs under the given foreground policy.
+pub fn runner_harness_foreground(
+    foreground: crate::builtins::bash::ForegroundPolicy,
+) -> Result<Harness, crate::exec::ExecError> {
+    runner_harness_with(Some(allow_all()), foreground)
+}
+
+fn runner_harness_with(
+    gate: Option<Box<dyn crate::runtime::Gate>>,
+    foreground: crate::builtins::bash::ForegroundPolicy,
+) -> Result<Harness, crate::exec::ExecError> {
     let dir = TempDir::new();
     fixture_tree(dir.path());
     let host = Arc::new(crate::exec::HostProcesses::new(dir.path())?);
@@ -295,7 +309,8 @@ pub fn runner_harness_with_gate(
         .expect("fixture root")
         .with_promote_channel(promote.clone())
         .with_scratch_dir(scratch.path());
-    let registry = crate::runner_tools(Arc::new(Unavailable)).expect("built-ins register");
+    let registry =
+        crate::runner_tools_with(Arc::new(Unavailable), foreground).expect("built-ins register");
     let mut rt = ToolRuntime::new(registry, Box::new(backend));
     if let Some(g) = gate {
         rt = rt.with_gate(g);

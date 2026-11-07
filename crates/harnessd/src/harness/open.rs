@@ -1991,14 +1991,21 @@ impl Harness {
         registry
             // The box-wide `[memory]` under the session's project's own: the
             // project is this session's workspace, settled above, not the daemon's.
-            .register(Box::new(letibot_tools::builtins::bash::Bash::with_memory(
-                crate::leticode_config::memory_policy(
-                    cfg.memory,
+            .register(Box::new(
+                letibot_tools::builtins::bash::Bash::with_memory(
+                    crate::leticode_config::memory_policy(
+                        cfg.memory,
+                        &cfg.leticode_user,
+                        &cfg.workspace,
+                        cfg.read_project_config,
+                    ),
+                )
+                .with_foreground(crate::leticode_config::foreground_policy(
                     &cfg.leticode_user,
                     &cfg.workspace,
                     cfg.read_project_config,
-                ),
-            )))
+                )),
+            ))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobList)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobOutput)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobWait)))

@@ -19,6 +19,7 @@ use crate::schema::{Access, ToolSchema};
 #[derive(Debug, Default)]
 pub struct Bash {
     memory: MemoryPolicy,
+    foreground: ForegroundPolicy,
     /// Whether this session's model has been told that some modified files are past the
     /// snapshot budget. Said once: it is a fact the model can do nothing about.
     snapshot_budget_said: std::sync::atomic::AtomicBool,
@@ -29,7 +30,30 @@ impl Bash {
     pub fn with_memory(memory: MemoryPolicy) -> Bash {
         Bash {
             memory,
-            snapshot_budget_said: Default::default(),
+            ..Bash::default()
+        }
+    }
+
+    /// `bash` under the operator's `[exec]` foreground settings.
+    pub fn with_foreground(mut self, foreground: ForegroundPolicy) -> Bash {
+        self.foreground = foreground;
+        self
+    }
+}
+
+/// `[exec]` in `leticode.toml`: how long a model's foreground call runs before the runtime
+/// moves it to the background (`auto_background`) or only advises it (off).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForegroundPolicy {
+    pub auto_background: bool,
+    pub threshold: Duration,
+}
+
+impl Default for ForegroundPolicy {
+    fn default() -> Self {
+        ForegroundPolicy {
+            auto_background: true,
+            threshold: SLOW_FOREGROUND,
         }
     }
 }
@@ -179,8 +203,15 @@ fn deadline_killed(body: &str, label: &str, secs: f32) -> String {
 /// What deadline this call gets: the one place the choice is made, and pure on purpose, because a
 /// test that waited 120 s to watch a kill would not be a test. It exists for the model's foreground
 /// run and no other: `background: true` asked for none, and the operator's own `!` line has no clock.
-fn deadline_for(asked_ms: Option<u64>, background: bool, operator: bool) -> Option<Duration> {
-    if background || operator {
+/// With `auto_background` on, an unasked deadline is none: promotion at the threshold takes the
+/// place of the default kill, so a long run is moved and never killed by a default.
+fn deadline_for(
+    asked_ms: Option<u64>,
+    background: bool,
+    operator: bool,
+    auto_background: bool,
+) -> Option<Duration> {
+    if background || operator || (auto_background && asked_ms.is_none()) {
         return None;
     }
     Some(Duration::from_millis(
@@ -217,15 +248,15 @@ pub(crate) fn wake_arg(args: &Value) -> Result<Option<WantedNow>, Invocation> {
     }
 }
 
-/// How long a foreground run may go before the daemon says it is the wrong shape: one minute, half of
-/// [`DEFAULT_TIMEOUT_MS`], so the reminder arrives while the call is still runnable.
-const SLOW_FOREGROUND: Duration = Duration::from_secs(60);
+/// The default foreground threshold: half of [`DEFAULT_TIMEOUT_MS`], so the move or the
+/// reminder comes while the call is still runnable.
+pub const SLOW_FOREGROUND: Duration = Duration::from_secs(60);
 
 /// The reminder a long foreground run owes the seat that reads its result, or `None` when it owes
 /// nothing. Pure like [`deadline_for`], for the same reason. The operator's own run is exempt: its
 /// stop is their own act, and the seat reading a `!` line is a person, not a model.
-fn slow_foreground(elapsed: Duration, operator: bool) -> Option<&'static str> {
-    if operator || elapsed < SLOW_FOREGROUND {
+fn slow_foreground(elapsed: Duration, operator: bool, threshold: Duration) -> Option<&'static str> {
+    if operator || elapsed < threshold {
         return None;
     }
     Some(concat!(
@@ -469,6 +500,7 @@ impl Tool for Bash {
             args.get("timeout_ms").and_then(|v| v.as_u64()),
             background,
             ctx.tty,
+            self.foreground.auto_background,
         );
 
         let cwd = match ctx.backend.workdir(cwd) {
@@ -628,7 +660,7 @@ impl Tool for Bash {
             });
         }
         let waited_from = std::time::Instant::now();
-        let foreground = wait_with_progress(ctx, host, &id, timeout);
+        let foreground = wait_with_progress(ctx, host, &id, timeout, self.foreground);
         // The run is over, so whatever card was up for it comes down: after the wait and before every
         // branch below, because a state, a promotion and a deadline all mean this tool is no longer
         // waiting, and a card that outlived its command would be a person answering nothing.
@@ -703,10 +735,11 @@ impl Tool for Bash {
                 p.how.clone(),
                 &next,
                 format!(
-                    "{body}\n\n[`{label}` was moved to the background by the operator]\
+                    "{body}\n\n[`{label}` was moved to the background: {}]\
                      \n  command: {command}\n{file_line}  owned by: {} — {}\n\nIts \
                      completion is delivered when it ends; \
                      nothing is held for a break.\n",
+                    p.how.phrasing(),
                     p.to,
                     p.to.kind.reaped_when()
                 ),
@@ -858,7 +891,8 @@ impl Tool for Bash {
             &state,
             JobState::Killed { by, .. } if by == crate::exec::DEADLINE_KILL
         ) || (matches!(&state, JobState::Running) && timeout.is_some());
-        if let Some(note) = slow_foreground(waited_from.elapsed(), ctx.tty)
+        if let Some(note) =
+            slow_foreground(waited_from.elapsed(), ctx.tty, self.foreground.threshold)
             && !deadline_answered
         {
             inv = inv.with_note(note);
@@ -994,6 +1028,7 @@ fn wait_with_progress(
     host: &dyn ProcessHost,
     id: &crate::exec::JobId,
     timeout: Option<Duration>,
+    policy: ForegroundPolicy,
 ) -> Foreground {
     let started = std::time::Instant::now();
     let step = Duration::from_millis(500);
@@ -1013,6 +1048,18 @@ fn wait_with_progress(
             // Whether the move succeeded or not, it is the answer to the request:
             // the failure path is reported, not retried into a second promotion.
             return match promoted {
+                Ok(p) => Foreground::Promoted(p),
+                Err(_) => Foreground::State(JobState::Running),
+            };
+        }
+        // Past the threshold the runtime moves the call exactly as Ctrl+O would, unless it is
+        // the operator's own run.
+        if policy.auto_background
+            && !ctx.tty
+            && started.elapsed() >= policy.threshold
+            && host.job(id).is_some_and(|v| v.state.is_running())
+        {
+            return match host.promote(id, ScopeKind::Session, None, Backgrounding::Promoted) {
                 Ok(p) => Foreground::Promoted(p),
                 Err(_) => Foreground::State(JobState::Running),
             };
@@ -1043,7 +1090,7 @@ fn wait_with_progress(
         // Past a minute in the foreground, say so once, in this loop's own register: the decision is
         // [`slow_foreground`]'s and the boundary is [`SLOW_FOREGROUND`]'s. This is the operator's
         // live line; the model's copy is appended to the call's result by [`Bash::invoke`].
-        if !told.slow && slow_foreground(started.elapsed(), ctx.tty).is_some() {
+        if !told.slow && slow_foreground(started.elapsed(), ctx.tty, policy.threshold).is_some() {
             told.slow = true;
             ctx.progress(format!(
                 "`{id}`: {:.0}s in the foreground and still running — this is what \
@@ -1269,14 +1316,26 @@ mod tests {
         assert!(text.lines().any(|l| l == kept.lines().next().unwrap()));
     }
 
+    /// With auto-background on, the run the default would have killed is promoted instead; an
+    /// explicit `timeout_ms` still bounds the foreground part.
+    #[test]
+    fn auto_background_replaces_the_default_deadline_not_an_asked_one() {
+        assert_eq!(deadline_for(None, false, false, true), None);
+        assert_eq!(
+            deadline_for(Some(5_000), false, false, true),
+            Some(Duration::from_secs(5))
+        );
+        assert!(deadline_for(None, false, false, false).is_some());
+    }
+
     #[test]
     fn a_models_run_gets_the_default_and_what_it_asked_for() {
         assert_eq!(
-            deadline_for(None, false, false),
+            deadline_for(None, false, false, false),
             Some(Duration::from_millis(DEFAULT_TIMEOUT_MS))
         );
         assert_eq!(
-            deadline_for(Some(30_000), false, false),
+            deadline_for(Some(30_000), false, false, false),
             Some(Duration::from_secs(30))
         );
     }
@@ -1284,11 +1343,11 @@ mod tests {
     #[test]
     fn an_asked_deadline_is_clamped_to_one_ms_and_the_ceiling() {
         assert_eq!(
-            deadline_for(Some(0), false, false),
+            deadline_for(Some(0), false, false, false),
             Some(Duration::from_millis(1))
         );
         assert_eq!(
-            deadline_for(Some(u64::MAX), false, false),
+            deadline_for(Some(u64::MAX), false, false, false),
             Some(Duration::from_millis(600_000))
         );
     }
@@ -1331,30 +1390,37 @@ mod tests {
 
     #[test]
     fn a_background_run_has_no_deadline() {
-        assert_eq!(deadline_for(None, true, false), None);
+        assert_eq!(deadline_for(None, true, false, false), None);
     }
 
     #[test]
     fn the_operators_own_run_has_no_deadline_whatever_the_call_says() {
         // The measured case: the daemon mints the operator's call with `command` and nothing
         // else, so `asked_ms` is `None`, and the run died at its silent default anyway.
-        assert_eq!(deadline_for(None, false, true), None);
+        assert_eq!(deadline_for(None, false, true, false), None);
         // A `timeout_ms` no head can even pass today is still not a deadline: the person's run is
         // the person's.
-        assert_eq!(deadline_for(Some(5_000), false, true), None);
+        assert_eq!(deadline_for(Some(5_000), false, true, false), None);
     }
 
     /// The boundary is one minute, and both sides of it are pinned without waiting a real minute:
     /// the decision is pure, so a nanosecond either side of [`SLOW_FOREGROUND`] stands in for it.
     #[test]
     fn a_foreground_run_owes_the_reminder_past_one_minute_and_not_before() {
-        assert_eq!(slow_foreground(Duration::from_secs(59), false), None);
         assert_eq!(
-            slow_foreground(SLOW_FOREGROUND - Duration::from_millis(1), false),
+            slow_foreground(Duration::from_secs(59), false, SLOW_FOREGROUND),
+            None
+        );
+        assert_eq!(
+            slow_foreground(
+                SLOW_FOREGROUND - Duration::from_millis(1),
+                false,
+                SLOW_FOREGROUND
+            ),
             None,
             "the reminder fires MORE than a minute in, not at the minute"
         );
-        let note = slow_foreground(SLOW_FOREGROUND, false)
+        let note = slow_foreground(SLOW_FOREGROUND, false, SLOW_FOREGROUND)
             .expect("a run that reaches the minute owes its reader the reminder");
         // The advice names the tool's own feature and the escape hatch it replaces: a model that
         // raised `timeout_ms` has to be told why that was the wrong knob, not merely that another
@@ -1368,9 +1434,12 @@ mod tests {
     /// result is that person. The reminder is for a model deciding how to spell its next call.
     #[test]
     fn the_operators_own_run_is_not_reminded_even_past_the_minute() {
-        assert_eq!(slow_foreground(Duration::from_secs(600), true), None);
+        assert_eq!(
+            slow_foreground(Duration::from_secs(600), true, SLOW_FOREGROUND),
+            None
+        );
         // And the contrast: a model's run of the same age owes it.
-        assert!(slow_foreground(Duration::from_secs(600), false).is_some());
+        assert!(slow_foreground(Duration::from_secs(600), false, SLOW_FOREGROUND).is_some());
     }
 
     /// The description states the default in force and which file set it: the project's
