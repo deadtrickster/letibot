@@ -61,8 +61,6 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | the next stop's line from `~/.local/state/letibot/scroll-stalls.log`, which the head now writes at each stop |
 | R137 | Todo graphs that span projects | Code work | the build of `docs/cross-project-todo.md` (P1-P6) and its four open questions |
 | R138 | Stable session identities across hosts, through migrations | Code work | the build of `docs/cross-host-identity.md` (Q1-Q7) and its five open questions; until then asks are same-host only |
-| R144 | The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag | Code work | nothing - settled; the entry is kept for the operator's archive |
-| R152 | `tests/launcher.sh` stubs outlived their run, and four of its cases had drifted | Code work | putting `tests/launcher.sh` in the merge gate |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
 | R153 | Placing a session on a busy host times out at 20 s | Needs the operator | the live proof on a loaded lab2x1: a placement there while the host is building, and a session's `job_wait` against it; the minute-long arranging budget, the one connection per host and the round a timed-out status query is not are landed |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
@@ -916,14 +914,6 @@ Today a board's edges stay inside one session tree. An answer-wait ask (R136) is
 The session id is the identity. The hub room (the box holding the `lives_on` index) holds the fleet directory and every cross-host ask, and dials the host rooms. Migration gains a fifth move: hand off, journal, re-home, clear.
 
 A session's identity is stable on its host only. Answer waits (R136) assume a stable graph of services, so they refuse targets on other hosts. A session that migrates between hosts must keep its name and its open asks, both as asker and target, for asks to cross hosts.
-
-## R144 - The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag
-
-**Status:** built, and settled: the head's todo pane draws a seat's board beside the session's. left: nothing.
-
-The design and the build are `docs/seat-todo.md`: `seat_todo` in the shared store under the handle `cc@<project>` (schema 41), three MCP tools - `todo_write` with the session's own schema, `todos` to read the board back, `todo_answer` for the operator's reply - and a watcher that runs the session's `TodoNagClock` over the seat's packages and pushes `unfinished_plan`'s own sentence as a channel notification. The schedule moved out of `crates/harnessd/src/sessions.rs` into `letibot_tools::builtins::todo::nag`, so the daemon and the seat run one clock and not two, and harnessd re-exports it under its old names. What a `wait_on` a seat may write: a package's turn end (a package is a child while its turn is in flight), a package's open job (through the new `JobTable` seam), and a question for the operator, which has no card and is answered in the conversation and recorded with `todo_answer`. The head draws it: `ServerFrame::Todos` gained a `seats` field (protocol 67, `serde(default)` so an older head drops it), filled by `Store::seat_boards` through `SessionSource::seat_boards` - the same store, the same `todo_entry` conversion - and `ui/panes/todos.rs` splices each board into the pane above the repo's list, in a session row's own shape, with no stop and no cursor: the seat writes its own board.
-
-A Claude Code seat orchestrating letibot sessions has no board: its waits live in Monitors and its own memory. The bridge should serve the same `todo_write` / `todos` / `update` tools a session has, kept in the store under the seat's handle, with `wait_on` edges to letibot sessions, their jobs, room asks (R136) and the operator. The same idle check nags the seat through the channel push when a row is ready or in progress with no wait. Then Monitors are not needed for waiting on packages, and a seat's plan is visible on the head's todo pane like any session's.
 
 ## R149 - A placement caps a package's build width from the host's free cores
 
