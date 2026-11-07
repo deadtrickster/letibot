@@ -1444,6 +1444,8 @@ pub enum Attention {
 struct Shared {
     state: Mutex<State>,
     bell: Condvar,
+    /// A copy of every event, for a caller that reads the stream itself (the browser bridge).
+    tap: Mutex<Option<std::sync::mpsc::Sender<Envelope>>>,
 }
 
 /// One attached head, and the session it holds.
@@ -1481,13 +1483,35 @@ impl Head {
     }
 
     fn attach_with(d: &Daemon, session: &str, watch_only: bool) -> Result<Head, String> {
+        Head::attach_as(d, session, watch_only, !watch_only, IDENTITY, None)
+    }
+
+    /// A head that may prompt but answers no card, under its own identity, with every event
+    /// copied to `tap`. The browser bridge: it asks, and the operator's own head decides.
+    pub fn attach_prompting(
+        d: &Daemon,
+        session: &str,
+        identity: &str,
+        tap: std::sync::mpsc::Sender<Envelope>,
+    ) -> Result<Head, String> {
+        Head::attach_as(d, session, false, false, identity, Some(tap))
+    }
+
+    fn attach_as(
+        d: &Daemon,
+        session: &str,
+        watch_only: bool,
+        can_decide: bool,
+        identity: &str,
+        tap: Option<std::sync::mpsc::Sender<Envelope>>,
+    ) -> Result<Head, String> {
         let caps = Caps {
-            can_decide: !watch_only,
+            can_decide,
             row_bodies: true,
             ..Caps::default()
         };
         let (client, hello, reader) =
-            HeadClient::attach(&d.socket, session, 0, HEAD_KIND, IDENTITY, caps)
+            HeadClient::attach(&d.socket, session, 0, HEAD_KIND, identity, caps)
                 .map_err(|e| said(&d.socket, e))?;
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
@@ -1495,6 +1519,7 @@ impl Head {
                 ..State::default()
             }),
             bell: Condvar::new(),
+            tap: Mutex::new(tap),
         });
         let client = Arc::new(Mutex::new(client));
         {
@@ -1706,12 +1731,22 @@ impl Head {
     /// A line to the running session: queued behind a running turn, as a head's own
     /// prompt is (the protocol's `Prompt` is a follow-up item, never a rejection).
     pub fn prompt(&self, text: &str) -> Result<String, String> {
+        self.prompt_attached(text, Vec::new())
+    }
+
+    /// [`Head::prompt`] with files beside it; the daemon reads them, so paths are absolute.
+    pub fn prompt_attached(
+        &self,
+        text: &str,
+        attachments: Vec<letibot_sessionlog::protocol::Attachment>,
+    ) -> Result<String, String> {
         self.may_write()?;
         let mut c = self.said_client()?;
         // `expected_seq = 0` is what the protocol reads as *I am not claiming a position*,
         // and `Hub::submit` accepts a prompt on a stale seq anyway. A bridge is a second
         // head on a session a person may be typing into, so it must never drop what it was told.
-        c.prompt(0, text).map_err(|e| e.to_string())
+        c.prompt_attached(0, text, attachments)
+            .map_err(|e| e.to_string())
     }
 
     /// Answer a card, by an option the card itself offered. The check is the bridge's as
@@ -2193,6 +2228,10 @@ fn collect(
                 let ack = match inbound {
                     Inbound::Frame(frame) => {
                         let seq = if let ServerFrame::Event(ref env) = frame {
+                            let tap = shared.tap.lock().unwrap_or_else(|e| e.into_inner());
+                            if let Some(tx) = tap.as_ref() {
+                                let _ = tx.send(env.clone());
+                            }
                             Some(env.seq)
                         } else {
                             None
