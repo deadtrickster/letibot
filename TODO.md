@@ -67,6 +67,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R152 | `tests/launcher.sh` stubs outlived their run, and four of its cases had drifted | Code work | putting `tests/launcher.sh` in the merge gate |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
 | R153 | Placing a session on a busy host times out at 20 s | Code work | all of it |
+| R154 | The channel push says turns, not work: idle-with-open-work and a held job's exit are silent, and a lost turn end is never replayed | Code work | all of it |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
 | R150 | Plugin extension points: the harness and head open to plugins | Needs the operator | answers to the 13 questions in `docs/plugin-extension-points-wide.md` §8 (each has a default), then packages K1-K11, P5 and P6; H0 (the pane contract types), the room UI P0-P4 and K9 (the config keys) are landed |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
@@ -957,6 +958,12 @@ Twenty `python3 /tmp/tmp.*/bin/harnessd` stubs were still listening on lab2x1 on
 **Status:** open. left: all of it.
 
 On 2026-11-07 four placements failed at the same step while their host was building: `making the mirror` and `handing the bundle to the remote repository` got no answer within 20 s, the ssh was killed and the daemon shut down before the brief was sent. A retry minutes later always worked. Also seen: an ssh `Connection closed` on lubuntu3 while three packages opened connections at once (sshd `MaxStartups`), and `remote_call_slow` warnings with budgets under a tenth of a second. The placement's one-off steps should take a budget sized for a loaded host, and the link should reuse one ssh connection per host (`ControlMaster`) instead of opening one per call. Beside R149, which sizes the build width.
+
+## R154 - The channel push says turns, not work, and a lost event is never replayed
+
+**Status:** open. left: all of it.
+
+Reported 2026-11-07 by `cc@serenedb` (room #831) with five placed children, and seen here with twelve. The bridge pushes a held session's turn end, ask and failure (`crates/bridge/src/push.rs`), but nothing when a session goes idle while it still has open jobs or pending rows, and nothing when a held job exits: a child waiting on job `j82015` sat idle with no event, and one of this session's packages sat three hours on a stuck job. And one `turn_ended` never reached the channel at all, found only through `leticode_list`. Wanted: an event on a held session going idle with `jobs_open` or pending rows, and on a held job exiting (with its exit); a per-bridge cursor over the pushed events with replay on reconnect, or a periodic digest of idle sessions with open work. The workaround in use is a Monitor polling `/proc` per placement.
 
 ## R134 - Scrolling stops at a line above the tail
 
