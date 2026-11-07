@@ -333,7 +333,7 @@ fn repo() -> PathBuf {
     std::fs::write(dir.join("package-lock.json"), "{}\n").unwrap();
     std::fs::write(
         dir.join(".gitignore"),
-        "dist/\nnode_modules/\n.envrc\n.vscode/\n*.log\n",
+        "dist/\nbuild/\nnode_modules/\n.envrc\n.vscode/\n*.log\n",
     )
     .unwrap();
     write(&dir.join("keep.log"), "mine");
