@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>letibot options</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { max-width: 520px; margin: 32px auto; font: 14px/1.5 -apple-system, Segoe UI, Roboto, sans-serif; padding: 0 16px; }
+  label { display: block; margin-top: 14px; font-weight: 600; }
+  input { width: 100%; box-sizing: border-box; font: 13px ui-monospace, monospace; padding: 6px 8px; margin-top: 4px; }
+  button { margin-top: 16px; padding: 7px 14px; font: inherit; font-weight: 600; }
+  .msg { margin-top: 12px; white-space: pre-wrap; }
+  code { font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+  <h1>letibot</h1>
+  <p>Run <code>letibot browser</code>. It prints the token once, on first run; it is kept in
+    <code>~/.config/letibot/browser.token</code>.</p>
+  <label for="token">Token</label>
+  <input id="token" type="password" autocomplete="off" spellcheck="false">
+  <label for="port">Port</label>
+  <input id="port" type="number" min="1" max="65535" placeholder="8790">
+  <button id="save">Save and test</button>
+  <div class="msg" id="msg"></div>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

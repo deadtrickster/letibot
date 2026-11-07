@@ -110,7 +110,11 @@ pub fn scan_in(
 /// What the daemon at `socket` says it holds, from the `Hello` of one attach to `session`.
 /// The attach runs on its own thread so a daemon that accepts and never answers costs this scan
 /// `timeout` and not its life. The thread is abandoned; it ends when the daemon closes the socket.
-fn briefs(socket: &Path, session: &str, timeout: Duration) -> Result<Vec<SessionBrief>, String> {
+pub(crate) fn briefs(
+    socket: &Path,
+    session: &str,
+    timeout: Duration,
+) -> Result<Vec<SessionBrief>, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     let (socket, session) = (socket.to_path_buf(), session.to_string());
     let spawned = std::thread::Builder::new()

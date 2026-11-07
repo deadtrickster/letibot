@@ -17,6 +17,7 @@
 //! Nothing here runs a model or links one: a leticode turn is the daemon's, on the other side of
 //! the socket, and what the bridge does with a turn is watch it and answer for it.
 
+pub mod browser;
 pub mod daemon;
 pub mod diff;
 pub mod fleet;
