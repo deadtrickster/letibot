@@ -86,6 +86,8 @@ fn read_loop<R: BufRead, W: Write>(
                     bridge.rooms().stream(std::sync::Arc::new(move |m| {
                         tx.send(crate::rooms::channel_notification(m)).is_ok()
                     }));
+                    // And the sessions this bridge holds, so no `leticode-wait` is needed.
+                    bridge.push_sessions(push.clone());
                 }
                 handle(bridge, &request)
             }
@@ -120,8 +122,9 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
             // `claude/channel` lets Claude Code start a turn on a room message; a client that
             // was not started with the channel flag ignores it and the tools still work.
             "capabilities": { "tools": {}, "experimental": { "claude/channel": {} } },
-            "instructions": format!("Room messages for `{}` arrive as <channel> events: read \
-                them, answer with `room_say` or `room_dm`, and `room_inbox` with ack true marks \
+            "instructions": format!("Room messages for `{}`, and the turn ends, asks and \
+                failures of the leticode sessions this bridge holds, arrive as <channel> events \
+                (meta `source: leticode` for a session's). Read them, answer with `room_say` or `room_dm`, and `room_inbox` with ack true marks \
                 what you handled. {} `room_nick` renames you (the name part of `cc@<folder>:<name>`) when \
                 this folder holds several repos.", crate::rooms::handle(), crate::rooms::etiquette(&crate::rooms::handle())),
             "serverInfo": {

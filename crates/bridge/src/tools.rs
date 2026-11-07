@@ -43,6 +43,8 @@ pub struct Bridge {
     /// The store and folder session names are read from, instead of this process's own. Set by
     /// a test; a running bridge asks `daemon::resolve` for the folder it was started in.
     names_from: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    /// Where held sessions' events go once the client can take channel notifications.
+    push: Mutex<Option<std::sync::mpsc::Sender<serde_json::Value>>>,
 }
 
 impl Bridge {
@@ -211,7 +213,19 @@ impl Bridge {
 
     fn hold(&self, h: &Arc<Head>) {
         let mut g = self.heads.lock().unwrap_or_else(|e| e.into_inner());
-        g.insert(h.session.clone(), h.clone());
+        let new = g.insert(h.session.clone(), h.clone()).is_none();
+        if new && let Some(tx) = self.push.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            crate::push::watch(h, tx.clone());
+        }
+    }
+
+    /// Push every held session's events on `tx` from now on, those held already included.
+    pub fn push_sessions(&self, tx: std::sync::mpsc::Sender<serde_json::Value>) {
+        let g = self.heads.lock().unwrap_or_else(|e| e.into_inner());
+        for h in g.values() {
+            crate::push::watch(h, tx.clone());
+        }
+        *self.push.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
     }
 
     /// Join a session this bridge did not start - `leticode_attach`. It joins a running
@@ -746,9 +760,10 @@ pub fn list() -> Value {
             "Start leticode on a worktree and hold the session. Starts or joins that \
               folder's daemon, opens a session, sets the approval point, sends the brief as \
               the first prompt, and stays attached so the gate's asks reach this bridge. \
-              Answers the session id every other tool takes. Run the `wait` verb as a \
-              background command afterwards — its exit is the notification that the turn \
-              ended or that a decision is pending. `host` places the session's TOOLS on \
+              Answers the session id every other tool takes. Its turn ends, asks, failures \
+              and provider trouble arrive as <channel> events when the client loaded this \
+              server's channel; without the channel, run the `wait` verb as a background \
+              command afterwards — its exit is the notification. `host` places the session's TOOLS on \
               another machine: a daemon already running for this folder with a different \
               placement is refused, naming where it runs and how to stop it, because a \
               package must never end up running locally when its caller asked for a host.",
