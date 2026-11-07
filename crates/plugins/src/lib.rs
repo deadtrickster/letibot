@@ -20,7 +20,7 @@ pub use gate::{BuildError, Builder, CargoBuilder, GateReport, ReplayDiff, gate};
 pub use manifest::{Capability, Manifest, Scope, ToolDecl};
 pub use recorder::Recorder;
 pub use stack::{BrokenPin, Candidate, DeclaredTool, Failure, Layer, Resolved, Stack};
-pub use trust::{Pin, Standing, Trust, Written};
+pub use trust::{Pin, Rebuilt, Standing, Trust, Written};
 
 /// One plugin module, as the stack sees it.
 /// The seam that keeps this crate out of the wasm business: rano's engine is one implementation, a
@@ -119,6 +119,16 @@ pub const HOOK_PREFIXES: &[&str] = &[
     "command_",
     "tool_",
 ];
+
+/// The hook kinds this host asks: every prefix of [`HOOK_PREFIXES`] something in this tree builds a
+/// hook name with. The `plugin-hooks` skill teaches one example of each, and a test fails when a
+/// kind is here and the skill never names it.
+pub const SERVED_KINDS: &[&str] = &["on_", "pane_", "condition_", "notice_", "command_", "tool_"];
+
+/// The prefixes the runtime recognises and this host never asks: nothing in the tree builds a hook
+/// name with them, so they are rano's own (`provider_open`, `digest_…`, `link_…`). Named so the two
+/// lists are the whole of [`HOOK_PREFIXES`]: a new prefix forces a decision about the skill.
+pub const UNSERVED_KINDS: &[&str] = &["provider_", "digest_", "link_"];
 
 /// The module a layer directory holds when its manifest names none.
 pub const WASM: &str = "plugin.wasm";

@@ -25,7 +25,27 @@ pub struct Pin {
     pub module: String,
     /// The SHA-256 of `plugin.toml`.
     pub manifest: String,
+    /// The capabilities `plugin.toml` declared when the pin was taken: what the person approved. A
+    /// rebuild that declares the same ones keeps the pin ([`Trust::rebuilt`]); `None` is a pin
+    /// written before this row existed, and nothing recorded what was approved then.
+    pub capabilities: Option<Vec<String>>,
     pub at_ms: u64,
+}
+
+/// What a rebuild did to a layer's pin. A pin is a statement about the manifest's capabilities as
+/// much as about the bytes: a rebuild that declares nothing new is the same layer, and one that
+/// declares a new power is a new review the person has not made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Rebuilt {
+    /// The pin was taken again over the new bytes, with the capabilities that were pinned.
+    Kept(Pin),
+    /// The pin is gone. `new` is what its manifest declares now that was not declared when the
+    /// person pinned it, and `was` is what the pin recorded - `None` for a pin taken before this
+    /// book recorded capabilities at all, which nothing can be judged against.
+    Dropped {
+        new: Vec<String>,
+        was: Option<Vec<String>>,
+    },
 }
 
 /// One write of a plugin artifact by a tool - provenance, recorded where it happened.
@@ -129,6 +149,17 @@ impl Book {
                 dir: text("dir").to_string(),
                 module: text("module").to_string(),
                 manifest: text("manifest").to_string(),
+                // A book written before capabilities were recorded answers `None`, and a rebuild of
+                // that layer drops the pin: nothing says what the person approved.
+                capabilities: pin
+                    .get("capabilities")
+                    .and_then(Value::as_array)
+                    .map(|caps| {
+                        caps.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    }),
                 at_ms: pin.get("at_ms").and_then(Value::as_u64).unwrap_or(0),
             });
         }
@@ -248,6 +279,7 @@ impl Book {
                     "dir": p.dir,
                     "module": p.module,
                     "manifest": p.manifest,
+                    "capabilities": p.capabilities,
                     "at_ms": p.at_ms,
                 })
             })
@@ -461,6 +493,40 @@ impl Trust {
         }
     }
 
+    /// What a REBUILD of this layer did to its pin: a rebuild whose `plugin.toml` asks for the same
+    /// powers keeps the operator's pin over the new bytes, and one that asks for a new power drops
+    /// it. `None` when this layer was never pinned, which is the ordinary case.
+    pub fn rebuilt(&self, name: &str, dir: &Path) -> Result<Option<Rebuilt>, String> {
+        let key = key_of(dir);
+        let before = {
+            let book = self.lock();
+            book.in_force(&key).cloned()
+        };
+        let Some(pin) = before else {
+            return Ok(None);
+        };
+        let now = capabilities_of(dir).unwrap_or_default();
+        let Some(approved) = pin.capabilities.clone() else {
+            return Ok(Some(Rebuilt::Dropped {
+                new: now,
+                was: None,
+            }));
+        };
+        let added: Vec<String> = now
+            .iter()
+            .filter(|c| !approved.contains(c))
+            .cloned()
+            .collect();
+        let kept = added.is_empty() && approved.iter().all(|c| now.contains(c));
+        if kept {
+            return self.pin(name, dir).map(|pin| Some(Rebuilt::Kept(pin)));
+        }
+        Ok(Some(Rebuilt::Dropped {
+            new: added,
+            was: Some(approved),
+        }))
+    }
+
     /// Pin a layer directory's bytes as they are now, and answer what was pinned.
     /// The hashes are read from the files rather than taken from a caller: a caller that passed a
     /// hash it remembered would be pinning the layer it meant to write.
@@ -476,6 +542,9 @@ impl Trust {
             dir: key_of(dir),
             module,
             manifest,
+            // The powers on the disk now, read back rather than taken from the caller: they are
+            // half of what this statement is about, and a rebuild is judged against them.
+            capabilities: capabilities_of(dir),
             at_ms,
         };
         {
@@ -602,6 +671,14 @@ pub(crate) mod test_seam {
             hook();
         }
     }
+}
+
+/// The capabilities a layer directory's `plugin.toml` declares now, as the manifest spells them.
+/// `None` when there is no manifest to read, which is a layer to be re-pinned rather than judged.
+fn capabilities_of(dir: &Path) -> Option<Vec<String>> {
+    Manifest::read(dir)
+        .ok()
+        .map(|m| m.capabilities.iter().map(|c| c.to_string()).collect())
 }
 
 /// A path as the book spells it: absolute where it can be, so a pin taken in the head and a layer
@@ -743,6 +820,76 @@ mod tests {
         assert!(said.contains(&pin.module), "the pinned hash: {said}");
         assert!(said.contains(&now), "and what is there now: {said}");
         assert!(said.contains("not pinned any more"), "{said}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_rebuild_keeps_the_pin_while_the_manifest_asks_for_the_same_capabilities() {
+        let root = tempdir("rebuilt");
+        let dir = layer(&root, "one", b"module v1");
+        let trust = Trust::in_memory();
+        let pin = trust.pin("one", &dir).expect("a pin");
+        assert_eq!(pin.capabilities, Some(Vec::new()));
+
+        std::fs::write(dir.join(WASM), b"module v2").expect("a rebuilt module");
+        let kept = trust.rebuilt("one", &dir).expect("a decision");
+        let Some(Rebuilt::Kept(pin)) = kept else {
+            panic!("a rebuild with no new capability keeps the pin: {kept:?}");
+        };
+        assert_eq!(pin.module, sha256_hex(b"module v2"), "over the new bytes");
+        assert!(
+            trust
+                .standing(
+                    &dir,
+                    &sha256_hex(b"module v2"),
+                    &sha256_hex(&std::fs::read(dir.join(MANIFEST)).unwrap())
+                )
+                .free,
+            "so the layer runs freely again"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_rebuild_that_declares_a_new_capability_drops_the_pin_and_names_it() {
+        let root = tempdir("widened");
+        let dir = layer(&root, "one", b"module v1");
+        let trust = Trust::in_memory();
+        trust.pin("one", &dir).expect("a pin");
+
+        // The one thing a person is actually approving: what the layer may reach.
+        std::fs::write(
+            dir.join(MANIFEST),
+            "name = \"one\"\npurpose = \"p\"\nhooks = [\"pane_x\"]\ncapabilities = [\"read\"]\n\
+             contract = 1\n",
+        )
+        .expect("a wider manifest");
+        std::fs::write(dir.join(WASM), b"module v2").expect("a rebuilt module");
+        let dropped = trust.rebuilt("one", &dir).expect("a decision");
+        let Some(Rebuilt::Dropped { new, was }) = dropped else {
+            panic!("a new capability drops the pin: {dropped:?}");
+        };
+        assert_eq!(new, vec!["read".to_string()], "the power that is new");
+        assert_eq!(was, Some(Vec::new()), "and what was approved");
+        assert!(
+            !trust
+                .standing(
+                    &dir,
+                    &sha256_hex(b"module v2"),
+                    &sha256_hex(&std::fs::read(dir.join(MANIFEST)).unwrap())
+                )
+                .free,
+            "the layer is adjudicated call by call until it is pinned again"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_layer_nobody_pinned_has_nothing_to_decide() {
+        let root = tempdir("unpinned");
+        let dir = layer(&root, "one", b"module v1");
+        let trust = Trust::in_memory();
+        assert_eq!(trust.rebuilt("one", &dir), Ok(None));
         let _ = std::fs::remove_dir_all(&root);
     }
 
