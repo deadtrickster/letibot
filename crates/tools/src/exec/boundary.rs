@@ -26,8 +26,14 @@ pub struct Origin {
 }
 
 impl std::fmt::Display for Origin {
+    /// `file:line`, or just the file when there is no line: a widening granted at a spawn came
+    /// from a person's answer and from no line of any file.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.file.display(), self.line)
+        if self.line == 0 {
+            write!(f, "{}", self.file.display())
+        } else {
+            write!(f, "{}:{}", self.file.display(), self.line)
+        }
     }
 }
 
@@ -98,11 +104,18 @@ pub fn is_secret_name(name: &str) -> bool {
 /// injection, and loader variables run code in every command. Minimal on purpose: the one list a
 /// carry-over of the caller's environment reads too.
 pub fn env_refusal(name: &str) -> Option<&'static str> {
-    const EXACT: &[&str] = &["SSH_AUTH_SOCK", "BASH_ENV", "ENV", "PATH", "HOME", "TMPDIR"];
-    let up = name.to_ascii_uppercase();
     if is_secret_name(name) {
         return Some("a secret or a credential helper travels by the seat's own injection");
     }
+    env_shape_refusal(name)
+}
+
+/// Why `name` may not be handed to a command at all, whatever its value: a loader variable runs
+/// code in every command, and these few decide where the command and its credential agent are.
+/// A value a file or a command COMPUTES may carry a secret's name; a literal in the file may not.
+pub fn env_shape_refusal(name: &str) -> Option<&'static str> {
+    const EXACT: &[&str] = &["SSH_AUTH_SOCK", "BASH_ENV", "ENV", "PATH", "HOME", "TMPDIR"];
+    let up = name.to_ascii_uppercase();
     if EXACT.contains(&up.as_str()) || up.starts_with("LD_") || up.starts_with("DYLD_") {
         return Some("it changes what every command runs or where it lives");
     }
@@ -145,6 +158,19 @@ pub struct Resolved {
     pub grants_rw: Vec<(PathBuf, Origin)>,
     pub hide: Vec<(PathBuf, Origin)>,
     pub env: Vec<(String, String, Origin)>,
+    /// The table the entries came from, so a grant's `why` names the key a reader can edit:
+    /// `[boundary]`, or the `[perimeter.<name>]` that a session's perimeter was built from.
+    pub label: String,
+}
+
+impl Resolved {
+    pub fn label(&self) -> &str {
+        if self.label.is_empty() {
+            "[boundary]"
+        } else {
+            &self.label
+        }
+    }
 }
 
 fn path_of(
@@ -153,8 +179,21 @@ fn path_of(
     home: &Path,
     grant: bool,
 ) -> Result<(PathBuf, Origin), String> {
-    let at = |why: String| format!("{}: [boundary] {key} = \"{}\": {why}", e.from, e.value);
-    let abs = expand(&e.value, home);
+    checked_path(&format!("[boundary] {key}"), &e.value, &e.from, home, grant)
+        .map(|p| (p, e.from.clone()))
+}
+
+/// One path a table names, expanded and checked: absolute, no `..`, and - for a grant - off the
+/// never-grant list. `label` is the key as a reader would write it, so the refusal names it.
+pub fn checked_path(
+    label: &str,
+    raw: &str,
+    from: &Origin,
+    home: &Path,
+    grant: bool,
+) -> Result<PathBuf, String> {
+    let at = |why: String| format!("{from}: {label} = \"{raw}\": {why}");
+    let abs = expand(raw, home);
     if !abs.is_absolute() {
         return Err(at(
             "the path is not absolute; start it with `/` or `~/`".into()
@@ -180,13 +219,16 @@ fn path_of(
             }
         }
     }
-    Ok((path, e.from.clone()))
+    Ok(path)
 }
 
 /// Check every entry against the rules and expand it. The first violation is the answer, naming
 /// the file, the line and the key.
 pub fn resolve(cfg: &BoundaryConfig, home: &Path) -> Result<Resolved, String> {
-    let mut r = Resolved::default();
+    let mut r = Resolved {
+        label: "[boundary]".into(),
+        ..Resolved::default()
+    };
     for e in &cfg.grants_ro {
         r.grants_ro.push(path_of("grants_ro", e, home, true)?);
     }
@@ -234,7 +276,7 @@ pub fn apply(mut seat: SeatView, r: &Resolved) -> SeatView {
             if p.exists() && !seat.grants.iter().any(|g| g.path() == p) {
                 seat.grants.push(Grant::ReadOnly {
                     path: p.clone(),
-                    why: format!("granted by `[boundary] grants_ro` at {from}"),
+                    why: format!("granted by `{} grants_ro` at {from}", r.label()),
                 });
             }
         }
@@ -244,7 +286,7 @@ pub fn apply(mut seat: SeatView, r: &Resolved) -> SeatView {
             seat.grants.retain(|g| g.path() != p);
             seat.grants.push(Grant::ReadWrite {
                 path: p.clone(),
-                why: format!("granted by `[boundary] grants_rw` at {from}"),
+                why: format!("granted by `{} grants_rw` at {from}", r.label()),
             });
         }
     }
@@ -306,7 +348,7 @@ pub fn report(
     for p in &seat.masked {
         let named = r.hide.iter().find(|(h, _)| h == p);
         out.push(match named {
-            Some((_, from)) => format!("  {} - `[boundary] hide` at {from}", p.display()),
+            Some((_, from)) => format!("  {} - `{} hide` at {from}", p.display(), r.label()),
             None => format!("  {} - credential or profile, fixed", p.display()),
         });
     }

@@ -275,6 +275,7 @@
 //! keeps letibot a runtime and leticode the thing that reads.
 
 use letibot_tools::exec::boundary::{BoundaryConfig, Entry, Origin};
+use letibot_tools::exec::perimeter::{EnvValue, PerimeterTable, Secret};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -530,6 +531,9 @@ pub struct LeticodeConfig {
     /// The `[boundary]` table: what a command's view holds beyond the built-in list. Empty is
     /// today's behaviour. See [`letibot_tools::exec::boundary`].
     pub boundary: BoundaryConfig,
+    /// The `[perimeter.<name>]` tables: the two seat levels, and any role a project names, as
+    /// data. Empty is today's behaviour. See [`letibot_tools::exec::perimeter`].
+    pub perimeters: BTreeMap<String, PerimeterTable>,
     /// Where this session goes when its model is out: model names, tried in order.
     /// A higher level's non-empty list replaces the whole list, because a list of models a
     /// session may answer on is one decision and not a set to union.
@@ -1025,6 +1029,154 @@ fn boundary_keys(
                 ));
             }
         }
+    }
+    Ok(out)
+}
+
+/// `[perimeter.<name>]` in a `leticode.toml`: the two seat levels, and any role a project names,
+/// as data. Five keys, each refused by name when misshapen, and every entry keeps its file and
+/// line so a refusal later names them.
+///
+/// ```toml
+/// [perimeter.subagent]
+/// grants_ro = ["~/shared"]        # USER file only: a project may not widen
+/// hide = ["~/models"]             # denied after every grant
+/// secrets = ["github"]            # which secrets it may carry
+/// [perimeter.subagent.env]
+/// RUST_LOG = "info"                                 # a constant
+/// DEPLOY_TOKEN = { file = "~/token" }               # read at open, outside the box
+/// DATE = { command = "date +%F" }                   # run at open, outside the box
+/// ```
+fn perimeter_tables(
+    value: &toml::Value,
+    path: &Path,
+    text: &str,
+    user: bool,
+) -> Result<BTreeMap<String, PerimeterTable>, String> {
+    let keys = "the keys are `grants_ro`, `grants_rw`, `hide` (lists of paths), `secrets` (a list \
+                of names) and `env` (constants, or `{ file = ... }` / `{ command = ... }`)";
+    let Some(names) = value.as_table() else {
+        return Err(format!(
+            "{}:{}: [perimeter] is a table of named perimeters; {keys}",
+            path.display(),
+            line_of(text, "perimeter")
+        ));
+    };
+    let mut out = BTreeMap::new();
+    for (name, body) in names {
+        if name.trim().is_empty() {
+            return Err(format!(
+                "{}:{}: [perimeter] has a table with no name",
+                path.display(),
+                line_of(text, "perimeter")
+            ));
+        }
+        let Some(table) = body.as_table() else {
+            return Err(format!(
+                "{}:{}: [perimeter.{name}] is a table; {keys}",
+                path.display(),
+                line_of(text, name)
+            ));
+        };
+        let at = |needle: &str| Origin {
+            file: path.to_path_buf(),
+            line: line_of(text, needle),
+            user,
+        };
+        let mut t = PerimeterTable {
+            name: name.clone(),
+            ..PerimeterTable::default()
+        };
+        for (key, v) in table {
+            let list = |what: &str| -> Result<Vec<Entry<String>>, String> {
+                let bad = || {
+                    format!(
+                        "{}:{}: [perimeter.{name}] {what} is a list of strings",
+                        path.display(),
+                        line_of(text, what)
+                    )
+                };
+                v.as_array()
+                    .ok_or_else(bad)?
+                    .iter()
+                    .map(|x| {
+                        let s = x.as_str().ok_or_else(bad)?;
+                        Ok(Entry {
+                            value: s.to_string(),
+                            from: at(&format!("\"{s}\"")),
+                        })
+                    })
+                    .collect()
+            };
+            match key.as_str() {
+                "grants_ro" => t.grants_ro = list("grants_ro")?,
+                "grants_rw" => t.grants_rw = list("grants_rw")?,
+                "hide" => t.hide = list("hide")?,
+                "secrets" => {
+                    for e in list("secrets")? {
+                        let Some(s) = Secret::parse(&e.value) else {
+                            return Err(format!(
+                                "{}: [perimeter.{name}] secrets: `{}` is not a secret this build \
+                                 knows; the names are: {}",
+                                e.from,
+                                e.value,
+                                Secret::ALL
+                                    .iter()
+                                    .map(|s| s.name())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ));
+                        };
+                        t.secrets.push(Entry {
+                            value: s,
+                            from: e.from,
+                        });
+                    }
+                }
+                "env" => {
+                    let Some(env) = v.as_table() else {
+                        return Err(format!(
+                            "{}:{}: [perimeter.{name}] env is a table of values",
+                            path.display(),
+                            line_of(text, "env")
+                        ));
+                    };
+                    for (var, val) in env {
+                        let bad = || {
+                            format!(
+                                "{}:{}: [perimeter.{name}] env.{var} is a string, or a table \
+                                 with one of `file` or `command`",
+                                path.display(),
+                                line_of(text, var)
+                            )
+                        };
+                        let value = if let Some(s) = val.as_str() {
+                            EnvValue::Constant(s.to_string())
+                        } else {
+                            let t = val.as_table().ok_or_else(bad)?;
+                            let one = |k: &str| t.get(k).and_then(|v| v.as_str());
+                            match (one("file"), one("command"), t.len()) {
+                                (Some(f), None, 1) => EnvValue::File(f.to_string()),
+                                (None, Some(c), 1) => EnvValue::Command(c.to_string()),
+                                _ => return Err(bad()),
+                            }
+                        };
+                        t.env.push(Entry {
+                            value: (var.clone(), value),
+                            from: at(var),
+                        });
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "{}:{}: [perimeter.{name}] `{other}` is not a key; {keys}",
+                        path.display(),
+                        line_of(text, other)
+                    ));
+                }
+            }
+        }
+        out.insert(name.clone(), t);
     }
     Ok(out)
 }
@@ -1683,6 +1835,10 @@ impl LeticodeConfig {
                 Some(v) => boundary_keys(v, path, &text, level == Level::User)?,
                 None => BoundaryConfig::default(),
             },
+            perimeters: match &file.perimeter {
+                Some(v) => perimeter_tables(v, path, &text, level == Level::User)?,
+                None => BTreeMap::new(),
+            },
             fallback: match &file.fallback {
                 Some(v) => fallback_list(v).map_err(|why| format!("{}: {why}", path.display()))?,
                 None => Vec::new(),
@@ -1838,6 +1994,19 @@ impl LeticodeConfig {
             skills: self.skills.overridden_by(&other.skills),
             github: self.github.overridden_by(&other.github),
             boundary: self.boundary.overridden_by(&other.boundary),
+            // The project wins per NAME, and only what it wrote: a project that says nothing
+            // about `reviewer` keeps the user file's `reviewer`.
+            perimeters: {
+                let mut out = self.perimeters.clone();
+                for (name, table) in &other.perimeters {
+                    let merged = match out.get(name) {
+                        Some(lower) => lower.overridden_by(table),
+                        None => table.clone(),
+                    };
+                    out.insert(name.clone(), merged);
+                }
+                out
+            },
             // Replaced, not joined: a project that names two models must not inherit a third.
             fallback: if other.fallback.is_empty() {
                 self.fallback.clone()
@@ -2143,6 +2312,9 @@ struct LeticodeConfigFile {
     /// The `[boundary]` table, see [`boundary_keys`].
     #[serde(default)]
     boundary: Option<toml::Value>,
+    /// The `[perimeter.<name>]` tables, see [`perimeter_tables`].
+    #[serde(default)]
+    perimeter: Option<toml::Value>,
     /// The `[exec]` table, see [`ExecKeys`].
     #[serde(default)]
     exec: Option<toml::Value>,
@@ -3149,6 +3321,87 @@ mod tests {
         let path = write_file(&dir, "[boundary]\nhide = []\ngrants = []\n");
         let err = LeticodeConfig::load(&path).unwrap_err();
         assert!(err.contains(":3:"), "{err}");
+    }
+
+    /// `[perimeter.<name>]` is read at both levels with each entry's file and line, the project's
+    /// table of one name adding to the user's; the three ways an env value is computed survive.
+    #[test]
+    fn the_perimeter_tables_keep_their_lines_and_a_project_adds_per_name() {
+        let dir = project_dir("perimeter");
+        let user_path = dir.join("user.toml");
+        std::fs::write(
+            &user_path,
+            "[perimeter.subagent]\nhide = [\"~/models\"]\nsecrets = [\"github\"]\n\
+             [perimeter.subagent.env]\nRUST_LOG = \"warn\"\nTOKEN = { file = \"~/tok\" }\n\
+             STAMP = { command = \"date +%F\" }\n\
+             [perimeter.reviewer]\ngrants_ro = [\"~/reviews\"]\n",
+        )
+        .unwrap();
+        let user = LeticodeConfig::load_as(&user_path, Level::User).unwrap();
+        let sub = user.perimeters.get("subagent").expect("the subagent table");
+        assert_eq!(sub.hide[0].value, "~/models");
+        assert!(sub.hide[0].from.user);
+        assert!(sub.hide[0].from.line >= 2);
+        assert_eq!(sub.secrets[0].value, Secret::Github);
+        assert!(
+            sub.env.iter().any(|e| e.value.0 == "TOKEN"
+                && matches!(e.value.1, EnvValue::File(ref f) if f == "~/tok"))
+        );
+        assert!(sub.env.iter().any(|e| e.value.0 == "STAMP"
+            && matches!(e.value.1, EnvValue::Command(ref c) if c == "date +%F")));
+        assert!(sub.env.iter().any(|e| e.value.0 == "RUST_LOG"
+            && matches!(e.value.1, EnvValue::Constant(ref v) if v == "warn")));
+        assert_eq!(user.perimeters["reviewer"].grants_ro[0].value, "~/reviews");
+
+        // The project's table of one name adds to the user's, and a name only the user file has
+        // survives the merge untouched.
+        let project_path = write_file(&dir, "[perimeter.subagent]\nhide = [\"/opt/x\"]\n");
+        let project = LeticodeConfig::load(&project_path).unwrap();
+        assert!(!project.perimeters["subagent"].hide[0].from.user);
+        let merged = user.overridden_by(&project);
+        let hides: Vec<&str> = merged.perimeters["subagent"]
+            .hide
+            .iter()
+            .map(|e| e.value.as_str())
+            .collect();
+        assert!(
+            hides.contains(&"~/models") && hides.contains(&"/opt/x"),
+            "{hides:?}"
+        );
+        assert!(merged.perimeters.contains_key("reviewer"));
+        assert!(LeticodeConfig::default().perimeters.is_empty());
+    }
+
+    /// A perimeter table that is misshapen is refused with its file and line, naming the key -
+    /// never silently read as the empty table, which would be a view nobody asked for.
+    #[test]
+    fn a_bad_perimeter_table_is_refused_with_its_line() {
+        let dir = project_dir("perimeter-bad");
+        for (body, want) in [
+            (
+                "[perimeter]\nsubagent = 3\n",
+                "[perimeter.subagent] is a table",
+            ),
+            ("[perimeter.subagent]\nsize = 3\n", "`size` is not a key"),
+            ("[perimeter.subagent]\nhide = \"~/a\"\n", "hide is a list"),
+            (
+                "[perimeter.subagent]\nsecrets = [\"ssh\"]\n",
+                "not a secret this build knows",
+            ),
+            (
+                "[perimeter.subagent]\n[perimeter.subagent.env]\nA = { file = 3 }\n",
+                "env.A is a string",
+            ),
+            (
+                "[perimeter.subagent]\n[perimeter.subagent.env]\nA = { file = \"x\", command = \"y\" }\n",
+                "env.A is a string",
+            ),
+        ] {
+            let path = write_file(&dir, body);
+            let err = LeticodeConfig::load(&path).unwrap_err();
+            assert!(err.contains(want), "{body:?}: {err}");
+            assert!(err.contains(&path.display().to_string()), "{err}");
+        }
     }
 
     /// A fallback list is replaced, not grown. A project that names two models must not

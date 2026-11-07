@@ -48,7 +48,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 |---|---|---|---|
 | R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement) |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | leticl's `:turn-finished` arm (`src/session/seq-gap.lisp:254`) does not read `ends_turn`, so every round's end is drawn as the turn's end |
-| R121 | What a command boundary holds is hardcoded and invisible | Code work | items 5-7 (perimeters as config, children narrow and widening is an ask) — items 1-4 and 8, including the file tools' fence and the probe line, are built |
+| R121 | What a command boundary holds is hardcoded and invisible | Code work | items 1-8 are built: the two seat levels and every role are `[perimeter.<name>]` tables, a child composes its parent's and may only narrow it, and a widening is an operator card. left: `grants_rw` and `secrets` are the user file's alone (operator ruling 2026-11-05), a `leticode` seat with no shell still has no boundary to put a perimeter in front of, and R95's carry-over should call `boundary::env_refusal` |
 | R126 | Reviewers fan out to the declared hosts, opt-in | Needs the operator | setting `[queue] reviewer_hosts` in the operator's `leticode.toml` and one live review on lab2x1 (the fan-out is landed and tested against fakes, never against a real host) |
 | R125 | Script plugin layers: where a JavaScript engine comes from, and the JS-side contract | Needs the operator | the two decisions, then `docs/plugins-plan.md` step 11: no JavaScript engine is available offline here, and a vendored one compiled in would run freely as a built-in |
 | R114 | Embeddings as the second similarity tier, for every similarity caller | Code work | item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase case scored against the worst measured negative, the per-round cost on lab2x1 |
@@ -613,7 +613,7 @@ Heads: this one reads it in `turn_busy` and the bridge gates `Turn::Idle` on it.
 
 ## R121 - What a command boundary holds is hardcoded and invisible
 
-Status: OPEN, filed 2026-11-04 by the operator. Items 1-4 and 8 are built: 1-4 (except 4's tool half) on branch z-r121, their remainders and 8 on the branch this row was rewritten on. left: items 5-7, the two seat levels as configurable perimeters. The macOS seatbelt suite passed on the Mac (22 tests, including the new hide test).
+Status: BUILT. Items 1-8 are done: 1-4 (except 4's tool half) on branch z-r121, their remainders and 8 after it, and 5-7 on R121's perimeter branch. The macOS seatbelt suite passed on the Mac (22 tests, including the new hide test).
 
 The paths a confined command sees are two constant lists: `GRANT_CANDIDATES` in
 `crates/tools/src/exec/confine.rs` (`~/.cargo`, `~/.rustup`, `~/.local/bin`, mise's data and
@@ -713,23 +713,53 @@ Closed after z-r121, on R121's own branch (item 3's probe line, item 4's tool ha
 
 Open:
 
-- `grants_rw` is the user file's alone: a project file is editable by a session, and a writable
-  grant is a widening. Operator ruling 2026-11-05: user file only, as built.
-- Item 3: the view prints what the probe measured, from the live session's boundary (closed
-  above).
-- Item 4: a path is refused with its key, and so is a file tool's path (closed above).
-- Items 5-7 are untouched. A child reads the same `[boundary]` as its parent and nothing is passed
-  at spawn, so no child can be wider yet; the narrow-only rule and the widening ask have nothing to
-  attach to until perimeters are config. Secrets per perimeter (`GH_TOKEN` and the credential
-  helper) stay coded. Operator ruling 2026-11-05: keep them as coded, top-level only.
-- Item 8's fence is this process's, not a sandbox: it refuses a path a file tool is asked for, and
-  a session that runs its own code goes round it by construction - that is the shell's view's job,
-  which is why the fence is built from the same view. A `leticode` seat that seats no shell has no
-  boundary at all, so its file tools keep the whole host (item 5's territory). `read_many` over a
-  remote or VM backend is not fenced: those substrates have their own view.
+- `grants_rw` and `secrets` are the user file's alone, at both `[boundary]` and `[perimeter.<name>]`:
+  a project file is editable by a session, and both are a widening. Operator ruling 2026-11-05.
+- A `leticode` seat that seats no shell has no boundary at all, so its file tools keep the whole
+  host and no perimeter can be put in front of a command it never runs. Unchanged.
+- Item 8's fence is this process's, not a sandbox: a session that runs its own code goes round it by
+  construction - that is the shell's view's job, which is why the fence is built from the same view.
+  `read_many` over a remote or VM backend is not fenced: those substrates have their own view.
+- A perimeter's `env` does not reach a REMOTE or VM placement's commands yet: those substrates have
+  their own view and their own environment.
 - `load_user` in `leticode-config` reads the user file as `Level::Project`; `perimeter::load` uses
   `load_as(.., Level::User)` instead. Left alone.
 - The R95 seam: `boundary::env_refusal` is the env deny-list. R95's carry-over should call it.
+- Today's injection gap stands: the masking of `GH_TOKEN` happens when a call's output is read, so a
+  background job's output file on disk keeps the token unmasked.
+
+Closed on R121's perimeter branch (items 5-7):
+
+- Item 5: the two levels are `[perimeter.<name>]` tables. `crates/tools/src/exec/perimeter.rs` holds
+  the model (`Perimeter`, `PerimeterTable`, `EnvValue`, `Secret`, `Widen`), the two built-in defaults
+  (`Perimeter::default_for`: `top-level` wide, `subagent` tight) and `render`, which is the
+  composition `seat::seat_for_level` used to be. `leticode-config::perimeter_tables` reads the tables
+  at both levels, the project's winning per name. `the_default_perimeters_are_the_views_they_were` is
+  the byte-identical proof: no table, the same `SeatView` field for field. How an env var is computed
+  is `EnvValue::{Constant, File, Command}`: a file's or a command's value is asked of the box at
+  open, outside the boundary, and travels as a SECRET (masked in every slice
+  `HostProcesses::output` returns). `env_shape_refusal` is the loader-variable half that applies
+  whatever computes a value; `env_refusal` stays the constant half. Secrets are named
+  (`Secret::Github`, the one that exists): `secrets = ["github"]` is what decides whether
+  `gh auth token` is asked at all, so a child carries none by default (`secrets_follow_the_perimeter`)
+  and the wide level's default is the old behaviour. `Perimeter::named` refuses a project table that
+  grants a path or names a secret (`a_project_perimeter_may_not_grant`).
+- Item 6: `Perimeter::child_of` composes a child from its parent at the tight level; `Perimeter::widening`
+  is the one place that decides what is beyond the parent (a path under a grant, the toolchain the
+  tight level reads anyway, a hidden path and a secret the parent carries are not widenings).
+  `task`/`task_start` take `perimeter` and `widen`; the widening is put to the operator before
+  anything spawns, through `Gate::grant_perimeter` (`AdjudicatedGate::grant_perimeter`,
+  `Tier::AlwaysAsk { rule: "perimeter_widening" }`, no standing rung), which is the head's card and
+  the bridge's `leticode_asks` ask. Granted -> that child's `Config.perimeter` alone, recorded in its
+  `subagent_run` row as `ro:<path>`/`secret:<name>` so a resume keeps it; refused or nobody to ask ->
+  nothing spawns and the model is told what it asked for. Tests:
+  `a_child_wider_than_its_parent_is_a_card_and_a_denial_spawns_nothing`,
+  `what_a_child_asks_beyond_its_parent_is_a_widening`, `a_widened_childs_own_child_cannot_exceed_it`,
+  `a_project_perimeter_narrows_a_child`, `a_child_starts_from_its_parents_perimeter_and_only_narrows`.
+- Item 7: the roles are the doc's three worked tables - `reviewer` (the token, so it may comment),
+  `coder` (commit only), and a `cleanup` child whose host access is the widening card - and no code
+  names a role. The flow the row describes is unchanged and now stated there: children in the tight
+  perimeter commit and cannot push, so their work reaches main through the review queue only.
 
 ---
 

@@ -924,6 +924,112 @@ env = { RUST_LOG = "info" }          # constants handed to every command
 - `/boundary` in a head and `letibot boundary` draw what a command gets: paths with the key that
   granted them, network, env (secrets redacted), hidden paths.
 
+### The two seat levels, and every role, as perimeters
+
+A **perimeter** is one session's answer to *what do my commands see*: the level (the operator's own
+home and the whole filesystem, or a throwaway home with the toolchain read-only), what it adds or
+hides, the env it is handed and how each of those values is computed, and which secrets it may
+carry. `[perimeter.<name>]` in the user's and the project's `leticode.toml`; `crates/tools/src/exec/perimeter.rs`
+composes it, `crates/harnessd/src/perimeter.rs` resolves it for a session, and a file that writes
+no table is the view it always was - byte for byte (`the_default_perimeters_are_the_views_they_were`).
+
+Two names are the levels and are built in: **`top-level`** (wide) and **`subagent`** (tight), the
+two branches `seat::seat_for_level` used to hardcode. Any other name is a child's too, and is
+selected at a spawn with `perimeter = "<name>"`.
+
+```toml
+[perimeter.subagent]                     # narrows EVERY child of this project
+hide = ["~/datasets"]                    # denied after every grant
+[perimeter.subagent.env]
+RUST_LOG = "warn"                        # a constant
+
+[perimeter.reviewer]                     # selected by `task { perimeter = "reviewer" }`
+grants_ro = ["~/reviews"]                # USER file only: a project may not grant
+secrets = ["github"]                     # USER file only
+[perimeter.reviewer.env]
+DEPLOY_TOKEN = { file = "~/.config/deploy/token" }   # read at open, OUTSIDE the box
+BUILD_STAMP  = { command = "date +%F" }              # run at open, OUTSIDE the box
+```
+
+- **Keys.** `grants_ro`, `grants_rw` (lists of paths, `~/` or absolute), `hide` (denied after every
+grant), `secrets` (the named secrets it may carry) and `env`. An env value is a string (a
+constant), `{ file = "…" }` or `{ command = "…" }`; a value a file or a command gives is a
+**secret**, masked in every slice the daemon reads back, because a value read from outside the box
+is exactly what masking exists for. A constant with a secret's name is refused (`env_refusal`); a
+computed one may carry that name, and the loader variables (`LD_*`, `DYLD_*`, `PATH`, `HOME`,
+`SSH_AUTH_SOCK`) are refused whatever computes them.
+- **The rules are `[boundary]`'s**: `~/.ssh` and every fenced store are never granted by any
+spelling, a `.` or `..` must not climb, and the refusal names the file, the line and the key.
+- **Project files narrow, they never widen.** A project's `[perimeter.<name>]` may `hide` and may set
+  env constants; a `grants_ro`, `grants_rw` or `secrets` there is refused (`a_project_perimeter_may_not_grant`),
+  because a project file is one the sessions it governs can edit.
+- **Secrets are named, and only `github` exists**: `gh auth token` run by the daemon outside the box,
+  plus a git credential helper that answers `password=$GH_TOKEN` on github.com and nothing else. The
+  wide level's default carries it; the tight level's carries nothing (`secrets_follow_the_perimeter`).
+- `/boundary` draws the perimeter a session actually got, including what a spawn had to be granted
+  for it and why (`Perimeter::lines`).
+
+### A child composes its parent's perimeter, and may only narrow it
+
+A spawn's child starts from the spawning session's perimeter, at the tight level, and its own
+children start from what IT got - so the chain never widens by accident:
+
+1. **Narrowing is silent.** The child gets the parent's grants and hide list, the `subagent` table's
+   `hide` (so a project's narrowing applies to every child, including one that names another table),
+   and its own table's entries. A named table's `secrets` are honoured only if the parent carries
+   them.
+2. **Widening is a card, and no mode decides it.** `task { widen = { grants_ro = [...], grants_rw =
+   [...], secrets = [...], because = "…" } }` names what the child needs beyond the parent's. What
+   the parent does not already hold is put to the operator as an `AlwaysAsk` card - in the head, and
+   through `leticode_asks`/`leticode_answer` for a bridge seat - with no standing rung, because a
+   perimeter is one spawn's. `grant_perimeter` in `crates/tools/src/adjudicate.rs` is the one
+   decision site; the card says the child starts from the parent's and that nothing has spawned yet.
+3. **The answer is that child's alone.** A granted widening is carried in the child's `Config`
+   (`Perimeter::widened`, recorded as `ro:<path>` / `secret:<name>` in its `subagent_run` row so a
+   resumed child keeps it) and reaches its own children as an ordinary inherited grant. A
+   grandchild asking for more meets its own card.
+4. **Refused or unanswerable means nothing spawns**, and the model is told which paths it asked for
+   and what the operator said. `task`'s `perimeter`/`widen` are refused by name in a runtime with no
+   perimeter of its own, which is a fixture or an unseated tool registry.
+
+### Three roles, as perimeters
+
+The row's roles are expressible now, and they are **tables, not code** - there is no `reviewer`
+branch anywhere. These three are the worked examples; the first is the default flow.
+
+```toml
+# A reviewer child: reads the checkout, runs the toolchain, and may comment on a PR - so it carries
+# the token - but it cannot push, because a child's `credential.helper` is reset and the only
+# helper it has answers for github.com's API through GH_TOKEN.
+[perimeter.reviewer]
+secrets = ["github"]
+[perimeter.reviewer.env]
+RUST_LOG = "warn"
+
+# A coder child: commits only. No secret, no host access beyond the toolchain the tight level
+# already reads, and the worktree's git dir granted by the seat, so `git commit` works and
+# `git push` has no credential to answer with.
+[perimeter.coder]
+hide = ["~/datasets", "~/models"]
+
+# A cleanup child: host access, at the operator's word and for one spawn. `~/.local/state` is
+# outside every child's perimeter, so naming it is a widening: it raises the card, and the answer
+# lands on that child only. Nothing in the file grants it, which is the point - a session cannot
+# hand itself the host by writing a table.
+```
+
+```json
+{"prompt": "remove the placements under ~/.local/state/letibot",
+ "perimeter": "coder",
+ "widen": {"grants_rw": ["~/.local/state/letibot"],
+           "because": "this child removes placement directories and nothing else"}}
+```
+
+And the flow the row describes: the main session (allow-all, wide perimeter) spawns children in the
+tight one; they commit on their branches and cannot push, so the only way their code reaches main is
+the review queue and its gate. The main session keeps its credentials and can push directly - the
+operator's "manual" mode, kept on purpose for when the queue itself is what is broken.
+
 ### The file tools obey the same perimeter
 
 A view a command cannot reach is a view `read`, `write`, `edit`, `grep` and `glob` cannot reach

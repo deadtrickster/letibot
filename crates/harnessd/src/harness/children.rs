@@ -3502,6 +3502,33 @@ impl HarnessTaskRunner {
             publish("failed", &why, None);
             why
         };
+        // What this child's commands may see: this session's perimeter at the tight level, narrowed
+        // by the table the spawn named and widened by what the operator granted it and by nothing
+        // else. Composed HERE, before the seat, so its own children start from what it got.
+        let child_perimeter = {
+            let parent_perimeter = match self.base.perimeter.clone() {
+                Some(p) => (*p).clone(),
+                // A fixture that never opened a seat has no perimeter of its own, and its level's
+                // default is what it would have got. A bad table was already refused at open.
+                None => crate::perimeter::of(&self.base).unwrap_or_else(|_| {
+                    letibot_tools::exec::perimeter::Perimeter::default_for(
+                        letibot_tools::exec::seat::Level::of(
+                            self.base.parent_session_id.as_deref(),
+                        ),
+                    )
+                }),
+            };
+            match crate::perimeter::child_of(
+                &parent_perimeter,
+                spec.perimeter.as_deref(),
+                &self.base.leticode.perimeters,
+                &spec.widen,
+                spec.widen_because.as_deref(),
+            ) {
+                Ok(p) => p,
+                Err(why) => return Err(fail(why)),
+            }
+        };
 
         #[allow(unused_mut)]
         let mut wiring = letibot_sessionlog::registry::SessionWiring {
@@ -3553,6 +3580,10 @@ impl HarnessTaskRunner {
             depth: self.base.depth + 1,
             downgrade,
             placement: placement.clone(),
+            // The child's own perimeter, composed above. Its children inherit this one and at most
+            // this one: a widening the operator answered for is not handed to a grandchild by
+            // accident, and never past what it was granted.
+            perimeter: Some(std::sync::Arc::new(child_perimeter)),
             // The child's own model, when it has one. `provider` is the whole switch:
             // `None` is the daemon's own server, exactly as `/models local` means, and a
             // `ProviderConfig` is a cloud preset whose key `models_choice` already checked.

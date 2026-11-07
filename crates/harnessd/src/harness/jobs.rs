@@ -222,14 +222,21 @@ impl Harness {
     /// with `[boundary]` applied, and the boundary this session's own probe measured — the
     /// config says what a command was meant to get, and the probe says what one got.
     pub fn boundary_lines(&self) -> Vec<String> {
-        let level = letibot_tools::exec::seat::Level::of(self.cfg.parent_session_id.as_deref());
         let measured = self.runtime.backend.boundary();
-        crate::perimeter::lines_with_probe(
-            level,
-            &self.cfg.mode,
-            &self.cfg.workspace,
-            measured.as_ref(),
-        )
+        match &self.cfg.perimeter {
+            Some(p) => crate::perimeter::session_lines(
+                p,
+                &self.cfg.mode,
+                &self.cfg.workspace,
+                measured.as_ref(),
+            ),
+            None => crate::perimeter::lines_with_probe(
+                letibot_tools::exec::seat::Level::of(self.cfg.parent_session_id.as_deref()),
+                &self.cfg.mode,
+                &self.cfg.workspace,
+                measured.as_ref(),
+            ),
+        }
     }
 
     /// What this conversation can actually call, for `/tools`: the REGISTRY is what this daemon seated, while the PROMPT

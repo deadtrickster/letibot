@@ -304,6 +304,9 @@ pub struct InvokeCtx<'a> {
     /// The map a compaction left, when this session has compacted anything: `recall` reads the
     /// bodies it names out of the spill store, and its bound is this session's window.
     pub recall: Option<&'a crate::recall::Recall>,
+    /// What this session's own commands may see, so a spawn starts from it and the operator can be
+    /// asked for anything beyond. `None` in a runtime with no daemon behind it.
+    pub perimeter: Option<&'a crate::exec::perimeter::Perimeter>,
 }
 
 impl InvokeCtx<'_> {
@@ -408,6 +411,28 @@ impl InvokeCtx<'_> {
                 .grant_memory(ask),
             None => crate::exec::memory::MemoryGrant::NotAsked,
         }
+    }
+
+    /// Put a spawn's widening to the operator, see [`Gate::grant_perimeter`]. The lock is taken for
+    /// the question, as `admit` takes it: a card may wait minutes, and a `/mode` typed meanwhile
+    /// must not move the gate.
+    pub fn grant_perimeter(
+        &self,
+        ask: &crate::exec::perimeter::PerimeterAsk,
+    ) -> crate::exec::perimeter::PerimeterGrant {
+        match self.gate {
+            Some(g) => g
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .grant_perimeter(ask),
+            None => crate::exec::perimeter::PerimeterGrant::NotAsked,
+        }
+    }
+
+    /// The perimeter this session's own commands run in: what a child starts from, and what a spawn
+    /// may only narrow. `None` in a runtime with no daemon behind it.
+    pub fn perimeter(&self) -> Option<&crate::exec::perimeter::Perimeter> {
+        self.perimeter
     }
 
     /// Say that the call is still working. This counts as liveness, and a tool that walks a
@@ -688,6 +713,17 @@ pub trait Gate: Send + Sync {
         _ask: &crate::exec::memory::MemoryAsk,
     ) -> crate::exec::memory::MemoryGrant {
         crate::exec::memory::MemoryGrant::NotAsked
+    }
+
+    /// May a spawn give a child a WIDER perimeter than the spawning session holds? Asked before the
+    /// child exists, as an always-ask: a mode decides no part of it, and the answer is recorded on
+    /// that child only. The default is `NotAsked`, and a spawn does not run on a question nobody
+    /// answered.
+    fn grant_perimeter(
+        &mut self,
+        _ask: &crate::exec::perimeter::PerimeterAsk,
+    ) -> crate::exec::perimeter::PerimeterGrant {
+        crate::exec::perimeter::PerimeterGrant::NotAsked
     }
 
     /// Who is adjudicating, for the daemon's startup disclosure. Defaults to naming the
@@ -1482,6 +1518,9 @@ pub struct ToolRuntime {
     /// The map a compaction left: the ids `recall` answers, and the window that bounds one read.
     /// `None` in a runtime nobody compacts into, and then `recall` says so by name.
     pub recall: Option<std::sync::Arc<crate::recall::Recall>>,
+    /// What this session's own commands may see. `None` in a runtime with no daemon behind it, and
+    /// then a spawn starts its child on the level's default perimeter and no widening is offered.
+    pub perimeter: Option<std::sync::Arc<crate::exec::perimeter::Perimeter>>,
 }
 
 /// A call the model proposed and this layer reproposed as a different tool. One shape produces
@@ -1531,7 +1570,15 @@ impl ToolRuntime {
             digest_hook: None,
             provenance: None,
             recall: None,
+            perimeter: None,
         }
+    }
+
+    /// Wire what this session's own commands may see. The daemon installs this at open, so a spawn
+    /// starts from the perimeter the session actually got - its own, not the level's default.
+    pub fn with_perimeter(mut self, p: std::sync::Arc<crate::exec::perimeter::Perimeter>) -> Self {
+        self.perimeter = Some(p);
+        self
     }
 
     /// Wire the fact that this runtime is a one-shot run's, which ends with the process that
@@ -2002,6 +2049,7 @@ impl ToolRuntime {
                 one_shot: self.one_shot,
                 provenance: self.provenance.as_deref(),
                 recall: self.recall.as_deref(),
+                perimeter: self.perimeter.as_deref(),
             };
             tool.invoke(&mut ctx, &args)
         };

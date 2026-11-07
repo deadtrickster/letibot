@@ -14,6 +14,7 @@ pub mod host;
 pub mod jobs;
 pub mod memory;
 pub mod monitor;
+pub mod perimeter;
 pub mod plugin_condition;
 pub mod predicate;
 pub mod procs;

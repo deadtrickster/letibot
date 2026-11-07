@@ -51,6 +51,17 @@ pub struct RecordedSpec {
     /// records, which means none - which is what those children had.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<String>,
+    /// The `[perimeter.<name>]` table the spawn named ([`TaskSpec::perimeter`]). Absent in older
+    /// records and in the ordinary spawn, which is the `subagent` table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perimeter: Option<String>,
+    /// What the operator granted for the spawn ([`TaskSpec::widen`]), in the arg spelling
+    /// `ro:<path>` / `rw:<path>` / `secret:<name>`, and the reason. A child brought back keeps the
+    /// widening it was answered for, and nothing more.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub widen: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widen_because: Option<String>,
 }
 
 /// Whether a recorded child is a tool's helper rather than the model's child - its record says
@@ -137,6 +148,9 @@ impl RecordedSpec {
             slug: spec.slug.clone(),
             helper: spec.helper,
             skills: spec.skills.clone(),
+            perimeter: spec.perimeter.clone(),
+            widen: spec.widen.iter().map(|i| i.arg()).collect(),
+            widen_because: spec.widen_because.clone(),
         }
     }
 
@@ -157,6 +171,13 @@ impl RecordedSpec {
             slug: self.slug.clone(),
             helper: self.helper,
             skills: self.skills.clone(),
+            perimeter: self.perimeter.clone(),
+            widen: self
+                .widen
+                .iter()
+                .filter_map(|w| letibot_tools::exec::perimeter::WidenItem::parse(w).ok())
+                .collect(),
+            widen_because: self.widen_because.clone(),
         })
     }
 
@@ -1418,6 +1439,14 @@ mod tests {
             slug: Some("survey-the-store".into()),
             helper: true,
             skills: vec!["release".into()],
+            perimeter: Some("reviewer".into()),
+            widen: vec![
+                letibot_tools::exec::perimeter::WidenItem::ReadOnly("/h/.local/state".into()),
+                letibot_tools::exec::perimeter::WidenItem::Secret(
+                    letibot_tools::exec::perimeter::Secret::Github,
+                ),
+            ],
+            widen_because: Some("it removes placements".into()),
         };
         let back = RecordedSpec::from_json(&RecordedSpec::of(&spec).to_json())
             .unwrap()

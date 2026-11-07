@@ -2436,6 +2436,158 @@ fn a_seat_that_may_reach_only_its_children_refuses_every_other_session() {
     );
 }
 
+/// A runner that keeps the spec it was handed, so a spawn's perimeter can be asserted rather
+/// than inferred: nothing here is a session.
+struct KeepsSpec(std::sync::Mutex<Vec<TaskSpec>>);
+
+impl TaskRunner for KeepsSpec {
+    fn start(&self, _prompt: &str, spec: &TaskSpec) -> Result<String, String> {
+        self.0.lock().unwrap().push(spec.clone());
+        Ok("s-kept".into())
+    }
+
+    fn collect(&self, _handle: &str, _timeout: std::time::Duration) -> TaskStatus {
+        TaskStatus::Running {
+            note: None,
+            child: None,
+        }
+    }
+}
+
+/// The operator's answer to a widening, recorded: what was asked, and what they said.
+struct Answers {
+    said: PerimeterGrant,
+    asked: std::sync::Mutex<Vec<crate::exec::perimeter::PerimeterAsk>>,
+}
+
+impl Answers {
+    fn answer(&self, ask: &crate::exec::perimeter::PerimeterAsk) -> PerimeterGrant {
+        self.asked.lock().unwrap().push(ask.clone());
+        self.said.clone()
+    }
+}
+
+/// [`Answers`] behind the runtime's own `Box<dyn Gate>`, which the runtime owns.
+struct Asked(Arc<Answers>);
+
+impl crate::runtime::Gate for Asked {
+    fn admit(&mut self, _call: &crate::runtime::GateCall<'_>) -> crate::runtime::GateDecision {
+        crate::runtime::GateDecision::Admit
+    }
+
+    fn grant_perimeter(&mut self, ask: &crate::exec::perimeter::PerimeterAsk) -> PerimeterGrant {
+        self.0.answer(ask)
+    }
+}
+
+/// A child asking for more than its parent holds is a CARD, even at allow-all: refused, nothing
+/// is spawned and the refusal carries the operator's words; granted, that child alone carries the
+/// widening.
+#[test]
+fn a_child_wider_than_its_parent_is_a_card_and_a_denial_spawns_nothing() {
+    use crate::exec::perimeter::{Perimeter, Secret, WidenItem};
+    use crate::runtime::{Registry, ToolRuntime};
+    use letibot_transcript::ToolCall;
+
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    let host = home.join("perimeter-fixture-data");
+    std::fs::create_dir_all(&host).expect("a fixture directory");
+    let parent = Perimeter::default_for(crate::exec::seat::Level::Tight);
+    let want = format!(
+        "{{\"grants_ro\": [\"{}\"], \"because\": \"the child removes the placements\"}}",
+        host.display()
+    );
+
+    let spawn = |said: PerimeterGrant| {
+        let runner = Arc::new(KeepsSpec(std::sync::Mutex::new(Vec::new())));
+        let mut reg = Registry::new();
+        reg.register(Box::new(TaskTool::new(runner.clone())))
+            .unwrap();
+        let d = crate::backend::tempdir::TempDir::new();
+        let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+        let answers = Arc::new(Answers {
+            said,
+            asked: std::sync::Mutex::new(Vec::new()),
+        });
+        let rt = ToolRuntime::new(reg, Box::new(backend))
+            .with_gate(Box::new(Asked(answers.clone())))
+            .with_perimeter(std::sync::Arc::new(parent.clone()));
+        (rt, answers, runner)
+    };
+    let mut sink = crate::NullToolSink;
+
+    // Denied: the card was raised with the reason, and nothing was spawned.
+    let (rt, answers, runner) = spawn(PerimeterGrant::Refused("not on a shared box".into()));
+    let r = rt.invoke(
+        "t1",
+        &ToolCall {
+            id: "c1".into(),
+            name: "task".into(),
+            arguments: format!("{{\"prompt\": \"clean up\", \"widen\": {want}}}"),
+        },
+        &mut sink,
+    );
+    assert!(
+        !matches!(r.outcome, letibot_transcript::ToolOutcome::Ok),
+        "{:?}",
+        r.outcome
+    );
+    assert!(r.payload.contains("not on a shared box"), "{}", r.payload);
+    assert!(
+        runner.0.lock().unwrap().is_empty(),
+        "a denied widening spawned"
+    );
+    {
+        let asked = answers.asked.lock().unwrap();
+        assert_eq!(asked.len(), 1, "one card, not none");
+        assert_eq!(
+            asked[0].items,
+            vec![WidenItem::ReadOnly(host.clone())],
+            "{:?}",
+            asked[0]
+        );
+        assert_eq!(
+            asked[0].because.as_deref(),
+            Some("the child removes the placements")
+        );
+    }
+
+    // Granted: the child carries exactly what the operator allowed, and nothing else.
+    let (rt, answers, runner) = spawn(PerimeterGrant::Granted);
+    let r = rt.invoke(
+        "t1",
+        &ToolCall {
+            id: "c2".into(),
+            name: "task".into(),
+            arguments: format!("{{\"prompt\": \"clean up\", \"widen\": {want}}}"),
+        },
+        &mut sink,
+    );
+    assert!(
+        matches!(
+            r.outcome,
+            letibot_transcript::ToolOutcome::Backgrounded { .. }
+        ),
+        "{:?} — {}",
+        r.outcome,
+        r.payload
+    );
+    {
+        let kept = runner.0.lock().unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].widen, vec![WidenItem::ReadOnly(host.clone())]);
+        assert_eq!(
+            kept[0].widen_because.as_deref(),
+            Some("the child removes the placements")
+        );
+    }
+    assert_eq!(answers.asked.lock().unwrap().len(), 1);
+    assert!(!Secret::ALL.is_empty());
+    std::fs::remove_dir_all(&host).ok();
+}
+
 /// The ordinary seat is unchanged by that: a session a person is in still addresses a peer by its
 /// id, which is the door the narrowing must not have closed for everybody.
 #[test]

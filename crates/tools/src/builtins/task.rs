@@ -10,6 +10,7 @@ use serde_json::json;
 // The child's state and its evidence come from the one judgement both doors read, so
 // `task_result` and the idle plan-check cannot answer differently about one child.
 use crate::builtins::todo::{ChildDoing, RunningChild, child_doing, child_evidence};
+use crate::exec::perimeter::{PerimeterGrant, SUBAGENT, Secret, TOP_LEVEL, Widen, WidenItem};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 pub use crate::schema::Downgrade;
 use crate::schema::{Access, ToolSchema};
@@ -244,6 +245,13 @@ pub struct TaskSpec {
     /// the index every session gets. Names are checked before the child exists, so a typo is a
     /// refusal. Empty means none of its own, which for a child is its parent's list.
     pub skills: Vec<String>,
+    /// The `[perimeter.<name>]` table this child is started on, when the caller named one. `None`
+    /// is the `subagent` table: the level's default, narrowed by whatever the project wrote.
+    pub perimeter: Option<String>,
+    /// What the operator GRANTED for this spawn beyond the parent's perimeter, and the reason it
+    /// gave. Empty is the ordinary case, and a spawn's own answer lands on this child alone.
+    pub widen: Vec<crate::exec::perimeter::WidenItem>,
+    pub widen_because: Option<String>,
 }
 
 /// What one `task_start` call asked for, beyond the prompt and the [`TaskSpec`]: the slug, the base
@@ -1042,7 +1050,9 @@ impl Tool for TaskTool {
                     "model": {"type": "string", "description": "Run the child on a different model than yours (`local`, or `PROVIDER/MODEL` — an unknown name or a missing key is refused at the spawn, naming the fix)."},
                     "slug": {"type": "string", "description": "A short name for the child (letters, digits, `-`), your word for the work — `task_result`, `task_message` and `job_kill` take it in place of the handle. Defaults to a derivation from the prompt; made unique among your subagents."},
                     "wake": {"type": "string", "enum": ["now", "later"], "description": WAKE_ARG},
-                    "skills": {"type": "array", "items": {"type": "string"}, "description": "Skills this child is STARTED with: each body is preloaded into its prompt, on top of the index every session gets. A name that matches nothing is refused before the child starts."}
+                    "skills": {"type": "array", "items": {"type": "string"}, "description": "Skills this child is STARTED with: each body is preloaded into its prompt, on top of the index every session gets. A name that matches nothing is refused before the child starts."},
+                    "perimeter": {"type": "string", "description": "The `[perimeter.<name>]` table this child is started on, from `leticode.toml`. A child starts from YOUR perimeter and may only narrow it; anything wider than you hold is the operator's answer and not yours, so ask with `widen`."},
+                    "widen": widen_arg()
                 },
                 "required": ["prompt"]
             }),
@@ -1164,10 +1174,19 @@ impl Tool for TaskTool {
                 named
             }
         };
+        // What this child sees, checked before anything is spawned: its perimeter is composed from
+        // this session's own and may only narrow it, and anything wider is a card.
+        let (perimeter, widen, widen_because) = match perimeter_args(ctx, args) {
+            Ok(p) => p,
+            Err(refused) => return refused,
+        };
         let spec = TaskSpec {
             role: role.to_string(),
             downgrade,
             placement,
+            perimeter,
+            widen,
+            widen_because,
             model: args
                 .get("model")
                 .and_then(|v| v.as_str())
@@ -1220,6 +1239,165 @@ impl Tool for TaskTool {
                 super::DELIVERED,
             ),
         )
+    }
+}
+
+/// The `widen` argument, one object so the reason and the grants cannot arrive apart: a card
+/// without a reason is a card nobody can answer.
+fn widen_arg() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "description": "What this child needs BEYOND your own perimeter, and why. A child starts \
+                        from your perimeter and may only narrow it, so anything here that you do \
+                        not already hold is put to the operator as a card - even at allow-all, \
+                        because widening a perimeter is not a mode's call. Granted, it lands on \
+                        that child only; its own children inherit at most it.",
+        "properties": {
+            "grants_ro": {"type": "array", "items": {"type": "string"}, "description": "Paths this child may read, `~/` or absolute."},
+            "grants_rw": {"type": "array", "items": {"type": "string"}, "description": "Paths this child may write, `~/` or absolute."},
+            "secrets": {"type": "array", "items": {"type": "string"}, "description": "Named secrets it may carry. The names are `github`."},
+            "because": {"type": "string", "description": "The reason, in your words: what the child cannot do without this."}
+        },
+        "required": ["because"]
+    })
+}
+
+/// What a spawn says about its child's perimeter: the `[perimeter.<name>]` table it names, the
+/// grants that table does not cover, and the reason. A widening is asked of the operator HERE,
+/// before anything is spawned, so a refusal spawns nothing at all.
+#[allow(clippy::result_large_err, clippy::type_complexity)] // Invocation is the failed row the caller shows
+fn perimeter_args(
+    ctx: &InvokeCtx<'_>,
+    args: &serde_json::Value,
+) -> Result<(Option<String>, Vec<WidenItem>, Option<String>), Invocation> {
+    let named = args
+        .get("perimeter")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(n) = &named
+        && n == TOP_LEVEL
+    {
+        return Err(Invocation::failed(
+            format!("`{n}` is the top level's own perimeter, and a child is never on it"),
+            "a child starts from your perimeter at the tight level and may only narrow it. Name \
+             a `[perimeter.<name>]` table, or leave `perimeter` out. Nothing was spawned."
+                .to_string(),
+        ));
+    }
+    let Some(widen) = args.get("widen") else {
+        return Ok((named, Vec::new(), None));
+    };
+    let list = |key: &str| -> Result<Vec<String>, Invocation> {
+        let bad = || {
+            Invocation::failed(
+                format!("`widen.{key}` is a list of strings"),
+                "nothing was spawned.",
+            )
+        };
+        match widen.get(key) {
+            None => Ok(Vec::new()),
+            Some(v) => v
+                .as_array()
+                .ok_or_else(bad)?
+                .iter()
+                .map(|x| x.as_str().map(str::to_string).ok_or_else(bad))
+                .collect(),
+        }
+    };
+    let grants_ro = list("grants_ro")?;
+    let grants_rw = list("grants_rw")?;
+    let mut secrets = Vec::new();
+    for name in list("secrets")? {
+        let Some(s) = Secret::parse(&name) else {
+            return Err(Invocation::failed(
+                format!("`{name}` is not a secret this build knows"),
+                format!(
+                    "the names are: {}. Nothing was spawned.",
+                    Secret::ALL
+                        .iter()
+                        .map(|s| s.name())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ));
+        };
+        secrets.push(s);
+    }
+    let because = widen
+        .get("because")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let want = Widen {
+        grants_ro,
+        grants_rw,
+        secrets,
+        because: because.clone(),
+        from: None,
+    };
+    if want.is_empty() {
+        return Ok((named, Vec::new(), because));
+    }
+    let Some(because) = because else {
+        return Err(Invocation::failed(
+            "`widen` needs a `because`",
+            "widening a perimeter is put to the operator as a card, and a card without a reason \
+             is one nobody can answer. Nothing was spawned."
+                .to_string(),
+        ));
+    };
+    let Some(parent) = ctx.perimeter() else {
+        return Err(Invocation::failed(
+            "`widen` needs this session's own perimeter, and this runtime has none",
+            "the daemon opens a session with the perimeter its config gives it; without one \
+             nothing can be said to be wider. Nothing was spawned."
+                .to_string(),
+        ));
+    };
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    let items = parent.widening(&want, &home).map_err(|why| {
+        Invocation::failed(
+            "that widening is not one this build would grant",
+            format!("{why}. Nothing was spawned."),
+        )
+    })?;
+    if items.is_empty() {
+        return Ok((named, items, Some(because)));
+    }
+    let child = named.clone().unwrap_or_else(|| SUBAGENT.to_string());
+    let ask = parent.ask(&child, &items, Some(&because));
+    match ctx.grant_perimeter(&ask) {
+        PerimeterGrant::Granted => Ok((named, items, Some(because))),
+        PerimeterGrant::Refused(why) => Err(Invocation::failed(
+            "the operator refused this widening, so nothing was spawned",
+            format!(
+                "the child would have been WIDER than this session's `{}` perimeter: {}. The \
+                 refusal, in their words: {why}",
+                parent.name,
+                items
+                    .iter()
+                    .map(|i| i.label())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+        PerimeterGrant::NotAsked => Err(Invocation::failed(
+            "nobody could be asked whether this child may be wider than its parent",
+            format!(
+                "it asks for {} beyond this session's `{}` perimeter. Widening a perimeter is \
+                 the operator's call and not a mode's, so it does not happen on a question \
+                 nobody answered. Nothing was spawned.",
+                items
+                    .iter()
+                    .map(|i| i.label())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                parent.name
+            ),
+        )),
     }
 }
 
@@ -1325,7 +1503,9 @@ impl Tool for TaskStartTool {
                     "main_tree": {"type": "boolean", "description": "Work in the main checkout instead of a fresh worktree. The exception; off by default."},
                     "repo": {"type": "string", "description": "The repository to work in, when it is not the one the session root is in (a session above its repositories names one). Relative to the session root, or absolute."},
                     "wake": {"type": "string", "enum": ["now", "later"], "description": WAKE_ARG},
-                    "skills": {"type": "array", "items": {"type": "string"}, "description": "Skills this child is STARTED with: each body is preloaded into its prompt, on top of the index every session gets. A name that matches nothing is refused before the child starts."}
+                    "skills": {"type": "array", "items": {"type": "string"}, "description": "Skills this child is STARTED with: each body is preloaded into its prompt, on top of the index every session gets. A name that matches nothing is refused before the child starts."},
+                    "perimeter": {"type": "string", "description": "The `[perimeter.<name>]` table this child is started on, from `leticode.toml`. A child starts from YOUR perimeter and may only narrow it; anything wider than you hold is the operator's answer and not yours, so ask with `widen`."},
+                    "widen": widen_arg()
                 },
                 "required": ["prompt"]
             }),
@@ -1533,10 +1713,18 @@ impl Tool for TaskStartTool {
                 named
             }
         };
+        // And what it sees, checked before the tree is arranged: a refusal here leaves nothing.
+        let (perimeter, widen, widen_because) = match perimeter_args(ctx, args) {
+            Ok(p) => p,
+            Err(refused) => return refused,
+        };
         let spec = TaskSpec {
             role: role.to_string(),
             downgrade,
             placement,
+            perimeter,
+            widen,
+            widen_because,
             model,
             // The runner fills this after the git work: the placement is a fact the
             // spawn carries, and the tool does not invent one the runner did not make.

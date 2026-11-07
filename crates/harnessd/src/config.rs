@@ -451,6 +451,11 @@ pub struct Config {
     /// inherited by every subagent it spawns and only ever added to. `none` for
     /// a session the operator opened. See `letibot_tools::schema::Downgrade`.
     pub downgrade: letibot_tools::schema::Downgrade,
+    /// What this session's own commands may see, once it is resolved at open: the perimeter the
+    /// config gave it, or the one its parent gave it (narrowed, plus what the operator granted for
+    /// the spawn). `None` before open, and then the level's default table is the answer. Shared, so
+    /// a spawn clones a handle and not a list.
+    pub perimeter: Option<std::sync::Arc<letibot_tools::exec::perimeter::Perimeter>>,
     /// Which search provider is behind `web_search`, by name (`brave`), or `None` for the tool
     /// that refuses. The key is deliberately not here: it is resolved at attach, so a secret
     /// never rides in a struct that derives `Debug`.
@@ -1616,6 +1621,7 @@ impl Config {
             permission: parse_permission(),
             flowy: None,
             downgrade: letibot_tools::schema::Downgrade::none(),
+            perimeter: None,
             web_search: default_web_search(),
             web_fetch: false,
             context_window: None,

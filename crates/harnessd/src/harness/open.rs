@@ -695,29 +695,31 @@ impl Harness {
         said
     }
 
-    /// The view this machine's confined commands are threaded with: the shared builder over what
-    /// exists under the operator's home, plus `[boundary]`. A config that is refused refuses the
-    /// seat.
+    /// The view this machine's confined commands are threaded with: the session's own perimeter
+    /// over what exists under the operator's home, plus `[boundary]`. A config that is refused
+    /// refuses the seat.
     fn local_seat(cfg: &Config) -> Result<letibot_tools::exec::seat::SeatView, HarnessError> {
         use letibot_tools::exec::seat;
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default();
         let r = crate::perimeter::resolved(&cfg.workspace, &home).map_err(HarnessError::Setup)?;
-        Ok(letibot_tools::exec::boundary::apply(
-            seat::seat_view(
+        let p = crate::perimeter::of(cfg).map_err(HarnessError::Setup)?;
+        let view = p
+            .render(
                 &cfg.mode,
                 "this machine",
                 &seat::present_under(&home),
                 &home,
-            ),
-            &r,
-        ))
+                &p.secret_values(&home).0,
+            )
+            .map_err(HarnessError::Setup)?;
+        Ok(letibot_tools::exec::boundary::apply(view, &r))
     }
 
-    /// The default seat's view: wide for a top-level session, tight for a child, with
-    /// `[boundary]` applied. The GitHub token is asked for once, here, outside the boundary; a
-    /// child never asks.
+    /// The default seat's view: the session's own perimeter - wide for a top-level session, tight
+    /// for a child - with `[boundary]` applied. The secrets it carries are asked for once, here,
+    /// outside the boundary; a child carries none unless its perimeter names one.
     fn default_seat(
         cfg: &Config,
         hub: &Arc<Hub>,
@@ -726,34 +728,22 @@ impl Harness {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default();
-        let level = seat::Level::of(cfg.parent_session_id.as_deref());
-        // Refused before the token is asked for: a bad config opens nothing.
+        // Refused before a secret is asked for: a bad config opens nothing.
         let r = crate::perimeter::resolved(&cfg.workspace, &home).map_err(HarnessError::Setup)?;
-        // Asked once, here, outside the boundary. A child never asks.
-        let token = match level {
-            seat::Level::Wide => match seat::gh_auth_token() {
-                Ok(t) => Some(t),
-                Err(why) => {
-                    hub.warn(
-                        "gh_token_absent",
-                        format!(
-                            "this session opens without a GitHub token, so `git push` and `gh` \
-                             will not authenticate: {why}"
-                        ),
-                    );
-                    None
-                }
-            },
-            seat::Level::Tight => None,
-        };
-        let view = seat::seat_for_level(
-            level,
-            &cfg.mode,
-            "this machine",
-            &seat::present_under(&home),
-            &home,
-            token.as_deref(),
-        );
+        let p = crate::perimeter::of(cfg).map_err(HarnessError::Setup)?;
+        let (secrets, said) = p.secret_values(&home);
+        for w in said {
+            hub.warn("gh_token_absent", w);
+        }
+        let view = p
+            .render(
+                &cfg.mode,
+                "this machine",
+                &seat::present_under(&home),
+                &home,
+                &secrets,
+            )
+            .map_err(HarnessError::Setup)?;
         Ok(letibot_tools::exec::boundary::apply(view, &r))
     }
 
@@ -794,6 +784,13 @@ impl Harness {
         // `HostBackend::executable` would be choosing no boundary, which no daemon may do on an
         // operator's behalf, and a downgrade closes doors here too. leticode roots at `/`.
         use letibot_tools::schema::Access as Cls;
+        // The perimeter this session's commands run in, resolved once: the table its config names,
+        // else the one its parent's spawn composed for it, else its level's default. Resolved
+        // BEFORE the seat, because a config that is refused must refuse the session.
+        if cfg.perimeter.is_none() {
+            let p = crate::perimeter::of(cfg).map_err(HarnessError::Setup)?;
+            cfg.perimeter = Some(Arc::new(p));
+        }
         let may_exec = !cfg.downgrade.denies(Cls::Exec);
         let may_write = !cfg.downgrade.denies(Cls::Write);
         // Set by the arms that hand the session the whole host, so the prompt and the head both
@@ -2764,6 +2761,11 @@ impl Harness {
             .with_spiller(spiller)
             .with_recall(recall.clone())
             .with_gate(gate)
+            // What this session's own commands may see, so a spawn starts from it and the operator
+            // can be asked for anything beyond: `task`'s `widen` is one card, and no mode decides it.
+            .with_perimeter(std::sync::Arc::new(
+                crate::perimeter::of(&cfg).map_err(HarnessError::Setup)?,
+            ))
             // And the plugin layer that sees a call before the gate, and the one a `monitor` call can arm a condition
             // from: both backed by the slot the `plugin` tool asks through, so a session nobody fills the slot for runs
             // its calls exactly as it always did.

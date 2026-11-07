@@ -2639,6 +2639,78 @@ impl Gate for AdjudicatedGate {
         }
     }
 
+    /// A spawn asking for a wider perimeter than this session holds, as a card the OPERATOR
+    /// answers: `AlwaysAsk`, so no mode admits it and no guard model widens it. The answer is
+    /// recorded on that child alone, and there is no standing rung - a perimeter is one child's.
+    fn grant_perimeter(
+        &mut self,
+        ask: &crate::exec::perimeter::PerimeterAsk,
+    ) -> crate::exec::perimeter::PerimeterGrant {
+        use crate::exec::perimeter::PerimeterGrant;
+        if self.adjudicator.describe().starts_with("none") {
+            return PerimeterGrant::NotAsked;
+        }
+        let req = AdjudicationRequest {
+            id: self.next_id(),
+            session_id: self.session_id.clone(),
+            turn_id: String::new(),
+            call_id: String::new(),
+            agent: self.agent.clone(),
+            tool: "task".to_string(),
+            target: ask.child.clone(),
+            class: ActionClass::host(Access::Exec, false, true),
+            prior: Vec::new(),
+            examples: Vec::new(),
+            brief_variant: crate::authorise::BriefVariant::AskedForIt,
+            agent_claim: ask.because.clone(),
+            reading: None,
+            shape: None,
+            advice: None,
+            summary: ask.summary(),
+            arguments: serde_json::json!({
+                "perimeter": ask.child,
+                "from": ask.parent,
+                "widen": ask.items.iter().map(|i| i.label()).collect::<Vec<_>>(),
+                "because": ask.because,
+            }),
+            arguments_digest: String::new(),
+            scripts: Vec::new(),
+            boundary_facts: vec![
+                format!(
+                    "the child starts from `{}`, the perimeter this session holds; what it asks \
+                     for is beyond it",
+                    ask.parent
+                ),
+                "the widening lands on THAT CHILD ONLY: its own children inherit at most it".into(),
+                "nothing has spawned yet; the child starts only if you agree".into(),
+            ],
+            kind: RequestKind::Permission,
+            options: always_ask_options(),
+            // No standing rung at all: a perimeter is one spawn's, and a rule that covered the
+            // next one would be a widening nobody looked at.
+            options_note: Some(
+                "this is one child's perimeter; there is no standing answer to offer".into(),
+            ),
+            on_timeout: OnTimeout::Deny,
+            tier: Tier::AlwaysAsk {
+                rule: "perimeter_widening",
+                why:
+                    "a session may only narrow its own perimeter; a widening is the operator's call"
+                        .into(),
+            },
+            resolved: true,
+            baseline: format!("a spawn asking for more than `{}` holds", ask.parent),
+            trail: crate::authorise::AuthorisationTrail::default(),
+        };
+        let d = self.adjudicator.decide(&req);
+        match &d.outcome {
+            DecisionOutcome::Selected { option_id } if option_id == "allow_once" => {
+                PerimeterGrant::Granted
+            }
+            DecisionOutcome::Selected { .. } => PerimeterGrant::Refused(d.basis.clone()),
+            _ => PerimeterGrant::NotAsked,
+        }
+    }
     fn supervising(&self) -> bool {
         self.supervise && self.advisor.is_some()
     }
