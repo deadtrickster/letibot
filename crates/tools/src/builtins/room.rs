@@ -68,16 +68,13 @@ impl Tool for RoomTool {
         ToolSchema::new(
             TOOL,
             format!(
-                "The host's room: a queue per TAG shared by every top-level session on this machine, \
-                 for coordinating scarce things (RAM, a port, the staging database). A tag is a LOCK — one live claim per tag, and anybody \
-                 else is refused with the holder's name — so two jobs that may run at once need two \
-                 tags, and urgent work gets its own tag rather than a priority number. `post` a \
-                 need, `claim` a tag's head, `beat` what you hold, `waiting` what you are waiting \
-                 on, `done`, `abandon`, `dispute`, `queue`, `holding`, `questions`, and `rule` — the \
-                 arbiter's verb — to answer with `retry`, `hand` or `drop`. `say` and `read` talk to the \
-                 operator and other sessions in room `project` or `host`; `to` is a private message and \
-                 `@name` is a public mention that wakes them where it was said. Answer others' \
-                 messages only if you hold what they lack. {beat}"
+                "The host's room: a queue per TAG for scarce things (RAM, a port, the staging \
+                 database). A tag is a LOCK: one live claim, others refused with the holder's name, so \
+                 two jobs that may run at once need two tags. `post` a need, `claim` a tag's head, `beat` \
+                 what you hold, `waiting`, `done`, `abandon`, `dispute`, `queue`, `holding`, \
+                 `questions`; `rule` is the arbiter's (`retry`, `hand`, `drop`). `say` and `read` talk \
+                 in room `project` or `host`: `to` is a private message, `@name` a public mention that \
+                 wakes them where it was said. Answer others only with what they lack. {beat}"
             ),
             json!({
                 "type": "object",
