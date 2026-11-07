@@ -2271,3 +2271,219 @@ fn a_task_that_names_skills_carries_them_and_refuses_an_unknown_one() {
         "nothing was spawned: {said}"
     );
 }
+
+/// A seat seated [`TaskReach::OwnChildren`] - the review queue's - reads and corrects the children
+/// it was handed and no other session. The daemon's runner is what makes this worth a test: its
+/// `send` reaches any live id and its `look` describes one, so a tool that trusted the handle alone
+/// would let this seat address a peer.
+#[test]
+fn a_seat_that_may_reach_only_its_children_refuses_every_other_session() {
+    use crate::runtime::{Registry, ToolRuntime};
+    use letibot_transcript::{ToolCall, ToolOutcome};
+
+    /// One child, and a record of every handle reached for - so "it was never read" is a fact
+    /// about the runner and not about the sentence a refusal printed.
+    struct OneChild {
+        read: std::sync::Mutex<Vec<String>>,
+        sent: std::sync::Mutex<Vec<String>>,
+    }
+    impl TaskRunner for OneChild {
+        fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
+            Ok("sub-reviewer".into())
+        }
+        fn collect(&self, _h: &str, _t: std::time::Duration) -> TaskStatus {
+            TaskStatus::Unknown
+        }
+        fn look(&self, handle: &str, timeout: std::time::Duration) -> TaskStatus {
+            self.read.lock().unwrap().push(handle.to_string());
+            self.collect(handle, timeout)
+        }
+        fn children(&self) -> Vec<ChildName> {
+            vec![ChildName {
+                handle: "sub-reviewer".into(),
+                slug: Some("review-9f2".into()),
+                own: true,
+                lost: None,
+            }]
+        }
+        fn send(&self, handle: &str, _text: &str) -> Result<String, String> {
+            self.sent.lock().unwrap().push(handle.to_string());
+            Ok(format!("`{handle}` was told"))
+        }
+    }
+
+    let runner = Arc::new(OneChild {
+        read: std::sync::Mutex::new(Vec::new()),
+        sent: std::sync::Mutex::new(Vec::new()),
+    });
+    let mut reg = Registry::new();
+    reg.register(Box::new(
+        TaskResultTool::new(runner.clone()).with_reach(TaskReach::OwnChildren),
+    ))
+    .unwrap();
+    reg.register(Box::new(
+        TaskMessageTool::new(runner.clone()).with_reach(TaskReach::OwnChildren),
+    ))
+    .unwrap();
+    let d = crate::backend::tempdir::TempDir::new();
+    let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+    let rt = ToolRuntime::new(reg, Box::new(backend));
+    let mut sink = crate::NullToolSink;
+
+    // A peer's id, on both verbs: neither is this seat's child, so neither reaches the runner.
+    for (verb, args) in [
+        ("task_message", r#"{"task": "s-a-peer", "text": "hi"}"#),
+        ("task_result", r#"{"task": "s-a-peer"}"#),
+    ] {
+        let refused = rt.invoke(
+            "t1",
+            &ToolCall {
+                id: "c1".into(),
+                name: verb.into(),
+                arguments: args.into(),
+            },
+            &mut sink,
+        );
+        let why = match &refused.outcome {
+            ToolOutcome::Failed { reason } => reason.clone(),
+            other => panic!("{verb} on a peer should have been refused, not {other:?}"),
+        };
+        assert!(
+            why.contains("not one of this session's children"),
+            "{verb}: {why}"
+        );
+        assert!(
+            refused.payload.contains("Nothing was"),
+            "{verb}: {}",
+            refused.payload
+        );
+    }
+    assert!(
+        runner.read.lock().unwrap().is_empty() && runner.sent.lock().unwrap().is_empty(),
+        "the runner was never asked about a session this seat does not hold: read {:?}, sent {:?}",
+        runner.read.lock().unwrap(),
+        runner.sent.lock().unwrap()
+    );
+
+    // Its own reviewer is reached by name and by handle, and read.
+    let sent = rt.invoke(
+        "t1",
+        &ToolCall {
+            id: "c2".into(),
+            name: "task_message".into(),
+            arguments: r#"{"task": "review-9f2", "text": "re-read the diff"}"#.into(),
+        },
+        &mut sink,
+    );
+    assert!(
+        matches!(sent.outcome, ToolOutcome::Ok),
+        "{:?} — {}",
+        sent.outcome,
+        sent.payload
+    );
+    assert_eq!(
+        runner.sent.lock().unwrap().as_slice(),
+        ["sub-reviewer".to_string()],
+        "the name resolved to the handle"
+    );
+    let read = rt.invoke(
+        "t1",
+        &ToolCall {
+            id: "c3".into(),
+            name: "task_result".into(),
+            arguments: r#"{"task": "sub-reviewer"}"#.into(),
+        },
+        &mut sink,
+    );
+    assert_eq!(
+        runner.read.lock().unwrap().as_slice(),
+        ["sub-reviewer".to_string()],
+        "its own child was read: {:?} — {}",
+        read.outcome,
+        read.payload
+    );
+
+    // And each description says what its seat will do about a stranger, so no model is promised a
+    // door that refuses it.
+    let narrow = TaskMessageTool::new(runner.clone())
+        .with_reach(TaskReach::OwnChildren)
+        .schema();
+    assert!(
+        narrow
+            .description
+            .contains("Only the children this session started may be addressed"),
+        "{}",
+        narrow.description
+    );
+    let wide = TaskMessageTool::new(runner.clone()).schema();
+    assert!(
+        wide.description.contains("the id of any live session")
+            && !wide
+                .description
+                .contains("Only the children this session started"),
+        "{}",
+        wide.description
+    );
+    let narrow = TaskResultTool::new(runner)
+        .with_reach(TaskReach::OwnChildren)
+        .schema();
+    assert!(
+        narrow
+            .description
+            .contains("Only the children this session started may be read"),
+        "{}",
+        narrow.description
+    );
+}
+
+/// The ordinary seat is unchanged by that: a session a person is in still addresses a peer by its
+/// id, which is the door the narrowing must not have closed for everybody.
+#[test]
+fn an_ordinary_seat_still_reaches_a_peer_by_its_id() {
+    use crate::runtime::{Registry, ToolRuntime};
+    use letibot_transcript::ToolCall;
+
+    /// A runner with no children that records who it was asked to say something to.
+    struct Peer(std::sync::Mutex<Vec<String>>);
+    impl TaskRunner for Peer {
+        fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
+            Err("no spawns here".into())
+        }
+        fn collect(&self, _h: &str, _t: std::time::Duration) -> TaskStatus {
+            TaskStatus::Unknown
+        }
+        fn send(&self, handle: &str, _text: &str) -> Result<String, String> {
+            self.0.lock().unwrap().push(handle.to_string());
+            Ok(format!("`{handle}` was told"))
+        }
+    }
+
+    let runner = Arc::new(Peer(std::sync::Mutex::new(Vec::new())));
+    let mut reg = Registry::new();
+    reg.register(Box::new(TaskMessageTool::new(runner.clone())))
+        .unwrap();
+    let d = crate::backend::tempdir::TempDir::new();
+    let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+    let rt = ToolRuntime::new(reg, Box::new(backend));
+    let mut sink = crate::NullToolSink;
+    let asked = rt.invoke(
+        "t1",
+        &ToolCall {
+            id: "c1".into(),
+            name: "task_message".into(),
+            arguments: r#"{"task": "s-a-peer", "text": "hello"}"#.into(),
+        },
+        &mut sink,
+    );
+    assert!(
+        matches!(asked.outcome, letibot_transcript::ToolOutcome::Ok),
+        "{:?} — {}",
+        asked.outcome,
+        asked.payload
+    );
+    assert_eq!(
+        runner.0.lock().unwrap().as_slice(),
+        ["s-a-peer".to_string()],
+        "the default reach addresses the id it was given"
+    );
+}

@@ -141,6 +141,7 @@ pub fn with_session_tools(
     task_runner: std::sync::Arc<dyn builtins::task::TaskRunner>,
     skills: std::sync::Arc<builtins::skill::SkillRegistry>,
     lsp: std::sync::Arc<builtins::lsp::LspConfig>,
+    reach: builtins::task::TaskReach,
 ) -> Result<Registry, RegisterError> {
     let todo = match children {
         Some(children) => builtins::todo::TodoWriteTool::with_children(board, children),
@@ -156,16 +157,17 @@ pub fn with_session_tools(
         builtins::task::TaskTool::new(task_runner.clone()).with_skills(skills.clone()),
     ))?;
     // `task_result` is seated with `task` and never without it: a handle that nothing can
-    // collect is worse than no handle.
-    reg.register(Box::new(builtins::task::TaskResultTool::new(
-        task_runner.clone(),
-    )))?;
+    // collect is worse than no handle. `reach` is the SEAT's: the queue's own session reads and
+    // corrects its reviewers, and no session it did not start.
+    reg.register(Box::new(
+        builtins::task::TaskResultTool::new(task_runner.clone()).with_reach(reach),
+    ))?;
     // So is `task_message`: a seat that can start a child, read it and stop it but not
     // correct it has only two remedies when the child goes wrong, wait out a wrong answer
     // or throw the work away with `job_kill`.
-    reg.register(Box::new(builtins::task::TaskMessageTool::new(
-        task_runner.clone(),
-    )))?;
+    reg.register(Box::new(
+        builtins::task::TaskMessageTool::new(task_runner.clone()).with_reach(reach),
+    ))?;
     // And so is `task_start`, with the same runner as `task` because it is the same spawn
     // with the placement arranged first: a second runner would hand out handles that
     // `task_result` cannot collect.
@@ -295,6 +297,7 @@ mod tests {
             std::sync::Arc::new(builtins::task::NoTaskRunner),
             std::sync::Arc::new(builtins::skill::SkillRegistry::default()),
             std::sync::Arc::new(builtins::lsp::LspConfig::default()),
+            builtins::task::TaskReach::Anywhere,
         )
         .expect("todo_write registers");
         // The ceiling binds what a SESSION is given, not what the registry holds: this one

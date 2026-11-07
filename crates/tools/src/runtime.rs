@@ -1039,6 +1039,17 @@ pub mod roles {
         )
     }
 
+    /// The review queue's own session: M1's set plus the pair its prompt prescribes. It reads and
+    /// corrects the reviewers the queue's clock starts for it, so it starts no child of its own
+    /// (`task`, `task_start`), holds no shell, and hands in no verdict - the reviewer does that.
+    pub fn review_queue() -> Role {
+        let mut r = m1_orchestrator();
+        r.name = "review_queue".to_string();
+        r.tools.push("task_result".into());
+        r.tools.push("task_message".into());
+        r
+    }
+
     /// The `researcher` seat with the web instead of `search_corpus`, which no build has: ask
     /// the index, ask the web, then read and search the tree. `todo_write` takes the last seat
     /// because it is the pane's writer and nothing was displaced to make it fit.
@@ -2625,7 +2636,11 @@ mod tests {
     /// a tool it did not have, and a raised item froze. The seats that must not are subagents'.
     #[test]
     fn the_room_is_seated_on_the_seats_a_top_level_session_actually_runs_on() {
-        for seat in [roles::m1_orchestrator(), roles::leticode()] {
+        for seat in [
+            roles::m1_orchestrator(),
+            roles::leticode(),
+            roles::review_queue(),
+        ] {
             assert!(
                 seat.tools.iter().any(|t| t == "room"),
                 "`{}` is a seat a top-level session runs on, so it must carry `room`: {:?}",
@@ -2657,6 +2672,92 @@ mod tests {
              collapse into one, `harnessd`'s `base_role_for_seat` has to be re-read before \
              anybody believes a tool added here is seated"
         );
+    }
+
+    /// Both seats the review queue runs on, and the delta between them printed when either is
+    /// wrong: the queue's own session reads and corrects the reviewers the queue starts, and the
+    /// reviewer holds the shell and the verdict and can collect nothing.
+    #[test]
+    fn the_queue_seat_reads_and_corrects_and_the_reviewer_seat_judges() {
+        let queue = roles::review_queue();
+        let reviewer = roles::gatekeeper();
+        let delta = || {
+            format!(
+                "\n  queue {}: {:?}\n  reviewer {}: {:?}\n  m1 {}: {:?}",
+                queue.name,
+                queue.tools,
+                reviewer.name,
+                reviewer.tools,
+                roles::m1_orchestrator().name,
+                roles::m1_orchestrator().tools
+            )
+        };
+
+        // The pair its prompt prescribes, and the whole of the difference from M1's seat: a tool
+        // added to either list without the other is the defect this test was written for.
+        let mut added: Vec<&String> = queue
+            .tools
+            .iter()
+            .filter(|t| !roles::m1_orchestrator().tools.contains(t))
+            .collect();
+        added.sort();
+        assert_eq!(
+            added,
+            ["task_message", "task_result"],
+            "the queue's seat is M1's plus exactly the verbs its prompt prescribes{}",
+            delta()
+        );
+        for tool in ["todo_write", "read", "recall", "room"] {
+            assert!(
+                queue.tools.iter().any(|t| t == tool),
+                "the queue's prompt prescribes `{tool}` and its seat lacks it{}",
+                delta()
+            );
+        }
+
+        // None of the four, on the queue's seat: it starts no child, runs no command and hands in
+        // no verdict - the reviewer does the last one, and the queue's clock starts the child.
+        let forbidden = ["task", "task_start", "review_verdict", "bash"];
+        let held: Vec<&&str> = forbidden
+            .iter()
+            .filter(|t| queue.tools.iter().any(|x| x == *t))
+            .collect();
+        assert!(
+            held.is_empty(),
+            "the queue's seat must hold none of {forbidden:?}, and holds {held:?}{}",
+            delta()
+        );
+
+        // And the reviewer's seat is the other half: a shell to `git diff` with, its own verdict to
+        // hand in, and no way to collect or correct anything - a reader that could become a second
+        // author is the thing its seat exists to prevent.
+        for tool in ["bash", "review_verdict"] {
+            assert!(
+                reviewer.tools.iter().any(|t| t == tool),
+                "the reviewer's seat must keep `{tool}`{}",
+                delta()
+            );
+        }
+        let leaked: Vec<&&str> = ["task_result", "task_message", "task", "task_start"]
+            .iter()
+            .filter(|t| reviewer.tools.iter().any(|x| x == *t))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "the reviewer's seat must hold none of [\"task_result\", \"task_message\", \"task\", \"task_start\"], and holds {leaked:?}{}",
+            delta()
+        );
+
+        // Both fit the ceiling that binds what a session is actually given.
+        for seat in [&queue, &reviewer] {
+            assert!(
+                seat.tools.len() <= seat.max_tools,
+                "`{}` is over its own ceiling: {} > {}",
+                seat.name,
+                seat.tools.len(),
+                seat.max_tools
+            );
+        }
     }
 
     /// `task_start` is seated wherever `task` is: placement lives in the tool, not in the

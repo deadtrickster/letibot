@@ -502,8 +502,9 @@ and beats the lease.
 The lease is a file, `<data dir>/room-<host key>.lease`, with `host/pid/<ns>` for an owner, a ten-second
 beat and a ninety-second TTL. The names all derive from the host (socket, lease, `s-room-<host key>`).
 
-The tool is seated on `m1_orchestrator` and on `leticode`, and nowhere else. A session on another seat
-does not see it, because `Registry::resolve_role` keeps only the tools a role names.
+The tool is seated on `m1_orchestrator`, on the review queue's own role (`roles::review_queue`, which
+is M1's list plus the two verbs on its reviewers) and on `leticode`, and nowhere else. A session on
+another seat does not see it, because `Registry::resolve_role` keeps only the tools a role names.
 
 `scripts/letibot`'s `room_ensure` starts a coordinator before any session opens, because the tool is
 seated at `Harness::open` from the socket that exists then. A daemon that forked another daemon would be

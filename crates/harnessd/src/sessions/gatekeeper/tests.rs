@@ -726,3 +726,191 @@ fn two_workspaces_get_two_review_sessions_and_one_workspace_keeps_its_own() {
         "a reviewer's id is its parent's plus a suffix, and it is not the queue"
     );
 }
+
+/// Every tool name this build seats anywhere, so a backticked word in the prompt can be told from
+/// prose. The roles' own lists, plus what the daemon registers beside a role rather than in one.
+fn known_tools() -> std::collections::BTreeSet<String> {
+    use letibot_tools::runtime::roles;
+    let mut all = std::collections::BTreeSet::new();
+    for r in [
+        roles::orchestrator(),
+        roles::coder(),
+        roles::leticode(),
+        roles::m1_orchestrator(),
+        roles::review_queue(),
+        roles::m3_researcher(),
+        roles::planner(),
+        roles::m2_coder(),
+        roles::m2_runner(),
+        roles::gatekeeper(),
+        roles::notes_keeper(),
+    ] {
+        all.extend(r.tools);
+    }
+    for t in [
+        "flowy",
+        "web_search",
+        "web_fetch",
+        "review_verdict",
+        "digest",
+        "decisions",
+    ] {
+        all.insert(t.into());
+    }
+    all
+}
+
+/// The prompt is written for the seat it is given to. It told the queue's session to `task_result`
+/// and `task_message` its reviewers while that session was seated M1's role, which holds neither -
+/// a session managed by its prompt, told to call two tools it does not have.
+#[test]
+fn every_tool_the_queue_prompt_names_is_on_the_seat_that_serves_it() {
+    use letibot_tools::runtime::roles;
+    let queue = roles::review_queue();
+    let reviewer = roles::gatekeeper();
+    let known = known_tools();
+    let text = prompt(&ReviewerPlacement::Host);
+    let named: std::collections::BTreeSet<String> = text
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .map(|w| w.split_whitespace().next().unwrap_or("").to_string())
+        .filter(|w| known.contains(w))
+        .collect();
+    let delta = || {
+        format!(
+            "\n  queue {}: {:?}\n  reviewer {}: {:?}\n  named: {:?}",
+            queue.name, queue.tools, reviewer.name, reviewer.tools, named
+        )
+    };
+    assert!(
+        named.contains("task_result") && named.contains("todo_write"),
+        "the scan found no tool names at all, so it proves nothing{}",
+        delta()
+    );
+    // `task` is the one word on neither seat: a review IS the child `task` would start, and the
+    // sentence that says so forbids starting one. Everything else the prompt names is a seat's.
+    let described_only = ["task"];
+    let lacks: Vec<&String> = named
+        .iter()
+        .filter(|t| {
+            !queue.tools.contains(t)
+                && !reviewer.tools.contains(t)
+                && !described_only.contains(&t.as_str())
+        })
+        .collect();
+    assert!(
+        lacks.is_empty(),
+        "the queue's prompt prescribes {lacks:?} and neither of the two seats holds them{}",
+        delta()
+    );
+
+    // The pair it prescribes for the queue itself, on the queue's seat and nowhere else.
+    for tool in ["task_result", "task_message"] {
+        assert!(
+            queue.tools.iter().any(|t| t == tool),
+            "the queue's prompt prescribes `{tool}` and its seat lacks it{}",
+            delta()
+        );
+        assert!(
+            !reviewer.tools.iter().any(|t| t == tool),
+            "and the reviewer's seat must not have it - a reader that collects is a second \
+             author{}",
+            delta()
+        );
+    }
+    // And the two it names as the reviewer's own, which the queue must not hold either.
+    for tool in ["review_verdict", "bash"] {
+        assert!(
+            reviewer.tools.iter().any(|t| t == tool),
+            "the prompt names `{tool}` as the reviewer's door{}",
+            delta()
+        );
+        assert!(
+            !queue.tools.iter().any(|t| t == tool),
+            "and the queue's seat must not hold it{}",
+            delta()
+        );
+    }
+}
+
+/// The seat a review-queue session resolves is its own, from the session rather than from a choice
+/// a person made: `Seat::Orchestrator` is what the queue records, and M1's role is not what it gets.
+#[test]
+fn the_queue_seat_resolves_to_the_queue_role() {
+    use letibot_tools::runtime::roles;
+    let cfg = Config::for_this_box("/tmp/letibot-review-queue-seat");
+    let queue = Config {
+        session_id: queue_of(&cfg),
+        ..cfg.clone()
+    };
+    assert!(is_the_queue_session(&queue), "{}", queue.session_id);
+    assert_eq!(queue.seat, SEAT, "the queue's recorded seat is unchanged");
+    let seat = crate::harness::base_role_for_seat(SEAT, &queue);
+    let expected = roles::review_queue();
+    let delta = || {
+        format!(
+            "\n  resolved {}: {:?}\n  expected {}: {:?}\n  m1 {}: {:?}",
+            seat.name,
+            seat.tools,
+            expected.name,
+            expected.tools,
+            roles::m1_orchestrator().name,
+            roles::m1_orchestrator().tools
+        )
+    };
+    assert_eq!(
+        seat.tools,
+        expected.tools,
+        "the queue's session is seated the queue's role, not M1's{}",
+        delta()
+    );
+    for tool in ["task_result", "task_message"] {
+        assert!(
+            seat.tools.iter().any(|t| t == tool),
+            "and `{tool}` is why: its prompt prescribes it{}",
+            delta()
+        );
+    }
+    for tool in ["task", "task_start", "review_verdict", "bash"] {
+        assert!(
+            !seat.tools.iter().any(|t| t == tool),
+            "while `{tool}` is not on it{}",
+            delta()
+        );
+    }
+
+    // The narrowing is the SESSION's, not the seat's: a session next door in the same workspace
+    // and the reviewer children of the queue are both ordinary.
+    let ordinary = Config {
+        session_id: format!("s-{}", std::process::id()),
+        ..cfg.clone()
+    };
+    assert_eq!(
+        crate::harness::base_role_for_seat(SEAT, &ordinary).tools,
+        roles::m1_orchestrator().tools,
+        "an ordinary orchestrator session still seats M1{}",
+        delta()
+    );
+    let reviewer = Config {
+        session_id: format!("{}-sub-1791", queue.session_id),
+        ..cfg.clone()
+    };
+    assert!(
+        !is_the_queue_session(&reviewer),
+        "a reviewer child is not the queue: {}",
+        reviewer.session_id
+    );
+    // Its own seat, `bash` behind the daemon's flag as `base_role_for_seat` filters it: the queue's
+    // check must not have taken the reviewer's seat over.
+    let mut expected = roles::gatekeeper().tools;
+    if !reviewer.allow_bash {
+        expected.retain(|t| t != "bash");
+    }
+    assert_eq!(
+        crate::harness::base_role_for_seat(crate::config::Seat::Gatekeeper, &reviewer).tools,
+        expected,
+        "and its own seat is untouched{}",
+        delta()
+    );
+}

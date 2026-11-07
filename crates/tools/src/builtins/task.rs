@@ -1629,22 +1629,79 @@ impl Tool for TaskStartTool {
     }
 }
 
+/// What a seat's `task_result` and `task_message` may reach. The daemon's runner addresses any live
+/// session by id, which is right for a seat a person is in and wrong for the review queue's: it was
+/// handed its reviewers and holds nothing else in the daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskReach {
+    /// Any child this session started, and - for a message - any live session's id.
+    Anywhere,
+    /// Only the children this session's runner holds: the review queue's own reviewers.
+    OwnChildren,
+}
+
+/// The refusal for a handle a [`TaskReach::OwnChildren`] seat may not address - the handle the
+/// caller named, after names and slugs have resolved, so the sentence quotes what it asked with.
+fn outside_its_children(
+    reach: TaskReach,
+    runner: &dyn TaskRunner,
+    handle: &str,
+    verb: &str,
+) -> Option<Invocation> {
+    if reach == TaskReach::Anywhere || runner.children().iter().any(|c| c.handle == handle) {
+        return None;
+    }
+    let did = if verb == "task_message" {
+        "sent"
+    } else {
+        "read"
+    };
+    Some(Invocation::failed(
+        format!("`{handle}` is not one of this session's children, so `{verb}` cannot address it"),
+        format!(
+            "this seat reads and corrects the children it started - here the reviewers the queue's \
+             clock started for the rows on its board - and no other session in the daemon. The \
+             handles it holds are the ones in `{verb}`'s listing. Nothing was {did}."
+        ),
+    ))
+}
+
 /// `task_result` - collect a subagent `task` started.
 pub struct TaskResultTool {
     runner: Arc<dyn TaskRunner>,
+    reach: TaskReach,
 }
 
 impl TaskResultTool {
     pub fn new(runner: Arc<dyn TaskRunner>) -> Self {
-        TaskResultTool { runner }
+        TaskResultTool {
+            runner,
+            reach: TaskReach::Anywhere,
+        }
+    }
+
+    /// Narrow what this seat may read to the children it started - see [`TaskReach`].
+    pub fn with_reach(mut self, reach: TaskReach) -> Self {
+        self.reach = reach;
+        self
     }
 }
 
 impl Tool for TaskResultTool {
     fn schema(&self) -> ToolSchema {
+        // A seat handed only its own children is told so: a description naming what the seat will
+        // refuse is the prompt contradicting the tool, which is what this pair was seated to end.
+        let only_its_own = match self.reach {
+            TaskReach::Anywhere => "",
+            TaskReach::OwnChildren => {
+                " Only the children this session started may be read: it holds the reviewers it was \
+                 handed and no other session, and a handle that is not one is refused by name."
+            }
+        };
         ToolSchema::new(
             "task_result",
-            "Look at a subagent started by `task`. Its answer is delivered to you \
+            format!(
+                "Look at a subagent started by `task`. Its answer is delivered to you \
              (when your current turn ends, or at once if a todo row needs it or wake is \
              \"now\"); this shows its state or re-reads the answer. Give `task` (the handle `task` returned) to see where it has got to. \
              `timeout_ms` blocks only for a child this session is not already being \
@@ -1656,7 +1713,8 @@ impl Tool for TaskResultTool {
              it), `between turns` (nothing is running in it — `task_message` starts a turn \
              for it), `quiet` (a turn is in flight and nothing has come out of it — check \
              whether it is stuck). Call with no `task` to list the subagents this \
-             session started.",
+             session started.{only_its_own}"
+            ),
             json!({
                 "type": "object",
                 "properties": {
@@ -1719,6 +1777,11 @@ impl Tool for TaskResultTool {
             Err(refused) => return refused,
         };
         let handle = handle.as_str();
+        if let Some(refused) =
+            outside_its_children(self.reach, self.runner.as_ref(), handle, "task_result")
+        {
+            return refused;
+        }
         // Asked BY HANDLE, not looked up in the list. The list carries only the children a
         // record was due for; a child from before the store recorded any is one a model may still
         // name, and its answer needs the same caveat.
@@ -1909,29 +1972,51 @@ fn addressed(runner: &dyn TaskRunner, asked: &str) -> Result<String, Invocation>
 /// steers it. The handle may name any live session, child or peer.
 pub struct TaskMessageTool {
     runner: Arc<dyn TaskRunner>,
+    reach: TaskReach,
 }
 
 impl TaskMessageTool {
     pub fn new(runner: Arc<dyn TaskRunner>) -> Self {
-        TaskMessageTool { runner }
+        TaskMessageTool {
+            runner,
+            reach: TaskReach::Anywhere,
+        }
+    }
+
+    /// Narrow who this seat may address to the children it started - see [`TaskReach`].
+    pub fn with_reach(mut self, reach: TaskReach) -> Self {
+        self.reach = reach;
+        self
     }
 }
 
 impl Tool for TaskMessageTool {
     fn schema(&self) -> ToolSchema {
+        // Same rule as `task_result`'s: the seat that may address only its own children says so in
+        // its own description, instead of promising a door onto every session and refusing it.
+        let (who, only_its_own) = match self.reach {
+            TaskReach::Anywhere => ("the id of any live session", ""),
+            TaskReach::OwnChildren => (
+                "the handle of one of this session's children",
+                " Only the children this session started may be addressed: it holds the reviewers \
+                 it was handed and no other session, and any other handle is refused by name.",
+            ),
+        };
         ToolSchema::new(
             "task_message",
-            "Say something to a session — a live correction. Give \
-             `task` (the handle `task` returned, the id of any live session, or `parent` for the \
-             session that started this one) and `text` (what to say). It is not a second \
-             prompt: the session hears it as your message and carries on. A session whose turn \
-             is running hears it at its next round boundary; a session that has answered and is \
-             waiting is woken and runs a turn for it. Refused by name if no session of that id \
-             is live. Read a subagent with `task_result`; stop one with `job_kill`.",
+            format!(
+                "Say something to a session — a live correction. Give \
+                 `task` (the handle `task` returned, {who}, or `parent` for the \
+                 session that started this one) and `text` (what to say). It is not a second \
+                 prompt: the session hears it as your message and carries on. A session whose turn \
+                 is running hears it at its next round boundary; a session that has answered and is \
+                 waiting is woken and runs a turn for it. Refused by name if no session of that id \
+                 is live. Read a subagent with `task_result`; stop one with `job_kill`.{only_its_own}"
+            ),
             json!({
                 "type": "object",
                 "properties": {
-                    "task": {"type": "string", "description": "The handle `task` returned (or the child's slug), the id of a live session to address, or `parent` — the session that started this one."},
+                    "task": {"type": "string", "description": format!("The handle `task` returned (or the child's slug), {who} to address, or `parent` — the session that started this one.")},
                     "text": {"type": "string", "description": "What to say to the session. It keeps working; this steers what it does next."}
                 },
                 "required": ["task", "text"]
@@ -1968,6 +2053,11 @@ impl Tool for TaskMessageTool {
             Err(refused) => return refused,
         };
         let handle = handle.as_str();
+        if let Some(refused) =
+            outside_its_children(self.reach, self.runner.as_ref(), handle, "task_message")
+        {
+            return refused;
+        }
         match self.runner.send(handle, text) {
             Ok(said) => Invocation::ok(said),
             // A refusal comes back unchanged, like `job_kill`'s: the runner is the only thing

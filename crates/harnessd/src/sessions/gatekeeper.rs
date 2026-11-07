@@ -27,8 +27,17 @@ pub(crate) fn session_for_fixture() -> String {
 /// changed on purpose (`SessionBrief::title`), so this is what a person reads in `--sessions`.
 pub const TITLE: &str = "the review queue";
 
-/// The session's SEAT, hardcoded, and it is the default one on purpose.
+/// The session's SEAT, hardcoded, and it is the default one on purpose. The ROLE it resolves to is
+/// not the default one's: [`crate::harness::base_role_for_seat`] seats a review-queue session
+/// [`letibot_tools::runtime::roles::review_queue`], which its prompt is written for.
 pub const SEAT: crate::config::Seat = crate::config::Seat::Orchestrator;
+
+/// Whether `cfg` is a review-queue session's. By its id's SHAPE, which is the one thing that
+/// survives a workspace the daemon moved away from: the seat's role and the tools that role reaches
+/// answer from this one predicate. A reviewer child's suffix is longer than a key, so it is not one.
+pub fn is_the_queue_session(cfg: &crate::config::Config) -> bool {
+    letibot_sessionlog::is_gatekeeper_session(&cfg.session_id)
+}
 
 /// Where a review-queue session's reviewers run - the decision as a STATE, rather than as a
 /// placement that happens to come out `host` when something was wrong.

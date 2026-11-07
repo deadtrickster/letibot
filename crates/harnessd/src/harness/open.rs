@@ -1983,6 +1983,13 @@ impl Harness {
             task_runner,
             parts.skills.clone(),
             parts.lsp.clone(),
+            // The queue's own session reads and corrects the reviewers it was handed, and the
+            // runner behind these two verbs will address any live session in the daemon.
+            if crate::sessions::gatekeeper::is_the_queue_session(&cfg) {
+                letibot_tools::builtins::task::TaskReach::OwnChildren
+            } else {
+                letibot_tools::builtins::task::TaskReach::Anywhere
+            },
         )
         .map_err(|e| HarnessError::Setup(format!("registering the todo tool: {e}")))?;
         registry
@@ -3852,6 +3859,12 @@ pub(crate) fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
 }
 
 pub(crate) fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
+    // The review queue's own session is nobody's seat at a keyboard: its prompt prescribes reading
+    // and correcting the reviewers the queue's clock starts, so it holds `task_result` and
+    // `task_message` and neither a child of its own nor a shell. By id, because its seat is default.
+    if crate::sessions::gatekeeper::is_the_queue_session(cfg) {
+        return roles::review_queue();
+    }
     match seat {
         Seat::Orchestrator => roles::m1_orchestrator(),
         Seat::Planner => roles::planner(),
