@@ -71,6 +71,8 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R142 | Room UI P3: composer (`@` completion, room `/` verbs, history and drafts, reply, pasted pictures) | Code work | all of it, after R139 |
 | R143 | Room UI P4: navigation (message cursor, jump to unread, `Ctrl+K` switcher, search, picture cache) | Code work | all of it, after R139 |
 | R144 | The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag | Code work | the design and the build |
+| R147 | A grant card is raised for a container's path or a glob | Code work | nothing: a card now needs a path this host has, with no glob left |
+| R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
 | T16 | W9's open questions | Code work | item 7 (call ids are positional per turn); unclear: item 6 asked lubuntu3 whether RAGFlow signals "no coverage" in a field, no answer is recorded |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
 | R100 | A remote session in a firecode VM: `--host` and `--vm` as one placement | Needs the operator | the live proof on lab2x1: a real `firecode` copy carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, the copy-out's cost |
@@ -866,6 +868,18 @@ The design and the five packages are `docs/room-tui.md`, from a study of flowy's
 **Status:** open. left: the design and the build.
 
 A Claude Code seat orchestrating letibot sessions has no board: its waits live in Monitors and its own memory. The bridge should serve the same `todo_write` / `todos` / `update` tools a session has, kept in the store under the seat's handle, with `wait_on` edges to letibot sessions, their jobs, room asks (R136) and the operator. The same idle check nags the seat through the channel push when a row is ready or in progress with no wait. Then Monitors are not needed for waiting on packages, and a seat's plan is visible on the head's todo pane like any session's.
+
+## R147 - A grant card is raised for a container's path or a glob
+
+**Status:** fixed. left: nothing.
+
+`Boundary::outside_paths` read every absolute path on a "No such file or directory" line of a command's output as a host path the view hid. A serenedb child running `docker run -v /tmp:/hosttmp ... ls /hosttmp/c-*` got the operator asked to grant `/hosttmp/c-*`. A card is now raised only for a path that exists on this host and has no glob characters (`is_a_host_path`, test `a_path_this_host_does_not_have_raises_no_grant_card`). The notes still describe what the command failed on.
+
+## R149 - A placement caps a package's build width from the host's free cores
+
+**Status:** postponed by the operator on 2026-11-07. left: all of it.
+
+On 2026-11-07 four packages on lubuntu1, each with subagents running cargo at full width, drove its load to 254 on 32 cores. Remote writes then timed out (`remote_call_slow`, then a failed `edit`), and R139's turn was stopped by the progress check. The fix was a message asking each package for `CARGO_BUILD_JOBS=6`. A placement should set it instead: the daemon placing a session on a host knows the host's cores (`hosts.toml` `reserve` holds some back for the owner) and the packages already placed there, so it hands each session `CARGO_BUILD_JOBS` and a test-thread count from the free share, and a session's subagents divide their parent's share rather than each taking the whole box. The placement's status should say the share.
 
 ## R134 - Scrolling stops at a line above the tail
 
