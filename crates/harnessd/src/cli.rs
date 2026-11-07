@@ -2716,6 +2716,17 @@ fn run_query(
         Query::Delete(id) => match store.delete_empty_session(&id) {
             Ok(()) => {
                 println!("{id} deleted");
+                // A deleted session is the one `DOWN`: every ask of it ends and every ask it made
+                // is withdrawn, so nobody is left nagged by a board that no longer exists. The
+                // room is told after the row is gone, and a box with no coordinator has no ask.
+                match crate::room::link::retire(&id) {
+                    Ok(said) => println!("the room was told: {said}"),
+                    Err(why) if crate::room::socket_exists() => eprintln!(
+                        "note: the room was not told `{id}` is gone ({why}), so asks about it stay \
+                         open until one side's grace escalates"
+                    ),
+                    Err(_) => {}
+                }
                 Ok(0)
             }
             Err(letibot_tokencore::store::StoreError::NotFound(_)) => {

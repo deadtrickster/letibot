@@ -842,7 +842,7 @@ fn why(v: &Value) -> String {
 }
 
 /// The tool names this module serves.
-pub const TOOLS: [&str; 9] = [
+pub const TOOLS: [&str; 12] = [
     "rooms",
     "room_read",
     "room_say",
@@ -852,6 +852,9 @@ pub const TOOLS: [&str; 9] = [
     "room_nick",
     "room_invite",
     "room_leave",
+    "room_asks",
+    "room_answer",
+    "room_decline",
 ];
 
 fn tool(name: &str, description: &str, schema: Value) -> Value {
@@ -1008,6 +1011,50 @@ pub fn tool_list() -> Vec<Value> {
                 "required": ["nick"]
             }),
         ),
+        tool(
+            "room_asks",
+            &format!(
+                "The questions between this seat and the other sessions: `of_me` is what somebody \
+             asked `{me}` and is waiting on, `by_me` what this seat asked. An ask is settled by \
+             `room_answer` or `room_decline` and by nothing else - a chat reply reaches its author \
+             without unblocking the asker's plan. `state` is `open`, `answered`, `declined`, `down` \
+             (the target's session was deleted) or `withdrawn`, and `escalated` says the other end \
+             has been gone long enough that the operator is being asked to restart it."
+            ),
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool(
+            "room_answer",
+            &format!(
+                "Answer ask `ask` - the number `room_asks` or a board row gave - with `text`. The \
+             answer is a thread reply in the ask's room, addressed to the session that asked, and it \
+             releases the row on that session's board. Only the session that was asked may answer, \
+             and only while the ask is open. {}",
+                etiquette(&me)
+            ),
+            json!({
+                "type": "object",
+                "properties": {
+                    "ask": { "type": "integer", "description": "The ask's number." },
+                    "text": { "type": "string", "description": "The answer itself, in your own words." }
+                },
+                "required": ["ask", "text"]
+            }),
+        ),
+        tool(
+            "room_decline",
+            "Decline ask `ask` with `text` saying why, when the question is not yours to answer: the \
+             asker's row is released and reads that it was declined, which is a different outcome \
+             from an answer.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "ask": { "type": "integer", "description": "The ask's number." },
+                    "text": { "type": "string", "description": "Why you will not answer it." }
+                },
+                "required": ["ask", "text"]
+            }),
+        ),
     ]
 }
 
@@ -1149,14 +1196,63 @@ fn upload(
 }
 
 fn with_lines(mut reply: Value) -> Value {
-    let lines: Vec<String> = reply["rows"]
+    // An ask is not a message, so it has its own line: the number, who it is with, the words and
+    // what became of it - one line a model reads without holding two halves in its head.
+    let ask_line = |a: &Value, mine: bool| {
+        let peer = if mine {
+            a["target"].as_str().unwrap_or("?")
+        } else {
+            a["asker"].as_str().unwrap_or("?")
+        };
+        format!(
+            "#{} ({peer}: {:?}) - {}",
+            a["seq"],
+            a["question"].as_str().unwrap_or(""),
+            ask_state(&a["state"])
+        )
+    };
+    let asks: Vec<String> = reply["of_me"]
         .as_array()
-        .map(|rows| rows.iter().map(line).collect())
-        .unwrap_or_default();
-    if reply["type"] == "history" || reply["type"] == "inbox" {
-        reply["lines"] = json!(lines);
+        .map(|rows| rows.iter().map(|a| ask_line(a, false)).collect())
+        .unwrap_or_else(|| {
+            reply["by_me"]
+                .as_array()
+                .map(|rows| rows.iter().map(|a| ask_line(a, true)).collect())
+                .unwrap_or_default()
+        });
+    let described = match reply["type"].as_str() {
+        Some("asked") => reply["ask"]
+            .as_object()
+            .map(|_| vec![ask_line(&reply["ask"], false)])
+            .unwrap_or_default(),
+        Some("asks") => asks,
+        _ => reply["rows"]
+            .as_array()
+            .map(|rows| rows.iter().map(line).collect())
+            .unwrap_or_default(),
+    };
+    if matches!(
+        reply["type"].as_str(),
+        Some("history" | "inbox" | "asked" | "asks")
+    ) {
+        reply["lines"] = json!(described);
     }
     reply
+}
+
+/// An ask's state, as one clause for a line: `{"state":"answered","text":"5433"}` reads
+/// `answered: 5433`, which is what a model needs and what a repeated answer must not hide.
+fn ask_state(state: &Value) -> String {
+    match state["state"].as_str().unwrap_or("open") {
+        "answered" => format!("answered: {}", state["text"].as_str().unwrap_or("")),
+        "declined" => format!("declined: {}", state["text"].as_str().unwrap_or("")),
+        "down" => "was shut down for good".to_string(),
+        "withdrawn" => format!(
+            "withdrawn by {}",
+            state["by"].as_str().unwrap_or("somebody")
+        ),
+        _ => "open".to_string(),
+    }
 }
 
 /// Run one room tool, resolving an attachment's path against the folder this process works in.
@@ -1239,6 +1335,25 @@ pub fn call_in(
             "room": arg_str(args, "room")?,
             "session": arg_str(args, "session")?,
         })),
+        // An ask belongs to the connection that speaks for this handle: the room refuses a reply
+        // from anybody but the target, so these three go over this seat's own connection.
+        "room_asks" => link.request(&json!({ "type": "asks" })).map(with_lines),
+        "room_answer" => link
+            .request(&json!({
+                "type": "reply",
+                "id": link.id(),
+                "ask": arg_opt_u64(args, "ask")?.ok_or("`ask` is required")?,
+                "text": arg_str(args, "text")?
+            }))
+            .map(with_lines),
+        "room_decline" => link
+            .request(&json!({
+                "type": "decline",
+                "id": link.id(),
+                "ask": arg_opt_u64(args, "ask")?.ok_or("`ask` is required")?,
+                "text": arg_str(args, "text")?
+            }))
+            .map(with_lines),
         "room_inbox" => {
             let attention = match arg_opt_str(args, "attention")? {
                 Some(a) => Attention::parse(&a)?,

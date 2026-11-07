@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 
 pub mod agents;
+pub mod asks;
 pub mod coordinator;
 pub mod link;
 pub mod operator;
@@ -16,6 +17,18 @@ pub mod wake;
 /// The environment variable that puts the room's socket somewhere else - a test's door, and
 /// the reason no fixture has to touch the box's real data directory.
 pub const SOCKET_ENV: &str = "LETIBOT_ROOM_SOCKET";
+
+/// The environment variable that shortens the grace an ask's other end gets before the operator is
+/// asked to restart it - [`letibot_room::server::ASK_GRACE_MS`] unless a test says otherwise, so a
+/// run of this box's own coordinator is five minutes and a test's is seconds.
+pub const ASK_GRACE_ENV: &str = "LETIBOT_ROOM_ASK_GRACE_MS";
+
+/// The ask grace this box runs with, or `None` to take the room's own default.
+pub fn ask_grace_ms() -> Option<u64> {
+    std::env::var(ASK_GRACE_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+}
 
 /// This box's room - where the coordinator serves, or `None` when there is no data directory
 /// and no override, which is a box with nowhere to put a socket.

@@ -2010,6 +2010,10 @@ impl Harness {
             registry,
             todo_board.clone(),
             Some(child_todos),
+            // The room's half of `todo_write`: a row that waits on another session's answer. It is
+            // the same slot the `room` tool talks through, so a link made after the open reaches
+            // both - and a box with no coordinator refuses the ask by name.
+            Some(room_late.clone()),
             task_runner,
             parts.skills.clone(),
             parts.lsp.clone(),

@@ -122,6 +122,25 @@ fn links() -> &'static Mutex<std::collections::BTreeMap<String, Weak<SessionRoom
     LINKS.get_or_init(Default::default)
 }
 
+/// A session was DELETED, not restarted: tell the room, so every open ask of it ends `DOWN` and
+/// every ask it made is withdrawn. Best effort and said aloud - a box with no coordinator holds no
+/// ask, and a room that did not hear it leaves the asks open until one side's grace escalates.
+pub fn retire(session: &str) -> Result<String, String> {
+    let socket = super::socket_path().filter(|p| p.exists()).ok_or_else(|| {
+        "there is no coordinator on this box, so it holds no ask of this session".to_string()
+    })?;
+    let wake: letibot_room::client::Wake = Arc::new(|_: &letibot_room::Event| {});
+    let client = Client::connect(socket, Speaker::top_level(session), wake)
+        .map_err(|e| format!("the coordinator did not take the connection: {e}"))?;
+    let response = client
+        .request(&Request::Retire {
+            id: request_id("retire"),
+            session: session.to_string(),
+        })
+        .map_err(|e| format!("the coordinator did not answer: {e}"))?;
+    answer_sentence(&response, session)
+}
+
 /// A merge-queue or review-queue row moved: say so in the room of the row's repository, or the host
 /// room when no session of that project is here. Every session hears a move, so one live link
 /// reports it and the coordinator drops a repeat of the same request id.
@@ -853,11 +872,112 @@ impl SessionRoom {
             ),
         }
     }
+
+    /// What this session made and what it was asked, as data: the room pass's one read. The `asks`
+    /// VERB is the same read in words, and a daemon that parsed those words back would be reading
+    /// its own formatting.
+    pub fn asks(&self) -> Result<(Vec<letibot_room::AskView>, Vec<letibot_room::AskView>), String> {
+        let response = self
+            .client
+            .request(&Request::Asks)
+            .map_err(|e| format!("the room at {} did not answer: {e}", self.socket.display()))?;
+        match response {
+            Response::Asks { by_me, of_me } => Ok((by_me, of_me)),
+            Response::Bye { why } => Err(format!("the room closed the connection: {why}")),
+            other => Err(format!(
+                "the room answered a frame that is not an `asks` read ({other:?}) — nothing was \
+                 written on the board"
+            )),
+        }
+    }
+
+    /// Take one of this session's asks back: its row was done, cancelled, detached or re-worded, so
+    /// the target must stop being nagged by a question nobody waits for. The room pass sends this;
+    /// no model verb does.
+    pub fn withdraw(&self, ask: u64) -> Result<(), String> {
+        let response = self
+            .client
+            .request(&Request::Withdraw {
+                id: request_id("withdraw"),
+                ask,
+            })
+            .map_err(|e| format!("the room at {} did not answer: {e}", self.socket.display()))?;
+        match response {
+            Response::Asked { .. } => Ok(()),
+            other => {
+                answer_sentence(&other, &self.session)?;
+                Err(format!(
+                    "the room answered a frame that is not an ask ({other:?})"
+                ))
+            }
+        }
+    }
+
+    /// Ask `of` a question, synchronously, so every refusal the room makes reaches the model in the
+    /// call that asked. `AskMade`'s note is the room's own fact about the target - not connected
+    /// now, or gone past the grace - said verbatim and never interpreted.
+    pub fn ask_of(
+        &self,
+        of: &str,
+        room: Option<&str>,
+        question: &str,
+    ) -> Result<letibot_tools::builtins::todo::AskMade, String> {
+        let request = Request::Ask {
+            id: request_id("ask"),
+            room: chat_room(room.unwrap_or("")),
+            to: of.trim().to_string(),
+            question: question.trim().to_string(),
+        };
+        let response = self
+            .client
+            .request(&request)
+            .map_err(|e| format!("the room at {} did not answer: {e}", self.socket.display()))?;
+        let Response::Asked { ask, .. } = &response else {
+            // A refusal or a `Bye` is the room's own sentence, and it is what the model must read.
+            answer_sentence(&response, &self.session)?;
+            return Err(
+                "the room answered a frame that is not an ask — nothing was recorded, so no row \
+                 waits on it"
+                    .to_string(),
+            );
+        };
+        let note = if ask.escalated {
+            Some(format!(
+                "`{of}` has been gone long enough that the operator is being asked to restart it; \
+                 the ask stays open and its answer waits in the room"
+            ))
+        } else if ask.gone_since_ms.is_some() {
+            Some(format!("`{of}` is not connected now"))
+        } else {
+            None
+        };
+        Ok(letibot_tools::builtins::todo::AskMade {
+            id: ask.seq,
+            room: ask.room.clone(),
+            note,
+        })
+    }
 }
 
 impl letibot_tools::builtins::room::RoomLink for SessionRoom {
     fn call(&self, verb: &str, args: &serde_json::Value) -> Result<String, String> {
         SessionRoom::call(self, verb, args)
+    }
+}
+
+impl letibot_tools::builtins::todo::AskLink for LateRoom {
+    fn ask(
+        &self,
+        of: &str,
+        room: Option<&str>,
+        question: &str,
+    ) -> Result<letibot_tools::builtins::todo::AskMade, String> {
+        match self.get() {
+            Some(link) => link.ask_of(of, room, question),
+            // A session opened before the coordinator did has a link that arrives later; until it
+            // does, the sentence `NoAsks` writes is the true one.
+            None => letibot_tools::builtins::todo::NoAsks.ask(of, room, question),
+        }
     }
 }
 
@@ -1105,6 +1225,17 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
             before: n("before"),
         },
         "queue" => Request::Queue { tag: s("tag") },
+        "answer" => Request::Reply {
+            id,
+            ask: n("ask").ok_or("`answer` needs `ask`: the number a row or `room asks` gave")?,
+            text: s("text"),
+        },
+        "decline" => Request::Decline {
+            id,
+            ask: n("ask").ok_or("`decline` needs `ask`: the number a row or `room asks` gave")?,
+            text: s("text"),
+        },
+        "asks" => Request::Asks,
         "holding" => Request::Holding {
             session: Some(s("session")).filter(|x| !x.is_empty()),
         },
@@ -1122,7 +1253,7 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
             return Err(format!(
                 "`{other}` is not a room verb — the verbs are post, claim, claim_item, beat, \
                  waiting, done, abandon, dispute, rule, queue, holding, reminders, questions, say, read, \
-                 invite and leave"
+                 invite, leave, answer, decline and asks"
             ));
         }
     })
@@ -1347,6 +1478,53 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
             format!("{} message(s), {skipped} left out", rows.len())
         }
         Response::Acked { cursor } => format!("read up to #{cursor}"),
+        // An ask, as the room holds it: who was asked of what, and whether it is still open - with
+        // the two facts a model can act on, a peer that is not connected now and one gone past the
+        // grace.
+        Response::Asked { ask, .. } => {
+            let peer = if ask.asker == me {
+                &ask.target
+            } else {
+                &ask.asker
+            };
+            let what = format!(
+                "ask #{} (`{peer}`: \"{}\") - {}",
+                ask.seq,
+                ask.question.trim(),
+                ask.state.line()
+            );
+            if !ask.open() {
+                what
+            } else if ask.escalated {
+                format!(
+                    "{what}; `{peer}` has been gone past the grace, so the operator is being asked \
+                     to restart it - the ask stays open and its answer waits in the room"
+                )
+            } else if ask.gone_since_ms.is_some() {
+                format!(
+                    "{what}; `{peer}` is not connected now, so the question waits in the room for \
+                     its next pass - the ask is not lost, and its own board nags it when it runs"
+                )
+            } else {
+                what
+            }
+        }
+        Response::Asks { by_me, of_me } => {
+            let open = by_me.iter().filter(|a| a.open()).count();
+            let owed = of_me.iter().filter(|a| a.open()).count();
+            if by_me.is_empty() && of_me.is_empty() {
+                "no asks: this session asked nobody and was asked nothing".to_string()
+            } else {
+                let mut s = format!("{open} ask(s) you made, {owed} owed to you:");
+                for ask in by_me {
+                    s.push_str(&format!("\n  by you: {}", ask.line()));
+                }
+                for ask in of_me {
+                    s.push_str(&format!("\n  owed:   {}", ask.line()));
+                }
+                s
+            }
+        }
         // The blob frames exist for a HEAD to draw a picture. A model's verbs do not upload or
         // fetch one yet, so this says what the room answered rather than inventing bytes for it.
         Response::Blob { attachment } => match attachment {
@@ -1464,6 +1642,9 @@ mod tests {
             json!({"verb": "holding"}),
             json!({"verb": "reminders"}),
             json!({"verb": "questions"}),
+            json!({"verb": "asks"}),
+            json!({"verb": "answer", "ask": 4211, "text": "5433"}),
+            json!({"verb": "decline", "ask": 4211, "text": "not my area"}),
         ];
         for args in cases {
             let verb = args["verb"].as_str().unwrap();
@@ -1477,12 +1658,98 @@ mod tests {
                     | Request::Holding { .. }
                     | Request::Reminders
                     | Request::Questions
+                    | Request::Asks
             );
             assert!(
                 frame.request_id().is_some() == mutates,
                 "{verb}: a mutating frame needs a request id and a read must not have one: {frame:?}"
             );
         }
+    }
+
+    /// The two verbs that settle an ask carry the number and the words, and the sentence a model
+    /// reads names the ask, the peer and the outcome - the whole of what it needs to carry on.
+    #[test]
+    fn an_answer_becomes_a_reply_and_its_sentence_names_the_ask() {
+        match request_of(
+            "answer",
+            &json!({"verb": "answer", "ask": 4211, "text": " 5433 "}),
+        )
+        .expect("a frame")
+        {
+            Request::Reply { ask, text, .. } => {
+                assert_eq!(ask, 4211);
+                assert_eq!(text, "5433");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            request_of("decline", &json!({"ask": 1, "text": "no"})).expect("a frame"),
+            Request::Decline { .. }
+        ));
+        assert!(matches!(
+            request_of("asks", &json!({})).expect("a frame"),
+            Request::Asks
+        ));
+        // A verb without the number is refused here, and nothing is sent.
+        let e = request_of("answer", &json!({"text": "5433"})).unwrap_err();
+        assert!(e.contains("needs `ask`"), "{e}");
+
+        let ask = |state, gone: bool| letibot_room::AskView {
+            seq: 4211,
+            room: "host".into(),
+            asker: "s-a".into(),
+            target: "s-b".into(),
+            question: "which port?".into(),
+            asked_ms: 1,
+            gone_since_ms: gone.then_some(2),
+            escalated: false,
+            state,
+        };
+        let answered = answer_sentence(
+            &Response::Asked {
+                id: "r1".into(),
+                ask: ask(
+                    letibot_room::AskState::Answered {
+                        text: "5433".into(),
+                        ms: 3,
+                    },
+                    false,
+                ),
+            },
+            "s-a",
+        )
+        .expect("a sentence");
+        assert!(answered.contains("ask #4211"), "{answered}");
+        assert!(answered.contains("`s-b`"), "{answered}");
+        assert!(answered.contains("answered: 5433"), "{answered}");
+        assert!(
+            !answered.contains("not connected"),
+            "an ended ask says nothing about liveness: {answered}"
+        );
+
+        // An open ask of a session that is not connected now says so: the model has to know its
+        // question is waiting rather than lost.
+        let waiting = answer_sentence(
+            &Response::Asked {
+                id: "q1".into(),
+                ask: ask(letibot_room::AskState::Open, true),
+            },
+            "s-a",
+        )
+        .expect("a sentence");
+        assert!(waiting.contains("not connected now"), "{waiting}");
+
+        let list = answer_sentence(
+            &Response::Asks {
+                by_me: vec![ask(letibot_room::AskState::Open, false)],
+                of_me: Vec::new(),
+            },
+            "s-a",
+        )
+        .expect("a sentence");
+        assert!(list.contains("1 ask(s) you made, 0 owed to you"), "{list}");
+        assert!(list.contains("which port?"), "{list}");
     }
 
     #[test]

@@ -176,6 +176,12 @@ impl Coordinator {
             server.with_item_store(&items);
         }
         server.with_arbiter(session).with_lease(lease.clone());
+        // How long a gone session's ask may stand before the operator is asked to restart it. Read
+        // from the box's environment, so a test can make the grace seconds while the shipped box
+        // runs five minutes with no config file to keep in step with the constant.
+        if let Some(ms) = super::ask_grace_ms() {
+            server.with_ask_grace(ms);
+        }
         eprintln!("harnessd: {}", server.identity());
 
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));

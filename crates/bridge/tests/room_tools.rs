@@ -222,6 +222,23 @@ fn serve_one(
                 *c = (*c).max(f["seq"].as_u64().unwrap());
                 json!({"type": "acked", "cursor": *c})
             }
+            // The ask the coordinator holds for this seat: one it owes, and none it asked.
+            "asks" => json!({"type": "asks", "by_me": [],
+                "of_me": [{"seq": 4211, "room": "host", "asker": "s-arango",
+                    "target": "claude-code", "question": "which port?",
+                    "asked_ms": 1, "state": {"state": "open"}}]}),
+            // A reply or a decline from the seat the ask was put to: the room settles it and
+            // answers with the ask as it now stands.
+            "reply" | "decline" => {
+                let state = if f["type"] == "reply" {
+                    json!({"state": "answered", "text": f["text"], "ms": 2})
+                } else {
+                    json!({"state": "declined", "text": f["text"], "ms": 2})
+                };
+                json!({"type": "asked", "id": f["id"], "ask": {"seq": f["ask"],
+                    "room": "host", "asker": "s-arango", "target": "claude-code",
+                    "question": "which port?", "asked_ms": 1, "state": state}})
+            }
             other => json!({"type": "refused", "id": null, "why": {"refused": other}}),
         };
         if writeln!(w, "{reply}").is_err() {
@@ -732,5 +749,64 @@ impl std::io::Read for ChannelReader {
         out[..n].copy_from_slice(&self.buf[..n]);
         self.buf.drain(..n);
         Ok(n)
+    }
+}
+
+/// The seat can be asked. `room_asks` reads what is owed, and `room_answer`/`room_decline` send the
+/// frames that settle it - over this seat's own connection, because the room refuses an answer from
+/// anybody but the session that was asked.
+#[test]
+fn a_claude_code_seat_can_be_asked_and_can_answer() {
+    let fake = Fake::start("asks");
+    let link = RoomLink::at(&fake.path);
+
+    let owed = call(&link, "room_asks", json!({})).unwrap();
+    assert_eq!(owed["type"], "asks");
+    assert_eq!(owed["of_me"][0]["seq"], 4211);
+    let line = owed["lines"][0]
+        .as_str()
+        .unwrap_or_else(|| panic!("{owed}"));
+    assert!(line.contains("s-arango"), "{line}");
+    assert!(line.contains("which port?"), "{line}");
+    assert!(line.contains("open"), "{line}");
+
+    let answered = call(&link, "room_answer", json!({"ask": 4211, "text": "5433"})).unwrap();
+    assert_eq!(answered["type"], "asked");
+    assert_eq!(answered["ask"]["seq"], 4211);
+    let said = answered["lines"][0]
+        .as_str()
+        .unwrap_or_else(|| panic!("{answered}"));
+    assert!(said.contains("answered: 5433"), "{said}");
+    let replies = fake.frames("reply");
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert_eq!(replies[0]["ask"], 4211);
+    assert_eq!(replies[0]["text"], "5433");
+
+    let declined = call(
+        &link,
+        "room_decline",
+        json!({"ask": 4211, "text": "not my area"}),
+    )
+    .unwrap();
+    let said = declined["lines"][0]
+        .as_str()
+        .unwrap_or_else(|| panic!("{declined}"));
+    assert!(said.contains("declined: not my area"), "{said}");
+    // A request id goes with each: the room answers a repeat instead of acting twice.
+    assert!(fake.frames("decline")[0]["id"].is_string());
+
+    // Without the number or the words, nothing is sent at all.
+    for (tool, args) in [
+        ("room_answer", json!({"text": "5433"})),
+        ("room_decline", json!({"ask": 4211})),
+    ] {
+        let before = fake.frames("reply").len() + fake.frames("decline").len();
+        let why = call(&link, tool, args).expect_err("refused");
+        assert!(!why.is_empty());
+        assert_eq!(
+            fake.frames("reply").len() + fake.frames("decline").len(),
+            before,
+            "{tool} sent a frame with a field missing"
+        );
     }
 }
