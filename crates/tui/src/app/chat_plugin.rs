@@ -500,7 +500,7 @@ impl App {
             "pick" => {
                 self.say(
                     "the chat layer asked for the host's picker, which this head has not got for a \
-                     layer yet — type the channel instead",
+                     layer yet — type the room instead",
                 );
                 None
             }
@@ -536,7 +536,7 @@ impl App {
             Chan::Room(room) => {
                 json!({"type": "say", "id": id, "room": room, "text": body, "thread": thread})
             }
-            Chan::Dm(to) => {
+            Chan::Dm(to) | Chan::Session(to) => {
                 json!({"type": "dm", "id": id, "to": to, "text": body, "thread": thread})
             }
         };

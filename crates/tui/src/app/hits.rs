@@ -58,6 +58,13 @@ pub(crate) enum Target {
     /// A member row of the `/rooms` roster column; its one stop is the row's index in
     /// `RoomsView::member_rows`. A click puts `@handle ` in the composer.
     RoomMember,
+    /// A channel row of the `/rooms` list; its one stop is the row's index in
+    /// `RoomsView::chan_rows`. A click enters the channel, as Enter in the switcher does.
+    RoomChan,
+    /// A row of the rooms sidebar; its one stop is the row's index in `Sidebar::rows`.
+    SideRow,
+    /// The sidebar's left border: a press on it starts a resize, a click does nothing.
+    SideBorder,
     /// The decision card; its stops are the ladder's rows.
     Decision,
     /// The quit card; its stops are its two choices.
@@ -187,6 +194,26 @@ impl App {
                                 stops: vec![(top + d, k)],
                             });
                         }
+                    }
+                }
+                // The channel list's rows, exactly where the draw put them.
+                if s == Surface::Rooms {
+                    let w = self.rooms_left_w;
+                    for (k, (row, kind)) in self.rooms.chan_rows.clone().into_iter().enumerate() {
+                        let (hx, hw) = match kind {
+                            crate::app::rooms::ListRow::Mute(_) => (x + w.saturating_sub(3), 3),
+                            _ => (x, w),
+                        };
+                        self.hits.push(Hit {
+                            rect: Rect {
+                                x: hx,
+                                y: top + row,
+                                w: hw,
+                                h: 1,
+                            },
+                            target: Target::RoomChan,
+                            stops: vec![(top + row, k)],
+                        });
                     }
                 }
                 // The roster column's member rows, exactly where the draw put them.

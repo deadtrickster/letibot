@@ -55,7 +55,7 @@ pub(super) fn open(a: &mut App, needle: &str) {
             "{n} hit(s) for `{needle}` — n and N step through them"
         ));
     } else {
-        a.say(&format!("nothing in this channel matches `{needle}`"));
+        a.say(&format!("nothing in this room matches `{needle}`"));
     }
 }
 
@@ -65,7 +65,7 @@ pub(super) fn step(a: &mut App, forward: bool) -> std::ops::ControlFlow<Option<A
     };
     if s.hits.is_empty() {
         let needle = s.needle.clone();
-        a.say(&format!("nothing in this channel matches `{needle}`"));
+        a.say(&format!("nothing in this room matches `{needle}`"));
         return std::ops::ControlFlow::Break(None);
     }
     let n = s.hits.len();

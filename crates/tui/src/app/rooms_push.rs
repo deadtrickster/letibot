@@ -31,7 +31,7 @@ impl App {
         let drawn = self.is_open(Surface::Rooms)
             && match self.rooms.sel.as_ref() {
                 Some(Chan::Room(id)) => *id == room,
-                Some(Chan::Dm(_)) => room == "dm",
+                Some(Chan::Dm(_) | Chan::Session(_)) => room == "dm",
                 None => false,
             };
         if let Some(row) = self.rooms.rows.iter_mut().find(|r| r.id == room) {

@@ -116,6 +116,7 @@ impl App {
             } => {
                 // Kept whole, like the `Hello` arm above - see it for why the filter is gone.
                 self.sessions = sessions;
+                self.rooms_sync_sessions();
                 // A LIST DOES NOT SEAT A HEAD: `current` is where the daemon's socket is and
                 // `self.session_id` is the session this head is DRAWING. When they disagree the ROWS
                 // are what is wrong, so this asks for a resync - a `Switch` would answer `already here`.
@@ -126,6 +127,9 @@ impl App {
                 // frame REPLACES `self.sessions`, which is what [`App::fold_subagents`] folds the
                 // subagent rows and the composer's count from, so a stale pane would outlive the list.
                 self.fold_subagents();
+                if self.picker_seat_pending && self.is_open(Surface::Picker) {
+                    self.seat_picker();
+                }
                 match created {
                     // A session was made *because this head asked*. Going there is
                     // what was meant - `/new` that leaves you where you were is a
@@ -191,6 +195,7 @@ impl App {
             // repository, and the pane and the edge are about that one unless told otherwise.
             ServerFrame::Queues { snapshot } => {
                 self.queues_all = snapshot;
+                self.queue_baseline();
                 self.queues_got_ms = self.now_ms.max(1);
                 self.rescope_queues();
                 // The one thing a snapshot cannot say about itself - whether a running step's

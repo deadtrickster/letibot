@@ -25,7 +25,7 @@ impl App {
             self.paint_pointer(&mut out);
             return out;
         }
-        let mut out = self.compose_screen(term_w, h);
+        let mut out = self.compose_framed(term_w, h);
         // Every key hint on this frame is a button, read back off the frame itself - see
         // `app::keyhints`. Before the links pass, which only adds escapes.
         self.scan_hints(&out);

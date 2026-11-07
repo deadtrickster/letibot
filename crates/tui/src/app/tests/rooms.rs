@@ -48,6 +48,21 @@ pub(super) fn ops(a: &mut App) -> Vec<Value> {
     a.take_actions()
         .into_iter()
         .filter_map(|x| match x {
+            Action::RoomChat { op, .. }
+                if !matches!(op["type"].as_str(), Some("marks" | "mark")) =>
+            {
+                Some(op)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every chat request, the mark traffic included.
+pub(super) fn raw_ops(a: &mut App) -> Vec<Value> {
+    a.take_actions()
+        .into_iter()
+        .filter_map(|x| match x {
             Action::RoomChat { op, .. } => Some(op),
             _ => None,
         })
@@ -702,7 +717,7 @@ fn a_mention_is_a_name_not_a_prefix() {
 
 const WIDTHS: [usize; 2] = [80, 120];
 
-fn screen(a: &mut App, cols: usize) -> Vec<String> {
+pub(super) fn screen(a: &mut App, cols: usize) -> Vec<String> {
     a.screen(cols, 24)
 }
 
@@ -736,7 +751,8 @@ fn before_any_answer_the_view_says_it_is_asking() {
         let rows = screen(&mut a, cols);
         fits(&rows, cols);
         let all = rows.join("\n");
-        assert!(all.contains("channels"), "{all}");
+        assert!(all.contains("Rooms"), "{all}");
+        assert!(!all.contains("channel"), "{all}");
         assert!(all.contains("▸ host"), "{all}");
         assert!(all.contains("asking the coordinator"), "{all}");
     }
@@ -1333,4 +1349,243 @@ fn invite_asks_for_a_guest_and_says_the_answer() {
 
 fn text_of(a: &App) -> String {
     a.notice.clone().unwrap_or_default()
+}
+
+/// A room read to its end is 0 unread, and stays 0 after a poll and after a new head attaches and
+/// is told the daemon's marks. The other channel holds the cursor, so the ack alone cannot do it.
+#[test]
+fn a_read_room_stays_read_after_a_poll_and_a_reattach() {
+    let mut a = opened(1_000);
+    reply(
+        &mut a,
+        rooms_reply(&[("host", 2, 7, 2), (PROJECT, 2, 12, 3)]),
+    );
+    reply(
+        &mut a,
+        history(
+            "host",
+            vec![
+                msg(4, "host", "s-a", "session", "one"),
+                msg(7, "host", "s-b", "session", "two"),
+            ],
+        ),
+    );
+    let sent = raw_ops(&mut a);
+    assert!(
+        sent.contains(&json!({"type": "mark", "key": "host", "seq": 7})),
+        "{sent:?}"
+    );
+    assert_eq!(
+        a.rooms
+            .unread(&crate::app::rooms::Chan::Room("host".into())),
+        0
+    );
+    assert_eq!(
+        a.rooms
+            .unread(&crate::app::rooms::Chan::Room(PROJECT.into())),
+        3
+    );
+    // A poll brings the coordinator's count back, which still holds the room's two.
+    reply(
+        &mut a,
+        rooms_reply(&[("host", 2, 7, 2), (PROJECT, 2, 12, 3)]),
+    );
+    assert_eq!(
+        a.rooms
+            .unread(&crate::app::rooms::Chan::Room("host".into())),
+        0
+    );
+
+    // A head attaching later has no marks of its own until the daemon answers.
+    let mut b = app();
+    b.clock(1_000);
+    b.rooms_poll();
+    reply(&mut b, rooms_reply(&[("host", 2, 7, 2)]));
+    assert_eq!(
+        b.rooms
+            .unread(&crate::app::rooms::Chan::Room("host".into())),
+        2
+    );
+    reply(&mut b, json!({"type": "marks", "marks": {"host": 7}}));
+    assert_eq!(
+        b.rooms
+            .unread(&crate::app::rooms::Chan::Room("host".into())),
+        0
+    );
+    assert_eq!(b.rooms.unread_total(), 0);
+}
+
+/// Only what follows the mark counts when the coordinator's cursor is behind it.
+#[test]
+fn a_new_message_after_the_mark_counts_alone() {
+    let mut a = opened(1_000);
+    reply(&mut a, rooms_reply(&[("host", 2, 7, 2)]));
+    reply(
+        &mut a,
+        history(
+            "host",
+            vec![
+                msg(4, "host", "s-a", "session", "one"),
+                msg(7, "host", "s-b", "session", "two"),
+            ],
+        ),
+    );
+    reply(&mut a, rooms_reply(&[("host", 2, 8, 3)]));
+    assert_eq!(
+        a.rooms
+            .unread(&crate::app::rooms::Chan::Room("host".into())),
+        1
+    );
+}
+
+/// A DM read before a reattach is not unread after it.
+#[test]
+fn a_read_dm_stays_read_after_a_reattach() {
+    let mut b = app();
+    b.clock(1_000);
+    reply(
+        &mut b,
+        history(
+            "dm",
+            vec![json!({"seq": 5, "ts": 1, "room": "dm", "author": "s-a",
+            "kind": "session", "text": "hi", "to": "operator"})],
+        ),
+    );
+    let dm = crate::app::rooms::Chan::Dm("s-a".into());
+    assert_eq!(b.rooms.unread(&dm), 1);
+    reply(&mut b, json!({"type": "marks", "marks": {"dm:s-a": 5}}));
+    assert_eq!(b.rooms.unread(&dm), 0);
+}
+
+/// A click on a channel's name enters it as Enter in the switcher does, the pointer is a hand over
+/// the name, and a click one cell past it does nothing.
+#[test]
+fn a_click_on_a_channel_name_enters_it() {
+    let mut a = opened(1_000);
+    reply(
+        &mut a,
+        rooms_reply(&[("host", 2, 7, 0), (PROJECT, 2, 12, 3)]),
+    );
+    let rows = screen(&mut a, 120);
+    let label = a.rooms_name(&crate::app::rooms::Chan::Room(PROJECT.into()));
+    let y = rows
+        .iter()
+        .position(|r| r.contains(&label))
+        .expect("the project row");
+    let x = rows[y].chars().position(|c| c == '#').unwrap() as u16;
+    // The cell right after the list column is the separator's, one past the row's rectangle.
+    let w = rows[y].chars().position(|c| c == '│').unwrap() as u16;
+    assert_eq!(
+        a.rooms.selected(),
+        Some(crate::app::rooms::Chan::Room("host".into()))
+    );
+    a.hover_at(x, y as u16);
+    assert_eq!(a.take_pointer(), Some(true), "no hand over the name");
+    // One cell outside the list column is the separator, not the row.
+    a.key(Key::Click { x: w, y: y as u16 });
+    assert_eq!(
+        a.rooms.selected(),
+        Some(crate::app::rooms::Chan::Room("host".into())),
+        "a click past the name entered the room"
+    );
+    a.key(Key::Click { x, y: y as u16 });
+    assert_eq!(
+        a.rooms.selected(),
+        Some(crate::app::rooms::Chan::Room(PROJECT.into()))
+    );
+}
+
+fn with_sessions(a: &mut App) {
+    let mut asking = brief("s-y", "beta", false);
+    asking.waits_on_operator = 1;
+    a.sessions = vec![brief("s-x", "alpha", true), asking];
+    a.rooms_sync_sessions();
+}
+
+fn row_of(rows: &[String], needle: &str) -> usize {
+    rows.iter()
+        .position(|r| r.contains(needle))
+        .unwrap_or_else(|| panic!("no `{needle}` in {rows:?}"))
+}
+
+/// The operator's sessions are their own section below the rooms, with project and live state.
+#[test]
+fn sessions_are_a_section_below_the_rooms() {
+    let mut a = opened(1_000);
+    reply(
+        &mut a,
+        rooms_reply(&[("host", 2, 7, 0), (PROJECT, 2, 12, 0)]),
+    );
+    with_sessions(&mut a);
+    let rows = screen(&mut a, 120);
+    let (rooms, project, sessions, alpha, beta) = (
+        row_of(&rows, "Rooms"),
+        row_of(&rows, "▸ host"),
+        row_of(&rows, "Sessions"),
+        row_of(&rows, "alpha"),
+        row_of(&rows, "beta"),
+    );
+    assert!(
+        rooms < project && project < sessions && sessions < alpha && alpha < beta,
+        "{rows:#?}"
+    );
+    assert!(rows[alpha + 1].contains("letibot · running"), "{rows:?}");
+    assert!(rows[beta + 1].contains("letibot · asking"), "{rows:?}");
+    assert!(!rows.join("\n").contains("direct messages"));
+}
+
+/// Unread DMs from a session show on its row.
+#[test]
+fn a_sessions_unread_dm_counts_on_its_row() {
+    let mut a = opened(1_000);
+    with_sessions(&mut a);
+    reply(
+        &mut a,
+        history(
+            "dm",
+            vec![json!({"seq": 5, "ts": 1, "room": "dm", "author": "s-x",
+                "kind": "session", "text": "hi", "to": "operator"})],
+        ),
+    );
+    let c = crate::app::rooms::Chan::Session("s-x".into());
+    assert_eq!(a.rooms.unread(&c), 1);
+}
+
+/// Enter on a selected session switches to it. `d` opens the DM with it. A click is Enter.
+#[test]
+fn enter_and_click_switch_to_a_session_and_d_opens_the_dm() {
+    let mut a = opened(1_000);
+    with_sessions(&mut a);
+    let c = crate::app::rooms::Chan::Session("s-x".into());
+    a.rooms_go(c.clone());
+    assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-x".into())));
+    // Switching leaves the rooms view; it is opened again for the DM key.
+    assert!(!a.is_open(Surface::Rooms));
+    let _ = a.command("rooms");
+
+    a.rooms_go(c.clone());
+    a.key(Key::Char('d'));
+    assert_eq!(
+        a.rooms.selected(),
+        Some(crate::app::rooms::Chan::Dm("s-x".into()))
+    );
+
+    a.rooms_go(crate::app::rooms::Chan::Room("host".into()));
+    let rows = screen(&mut a, 120);
+    let y = row_of(&rows, "alpha");
+    let x = rows[y].chars().position(|c| c == 'a').unwrap() as u16;
+    assert_eq!(
+        a.key(Key::Click { x, y: y as u16 }),
+        Some(Action::Switch("s-x".into()))
+    );
+}
+
+/// The hint bar names the second key while a session row is selected.
+#[test]
+fn the_hint_names_d_for_a_session() {
+    let mut a = opened(1_000);
+    with_sessions(&mut a);
+    a.rooms_go(crate::app::rooms::Chan::Session("s-x".into()));
+    let all = screen(&mut a, 160).join("\n");
+    assert!(all.contains("opens its DM"), "{all}");
 }

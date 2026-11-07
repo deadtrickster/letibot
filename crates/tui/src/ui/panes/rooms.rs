@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::app::chat_adapter;
-use crate::app::rooms::{Chan, Member, OPERATOR, RoomsView, Send};
+use crate::app::rooms::{Chan, ListRow, Member, OPERATOR, RoomsView, Send, SessInfo};
 use crate::app::*;
 use crate::ui::chat::{ChatCtx, chat_blocks};
 use crate::ui::render::{row_strings, trim_to, visible_width, wrap};
@@ -29,6 +29,11 @@ impl App {
             let count = self.rooms.unread(&c).to_string().len();
             let name = visible_width(&label(&self.rooms, &c));
             needed = needed.max(2 + name + 1 + count);
+            if let Chan::Session(id) = &c
+                && let Some(s) = self.rooms.sessions.iter().find(|s| &s.id == id)
+            {
+                needed = needed.max(2 + visible_width(&session_facts(s)));
+            }
         }
         let cap = (w / 2).saturating_sub(visible_width(SEP) + 1);
         needed.min(cap.max(12))
@@ -70,7 +75,13 @@ fn label(v: &RoomsView, c: &Chan) -> String {
             Some(_) => format!("#{}", clean_line(&v.room_label(id))),
             None => id.clone(),
         },
+        Chan::Dm(p) if v.sessions.iter().any(|s| &s.id == p) => "  dm".into(),
         Chan::Dm(p) => clean_line(p),
+        Chan::Session(id) => v
+            .sessions
+            .iter()
+            .find(|s| &s.id == id)
+            .map_or_else(|| clean_line(id), |s| clean_line(&s.name)),
     }
 }
 
@@ -81,6 +92,7 @@ fn title(v: &RoomsView, c: &Chan) -> String {
             None => format!("{id} room"),
         },
         Chan::Dm(p) => format!("dm with {}", clean_line(p)),
+        Chan::Session(_) => "session".into(),
     }
 }
 
@@ -91,6 +103,15 @@ fn padded(mut l: Line, w: usize) -> Line {
         l.push(Span::raw(" ".repeat(w - cur)));
     }
     l
+}
+
+/// The second line of a session row: its project and what it is doing.
+fn session_facts(s: &SessInfo) -> String {
+    if s.project.is_empty() {
+        s.state.to_string()
+    } else {
+        format!("{} · {}", clean_line(&s.project), s.state)
+    }
 }
 
 /// One channel row: mark, name, and the unread count at the right edge.
@@ -277,6 +298,9 @@ fn member_strip(
 impl RoomsView {
     fn header(&self, c: &Chan, rw: usize) -> Line {
         let mut spans = vec![Span::role(title(self, c), Role::Strong)];
+        if let Chan::Session(_) = c {
+            spans.push(Span::role(format!("  {}", label(self, c)), Role::Faint));
+        }
         if let Chan::Room(id) = c
             && let Some(r) = self.rows.iter().find(|r| &r.id == id)
         {
@@ -316,14 +340,88 @@ impl RoomsView {
 }
 
 impl App {
-    fn rooms_left(&self, lw: usize, room: usize) -> Vec<Line> {
+    /// The sidebar's `h` rows, `w` columns each, drawn with the pane's own list. The click rows it
+    /// leaves are the sidebar's, and the pane's are put back.
+    pub(crate) fn sidebar_lines(&mut self, w: usize, h: usize) -> Vec<String> {
+        let palette = self.cfg.palette();
+        let saved = std::mem::take(&mut self.rooms.chan_rows);
+        let lines = self.rooms_left(w, h);
+        let drawn = std::mem::replace(&mut self.rooms.chan_rows, saved);
+        self.sidebar.rows = drawn.into_iter().collect();
+        let lines: Vec<Line> = lines.into_iter().map(|l| padded(l, w)).collect();
+        row_strings(&lines, palette)
+    }
+
+    /// The Queues section: a heading and two lines a repository. The first is health, name and the
+    /// unread queue moves, the second the counts and the mute checkbox at its right edge.
+    fn queue_section(&self, lines: &mut Vec<Line>, at: &mut Vec<(usize, ListRow)>, lw: usize) {
+        let repos = self.queue_repos();
+        if repos.is_empty() {
+            return;
+        }
+        lines.push(padded(pane::faint("Queues"), lw));
+        for r in repos {
+            let (dot, role) = match r.health {
+                crate::app::queue_rows::Health::Green => ("●", Role::Success),
+                crate::app::queue_rows::Health::Red => ("●", Role::Failure),
+                crate::app::queue_rows::Health::Unjudged => ("○", Role::Faint),
+            };
+            let count = if r.unread > 0 {
+                r.unread.to_string()
+            } else {
+                String::new()
+            };
+            let name = cut_keeping_ends(&r.name, lw.saturating_sub(count.len() + 3).max(3));
+            let mut l = Line::new(vec![
+                Span::raw("  "),
+                Span::role(dot, role),
+                Span::raw(format!(" {name}")),
+            ]);
+            let pad = lw.saturating_sub(l.width() + count.len());
+            l.push(Span::raw(" ".repeat(pad)));
+            l.push(Span::role(count, Role::Attention));
+            at.push((lines.len(), ListRow::Queue(r.repo.clone())));
+            lines.push(l);
+            let facts = format!("  {}w {}g {}p", r.waiting, r.gating, r.person);
+            let check = if r.muted { "[x]" } else { "[ ]" };
+            let mut l2 = Line::new(vec![Span::role(
+                trim_to(&facts, lw.saturating_sub(4)),
+                Role::Faint,
+            )]);
+            let pad = lw.saturating_sub(l2.width() + 3);
+            l2.push(Span::raw(" ".repeat(pad)));
+            l2.push(Span::role(
+                check,
+                if r.muted {
+                    Role::Attention
+                } else {
+                    Role::Faint
+                },
+            ));
+            // The row opens the queue, the checkbox mutes it: the checkbox is the later, narrower
+            // hit, so it wins its three cells.
+            at.push((lines.len(), ListRow::Queue(r.repo.clone())));
+            at.push((lines.len(), ListRow::Mute(r.repo)));
+            lines.push(l2);
+        }
+    }
+
+    fn rooms_left(&mut self, lw: usize, room: usize) -> Vec<Line> {
         let channels = self.rooms.channels();
         let picked = self.rooms.selected();
-        let mut lines = vec![padded(pane::faint(trim_to("channels", lw)), lw)];
+        let mut lines = vec![padded(pane::faint(trim_to("Rooms", lw)), lw)];
         let mut sel_row = 0;
         let mut dm_heading = false;
+        let mut at: Vec<(usize, ListRow)> = Vec::new();
+        let mut sess_heading = false;
         for c in channels.iter() {
-            if matches!(c, Chan::Dm(_)) && !dm_heading {
+            if matches!(c, Chan::Session(_)) && !sess_heading {
+                sess_heading = true;
+                lines.push(padded(pane::faint("Sessions"), lw));
+            }
+            let of_session =
+                matches!(c, Chan::Dm(p) if self.rooms.sessions.iter().any(|s| &s.id == p));
+            if matches!(c, Chan::Dm(_)) && !of_session && !dm_heading {
                 dm_heading = true;
                 lines.push(padded(pane::faint("direct messages"), lw));
             }
@@ -332,10 +430,49 @@ impl App {
                 sel_row = lines.len();
             }
             let unread = if is_sel { 0 } else { self.rooms.unread(c) };
+            at.push((lines.len(), ListRow::Chan(c.clone())));
             lines.push(entry(&self.rooms, c, is_sel, unread, lw));
+            if let Chan::Session(id) = c
+                && let Some(s) = self.rooms.sessions.iter().find(|s| &s.id == id)
+            {
+                // The facts are the same row's: a click on either line is the session's.
+                at.push((lines.len(), ListRow::Chan(c.clone())));
+                lines.push(padded(
+                    pane::faint(trim_to(&format!("  {}", session_facts(s)), lw)),
+                    lw,
+                ));
+            }
         }
+        self.queue_section(&mut lines, &mut at, lw);
         let skip = (sel_row + 1).saturating_sub(room);
+        self.rooms.chan_rows = at
+            .into_iter()
+            .filter_map(|(r, c)| r.checked_sub(skip).filter(|d| *d < room).map(|d| (d, c)))
+            .collect();
         lines.into_iter().skip(skip).take(room).collect()
+    }
+
+    /// The body of a selected session row: who it is and the two keys that act on it.
+    fn session_card(&self, id: &str, rw: usize) -> Vec<Line> {
+        let Some(s) = self.rooms.sessions.iter().find(|s| s.id == id) else {
+            return vec![pane::faint("  this session is gone")];
+        };
+        let dm = self.rooms.unread(&Chan::Dm(id.to_string()));
+        let mut out = vec![
+            pane::faint(format!(
+                "  {}",
+                trim_to(&session_facts(s), rw.saturating_sub(2))
+            )),
+            pane::faint(format!("  id {id}")),
+        ];
+        if dm > 0 {
+            out.push(Line::new(vec![Span::role(
+                format!("  {dm} unread in the DM"),
+                Role::Attention,
+            )]));
+        }
+        out.push(pane::faint("  enter switches to it · d opens the DM"));
+        out
     }
 
     /// What a session is called: its title or slug in this head's session list, else the
@@ -369,18 +506,17 @@ impl App {
         let Some(c) = self.rooms.selected() else {
             // The selected channel is gone rather than empty, and the sentence says which:
             // an empty channel draws "nothing here yet", which would be a lie here.
-            let which = self
-                .rooms
-                .gone
-                .clone()
-                .unwrap_or_else(|| "the channel".into());
+            let which = self.rooms.gone.clone().unwrap_or_else(|| "the room".into());
             return (
                 vec![pane::faint(format!(
-                    "  {which} is gone - up or down selects a channel"
+                    "  {which} is gone - up or down selects a room"
                 ))],
                 None,
             );
         };
+        if let Chan::Session(id) = &c {
+            return (self.session_card(id, rw), None);
+        }
         // The channel as a layer sees it: what a message means is the layer's to say - a chat
         // plugin's when one answers, the adapter's when none does - and this pane draws the stream
         // it answers without ever reading a `Msg`.
@@ -423,6 +559,7 @@ impl App {
         let palette = self.cfg.palette();
         self.rooms.member_rows.clear();
         self.rooms.member_col = (0, 0);
+        self.rooms.chan_rows.clear();
         if room < 3 || w < 24 {
             self.pane_len = 0;
             self.pane_room = room;
@@ -431,11 +568,19 @@ impl App {
                 palette,
             );
         }
-        let lw = self.rooms_left_width(w);
+        // With the sidebar drawn beside this view it is the navigation, and the room takes the
+        // whole width instead of repeating the list.
+        let listless = self.sidebar.drawn;
+        let lw = if listless {
+            0
+        } else {
+            self.rooms_left_width(w)
+        };
+        let sep = if listless { 0 } else { visible_width(SEP) };
         // Recorded for the same reason click arithmetic is: a test reading the column must
         // not re-derive a width the frame already computed.
         self.rooms_left_w = lw;
-        let full = w.saturating_sub(lw + visible_width(SEP));
+        let full = w.saturating_sub(lw + sep);
         let names = self.rooms_names();
         let room_key = match self.rooms.selected() {
             Some(Chan::Room(id)) => Some(id),
@@ -474,10 +619,14 @@ impl App {
             .then(|| member_strip(members.as_ref(), &names, rw));
         let chat_room = room - 2 - usize::from(strip.is_some());
         if wide {
-            self.rooms.member_col = (lw + visible_width(SEP) + rw + visible_width(SEP), mw);
+            self.rooms.member_col = (lw + sep + rw + visible_width(SEP), mw);
         }
 
-        let left = self.rooms_left(lw, room);
+        let left = if listless {
+            Vec::new()
+        } else {
+            self.rooms_left(lw, room)
+        };
         let (body, first) = self.rooms_body(rw);
         // The body has asked the chat layer by now: a layer that could not answer is a fallback
         // drawn here, and this is the frame that owes the reason - once, not every frame.
@@ -517,7 +666,7 @@ impl App {
         let header = self
             .rooms
             .selected()
-            .map_or_else(|| pane::title("no channel"), |c| self.rooms.header(&c, rw));
+            .map_or_else(|| pane::title("no room"), |c| self.rooms.header(&c, rw));
         right.insert(0, header);
         if let Some(l) = strip {
             right.insert(1, l);
@@ -541,7 +690,9 @@ impl App {
                 for s in &l.spans {
                     out.push(Span::styled(s.content.clone(), l.style.patch(&s.style)));
                 }
-                out.push(Span::role(SEP, Role::Faint));
+                if !listless {
+                    out.push(Span::role(SEP, Role::Faint));
+                }
                 let r = if wide { padded(r, rw) } else { r };
                 for s in &r.spans {
                     out.push(Span::styled(s.content.clone(), r.style.patch(&s.style)));

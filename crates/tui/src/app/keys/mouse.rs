@@ -25,7 +25,9 @@ impl App {
         match t {
             Target::Surface(s) => self.focused_surface() == Some(s),
             Target::TodoWait => self.focused_surface() == Some(Surface::Todos),
-            Target::RoomMember => self.focused_surface() == Some(Surface::Rooms),
+            Target::RoomMember | Target::RoomChan => self.focused_surface() == Some(Surface::Rooms),
+            Target::SideRow => !self.sidebar.rows.is_empty(),
+            Target::SideBorder => self.sidebar.drawn,
             Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture => {
                 self.drawn() == Drawn::Conversation
             }
@@ -209,6 +211,24 @@ impl App {
                 }
                 return ControlFlow::Break(None);
             }
+            (Target::SideBorder, _) => return ControlFlow::Break(None),
+            (Target::SideRow, Some(k)) => {
+                return ControlFlow::Break(self.sidebar_click(k));
+            }
+            (Target::RoomChan, Some(k)) => {
+                if let Some((_, row)) = self.rooms.chan_rows.get(k).cloned() {
+                    match row {
+                        crate::app::rooms::ListRow::Chan(c) => {
+                            if let crate::app::rooms::Chan::Session(id) = c {
+                                return ControlFlow::Break(self.rooms_switch_session(id));
+                            }
+                            self.rooms_go(c);
+                        }
+                        other => return ControlFlow::Break(self.list_row_act(other)),
+                    }
+                }
+                return ControlFlow::Break(None);
+            }
             (Target::RoomMember, Some(k)) => {
                 self.rooms_mention(k);
                 return ControlFlow::Break(None);
@@ -305,7 +325,10 @@ impl App {
             return ControlFlow::Continue(());
         }
         match target {
-            Target::Surface(_) | Target::TodoWait | Target::PluginPanel | Target::RoomMember => {
+            Target::Surface(_) | Target::TodoWait | Target::PluginPanel | Target::RoomMember
+            | Target::RoomChan
+            | Target::SideRow
+            | Target::SideBorder => {
                 self.scroll_pane(up, NOTCH)
             }
             // A window, not an open run - a run is the conversation's own rows and the

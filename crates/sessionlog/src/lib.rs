@@ -95,7 +95,9 @@ pub use hub::{
     SessionStatus,
 };
 pub use log::{LogBounds, SessionLog};
-pub use origin::{GroupRow, MCP_IDENTITY, SessionGroup, SessionOrigin, group_of};
+pub use origin::{
+    GroupRow, MCP_IDENTITY, SessionGroup, SessionOrigin, group_of, is_operator_top_level,
+};
 pub use protocol::{
     Ack, Attachment, AttachmentKind, Caps, ClientFrame, HEAD_RUN_KIND_PATH, HEAD_RUN_KIND_TEXT,
     HEAD_RUN_KIND_URL, HEAD_RUN_TOOLS, HEAD_RUN_TOOLS_KEY, HeadRunTool, NOTE_STOPPING,

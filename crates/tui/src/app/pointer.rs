@@ -261,6 +261,10 @@ impl App {
             // A live call's card lights whole, every row it was drawn in - one card is one door,
             // like a notice. Keyed by the CALL rather than a card index, so one card's rows are the
             // rows that name one call.
+            Target::RoomChan | Target::SideRow | Target::SideBorder => Some(Hovered::one(
+                row,
+                Some((hit.rect.x, hit.rect.x + hit.rect.w)),
+            )),
             Target::LiveCall => {
                 let k = hit.stop_at(row)?;
                 let id = self.call_rows.get(k)?.1.clone();
@@ -357,6 +361,9 @@ impl App {
     /// The left button went down: the start of a click or of a selection, and the end of
     /// any selection already drawn.
     pub(crate) fn press_at(&mut self, x: u16, y: u16) {
+        if self.sidebar_press(x, y) {
+            return;
+        }
         self.drag = Drag {
             from: Some((x, y)),
             to: None,
@@ -368,6 +375,9 @@ impl App {
     /// held from the first motion (ctrl-p's hold), because a turn streaming in under a selection
     /// moves the text it was made over. Not when the operator already held it: that hold is theirs.
     pub(crate) fn drag_to(&mut self, x: u16, y: u16) {
+        if self.sidebar_drag(x) {
+            return;
+        }
         if self.drag.from.is_some() {
             if self.selection.is_none() && !self.hold {
                 let _ = self.toggle_hold();
@@ -392,6 +402,9 @@ impl App {
     /// The left button came up: the end of a selection, which is copied - or, with no motion
     /// since the press, a click at the press.
     pub(crate) fn release(&mut self) -> Option<Key> {
+        if self.sidebar_release() {
+            return None;
+        }
         let drag = std::mem::take(&mut self.drag);
         match (drag.from, drag.to) {
             (Some(from), Some(to)) if from != to => {

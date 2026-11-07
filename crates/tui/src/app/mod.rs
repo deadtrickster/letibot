@@ -214,6 +214,9 @@ pub struct App {
     /// Which picker row the cursor is on. It starts on the session this head is already in, so
     /// an untouched list answers Enter with a no-op rather than a surprise.
     pub(crate) picker_sel: usize,
+    /// The picker opened before the cursor could be seated on this session (its list had not
+    /// landed, or lacked it). The next list seats it; any cursor move cancels.
+    pub(crate) picker_seat_pending: bool,
     /// The home this head shortens paths against, `$HOME`, read once at construction: three
     /// places draw a path and a per-frame read would make the picture depend on the process's
     /// environment, which no test can pin. A test sets this field.
@@ -496,6 +499,8 @@ pub struct App {
     /// than a `retired` key per copy - the 127 dismissals of `model_slow_first_byte` a head can
     /// carry are this one entry. See [`crate::prefs::leticode`].
     pub(crate) quiet: Quiet,
+    /// The rooms sidebar: on or off, focused, and the rows it drew.
+    pub(crate) sidebar: sidebar::Sidebar,
     /// The surface keys `leticode.toml`'s `[keys]` moved, resolved against the tables in
     /// `app::keys::bindings`.
     pub(crate) key_overrides: KeyOverrides,
@@ -1230,6 +1235,7 @@ impl App {
             plugin_detail: None,
             plugin_sent: None,
             picker_sel: 0,
+            picker_seat_pending: false,
             home: std::env::var("HOME").unwrap_or_default(),
             sessions_host: std::cell::RefCell::new(None),
             picker_folds: std::collections::BTreeMap::new(),
@@ -1319,6 +1325,7 @@ impl App {
             dec_content_room: 0,
             dismissed: Vec::new(),
             quiet: Quiet::shipped(),
+            sidebar: sidebar::Sidebar::default(),
             key_overrides: KeyOverrides::default(),
             profiles: Profiles::default(),
             read_marks: Vec::new(),
@@ -1647,6 +1654,7 @@ mod plugin;
 mod pointer;
 mod prefs;
 mod queue_pane;
+pub(crate) mod queue_rows;
 mod reach;
 mod removal;
 pub(crate) mod reseat;
@@ -1656,6 +1664,7 @@ pub(crate) mod runclick;
 mod scroll;
 mod session;
 mod sessions_pane;
+pub(crate) mod sidebar;
 pub(crate) mod standing;
 mod surface;
 mod term_pane;

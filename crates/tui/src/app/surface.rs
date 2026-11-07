@@ -326,6 +326,21 @@ impl App {
         }
     }
 
+    /// Put the picker cursor on the session this head is in, from the list being drawn (the
+    /// layer's or the head's own). Not found: the first session row, never a group line, and the
+    /// next list tries again.
+    pub(crate) fn seat_picker(&mut self) {
+        let rows = self.picker_rows();
+        let here = rows.iter().position(|r| {
+            r.session
+                .is_some_and(|i| self.sessions[i].session_id == self.session_id)
+        });
+        self.picker_seat_pending = here.is_none();
+        self.picker_sel = here
+            .or_else(|| rows.iter().position(|r| r.session.is_some()))
+            .unwrap_or(0);
+    }
+
     /// The one door a surface is opened through, so two spellings of "open the jobs pane" cannot
     /// come to do two different things. Returns what the daemon has to be asked for the surface to
     /// have rows: the jobs table, the todo list, the standing notes, the queue, the settings.
@@ -337,14 +352,7 @@ impl App {
                 // screen holds one list and the arrows mean one thing. The cursor starts on
                 // the session this head is in, so Enter on an untouched list is a no-op.
                 self.pick = None;
-                self.picker_sel = self
-                    .session_rows()
-                    .iter()
-                    .position(|r| {
-                        r.idx
-                            .is_some_and(|i| self.sessions[i].session_id == self.session_id)
-                    })
-                    .unwrap_or(0);
+                self.seat_picker();
                 Some(Action::ListSessions)
             }
             Surface::Config => {

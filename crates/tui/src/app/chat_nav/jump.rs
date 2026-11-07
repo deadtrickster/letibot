@@ -38,7 +38,7 @@ pub(super) fn to(a: &mut App, to: Jump) -> std::ops::ControlFlow<Option<Action>>
                     std::ops::ControlFlow::Break(None)
                 }
                 None => {
-                    a.say("nothing unread in this channel");
+                    a.say("nothing unread in this room");
                     std::ops::ControlFlow::Break(None)
                 }
             }

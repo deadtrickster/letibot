@@ -27,7 +27,7 @@ pub(crate) const ROOM_VERBS: &[(&str, &str)] = &[
     ("leave", "ROOM — stop being a member"),
     ("reply", "N TEXT — answer a message"),
     ("me", "TEXT — say it as yourself"),
-    ("search", "TEXT — find it in this channel"),
+    ("search", "TEXT — find it in this room"),
     ("jump", "N — a message by seq"),
 ];
 

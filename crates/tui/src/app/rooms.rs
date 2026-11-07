@@ -110,6 +110,28 @@ pub(crate) enum Chan {
     Room(String),
     /// Direct messages with one principal.
     Dm(String),
+    /// One of the operator's own top-level sessions, by session id.
+    Session(String),
+}
+
+/// What a row of the left list stands for when it is clicked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ListRow {
+    Chan(Chan),
+    /// A repository's queue row, by the repository key the queue snapshot uses.
+    Queue(String),
+    /// The mute checkbox of that repository's queue row.
+    Mute(String),
+}
+
+/// A top-level session of the operator's, as the Sessions section lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessInfo {
+    pub id: String,
+    pub name: String,
+    pub project: String,
+    /// `running`, `idle` or `asking`.
+    pub state: &'static str,
 }
 
 /// A line this head sent and is still answerable for, under the request id it went out with.
@@ -132,6 +154,8 @@ pub(crate) struct RoomsView {
     pub read_to: BTreeMap<String, u64>,
     /// The newest `seq` shown per channel key.
     pub seen: BTreeMap<String, u64>,
+    /// The daemon's marks were asked for: they outlive this head, and seed `seen` once.
+    pub marks_asked: bool,
     /// The channel's `seen` mark at the moment it was opened: the unread divider sits before the
     /// first message newer than it, and stays for as long as the channel is selected.
     #[allow(dead_code)] // P2 reads it to place the divider; P4 fills it.
@@ -149,6 +173,18 @@ pub(crate) struct RoomsView {
     /// The last draw's member column: its x offset in the pane, its width, and the handle
     /// on each row, so a click is answered from the frame and not recomputed.
     pub member_col: (usize, usize),
+    /// The operator's top-level sessions, kept in step with the head's session list.
+    pub sessions: Vec<SessInfo>,
+    /// The channel list's rows as the last frame drew them: the pane row and the channel on it.
+    pub chan_rows: Vec<(usize, ListRow)>,
+    /// Sessions the review queue runs (the gatekeeper and its reviewers): what they say is a queue
+    /// event, counted on the Queues rows, and never a room message.
+    pub queue_authors: BTreeSet<String>,
+    /// The newest queue move each repository's row has shown, by repository key.
+    pub queue_seen: BTreeMap<String, u64>,
+    /// The newest `seq` of a queue post dropped from each room, so reading the room to its end
+    /// still reaches the room's last `seq`.
+    pub hidden: BTreeMap<String, u64>,
     pub member_rows: Vec<(usize, String)>,
     /// Rooms whose oldest stored message is on screen, so asking further back finds nothing.
     pub oldest_known: BTreeSet<String>,
@@ -205,7 +241,19 @@ impl RoomsView {
                 out.push(Chan::Room(r.id.clone()));
             }
         }
-        out.extend(self.peers().into_iter().map(Chan::Dm));
+        let peers = self.peers();
+        for s in &self.sessions {
+            out.push(Chan::Session(s.id.clone()));
+            if peers.contains(&s.id) {
+                out.push(Chan::Dm(s.id.clone()));
+            }
+        }
+        out.extend(
+            peers
+                .into_iter()
+                .filter(|p| !self.sessions.iter().any(|s| &s.id == p))
+                .map(Chan::Dm),
+        );
         out
     }
 
@@ -220,12 +268,14 @@ impl RoomsView {
         match c {
             Chan::Room(id) => id.clone(),
             Chan::Dm(p) => format!("dm:{p}"),
+            Chan::Session(id) => format!("session:{id}"),
         }
     }
 
     pub(crate) fn messages(&self, c: &Chan) -> Vec<&Msg> {
         match c {
             Chan::Room(id) => self.msgs.get(id).into_iter().flatten().collect(),
+            Chan::Session(_) => Vec::new(),
             Chan::Dm(p) => self
                 .msgs
                 .get("dm")
@@ -245,12 +295,30 @@ impl RoomsView {
                 .iter()
                 .find(|r| &r.id == id)
                 .filter(|r| r.last_seq > seen)
-                .map_or(0, |r| r.unread),
+                .map_or(0, |r| {
+                    // The coordinator counts from one cursor for the whole log, which a held ack
+                    // leaves behind what this head showed: past a known mark only what followed
+                    // it is news.
+                    if seen == 0 {
+                        return r.unread;
+                    }
+                    let loaded = self.msgs.get(id).map_or(&[][..], Vec::as_slice);
+                    let top = loaded
+                        .last()
+                        .map_or(0, |m| m.seq)
+                        .max(self.hidden.get(id).copied().unwrap_or(0));
+                    let after = loaded
+                        .iter()
+                        .filter(|m| m.author != OPERATOR && m.seq > seen)
+                        .count() as u64;
+                    r.unread.min(after + u64::from(r.last_seq > top))
+                }),
             Chan::Dm(_) => self
                 .messages(c)
                 .iter()
                 .filter(|m| m.author != OPERATOR && m.seq > seen)
                 .count() as u64,
+            Chan::Session(id) => self.unread(&Chan::Dm(id.clone())),
         }
     }
 
@@ -292,6 +360,11 @@ impl RoomsView {
         let list = self.msgs.entry(room.to_string()).or_default();
         for m in rows {
             *cursor = (*cursor).max(m.seq);
+            if self.queue_authors.contains(&m.author) || m.author.starts_with("s-gatekeeper-") {
+                let at = self.hidden.entry(room.to_string()).or_insert(0);
+                *at = (*at).max(m.seq);
+                continue;
+            }
             if list.iter().all(|x| x.seq != m.seq) {
                 list.push(m);
             }
@@ -340,7 +413,7 @@ impl RoomsView {
                 ops.push(self.read_op("dm"));
                 ops.push(json!({"type": "roster", "room": id}));
             }
-            Some(Chan::Dm(_)) => ops.push(self.read_op("dm")),
+            Some(Chan::Dm(_) | Chan::Session(_)) => ops.push(self.read_op("dm")),
             None => {}
         }
         ops
@@ -351,7 +424,12 @@ impl RoomsView {
     /// holds the cursor - it may not pass a message this head has not drawn anywhere.
     pub(crate) fn shown(&mut self) -> Option<u64> {
         let c = self.selected()?;
-        let top = self.messages(&c).last().map(|m| m.seq)?;
+        let shown = self.messages(&c).last().map(|m| m.seq)?;
+        // A queue post the room dropped is not news to read, so reading to the end passes it.
+        let top = match &c {
+            Chan::Room(id) => shown.max(self.hidden.get(id).copied().unwrap_or(0)),
+            _ => shown,
+        };
         self.seen.insert(Self::key(&c), top);
         let undrawn = |c: &Chan| -> bool {
             let seen = self.seen.get(&Self::key(c)).copied().unwrap_or(0);
@@ -362,6 +440,7 @@ impl RoomsView {
                     .find(|r| &r.id == id)
                     .is_some_and(|r| r.last_seq > seen),
                 Chan::Dm(_) => self.messages(c).iter().any(|m| m.seq > seen),
+                Chan::Session(_) => false,
             }
         };
         let held = self
@@ -423,6 +502,7 @@ impl App {
         // went away: `gone` is a state of one selection, not of the view.
         self.rooms.sel.get_or_insert(Chan::Room("host".into()));
         self.rooms.next_poll_ms = self.now_ms.saturating_add(POLL_MS);
+        self.rooms_ask_marks();
         let mut ops = self.rooms.poll_ops().into_iter();
         let first = ops.next()?;
         self.queued
@@ -433,6 +513,17 @@ impl App {
         })
     }
 
+    /// Ask the daemon, once, how far the operator has read each channel: a head that attaches
+    /// later starts with no marks of its own and would count everything unread again.
+    fn rooms_ask_marks(&mut self) {
+        if !std::mem::replace(&mut self.rooms.marks_asked, true) {
+            self.queued.push(Action::RoomChat {
+                op: json!({"type": "marks"}),
+                id: None,
+            });
+        }
+    }
+
     /// Ask again when the interval is up. An open view asks for everything it draws. A closed
     /// one asks for the room list alone, so the unread count stays current.
     pub(crate) fn rooms_poll(&mut self) {
@@ -441,6 +532,7 @@ impl App {
         }
         if !self.is_open(Surface::Rooms) {
             self.rooms.next_poll_ms = self.now_ms.saturating_add(CLOSED_POLL_MS);
+            self.rooms_ask_marks();
             self.queued.push(Action::RoomChat {
                 op: json!({"type": "rooms"}),
                 id: None,
@@ -559,6 +651,15 @@ impl App {
                     self.rooms.roster.insert(room.to_string(), r);
                 }
             }
+            "marks" => {
+                if let Some(m) = reply.get("marks").and_then(Value::as_object) {
+                    for (key, seq) in m {
+                        let seq = seq.as_u64().unwrap_or(0);
+                        let at = self.rooms.seen.entry(key.clone()).or_insert(0);
+                        *at = (*at).max(seq);
+                    }
+                }
+            }
             "said" => {
                 // Only this send's record goes. The footer error is not cleared here: it may be
                 // another send's, and the poll this fires will answer for itself.
@@ -605,7 +706,21 @@ impl App {
         // tail. Taken after, both would already be the channel's newest message.
         self.rooms_opened_note();
         self.rooms_tail_note();
-        if let Some(seq) = self.rooms.shown() {
+        let key = self.rooms.selected().map(|c| RoomsView::key(&c));
+        let before = key.as_ref().and_then(|k| self.rooms.seen.get(k).copied());
+        let acked = self.rooms.shown();
+        // The mark goes to the daemon even when the cursor is held back by another channel: the
+        // cursor is one number for the whole log, the mark is this channel's.
+        if let Some(k) = key
+            && let Some(seq) = self.rooms.seen.get(&k).copied()
+            && Some(seq) != before
+        {
+            self.queued.push(Action::RoomChat {
+                op: json!({"type": "mark", "key": k, "seq": seq}),
+                id: None,
+            });
+        }
+        if let Some(seq) = acked {
             self.queued.push(Action::RoomChat {
                 op: json!({"type": "ack", "seq": seq}),
                 id: None,
@@ -622,6 +737,7 @@ impl App {
                 None => id.clone(),
             },
             Chan::Dm(p) => format!("dm with {p}"),
+            Chan::Session(id) => self.session_label(id),
         }
     }
 
@@ -631,17 +747,21 @@ impl App {
         if body.is_empty() {
             return None;
         }
+        if let Some(Chan::Session(id)) = self.rooms.selected() {
+            self.set_composer(text.trim());
+            self.say(&format!(
+                "{} is a session row - d opens its DM, enter switches to it",
+                self.session_label(&id)
+            ));
+            return None;
+        }
         let Some(chan) = self.rooms.selected() else {
-            let which = self
-                .rooms
-                .gone
-                .clone()
-                .unwrap_or_else(|| "the channel".into());
+            let which = self.rooms.gone.clone().unwrap_or_else(|| "the room".into());
             // The line is held, not swallowed: nothing was sent, so the words are still the
             // operator's to send somewhere real.
             self.set_composer(text.trim());
             self.say(&format!(
-                "{which} is gone, so nothing is selected - up or down picks a channel"
+                "{which} is gone, so nothing is selected - up or down picks a room"
             ));
             return None;
         };
@@ -664,7 +784,7 @@ impl App {
             Chan::Room(room) => {
                 json!({"type": "say", "id": id, "room": room, "text": body, "thread": thread})
             }
-            Chan::Dm(to) => {
+            Chan::Dm(to) | Chan::Session(to) => {
                 json!({"type": "dm", "id": id, "to": to, "text": body, "thread": thread})
             }
         };
@@ -677,6 +797,9 @@ impl App {
     /// under a new id, superseding the old record. A view binding rather than the composer's,
     /// because the editor answers an empty Enter with `Idle` before `submit` is called.
     pub(crate) fn rooms_resend_send(&mut self) -> ControlFlow<Option<Action>> {
+        if let Some(Chan::Session(id)) = self.rooms.selected() {
+            return ControlFlow::Break(self.rooms_switch_session(id));
+        }
         let act = self
             .rooms
             .selected()
@@ -695,6 +818,10 @@ impl App {
     /// `d` on an empty composer: drop the newest failed line of the selected channel. The
     /// operator has read the reason and chosen not to send it again.
     pub(crate) fn rooms_dismiss_send(&mut self) -> ControlFlow<Option<Action>> {
+        if let Some(Chan::Session(id)) = self.rooms.selected() {
+            self.rooms_open_dm(id);
+            return ControlFlow::Break(None);
+        }
         if let Some(chan) = self.rooms.selected()
             && let Some(failed) = self.rooms.failed_of(&chan).map(|s| s.id.clone())
         {
@@ -741,6 +868,95 @@ impl App {
         self.rooms.sel = Some(all[next].clone());
         self.rooms.gone = None;
         self.scroll_rooms_to_tail();
+        self.rooms.next_poll_ms = 0;
+        self.rooms_shown();
+    }
+
+    /// Keep the Sessions section in step with the session list: the operator's own top-level
+    /// sessions the daemon holds, with the project folder and what each is doing now.
+    pub(crate) fn rooms_sync_sessions(&mut self) {
+        let mine: Vec<_> = self
+            .sessions
+            .iter()
+            // The one test the session picker and `--continue` use, so none of them can differ.
+            .filter(|b| {
+                b.live
+                    && letibot_sessionlog::is_operator_top_level(&letibot_sessionlog::GroupRow {
+                        id: &b.session_id,
+                        parent: b.parent_session_id.as_deref(),
+                        origin: b.origin,
+                        role: None,
+                        title: &b.title,
+                    })
+            })
+            .map(|b| rooms::SessInfo {
+                id: b.session_id.clone(),
+                name: self.session_label(&b.session_id),
+                project: std::path::Path::new(&b.wiring.workspace)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                state: if b.waits_on_operator > 0 {
+                    "asking"
+                } else if b.status.running {
+                    "running"
+                } else {
+                    "idle"
+                },
+            })
+            .collect();
+        self.rooms.sessions = mine;
+        // The queue's own sessions: a queue-origin session and whatever it spawned (its reviewers).
+        let queue: BTreeSet<String> = self
+            .sessions
+            .iter()
+            .filter(|b| {
+                let mut cur = Some(*b);
+                for _ in 0..8 {
+                    let Some(s) = cur else { break };
+                    if s.origin == letibot_sessionlog::SessionOrigin::Queue {
+                        return true;
+                    }
+                    cur = s
+                        .parent_session_id
+                        .as_deref()
+                        .and_then(|p| self.sessions.iter().find(|x| x.session_id == p));
+                }
+                false
+            })
+            .map(|b| b.session_id.clone())
+            .collect();
+        self.rooms.queue_authors = queue;
+    }
+
+    /// Enter on a session row: this head moves to that session, as picking it in the session list.
+    pub(crate) fn rooms_switch_session(&mut self, id: String) -> Option<Action> {
+        // Going to a session leaves the rooms view, including the session already on screen: the
+        // transcript is what is behind the view.
+        self.close_surface(Surface::Rooms);
+        self.sidebar.focus = false;
+        if id == self.session_id {
+            return None;
+        }
+        self.switch_to(id)
+    }
+
+    /// `d` on a session row: the DM with it.
+    pub(crate) fn rooms_open_dm(&mut self, id: String) {
+        self.rooms.fresh.insert(id.clone());
+        self.rooms_go(Chan::Dm(id));
+    }
+
+    /// Enter a channel: select it and start reading it at the tail. The switcher's Enter and a
+    /// click on a channel's name are this one act.
+    pub(crate) fn rooms_go(&mut self, c: Chan) {
+        self.rooms.sel = Some(c);
+        self.rooms.gone = None;
+        // A channel is a different stream: the cursor, the search and the tail mark all belong
+        // to the one being left.
+        self.rooms_cursor_set(None);
+        self.nav.search = None;
+        self.rooms_to_tail();
         self.rooms.next_poll_ms = 0;
         self.rooms_shown();
     }
