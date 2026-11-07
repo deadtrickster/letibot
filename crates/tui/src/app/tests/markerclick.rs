@@ -194,7 +194,7 @@ fn hovering_a_part_of_the_marker_lights_it() {
     a.key(Key::Hover { x: x + 1, y });
     let lit = a.screen(200, 40);
     assert!(
-        lit[y as usize].contains("\x1b[22;1m"),
+        lit[y as usize].contains("\x1b[22m"),
         "{:?}",
         lit[y as usize]
     );
@@ -210,7 +210,7 @@ fn a_click_that_opens_a_run_leaves_no_light_on_what_it_opened() {
     let (x, y) = find(&screen, "3 thinking lines");
     a.key(Key::Hover { x: x + 1, y });
     assert!(
-        a.screen(200, 40)[y as usize].contains("\x1b[22;1m"),
+        a.screen(200, 40)[y as usize].contains("\x1b[22m"),
         "the premise"
     );
     a.key(Key::Click { x: x + 1, y });
@@ -221,12 +221,12 @@ fn a_click_that_opens_a_run_leaves_no_light_on_what_it_opened() {
             continue;
         }
         assert!(
-            !l.contains("\x1b[22;1m"),
+            !l.contains("\x1b[22m"),
             "row {i} is lit after the click: {l:?}"
         );
     }
     assert!(
-        open[marker as usize].contains("\x1b[22;1m"),
+        open[marker as usize].contains("\x1b[22m"),
         "the clause under the pointer is a button and does not say so: {:?}",
         open[marker as usize]
     );

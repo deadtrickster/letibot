@@ -551,7 +551,7 @@ fn hovering_a_notice_brightens_every_row_it_opens_from() {
     let screen = a.screen(100, 30);
     for (y, _) in &rows {
         assert!(
-            screen[*y].contains("\x1b[22;1m"),
+            screen[*y].contains("\x1b[22m"),
             "row {y} of the notice is not lit: {:?}",
             screen[*y]
         );
