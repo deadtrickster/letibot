@@ -71,7 +71,7 @@ pub const REACH: usize = 5;
 
 /// The nouns an excuse is about. `room` because *"before I run out of room"* is the same claim in
 /// other words.
-pub const ANCHORS: &[&str] = &["context", "room"];
+pub const ANCHORS: &[&str] = &["context", "room", "carry"];
 
 /// The term a first-person word becomes - see [`words`].
 pub const SELF: &str = "myself";
@@ -108,6 +108,10 @@ pub const EXEMPLARS: &[&str] = &[
     "I can't finish it in what is left of this session's context.",
     "I have very little context left, so I am naming it rather than starting it.",
     "I'm at the end of what I can hold in context, so here is the state.",
+    // The same claim with no word for context in it: *"I'm at the end of what I can carry in
+    // this session"* stopped a session at 842k of 1M with five rows open.
+    "I'm at the end of what I can carry in this session, so here is where each piece stands.",
+    "This session cannot carry any more, so I'll stop and hand it over.",
     // A capacity claim can justify HANDING WORK OFF, not only stopping:
     // *"my context cannot carry it safely - a half-applied refactor is worse than none"* scored
     // under the floor: none of the stop family's words (full, spent, wall, out) are in it.
@@ -271,6 +275,10 @@ pub fn score_with(sentence: &str, tier: Option<&Tier>) -> f64 {
             continue;
         }
         let window = &ws[i.saturating_sub(REACH)..(i + REACH + 1).min(ws.len())];
+        // `carry` is a capacity word only about the session: "carry the fix over" is not one.
+        if w == "carry" && !window.iter().any(|t| t == "session") {
+            continue;
+        }
         if !window.iter().any(|w| OWNERS.contains(&w.as_str())) {
             continue;
         }
@@ -679,6 +687,7 @@ mod tests {
             "My context is getting full, so I'll stop and summarise.",
             "Given how little context I have left, I won't start the refactor.",
             "This is best done in a fresh context rather than at the tail of this one.",
+            "I'm at the end of what I can carry in this session, so rather than leave a plan that reads as work, here is exactly where each remaining piece stands.",
         ] {
             let got = score(s);
             assert!(got >= FLOOR, "{got:.3} for {s:?}");
@@ -707,6 +716,9 @@ mod tests {
             "Let me read the surrounding lines for context.",
             "Now let me make `StoredSession` carry the context.",
             "The layout leaves room for the marker at the end of the row.",
+            "I'll carry the fix over to the release branch.",
+            "The patch carries my change to the parser into the reviewer's branch.",
+            "I carry the id through to the next call.",
         ] {
             let got = score(s);
             assert!(got < FLOOR, "{got:.3} for {s:?}");

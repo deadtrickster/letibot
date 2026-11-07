@@ -61,6 +61,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R132 | `skills_path.rs` refuses its own session as written by another process, once under load | Code work | the root cause; seen once in a full gate, 6 reruns and the next gate passed |
 | R133 | The one-shot env report prints its lines out of order | Code work | a reproduction and the fix |
 | R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | a reproduction: whether it happens only while a turn or job runs, and at which row; `walking_down_from_far_up_a_long_session_reaches_the_tail_while_rows_arrive` passes on main |
+| R135 | The context-claim detector's `carry` anchor is not calibrated | Code work | score the store's sentences carrying `carry` near `session` against the floor, as the 747-sentence set was |
 | T16 | W9's open questions | Code work | item 7 (call ids are positional per turn); unclear: item 6 asked lubuntu3 whether RAGFlow signals "no coverage" in a field, no answer is recorded |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
 | R100 | A remote session in a firecode VM: `--host` and `--vm` as one placement | Needs the operator | the live proof on lab2x1: a real `firecode` copy carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, the copy-out's cost |
@@ -820,6 +821,12 @@ Every daemon writes one `sessions.db` (9.4 GB on 2026-11-06, a WAL that reached 
 **Status:** open. left: a reproduction and the fix.
 
 The environment trailer a one-shot command appends (`shell::oneshot_trailer`) was seen reporting its lines out of order. The other two items once filed here are closed: the attach wait draws the attach screen and answers keys while it runs, and the macOS clipboard read now has the same 3 s deadline as the Linux readers.
+
+## R135 - The context-claim detector's `carry` anchor is not calibrated
+
+**Status:** open. left: the measurement.
+
+A session stopped at 842k of 1M with five rows open, saying *"I'm at the end of what I can carry in this session"*. `context_claim` anchors only on `context` and `room`, so the sentence was never scored. `carry` is now an anchor when `session` is in its window, with two exemplars, and the module's tests pass. The floor (0.25) was measured on 747 labelled sentences that did not include this anchor, so the store's sentences with `carry` near `session` should be scored against it the same way.
 
 ## R134 - Scrolling stops at a line above the tail
 
