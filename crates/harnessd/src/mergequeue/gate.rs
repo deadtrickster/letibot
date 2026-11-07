@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use letibot_tokencore::store::{MergeGateOutcome, MergeGateStep};
+use std::sync::Arc;
+
 use letibot_tools::exec::memory::{Amount, Ask, Meminfo};
 use letibot_tools::exec::{MemoryUse, SiblingScope, join_script};
 use letibot_transcript::text::bytes_head;
@@ -823,6 +825,10 @@ pub trait GateRunner: Send + Sync {
     fn name(&self) -> String {
         "local".to_string()
     }
+    /// This runner's form for `[queue] gate_in = "firecode"`, or `None` when it has none.
+    fn firecode(&self) -> Option<Arc<dyn GateRunner>> {
+        None
+    }
 }
 
 /// The daemon's gate - decision 8: *"the gate runs here for now"*, and, since the
@@ -842,6 +848,14 @@ impl GateRunner for LocalGate {
     fn name(&self) -> String {
         gate_host().unwrap_or_else(|| "local".to_string())
     }
+
+    fn firecode(&self) -> Option<Arc<dyn GateRunner>> {
+        Some(Arc::new(super::gate_firecode::FirecodeGate {
+            host: gate_host(),
+            ready: Arc::new(super::gate_firecode::Doctor),
+            memory: gate_memory(),
+        }))
+    }
 }
 
 /// The gate on one declared host - `hosts.toml`'s machine, reached over its own key and
@@ -853,7 +867,7 @@ pub struct HostGate {
 
 impl GateRunner for HostGate {
     fn run(&self, worktree: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
-        super::gate_host::run_on_host(&self.host, worktree, steps, ctl)
+        super::gate_host::run_on_host(&self.host, worktree, steps, ctl, false)
     }
 
     fn name(&self) -> String {
@@ -868,6 +882,19 @@ pub fn run_with_memory(
     steps: &[String],
     ctl: &GateControl,
     memory: Ask,
+) -> GateRun {
+    run_with_launcher(worktree, steps, ctl, memory, &|s| s.to_string())
+}
+
+/// [`run_with_memory`] where `launch` turns a step into the command line the shell runs: the row,
+/// the deadline and the verdict stay the step's. How `[queue] gate_in = "firecode"` puts a VM
+/// between the step and the host.
+pub fn run_with_launcher(
+    worktree: &Path,
+    steps: &[String],
+    ctl: &GateControl,
+    memory: Ask,
+    launch: &dyn Fn(&str) -> String,
 ) -> GateRun {
     // The cap is resolved once and used twice: the cgroup the step joins is capped with it and the
     // build's parallelism is bounded by it ([`StepEnv`]) - a step judged by two different numbers is
@@ -887,6 +914,7 @@ pub fn run_with_memory(
         let (end, mem, leftover) = run_step(
             worktree,
             step,
+            &launch(step),
             (i + 1, steps.len()),
             scratch.path(),
             cap,
@@ -1024,7 +1052,7 @@ pub(crate) fn judge(
 /// A run that could not start at all - a scratch directory the gate cannot make. Every step's row is
 /// `NotRun` and the verdict is `Infra`: never `failed`, which would say the branch is red when nothing
 /// about it was judged.
-fn could_not_run(steps: &[String], why: String) -> GateRun {
+pub(crate) fn could_not_run(steps: &[String], why: String) -> GateRun {
     let mut rows: Vec<MergeGateStep> = steps
         .iter()
         .map(|s| MergeGateStep {
@@ -1114,7 +1142,7 @@ pub fn run_gate(
     memory: Ask,
 ) -> GateRun {
     match host {
-        Some(name) => super::gate_host::run_on_host(name, worktree, steps, ctl),
+        Some(name) => super::gate_host::run_on_host(name, worktree, steps, ctl, false),
         None => run_with_memory(worktree, steps, ctl, memory),
     }
 }
@@ -1134,6 +1162,7 @@ pub(crate) enum StepEnd {
 fn run_step(
     worktree: &Path,
     step: &str,
+    command: &str,
     at: (usize, usize),
     scratch: &Path,
     cap: Option<u64>,
@@ -1184,8 +1213,8 @@ fn run_step(
             .arg("letibot-gate")
             .arg(s.procs_path())
             .arg(&joined)
-            .args(["sh", "-c", step]),
-        None => cmd.arg("-c").arg(step),
+            .args(["sh", "-c", command]),
+        None => cmd.arg("-c").arg(command),
     };
     env.apply(&mut cmd);
     let child = cmd

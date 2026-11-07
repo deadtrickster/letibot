@@ -442,7 +442,7 @@ fn an_undeclared_host_is_unjudged_with_a_sentence_that_names_the_file() {
         alive: &alive,
     };
     let steps = vec!["echo hi".to_string(), "echo there".to_string()];
-    let run = run_on_host("no-such-host-anywhere", &wt, &steps, &ctl);
+    let run = run_on_host("no-such-host-anywhere", &wt, &steps, &ctl, false);
     let GateVerdict::Infra(why) = &run.verdict else {
         panic!("{run:#?}");
     };

@@ -43,6 +43,15 @@ steps, in a copy of that tree ([docs/remote-hosts.md](remote-hosts.md), *The mer
 declared host*, has the transport, the two clocks, the one-line time report and what a cold cache
 costs).
 
+**`gate_in = "firecode"` runs each step in a firecode VM.** Opt-in per repository, in the same
+`[queue]` table. On the gate machine (this one, or the `gate_host`) every step becomes a `firecode`
+call over the gate's checkout: on a Mac `firecode sh -c` (project mounted read-only with a
+throwaway layer, nothing copied back, the VM deleted), elsewhere `firecode run` (files sent in,
+nothing copied back, the VM discarded after the gate). Deadlines, logs and verdicts are the
+ordinary gate's, since the step is still the unit. A machine without a working firecode (no CLI, no
+`/dev/kvm` on Linux, `firecode doctor` failing) leaves the tip UNJUDGED with a sentence. The steps
+never run on the host instead. Default is `gate_in = "host"`, which is today's behaviour.
+
 **`~/.config/letibot/hosts.toml` is the operator's, and is never in a repository.** A machine is a
 `[host.NAME]` table - `hostname`, `user`, `key` (the identity file ssh is given; the key itself is
 never read into a session or a log), `root`, `path` (directories put in front of the remote

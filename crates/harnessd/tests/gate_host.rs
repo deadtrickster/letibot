@@ -226,6 +226,26 @@ impl Rig {
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
     }
 
+    /// The same gate with `[queue] gate_in = "firecode"`: the host's steps go through its `firecode`.
+    fn gate_in_firecode(&self, steps: &[&str], seconds: u64) -> GateRun {
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let alive = || true;
+        let ctl = GateControl {
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(seconds),
+            budget: std::time::Duration::from_secs(seconds),
+            stop: &stop,
+            alive: &alive,
+        };
+        let steps: Vec<String> = steps.iter().map(|s| s.to_string()).collect();
+        letibot_harnessd::mergequeue::gate_host::run_on_host(
+            "fake",
+            &self.landing(),
+            &steps,
+            &ctl,
+            true,
+        )
+    }
+
     fn gate(&self, steps: &[&str], seconds: u64) -> GateRun {
         let stop = std::sync::atomic::AtomicBool::new(false);
         let alive = || true;
@@ -754,4 +774,57 @@ fn a_step_that_refused_to_skip_is_unjudged_and_not_red() {
             .contains("LETIBOT_REQUIRE_APPARATUS is set"),
         "{run:#?}"
     );
+}
+
+/// A `firecode` for the "host" that records its calls, answers `doctor` from `$FAKE_DOCTOR`, and
+/// runs a step where a VM would.
+const FAKE_FIRECODE: &str = "#!/bin/sh\n\
+     echo \"$@\" >> \"$FAKE_FIRECODE_LOG\"\n\
+     case \"$1\" in\n\
+       doctor) exit \"${FAKE_DOCTOR:-0}\" ;;\n\
+       sh) cd \"$4\" && exec sh -c \"$3\" ;;\n\
+       run) cd \"$3\" && exec sh -c \"$7\" ;;\n\
+     esac\n";
+
+#[test]
+fn a_gate_in_firecode_runs_the_hosts_steps_through_its_firecode() {
+    let _only = only_rig();
+    let rig = Rig::new("fc-green", FAKE_SSH);
+    let fc = rig.host_program("firecode", FAKE_FIRECODE);
+    let log = rig.dir.join("firecode.log");
+    // SAFETY: one rig at a time, set before the gate starts.
+    unsafe {
+        std::env::set_var("FIRECODE_BIN", &fc);
+        std::env::set_var("FAKE_FIRECODE_LOG", &log);
+        std::env::set_var("FAKE_DOCTOR", "0");
+    }
+    let run = rig.gate_in_firecode(&["cat README"], 120);
+    assert_eq!(run.verdict, GateVerdict::Passed, "{run:#?}");
+    assert!(run.steps[0].output.contains("the first commit"), "{run:#?}");
+    let said = std::fs::read_to_string(&log).unwrap();
+    assert!(said.starts_with("doctor\n"), "{said}");
+    assert!(said.contains("cat README"), "{said}");
+}
+
+#[test]
+fn a_host_whose_firecode_fails_its_doctor_is_unjudged_and_runs_nothing_bare() {
+    let _only = only_rig();
+    let rig = Rig::new("fc-doctor", FAKE_SSH);
+    let fc = rig.host_program("firecode", FAKE_FIRECODE);
+    let log = rig.dir.join("firecode.log");
+    let marker = rig.dir.join("ran-bare");
+    // SAFETY: as above.
+    unsafe {
+        std::env::set_var("FIRECODE_BIN", &fc);
+        std::env::set_var("FAKE_FIRECODE_LOG", &log);
+        std::env::set_var("FAKE_DOCTOR", "1");
+    }
+    let step = format!("touch '{}'", marker.display());
+    let run = rig.gate_in_firecode(&[step.as_str()], 120);
+    let GateVerdict::Infra(why) = &run.verdict else {
+        panic!("{run:#?}");
+    };
+    assert!(why.contains("UNJUDGED") && why.contains("doctor"), "{why}");
+    assert_eq!(run.steps[0].outcome, MergeGateOutcome::NotRun);
+    assert!(!marker.exists(), "the step ran on the host");
 }

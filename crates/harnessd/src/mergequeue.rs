@@ -14,6 +14,7 @@ pub mod capacity;
 pub mod carry;
 pub mod desk;
 pub mod gate;
+pub mod gate_firecode;
 pub mod gate_host;
 pub mod gate_orphans;
 pub mod git;
