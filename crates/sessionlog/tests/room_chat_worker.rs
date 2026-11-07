@@ -87,7 +87,7 @@ fn a_slow_chat_answer_does_not_stop_the_reader_loop() {
         });
         let left = Arc::clone(&gone);
         let gone = Arc::new(move |head: &str| left.lock().unwrap().push(head.to_string()));
-        RoomChatSeat { ask, gone }
+        RoomChatSeat::new(ask, gone)
     };
     registry.set_room_chat(seat);
     let hub = registry.get("s-1").expect("the session");

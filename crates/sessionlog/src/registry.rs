@@ -692,12 +692,37 @@ pub type RoomChatAsk = Arc<dyn Fn(&str, serde_json::Value) -> serde_json::Value 
 /// A head's connection ended, so its per-head chat state may go. See [`RoomChatSeat`].
 pub type RoomChatGone = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// One head's connection as the chat fan-out writes to it: the message and whether it names that
+/// reader. Held by the connection's own chat worker, so a write cannot outlive its socket.
+pub type RoomChatSink = Arc<dyn Fn(serde_json::Value, bool) + Send + Sync>;
+
+/// The daemon's fan-out to the heads that have chatted: `None` is every one of them, `Some(head)`
+/// is every one but that head - the author of a message already has its own words.
+pub type RoomChatFanout = Arc<dyn Fn(Option<&str>, serde_json::Value, bool) + Send + Sync>;
+
+/// How the daemon hands the fan-out to the seat when it installs it: pushed chat lands at the
+/// seat, and the heads' connections are the daemon's, so the two are joined here.
+pub type RoomChatAttach = Arc<dyn Fn(RoomChatFanout) + Send + Sync>;
+
 /// The operator's chat seat: `ask` answers one head's request, `gone` retires one head. Both
 /// halves arrive together because a head that asks is a head that can leave.
 #[derive(Clone)]
 pub struct RoomChatSeat {
     pub ask: RoomChatAsk,
     pub gone: RoomChatGone,
+    /// Called once, by [`Registry::set_room_chat`].
+    pub attach: RoomChatAttach,
+}
+
+impl RoomChatSeat {
+    /// A seat for a daemon with no heads to push to: a fixture, or a test of the ask alone.
+    pub fn new(ask: RoomChatAsk, gone: RoomChatGone) -> RoomChatSeat {
+        RoomChatSeat {
+            ask,
+            gone,
+            attach: Arc::new(|_| {}),
+        }
+    }
 }
 
 /// See [`Registry::set_broadcast_observer`].
@@ -733,6 +758,9 @@ pub struct Registry {
     /// [`Registry::notes`] and removed with the session. See [`JobOutputSource`].
     job_output: Mutex<std::collections::HashMap<String, JobOutputSource>>,
     room_chat: Mutex<Option<RoomChatSeat>>,
+    /// The heads whose connection has chatted, and how to write a pushed message to each. A head
+    /// that never chatted is absent, which is what keeps a passing reader from being woken.
+    chatting: Mutex<std::collections::BTreeMap<String, RoomChatSink>>,
     broadcast_observer: Mutex<Option<BroadcastObserver>>,
     /// The close runs ONCE and every other caller waits for it to finish: the `Stop` frame,
     /// `catch_signals` and a head's own exit all arrive here.
@@ -885,6 +913,7 @@ impl Registry {
             skills: Mutex::new(std::collections::HashMap::new()),
             job_output: Mutex::new(std::collections::HashMap::new()),
             room_chat: Mutex::new(None),
+            chatting: Mutex::new(std::collections::BTreeMap::new()),
             broadcast_observer: Mutex::new(None),
             close_once: std::sync::Once::new(),
             source: Mutex::new(None),
@@ -1098,9 +1127,44 @@ impl Registry {
     }
 
     /// The operator's chat seat: answers a head's `RoomChat` request. `None` on a daemon with no
-    /// host coordinator, in which case the reply says so.
-    pub fn set_room_chat(&self, seat: RoomChatSeat) {
+    /// host coordinator, in which case the reply says so. The seat is handed this daemon's
+    /// fan-out before it is installed, because the heads it writes to are the server's.
+    pub fn set_room_chat(self: &Arc<Self>, seat: RoomChatSeat) {
+        let me = Arc::clone(self);
+        (seat.attach)(Arc::new(move |except, message, names_you| {
+            me.room_chat_pushed(except, message, names_you)
+        }));
         *self.room_chat.lock().unwrap_or_else(|e| e.into_inner()) = Some(seat);
+    }
+
+    /// A head's connection began chatting: from here a pushed message reaches it.
+    pub fn chat_head(&self, head: &str, sink: RoomChatSink) {
+        self.chatting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(head.to_string(), sink);
+    }
+
+    /// One message the coordinator pushed to the operator's seat, to every head that has chatted.
+    /// The sinks are collected under the lock and called without it: a head's socket is not the
+    /// registry's to hold while the others wait.
+    pub fn room_chat_pushed(
+        &self,
+        except: Option<&str>,
+        message: serde_json::Value,
+        names_you: bool,
+    ) {
+        let sinks: Vec<RoomChatSink> = self
+            .chatting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(head, _)| except != Some(head.as_str()))
+            .map(|(_, sink)| Arc::clone(sink))
+            .collect();
+        for sink in sinks {
+            sink(message.clone(), names_you);
+        }
     }
 
     /// Run one operator chat request for `head` through the seat, or say there is none.
@@ -1119,6 +1183,10 @@ impl Registry {
     /// A head's connection ended: the seat drops whatever it held for it. Called from the
     /// connection's own chat worker, which outlives the reader loop by exactly its last reply.
     pub fn room_chat_gone(&self, head: &str) {
+        self.chatting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(head);
         if let Some(seat) = self
             .room_chat
             .lock()

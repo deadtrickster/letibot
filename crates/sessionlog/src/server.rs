@@ -509,6 +509,16 @@ fn spawn_room_chat_worker(
     std::thread::Builder::new()
         .name("room-chat".into())
         .spawn(move || {
+            // A head is one that has chatted from here: the daemon pushes to exactly this set, and
+            // the sink is this connection's own writer so a push can never outlive its socket.
+            registry.chat_head(&head, {
+                let writer = Arc::clone(&writer);
+                Arc::new(move |message: serde_json::Value, names_you: bool| {
+                    let f = ServerFrame::RoomChatPushed { message, names_you };
+                    let mut w = writer.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = w.write(&f);
+                })
+            });
             while let Ok((client_request_id, op)) = rx.recv() {
                 let f = ServerFrame::RoomChat {
                     client_request_id,
@@ -2052,6 +2062,147 @@ fn mint_session_id(registry: &Arc<Registry>) -> String {
         id = format!("s-{base}-{n}");
     }
     id
+}
+
+#[cfg(test)]
+mod room_push_tests {
+    use super::*;
+    use crate::protocol::{Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame};
+    use crate::registry::{RoomChatFanout, RoomChatSeat};
+    use std::time::{Duration, Instant};
+
+    /// A daemon with one session and a chat seat that keeps the fan-out it is handed, the way the
+    /// operator's seat keeps it: the push path is the seat's, and this is the shortest way to reach
+    /// the same one without a coordinator.
+    fn daemon() -> (Arc<Registry>, Arc<Mutex<Option<RoomChatFanout>>>) {
+        let registry = Registry::new();
+        registry
+            .create(
+                "s-1",
+                "one",
+                SessionWiring {
+                    model: "qwen3-4b".into(),
+                    dialect: "qwen".into(),
+                    endpoint: "127.0.0.1:8080".into(),
+                    workspace: "/tmp/ws".into(),
+                },
+            )
+            .expect("create");
+        let held: Arc<Mutex<Option<RoomChatFanout>>> = Arc::default();
+        let seat = {
+            let slot = Arc::clone(&held);
+            let ask: crate::registry::RoomChatAsk = Arc::new(
+                |_head: &str, _op: serde_json::Value| serde_json::json!({"type": "rooms"}),
+            );
+            let gone: crate::registry::RoomChatGone = Arc::new(|_head: &str| {});
+            RoomChatSeat {
+                ask,
+                gone,
+                attach: Arc::new(move |fanout: RoomChatFanout| {
+                    *slot.lock().unwrap() = Some(fanout);
+                }),
+            }
+        };
+        registry.set_room_chat(seat);
+        (registry, held)
+    }
+
+    /// One head attached to the daemon, its reader left on a timeout so "nothing came" is a fact a
+    /// test can wait for rather than a hang.
+    fn attach(registry: &Arc<Registry>) -> (FrameWriter<UnixStream>, FrameReader<UnixStream>) {
+        let (a, b) = UnixStream::pair().expect("pair");
+        let reg = Arc::clone(registry);
+        std::thread::spawn(move || {
+            let _ = serve_conn(reg, a);
+        });
+        let mut w = FrameWriter::new(b.try_clone().expect("clone"));
+        w.write(&ClientFrame::Attach {
+            protocol_version: PROTOCOL_VERSION,
+            session_id: "s-1".into(),
+            since_seq: 0,
+            kind: "tui".into(),
+            identity: "test".into(),
+            caps: Caps::default(),
+        })
+        .expect("attach");
+        b.set_read_timeout(Some(Duration::from_millis(200)))
+            .expect("a read deadline");
+        let mut r = FrameReader::new(b);
+        // The hello is the connection's promise, and the frames after it are the daemon's session
+        // list: read past them so the first thing a test sees is what the test caused.
+        loop {
+            match r.read::<ServerFrame>() {
+                Ok(ServerFrame::Hello { .. }) => break,
+                Ok(_) => {}
+                Err(e) => panic!("no hello on an attached head: {e}"),
+            }
+        }
+        (w, r)
+    }
+
+    /// Every push at `reader`, until 300 ms pass with nothing on the wire. A head that may not be
+    /// pushed is a head whose socket stays silent, and silence is read as a timeout, not as a fail.
+    fn pushed(reader: &mut FrameReader<UnixStream>) -> Vec<ServerFrame> {
+        let mut out = Vec::new();
+        let deadline = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < deadline {
+            match reader.read::<ServerFrame>() {
+                Ok(f @ ServerFrame::RoomChatPushed { .. }) => out.push(f),
+                Ok(_) => {}
+                Err(_) => {}
+            }
+        }
+        out
+    }
+
+    /// The daemon pushes to the heads that CHATTED and to no others: a head that only watches a
+    /// session is not woken by a message it never asked to read.
+    #[test]
+    fn a_head_that_never_chatted_gets_no_push() {
+        let (registry, fanout) = daemon();
+        let fanout = fanout
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the seat was handed a fan-out");
+        let (watcher, mut watching) = attach(&registry);
+        let (mut chatter, mut chatting) = attach(&registry);
+        // The second head asks the room something, which is what makes it a head that chats; the
+        // first only attached.
+        chatter
+            .write(&ClientFrame::RoomChat {
+                client_request_id: "c1".into(),
+                op: serde_json::json!({"type": "rooms"}),
+            })
+            .expect("ask");
+        let mut asked = false;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !asked && Instant::now() < deadline {
+            match chatting.read::<ServerFrame>() {
+                Ok(ServerFrame::RoomChat { .. }) => asked = true,
+                Ok(_) | Err(_) => {}
+            }
+        }
+        assert!(asked, "the head's chat was never answered");
+
+        fanout(
+            None,
+            serde_json::json!({"seq": 7, "room": "host", "author": "s-2", "text": "live"}),
+            false,
+        );
+        let heard = pushed(&mut chatting);
+        assert_eq!(heard.len(), 1, "the head that chatted is pushed: {heard:?}");
+        let ServerFrame::RoomChatPushed { message, .. } = &heard[0] else {
+            unreachable!("filtered above")
+        };
+        assert_eq!(message["text"], "live");
+        let missed = pushed(&mut watching);
+        assert!(
+            missed.is_empty(),
+            "a head that never chatted was pushed: {missed:?}"
+        );
+        drop(watcher);
+    }
 }
 
 #[cfg(test)]

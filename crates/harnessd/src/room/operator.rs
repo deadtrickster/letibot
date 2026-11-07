@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use letibot_room::client::Client;
 use letibot_room::{OPERATOR, Request, Seat, Speaker};
-use letibot_sessionlog::registry::RoomChatSeat;
+use letibot_sessionlog::registry::{RoomChatFanout, RoomChatSeat};
 use serde_json::{Value, json};
 
 /// One lazily opened operator connection per daemon, shared by every head attached to it.
@@ -20,6 +20,10 @@ pub struct OperatorSeat {
     /// Each head's inbox cursor, by the id the daemon named it at attach. An entry appears on
     /// the head's first chat request and goes when its connection ends.
     read: Mutex<BTreeMap<String, u64>>,
+    /// The daemon's fan-out to the heads that have chatted, handed over by
+    /// [`letibot_sessionlog::registry::Registry::set_room_chat`] when it takes this seat. A seat no
+    /// daemon installed has none, and then a pushed message goes nowhere.
+    fanout: Mutex<Option<RoomChatFanout>>,
 }
 
 impl OperatorSeat {
@@ -28,11 +32,12 @@ impl OperatorSeat {
             socket,
             client: Mutex::new(None),
             read: Mutex::new(BTreeMap::new()),
+            fanout: Mutex::new(None),
         })
     }
 
     /// The seat a registry takes for `RoomChat`: one ask per head's request, one gone per
-    /// head that left.
+    /// head that left, and the slot the daemon hands its fan-out to.
     pub fn seat(self: &Arc<Self>) -> RoomChatSeat {
         let ask = {
             let seat = Arc::clone(self);
@@ -42,7 +47,35 @@ impl OperatorSeat {
             let seat = Arc::clone(self);
             Arc::new(move |head: &str| seat.head_gone(head))
         };
-        RoomChatSeat { ask, gone }
+        let attach = {
+            let seat = Arc::clone(self);
+            Arc::new(move |fanout: RoomChatFanout| {
+                *seat.fanout.lock().unwrap_or_else(|e| e.into_inner()) = Some(fanout);
+            })
+        };
+        RoomChatSeat { ask, gone, attach }
+    }
+
+    /// Every head that has chatted hears this message but `except`, which wrote it: a head's own
+    /// words are already on its screen, and a second copy would draw twice.
+    fn fan(&self, except: Option<&str>, message: Value, names_you: bool) {
+        let fanout = self
+            .fanout
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(fanout) = fanout {
+            fanout(except, message, names_you);
+        }
+    }
+
+    /// Chat the coordinator pushed to this connection: a session's words reach the heads without
+    /// waiting for a poll. The room pushes under the author's own name, so this connection never
+    /// hears the words it said itself.
+    fn pushed(&self, message: &letibot_room::Message, names_you: bool) {
+        if let Ok(value) = serde_json::to_value(message) {
+            self.fan(None, value, names_you);
+        }
     }
 
     /// A head's connection ended: its cursor stops holding the shared one back.
@@ -55,7 +88,7 @@ impl OperatorSeat {
 
     /// One chat request from one head. `op` is a room `Request`; anything outside the chat set
     /// is refused, so the queue's verbs and `notify` stay out of a head's reach.
-    pub fn ask(&self, head: &str, op: Value) -> Value {
+    pub fn ask(self: &Arc<Self>, head: &str, op: Value) -> Value {
         let request: Request = match serde_json::from_value(op) {
             Ok(r) => r,
             Err(e) => return json!({"error": format!("not a room request: {e}")}),
@@ -101,20 +134,46 @@ impl OperatorSeat {
                 Seat::Operator,
                 wake,
             ) {
-                Ok(c) => *slot = Some(c),
+                Ok(c) => {
+                    // The hook is the live half of this seat: what the coordinator pushes to the
+                    // operator lands here and goes on to the heads. Installed at the connect, so a
+                    // message pushed before a head's first ask is not lost on the floor.
+                    let seat = Arc::clone(self);
+                    c.on_chat(Arc::new(move |m, names_you| seat.pushed(m, names_you)));
+                    *slot = Some(c);
+                }
                 Err(e) => {
                     return json!({"error": format!("the host coordinator is not reachable: {e}")});
                 }
             }
         }
-        let client = slot.as_ref().expect("just seated");
-        match client.request(&request) {
+        let talk = matches!(request, Request::Say { .. } | Request::Dm { .. });
+        let answered = slot.as_ref().expect("just seated").request(&request);
+        // A head's own words are fanned out here and not by the coordinator: the room skips the
+        // author's connection, and every head shares this one, so the other heads would wait for a
+        // poll to hear them.
+        let said = match &answered {
+            Ok(letibot_room::Response::Said { message, .. }) if talk => {
+                serde_json::to_value(message)
+                    .ok()
+                    .map(|v| (message.names(OPERATOR), v))
+            }
+            _ => None,
+        };
+        let reply = match answered {
             Ok(r) => serde_json::to_value(r).unwrap_or_else(|e| json!({"error": e.to_string()})),
             Err(e) => {
                 *slot = None;
                 json!({"error": e.to_string()})
             }
+        };
+        // The fan-out writes to other heads' sockets, so it is done with this seat's client lock
+        // released: one slow head must not hold the next head's request.
+        drop(slot);
+        if let Some((names_you, message)) = said {
+            self.fan(Some(head), message, names_you);
         }
+        reply
     }
 }
 
@@ -129,6 +188,114 @@ mod tests {
         let sock = dir.join("room.sock");
         let server = letibot_room::server::Server::serve(&sock, letibot_room::Room::new()).unwrap();
         (server, sock)
+    }
+
+    /// A seat installed on a registry, with the heads `head` given a sink each: what a head's
+    /// connection does in `sessionlog`, done here so the fan-out can be read by the test.
+    fn seated(
+        name: &str,
+        heads: &[&str],
+    ) -> (
+        letibot_room::server::Server,
+        PathBuf,
+        Arc<OperatorSeat>,
+        Arc<Mutex<Vec<(String, Value)>>>,
+    ) {
+        let (server, sock) = serve(name);
+        let seat = OperatorSeat::new(sock.clone());
+        let heard: Arc<Mutex<Vec<(String, Value)>>> = Arc::default();
+        let registry = letibot_sessionlog::registry::Registry::new();
+        registry.set_room_chat(seat.seat());
+        for head in heads {
+            let heard = Arc::clone(&heard);
+            let name = head.to_string();
+            registry.chat_head(
+                head,
+                Arc::new(move |message, _names_you| {
+                    heard.lock().unwrap().push((name.clone(), message));
+                }),
+            );
+        }
+        // Both heads have chatted, so the seat's connection to the coordinator exists.
+        for head in heads {
+            assert_eq!(seat.ask(head, json!({"type": "rooms"}))["type"], "rooms");
+        }
+        (server, sock, seat, heard)
+    }
+
+    /// A message the coordinator pushes to the operator's seat reaches every head that has chatted,
+    /// with no head asking for anything: this is the whole of live delivery on the daemon's side.
+    #[test]
+    fn a_pushed_message_reaches_every_chatting_head() {
+        let (server, sock, _seat, heard) = seated("fanout", &["h1", "h2"]);
+        let bell: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|_: &str| {});
+        let other = crate::room::link::SessionRoom::connect(
+            "s-op-live",
+            &sock,
+            "aaaaaaaaaaaa",
+            None,
+            bell,
+            None,
+        )
+        .expect("a session link");
+        other
+            .call(
+                "say",
+                &json!({"room": "host", "text": "pushed, not polled"}),
+            )
+            .expect("the session's word lands");
+        let reached = |head: &str| -> bool {
+            heard
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(h, m)| h == head && m["text"] == "pushed, not polled")
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !(reached("h1") && reached("h2")) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the push never reached both heads: {:?}",
+                heard.lock().unwrap()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        drop(other);
+        server.stop();
+    }
+
+    /// The head that wrote a message already has it on its screen: the daemon pushes it to the
+    /// other heads only, because a second copy would draw the line twice.
+    #[test]
+    fn the_authors_own_message_is_not_pushed_back() {
+        let (server, _sock, seat, heard) = seated("author", &["h1", "h2"]);
+        let said = seat.ask(
+            "h1",
+            json!({"type": "say", "id": "1", "room": "host", "text": "mine alone"}),
+        );
+        assert_eq!(said["type"], "said", "{said}");
+        let reached = |head: &str| -> bool {
+            heard
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(h, m)| h == head && m["text"] == "mine alone")
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !reached("h2") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the other head never heard it: {:?}",
+                heard.lock().unwrap()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            !reached("h1"),
+            "the author was pushed its own message: {:?}",
+            heard.lock().unwrap()
+        );
+        server.stop();
     }
 
     #[test]
