@@ -94,7 +94,9 @@ fn steps_run_through_firecode_with_the_gates_own_verdicts() {
     let r = run(&g, &f.wt(), &["echo one", "echo two"], 60);
     assert_eq!(r.verdict, GateVerdict::Passed, "{r:?}");
     let rec = std::fs::read_to_string(f.record()).unwrap();
-    assert_eq!(rec.lines().count(), 2, "{rec}");
+    // Linux also brings its VM down once the gate has run.
+    let calls = rec.lines().filter(|l| !l.starts_with("down ")).count();
+    assert_eq!(calls, 2, "{rec}");
     assert!(
         rec.contains("echo one") && rec.contains("echo two"),
         "{rec}"
