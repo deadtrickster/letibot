@@ -919,8 +919,12 @@ fn the_queue_seat_resolves_to_the_queue_role() {
 /// other principals it must not use.
 #[test]
 fn the_gatekeepers_room_context_never_claims_claude_codes_name() {
-    let said = prompt(&ReviewerPlacement::Host);
-    assert!(said.contains("`gatekeeper@<your project's label>`"), "{said}");
+    let handle = room_handle(Path::new("/work/stroppy"));
+    assert_eq!(handle, "gatekeeper@stroppy");
+    let said = prompt_as(&ReviewerPlacement::Host, &handle);
+    assert!(said.contains("`gatekeeper@stroppy`"), "{said}");
+    assert!(!said.contains("@HANDLE@") && !said.contains("<your"), "{said}");
+    assert!(!said.contains("<project"), "no placeholder is left: {said}");
     for line in said.lines().flat_map(|l| l.split(". ")) {
         if line.contains("claude-code") {
             assert!(
