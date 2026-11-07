@@ -85,9 +85,9 @@ impl Tool for RoomTool {
                         "enum": [
                             "post", "claim", "claim_item", "beat", "waiting", "done", "abandon",
                             "dispute", "rule", "queue", "holding", "reminders", "questions",
-                            "say", "read"
+                            "say", "read", "invite", "leave"
                         ],
-                        "description": "What to do. `post` needs `tag` and `body`; `claim` needs `tag`; `claim_item`, `beat`, `done` need `item`; `waiting` needs `item` and `text`; `abandon` needs `item` and `why`; `dispute` needs `item` and `says`; `rule` needs `question` and `decision`; `queue` needs `tag`; `holding` takes an optional `session`; `reminders` and `questions` take nothing; `say` needs `text` and takes `room`, `to`, `thread`, `todo`, `queue`; `read` takes `room`, `since`, `last`, `thread`."
+                        "description": "What to do. `post` needs `tag` and `body`; `claim` needs `tag`; `claim_item`, `beat`, `done` need `item`; `waiting` needs `item` and `text`; `abandon` needs `item` and `why`; `dispute` needs `item` and `says`; `rule` needs `question` and `decision`; `queue` needs `tag`; `holding` takes an optional `session`; `reminders` and `questions` take nothing; `say` needs `text` and takes `room`, `to`, `thread`, `todo`, `queue`; `read` takes `room`, `since`, `last`, `thread`; `invite` needs `room` and `session` and lets that session hear and speak in a project room you are a member of; `leave` takes `room` and an optional `session` (yourself when empty)."
                     },
                     "tag": {
                         "type": "string",
@@ -128,7 +128,7 @@ impl Tool for RoomTool {
                     },
                     "room": {
                         "type": "string",
-                        "description": "For `say` and `read`: `project` (the default) is the room of your project, `host` is the room every session on this machine is in, `dm` (read only) is your direct messages."
+                        "description": "For `say` and `read`: `project` (the default) is the room of your project, `host` is the room every session on this machine is in, `dm` (read only) is your direct messages, and `project/<key>` is a project room you were invited into. For `invite` and `leave`: the project room, as `project/<key>` or its label."
                     },
                     "since": {
                         "type": "integer",
@@ -152,7 +152,7 @@ impl Tool for RoomTool {
                     },
                     "session": {
                         "type": "string",
-                        "description": "For `holding`: whose claims to read. Omit for your own."
+                        "description": "For `holding`: whose claims to read. Omit for your own. For `invite` and `leave`: the session, by id or name."
                     }
                 },
                 "required": ["verb"]
@@ -228,6 +228,9 @@ fn dispatch(link: &dyn RoomLink, args: &Value) -> Result<String, Invocation> {
             }
         }
         "say" if !nonempty(args, "text") => Some("text"),
+        "invite" if !nonempty(args, "room") => Some("room"),
+        "invite" if !nonempty(args, "session") => Some("session"),
+        "leave" if !nonempty(args, "room") => Some("room"),
         "rule" => {
             if args.get("question").and_then(|v| v.as_u64()).is_none() {
                 Some("question")

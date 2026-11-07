@@ -1277,3 +1277,42 @@ fn scrolling_to_the_first_line_asks_for_the_page_before_it_once() {
     reply_as(&mut a, "older:host", history("host", Vec::new()));
     assert!(a.rooms.oldest_known.contains("host"));
 }
+
+/// `/invite` asks the room to let a session into a named project room, and its answer is said in
+/// the conversation whether the pane is open or not; a refusal says why.
+#[test]
+fn invite_asks_for_a_guest_and_says_the_answer() {
+    let mut a = app();
+    assert_eq!(
+        a.command("invite fuzzing project/aaaaaaaaaaaa"),
+        Some(Action::RoomChat {
+            op: json!({"type": "invite", "room": "project/aaaaaaaaaaaa", "session": "fuzzing"}),
+            id: Some("invite:fuzzing:project/aaaaaaaaaaaa".into()),
+        })
+    );
+    a.apply(ServerFrame::RoomChat {
+        client_request_id: "invite:fuzzing:project/aaaaaaaaaaaa".into(),
+        reply: json!({"type": "roster", "room": "project/aaaaaaaaaaaa", "rows": []}),
+    });
+    assert!(
+        text_of(&a).contains("fuzzing is a guest of project/aaaaaaaaaaaa"),
+        "{}",
+        text_of(&a)
+    );
+    a.apply(ServerFrame::RoomChat {
+        client_request_id: "leave:fuzzing:serenedb".into(),
+        reply: json!({"type": "refused", "why": "`serenedb` is not a room you can see"}),
+    });
+    assert!(
+        text_of(&a).contains("/leave fuzzing serenedb was refused"),
+        "{}",
+        text_of(&a)
+    );
+    // With no room named and none selected, nothing is sent and the line says what is missing.
+    assert_eq!(a.command("invite fuzzing"), None);
+    assert!(text_of(&a).contains("needs a room"), "{}", text_of(&a));
+}
+
+fn text_of(a: &App) -> String {
+    a.notice.clone().unwrap_or_default()
+}

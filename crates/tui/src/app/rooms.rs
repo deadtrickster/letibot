@@ -428,7 +428,50 @@ impl App {
 
     /// The daemon's answer to a chat request. `id` is the request the answer belongs to: a
     /// send's answer is told from a poll's by it, and no poll may clear a send's record.
+    /// `/invite NAME [ROOM]` and `/leave NAME [ROOM]`: a session in or out of a project room that is
+    /// not its own. ROOM is `project/<key>` or a label, and defaults to the project room selected in
+    /// `/rooms`.
+    pub(crate) fn room_guest(&mut self, verb: &str, args: &str) -> Option<Action> {
+        let mut words = args.split_whitespace();
+        let (Some(who), room) = (words.next(), words.next()) else {
+            self.say(&format!(
+                "/{verb} SESSION [ROOM] - ROOM is `project/<key>` or its label, or the project \
+                 room selected in /rooms"
+            ));
+            return None;
+        };
+        let room = match room {
+            Some(r) => r.to_string(),
+            None => match self.rooms.selected() {
+                Some(Chan::Room(r)) if r.starts_with("project/") => r,
+                _ => {
+                    self.say(&format!(
+                        "/{verb} {who} needs a room: name it, or select a project room in /rooms"
+                    ));
+                    return None;
+                }
+            },
+        };
+        let id = format!("{verb}:{who}:{room}");
+        Some(Action::RoomChat {
+            op: json!({"type": verb, "room": room, "session": who}),
+            id: Some(id),
+        })
+    }
+
     pub(crate) fn on_room_chat(&mut self, id: &str, reply: Value) {
+        // An invite's or a leave's outcome is said where it was typed, the pane open or not.
+        if let Some((verb, rest)) = id.split_once(':')
+            && matches!(verb, "invite" | "leave")
+        {
+            let (who, room) = rest.split_once(':').unwrap_or((rest, ""));
+            let said = match reply.get("why").and_then(Value::as_str) {
+                Some(why) => format!("/{verb} {who} {room} was refused: {why}"),
+                None if verb == "invite" => format!("{who} is a guest of {room} until it leaves"),
+                None => format!("{who} has left {room}"),
+            };
+            self.say(&said);
+        }
         if let Some(e) = reply.get("error").and_then(Value::as_str) {
             // A send that never reached the coordinator keeps its line with the reason on it;
             // the footer is for the poll's own trouble, which no send owns.

@@ -453,6 +453,11 @@ impl App {
         // Renames the session this head is IN and not an arbitrary one: the picker is where another session is on
         // screen, and a `/rename` that could reach a row you were looking at is one typo from renaming the wrong
         // conversation.
+        for verb in ["invite", "leave"] {
+            if let Some(args) = verb_arg(cmd, verb) {
+                return self.room_guest(verb, args);
+            }
+        }
         if let Some(title) = verb_arg(cmd, "rename") {
             let title = title.trim().to_string();
             if self.session_id.is_empty() {
@@ -1202,6 +1207,14 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
         "ID — forget a session in the store (refused: see the sentence it answers)",
     ),
     ("rename", "NAME — name the session you are in"),
+    (
+        "invite",
+        "SESSION [ROOM] - let a session hear and speak in another project's room",
+    ),
+    (
+        "leave",
+        "SESSION [ROOM] - take an invited session out of a project room",
+    ),
     ("help", "the key and command reference"),
     ("status", "the bottom border's telemetry, full screen"),
     ("think", "fold or unfold the model's reasoning"),

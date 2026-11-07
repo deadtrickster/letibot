@@ -138,6 +138,9 @@ struct Inner {
     items: Mutex<Option<Arc<Mutex<crate::store::Store>>>>,
     /// Names of externals that have connected, so a message to one that is away is not refused.
     externals: Mutex<BTreeSet<String>>,
+    /// Each project room's invited sessions - a copy of chat's, so a visibility check made
+    /// while the chat lock is held does not take it again.
+    guests: Mutex<BTreeMap<String, BTreeSet<String>>>,
     /// The principals this room has armed an inbox cursor for - [`MAX_PRINCIPALS`], or what a test
     /// set. A name here is one the chat log keeps a cursor for, and that map is chat's own.
     armed: Mutex<BTreeSet<String>>,
@@ -229,6 +232,7 @@ impl Server {
                 chat: Mutex::new(Chat::new()),
                 items: Mutex::new(None),
                 externals: Mutex::new(BTreeSet::new()),
+                guests: Mutex::new(BTreeMap::new()),
                 armed: Mutex::new(BTreeSet::new()),
                 pending: Mutex::new(BTreeMap::new()),
                 principals: AtomicUsize::new(MAX_PRINCIPALS),
@@ -301,7 +305,9 @@ impl Server {
     /// Keep chat in `path`: load what it holds and append from now on. Call before the first
     /// connection, so no message is made against the empty chat it replaces.
     pub fn with_chat_store(&self, path: &Path) -> &Self {
-        *self.inner.chat.lock().expect("the chat lock") = Chat::open(path);
+        let chat = Chat::open(path);
+        *self.inner.guests.lock().expect("the guests lock") = chat.guests();
+        *self.inner.chat.lock().expect("the chat lock") = chat;
         self
     }
 
@@ -1264,7 +1270,7 @@ impl Server {
     }
 
     /// May a principal in `seat` and `project` see chat room `room`?
-    fn may_see(&self, seat: Seat, project: &str, room: &str) -> bool {
+    fn may_see(&self, name: &str, seat: Seat, project: &str, room: &str) -> bool {
         if room == chat::HOST_ROOM {
             return true;
         }
@@ -1278,7 +1284,65 @@ impl Server {
                 .expect("the rooms lock")
                 .contains_key(key)
         } else {
-            !project.is_empty() && project == key
+            (!project.is_empty() && project == key) || self.is_guest(room, name)
+        }
+    }
+
+    fn is_guest(&self, room: &str, name: &str) -> bool {
+        self.inner
+            .guests
+            .lock()
+            .expect("the guests lock")
+            .get(room)
+            .is_some_and(|g| g.contains(name))
+    }
+
+    /// The project room `named` means - `project/<key>` or a room's label - when it exists.
+    fn project_room_named(&self, named: &str) -> Option<String> {
+        let named = named.trim();
+        let keys: Vec<String> = self
+            .inner
+            .rooms
+            .lock()
+            .expect("the rooms lock")
+            .keys()
+            .filter(|k| !k.is_empty())
+            .cloned()
+            .collect();
+        if let Some(key) = chat::project_of_room(named) {
+            return keys.iter().any(|k| k == key).then(|| named.to_string());
+        }
+        self.project_label_map()
+            .into_iter()
+            .find(|(_, label)| label == named)
+            .map(|(key, _)| chat::project_room(&key))
+    }
+
+    /// `room` as named, with empty and `project` meaning the caller's own project room.
+    fn own_room_or(&self, room: &str, project: &str) -> String {
+        match room.trim() {
+            "" | "project" if !project.is_empty() => chat::project_room(project),
+            r => r.to_string(),
+        }
+    }
+
+    /// Invite `who` into `room` or take it out, in the store and in the copy `may_see` reads.
+    fn set_guest(&self, room: &str, who: &str, on: bool) {
+        self.inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .set_guest(room, who, on);
+        let mut g = self.inner.guests.lock().expect("the guests lock");
+        if on {
+            g.entry(room.to_string())
+                .or_default()
+                .insert(who.to_string());
+        } else if let Some(names) = g.get_mut(room) {
+            names.remove(who);
+            if names.is_empty() {
+                g.remove(room);
+            }
         }
     }
 
@@ -1287,7 +1351,7 @@ impl Server {
         if m.room == chat::DM_ROOM {
             return m.author == name || m.to.as_deref() == Some(name);
         }
-        self.may_see(seat, project, &m.room)
+        self.may_see(name, seat, project, &m.room)
     }
 
     /// Does anybody on this host answer to `name`? A session the room has merely seen before is NOT
@@ -1366,9 +1430,28 @@ impl Server {
                 }
             }
         }
+        let guests: BTreeSet<String> = self
+            .inner
+            .guests
+            .lock()
+            .expect("the guests lock")
+            .get(room)
+            .cloned()
+            .unwrap_or_default();
+        for g in &guests {
+            rows.entry(g.clone()).or_insert(chat::Presence {
+                name: g.clone(),
+                id: g.clone(),
+                kind: Seat::Session,
+                connected: false,
+                project: key.unwrap_or("").to_string(),
+                label: "guest".to_string(),
+            });
+        }
         for c in self.conn_list() {
             let name = c.who.session.clone();
-            let in_room = c.seat.is_wide() || key.is_none_or(|k| k == c.project);
+            let in_room =
+                c.seat.is_wide() || key.is_none_or(|k| k == c.project) || guests.contains(&name);
             if !in_room {
                 continue;
             }
@@ -1425,6 +1508,12 @@ impl Server {
                 } else if !project.is_empty() {
                     ids.push(chat::project_room(project));
                 }
+                // And the rooms this session was invited into.
+                for (room, names) in self.inner.guests.lock().expect("the guests lock").iter() {
+                    if names.contains(name) && !ids.contains(room) {
+                        ids.push(room.clone());
+                    }
+                }
                 let labels = self.project_label_map();
                 let chat = self.inner.chat.lock().expect("the chat lock");
                 let rows = ids
@@ -1456,7 +1545,7 @@ impl Server {
                     "" => Self::default_chat_room(seat, project),
                     r => r.to_string(),
                 };
-                if !self.may_see(seat, project, &room) {
+                if !self.may_see(name, seat, project, &room) {
                     return refuse(Some(id), crate::Refused::UnknownChatRoom { room });
                 }
                 let to = to
@@ -1536,7 +1625,7 @@ impl Server {
                 if seat != Seat::Session
                     || !matches!(source.as_str(), "todo" | "queue")
                     || room == chat::DM_ROOM
-                    || !self.may_see(seat, project, &room)
+                    || !self.may_see(name, seat, project, &room)
                 {
                     return refuse(
                         Some(id),
@@ -1568,7 +1657,7 @@ impl Server {
                     "" => Self::default_chat_room(seat, project),
                     r => r.to_string(),
                 };
-                if room != chat::DM_ROOM && !self.may_see(seat, project, &room) {
+                if room != chat::DM_ROOM && !self.may_see(name, seat, project, &room) {
                     return refuse(None, crate::Refused::UnknownChatRoom { room });
                 }
                 let handles = self.handles();
@@ -1593,7 +1682,7 @@ impl Server {
                     "" => Self::default_chat_room(seat, project),
                     r => r.to_string(),
                 };
-                if !self.may_see(seat, project, &room) {
+                if !self.may_see(name, seat, project, &room) {
                     return refuse(None, crate::Refused::UnknownChatRoom { room });
                 }
                 Response::Roster {
@@ -1615,6 +1704,60 @@ impl Server {
                     skipped,
                     cursor: chat.cursor(name),
                     head: chat.head(),
+                }
+            }
+            Request::Invite { room, session } => {
+                let room = self.own_room_or(room, project);
+                let Some(room) = self.project_room_named(&room) else {
+                    return refuse(None, crate::Refused::UnknownChatRoom { room: room.clone() });
+                };
+                let key = chat::project_of_room(&room).unwrap_or("");
+                // The room's own members and the wide seats invite; a guest does not.
+                if !seat.is_wide() && project != key {
+                    return refuse(None, crate::Refused::UnknownChatRoom { room });
+                }
+                let asked = session.trim().trim_start_matches('@');
+                let who = match self.resolve_name(project, asked) {
+                    Ok(who) => who,
+                    Err(candidates) => {
+                        return refuse(
+                            None,
+                            crate::Refused::Ambiguous {
+                                name: asked.to_string(),
+                                candidates,
+                            },
+                        );
+                    }
+                };
+                if !self.is_known(&who) {
+                    return refuse(None, crate::Refused::UnknownAddressee { name: who });
+                }
+                self.set_guest(&room, &who, true);
+                Response::Roster {
+                    rows: self.roster_of(&room),
+                    room,
+                }
+            }
+            Request::Leave { room, session } => {
+                let room = self.own_room_or(room, project);
+                let Some(room) = self.project_room_named(&room) else {
+                    return refuse(None, crate::Refused::UnknownChatRoom { room: room.clone() });
+                };
+                let key = chat::project_of_room(&room).unwrap_or("");
+                let who = match session.as_deref().map(|s| s.trim().trim_start_matches('@')) {
+                    None | Some("") => name.to_string(),
+                    Some(asked) => self
+                        .resolve_name(project, asked)
+                        .unwrap_or(asked.to_string()),
+                };
+                // A guest leaves by itself; the room's members and the wide seats show one out.
+                if who != name && !seat.is_wide() && project != key {
+                    return refuse(None, crate::Refused::UnknownChatRoom { room });
+                }
+                self.set_guest(&room, &who, false);
+                Response::Roster {
+                    rows: self.roster_of(&room),
+                    room,
                 }
             }
             Request::Ack { seq } => {
@@ -2191,6 +2334,8 @@ fn is_chat_frame(frame: &Request) -> bool {
             | Request::Roster { .. }
             | Request::Inbox { .. }
             | Request::Ack { .. }
+            | Request::Invite { .. }
+            | Request::Leave { .. }
     )
 }
 

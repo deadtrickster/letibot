@@ -141,6 +141,15 @@ pub enum Request {
     },
     /// Move this principal's inbox cursor to `seq`.
     Ack { seq: u64 },
+    /// Invite `session` (an id or a handle) into a project room that is not its own: it reads
+    /// and is told that room's chat until it leaves. `room` is `project/<key>` or the room's label.
+    Invite { room: String, session: String },
+    /// Take `session` out of a room it was invited into; `None` is the caller itself.
+    Leave {
+        room: String,
+        #[serde(default)]
+        session: Option<String>,
+    },
     /// Post a need under a tag. `body` is the need, in the poster's words.
     Post {
         id: String,
@@ -209,6 +218,8 @@ impl Request {
             | Request::Roster { .. }
             | Request::Inbox { .. }
             | Request::Ack { .. }
+            | Request::Invite { .. }
+            | Request::Leave { .. }
             | Request::Queue { .. }
             | Request::Holding { .. }
             | Request::Reminders
@@ -587,7 +598,9 @@ impl Room {
             | Request::Read { .. }
             | Request::Roster { .. }
             | Request::Inbox { .. }
-            | Request::Ack { .. } => Answer::quiet(Response::Refused {
+            | Request::Ack { .. }
+            | Request::Invite { .. }
+            | Request::Leave { .. } => Answer::quiet(Response::Refused {
                 id: request.request_id().map(str::to_string),
                 why: Refused::ChatIsTheServers,
             }),

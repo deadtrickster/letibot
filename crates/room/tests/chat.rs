@@ -972,3 +972,76 @@ fn a_handle_in_two_projects_is_the_senders_own_or_ambiguous() {
         other => panic!("{other:?}"),
     }
 }
+
+/// A session invited into another project's room hears it, speaks in it and reads it, keeps the
+/// invitation across a restart, and hears nothing after it leaves. Its own room stays its own.
+#[test]
+fn a_session_invited_into_another_projects_room_hears_it_until_it_leaves() {
+    let dir = Scratch::new();
+    let room_a = letibot_room::chat::project_room(A);
+    let first = stored(&dir);
+    let a1 = seat(&first, "s-a1", A, Seat::Session);
+    let b1 = seat(&first, "s-b1", B, Seat::Session);
+
+    // Not a member: refused, and not told.
+    assert!(matches!(
+        b1.say("x", &room_a, "let me in"),
+        Response::Refused { .. }
+    ));
+    said(a1.say("m0", "", "before the invite"));
+    b1.silent();
+
+    // A member invites; the guest is in the roster and its room list.
+    match a1.call(Request::Invite {
+        room: room_a.clone(),
+        session: "s-b1".into(),
+    }) {
+        Response::Roster { rows, .. } => {
+            assert!(
+                rows.iter().any(|r| r.id == "s-b1" && r.label == "guest"),
+                "{rows:?}"
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(b1.rooms().contains(&room_a), "{:?}", b1.rooms());
+    let m = said(a1.say("m1", "", "welcome"));
+    assert_eq!(b1.next_seq(m.seq).0.text, "welcome");
+    let back = said(b1.say("m2", &room_a, "thanks"));
+    assert_eq!(a1.next_seq(back.seq).0.text, "thanks");
+
+    // A guest invites nobody into a room it is only a guest of.
+    let c1 = seat(&first, "s-c1", B, Seat::Session);
+    assert!(matches!(
+        b1.call(Request::Invite {
+            room: room_a.clone(),
+            session: "s-c1".into(),
+        }),
+        Response::Refused { .. }
+    ));
+    drop(c1);
+
+    // The invitation is kept across a restart.
+    drop(a1);
+    drop(b1);
+    first.stop();
+    std::thread::sleep(Duration::from_millis(50));
+    let second = stored(&dir);
+    let a1 = seat(&second, "s-a1", A, Seat::Session);
+    let b1 = seat(&second, "s-b1", B, Seat::Session);
+    let _ = drained(&b1);
+    let m = said(a1.say("m3", "", "still here?"));
+    assert_eq!(b1.next_seq(m.seq).0.text, "still here?");
+
+    // It leaves, and is told nothing more.
+    assert!(matches!(
+        b1.call(Request::Leave {
+            room: room_a.clone(),
+            session: None,
+        }),
+        Response::Roster { .. }
+    ));
+    said(a1.say("m4", "", "gone"));
+    b1.silent();
+    second.stop();
+}

@@ -942,10 +942,19 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
         },
         "reminders" => Request::Reminders,
         "questions" => Request::Questions,
+        "invite" => Request::Invite {
+            room: s("room"),
+            session: s("session"),
+        },
+        "leave" => Request::Leave {
+            room: s("room"),
+            session: Some(s("session")).filter(|x| !x.is_empty()),
+        },
         other => {
             return Err(format!(
                 "`{other}` is not a room verb — the verbs are post, claim, claim_item, beat, \
-                 waiting, done, abandon, dispute, rule, queue, holding, reminders, questions, say and read"
+                 waiting, done, abandon, dispute, rule, queue, holding, reminders, questions, say, read, \
+                 invite and leave"
             ));
         }
     })
@@ -1149,7 +1158,11 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
         Response::Roster { room, rows } => format!(
             "in `{room}`: {}",
             rows.iter()
-                .map(|p| p.name.as_str())
+                .map(|p| if p.label == "guest" {
+                    format!("{} (guest)", p.name)
+                } else {
+                    p.name.clone()
+                })
                 .collect::<Vec<_>>()
                 .join(", ")
         ),

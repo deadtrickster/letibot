@@ -1,7 +1,7 @@
 //! Chat: one append-only log with one cursor (`seq`), cut into rooms (the host's, one per project) and DMs.
 //! State machine and vocabulary only: no clock, no socket. The server hands in `now` and decides who is pushed to.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -434,6 +434,12 @@ enum Record {
         name: String,
         seq: u64,
     },
+    /// A session invited into a project room that is not its own (`on`), or gone from it.
+    Guest {
+        room: String,
+        name: String,
+        on: bool,
+    },
 }
 
 /// The file chat is kept in, and the size it had at the last write.
@@ -451,6 +457,8 @@ pub struct Chat {
     seen: BTreeMap<String, u64>,
     said: VecDeque<((String, String), u64)>,
     store: Option<Store>,
+    /// Each project room's invited sessions, by room.
+    guests: BTreeMap<String, BTreeSet<String>>,
 }
 
 fn ring_bytes(ring: &VecDeque<Message>) -> usize {
@@ -482,6 +490,7 @@ impl Chat {
                     let d = c.dropped_to.entry(room).or_insert(0);
                     *d = (*d).max(seq);
                 }
+                Ok(Record::Guest { room, name, on }) => c.note_guest(&room, &name, on),
                 Err(e) => eprintln!(
                     "room: chat store {} line {} is not a record ({e}); skipped",
                     path.display(),
@@ -589,6 +598,15 @@ impl Chat {
                 name: name.clone(),
                 seq: *seq,
             });
+        }
+        for (room, names) in &self.guests {
+            for name in names {
+                records.push(Record::Guest {
+                    room: room.clone(),
+                    name: name.clone(),
+                    on: true,
+                });
+            }
         }
         let mut buf = String::new();
         for r in &records {
@@ -797,6 +815,45 @@ impl Chat {
     /// The file chat is kept in, `None` for a chat in memory only.
     pub fn store_path(&self) -> Option<&Path> {
         self.store.as_ref().map(|s| s.path.as_path())
+    }
+
+    /// Invite `name` into `room` (`on`) or take it out, and keep that. `false` when nothing changed.
+    pub fn set_guest(&mut self, room: &str, name: &str, on: bool) -> bool {
+        let was = self.is_guest(room, name);
+        if was == on {
+            return false;
+        }
+        self.note_guest(room, name, on);
+        self.write(&[Record::Guest {
+            room: room.to_string(),
+            name: name.to_string(),
+            on,
+        }]);
+        true
+    }
+
+    fn note_guest(&mut self, room: &str, name: &str, on: bool) {
+        if on {
+            self.guests
+                .entry(room.to_string())
+                .or_default()
+                .insert(name.to_string());
+        } else if let Some(g) = self.guests.get_mut(room) {
+            g.remove(name);
+            if g.is_empty() {
+                self.guests.remove(room);
+            }
+        }
+    }
+
+    /// Is `name` invited into `room`?
+    pub fn is_guest(&self, room: &str, name: &str) -> bool {
+        self.guests.get(room).is_some_and(|g| g.contains(name))
+    }
+
+    /// Every project room's guests.
+    pub fn guests(&self) -> BTreeMap<String, BTreeSet<String>> {
+        self.guests.clone()
     }
 
     /// Note that `name` was connected while `seq` was said. Memory only, until [`Chat::keep_seen`].

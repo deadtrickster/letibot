@@ -842,7 +842,7 @@ fn why(v: &Value) -> String {
 }
 
 /// The tool names this module serves.
-pub const TOOLS: [&str; 7] = [
+pub const TOOLS: [&str; 9] = [
     "rooms",
     "room_read",
     "room_say",
@@ -850,6 +850,8 @@ pub const TOOLS: [&str; 7] = [
     "room_roster",
     "room_inbox",
     "room_nick",
+    "room_invite",
+    "room_leave",
 ];
 
 fn tool(name: &str, description: &str, schema: Value) -> Value {
@@ -943,6 +945,26 @@ pub fn tool_list() -> Vec<Value> {
                 "type": "object",
                 "properties": { "room": { "type": "string" } },
                 "required": ["room"]
+            }),
+        ),
+        tool(
+            "room_invite",
+            "Invite a session (id or name) into a project room that is not its own, so it hears \
+             and speaks there until it leaves. `room` is `project/<key>` or the room's label. \
+             Answers with the room's roster.",
+            json!({
+                "type": "object",
+                "properties": { "room": { "type": "string" }, "session": { "type": "string" } },
+                "required": ["room", "session"]
+            }),
+        ),
+        tool(
+            "room_leave",
+            "Take an invited session out of a project room. Answers with the room's roster.",
+            json!({
+                "type": "object",
+                "properties": { "room": { "type": "string" }, "session": { "type": "string" } },
+                "required": ["room", "session"]
             }),
         ),
         tool(
@@ -1078,6 +1100,16 @@ pub fn call(link: &RoomLink, name: &str, args: &Value) -> Result<Value, String> 
         }
         "room_nick" => link.nick(&arg_str(args, "nick")?),
         "room_roster" => link.request(&json!({ "type": "roster", "room": arg_str(args, "room")? })),
+        "room_invite" => link.request(&json!({
+            "type": "invite",
+            "room": arg_str(args, "room")?,
+            "session": arg_str(args, "session")?,
+        })),
+        "room_leave" => link.request(&json!({
+            "type": "leave",
+            "room": arg_str(args, "room")?,
+            "session": arg_str(args, "session")?,
+        })),
         "room_inbox" => {
             let attention = match arg_opt_str(args, "attention")? {
                 Some(a) => Attention::parse(&a)?,
