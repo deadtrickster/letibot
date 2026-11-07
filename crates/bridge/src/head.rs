@@ -38,7 +38,9 @@ use std::time::{Duration, Instant};
 
 use letibot_sessionlog::activity::{Activity, Waiting};
 use letibot_sessionlog::client::{ClientError, HeadClient, Inbound, pump};
-use letibot_sessionlog::event::{DeltaTarget, Envelope, PrefixCheck, SessionEvent, TodoEntry};
+use letibot_sessionlog::event::{
+    DeltaTarget, Envelope, PrefixCheck, SessionEvent, TodoEntry, TodoStatus,
+};
 use letibot_sessionlog::protocol::{Ack, Caps, PeekShape, ServerFrame};
 use letibot_sessionlog::view::{
     CallState, OpenDecision, Snapshot, SnapshotItem, TurnState as ViewTurnState,
@@ -543,6 +545,9 @@ pub struct State {
     pub skew: Option<String>,
     /// Lines from the daemon this build could not read. Skipped, never silent.
     pub unreadable: u64,
+    /// This bridge itself asked the daemon to close this session (`leticode_stop`). The goodbye
+    /// the daemon sends behind the ack is that close arriving, not a failure to report.
+    pub stopped: bool,
 }
 
 /// The word a provider trouble is filed under - this file's closed vocabulary, so a head that asks
@@ -1627,6 +1632,7 @@ impl Head {
             troubles: g.troubles,
             skew: g.skew.clone(),
             unreadable: g.unreadable,
+            stopped: g.stopped,
         }
     }
 
@@ -1649,6 +1655,51 @@ impl Head {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .asks
+            .clone()
+    }
+
+    /// The word `leticode_status` answers with, from the live state: `asking`, `failed`,
+    /// `running` or `idle`. Read under the state's own lock for the channel push, which asks once
+    /// a second rather than answering a caller.
+    pub fn word(&self) -> &'static str {
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .word()
+    }
+
+    /// What this session leaves open between turns: the jobs the daemon still lists running, and
+    /// how many todo rows are pending or in progress. The channel push's own question - a session
+    /// that is `idle` with either of these has work nobody is watching.
+    pub fn open_work(&self) -> (Vec<String>, usize) {
+        let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        let rows = g
+            .todos
+            .iter()
+            .filter(|t| matches!(t.status, TodoStatus::Pending | TodoStatus::InProgress))
+            .count();
+        (g.jobs_open.iter().cloned().collect(), rows)
+    }
+
+    /// Whether this bridge asked the daemon to close this session (`leticode_stop`). The `Bye` that
+    /// follows the close is that act arriving, not a failure of the session's to report.
+    pub fn stopped_by_bridge(&self) -> bool {
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stopped
+    }
+
+    /// The turn in view, as the daemon minted it - empty before a turn has run under this head. A
+    /// turn's own id is what makes its end one event whatever words it ended with.
+    pub fn turn_id(&self) -> String {
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .turn_id
             .clone()
     }
 
@@ -1734,6 +1785,13 @@ impl Head {
     /// naming the wait when it did not, so a caller never reports a close that was not seen.
     pub fn stop_within(&self, patience: Duration) -> Result<(), String> {
         self.may_write()?;
+        // Said before the close is sent: the daemon's goodbye follows the ack, and a head that
+        // learned of the stop from it would report the bridge's own act as a failure.
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stopped = true;
         let id = {
             let mut c = self.said_client()?;
             let who = c.identity().to_string();

@@ -109,6 +109,22 @@ deliberately NOT subject to the *a failure that was already there does not count
 about a previous TURN's death. A connection the daemon closed (`Bye`) ends the wait for the same
 reason, and `leticode_status` says `failed` rather than `idle`.
 
+### The channel's events, and the cursor a client resumes from
+
+A held session's events arrive as `notifications/claude/channel` with `meta.source: leticode` and
+`meta.event` naming the fact. Four are a turn's: `turn_ended`, `ask`, `failed`, `trouble`. Two are
+not, and were the ones an orchestrator had no news of at all: **`idle_with_work`** - the session is
+between turns with `meta.jobs` running or `meta.rows` todo rows pending, said once per change to
+that work and not once per poll - and **`job_ended`** - `meta.job` and `meta.state` as the daemon
+settled it. A session the bridge itself stopped with `leticode_stop` pushes no `failed`: the `Bye`
+behind that close is the bridge's own act, not a failure of the session's.
+
+Each session's events are kept in `<rundir>/<folder key>.push-<session>`: the key of every fact
+already said, the frames a client has not taken, and the `cursor` it has been told up to. An event
+that happens while nobody is reading - a client between connections, a bridge restarted - is pushed
+once when a client comes back, and nothing already pushed is pushed again, including by a bridge
+restarted on the same folder.
+
 ### Claude Code as the approver, and the report as data
 
 With the bridge attached the session no longer needs allow-all: `writes-allowed` (approve a class

@@ -961,7 +961,21 @@ On 2026-11-07 four placements failed at the same step while their host was build
 
 ## R154 - The channel push says turns, not work, and a lost event is never replayed
 
-**Status:** open. left: all of it.
+**Status:** fixed. left: nothing.
+
+Built, in `crates/bridge/src/push.rs`: a per-session outbox at `<rundir>/<folder key>.push-<session>`
+holding the key of every fact said, the frames a client has not taken, and the cursor it has been
+told up to (written through a temp name and a rename, so a killed bridge leaves the old one).
+`tools.rs` keeps one outbox per held session, so a client that connects again is handed what it
+missed instead of starting a second watcher, and a bridge restarted on the same folder resumes
+where the first one stopped. Two events are new: `idle_with_work` - the session reads `idle` with
+jobs the daemon still lists running or with pending/in-progress todo rows, keyed by that work so a
+change is one message and a poll is none - and `job_ended`, with the job and the state the daemon
+settled it with, read from the progress ring because `JobSettled` never wakes `wait`. A turn end is
+now keyed by the daemon's `turn_id`, so two turns with the same words are two events. And
+`leticode_stop` marks the head it stopped, so the `Bye` behind that close is no longer pushed as
+`failed: the daemon closed this connection`. Tests: seven in `push.rs`, and
+`tests/push_work.rs`, `tests/push_replay.rs`, `tests/push_stop.rs`, `tests/push_bye.rs`.
 
 Reported 2026-11-07 by `cc@serenedb` (room #831) with five placed children, and seen here with twelve. The bridge pushes a held session's turn end, ask and failure (`crates/bridge/src/push.rs`), but nothing when a session goes idle while it still has open jobs or pending rows, and nothing when a held job exits: a child waiting on job `j82015` sat idle with no event, and one of this session's packages sat three hours on a stuck job. And one `turn_ended` never reached the channel at all, found only through `leticode_list`. Wanted: an event on a held session going idle with `jobs_open` or pending rows, and on a held job exiting (with its exit); a per-bridge cursor over the pushed events with replay on reconnect, or a periodic digest of idle sessions with open work. The workaround in use is a Monitor polling `/proc` per placement.
 

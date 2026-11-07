@@ -58,6 +58,8 @@ fn a_turn_end_is_pushed_once_and_the_next_turn_again() {
     unsafe {
         std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
         std::env::set_var("XDG_DATA_HOME", root.join("data"));
+        // The per-session channel is kept under the rundir; a test keeps it under its own root.
+        std::env::set_var("XDG_RUNTIME_DIR", root.join("run"));
         std::env::set_var("LETIBOT_SOCKET", &socket);
         std::env::remove_var("LETIBOT_STORE");
     }
@@ -75,7 +77,7 @@ fn a_turn_end_is_pushed_once_and_the_next_turn_again() {
         .expect("the head attaches"),
     );
     let (tx, rx) = mpsc::channel();
-    letibot_bridge::push::watch(&head, tx);
+    letibot_bridge::push::watch(&head).attach(tx);
 
     turn(&hub, "t1", "first answer");
     let note = rx

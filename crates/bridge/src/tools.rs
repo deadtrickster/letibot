@@ -44,6 +44,10 @@ pub struct Bridge {
     names_from: Option<(std::path::PathBuf, std::path::PathBuf)>,
     /// Where held sessions' events go once the client can take channel notifications.
     push: Mutex<Option<std::sync::mpsc::Sender<serde_json::Value>>>,
+    /// One channel per held session: the records a client has not taken yet, and the cursor it
+    /// has been told up to. Kept apart from `push` because a client that connects again is
+    /// handed what it missed rather than starting a second watcher that repeats the lot.
+    channels: Mutex<HashMap<String, Arc<crate::push::Outbox>>>,
     /// Whether this folder's queues are already being followed: a client that initializes twice
     /// must not leave a second follower saying the same move again.
     queue: Mutex<bool>,
@@ -63,6 +67,7 @@ impl Default for Bridge {
             stream_rooms: false,
             names_from: None,
             push: Mutex::new(None),
+            channels: Mutex::new(HashMap::new()),
             queue: Mutex::new(false),
             seat: Mutex::new(None),
             // Written out rather than derived: a derived `Duration` is zero, and a zero window is
@@ -292,18 +297,39 @@ impl Bridge {
     fn hold(&self, h: &Arc<Head>) {
         let mut g = self.heads.lock().unwrap_or_else(|e| e.into_inner());
         let new = g.insert(h.session.clone(), h.clone()).is_none();
-        if new && let Some(tx) = self.push.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            crate::push::watch(h, tx.clone());
+        drop(g);
+        if new && let Some(tx) = self.push.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            self.channel(h).attach(tx);
         }
+    }
+
+    /// The channel a session's events are recorded in, started on first use: one per session,
+    /// because a second watcher on one head would say every event twice.
+    fn channel(&self, h: &Arc<Head>) -> Arc<crate::push::Outbox> {
+        let mut g = self.channels.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(channel) = g.get(&h.session) {
+            return channel.clone();
+        }
+        let channel = crate::push::watch(h);
+        g.insert(h.session.clone(), channel.clone());
+        channel
     }
 
     /// Push every held session's events on `tx` from now on, those held already included.
     pub fn push_sessions(&self, tx: std::sync::mpsc::Sender<serde_json::Value>) {
-        let g = self.heads.lock().unwrap_or_else(|e| e.into_inner());
-        for h in g.values() {
-            crate::push::watch(h, tx.clone());
+        *self.push.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx.clone());
+        let heads: Vec<Arc<Head>> = self
+            .heads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        for h in heads {
+            // A new client, or the first one: either way what was recorded while nobody was
+            // reading goes now, and a channel that never existed starts at the state it sees.
+            self.channel(&h).attach(tx.clone());
         }
-        *self.push.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
     }
 
     /// Push the queues' moves for this bridge's folder on `tx` from now on: the same channel as
@@ -637,6 +663,13 @@ impl Bridge {
         h.stop()?;
         let mut g = self.heads.lock().unwrap_or_else(|e| e.into_inner());
         g.remove(session);
+        drop(g);
+        // The watcher goes with the head, and the records it never delivered stay in the file: a
+        // session started again on this folder is the same channel, resumed where it stopped.
+        self.channels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session);
         let mut answer = json!({ "stopped": true, "session": session, "closed": true });
         // The daemon's own line carries the commit, and the head cannot read it - so it names the
         // branch the caller must look at, on the one rule the placement itself uses.
