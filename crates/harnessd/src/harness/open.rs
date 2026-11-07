@@ -2990,7 +2990,7 @@ impl Harness {
                 pc,
                 &cfg.sampling,
                 provider_notes(&hub),
-                cfg.provider_timeout,
+                cfg.deadlines_for(Some(pc)),
             ) {
                 Ok(p) => Some(scoped_provider(
                     p,
@@ -3760,21 +3760,20 @@ pub(crate) fn render_sampling(s: &serde_json::Map<String, serde_json::Value>) ->
 }
 
 /// A provider backend from its config: preset, key (missing is a refusal naming variable and file), model, switches.
-/// `notes` is passed in because the provider must stay below this crate's session log. `answer_within` is the patience for a silent provider; `None` is its own.
+/// `notes` is passed in because the provider must stay below this crate's session log. `deadlines` are the first-byte and answer budgets, resolved from the config by [`crate::config::Config::deadlines_for`].
 pub fn build_provider(
     pc: &crate::config::ProviderConfig,
     sampling: &serde_json::Value,
     notes: letibot_provider::openai::Notes,
-    answer_within: Option<std::time::Duration>,
+    deadlines: crate::leticode_config::Deadlines,
 ) -> Result<Box<dyn letibot_backend::MessagesBackend>, String> {
     let preset = letibot_provider::Preset::parse(&pc.name)?;
     let creds = letibot_provider::keys::resolve(preset, pc.api_key.as_deref(), None)
         .map_err(|e| format!("provider {}: {e}", pc.name))?;
-    let mut p =
-        letibot_provider::OpenAiProvider::new(preset, pc.model.as_deref(), creds).with_notes(notes);
-    if let Some(answer) = answer_within {
-        p = p.with_response_timeout(answer);
-    }
+    let mut p = letibot_provider::OpenAiProvider::new(preset, pc.model.as_deref(), creds)
+        .with_notes(notes)
+        .with_first_byte(deadlines.first_byte)
+        .with_response_timeout(deadlines.answer);
     p.thinking = pc.thinking;
     p.sampling = provider_sampling(sampling);
     Ok(Box::new(p))

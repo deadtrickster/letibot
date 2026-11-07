@@ -833,6 +833,20 @@ fn a_provider_that_says_nothing_fails_at_the_first_byte_deadline() {
     assert!(e.timed_out(), "and the deadline is its kind: {e}");
 }
 
+/// Setting one deadline leaves the other as it was, in either order.
+#[test]
+fn the_two_deadlines_are_set_independently_in_either_order() {
+    let (f, a) = (Duration::from_secs(120), Duration::from_secs(900));
+    let one = provider("http://x")
+        .with_first_byte(f)
+        .with_response_timeout(a);
+    let two = provider("http://x")
+        .with_response_timeout(a)
+        .with_first_byte(f);
+    assert_eq!(one.deadlines(), (f, a));
+    assert_eq!(two.deadlines(), (f, a));
+}
+
 /// Half a stream is not an answer: a socket that closes cleanly is indistinguishable from a finished
 /// one, so `Stop` with zero usage bills the fragment as nothing and draws it as a completed thought.
 #[test]

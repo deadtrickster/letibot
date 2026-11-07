@@ -27,6 +27,9 @@ pub struct OpenAiProvider {
     url: String,
     creds: Credentials,
     agent: ureq::Agent,
+    /// The two deadlines `agent` was built from, kept so setting one never resets the other.
+    first_byte: Duration,
+    answer: Duration,
     /// Ask the provider to think out loud, where it has a switch for it.
     pub thinking: bool,
     /// `temperature` and friends, passed through verbatim.
@@ -60,6 +63,8 @@ impl OpenAiProvider {
             creds,
             catalogue,
             agent: Self::agent(DEFAULT_FIRST_BYTE, DEFAULT_ANSWER_TIMEOUT),
+            first_byte: DEFAULT_FIRST_BYTE,
+            answer: DEFAULT_ANSWER_TIMEOUT,
             thinking: false,
             sampling: json!({}),
             notes: None,
@@ -88,7 +93,8 @@ impl OpenAiProvider {
     /// [`DEFAULT_ANSWER_TIMEOUT`]. A caller that must react to a model API timeout sets its own
     /// patience here rather than waiting ten minutes for a deadline nobody chose.
     pub fn with_response_timeout(mut self, answer: Duration) -> Self {
-        self.agent = Self::agent(DEFAULT_FIRST_BYTE.min(answer), answer);
+        self.answer = answer;
+        self.agent = Self::agent(self.first_byte.min(answer), answer);
         self
     }
 
@@ -96,8 +102,14 @@ impl OpenAiProvider {
     /// [`DEFAULT_FIRST_BYTE`]. Separate from the answer budget: a provider that says nothing is a
     /// failure in a minute, and an answer still streaming at that point is not.
     pub fn with_first_byte(mut self, first_byte: Duration) -> Self {
-        self.agent = Self::agent(first_byte, DEFAULT_ANSWER_TIMEOUT);
+        self.first_byte = first_byte;
+        self.agent = Self::agent(first_byte.min(self.answer), self.answer);
         self
+    }
+
+    /// The first-byte and answer deadlines in force.
+    pub fn deadlines(&self) -> (Duration, Duration) {
+        (self.first_byte.min(self.answer), self.answer)
     }
 
     /// The catalogue this provider reads, instead of the box's, so a test's answer is about

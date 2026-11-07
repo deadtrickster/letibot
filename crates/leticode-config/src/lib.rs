@@ -42,6 +42,12 @@
 //! non-empty list here is the whole list. `fallback_after_timeouts = 0` is refused by
 //! name: a move on the first timeout is written `1`.
 //!
+//! `[provider]` also holds the model API deadlines: `slow_notice_seconds` (15, the red "model
+//! slow" notice), `first_byte_seconds` (60) and `answer_seconds` (600), as defaults for every
+//! provider, and the same three keys in `[provider.glm]` (a preset) or `[provider."glm-coding/glm-5.3"]`
+//! (one model) for a slow one. The model's table wins over the preset's, the preset's over
+//! `[provider]`, that over the built-in number. See [`ProviderKeys`].
+//!
 //! An absent key means the daemon's own default, stated as such - not a
 //! guess, and not silently a built-in. The default for each key is the one the
 //! daemon already has for that model, and the disclosure says which models the
@@ -589,43 +595,181 @@ impl OnLimit {
     }
 }
 
+/// The three model API deadlines, as the file wrote them: each is absent until some level says it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeadlineKeys {
+    /// Silence before the "model slow" notice. A notice, never a failure.
+    pub slow_notice_seconds: Option<u64>,
+    /// Silence before the first byte that fails the round as a timeout.
+    pub first_byte_seconds: Option<u64>,
+    /// The whole answer's budget.
+    pub answer_seconds: Option<u64>,
+}
+
+impl DeadlineKeys {
+    /// Keys `other` sets win, the rest stay.
+    fn overridden_by(self, other: DeadlineKeys) -> DeadlineKeys {
+        DeadlineKeys {
+            slow_notice_seconds: other.slow_notice_seconds.or(self.slow_notice_seconds),
+            first_byte_seconds: other.first_byte_seconds.or(self.first_byte_seconds),
+            answer_seconds: other.answer_seconds.or(self.answer_seconds),
+        }
+    }
+}
+
+/// The deadlines one provider/model runs under, every key resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Deadlines {
+    pub slow_notice: std::time::Duration,
+    pub first_byte: std::time::Duration,
+    pub answer: std::time::Duration,
+}
+
+/// Today's numbers, for a key no level sets. They mirror `letibot_provider::openai::DEFAULT_*`
+/// (60 s, 600 s) and the daemon's silence notice (15 s).
+pub const DEFAULT_SLOW_NOTICE_SECS: u64 = 15;
+pub const DEFAULT_FIRST_BYTE_SECS: u64 = 60;
+pub const DEFAULT_ANSWER_SECS: u64 = 600;
+
 /// `[provider]` in a `leticode.toml`.
 ///
 /// ```toml
 /// [provider]
 /// on_limit = "switch"                            # or "wait"
 /// fallback = ["deepseek", "glm-coding/glm-5.3"]  # where a switch goes, in order
+/// slow_notice_seconds = 15                       # silence before the "model slow" notice
+/// first_byte_seconds = 60                        # silence before the round fails
+/// answer_seconds = 600                           # the whole answer's budget
+///
+/// [provider.glm]                                 # one preset: the same three keys
+/// slow_notice_seconds = 90
+///
+/// [provider."glm-coding/glm-5.3"]                # one model: wins over its preset
+/// first_byte_seconds = 120
 /// ```
 ///
 /// `on_limit` absent means `switch` when a fallback list exists and `wait` when nothing is set -
 /// see [`LeticodeConfig::limit_policy`]. `fallback` here is the same list as the file's top-level
 /// `fallback`, and a file that writes both to different lists is refused by name.
+///
+/// The three deadline keys resolve per key: the `provider/model` table, then the preset's table,
+/// then the keys here, then the built-in 15 / 60 / 600 - see [`LeticodeConfig::deadlines`]. A
+/// level's key wins over the same key at the other level. `0` and a `first_byte_seconds` above
+/// `answer_seconds` in one table are refused by file and line.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProviderKeys {
     pub on_limit: Option<OnLimit>,
     pub fallback: Vec<String>,
+    /// The deadline keys written directly under `[provider]`.
+    pub deadlines: DeadlineKeys,
+    /// `[provider.NAME]` tables: NAME is a preset or `provider/model`.
+    pub overrides: BTreeMap<String, DeadlineKeys>,
 }
 
-#[derive(Debug, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProviderTable {
-    #[serde(default)]
-    on_limit: Option<String>,
-    #[serde(default)]
-    fallback: Option<toml::Value>,
+/// The first line holding `key` after the first holding `after`; `after`'s own when none.
+fn line_after(text: &str, after: &str, key: &str) -> usize {
+    let start = line_of(text, after);
+    text.lines()
+        .enumerate()
+        .skip(start)
+        .find(|(_, l)| l.contains(key))
+        .map_or(start, |(i, _)| i + 1)
 }
 
-fn provider_keys(value: &toml::Value) -> Result<ProviderKeys, String> {
-    let t: ProviderTable = value.clone().try_into().map_err(|e| {
-        format!("[provider]: {e}; the keys are `on_limit` (\"wait\" or \"switch\") and `fallback`")
-    })?;
-    Ok(ProviderKeys {
-        on_limit: t.on_limit.as_deref().map(OnLimit::parse).transpose()?,
-        fallback: match &t.fallback {
-            Some(v) => fallback_list(v)?,
-            None => Vec::new(),
-        },
-    })
+/// The three deadline keys of one table (`scope` is its name in a refusal, `after` where to
+/// start looking for its lines).
+fn deadline_keys(
+    table: &toml::Table,
+    path: &Path,
+    text: &str,
+    user: bool,
+    scope: &str,
+    after: &str,
+) -> Result<DeadlineKeys, String> {
+    let mut out = DeadlineKeys::default();
+    for key in [
+        "slow_notice_seconds",
+        "first_byte_seconds",
+        "answer_seconds",
+    ] {
+        let Some(v) = table.get(key) else { continue };
+        let from = Origin {
+            file: path.to_path_buf(),
+            line: line_after(text, after, key),
+            user,
+        };
+        let n = seconds_at(v, &from, scope, key)?;
+        match key {
+            "slow_notice_seconds" => out.slow_notice_seconds = Some(n),
+            "first_byte_seconds" => out.first_byte_seconds = Some(n),
+            _ => out.answer_seconds = Some(n),
+        }
+    }
+    if let (Some(f), Some(a)) = (out.first_byte_seconds, out.answer_seconds)
+        && f > a
+    {
+        return Err(format!(
+            "{}:{}: [{scope}] first_byte_seconds = {f} is above answer_seconds = {a} - the first \
+             byte is part of the answer, so it cannot be given longer than the whole",
+            path.display(),
+            line_after(text, after, "first_byte_seconds")
+        ));
+    }
+    Ok(out)
+}
+
+fn provider_keys(
+    value: &toml::Value,
+    path: &Path,
+    text: &str,
+    user: bool,
+) -> Result<ProviderKeys, String> {
+    let keys = "the keys are `on_limit` (\"wait\" or \"switch\"), `fallback`, \
+                `slow_notice_seconds`, `first_byte_seconds`, `answer_seconds`, and `[provider.NAME]` \
+                tables (a preset or `provider/model`) holding the last three";
+    let table = table_at(value, path, text, "provider", keys)?;
+    let mut out = ProviderKeys::default();
+    for (key, v) in table {
+        let from = at(path, text, key, user);
+        match key.as_str() {
+            "on_limit" => {
+                let s = v.as_str().ok_or_else(|| {
+                    format!(
+                        "{from}: [provider] on_limit is a string, not {}",
+                        kind_of(v)
+                    )
+                })?;
+                out.on_limit = Some(OnLimit::parse(s).map_err(|why| format!("{from}: {why}"))?);
+            }
+            "fallback" => {
+                out.fallback = fallback_list(v).map_err(|why| format!("{from}: {why}"))?;
+            }
+            "slow_notice_seconds" | "first_byte_seconds" | "answer_seconds" => {}
+            name => {
+                let Some(sub) = v.as_table() else {
+                    return Err(format!("{from}: [provider] `{name}` is not a key; {keys}"));
+                };
+                for k in sub.keys() {
+                    if k.as_str() == "on_limit" || k.as_str() == "fallback" {
+                        return Err(format!(
+                            "{}:{}: [provider.{name}] `{k}` is not a key here; a preset or model \
+                             table holds `slow_notice_seconds`, `first_byte_seconds` and \
+                             `answer_seconds`",
+                            path.display(),
+                            line_after(text, name, k)
+                        ));
+                    }
+                }
+                let scope = format!("provider.{name}");
+                out.overrides.insert(
+                    name.to_string(),
+                    deadline_keys(sub, path, text, user, &scope, name)?,
+                );
+            }
+        }
+    }
+    out.deadlines = deadline_keys(table, path, text, user, "provider", "[provider]")?;
+    Ok(out)
 }
 
 /// `[exec]` in a `leticode.toml`.
@@ -1558,7 +1702,7 @@ impl LeticodeConfig {
                 None => ExecKeys::default(),
             },
             provider: match &file.provider {
-                Some(v) => provider_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
+                Some(v) => provider_keys(v, path, &text, level == Level::User)?,
                 None => ProviderKeys::default(),
             },
             // The six tables below refuse with their own file and line (`{from}`), so their
@@ -1727,6 +1871,18 @@ impl LeticodeConfig {
                 } else {
                     other.provider.fallback.clone()
                 },
+                deadlines: self
+                    .provider
+                    .deadlines
+                    .overridden_by(other.provider.deadlines),
+                overrides: {
+                    let mut m = self.provider.overrides.clone();
+                    for (name, k) in &other.provider.overrides {
+                        let base = m.get(name).copied().unwrap_or_default();
+                        m.insert(name.clone(), base.overridden_by(*k));
+                    }
+                    m
+                },
             },
             // The three numbers the runtime threads, and the head's three tables: the project's
             // answer for each key, and the two lists that are suppressions (`mute`, and a profile
@@ -1789,6 +1945,28 @@ impl LeticodeConfig {
             } else {
                 OnLimit::Switch
             })
+    }
+
+    /// The deadlines for a session on `name` (a preset) and `model`: per key, the
+    /// `[provider."name/model"]` table, then `[provider.name]`, then `[provider]`, then the
+    /// built-in numbers. A first byte above the answer budget (two levels disagreeing) is cut to it.
+    pub fn deadlines(&self, name: &str, model: Option<&str>) -> Deadlines {
+        let p = &self.provider;
+        let pick = |f: fn(&DeadlineKeys) -> Option<u64>, default: u64| {
+            model
+                .and_then(|m| p.overrides.get(&format!("{name}/{m}")))
+                .and_then(f)
+                .or_else(|| p.overrides.get(name).and_then(f))
+                .or_else(|| f(&p.deadlines))
+                .unwrap_or(default)
+        };
+        let secs = std::time::Duration::from_secs;
+        let answer = secs(pick(|k| k.answer_seconds, DEFAULT_ANSWER_SECS));
+        Deadlines {
+            slow_notice: secs(pick(|k| k.slow_notice_seconds, DEFAULT_SLOW_NOTICE_SECS)),
+            first_byte: secs(pick(|k| k.first_byte_seconds, DEFAULT_FIRST_BYTE_SECS)).min(answer),
+            answer,
+        }
     }
 
     /// Which models the file set, as the disclosure says them, and for a role that set
@@ -3160,6 +3338,94 @@ mod tests {
             ["deepseek"],
             "the same list twice is one list"
         );
+    }
+
+    /// The deadline keys parse, resolve model over preset over table over built-in, per key, and
+    /// the project's key beats the user's.
+    #[test]
+    fn provider_deadlines_resolve_by_model_then_preset_then_table_then_builtin() {
+        let dir = project_dir("deadlines");
+        let none = LeticodeConfig::default().deadlines("glm", Some("glm-5.3"));
+        assert_eq!(
+            (
+                none.slow_notice.as_secs(),
+                none.first_byte.as_secs(),
+                none.answer.as_secs()
+            ),
+            (15, 60, 600)
+        );
+        let user = write_file(
+            &sub(&dir, "user"),
+            "[provider]\nslow_notice_seconds = 20\nanswer_seconds = 900\n\
+             [provider.glm]\nslow_notice_seconds = 90\nfirst_byte_seconds = 100\n\
+             [provider.\"glm/glm-5.3\"]\nfirst_byte_seconds = 120\n",
+        );
+        let project = write_file(
+            &sub(&dir, "project"),
+            "[provider.glm]\nslow_notice_seconds = 45\n",
+        );
+        let merged = LeticodeConfig::load_as(&user, Level::User)
+            .unwrap()
+            .overridden_by(&LeticodeConfig::load(&project).unwrap());
+        let d = |name, model| {
+            let d = merged.deadlines(name, model);
+            (
+                d.slow_notice.as_secs(),
+                d.first_byte.as_secs(),
+                d.answer.as_secs(),
+            )
+        };
+        assert_eq!(
+            d("glm", Some("glm-5.3")),
+            (45, 120, 900),
+            "model, preset, table"
+        );
+        assert_eq!(d("glm", Some("other")), (45, 100, 900), "the preset only");
+        assert_eq!(
+            d("deepseek", None),
+            (20, 60, 900),
+            "the table, then built-in"
+        );
+    }
+
+    /// Nonsense deadlines are refused naming file, line and key.
+    #[test]
+    fn nonsense_deadlines_are_refused_with_file_line_and_key() {
+        let dir = project_dir("deadline_refusals");
+        for (tag, body, want, line) in [
+            (
+                "zero",
+                "\n[provider]\nslow_notice_seconds = 0\n",
+                "slow_notice_seconds",
+                3,
+            ),
+            (
+                "crossed",
+                "\n[provider]\nfirst_byte_seconds = 90\nanswer_seconds = 30\n",
+                "first_byte_seconds",
+                3,
+            ),
+            (
+                "preset_zero",
+                "\n[provider.glm]\nanswer_seconds = 0\n",
+                "[provider.glm] answer_seconds",
+                3,
+            ),
+            (
+                "preset_key",
+                "\n[provider.glm]\non_limit = \"wait\"\n",
+                "on_limit",
+                3,
+            ),
+        ] {
+            let path = write_file(&sub(&dir, tag), body);
+            let err = LeticodeConfig::load(&path).expect_err(tag);
+            assert!(
+                err.contains(&format!("leticode.toml:{line}:")),
+                "{tag}: {err}"
+            );
+            assert!(err.contains(want), "{tag}: {err}");
+        }
     }
 
     // ---- K9: config, not a plugin (the plan's §4.3, §6 K9) ----

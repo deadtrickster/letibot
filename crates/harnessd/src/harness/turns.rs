@@ -2371,7 +2371,9 @@ impl Harness {
             let watch = SilenceWatch::start(
                 self.hub.clone(),
                 cloud_host,
-                std::time::Duration::from_secs(SILENT_ROUND_SECS),
+                self.cfg
+                    .deadlines_for(self.cfg.provider.as_ref())
+                    .slow_notice,
                 self.model_name(),
                 stalls,
                 spoke,
@@ -4045,11 +4047,6 @@ fn silence_host(provider: Option<&dyn letibot_backend::MessagesBackend>) -> Opti
     provider.map(|p| p.authority())
 }
 
-/// How long a CLOUD round may produce nothing before the silence is worth naming: fifteen seconds, a judgement
-/// above the 12.44 s a degraded provider was measured taking to its first byte, so the notice means slower than a
-/// healthy provider and not this failed.
-const SILENT_ROUND_SECS: u64 = 15;
-
 /// The notice for a cloud round that has produced nothing, when one is warranted: pure, with no clock and no
 /// thread, so the decision is testable on its own. Nothing here can see the status, so it claims nothing about the
 /// request: it says the round has produced nothing and names the host it waits on.
@@ -4292,6 +4289,12 @@ mod endpoint_retry {
         silence_host, silence_notice,
     };
     use letibot_turn::{Endpoint, HttpError};
+
+    fn letibot_leticode_config_for_test(
+        file: &std::path::Path,
+    ) -> crate::leticode_config::LeticodeConfig {
+        crate::leticode_config::LeticodeConfig::load(file).expect("test config parses")
+    }
 
     fn status(code: u16) -> HttpError {
         HttpError::Status {
@@ -4795,6 +4798,93 @@ mod endpoint_retry {
         watch.finish();
         assert_eq!(said.len(), 1, "one notice, not one per slice: {said:?}");
         assert!(said[0].contains("api.deepseek.com"), "{}", said[0]);
+    }
+
+    /// The silence threshold is the session's provider's: a `[provider.glm]` table moves it for GLM and
+    /// leaves every other provider on the built-in 15 s, and a `/models` switch changes which one is read.
+    #[test]
+    fn the_silence_notice_uses_the_providers_configured_threshold() {
+        use letibot_sessionlog::SessionEvent;
+        let dir = std::env::temp_dir().join(format!("silence-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("leticode.toml");
+        std::fs::write(
+            &file,
+            "[provider.glm]\nslow_notice_seconds = 1\n[provider.deepseek]\nslow_notice_seconds = 90\n",
+        )
+        .unwrap();
+        let mut cfg = crate::config::Config::for_this_box(&dir);
+        cfg.leticode = letibot_leticode_config_for_test(&file);
+        let pc = |name: &str| crate::config::ProviderConfig {
+            name: name.into(),
+            model: None,
+            api_key: None,
+            thinking: false,
+        };
+        assert_eq!(cfg.deadlines_for(None).slow_notice.as_secs(), 15);
+        assert_eq!(
+            cfg.deadlines_for(Some(&pc("deepseek")))
+                .slow_notice
+                .as_secs(),
+            90
+        );
+        let threshold = cfg.deadlines_for(Some(&pc("glm"))).slow_notice;
+        assert_eq!(threshold.as_secs(), 1);
+        let hub = letibot_sessionlog::hub::Hub::new("silence-cfg");
+        let watch = SilenceWatch::start(
+            hub.clone(),
+            Some("api.z.ai".into()),
+            threshold,
+            "glm".into(),
+            0,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1400));
+        let said = hub
+            .retained()
+            .iter()
+            .filter(|e| {
+                matches!(&e.event, SessionEvent::Warning { code, .. } if code == "model_slow_first_byte")
+            })
+            .count();
+        watch.finish();
+        assert_eq!(said, 1, "the configured 1 s threshold fired");
+    }
+
+    /// `provider_timeout`, when a caller sets it, is the answer budget over the file's, and the first
+    /// byte never outlasts the answer.
+    #[test]
+    fn the_provider_gets_both_deadlines_from_the_config() {
+        let dir = std::env::temp_dir().join(format!("deadline-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("leticode.toml");
+        std::fs::write(
+            &file,
+            "[provider.glm]\nfirst_byte_seconds = 120\nanswer_seconds = 900\n",
+        )
+        .unwrap();
+        let mut cfg = crate::config::Config::for_this_box(&dir);
+        cfg.leticode = letibot_leticode_config_for_test(&file);
+        let glm = crate::config::ProviderConfig {
+            name: "glm".into(),
+            model: None,
+            api_key: Some("k".into()),
+            thinking: false,
+        };
+        let d = cfg.deadlines_for(Some(&glm));
+        assert_eq!((d.first_byte.as_secs(), d.answer.as_secs()), (120, 900));
+        // build_provider hands both to the provider, neither resetting the other.
+        let hub = letibot_sessionlog::hub::Hub::new("deadline-cfg");
+        let built = crate::harness::open::build_provider(
+            &glm,
+            &serde_json::json!({}),
+            crate::harness::open::provider_notes(&hub),
+            d,
+        );
+        assert!(built.is_ok(), "{:?}", built.err());
+        cfg.provider_timeout = Some(std::time::Duration::from_secs(30));
+        let d = cfg.deadlines_for(Some(&glm));
+        assert_eq!((d.first_byte.as_secs(), d.answer.as_secs()), (30, 30));
     }
 
     /// A round that is STREAMING is not silent. The watch's clock was the round's start and it never

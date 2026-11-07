@@ -1318,6 +1318,20 @@ fn mode_beyond_the_mode(mode: &letibot_tools::mode::Mode) -> &'static str {
 }
 
 impl Config {
+    /// The model API deadlines for a session on `pc` (`None` is the local route, which has the
+    /// defaults). `provider_timeout`, when set, is the answer budget over the file's.
+    pub fn deadlines_for(&self, pc: Option<&ProviderConfig>) -> crate::leticode_config::Deadlines {
+        let mut d = match pc {
+            Some(pc) => self.leticode.deadlines(&pc.name, pc.model.as_deref()),
+            None => self.leticode.deadlines("", None),
+        };
+        if let Some(answer) = self.provider_timeout {
+            d.answer = answer;
+            d.first_byte = d.first_byte.min(answer);
+        }
+        d
+    }
+
     /// How much of the window must stay free for a turn to be safe to start. A compaction is itself a
     /// turn, so firing it with no room left fails like the turn it was meant to prevent. The session
     /// that died was at 93% and the 500 arrived on the NEXT turn.

@@ -558,7 +558,7 @@ impl Harness {
                     &pc,
                     &self.cfg.sampling,
                     provider_notes(&self.hub),
-                    self.cfg.provider_timeout,
+                    self.cfg.deadlines_for(Some(&pc)),
                 )
                 .map_err(HarnessError::Setup)?;
                 let mut line = format!(
