@@ -63,6 +63,8 @@ pub(crate) enum Target {
     RoomChan,
     /// A row of the rooms sidebar; its one stop is the row's index in `Sidebar::rows`.
     SideRow,
+    /// The sidebar's left border: a press on it starts a resize, a click does nothing.
+    SideBorder,
     /// The decision card; its stops are the ladder's rows.
     Decision,
     /// The quit card; its stops are its two choices.

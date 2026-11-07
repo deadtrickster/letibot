@@ -188,6 +188,10 @@ impl App {
                 self.sidebar_enter_key();
                 return None;
             }
+            Key::AltNarrow | Key::AltWiden => {
+                self.sidebar_resize_key(k == Key::AltWiden);
+                return None;
+            }
             k => k,
         };
         // A wheel notch goes to the surface under the pointer - see [`App::wheel_at`]. One
@@ -868,6 +872,9 @@ pub enum Key {
     AltL,
     /// alt-j: the keyboard into the rooms sidebar.
     AltJ,
+    /// alt-< and alt->: the rooms sidebar narrower and wider.
+    AltNarrow,
+    AltWiden,
     Backspace,
     Delete,
     Left,
@@ -1022,6 +1029,8 @@ impl Key {
             | Key::AltH
             | Key::AltL
             | Key::AltJ
+            | Key::AltNarrow
+            | Key::AltWiden
             | Key::PageUp
             | Key::PageDown
             | Key::WheelUp

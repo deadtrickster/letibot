@@ -27,6 +27,7 @@ impl App {
             Target::TodoWait => self.focused_surface() == Some(Surface::Todos),
             Target::RoomMember | Target::RoomChan => self.focused_surface() == Some(Surface::Rooms),
             Target::SideRow => !self.sidebar.rows.is_empty(),
+            Target::SideBorder => self.sidebar.drawn,
             Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture => {
                 self.drawn() == Drawn::Conversation
             }
@@ -203,6 +204,7 @@ impl App {
                 }
                 return ControlFlow::Break(None);
             }
+            (Target::SideBorder, _) => return ControlFlow::Break(None),
             (Target::SideRow, Some(k)) => {
                 return ControlFlow::Break(self.sidebar_click(k));
             }
@@ -318,7 +320,8 @@ impl App {
         match target {
             Target::Surface(_) | Target::TodoWait | Target::PluginPanel | Target::RoomMember
             | Target::RoomChan
-            | Target::SideRow => {
+            | Target::SideRow
+            | Target::SideBorder => {
                 self.scroll_pane(up, NOTCH)
             }
             // A window, not an open run - a run is the conversation's own rows and the

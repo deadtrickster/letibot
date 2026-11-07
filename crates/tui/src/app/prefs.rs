@@ -278,6 +278,7 @@ impl App {
         self.todo_template = p.todo_template;
         self.todo_seed = p.todo_seed;
         self.git_format = p.git_format;
+        self.sidebar.width = p.rooms_sidebar_width.map(usize::from);
         // A format that was loaded before the first reading still has nothing to render
         // over - but a head that RESUMES into a session renders the header at once, so the
         // format is applied here too and not only on the reader's first tick.
@@ -326,6 +327,7 @@ impl App {
         }
         self.quiet.muted.retain(|code| known_warning(code));
         self.sidebar_set(cfg.ui.rooms_sidebar.unwrap_or(false));
+        self.sidebar.default_width = cfg.ui.rooms_sidebar_width.map(usize::from);
         let (overrides, key_said) = KeyOverrides::resolve(&cfg.keys);
         self.key_overrides = overrides;
         problems.extend(key_said);
@@ -354,6 +356,7 @@ impl App {
             todo_template: self.todo_template.clone(),
             todo_seed: self.todo_seed.clone(),
             git_format: self.git_format.clone(),
+            rooms_sidebar_width: self.sidebar.width.and_then(|n| u16::try_from(n).ok()),
             // Not the head's to write: `save` keeps the file's own `theme` and `color.` lines
             // where they are, so these are only what the struct needs to be whole.
             theme: rano::theme::active_name(),

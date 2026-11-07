@@ -196,3 +196,83 @@ fn the_rooms_view_has_no_list_of_its_own_beside_the_sidebar() {
     let (x, _) = pos(&rows, "host room", false);
     assert!(x > 8, "the list is back: {x}");
 }
+
+#[test]
+fn the_sidebar_starts_a_third_wide_and_keeps_the_transcripts_minimum() {
+    let mut a = sidebar_with_rooms();
+    a.screen(150, 24);
+    assert_eq!(a.sidebar.last_w, 50);
+    // Wide enough to ask for more than the transcript can spare: held at its minimum.
+    a.sidebar.width = Some(400);
+    a.screen(150, 24);
+    assert_eq!(a.sidebar.last_w, 150 - MAIN_MIN - 1);
+    // And no narrower than the list's own minimum.
+    a.sidebar.width = Some(2);
+    a.screen(150, 24);
+    assert_eq!(a.sidebar.last_w, crate::app::sidebar::SIDE_MIN);
+}
+
+#[test]
+fn the_border_drags_and_the_keys_resize() {
+    let mut a = sidebar_with_rooms();
+    a.screen(150, 24);
+    let border = 150 - a.sidebar.last_w - 1;
+    // The hand is over the border.
+    a.hover_at(border as u16, 5);
+    assert_eq!(a.take_pointer(), Some(true));
+    a.key(Key::Press {
+        x: border as u16,
+        y: 5,
+    });
+    a.key(Key::Drag { x: 90, y: 5 });
+    a.key(Key::Release { x: 90, y: 5 });
+    a.screen(150, 24);
+    assert_eq!(a.sidebar.last_w, 150 - 90 - 1);
+    assert!(a.selection.is_none(), "the drag selected text");
+
+    a.key(Key::AltWiden);
+    a.screen(150, 24);
+    assert_eq!(a.sidebar.last_w, 150 - 90 - 1 + 4);
+    a.key(Key::AltNarrow);
+    a.screen(150, 24);
+    a.key(Key::AltNarrow);
+    a.screen(150, 24);
+    assert_eq!(a.sidebar.last_w, 150 - 90 - 1 - 4);
+    let hint = a.screen(150, 24).last().cloned().unwrap();
+    assert!(hint.contains("alt-< alt->"), "{hint}");
+}
+
+/// The width the operator chose is in `head.toml` and comes back at the next start. The configured
+/// width is only the start.
+#[test]
+fn the_chosen_width_persists_and_the_configured_one_starts_it() {
+    let dir = std::env::temp_dir().join(format!("letibot-sidebar-w-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("leticode.toml"),
+        "[ui]\nrooms_sidebar = true\nrooms_sidebar_width = 30\n",
+    )
+    .unwrap();
+    let path = dir.join("head.toml");
+
+    let mut a = app();
+    a.wiring.workspace = dir.display().to_string();
+    a.prefs_path = Some(path.clone());
+    a.load_prefs();
+    a.screen(150, 24);
+    assert_eq!(a.sidebar.last_w, 30, "the configured start");
+    a.key(Key::AltWiden);
+    assert_eq!(a.sidebar.width, Some(34));
+
+    let mut b = app();
+    b.wiring.workspace = dir.display().to_string();
+    b.prefs_path = Some(path);
+    b.load_prefs();
+    b.screen(150, 24);
+    assert_eq!(
+        b.sidebar.last_w, 34,
+        "the dragged width wins after a restart"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

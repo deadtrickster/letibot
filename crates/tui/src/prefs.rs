@@ -53,6 +53,9 @@ pub struct HeadPrefs {
     /// `color.ROLE = "look"` lines, in file order: one role overridden on top of the theme.
     /// Kept as written; `rano::theme::resolve` reads and reports them.
     pub colors: Vec<(String, String)>,
+    /// The rooms sidebar's width in columns, as the operator last dragged or keyed it. `None` is
+    /// the configured or default width.
+    pub rooms_sidebar_width: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +138,7 @@ impl Default for HeadPrefs {
             git_format: None,
             theme: None,
             colors: Vec::new(),
+            rooms_sidebar_width: None,
         }
     }
 }
@@ -338,6 +342,15 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
             // The theme, and single-role overrides on top of it. Their values are read by
             // `rano::theme::resolve` when the head applies them, which is where a bad role or a
             // bad look is reported - so here they are only kept.
+            "rooms_sidebar_width" => match v.trim() {
+                "" | "false" => p.rooms_sidebar_width = None,
+                n => match n.parse::<u16>() {
+                    Ok(n) if n > 0 => p.rooms_sidebar_width = Some(n),
+                    _ => notes.push(format!(
+                        "head.toml: rooms_sidebar_width = {n:?} is a column count or false"
+                    )),
+                },
+            },
             "theme" => p.theme = (!v.is_empty()).then_some(v),
             k if k.starts_with("color.") => {
                 p.colors.push((k["color.".len()..].to_string(), v));
@@ -352,7 +365,7 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
 /// key from a newer build - where it was. Creates the directory.
 pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let ours: [(&str, String); 10] = [
+    let ours: [(&str, String); 11] = [
         ("diff", format!("\"{}\"", p.diff.as_str())),
         ("thinking", format!("\"{}\"", p.thinking)),
         ("tools", format!("\"{}\"", p.tools)),
@@ -372,6 +385,11 @@ pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
             },
         ),
         ("todo_seed", format!("\"{}\"", p.todo_seed.join(","))),
+        (
+            "rooms_sidebar_width",
+            p.rooms_sidebar_width
+                .map_or_else(|| "false".to_string(), |n| n.to_string()),
+        ),
         // The template itself quoted, or `false` bare - the two words the file may hold.
         (
             "git_format",

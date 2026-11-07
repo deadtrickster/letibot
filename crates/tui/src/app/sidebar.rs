@@ -12,6 +12,8 @@ use crate::app::*;
 pub(crate) const MAIN_MIN: usize = 72;
 /// The narrowest sidebar worth drawing.
 pub(crate) const SIDE_MIN: usize = 18;
+/// Columns one resize key moves the border.
+const RESIZE_STEP: usize = 4;
 
 #[derive(Debug, Default)]
 pub(crate) struct Sidebar {
@@ -19,6 +21,15 @@ pub(crate) struct Sidebar {
     pub focus: bool,
     /// Set by the frame: the sidebar is drawn beside this frame's `/rooms` view.
     pub drawn: bool,
+    /// The width the operator chose (drag or keys), kept in `head.toml`.
+    pub width: Option<usize>,
+    /// The configured starting width, `[ui] rooms_sidebar_width`.
+    pub default_width: Option<usize>,
+    /// The border is held: motion resizes instead of selecting.
+    pub dragging: bool,
+    /// The terminal width of the last frame and the sidebar's width in it.
+    pub term_w: usize,
+    pub last_w: usize,
     /// The rows of the last frame, by screen row.
     pub rows: Vec<(usize, ListRow)>,
 }
@@ -38,20 +49,28 @@ impl App {
         if !self.sidebar.on {
             return Fit::Off;
         }
-        let want = self
-            .rooms_left_width(term_w * 2 / 3)
-            .clamp(SIDE_MIN, (term_w / 3).max(SIDE_MIN));
-        if term_w >= MAIN_MIN + 1 + want {
-            Fit::Wide(want)
-        } else {
-            Fit::Collapsed
+        if term_w < MAIN_MIN + 1 + SIDE_MIN {
+            return Fit::Collapsed;
         }
+        // A third of the terminal unless chosen or configured, never so wide that the transcript
+        // drops under its minimum.
+        let want = self
+            .sidebar
+            .width
+            .or(self.sidebar.default_width)
+            .unwrap_or(term_w / 3);
+        Fit::Wide(want.clamp(SIDE_MIN, term_w - MAIN_MIN - 1))
     }
 
     /// The frame with the sidebar beside it, or a strip row that says it is collapsed.
     pub(crate) fn compose_framed(&mut self, term_w: usize, h: usize) -> Vec<String> {
         let fit = self.sidebar_fit(term_w);
         self.sidebar.drawn = matches!(fit, Fit::Wide(_));
+        self.sidebar.term_w = term_w;
+        self.sidebar.last_w = match fit {
+            Fit::Wide(w) => w,
+            _ => 0,
+        };
         match fit {
             Fit::Off => {
                 self.sidebar.rows.clear();
@@ -105,6 +124,17 @@ impl App {
                     }
                 }
                 let x = main_w + 1;
+                // The border column is the resize handle: a press on it starts a drag.
+                self.hits.push(Hit {
+                    rect: Rect {
+                        x: main_w,
+                        y: 0,
+                        w: 1,
+                        h: out.len(),
+                    },
+                    target: Target::SideBorder,
+                    stops: Vec::new(),
+                });
                 for (k, (r, row)) in self.sidebar.rows.clone().into_iter().enumerate() {
                     // The checkbox is the last three cells of its line, a target of its own.
                     let (hx, hw) = match row {
@@ -151,6 +181,58 @@ impl App {
         } else {
             "rooms sidebar off"
         });
+    }
+
+    /// Set the width and keep it: clamped to the minimums, written to `head.toml`.
+    pub(crate) fn sidebar_set_width(&mut self, want: usize) {
+        let t = self.sidebar.term_w;
+        if t < MAIN_MIN + 1 + SIDE_MIN {
+            return;
+        }
+        self.sidebar.width = Some(want.clamp(SIDE_MIN, t - MAIN_MIN - 1));
+    }
+
+    /// alt-< and alt->: narrower and wider by a few columns.
+    pub(crate) fn sidebar_resize_key(&mut self, wider: bool) {
+        if !self.sidebar.on || self.sidebar.last_w == 0 {
+            return;
+        }
+        let w = self.sidebar.last_w;
+        self.sidebar_set_width(if wider {
+            w + RESIZE_STEP
+        } else {
+            w.saturating_sub(RESIZE_STEP)
+        });
+        let _ = self.save_prefs(RetiredWrite::Union);
+    }
+
+    /// A press on column `x`: the border starts a resize. `true` when it was taken.
+    pub(crate) fn sidebar_press(&mut self, x: u16, _y: u16) -> bool {
+        if self.sidebar.drawn && usize::from(x) == self.sidebar.term_w - self.sidebar.last_w - 1 {
+            self.sidebar.dragging = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Motion while the border is held: the sidebar's left edge follows the pointer.
+    pub(crate) fn sidebar_drag(&mut self, x: u16) -> bool {
+        if !self.sidebar.dragging {
+            return false;
+        }
+        let t = self.sidebar.term_w;
+        self.sidebar_set_width(t.saturating_sub(usize::from(x) + 1));
+        true
+    }
+
+    /// The button came up on a resize: keep the width.
+    pub(crate) fn sidebar_release(&mut self) -> bool {
+        if !std::mem::take(&mut self.sidebar.dragging) {
+            return false;
+        }
+        let _ = self.save_prefs(RetiredWrite::Union);
+        true
     }
 
     /// alt-l: the sidebar on or off.

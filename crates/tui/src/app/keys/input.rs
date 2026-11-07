@@ -50,6 +50,8 @@ fn key(k: KeyEvent) -> Option<Key> {
         // alt-l / alt-j: the rooms sidebar on or off, and into it (`app/sidebar.rs`).
         KeyCode::Char('l') if m == Mods::ALT => Key::AltL,
         KeyCode::Char('j') if m == Mods::ALT => Key::AltJ,
+        KeyCode::Char('<') if m == Mods::ALT => Key::AltNarrow,
+        KeyCode::Char('>') if m == Mods::ALT => Key::AltWiden,
         KeyCode::Char('f') if m == Mods::ALT => Key::WordRight,
         // In many terminals Ctrl+Shift+Z arrives byte-identical to Ctrl+Z, so redo needs a
         // second binding.
@@ -375,6 +377,8 @@ mod tests {
             (b"\x1bh", Key::AltH),
             (b"\x1bl", Key::AltL),
             (b"\x1bj", Key::AltJ),
+            (b"\x1b<", Key::AltNarrow),
+            (b"\x1b>", Key::AltWiden),
             (b"\x01", Key::Home),
             (b"\x09", Key::Tab),
             // Its own key now: end-of-line in the composer, the editor on an empty prompt. The

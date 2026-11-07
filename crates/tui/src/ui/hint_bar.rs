@@ -207,6 +207,11 @@ impl App {
         } else {
             format!("{} · {tail}", lead.join(" · "))
         };
+        let tail = if self.sidebar.drawn {
+            format!("alt-< alt-> sidebar width · {tail}")
+        } else {
+            tail
+        };
         crate::ui::render::row(
             &HintBar {
                 editor,
