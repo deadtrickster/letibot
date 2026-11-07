@@ -216,9 +216,14 @@ const PICKER: &[Binding] = &[
         &[On::Right],
         Empty,
         Act::Expand,
-        Text("opens its subagents"),
+        Text("expands it, or steps in"),
     ),
-    b(&[On::Left], Empty, Act::Collapse, Text("closes them")),
+    b(
+        &[On::Left],
+        Empty,
+        Act::Collapse,
+        Text("collapses it, or steps out"),
+    ),
     b(&[On::Enter], Empty, Act::Open, Says::Row),
     // `del` takes the row off the list and `ctrl-z` puts it back, asked twice: the first press
     // says what would go, the second does it. Not letters, because the picker's typed path is a

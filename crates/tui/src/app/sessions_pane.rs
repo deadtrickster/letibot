@@ -56,6 +56,21 @@ pub(crate) struct Listed {
     pub(crate) enter: Option<RowAct>,
     /// Whether it folds, and which way it stands now.
     pub(crate) open: Option<Fold>,
+    /// The column this row is DRAWN at - what `←` and `→` walk by, so a key that steps out of a
+    /// subtree lands where the eye already is.
+    pub(crate) depth: usize,
+}
+
+impl Listed {
+    /// Whether this row's own rows are drawn under it now.
+    pub(crate) fn is_open(&self) -> bool {
+        matches!(self.open, Some(Fold::Open))
+    }
+
+    /// Whether a fold would put rows under it - a closed row, and not a leaf or a `fixed` one.
+    pub(crate) fn folds_open(&self) -> bool {
+        matches!(self.open, Some(Fold::Closed))
+    }
 }
 
 /// The list, as drawn: the rows the keys act on, and the lines already rendered.
@@ -954,6 +969,7 @@ impl App {
                         number: Some(number),
                         enter: Some(RowAct::switch(id)),
                         open,
+                        depth: r.depth,
                     });
                 }
                 None if matches!(r.node, crate::app::session::Node::FleetUnlisted { .. }) => {
@@ -974,6 +990,7 @@ impl App {
                         number: None,
                         enter: None,
                         open: None,
+                        depth: r.depth,
                     });
                 }
                 None if matches!(r.node, crate::app::session::Node::Fleet { .. }) => {
@@ -1008,6 +1025,7 @@ impl App {
                         number: None,
                         enter: Some(RowAct::switch(f.id.clone())),
                         open: None,
+                        depth: r.depth,
                     });
                 }
                 None => {
@@ -1053,6 +1071,7 @@ impl App {
                         number: None,
                         enter: Some(RowAct::fold()),
                         open,
+                        depth: r.depth,
                     });
                 }
             }
@@ -1239,7 +1258,7 @@ fn tree_of(view: &pv::View, folds: &BTreeMap<String, bool>) -> Option<(Vec<TreeR
         })
     })?;
     let mut rows = Vec::new();
-    for (depth, row) in pv::rows_deep(&tree.rows) {
+    for (base, row) in pv::rows_deep(&tree.rows) {
         let id = row.id().to_string();
         // The host's fold state wins over the plugin's, which is what makes a fold instant: the
         // press changes this map and the next draw, and the layer remembers nothing. Three rows it
@@ -1253,11 +1272,7 @@ fn tree_of(view: &pv::View, folds: &BTreeMap<String, bool>) -> Option<(Vec<TreeR
         };
         rows.push(TreeRow {
             id: (!id.is_empty()).then(|| id.clone()),
-            depth: if row.children.is_empty() {
-                row.depth
-            } else {
-                depth
-            },
+            depth: drawn_depth(base, row),
             number: row.number,
             open,
             role: row.role.map(role_of),
@@ -1278,6 +1293,17 @@ fn tree_of(view: &pv::View, folds: &BTreeMap<String, bool>) -> Option<(Vec<TreeR
         });
     }
     Some((rows, tree.empty.clone()))
+}
+
+/// The column a row is drawn at. A row with children is NESTED and its depth is the walk's own; a
+/// row without is a flat list's, and says its depth itself. One rule for the drawing and the keys,
+/// so a `→` walks where the eye already reads the indent.
+fn drawn_depth(base: usize, row: &pv::Row) -> usize {
+    if row.children.is_empty() {
+        row.depth
+    } else {
+        base
+    }
 }
 
 /// The Enter action a row carries, in the words the head's own list uses - so a plugin's list and
@@ -1349,7 +1375,7 @@ fn listed(view: &pv::View, app: &App) -> Vec<Listed> {
     }) else {
         return out;
     };
-    for (_, row) in pv::rows_deep(&tree.rows) {
+    for (base, row) in pv::rows_deep(&tree.rows) {
         let id = row.id().to_string();
         if id.is_empty() {
             continue;
@@ -1362,6 +1388,7 @@ fn listed(view: &pv::View, app: &App) -> Vec<Listed> {
             (None, _) => None,
         };
         out.push(Listed {
+            depth: drawn_depth(base, row),
             session: app.sessions.iter().position(|s| s.session_id == id),
             number: row.number,
             enter: row.enter.clone(),

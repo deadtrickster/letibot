@@ -267,18 +267,19 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
         "Enter on a sub-session must be an ordinary attach"
     );
 
-    // `←` on the child row closes the TREE EDGE it sits on - the parent stays open in the
-    // project, and the child goes back under it.
+    // `←` on the child row is the way back UP the tree: the cursor goes to the row the child is
+    // drawn under, and nothing is closed - a tree's left on a leaf steps out, it does not fold.
     assert_eq!(
         a.session_rows().len(),
         3,
         "the project and its tree are open"
     );
-    a.key(Key::Left);
+    assert_eq!(a.key(Key::Left), None);
+    assert_eq!(a.session_rows().len(), 3, "left on a leaf closed something");
     assert_eq!(
-        a.session_rows().len(),
-        2,
-        "left did not fold the child back into its parent"
+        a.picker_row().map(|r| r.id),
+        Some("s-root".to_string()),
+        "left on the child did not step out to the row it is drawn under"
     );
 }
 

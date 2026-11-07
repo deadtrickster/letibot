@@ -396,6 +396,146 @@ fn the_fold_works_at_every_level() {
     );
 }
 
+/// The rows the KEYS act on, as ids in drawing order - the list `←` and `→` walk, whichever of
+/// the two drew it (the built-in layer's answer or the head's own).
+fn drawn(a: &App) -> Vec<String> {
+    a.picker_rows().into_iter().map(|r| r.id).collect()
+}
+
+/// Put the cursor on the row with this id, failing with the picture when it is not drawn.
+fn cursor_on(a: &mut App, id: &str) {
+    let rows = drawn(a);
+    let at = rows
+        .iter()
+        .position(|r| r == id)
+        .unwrap_or_else(|| panic!("`{id}` is not drawn: {rows:?}"));
+    a.picker_sel = at;
+}
+
+/// The id under the cursor.
+fn cursor(a: &App) -> Option<String> {
+    a.picker_row().map(|r| r.id)
+}
+
+/// A tree with a conversation that has rows under it: the project's line, the conversation, and
+/// its child's own child - the shape R159's keys are asked about.
+fn a_tree_with_three_levels() -> App {
+    let mut a = a_daemon_with_two_projects();
+    a.set_row_fold("s-habr", true);
+    a.set_row_fold("s-sub-1", true);
+    a
+}
+
+/// `←` on an expanded session closes THAT session and nothing else, and the cursor stays on the
+/// row it just closed. Filed by the operator on 2026-11-08: this key closed the whole project and
+/// left the cursor on whichever project's line slid into the hole.
+#[test]
+fn left_on_an_expanded_session_closes_only_it_and_keeps_the_cursor() {
+    let mut a = a_tree_with_three_levels();
+    let before = drawn(&a);
+    assert!(
+        before.contains(&"s-sub-1".to_string()) && before.contains(&"s-sub-2".to_string()),
+        "the conversation's rows are drawn: {before:?}"
+    );
+    cursor_on(&mut a, "s-habr");
+    assert_eq!(a.key(Key::Left), None);
+    let after = drawn(&a);
+    assert_eq!(
+        cursor(&a).as_deref(),
+        Some("s-habr"),
+        "the cursor left the row it closed: {after:?}"
+    );
+    let kept: Vec<String> = before
+        .into_iter()
+        .filter(|id| id != "s-sub-1" && id != "s-sub-2")
+        .collect();
+    assert_eq!(
+        after, kept,
+        "left closed more than the row under the cursor"
+    );
+}
+
+/// `←` on a leaf steps OUT to the row it is drawn under and closes nothing: a tree's left is the
+/// way back up, and the small subtree a person just opened stays open behind them.
+#[test]
+fn left_on_a_leaf_steps_out_to_its_parent_and_closes_nothing() {
+    let mut a = a_tree_with_three_levels();
+    let before = drawn(&a);
+    cursor_on(&mut a, "s-sub-2");
+    assert_eq!(a.key(Key::Left), None);
+    assert_eq!(
+        cursor(&a).as_deref(),
+        Some("s-sub-1"),
+        "left did not land on the row it is drawn under"
+    );
+    assert_eq!(drawn(&a), before, "a leaf's left closed something");
+    // The row it landed on is EXPANDED, so the next press closes that one and stays - and only
+    // then, on a closed row, does the same key step out to the conversation.
+    assert_eq!(a.key(Key::Left), None);
+    assert_eq!(cursor(&a).as_deref(), Some("s-sub-1"));
+    assert!(
+        !drawn(&a).contains(&"s-sub-2".to_string()),
+        "the second press did not close the row it was on: {:?}",
+        drawn(&a)
+    );
+    assert_eq!(a.key(Key::Left), None);
+    assert_eq!(cursor(&a).as_deref(), Some("s-habr"));
+    assert!(
+        drawn(&a).contains(&"s-sub-1".to_string()),
+        "stepping out closed the row above it too: {:?}",
+        drawn(&a)
+    );
+}
+
+/// `←` on a closed row that is already at the top of its branch moves nothing at all - it does not
+/// close the branch it is in, and it does not jump to the next project's line.
+#[test]
+fn left_on_a_closed_project_moves_nothing_to_another_project() {
+    let mut a = a_daemon_with_two_projects();
+    // The project's line is closed by the fold, and the row after it belongs to another project.
+    a.set_row_fold(LETIBOT, false);
+    let before = drawn(&a);
+    cursor_on(&mut a, LETIBOT);
+    assert_eq!(a.key(Key::Left), None);
+    assert_eq!(
+        cursor(&a).as_deref(),
+        Some(LETIBOT),
+        "the cursor jumped off the closed line: {before:?}"
+    );
+    assert_eq!(drawn(&a), before, "a closed row's left folded something");
+}
+
+/// `→` opens the row under the cursor, and `→` again walks INTO the row it just opened: the first
+/// row drawn under it. A leaf is where the gesture ends.
+#[test]
+fn right_expands_and_right_again_enters_the_first_child() {
+    let mut a = a_tree_with_three_levels();
+    a.set_row_fold("s-sub-1", false);
+    let closed = drawn(&a);
+    assert!(
+        !closed.contains(&"s-sub-2".to_string()),
+        "the grandchild starts folded away: {closed:?}"
+    );
+    cursor_on(&mut a, "s-sub-1");
+    assert_eq!(a.key(Key::Right), None, "expanding is not a daemon action");
+    assert!(
+        drawn(&a).contains(&"s-sub-2".to_string()),
+        "right did not open the row under the cursor: {:?}",
+        drawn(&a)
+    );
+    assert_eq!(
+        cursor(&a).as_deref(),
+        Some("s-sub-1"),
+        "opening a row moved the cursor off it"
+    );
+    // The second press walks in, and the row it lands on is the first one drawn under it.
+    assert_eq!(a.key(Key::Right), None);
+    assert_eq!(cursor(&a).as_deref(), Some("s-sub-2"));
+    // A leaf has nothing under it, so the gesture ends there rather than moving elsewhere.
+    assert_eq!(a.key(Key::Right), None);
+    assert_eq!(cursor(&a).as_deref(), Some("s-sub-2"));
+}
+
 /// A click selects what it points at, and acts on a node's line - the row under the pointer,
 /// from the same enumeration the drawing wrote.
 #[test]
