@@ -61,7 +61,6 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R132 | `skills_path.rs` refuses its own session as written by another process, once under load | Code work | the root cause; seen once in a full gate, 6 reruns and the next gate passed |
 | R133 | The one-shot env report prints its lines out of order | Code work | a reproduction and the fix |
 | R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | the next stop's line from `~/.local/state/letibot/scroll-stalls.log`, which the head now writes at each stop |
-| R135 | The context-claim detector's `carry` anchor is not calibrated | Code work | score the store's sentences carrying `carry` near `session` against the floor, as the 747-sentence set was |
 | R136 | Answer waits: a row waits on another top-level session's answer | Code work | all of the build, per `docs/answer-waits.md` (operator's rulings 2026-11-07 are in it) |
 | R137 | Todo graphs that span projects | Code work | the design; an answer-wait ask is the first cross-project edge |
 | R138 | Stable session identities across hosts, through migrations | Code work | the design; until then asks are same-host only |
@@ -839,9 +838,22 @@ The environment trailer a one-shot command appends (`shell::oneshot_trailer`) wa
 
 ## R135 - The context-claim detector's `carry` anchor is not calibrated
 
-**Status:** open. left: the measurement.
+**Status:** SETTLED 2026-11-07. Measured on this box's store, read once and read-only (4,316,024 sentences of assistant and reasoning prose, 1,421 of them scorable), every scorable sentence labelled by hand - 141 claims, 1,280 not - into `~/.local/share/letibot/calibration/context_claim_sentences.tsv` on lab2x1 (session text, kept out of the public repository; the test skips where it is absent). left: nothing.
 
 A session stopped at 842k of 1M with five rows open, saying *"I'm at the end of what I can carry in this session"*. `context_claim` anchors only on `context` and `room`, so the sentence was never scored. `carry` is now an anchor when `session` is in its window, with two exemplars, and the module's tests pass. The floor (0.25) was measured on 747 labelled sentences that did not include this anchor, so the store's sentences with `carry` near `session` should be scored against it the same way.
+
+**The `carry` walk (R135's own):** 122 sentences have `carry` inside the window around `session`. None is a claim, and every one scores 0.000 - no window carries a capacity word as well, so the anchor adds no false positive to the floor. The sentence that filed the row is NOT in the store any more (compacted), so the anchor's only positive evidence is its own exemplar, asserted by `the_family_is_caught_in_other_words` and again by the calibration test.
+
+**The 747-set walk, re-derived the same way, moved the floor.** The code as filed caught 27 of the 141 claims and called 74 of the 1,280 negatives a claim: precision 0.267, recall 0.191 at 0.25. Today's store speaks mostly in *holding* claims ("I have enough context", "both are in my context") and in this repository's own noun, `room`, so `HOLDING` grew the holding family (6 to 16), `EXEMPLARS` the budget family (`given my context budget`, `I've used a lot of context`, 14 more), a percentage is a token (`49%`), and three gates now decide whether a window is a claim at all: an owner, a capacity word (`CAPACITY`; `ROOM_CAPACITY` and no article for the uncountable `room`), and `session` for `carry`. `FLOOR` moved 0.25 to 0.28.
+
+| floor | claims over | negatives over | precision | recall |
+|---|---|---|---|---|
+| 0.25 (before this change) | 27/141 | 74/1280 | 0.267 | 0.191 |
+| 0.25 (after) | 90/141 | 5/1280 | 0.947 | 0.638 |
+| **0.28 (after, FLOOR)** | **87/141** | **2/1280** | **0.978** | **0.617** |
+| 0.40 (above every negative) | 59/141 | 0/1280 | 1.000 | 0.418 |
+
+The two negatives over the floor are `"the enormous amount of context-only messages"` (0.391) and `"the spike used a fresh context per configuration"` (0.367) - code-sense collisions no word gate separates; 0.40, above every negative, costs a third of the recall. Test: `context_claim::tests::the_floor_is_measured_on_the_labelled_sentences`, which asserts these counts; the module doc carries the same measurement.
 
 ## R136 - Answer waits: a row waits on another top-level session's answer
 

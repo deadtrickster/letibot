@@ -21,38 +21,57 @@
 //! costs one line telling the model the truth about its own fill. Every claim found is logged to
 //! [`LOG`], so the floor is tuned from what happened.
 //!
-//! # How a sentence is scored: a window around the noun, owned by the speaker
+//! # How a sentence is scored: a window around the noun, owned by the speaker, that measures it
 //!
 //! Plain sentence-level cosine was not good enough: the excuse is often a subordinate clause of a
 //! long sentence and cosine normalises by the whole sentence's length, so the clause drowns. The
-//! score is a window of [`REACH`] terms either side of each [`ANCHORS`] noun, and the window must
-//! carry one of [`OWNERS`] - a claim about THIS session's fill is the only one the daemon can
-//! check. [`words`] maps `I`, `my` and `me` to [`SELF`] before the shared tokeniser (which drops
-//! them for being short) sees the text, and [`BACKGROUND`] prices the words every sentence uses, so
-//! an excuse's own words are the expensive ones.
+//! score is a window of [`REACH`] terms either side of each [`ANCHORS`] noun, and three gates
+//! decide whether that window is a claim at all: it must carry one of [`OWNERS`] - a claim about
+//! THIS session's fill is the only one the daemon can check - it must say how much there is
+//! ([`CAPACITY`], or [`ROOM_CAPACITY`] for the uncountable `room`), and `carry` must name the
+//! `session` it is about. [`words`] maps `I`, `my` and `me` to [`SELF`] before the shared
+//! tokeniser (which drops them for being short) sees the text, and [`BACKGROUND`] prices the
+//! words every sentence uses, so an excuse's own words are the expensive ones.
 //!
 //! # The floor, measured
 //!
-//! Measured on this box's store: 747 distinct sentences carrying `context`, `room`
-//! or `running low`, labelled by hand - 79 positives, 641 negatives. Through [`find`]
+//! Measured at R135 on this box's store, read once and read-only: 4,316,024 sentences of
+//! assistant and reasoning prose walked by [`sentences`], fork copies skipped. 1,421 of them can
+//! be scored - 1,299 carrying `context`, `room` or `running low`, and 122 with `carry` inside the
+//! window around `session` - and every one was labelled by hand: 141 claims, 1,280 not. The set
+//! is `~/.local/share/letibot/calibration/context_claim_sentences.tsv` (session text, kept out of git), and
+//! `the_floor_is_measured_on_the_labelled_sentences` asserts every number below.
 //!
 //! ```text
-//!   floor   positives over   negatives over
-//!   0.18        72/79            7/641
-//!   0.20        69/79            6/641
-//!   0.22        67/79            3/641
-//!   0.25        63/79            0/641     <- FLOOR
-//!   0.28        57/79            0/641
+//!   floor   claims over   negatives over   precision   recall
+//!   0.20       98/141         13/1280          0.883     0.695
+//!   0.22       94/141          8/1280          0.922     0.667
+//!   0.25       90/141          5/1280          0.947     0.638
+//!   0.28       87/141          2/1280          0.978     0.617     <- FLOOR
+//!   0.35       70/141          2/1280          0.972     0.496
+//!   0.40       59/141          0/1280          1.000     0.418
 //! ```
 //!
-//! 0.25 is above every negative measured and below 63 of the 79 positives. The 16 it misses
-//! are the honest gap - most score zero because nothing in their window says whose context it is -
-//! and the log ([`LOG`]) is the out-of-sample measurement that moves the floor.
+//! 0.28 is the smallest floor at which precision reaches 0.97. The two negatives over it are
+//! code-sense collisions no word gate separates - *"the enormous amount of context-only
+//! messages"* (0.391) and *"the spike used a fresh context per configuration"* (0.367) - and the
+//! 54 claims it misses are the lexical tier's gap: most score zero because their window has no
+//! capacity word at all (*"I'd rather not burn context"*, *"time/context matters"*), and the log
+//! ([`LOG`]) is the out-of-sample measurement that moves the floor.
 //!
-//! * Negatives: max 0.228, then 0.222. The daemon's own *"This session is over its context
-//!   budget…"* scores 0.000: its window has no owner. The TRUE report of 10-07 scores 0.000
-//!   too - its window carries no first-person word, so it is not a claim about the speaker. * Positives: 0.000 to 1.000; 's four verbatim excuses score 0.497 to 0.782. Not 1.0 even
-//!   where the sentence IS an exemplar, because the score is a window's and not the sentence's.
+//! The same code before this calibration, on the same set, caught 27 of the 141 and called 74 of
+//! the 1,280 a claim (precision 0.267): the store of 2026-11 speaks mostly in *holding* claims
+//! ("I have enough context", "both are in my context") and in the repository's own noun, `room`.
+//! [`HOLDING`] grew the holding family, [`EXEMPLARS`] the budget family, and the `room` and
+//! capacity gates took the product noun out.
+//!
+//! * The `carry` half (R135): all 122 sentences score 0.000 - no window around `carry` that names
+//!   `session` also carries a capacity word, so the anchor adds no false positive to the floor.
+//!   It also found no claim in the store: the sentence that filed R135 - *"I'm at the end of what
+//!   I can carry in this session"* - had been compacted away, so the only evidence it is caught
+//!   is its own exemplar (`the_family_is_caught_in_other_words`).
+//! * The daemon's own *"This session is over its context budget…"* scores 0.000: its window has
+//!   no owner. The TRUE report of 10-07 scores 0.000 too - no first-person word in it.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -61,9 +80,10 @@ use letibot_tools::similarity::{self, Corpus, MIN_TERM, Weights, blended};
 
 use letibot_embeddings::Tier;
 
-/// The score a sentence has to reach before it is a claim - above every one of 641 negatives
-/// (max 0.228), below 63 of 79 positives. See the module doc for the measurement.
-pub const FLOOR: f64 = 0.25;
+/// The score a sentence has to reach before it is a claim: the smallest floor at which the
+/// calibration set's precision reaches 0.97 - 87 of 141 claims over it, 2 of 1,280 negatives
+/// (max 0.391). See the module doc for the measurement.
+pub const FLOOR: f64 = 0.28;
 
 /// How many terms either side of an [`ANCHORS`] noun are scored. Measured: 5 and 6 separate the
 /// calibration set at the same floor, 8 starts reaching into the next clause and loses positives.
@@ -76,9 +96,89 @@ pub const ANCHORS: &[&str] = &["context", "room", "carry"];
 /// The term a first-person word becomes - see [`words`].
 pub const SELF: &str = "myself";
 
+/// The term a percentage becomes - see [`words`]. `49%` is a fill report; `49` alone is too
+/// short to survive `MIN_TERM`.
+pub const PERCENT: &str = "percent";
+
 /// The words that make a window a claim about the speaker's OWN context: first person, what
-/// *remains* of it, or wanting a *fresh* one. Measured
+/// *remains* of it, or wanting a *fresh* one. Measured; `fresh` is an owner for `context` alone
+/// (see [`is_owned`]).
 pub const OWNERS: &[&str] = &[SELF, "remaining", "fresh"];
+
+/// What makes a `room` window a claim: the uncountable idiom - a quantity of it ("run out of
+/// room") and no article, because "the room" is this tree's product noun. Measured: without it
+/// the anchor carried 32 of the calibration set's false positives and no floor separated them.
+pub const ROOM_CAPACITY: &[&str] = &["out", "left", "no", "limited", "little", "enough"];
+
+/// How much of the noun there is, or a verb of spending or holding it; every window must carry
+/// one, because `context` here is also a diff's or a grep's surrounding text. Measured: the weak
+/// quantifiers (`more`, `no`, `used`) each carried a false positive alone; `out` stays.
+pub const CAPACITY: &[&str] = &[
+    "full",
+    "filled",
+    "left",
+    "remaining",
+    "little",
+    "low",
+    "long",
+    "huge",
+    "enormous",
+    "plenty",
+    "limited",
+    "limits",
+    "limit",
+    "exhausted",
+    "spent",
+    "spending",
+    "burning",
+    "burned",
+    "burn",
+    "burnt",
+    "consumed",
+    "conserve",
+    "saving",
+    "budget",
+    "headroom",
+    "wall",
+    "end",
+    "enough",
+    "empty",
+    "out",
+    "fresh",
+    "percent",
+    "carry",
+    "hold",
+    "fit",
+    "survive",
+    "flood",
+    "flooded",
+    "expensive",
+    "precious",
+    "cost",
+    "lot",
+    "size",
+    "efficient",
+    "waste",
+];
+
+/// Is this window a claim about the speaker's own fill? `fresh` counts only next to `context`:
+/// a fresh room is a newly started one, and a fresh test run is a new spin of the suite.
+fn is_owned(window: &[String], anchor: &str) -> bool {
+    window
+        .iter()
+        .any(|t| t == SELF || t == "remaining" || (t == "fresh" && anchor == "context"))
+}
+
+/// Does the window say how much of the anchor noun there is - a fill, its edge, or a verb of
+/// spending or holding it? For `room` the article is the tell between the capacity noun and
+/// the product noun.
+fn is_measured(window: &[String], anchor: &str) -> bool {
+    if anchor == "room" {
+        return window.iter().any(|t| ROOM_CAPACITY.contains(&t.as_str()))
+            && !window.iter().any(|t| t == "the");
+    }
+    window.iter().any(|t| CAPACITY.contains(&t.as_str()))
+}
 
 /// The file each claim is appended to, under the workspace.
 pub const LOG: &str = "context-claims.jsonl";
@@ -131,6 +231,24 @@ pub const EXEMPLARS: &[&str] = &[
     // Not rationing, and caught anyway: a model reading its own fill every round is a model
     // budgeting by it, and "plenty" is the same habit on a good day.
     "The nag, and my context is at 73%, plenty.",
+    // The same budget said as a BUDGET: the store's sessions rarely say "full" - they say what
+    // they have used, what they have left, and what they will therefore not do. The families
+    // above missed 114 of the calibration set's claims, almost all of these.
+    "Given my context budget, I should stop here and report.",
+    "Given my remaining context, let me prioritise what lands.",
+    "I've used a lot of context.",
+    "I'm burning a lot of context.",
+    "My context is getting long.",
+    "My context is enormous.",
+    "I have limited context left.",
+    "I have a lot of context left.",
+    "I have plenty of context left.",
+    "To conserve context, I'll poll with minimal output.",
+    "That consumed a lot of context.",
+    "The output would flood my context.",
+    "I'm at a high context usage.",
+    "I'm quite low on context.",
+    "Given the amount of context I've burned, the responsible move is to stop.",
 ];
 
 /// The other claim about the speaker's own context: that it HOLDS something - the nearest
@@ -143,6 +261,18 @@ pub const HOLDING: &[&str] = &[
     "I have the earlier diff in context.",
     "Since I have the whole module in context, I can edit it directly.",
     "I already have the context for this.",
+    // The same claim about what the context HOLDS, in the words the store's sessions use
+    // most: a fill report says how much is left, a holding claim says something is there.
+    "I have enough context.",
+    "I have all of it in my context.",
+    "Both are in my context.",
+    "I have the context.",
+    "I don't have it in context.",
+    "I don't have that error context.",
+    "I have it fully in my context.",
+    "I have all the code in context and this is design reasoning.",
+    "I have enough context on the call path.",
+    "I have enough from the grep context.",
 ];
 
 /// The background - in the corpus for its document frequencies, never matched against. Reports
@@ -175,11 +305,11 @@ pub const BACKGROUND: &[&str] = &[
     "The layout leaves room for the marker at the end of the row.",
 ];
 
-/// The words of a text, as this check counts them. `similarity::terms`'s rule - lowercased
-/// runs of letters and digits, at least [`MIN_TERM`] long - with one difference: `I`, `my`
-/// `me` `mine` and `myself` become [`SELF`], and `let me` becomes `letme`.
+/// The words of a text: `similarity::terms`'s rule, with `I`/`my`/`me` mapped to [`SELF`],
+/// `let me` to `letme`, and a percentage to [`PERCENT`] - `49` is shorter than [`MIN_TERM`] and
+/// *"my context 49%, so one call"* is a whole family of the tic.
 pub fn words(text: &str) -> Vec<String> {
-    let raw: Vec<String> = text
+    let raw: Vec<String> = with_percent(text)
         .split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
         .map(|t| t.to_lowercase())
@@ -200,6 +330,30 @@ pub fn words(text: &str) -> Vec<String> {
         }
         i += 1;
     }
+    out
+}
+
+/// `text` with every `<digits>%` turned into [`PERCENT`], so a fill report in percent survives
+/// the tokeniser that drops a two-digit number. Every other number is left where it was.
+fn with_percent(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut digits = String::new();
+    for c in text.chars() {
+        if c.is_ascii_digit() {
+            digits.push(c);
+            continue;
+        }
+        if c == '%' && !digits.is_empty() {
+            out.push(' ');
+            out.push_str(PERCENT);
+            out.push(' ');
+        } else {
+            out.push_str(&digits);
+            out.push(c);
+        }
+        digits.clear();
+    }
+    out.push_str(&digits);
     out
 }
 
@@ -279,7 +433,11 @@ pub fn score_with(sentence: &str, tier: Option<&Tier>) -> f64 {
         if w == "carry" && !window.iter().any(|t| t == "session") {
             continue;
         }
-        if !window.iter().any(|w| OWNERS.contains(&w.as_str())) {
+        // `room` is a capacity word only where the window says how much of it there is.
+        if !is_measured(window, w) {
+            continue;
+        }
+        if !is_owned(window, w) {
             continue;
         }
         let text = window.join(" ");
@@ -881,12 +1039,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The calibration set: this box's store, walked for the sentences the detector can score
+    /// and labelled by hand. Real session text, so it lives beside the store and not in the
+    /// repository: `$LETIBOT_CALIBRATION/context_claim_sentences.tsv`, else
+    /// `~/.local/share/letibot/calibration/`. `None` where it is absent.
+    fn calibration_text() -> Option<String> {
+        let dir = std::env::var_os("LETIBOT_CALIBRATION")
+            .filter(|v| !v.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|h| std::path::PathBuf::from(h).join(".local/share/letibot/calibration"))
+            })?;
+        std::fs::read_to_string(dir.join("context_claim_sentences.tsv")).ok()
+    }
+
+    /// The calibration rows as `(is a claim, the set it was walked for, the sentence)`.
+    fn calibration(text: &str) -> Vec<(bool, &str, &str)> {
+        text.lines()
+            .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+            .map(|line| {
+                let mut fields = line.splitn(3, '\t');
+                let label = fields.next().expect("a label") == "1";
+                let set = fields.next().expect("a set");
+                let text = fields.next().expect("a sentence");
+                (label, set, text)
+            })
+            .collect()
+    }
+
     /// The same excuse in words no exemplar uses. `brimming`, `shall` and `halt` are in
     /// none of [`EXEMPLARS`], so the words score the sentence under [`FLOOR`] - and the second
     /// tier's cosine, over the three planted as synonyms, carries it over.
     #[test]
     fn a_paraphrase_the_words_score_under_the_floor_is_a_claim_with_the_tier() {
-        let said = "my context is brimming, so I shall halt here";
+        let said = "my remaining context is brimming, so I shall halt here";
         let words_only = score(said);
         assert!(
             words_only < FLOOR,
@@ -912,5 +1099,79 @@ mod tests {
         );
         assert!(matches!(finding.verdict, Verdict::Slap(_)), "{finding:?}");
         let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// The floor, measured on the set the module doc's table comes from: 1,421 sentences of this
+    /// box's store, labelled by hand (141 claims, 1,280 not), which every number in that table
+    /// asserts. A calibration set, so its recall is optimistic and [`LOG`] is the out-of-sample door.
+    #[test]
+    fn the_floor_is_measured_on_the_labelled_sentences() {
+        let Some(text) = calibration_text() else {
+            letibot_tokencore::apparatus::absent(
+                "the context-claim calibration set (~/.local/share/letibot/calibration)",
+            );
+            return;
+        };
+        let rows = calibration(&text);
+        let claims: Vec<_> = rows.iter().filter(|row| row.0).collect();
+        let others: Vec<_> = rows.iter().filter(|row| !row.0).collect();
+        assert_eq!(rows.len(), 1421, "the fixture is the set that was labelled");
+        assert_eq!(claims.len(), 141, "claims in the set");
+        assert_eq!(
+            rows.iter().filter(|row| row.1 == "carry").count(),
+            122,
+            "the R135 walk's own half"
+        );
+
+        let caught: Vec<_> = claims.iter().filter(|row| score(row.2) >= FLOOR).collect();
+        let wrong: Vec<_> = others.iter().filter(|row| score(row.2) >= FLOOR).collect();
+        assert_eq!(
+            caught.len(),
+            87,
+            "recall {:.3}: the claims the floor catches",
+            caught.len() as f64 / claims.len() as f64
+        );
+        assert_eq!(
+            wrong.len(),
+            2,
+            "precision {:.3}: the sentences it wrongly calls claims: {:#?}",
+            caught.len() as f64 / (caught.len() + wrong.len()) as f64,
+            wrong.iter().map(|row| row.2).collect::<Vec<_>>()
+        );
+
+        // The R135 half: not one of the 122 sentences with `carry` in the window around `session`
+        // is a claim, and none reaches the floor - the anchor costs no false positive.
+        let carry: Vec<_> = rows.iter().filter(|row| row.1 == "carry").collect();
+        assert!(
+            carry.iter().all(|row| !row.0),
+            "no carry sentence was labelled a claim"
+        );
+        let best = carry.iter().map(|row| score(row.2)).fold(0.0f64, f64::max);
+        assert_eq!(best, 0.0, "the carry walk's highest score");
+        // And the sentence that filed R135 is still caught through its exemplar: it is not in
+        // the store any more (compacted), so this is the only read that it fires at all.
+        let filed = "I'm at the end of what I can carry in this session, so here is where each \
+                     piece stands.";
+        assert!(
+            score(filed) >= FLOOR,
+            "the 842k sentence scores {:.3}",
+            score(filed)
+        );
+    }
+
+    /// A percentage is a fill report: `49` is shorter than the shared tokeniser's minimum, and
+    /// *"my context 49%, so one call"* is the whole reasoning tic.
+    #[test]
+    fn a_percentage_is_a_word_and_other_numbers_stay() {
+        assert_eq!(
+            words("my context 49%, so one call"),
+            vec!["myself", "context", PERCENT, "one", "call"]
+        );
+        assert_eq!(words("262144 tokens"), vec!["262144", "tokens"]);
+        assert_eq!(
+            words("at 2.7 s"),
+            Vec::<String>::new(),
+            "a decimal's parts are short and are dropped as they always were"
+        );
     }
 }
