@@ -11,9 +11,9 @@ use crate::authorise::UnsureKind;
 use crate::runtime::{Gate, GateCall, GateDecision};
 use crate::schema::Access;
 
-/// Which data-flow rule an action breaks. The rule is about flow, not access: `ssh`
-/// reads the private key legitimately, so what separates the rows is where the bytes
-/// end up. See [`crate::intent`] for the derivation and its limits.
+/// Which rule put an action beyond adjudication. The data-flow rules are about flow, not access:
+/// what separates their rows is where the bytes end up. The last is not a flow but a reviewed
+/// layer's floor, in this type because [`Tier::Blocked`] carries a rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FlowRule {
     /// Into a tool result, therefore the transcript, therefore the model's context
@@ -29,6 +29,10 @@ pub enum FlowRule {
     SecretFlowUnknown,
     /// A write into a secret store, kept here so both mechanisms exist.
     WriteIntoSecretStore,
+    /// The `adjudicate_` floor: a project's or a built-in's reviewed policy said no, or could not
+    /// answer at all and so was read as the strictest tier. Not a data flow, and in this type
+    /// because [`Tier::Blocked`] carries one.
+    FloorRefused,
 }
 
 impl FlowRule {
@@ -39,6 +43,7 @@ impl FlowRule {
             FlowRule::SecretOffBox => "secret_off_box",
             FlowRule::SecretFlowUnknown => "secret_flow_unknown",
             FlowRule::WriteIntoSecretStore => "write_into_secret_store",
+            FlowRule::FloorRefused => "adjudicate_floor",
         }
     }
 }
@@ -53,8 +58,8 @@ pub enum Tier {
     /// The model may widen this into an admission, within the scope it has earned.
     MayApprove,
     /// The operator decides, every time. `rule` names the entry on
-    /// [`crate::intent::ALWAYS_ASK`] and `why` is that entry's reason, so an operator
-    /// reading a prompt can see what they are trading.
+    /// [`crate::intent::ALWAYS_ASK`], or [`FLOOR_RULE`] when a plugin layer's floor raised it, and
+    /// `why` is that entry's reason, so an operator reading a prompt can see what they are trading.
     AlwaysAsk { rule: &'static str, why: String },
     /// Nothing promotes this. `evidence` is the sentence the audit row carries.
     Blocked { rule: FlowRule, evidence: String },
@@ -98,6 +103,103 @@ impl Tier {
         } else {
             self
         }
+    }
+}
+
+/// The rule word a raised tier carries when it was the floor rather than layer A, so an audit row
+/// says which of the two asked.
+pub const FLOOR_RULE: &str = "adjudicate_floor";
+
+/// What a plugin layer's floor said about one call, as the gate can use it. Three answers, and the
+/// two that are not a pass can only make the call stricter: none of them can admit anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Floored {
+    /// No layer answered, or the one that did said nothing. The gate's own reading stands, byte for
+    /// byte - this is the answer every session without a floor layer gives.
+    Pass,
+    /// These names for the action, at this floor. Merged through [`Tier::strictest`], so a floor
+    /// below the gate's own tier changes nothing.
+    Raised {
+        intents: Vec<String>,
+        floor: letibot_plugin::adjudicate::Floor,
+        by: String,
+    },
+    /// The layer could not answer - a trap, a timeout, an answer that is not the contract. A guard
+    /// that cannot answer refuses what it guards, so this is the strictest tier and not a skip.
+    Trapped { by: String, why: String },
+}
+
+/// The stack's floor, handed to the gate. A trait here for the reason [`crate::runtime::CallHook`]
+/// is one: this crate holds no plugin stack, and a gate with no hook installed decides exactly as
+/// it did before there were floors.
+pub trait FloorHook: Send + Sync {
+    fn floor(&self, action: &letibot_plugin::adjudicate::Action) -> Floored;
+}
+
+/// The tier a floor asks for, with the sentence a card and an audit row carry. `auto` and
+/// `may_approve` are rungs below or at layer A's usual reading and so can never raise anything;
+/// they exist because a layer may answer with the rung it wants the gate to keep.
+fn floor_tier(floor: letibot_plugin::adjudicate::Floor, why: String) -> Tier {
+    use letibot_plugin::adjudicate::Floor;
+    match floor {
+        Floor::Auto => Tier::Auto,
+        Floor::MayApprove => Tier::MayApprove,
+        Floor::Ask => Tier::AlwaysAsk {
+            rule: FLOOR_RULE,
+            why,
+        },
+        Floor::Deny => Tier::Blocked {
+            rule: FlowRule::FloorRefused,
+            evidence: why,
+        },
+    }
+}
+
+/// The action a floor is asked about: layer A's own reading of one call, in the words a guest can
+/// hold. Paths come from the arguments the way [`AdjudicatedGate::baseline_for`] reads them, so a
+/// policy about a file is a match on the same string the classifier saw.
+fn floor_action(
+    call: &GateCall<'_>,
+    baseline: &crate::intent::Baseline,
+    mode: &crate::mode::Mode,
+) -> letibot_plugin::adjudicate::Action {
+    use crate::intent::Region;
+    let paths = call
+        .args
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .filter(|(k, _)| {
+                    matches!(
+                        k.as_str(),
+                        "path" | "paths" | "file" | "src" | "dest" | "to" | "from"
+                    )
+                })
+                .filter_map(|(_, v)| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    letibot_plugin::adjudicate::Action {
+        tool: call.name.to_string(),
+        intents: baseline
+            .intents
+            .iter()
+            .map(|i| i.as_str().to_string())
+            .collect(),
+        tier: baseline.tier.as_str().to_string(),
+        program: baseline.grant_program.clone(),
+        paths,
+        regions: baseline
+            .regions
+            .iter()
+            .map(|r| match r {
+                Region::Secret(store) => format!("secret:{store}"),
+                Region::Remote(host) => format!("remote:{host}"),
+                other => other.as_str().to_string(),
+            })
+            .collect(),
+        mode: mode.name.to_string(),
+        project: call.workspace.to_string(),
     }
 }
 
@@ -1344,6 +1446,10 @@ pub struct AdjudicatedGate {
     /// The guard model, when one is configured. Held whether or not supervision
     /// is on, so turning it on is a flag and not a rebuild.
     advisor: Option<std::sync::Arc<dyn Adjudicator>>,
+    /// The `adjudicate_` floor: the one thing that can make a call stricter after layer A, merged
+    /// through [`Tier::strictest`]. `None` in a gate nobody installed a hook on, which is every
+    /// session today, and then this gate decides exactly as it did before the seam existed.
+    floor: Option<std::sync::Arc<dyn FloorHook>>,
     /// Whether [`AdjudicatedGate::advisor`] gets a turn on every call. A field rather than a
     /// mode, so `/supervise` moves it mid-session: the mode is fixed when a session opens
     /// because the tools seated under it are, and this changes nothing about that.
@@ -1442,11 +1548,20 @@ impl AdjudicatedGate {
             advice: None,
             standing: None,
             advisor: None,
+            floor: None,
             supervise: false,
             corpus_sink: None,
             unasked: false,
             admissions: None,
         }
+    }
+
+    /// Install the `adjudicate_` floor. The gate keeps the hook rather than the stack because the
+    /// floor is asked inside one decision: a runtime that installed it would have to hold a second
+    /// copy of layer A's reading, and two readings of one call can disagree.
+    pub fn with_floor_hook(mut self, hook: std::sync::Arc<dyn FloorHook>) -> Self {
+        self.floor = Some(hook);
+        self
     }
 
     /// opencode parity: make exec follow the mode instead of always asking. See
@@ -1858,17 +1973,61 @@ impl AdjudicatedGate {
         )
     }
 
+    /// Layer A's reading of this call with the `adjudicate_` floor merged into it: the one place a
+    /// floor may change anything, and the reading every card and every decision is built from. The
+    /// second half is the line a card carries when a layer answered - `None` when none did.
+    fn reading_for(&self, call: &GateCall<'_>) -> (crate::intent::Baseline, Option<String>) {
+        let mut baseline = self.baseline_for(call);
+        let Some(hook) = self.floor.as_ref() else {
+            return (baseline, None);
+        };
+        match hook.floor(&floor_action(call, &baseline, &self.mode)) {
+            Floored::Pass => (baseline, None),
+            Floored::Raised { intents, floor, by } => {
+                let named = if intents.is_empty() {
+                    String::new()
+                } else {
+                    format!(" for {}", intents.join(", "))
+                };
+                let why = format!(
+                    "the `adjudicate_` layer `{by}` floors this call at `{}`{named}",
+                    floor.as_str()
+                );
+                // `strictest`, never the floor's own word: a layer answering `auto` over a call
+                // layer A already found disclosing must leave it disclosing.
+                baseline.tier = baseline
+                    .tier
+                    .clone()
+                    .strictest(floor_tier(floor, why.clone()));
+                (baseline, Some(why))
+            }
+            Floored::Trapped { by, why } => {
+                let said = format!(
+                    "the `adjudicate_` layer `{by}` could not answer ({why}). A floor that cannot \
+                     answer refuses what it guards rather than passing it, so this call is at the \
+                     strictest tier"
+                );
+                baseline.tier = baseline.tier.clone().strictest(Tier::Blocked {
+                    rule: FlowRule::FloorRefused,
+                    evidence: said.clone(),
+                });
+                (baseline, Some(said))
+            }
+        }
+    }
+
     /// The request one call produces. Public because the head and the tests both want to see a
     /// request without a decision having been made about it.
     pub fn request_for(&mut self, call: &GateCall<'_>) -> AdjudicationRequest {
-        let baseline = self.baseline_for(call);
-        self.request_from(call, &baseline)
+        let (baseline, floor) = self.reading_for(call);
+        self.request_from(call, &baseline, floor)
     }
 
     fn request_from(
         &mut self,
         call: &GateCall<'_>,
         baseline: &crate::intent::Baseline,
+        floor: Option<String>,
     ) -> AdjudicationRequest {
         let network = call.access == Access::Network;
         // What this call is about, for a human deciding in one line. A path for a file tool;
@@ -1965,6 +2124,12 @@ impl AdjudicatedGate {
             // whoever decides. The op goes in the facts because the class cannot carry it, and
             // a person reading `github` alone cannot tell a listing from a merge.
             facts.push(format!("operation: `{op}`"));
+        }
+        // The floor's own sentence, when a layer raised this call: whoever decides is owed the
+        // reason the tier is not layer A's, since a card that asks with no visible reason reads as
+        // the gate's own opinion.
+        if let Some(floor) = floor {
+            facts.push(floor);
         }
         // The key the row will be recorded under, computed from the parts this function has,
         // so the history in the brief and the history the next call reads back are keyed the
@@ -2559,7 +2724,10 @@ impl Gate for AdjudicatedGate {
         use crate::authorise::{BreakerState, TaskDirection};
         use crate::intent::BaselineVerdict;
 
-        let baseline = self.baseline_for(call);
+        // Layer A's reading, with the `adjudicate_` floor merged into it. One call, here, and the
+        // same reading the card is built from: a layer may raise this tier before anything else
+        // looks at it, and there is no path by which it could lower one.
+        let (baseline, floor) = self.reading_for(call);
         // The access this call is judged at. Computed here and passed to the three places that
         // would otherwise read the tool's declared one; the gate is still consulted on the
         // declared access, so this changes what it says, not whether it is asked.
@@ -2568,7 +2736,7 @@ impl Gate for AdjudicatedGate {
         // own code and the host has no boundary. Read by the three arms that would otherwise let
         // a standing answer settle it, and by the two that would record one.
         let unconfined_code = self.runs_project_code_unconfined(access, &baseline);
-        let mut req = self.request_from(call, &baseline);
+        let mut req = self.request_from(call, &baseline, floor);
         let direction = TaskDirection::of(&req, &baseline);
         let breaker_state = self.breaker.state(&direction);
 

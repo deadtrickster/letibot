@@ -438,12 +438,27 @@ impl Manifest {
         ))
     }
 
-    /// [`Manifest::admit`], and the one rule about the LAYER rather than about its answers: the
-    /// `chat` feed is every message the operator sees, DMs included, so only a built-in or a
-    /// PINNED layer may read it (the reviews' question 9, built on its default). A session's own
-    /// layer is the case the rule exists for - nobody vouched for it.
+    /// [`Manifest::admit`], and the two rules about the LAYER rather than about its answers: only a
+    /// built-in or a PINNED layer may read the `chat` feed, and a session's own layer may not answer
+    /// the gate's floor at all (the review's questions 9 and 4, on their defaults).
     pub fn admit_for(&self, exports: &[String], scope: Scope, pinned: bool) -> Result<(), String> {
         self.admit(exports)?;
+        if scope == Scope::Session
+            && let Some(hook) = self
+                .hooks
+                .iter()
+                .find(|h| h.starts_with(letibot_plugin::adjudicate::PREFIX))
+        {
+            return Err(format!(
+                "the layer `{}` is a session's own and answers `{hook}`. The floor at the gate \
+                 is reviewed policy — a project's production hosts and its own secret stores — \
+                 and the layer of the session it governs may not raise or lower it, so this hook \
+                 is a built-in's, a project's or the operator's. Move it to \
+                 `~/.config/letibot/plugins` (a user layer) or to the project's \
+                 `.letibot/plugins`",
+                self.name
+            ));
+        }
         if self.feeds.contains(&letibot_plugin::pane::Feed::Chat)
             && scope != Scope::BuiltIn
             && !pinned
@@ -1013,5 +1028,41 @@ contract = 1
         other
             .admit_for(&exports, Scope::Session, false)
             .expect("no chat, no refusal");
+    }
+
+    /// The floor at the gate is reviewed policy, and the layer of the session it governs is not a
+    /// reviewer. A session layer that answers it is refused at its door - pinned or not, because a
+    /// pin says who wrote the bytes, not that the agent may grade its own calls.
+    const A_FLOOR_LAYER: &str = r#"
+name = "prod-floor"
+purpose = "this project's production hosts ask whatever the mode says"
+hooks = ["adjudicate_floor"]
+capabilities = ["read"]
+contract = 1
+"#;
+
+    #[test]
+    fn a_session_scope_adjudicate_layer_is_refused_at_admit() {
+        let m = Manifest::parse(A_FLOOR_LAYER).expect("the floor layer's manifest parses");
+        let exports: Vec<String> = m.hooks.clone();
+        // A project's or the operator's own file is exactly where this belongs.
+        for scope in [Scope::Project, Scope::User, Scope::BuiltIn] {
+            m.admit_for(&exports, scope, false)
+                .unwrap_or_else(|why| panic!("{scope} may answer the floor: {why}"));
+        }
+        for pinned in [false, true] {
+            let why = m
+                .admit_for(&exports, Scope::Session, pinned)
+                .expect_err("a session layer never answers the floor, pinned or not");
+            assert!(
+                why.contains("`adjudicate_floor`"),
+                "the hook is named: {why}"
+            );
+            assert!(why.contains("session"), "and the scope: {why}");
+            assert!(
+                why.contains("`.letibot/plugins`") && why.contains("`~/.config/letibot/plugins`"),
+                "and where it goes instead: {why}"
+            );
+        }
     }
 }

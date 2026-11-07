@@ -116,8 +116,15 @@ pub struct Resolved {
     pub refused: Option<(String, String)>,
 }
 
-/// Hooks whose failure must stop what they guard rather than let it through.
-const FAIL_CLOSED: &[&str] = &["on_tool_call"];
+/// Hooks whose failure must stop what they guard rather than let it through. The gate's floor is
+/// one: a policy that cannot answer has not said the call is fine, and the gate reads its failure
+/// as the strictest tier.
+const FAIL_CLOSED: &[&str] = &["on_tool_call", letibot_plugin::adjudicate::HOOK];
+
+/// Hooks a session's own layer may not answer at all, whatever the manifest declared: reviewed
+/// policy about what may run is a project's, the operator's or a built-in's, never that of the agent
+/// it governs. `Manifest::admit_for` refuses such a layer at its door; this catches one already on.
+const NOT_A_SESSIONS: &[&str] = &[letibot_plugin::adjudicate::HOOK];
 
 /// A layer's module changed on disk and is waiting for the gate.
 /// The gate fills in the module it loaded and `Stack::apply` swaps in exactly that one: a second
@@ -978,6 +985,11 @@ impl Stack {
             }
             let layer = &self.layers[i];
             if layer.disabled {
+                continue;
+            }
+            // Reviewed policy is nobody's own layer: a session that could answer this hook could
+            // raise its own floor to `auto`, so it never reaches a module at all.
+            if layer.scope == Scope::Session && NOT_A_SESSIONS.contains(&walk.hook) {
                 continue;
             }
             let Some(wired) = self.wired.get(&layer.id) else {
@@ -2405,5 +2417,79 @@ mod tests {
         let r = stack(&t).call("notice_fired", &json!({}));
         assert_eq!(r.refused, None);
         assert_eq!(r.answer, Some(json!({"from": "below"})));
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The gate's floor: reviewed policy, and a session's own layer is not a reviewer
+    // -----------------------------------------------------------------------------------------
+
+    /// A session's layer never answers the floor: a layer could raise its own limit to `auto`, and
+    /// the answer that stands is the project's. Two doors - this and `Manifest::admit_for` - because
+    /// a stack is discovered before anything asks a manifest about its scope.
+    #[test]
+    fn a_session_scope_layer_never_answers_the_gates_floor() {
+        let hook = letibot_plugin::adjudicate::HOOK;
+        let t = TempDir::new("floor-scope");
+        layer(
+            &t.path().join("session"),
+            "own",
+            &[hook],
+            Act::answer(json!({"floor": "auto"})),
+        );
+        layer(
+            &t.path().join("project/.letibot/plugins"),
+            "prod",
+            &[hook],
+            Act::answer(json!({"intents": ["prod-host"], "floor": "ask"})),
+        );
+        let s = stack(&t);
+        assert!(s.layer("s1").is_some(), "the session layer is on the stack");
+        let r = s.call(hook, &json!({"v": 1}));
+        assert_eq!(r.by.as_deref(), Some("p1"), "{r:?}");
+        assert_eq!(
+            answer_of(&r),
+            json!({"intents": ["prod-host"], "floor": "ask"})
+        );
+        assert!(r.failures.is_empty(), "nobody failed: {:?}", r.failures);
+
+        // And with nothing below it, a session's floor is no answer at all - not a silent `auto`.
+        let alone = TempDir::new("floor-scope-alone");
+        layer(
+            &alone.path().join("session"),
+            "own",
+            &[hook],
+            Act::answer(json!({"floor": "auto"})),
+        );
+        let s = Stack::discover(
+            Some(&alone.path().join("session")),
+            None,
+            None,
+            std::sync::Arc::new(crate::testing::FakeLoader::new()),
+        );
+        let r = s.call(hook, &json!({"v": 1}));
+        assert_eq!(r.answer, None, "{r:?}");
+        assert_eq!(r.by, None);
+    }
+
+    /// A floor that traps is a guard that failed, not a layer with nothing to say: the stack holds
+    /// this hook closed, so a trap reaches the caller as a refusal instead of a pass.
+    #[test]
+    fn a_trapping_floor_layer_is_a_refusal_and_not_a_pass() {
+        let hook = letibot_plugin::adjudicate::HOOK;
+        let t = TempDir::new("floor-trap");
+        layer(
+            &t.path().join("project/.letibot/plugins"),
+            "prod",
+            &[hook],
+            Act::trap("its fuel ran out"),
+        );
+        let r = stack(&t).call(hook, &json!({"v": 1}));
+        assert_eq!(r.answer, None);
+        let (by, why) = r
+            .refused
+            .clone()
+            .unwrap_or_else(|| panic!("a failed floor is a refusal: {r:?}"));
+        assert_eq!(by, "p1");
+        assert!(why.contains("fuel ran out"), "{why}");
     }
 }
