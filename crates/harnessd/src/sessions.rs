@@ -1334,6 +1334,13 @@ impl<'a> Sessions<'a> {
                 self.rearm_todo_nag(session_id);
                 reply
             }
+            Slash::Listen(words) => match self.open.get_mut(session_id) {
+                Some(h) => h.listen_verb(&words),
+                None => SlashReply {
+                    lines: vec![format!("session {session_id} is not open")],
+                    ok: false,
+                },
+            },
             Slash::FlowyStatus => crate::slash::flowy_status(self.seat.as_ref()),
             Slash::FlowyLogout => match self.detach_seat() {
                 Some(name) => SlashReply {

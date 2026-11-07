@@ -1573,3 +1573,62 @@ fn a_mute_name_matches_a_directory_name_or_the_key_and_a_typo_is_found() {
         ["stroppy-rsut"]
     );
 }
+
+/// `/listen -REPO` from the notice's hint stops the next red of that repository and not of the
+/// other, and a new session of the same folder inherits it from the store.
+#[test]
+fn a_listen_mute_stops_that_repositorys_next_red_and_a_new_session_inherits_it() {
+    use letibot_tokencore::store::{HealthState, TargetHealth};
+    let Some(mut f) = Fixture::new("listen-told") else {
+        return;
+    };
+    let org = f.dir.path().join("stroppy-io");
+    let child = |name: &str, url: &str| {
+        let p = org.join(name);
+        std::fs::create_dir_all(&p).unwrap();
+        git(&p, &["init", "-q", "-b", "main"]);
+        git(&p, &["remote", "add", "origin", url]);
+        std::fs::canonicalize(p).unwrap().display().to_string()
+    };
+    let a = child("a", "https://github.com/stroppy-io/a.git");
+    let b = child("b", "https://github.com/stroppy-io/b.git");
+    f.cfg.workspace = org.clone();
+    let s = f.store();
+    let red = |repository: &str, sha: &str| {
+        s.set_target_health(
+            &TargetHealth {
+                repository: repository.into(),
+                target: "main".into(),
+                sha: sha.into(),
+                state: HealthState::Red,
+                checked_ms: 1,
+                evidence: "`scripts/merge_gate.sh` failed".into(),
+                gate_steps: Vec::new(),
+            },
+            "test",
+        )
+        .unwrap();
+    };
+    let mut sessions = Sessions::open_first(&f.parts, f.cfg.clone(), f.registry.clone())
+        .expect("the session opens");
+    let project = sessions.held("s-parent").expect("the project's session");
+    red(&a, "1111111111111111111111111111111111111111");
+    let first = project.queue_emergency_notices();
+    assert!(first[0].contains("/listen -a"), "the hint: {}", first[0]);
+    let said = project.listen_verb(&["-a".into()]);
+    assert!(said.ok, "{:?}", said.lines);
+    red(&a, "2222222222222222222222222222222222222222");
+    red(&b, "3333333333333333333333333333333333333333");
+    let next = project.queue_emergency_notices();
+    assert_eq!(next.len(), 1, "{next:#?}");
+    assert!(
+        next[0].contains(&b) && !next[0].contains(&format!("in {a}")),
+        "{}",
+        next[0]
+    );
+    // A session opened later in the same folder reads the same set.
+    assert_eq!(
+        crate::mergequeue::listen::effective(Some(&f.store()), &org, &[]),
+        ["a"]
+    );
+}

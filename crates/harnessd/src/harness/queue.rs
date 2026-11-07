@@ -355,10 +355,15 @@ impl Harness {
         let all_mine = crate::mergequeue::repositories_of_workspace(&self.cfg.workspace);
         // Muted repositories are not this session's news. A Branch review rooted here is
         // still its own work and is told regardless.
-        let mute = self.cfg.leticode.queue_mute();
+        let mute = crate::mergequeue::listen::effective(
+            Some(store),
+            &self.cfg.workspace,
+            self.cfg.leticode.queue_mute(),
+        );
+        let several = all_mine.len() > 1;
         let mine: Vec<String> = all_mine
             .into_iter()
-            .filter(|k| !crate::mergequeue::is_muted(k, mute))
+            .filter(|k| !crate::mergequeue::is_muted(k, &mute))
             .collect();
         let mut out = Vec::new();
         // Green again: an emergency this session was told about is over - said once,
@@ -397,7 +402,8 @@ impl Harness {
             {
                 continue;
             }
-            out.push(crate::mergequeue::notices::health(&h));
+            let hint = mute_hint(several, &h.repository);
+            out.push(format!("{}{hint}", crate::mergequeue::notices::health(&h)));
         }
         for r in &parked {
             let ours = match r.kind {
@@ -417,9 +423,40 @@ impl Harness {
             {
                 continue;
             }
-            out.push(crate::mergequeue::notices::parked(r));
+            let hint = match r.kind {
+                letibot_tokencore::store::ReviewKind::Target => mute_hint(several, &r.repository),
+                _ => String::new(),
+            };
+            out.push(format!("{}{hint}", crate::mergequeue::notices::parked(r)));
         }
         out
+    }
+
+    /// `/listen`: this folder's mutes, from the store.
+    pub fn listen_verb(&mut self, words: &[String]) -> crate::slash::SlashReply {
+        let Some(store) = self.store.as_ref() else {
+            return crate::slash::SlashReply {
+                lines: vec!["no store: nothing to remember a mute in".into()],
+                ok: false,
+            };
+        };
+        let config = self.cfg.leticode.queue_mute();
+        let this = crate::mergequeue::listen::this_repo(&self.cfg.workspace);
+        let (lines, ok) = if words.is_empty() {
+            (
+                crate::mergequeue::listen::show(store, &self.cfg.workspace, config),
+                true,
+            )
+        } else {
+            crate::mergequeue::listen::run(
+                store,
+                &self.cfg.workspace,
+                config,
+                words,
+                this.as_deref(),
+            )
+        };
+        crate::slash::SlashReply { lines, ok }
     }
 
     /// The reviews the queue handed to THIS project's main session (the
@@ -517,4 +554,18 @@ impl Harness {
         }
         served.started
     }
+}
+
+/// The line that tells a folder session how to stop hearing a repository's gate.
+fn mute_hint(several: bool, repository: &str) -> String {
+    let name = std::path::Path::new(repository)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !several || name.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\nTo stop hearing about `{name}`: `/listen -{name}` (`/listen` lists, `+{name}` undoes)."
+    )
 }

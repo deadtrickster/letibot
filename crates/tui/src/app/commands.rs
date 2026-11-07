@@ -802,11 +802,26 @@ impl App {
                 if let Some(taken) = self.command_layer(verb, rest) {
                     return taken;
                 }
-                Some(Action::Slash {
-                    line: other.trim().to_string(),
-                })
+                let mut line = other.trim().to_string();
+                if verb == "listen" {
+                    line = self.listen_line_with_this(&line);
+                }
+                Some(Action::Slash { line })
             }
         }
+    }
+
+    /// `/listen only this`: `this` is the repository the header names, which only the head knows.
+    fn listen_line_with_this(&self, line: &str) -> String {
+        let here = self.header_workspace();
+        let name = std::path::Path::new(&here)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        line.split_whitespace()
+            .map(|w| if w == "this" && !name.is_empty() { name.as_str() } else { w })
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     pub(crate) fn todo_command(&mut self, rest: &str) -> Option<Action> {

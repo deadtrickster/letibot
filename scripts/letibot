@@ -29,6 +29,8 @@
 #                               socket is forwarded back here, so --session attaches to it
 #   letibot "some prompt"       one-shot: run it, print, exit (no TUI)
 #   letibot --glm               GLM's dialect+vocab; providers.toml names the address
+#   letibot --listen WORDS      mute or unmute a folder project's repositories before the start:
+#                               -REPO, +REPO, only REPO|this, all (then the usual command runs)
 #   letibot --stop              stop the daemon
 #   letibot --room              the BOX'S ROOM: start its coordinator if none is serving, and say
 #                               what it is (`--room --stop` stops it). One per box, not one per
@@ -2246,6 +2248,23 @@ room_stale_line() {
   printf 'letibot: the box'\''s room (pid %s) runs an older build than %s - restart it with: letibot --room --stop && letibot --room\n' \
     "$p" "$BIN/harnessd"
 }
+
+# `--listen WORDS...` sets which repositories of this folder the sessions hear gate news of
+# (`-REPO`, `+REPO`, `only REPO|this`, `all`), in the store, before anything starts - so a session
+# started right after is never woken by a muted repository. The words run to the next `--flag`;
+# whatever follows is the launcher's usual command. No words lists the state and exits.
+if [ "${1:-}" = --listen ]; then
+  shift
+  listen_words=()
+  while [ $# -gt 0 ] && [[ $1 != --* ]]; do
+    listen_words+=("$1")
+    shift
+  done
+  if [ "${#listen_words[@]}" -eq 0 ]; then
+    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --workspace "$PWD" --listen
+  fi
+  "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --workspace "$PWD" --listen "${listen_words[@]}" || exit $?
+fi
 
 # Questions about the store need no socket, no model and no vocabulary. They are
 # answered before any of that is checked, so `letibot --sessions` still works on a

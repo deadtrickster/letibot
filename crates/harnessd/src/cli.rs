@@ -15,6 +15,7 @@
 //!
 //! store queries - no socket, no vocabulary, no model:
 //! harnessd --store PATH --list-sessions [--workspace DIR] [--tsv]
+//! harnessd --store PATH --listen WORDS... [--workspace DIR]   (/listen, offline)
 //! harnessd --store PATH --latest-session [--workspace DIR]
 //! harnessd --store PATH --resolve-session NAME [--scope DIR]
 //! harnessd --store PATH --rename ID TITLE
@@ -747,6 +748,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 query = Some(Query::Rename(id, title));
             }
             "--delete" => query = Some(Query::Delete(next()?)),
+            // Every remaining word is `/listen`'s: `-REPO`, `+REPO`, `only REPO|this`, `all`.
+            "--listen" => query = Some(Query::Listen(it.by_ref().collect())),
             // Replay the operator-answered corpus against the guard and print what it earns.
             // `--calibrate-write` also records it where the daemon reads it at startup. See
             // `crate::calibrate`.
@@ -2413,6 +2416,7 @@ enum Query {
     Resolve(String),
     Rename(String, String),
     Delete(String),
+    Listen(Vec<String>),
     Calibrate {
         write: bool,
     },
@@ -2712,6 +2716,36 @@ fn run_query(
                  the head to change it live."
             );
             Ok(0)
+        }
+        Query::Listen(words) => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| cfg.workspace.clone());
+            let config = crate::leticode_config::LeticodeConfig::discover(&cfg.workspace)
+                .and_then(|p| crate::leticode_config::LeticodeConfig::load(&p).ok())
+                .unwrap_or_default();
+            let config = config.queue_mute();
+            let (lines, ok) = if words.is_empty() {
+                (
+                    crate::mergequeue::listen::show(&store, &cfg.workspace, config),
+                    true,
+                )
+            } else {
+                let this = crate::mergequeue::listen::this_repo(&cwd);
+                crate::mergequeue::listen::run(
+                    &store,
+                    &cfg.workspace,
+                    config,
+                    &words,
+                    this.as_deref(),
+                )
+            };
+            for l in &lines {
+                if ok {
+                    println!("{l}");
+                } else {
+                    eprintln!("{l}");
+                }
+            }
+            Ok(if ok { 0 } else { 2 })
         }
         Query::Delete(id) => match store.delete_empty_session(&id) {
             Ok(()) => {
