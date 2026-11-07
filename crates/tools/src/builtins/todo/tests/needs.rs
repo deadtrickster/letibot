@@ -301,7 +301,8 @@ fn a_board_with_no_dependencies_is_read_exactly_as_before() {
     assert_eq!(
         nag_for(&plan).expect("open work"),
         "[todo check] Not done:\n  - wire the check — yours (in progress)\nDo it, or mark it done \
-         with `todo_write`'s `update` field (quote it exactly).",
+         with `todo_write`'s `update` field (quote it exactly). It is in progress and waits on \
+         nothing: continue it now, or attach what it waits on with `todo_write`'s `wait_on`.",
     );
 
     // The other arms, one at a time, because the arm is what the field could have moved.

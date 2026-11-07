@@ -301,8 +301,9 @@ fn a_malformed_wait_on_is_refused_and_writes_nothing() {
 fn the_check_offers_wait_on_when_a_job_or_a_subagent_is_running() {
     let plan = vec![operator_row(CRITERION, TodoStatus::InProgress)];
     let quiet = nag_with(&plan, &ChildSessions::none(), &RunningJobs::none()).unwrap();
+    // The in-progress line still names `wait_on` in words; the offer is the call with a handle.
     assert!(
-        !quiet.contains("wait_on"),
+        !quiet.contains("{\"wait_on\""),
         "nothing running, nothing to offer: {quiet}"
     );
 
@@ -346,10 +347,10 @@ fn the_check_offers_wait_on_when_a_job_or_a_subagent_is_running() {
     assert!(!said.contains("wait_on"), "{said}");
 }
 
-/// A row whose own words are a running job's description is work in flight, and the check says
-/// nothing about it. It must not offer the wait: the completion arrives on its own.
+/// A row that only reads like a running job is not taken as waiting on it: the wait is stated on
+/// the row, so the check asks, and its offer names the job the row reads like.
 #[test]
-fn a_row_a_running_job_reads_like_is_not_nagged() {
+fn a_row_a_running_job_reads_like_is_asked_and_offered_that_job() {
     let plan = vec![operator_row(
         "correctness gate must PASS in RATCHET=0 — rerun scripts/correctness_gate.sh",
         TodoStatus::InProgress,
@@ -362,10 +363,11 @@ fn a_row_a_running_job_reads_like_is_not_nagged() {
         .running("j12")
         .about("j55", "gate: RATCHET=0 scripts/correctness_gate.sh")
         .running("j55");
-    assert_eq!(
-        nag_with(&plan, &ChildSessions::none(), &jobs),
-        None,
-        "the gate job IS the row: nothing to ask and no wait to attach"
+    let said =
+        nag_with(&plan, &ChildSessions::none(), &jobs).expect("an unstated wait is asked about");
+    assert!(
+        said.contains(r#""job": "j55""#),
+        "the offer names the job the row reads like: {said}"
     );
 }
 

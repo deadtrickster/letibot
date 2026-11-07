@@ -637,54 +637,35 @@ fn a_said_check_repeats_and_a_moved_plan_starts_the_ladder_over() {
     );
 }
 
-/// A row the model marked in progress is not asked about one window later: 793 of 1,778 checks in
-/// the review's data named such a row, and 45% of those got a restatement of its state back. The
-/// check waits for the longest interval the ladder reaches, which is a stall and not a claim.
+/// A row the model marked in progress, with no wait on it, at a turn's end is a row it forgot: it
+/// is checked one window later like any other free head, and the check asks for an act (continue
+/// it, or attach its wait) rather than its state, which only ever got the state restated back.
 #[test]
-fn a_row_the_model_marked_in_progress_is_left_until_the_cap() {
+fn an_in_progress_row_with_no_wait_is_checked_one_window_later() {
     use std::time::{Duration, Instant};
 
     let t0 = Instant::now();
     let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
     let started = [row("the migration", TodoStatus::InProgress)];
-
-    // 60 s after the turn that wrote it, nothing is said: the row is the model's own claim of
-    // work, and a check at the base window is the check that produced *still in progress*.
     clock.rearm(&started, t0, &no_children(), &no_jobs());
     assert_eq!(
         clock.due_at(),
-        Some(t0 + super::NAG_REPEAT_CAP),
-        "an in-progress row is due at the cap, not at the base window"
+        Some(t0 + Duration::from_secs(60)),
+        "an in-progress row with no wait is due at the base window"
     );
-
-    // And the repeat keeps that floor: the ladder's first interval is the base window doubled,
-    // which is still shorter than a stall, so an unchanged in-progress notice stays at the cap.
     let said = super::unfinished_plan(
         &super::the_plan_as_checked(&started, &no_children(), &no_jobs()),
         &started,
         &no_children(),
         &no_jobs(),
     )
-    .expect("the row is still open work");
-    let delivered = t0 + super::NAG_REPEAT_CAP;
-    assert!(clock.due_now(delivered));
-    clock.said(Some(said), delivered);
-    clock.rearm(&started, delivered, &no_children(), &no_jobs());
-    assert_eq!(
-        clock.due_at(),
-        Some(delivered + super::NAG_REPEAT_CAP),
-        "and the repeat is a cap away, not a doubled window"
+    .expect("the row is open work");
+    assert!(said.contains("continue it now"), "{said}");
+    assert!(said.contains("`wait_on`"), "{said}");
+    assert!(
+        said.contains("mark it done with `todo_write`"),
+        "the head's fold: {said}"
     );
-
-    // A row nobody has started keeps the base window, so the floor is the in-progress claim's and
-    // not the whole check's.
-    clock.rearm(
-        &[row("the migration", TodoStatus::Pending)],
-        t0,
-        &no_children(),
-        &no_jobs(),
-    );
-    assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(60)));
 }
 
 /// The ladder stops growing, which keeps a nine-hour stall a working night rather than a

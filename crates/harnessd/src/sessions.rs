@@ -208,24 +208,6 @@ pub(crate) fn the_plan_as_checked(
         .collect()
 }
 
-/// Is the row the check would name one the model itself has marked in progress? Read through the
-/// same two doors the arming takes, so the clock paces exactly the notice the turn would send.
-fn the_named_row_is_in_progress(
-    todos: &[TodoItem],
-    children: &ChildSessions,
-    jobs: &RunningJobs,
-) -> bool {
-    let askable = the_plan_as_checked(todos, children, jobs);
-    let Some((_, named)) =
-        letibot_tools::builtins::todo::unfinished_plan_for(&askable, todos, None, children, jobs)
-    else {
-        return false;
-    };
-    todos
-        .iter()
-        .any(|row| row.content == named && row.status == TodoStatus::InProgress)
-}
-
 /// Should the idle check be armed for a plan of these ROWS, given what it was last NAGGED
 /// with? The `moved` half of the schedule, as one predicate, so the rule can be tested
 /// without a daemon
@@ -380,11 +362,10 @@ impl TodoNagClock {
         // A row the model has already moved to in progress is not asked about again until the
         // session has been idle for the longest interval the ladder reaches: the check that
         // restated *in progress* one window after the model wrote it got a restatement back.
-        let floor = if the_named_row_is_in_progress(todos, children, jobs) {
-            NAG_REPEAT_CAP
-        } else {
-            self.window
-        };
+        // One window for every free head, in progress or not: a row whose work is in flight says so
+        // with a wait, which takes it off the check until the wait ends, and a row in progress with
+        // none at a turn's end is a row the model forgot.
+        let floor = self.window;
         let askable = the_plan_as_checked(todos, children, jobs);
         let text = unfinished_plan(&askable, todos, children, jobs);
         if nag_should_arm(todos, self.nagged.as_deref(), children, jobs) {

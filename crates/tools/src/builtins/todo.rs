@@ -974,10 +974,6 @@ pub fn attach_now(ctx: &InvokeCtx<'_>, field: &str, handle: &str) -> String {
     )
 }
 
-/// How alike a row and a running job must be for the check to say the row "reads like" it.
-/// Below it the offer still names the likeliest one, without claiming they are related.
-const LIKE_FLOOR: f64 = 0.15;
-
 /// A job's or child's description cut to one clause for the check's line - the line is folded by
 /// the head as one, so it cannot grow a paragraph per running job.
 pub fn said_short(about: &str) -> String {
@@ -1192,17 +1188,8 @@ pub fn unfinished_plan_for(
     // The count of open rows is not in the text: the idle clock compares that text, so a row
     // added or closed elsewhere would make the same question a new notice and reset the backoff.
     let who = whose_row(&next.by);
-    // A row whose own words are a running job's or child's description is work already in
-    // flight. Asking about it produces "still running" and offering the wait is the same sentence
-    // again, so the check is silent until the thing it names has ended.
-    if matches!(next.by, TodoBy::Model | TodoBy::Operator)
-        && jobs
-            .likeliest_wait(&next.content)
-            .first()
-            .is_some_and(|(_, _, _, score)| *score >= LIKE_FLOOR)
-    {
-        return None;
-    }
+    // A row that only reads like a running job is not taken as waiting on it: a wait is stated on
+    // the row with `wait_on`, which the offer below names, and an unstated one is asked about.
     // The first check that names an operator's row after they add it says who put it there; a row
     // the model has already moved to in progress is one it knows about.
     let operator_added = next.by == TodoBy::Operator
@@ -1214,6 +1201,14 @@ pub fn unfinished_plan_for(
     let state = match next.status {
         TodoStatus::InProgress => format!(" — {who} (in progress)"),
         _ => format!(" — {who}"),
+    };
+    // In progress with no wait at a turn's end is forgotten work: the line asks for the act, since
+    // a question about its state only ever got the state restated.
+    let forgotten = if next.status == TodoStatus::InProgress {
+        " It is in progress and waits on nothing: continue it now, or attach what it waits on with \
+         `todo_write`'s `wait_on`."
+    } else {
+        ""
     };
     // The verbs differ by author: the model may mark its own row done and may not do that to the
     // operator's, and a parent's row no field of this tool disposes of.
@@ -1278,7 +1273,7 @@ pub fn unfinished_plan_for(
     };
     Some((
         format!(
-            "{head}:\n  - {}{state}\n{advice}{offer}{waiting}",
+            "{head}:\n  - {}{state}\n{advice}{forgotten}{offer}{waiting}",
             next.content.trim(),
         ),
         next.content.clone(),
