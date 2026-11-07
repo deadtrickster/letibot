@@ -425,6 +425,14 @@ fn a_childs_clear_is_answered_by_its_own_thread() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
+    // The guard the test above carries, and for the same reason: this one opens a parent harness,
+    // whose shell seat needs a boundary this box may not be able to build (AGENTS.md, apparatus).
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "a process-lifetime tree (cgroup v2; process groups on macOS)",
+        letibot_tools::host_tree().is_ok(),
+    ) else {
+        return;
+    };
     let dir = TempDir::new("harnessd-clear-child");
     let path = dir.path().join("sessions.db");
     let session_id = "s-clear-child-parent";

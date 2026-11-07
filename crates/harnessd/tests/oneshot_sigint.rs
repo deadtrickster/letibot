@@ -366,6 +366,14 @@ impl Drop for OneShot {
 
 #[test]
 fn the_first_ctrl_c_interrupts_the_turn_and_the_one_shot_goes_in_seconds() {
+    // The daemon this starts seats a shell, so it needs a boundary this box may not be able to
+    // build (AGENTS.md, apparatus): without one it refuses to run the command at all.
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "a process-lifetime tree (cgroup v2; process groups on macOS)",
+        letibot_tools::host_tree().is_ok(),
+    ) else {
+        return;
+    };
     let dir = TempDir::new("oneshot-sigint");
     let fake = Fake::serve(Script::BashThenProse);
     let mut shot = OneShot::start(dir.path(), &fake);
@@ -434,6 +442,14 @@ fn the_first_ctrl_c_interrupts_the_turn_and_the_one_shot_goes_in_seconds() {
 
 #[test]
 fn a_turn_that_never_comes_back_is_bounded_and_a_second_ctrl_c_exits_at_once() {
+    // [`the_first_ctrl_c_interrupts_the_turn_and_the_one_shot_goes_in_seconds`]'s guard, for its
+    // reason: the daemon's shell seat needs a boundary.
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "a process-lifetime tree (cgroup v2; process groups on macOS)",
+        letibot_tools::host_tree().is_ok(),
+    ) else {
+        return;
+    };
     let dir = TempDir::new("oneshot-sigint-hang");
     let fake = Fake::serve(Script::Hang);
     let mut shot = OneShot::start(dir.path(), &fake);
