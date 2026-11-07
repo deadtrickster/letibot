@@ -1175,6 +1175,7 @@ impl App {
             now.saturating_add(delta as usize)
         };
         let bottom = self.body_len.saturating_sub(self.view_room.max(1));
+        let stall_from = (delta > 0).then_some(now);
         // The bottom of the window is not the bottom of the session. With rows below it this head
         // has not drawn, reaching the last drawn line is a page and not a return to following.
         if want >= bottom && delta > 0 && self.hist_ceiling.is_none() {
@@ -1218,6 +1219,51 @@ impl App {
         // `scroll` is left alone: it is derived by the frame from the anchor, and a second derivation would
         // be two implementations of one formula. Anything asking whether the reader is at the bottom asks
         // [`App::following`].
+        if let Some(was) = stall_from
+            && self.anchor.is_some()
+            && self.held_line() <= was
+        {
+            self.note_scroll_stall(was, want, bottom);
+        }
+    }
+
+    /// A step down that did not move a reader who is not following: the stop above the tail that
+    /// only Esc frees, seen in long sessions and not reproduced. One line per stop, to a file the
+    /// operator can send, naming the window's state at it.
+    fn note_scroll_stall(&self, held: usize, want: usize, bottom: usize) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static LAST: AtomicUsize = AtomicUsize::new(usize::MAX);
+        if cfg!(test) || LAST.swap(held, Ordering::Relaxed) == held {
+            return;
+        }
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let dir = std::path::Path::new(&home).join(".local/state/letibot");
+        let _ = std::fs::create_dir_all(&dir);
+        let line = format!(
+            "{} session={} items={} floor={} upto={} ceiling={:?} below={} body_len={} room={} \
+             held={held} want={want} bottom={bottom} walk_ahead={} spans={}\n",
+            self.now_ms,
+            self.session_id,
+            self.items.len(),
+            self.hist_floor,
+            self.hist_upto,
+            self.hist_ceiling,
+            self.items_below,
+            self.body_len,
+            self.view_room,
+            self.walk_ahead,
+            self.spans.len(),
+        );
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("scroll-stalls.log"))
+        {
+            let _ = f.write_all(line.as_bytes());
+        }
     }
 
     /// One notch down walks three lines; a run of notches gathers speed, but only against a stream still

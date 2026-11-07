@@ -60,7 +60,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | a remote placement: its keep-list and `plan.env` go into the ssh command line (`EnvSource::Remote`), where `ps` on both boxes reads them; and the operator rotates the token |
 | R132 | `skills_path.rs` refuses its own session as written by another process, once under load | Code work | the root cause; seen once in a full gate, 6 reruns and the next gate passed |
 | R133 | The one-shot env report prints its lines out of order | Code work | a reproduction and the fix |
-| R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | a reproduction: whether it happens only while a turn or job runs, and at which row; `walking_down_from_far_up_a_long_session_reaches_the_tail_while_rows_arrive` passes on main |
+| R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | the next stop's line from `~/.local/state/letibot/scroll-stalls.log`, which the head now writes at each stop |
 | R135 | The context-claim detector's `carry` anchor is not calibrated | Code work | score the store's sentences carrying `carry` near `session` against the floor, as the 747-sentence set was |
 | T16 | W9's open questions | Code work | item 7 (call ids are positional per turn); unclear: item 6 asked lubuntu3 whether RAGFlow signals "no coverage" in a field, no answer is recorded |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
@@ -832,7 +832,7 @@ A session stopped at 842k of 1M with five rows open, saying *"I'm at the end of 
 
 **Status:** not reproduced. left: a reproduction from the operator.
 
-Seen twice in the arango window: the view scrolls up and down but not below one line, and only Esc frees it. The head showed `holding your place · 119 line(s) below arrive underneath`. `walking_down_from_far_up_a_long_session_reaches_the_tail_while_rows_arrive` passes on main. Needed: whether it happens only while a turn or a job streams, and whether the stop is always at the newest finished message.
+Seen twice in the arango window: the view scrolls up and down but not below one line, and only Esc frees it. The head showed `holding your place · 119 line(s) below arrive underneath`. `walking_down_from_far_up_a_long_session_reaches_the_tail_while_rows_arrive` passes on main. Seen again on 2026-11-07 in arango after a restart. A probe test does not reproduce it: 1,800 recorded rows attached as a snapshot, paged to the top and walked down with rows arriving, reach the tail. The suspect is the drawn window's ceiling: `App::hold` resumes following only when `hist_ceiling` is unset, and the window has rows above the snapshot that arango pages in from the daemon, which the probe has not. The head now appends one line per stop to `~/.local/state/letibot/scroll-stalls.log` (`App::note_scroll_stall`) with the window's numbers; the next stop's line says which boundary held.
 
 ## T16 - W9's open questions
 
