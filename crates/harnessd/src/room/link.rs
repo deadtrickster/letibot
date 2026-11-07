@@ -267,7 +267,7 @@ impl SessionRoom {
                 if plain && wakes && m.attends(&me, letibot_room::Attention::All) {
                     wake::push_chat(&me, m.seq, wake::chat_sentence(m, names));
                     bell(&me);
-                } else {
+                } else if !wake::seen_meanwhile(&me, m.seq) {
                     // Nothing here will take it as a note, so it is seen on arrival.
                     ack_taken(&me, m.seq);
                 }

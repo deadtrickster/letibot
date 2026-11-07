@@ -55,6 +55,20 @@ pub fn push_chat(session: &str, seq: u64, line: String) {
     }
 }
 
+/// Note that chat up to `seq` was seen by a session that is not woken for it. With notes still
+/// queued the seq rides on them, acked when a turn takes them; `false` when nothing is queued and
+/// the caller acks now. Acked now, it would mark seen past a note no turn has taken.
+pub fn seen_meanwhile(session: &str, seq: u64) -> bool {
+    let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
+    match q.map.get_mut(session) {
+        Some(entry) if !entry.lines.is_empty() => {
+            entry.chat_seq = entry.chat_seq.max(seq);
+            true
+        }
+        _ => false,
+    }
+}
+
 /// The push, given the queues it goes into - so a test can prove the bounds without filling the
 /// process's own map.
 fn enqueue(queues: &mut Queues, session: &str, line: String) {
@@ -255,6 +269,22 @@ pub fn missed_line(count: u64, since_ms: u64, now: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An unwoken message that arrives while a note waits is not acked past that note: its seq
+    /// rides on the queue, and the turn that takes the note acks both.
+    #[test]
+    fn a_message_seen_meanwhile_waits_for_the_queued_note() {
+        let me = "s-seen-meanwhile";
+        assert!(
+            !seen_meanwhile(me, 5),
+            "nothing queued: the caller acks at once"
+        );
+        push_chat(me, 7, "a note".into());
+        assert!(seen_meanwhile(me, 9), "a note waits: the seq rides on it");
+        let (lines, seq) = take_with_seq(me);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(seq, 9, "the take acks past both");
+    }
 
     fn said(to: Option<&str>, text: &str) -> letibot_room::Message {
         letibot_room::Message {
