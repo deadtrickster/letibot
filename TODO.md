@@ -63,6 +63,10 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R138 | Stable session identities across hosts, through migrations | Code work | the build of `docs/cross-host-identity.md` (Q1-Q7) and its five open questions; until then asks are same-host only |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
 | R153 | Placing a session on a busy host times out at 20 s | Needs the operator | the live proof on a loaded lab2x1: a placement there while the host is building, and a session's `job_wait` against it; the minute-long arranging budget, the one connection per host and the round a timed-out status query is not are landed |
+| R155 | A remote placement's memory cap is checked against the daemon's box, not the host the command runs on | Code work | all of it |
+| R156 | A Claude Code seat's nag repeats on every package job and offers the packages' jobs as its own waits | Code work | all of it |
+| R157 | Built-in panes `b-sessions`/`pane_sessions` and `b-irc`/`pane_nicks` trap with symbol-less backtraces | Code work | a reproduction (reported by gatekeeper@arangodb, room #1029), the cause, the fix |
+| R154 | The channel push says turns, not work: idle-with-open-work and a held job's exit are silent, and a lost turn end is never replayed | Code work | all of it |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
 | R150 | Plugin extension points: the harness and head open to plugins | Needs the operator | the operator's answers to the 13 questions in `docs/plugin-extension-points-wide.md` §8 (each has a default and is built on it meanwhile); K2-K6, K11 and P6 to build; H0, P5, K7, K8, K9, K10 are landed and K1 is in flight |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
@@ -993,6 +997,24 @@ A second budget did the same to running sessions (`cc@serenedb`, room #861, two 
   against a host that DID answer is still a stalled round and still stops a turn. Measured both ways
   by `a_wait_whose_status_queries_all_timed_out_is_neither_progress_nor_a_stall`, and the production
   half by `a_wait_no_status_query_answered_does_not_claim_the_job_is_stuck`.
+
+## R155 - A remote placement's memory cap is checked against the daemon's box
+
+**Status:** open. left: all of it.
+
+On 2026-11-07 R144's package, placed on lubuntu3 (123 GiB), asked for 12 GiB for a clippy run and the card said "15.1 GiB of 185.8 GiB is free now": lab2x1's numbers, the box the daemon runs on. A command's memory cap is decided by the free memory of the host it runs on, so a placement must read that host's `/proc/meminfo` (one call, cached for the poll interval) and the card must name the host.
+
+## R156 - A Claude Code seat's nag repeats on every package job and offers the packages' jobs as its own
+
+**Status:** open. left: all of it.
+
+Seen the first evening the seat board ran (R144): with one row in progress and two packages building, the seat got about twenty `[todo check]` pushes in fifteen minutes. The check's sentence carries "Also running: `jNNNN`", so every job a held package starts or ends is a new sentence and the once-per-change rule fires again. And it suggests `wait_on` a package's job (`j83509`) as if it were the seat's: a seat's own waits are its packages' turns and the operator; a package's jobs are that package's. The seat's own background work (a local gate) has no `wait_on` kind at all. Wanted: the change key is the plan, not the job list; package jobs are named as the package's; and a seat can say a row waits on something outside letibot (a free-text `external` wait that the nag stays quiet on until the row moves).
+
+## R157 - Built-in panes trap with symbol-less backtraces
+
+**Status:** open. left: a reproduction, the cause, the fix.
+
+gatekeeper@arangodb (room #1029, 2026-11-07) saw `b-sessions`/`pane_sessions` and `b-irc`/`pane_nicks` both trap, with backtraces of 17 and 18 frames and no symbols. Likely new since R151 installed the built-in panes at a head's door, so these are now compiled and asked in sessions that never asked them. The trap should be reproduced with the session's input, the modules built with names kept so a backtrace says where, and the cause fixed.
 
 ## R134 - Scrolling stops at a line above the tail
 
