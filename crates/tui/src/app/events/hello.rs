@@ -108,6 +108,7 @@ impl App {
                 // and it answers, so dropping it throws away a session the head can DRIVE. The noise
                 // the filter was for is [`App::session_rows`]'s business - nested, folded by default.
                 self.sessions = sessions;
+                self.rooms_sync_sessions();
                 // A removal is about a row of the daemon's list, so it goes when the row does - down
                 // the chain to where this head has just been seated (`App::prune_removed`), or a switch
                 // onto a removed row stands in a subtree the head's own list filters out.

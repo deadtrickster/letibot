@@ -116,6 +116,7 @@ impl App {
             } => {
                 // Kept whole, like the `Hello` arm above - see it for why the filter is gone.
                 self.sessions = sessions;
+                self.rooms_sync_sessions();
                 // A LIST DOES NOT SEAT A HEAD: `current` is where the daemon's socket is and
                 // `self.session_id` is the session this head is DRAWING. When they disagree the ROWS
                 // are what is wrong, so this asks for a resync - a `Switch` would answer `already here`.

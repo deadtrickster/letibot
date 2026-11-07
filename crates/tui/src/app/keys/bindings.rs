@@ -441,13 +441,13 @@ const ROOMS: &[Binding] = &[
         &[On::Char('d')],
         Empty,
         Act::DismissSend,
-        Text("dismisses the failed line"),
+        Text("dismisses the failed line; on a session, opens its DM"),
     ),
     b(
         &[On::Enter],
         Empty,
         Act::ResendSend,
-        Text("resends the failed line"),
+        Text("resends the failed line; on a session, switches to it"),
     ),
     // The chat keys of `docs/room-tui.md`. Tab puts a cursor on a message and the arrows walk the
     // messages from then on; each of the rest acts on the message under that cursor, and with no

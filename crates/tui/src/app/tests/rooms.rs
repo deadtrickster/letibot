@@ -1494,3 +1494,95 @@ fn a_click_on_a_channel_name_enters_it() {
         Some(crate::app::rooms::Chan::Room(PROJECT.into()))
     );
 }
+
+fn with_sessions(a: &mut App) {
+    let mut asking = brief("s-y", "beta", false);
+    asking.waits_on_operator = 1;
+    a.sessions = vec![brief("s-x", "alpha", true), asking];
+    a.rooms_sync_sessions();
+}
+
+fn row_of(rows: &[String], needle: &str) -> usize {
+    rows.iter()
+        .position(|r| r.contains(needle))
+        .unwrap_or_else(|| panic!("no `{needle}` in {rows:?}"))
+}
+
+/// The operator's sessions are their own section below the rooms, with project and live state.
+#[test]
+fn sessions_are_a_section_below_the_rooms() {
+    let mut a = opened(1_000);
+    reply(
+        &mut a,
+        rooms_reply(&[("host", 2, 7, 0), (PROJECT, 2, 12, 0)]),
+    );
+    with_sessions(&mut a);
+    let rows = screen(&mut a, 120);
+    let (rooms, project, sessions, alpha, beta) = (
+        row_of(&rows, "Rooms"),
+        row_of(&rows, "▸ host"),
+        row_of(&rows, "Sessions"),
+        row_of(&rows, "alpha"),
+        row_of(&rows, "beta"),
+    );
+    assert!(
+        rooms < project && project < sessions && sessions < alpha && alpha < beta,
+        "{rows:#?}"
+    );
+    assert!(rows[alpha + 1].contains("letibot · running"), "{rows:?}");
+    assert!(rows[beta + 1].contains("letibot · asking"), "{rows:?}");
+    assert!(!rows.join("\n").contains("direct messages"));
+}
+
+/// Unread DMs from a session show on its row.
+#[test]
+fn a_sessions_unread_dm_counts_on_its_row() {
+    let mut a = opened(1_000);
+    with_sessions(&mut a);
+    reply(
+        &mut a,
+        history(
+            "dm",
+            vec![json!({"seq": 5, "ts": 1, "room": "dm", "author": "s-x",
+                "kind": "session", "text": "hi", "to": "operator"})],
+        ),
+    );
+    let c = crate::app::rooms::Chan::Session("s-x".into());
+    assert_eq!(a.rooms.unread(&c), 1);
+}
+
+/// Enter on a selected session switches to it. `d` opens the DM with it. A click is Enter.
+#[test]
+fn enter_and_click_switch_to_a_session_and_d_opens_the_dm() {
+    let mut a = opened(1_000);
+    with_sessions(&mut a);
+    let c = crate::app::rooms::Chan::Session("s-x".into());
+    a.rooms_go(c.clone());
+    assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-x".into())));
+
+    a.rooms_go(c.clone());
+    a.key(Key::Char('d'));
+    assert_eq!(
+        a.rooms.selected(),
+        Some(crate::app::rooms::Chan::Dm("s-x".into()))
+    );
+
+    a.rooms_go(crate::app::rooms::Chan::Room("host".into()));
+    let rows = screen(&mut a, 120);
+    let y = row_of(&rows, "alpha");
+    let x = rows[y].chars().position(|c| c == 'a').unwrap() as u16;
+    assert_eq!(
+        a.key(Key::Click { x, y: y as u16 }),
+        Some(Action::Switch("s-x".into()))
+    );
+}
+
+/// The hint bar names the second key while a session row is selected.
+#[test]
+fn the_hint_names_d_for_a_session() {
+    let mut a = opened(1_000);
+    with_sessions(&mut a);
+    a.rooms_go(crate::app::rooms::Chan::Session("s-x".into()));
+    let all = screen(&mut a, 160).join("\n");
+    assert!(all.contains("opens its DM"), "{all}");
+}

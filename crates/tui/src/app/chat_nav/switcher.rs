@@ -47,7 +47,7 @@ pub(crate) fn rows(a: &App, query: &str) -> Vec<Row> {
         // A DM's peer is matched by its own handle: the row is titled `dm with X`, and someone
         // looking for X should not have to type the words this head wraps it in.
         let peer = match &c {
-            Chan::Dm(p) => Some(p.as_str()),
+            Chan::Dm(p) | Chan::Session(p) => Some(p.as_str()),
             Chan::Room(_) => None,
         };
         let Some(rank) = rank(query, &label).or_else(|| peer.and_then(|p| rank(query, p))) else {

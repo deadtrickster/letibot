@@ -536,7 +536,7 @@ impl App {
             Chan::Room(room) => {
                 json!({"type": "say", "id": id, "room": room, "text": body, "thread": thread})
             }
-            Chan::Dm(to) => {
+            Chan::Dm(to) | Chan::Session(to) => {
                 json!({"type": "dm", "id": id, "to": to, "text": body, "thread": thread})
             }
         };

@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::app::chat_adapter;
-use crate::app::rooms::{Chan, Member, OPERATOR, RoomsView, Send};
+use crate::app::rooms::{Chan, Member, OPERATOR, RoomsView, Send, SessInfo};
 use crate::app::*;
 use crate::ui::chat::{ChatCtx, chat_blocks};
 use crate::ui::render::{row_strings, trim_to, visible_width, wrap};
@@ -29,6 +29,11 @@ impl App {
             let count = self.rooms.unread(&c).to_string().len();
             let name = visible_width(&label(&self.rooms, &c));
             needed = needed.max(2 + name + 1 + count);
+            if let Chan::Session(id) = &c
+                && let Some(s) = self.rooms.sessions.iter().find(|s| &s.id == id)
+            {
+                needed = needed.max(2 + visible_width(&session_facts(s)));
+            }
         }
         let cap = (w / 2).saturating_sub(visible_width(SEP) + 1);
         needed.min(cap.max(12))
@@ -70,7 +75,13 @@ fn label(v: &RoomsView, c: &Chan) -> String {
             Some(_) => format!("#{}", clean_line(&v.room_label(id))),
             None => id.clone(),
         },
+        Chan::Dm(p) if v.sessions.iter().any(|s| &s.id == p) => "  dm".into(),
         Chan::Dm(p) => clean_line(p),
+        Chan::Session(id) => v
+            .sessions
+            .iter()
+            .find(|s| &s.id == id)
+            .map_or_else(|| clean_line(id), |s| clean_line(&s.name)),
     }
 }
 
@@ -81,6 +92,7 @@ fn title(v: &RoomsView, c: &Chan) -> String {
             None => format!("{id} room"),
         },
         Chan::Dm(p) => format!("dm with {}", clean_line(p)),
+        Chan::Session(_) => "session".into(),
     }
 }
 
@@ -91,6 +103,15 @@ fn padded(mut l: Line, w: usize) -> Line {
         l.push(Span::raw(" ".repeat(w - cur)));
     }
     l
+}
+
+/// The second line of a session row: its project and what it is doing.
+fn session_facts(s: &SessInfo) -> String {
+    if s.project.is_empty() {
+        s.state.to_string()
+    } else {
+        format!("{} · {}", clean_line(&s.project), s.state)
+    }
 }
 
 /// One channel row: mark, name, and the unread count at the right edge.
@@ -277,6 +298,9 @@ fn member_strip(
 impl RoomsView {
     fn header(&self, c: &Chan, rw: usize) -> Line {
         let mut spans = vec![Span::role(title(self, c), Role::Strong)];
+        if let Chan::Session(_) = c {
+            spans.push(Span::role(format!("  {}", label(self, c)), Role::Faint));
+        }
         if let Chan::Room(id) = c
             && let Some(r) = self.rows.iter().find(|r| &r.id == id)
         {
@@ -323,8 +347,15 @@ impl App {
         let mut sel_row = 0;
         let mut dm_heading = false;
         let mut at: Vec<(usize, Chan)> = Vec::new();
+        let mut sess_heading = false;
         for c in channels.iter() {
-            if matches!(c, Chan::Dm(_)) && !dm_heading {
+            if matches!(c, Chan::Session(_)) && !sess_heading {
+                sess_heading = true;
+                lines.push(padded(pane::faint("Sessions"), lw));
+            }
+            let of_session =
+                matches!(c, Chan::Dm(p) if self.rooms.sessions.iter().any(|s| &s.id == p));
+            if matches!(c, Chan::Dm(_)) && !of_session && !dm_heading {
                 dm_heading = true;
                 lines.push(padded(pane::faint("direct messages"), lw));
             }
@@ -335,6 +366,16 @@ impl App {
             let unread = if is_sel { 0 } else { self.rooms.unread(c) };
             at.push((lines.len(), c.clone()));
             lines.push(entry(&self.rooms, c, is_sel, unread, lw));
+            if let Chan::Session(id) = c
+                && let Some(s) = self.rooms.sessions.iter().find(|s| &s.id == id)
+            {
+                // The facts are the same row's: a click on either line is the session's.
+                at.push((lines.len(), c.clone()));
+                lines.push(padded(
+                    pane::faint(trim_to(&format!("  {}", session_facts(s)), lw)),
+                    lw,
+                ));
+            }
         }
         let skip = (sel_row + 1).saturating_sub(room);
         self.rooms.chan_rows = at
@@ -342,6 +383,29 @@ impl App {
             .filter_map(|(r, c)| r.checked_sub(skip).filter(|d| *d < room).map(|d| (d, c)))
             .collect();
         lines.into_iter().skip(skip).take(room).collect()
+    }
+
+    /// The body of a selected session row: who it is and the two keys that act on it.
+    fn session_card(&self, id: &str, rw: usize) -> Vec<Line> {
+        let Some(s) = self.rooms.sessions.iter().find(|s| s.id == id) else {
+            return vec![pane::faint("  this session is gone")];
+        };
+        let dm = self.rooms.unread(&Chan::Dm(id.to_string()));
+        let mut out = vec![
+            pane::faint(format!(
+                "  {}",
+                trim_to(&session_facts(s), rw.saturating_sub(2))
+            )),
+            pane::faint(format!("  id {id}")),
+        ];
+        if dm > 0 {
+            out.push(Line::new(vec![Span::role(
+                format!("  {dm} unread in the DM"),
+                Role::Attention,
+            )]));
+        }
+        out.push(pane::faint("  enter switches to it · d opens the DM"));
+        out
     }
 
     /// What a session is called: its title or slug in this head's session list, else the
@@ -383,6 +447,9 @@ impl App {
                 None,
             );
         };
+        if let Chan::Session(id) = &c {
+            return (self.session_card(id, rw), None);
+        }
         // The channel as a layer sees it: what a message means is the layer's to say - a chat
         // plugin's when one answers, the adapter's when none does - and this pane draws the stream
         // it answers without ever reading a `Msg`.

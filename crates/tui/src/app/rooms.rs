@@ -110,6 +110,18 @@ pub(crate) enum Chan {
     Room(String),
     /// Direct messages with one principal.
     Dm(String),
+    /// One of the operator's own top-level sessions, by session id.
+    Session(String),
+}
+
+/// A top-level session of the operator's, as the Sessions section lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessInfo {
+    pub id: String,
+    pub name: String,
+    pub project: String,
+    /// `running`, `idle` or `asking`.
+    pub state: &'static str,
 }
 
 /// A line this head sent and is still answerable for, under the request id it went out with.
@@ -151,6 +163,8 @@ pub(crate) struct RoomsView {
     /// The last draw's member column: its x offset in the pane, its width, and the handle
     /// on each row, so a click is answered from the frame and not recomputed.
     pub member_col: (usize, usize),
+    /// The operator's top-level sessions, kept in step with the head's session list.
+    pub sessions: Vec<SessInfo>,
     /// The channel list's rows as the last frame drew them: the pane row and the channel on it.
     pub chan_rows: Vec<(usize, Chan)>,
     pub member_rows: Vec<(usize, String)>,
@@ -209,7 +223,19 @@ impl RoomsView {
                 out.push(Chan::Room(r.id.clone()));
             }
         }
-        out.extend(self.peers().into_iter().map(Chan::Dm));
+        let peers = self.peers();
+        for s in &self.sessions {
+            out.push(Chan::Session(s.id.clone()));
+            if peers.contains(&s.id) {
+                out.push(Chan::Dm(s.id.clone()));
+            }
+        }
+        out.extend(
+            peers
+                .into_iter()
+                .filter(|p| !self.sessions.iter().any(|s| &s.id == p))
+                .map(Chan::Dm),
+        );
         out
     }
 
@@ -224,12 +250,14 @@ impl RoomsView {
         match c {
             Chan::Room(id) => id.clone(),
             Chan::Dm(p) => format!("dm:{p}"),
+            Chan::Session(id) => format!("session:{id}"),
         }
     }
 
     pub(crate) fn messages(&self, c: &Chan) -> Vec<&Msg> {
         match c {
             Chan::Room(id) => self.msgs.get(id).into_iter().flatten().collect(),
+            Chan::Session(_) => Vec::new(),
             Chan::Dm(p) => self
                 .msgs
                 .get("dm")
@@ -269,6 +297,7 @@ impl RoomsView {
                 .iter()
                 .filter(|m| m.author != OPERATOR && m.seq > seen)
                 .count() as u64,
+            Chan::Session(id) => self.unread(&Chan::Dm(id.clone())),
         }
     }
 
@@ -358,7 +387,7 @@ impl RoomsView {
                 ops.push(self.read_op("dm"));
                 ops.push(json!({"type": "roster", "room": id}));
             }
-            Some(Chan::Dm(_)) => ops.push(self.read_op("dm")),
+            Some(Chan::Dm(_) | Chan::Session(_)) => ops.push(self.read_op("dm")),
             None => {}
         }
         ops
@@ -380,6 +409,7 @@ impl RoomsView {
                     .find(|r| &r.id == id)
                     .is_some_and(|r| r.last_seq > seen),
                 Chan::Dm(_) => self.messages(c).iter().any(|m| m.seq > seen),
+                Chan::Session(_) => false,
             }
         };
         let held = self
@@ -676,6 +706,7 @@ impl App {
                 None => id.clone(),
             },
             Chan::Dm(p) => format!("dm with {p}"),
+            Chan::Session(id) => self.session_label(id),
         }
     }
 
@@ -683,6 +714,14 @@ impl App {
     pub(crate) fn rooms_say(&mut self, text: &str) -> Option<Action> {
         let (thread, body) = split_reply(text.trim());
         if body.is_empty() {
+            return None;
+        }
+        if let Some(Chan::Session(id)) = self.rooms.selected() {
+            self.set_composer(text.trim());
+            self.say(&format!(
+                "{} is a session row - d opens its DM, enter switches to it",
+                self.session_label(&id)
+            ));
             return None;
         }
         let Some(chan) = self.rooms.selected() else {
@@ -714,7 +753,7 @@ impl App {
             Chan::Room(room) => {
                 json!({"type": "say", "id": id, "room": room, "text": body, "thread": thread})
             }
-            Chan::Dm(to) => {
+            Chan::Dm(to) | Chan::Session(to) => {
                 json!({"type": "dm", "id": id, "to": to, "text": body, "thread": thread})
             }
         };
@@ -727,6 +766,9 @@ impl App {
     /// under a new id, superseding the old record. A view binding rather than the composer's,
     /// because the editor answers an empty Enter with `Idle` before `submit` is called.
     pub(crate) fn rooms_resend_send(&mut self) -> ControlFlow<Option<Action>> {
+        if let Some(Chan::Session(id)) = self.rooms.selected() {
+            return ControlFlow::Break(self.rooms_switch_session(id));
+        }
         let act = self
             .rooms
             .selected()
@@ -745,6 +787,10 @@ impl App {
     /// `d` on an empty composer: drop the newest failed line of the selected channel. The
     /// operator has read the reason and chosen not to send it again.
     pub(crate) fn rooms_dismiss_send(&mut self) -> ControlFlow<Option<Action>> {
+        if let Some(Chan::Session(id)) = self.rooms.selected() {
+            self.rooms_open_dm(id);
+            return ControlFlow::Break(None);
+        }
         if let Some(chan) = self.rooms.selected()
             && let Some(failed) = self.rooms.failed_of(&chan).map(|s| s.id.clone())
         {
@@ -793,6 +839,47 @@ impl App {
         self.scroll_rooms_to_tail();
         self.rooms.next_poll_ms = 0;
         self.rooms_shown();
+    }
+
+    /// Keep the Sessions section in step with the session list: the operator's own top-level
+    /// sessions the daemon holds, with the project folder and what each is doing now.
+    pub(crate) fn rooms_sync_sessions(&mut self) {
+        let mine: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|b| {
+                b.parent_session_id.is_none()
+                    && b.live
+                    && b.origin == letibot_sessionlog::SessionOrigin::Operator
+            })
+            .map(|b| rooms::SessInfo {
+                id: b.session_id.clone(),
+                name: self.session_label(&b.session_id),
+                project: std::path::Path::new(&b.wiring.workspace)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                state: if b.waits_on_operator > 0 {
+                    "asking"
+                } else if b.status.running {
+                    "running"
+                } else {
+                    "idle"
+                },
+            })
+            .collect();
+        self.rooms.sessions = mine;
+    }
+
+    /// Enter on a session row: this head moves to that session, as picking it in the session list.
+    pub(crate) fn rooms_switch_session(&mut self, id: String) -> Option<Action> {
+        self.switch_to(id)
+    }
+
+    /// `d` on a session row: the DM with it.
+    pub(crate) fn rooms_open_dm(&mut self, id: String) {
+        self.rooms.fresh.insert(id.clone());
+        self.rooms_go(Chan::Dm(id));
     }
 
     /// Enter a channel: select it and start reading it at the tail. The switcher's Enter and a

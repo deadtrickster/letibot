@@ -204,6 +204,9 @@ impl App {
             }
             (Target::RoomChan, Some(k)) => {
                 if let Some((_, c)) = self.rooms.chan_rows.get(k).cloned() {
+                    if let crate::app::rooms::Chan::Session(id) = c {
+                        return ControlFlow::Break(self.rooms_switch_session(id));
+                    }
                     self.rooms_go(c);
                 }
                 return ControlFlow::Break(None);
