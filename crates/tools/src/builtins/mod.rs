@@ -37,6 +37,7 @@ pub mod recall;
 pub mod retrieval;
 pub mod room;
 pub mod scenario;
+pub mod screen;
 pub mod session_self;
 pub mod skill;
 pub mod task;

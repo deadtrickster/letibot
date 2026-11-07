@@ -428,6 +428,8 @@ impl SkillRegistry {
                 "plugin-hooks",
                 include_str!("../../../../skills/plugin-hooks/SKILL.md"),
             ),
+            // How to look at a UI change with the `screen` tool.
+            ("screen", include_str!("../../../../skills/screen/SKILL.md")),
         ]
         .into_iter()
         .filter_map(|(what, text)| {

@@ -49,6 +49,11 @@ regex-syntax = "0.8"
 # separate crate because the grammars are C and pull a `cc` build, and this
 # crate deliberately has no `build.rs` — see below.
 letibot-code.workspace = true
+# The screen model behind the `screen` tool: bytes in, cells out, no dependencies of its own.
+letibot-vt.workspace = true
+# PNG for `screen shot`: a zlib stream and a crc, already in the tree through rano.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+crc32fast = "1"
 # The pty. Four calls — `posix_openpt`, `grantpt`, `unlockpt`, `ptsname_r` — and the
 # one `tcsetattr` that keeps `\r` out of the capture. See the note below.
 libc = "0.2"

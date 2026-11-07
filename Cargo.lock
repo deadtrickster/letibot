@@ -1674,6 +1674,8 @@ dependencies = [
 name = "letibot-tools"
 version = "0.6.0"
 dependencies = [
+ "crc32fast",
+ "flate2",
  "letibot-code",
  "letibot-embeddings",
  "letibot-metrics",
@@ -1682,6 +1684,7 @@ dependencies = [
  "letibot-tokencore",
  "letibot-tools",
  "letibot-transcript",
+ "letibot-vt",
  "libc",
  "regex",
  "regex-syntax",
