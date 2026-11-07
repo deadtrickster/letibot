@@ -126,6 +126,7 @@ pub const HOST_VERBS: &[&str] = &[
     "flowy",
     "gate",
     "job",
+    "listen",
     "login",
     "model",
     "monitor",
