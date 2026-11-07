@@ -54,7 +54,15 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R114 | Embeddings as the second similarity tier, for every similarity caller | Code work | item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase case scored against the worst measured negative, the per-round cost on lab2x1 |
 | R118 | A GitHub reviewer seat: `letibot attach github` reviews every PR and answers as @letibot | Code work | the seat in the daemon so the pane has a feed, a mirror per repository, the review panel, R116's verdict, R114's similarity offers |
 | R116 | Claude Code as a merge-queue reviewer through headless `claude -p` | Code work | all of it - no `claude -p`, `--json-schema` or `structured_output` use exists under `crates/` |
-| R117 | The leticode MCP bridge pushes package and queue events into Claude Code as a channel | Code work | package and queue events on the channel (rooms already push), and leticode as an approved Claude Code plugin so the channel needs no development flag |
+| R117 | The leticode MCP bridge pushes package and queue events into Claude Code as a channel | Code work | package and queue events on the channel (rooms already push), and the plugin; a self-published channel plugin still needs `--dangerously-load-development-channels` during the preview |
+| R127 | The idle nag names every free head of the plan, so independent rows run in parallel | Code work | all of it - `the_row_to_name` (`crates/tools/src/builtins/todo.rs:1333`) picks one ready row; postponed by the operator on 2026-11-07 |
+| R128 | A model switch says it is re-rendering, and a prompt sent meanwhile says why it waits | Code work | all of it - the re-render is in the daemon log only, and the head shows the prompt as `queued` with no reason |
+| R129 | One store file per project and a shared file, so one daemon's write cannot stall another's | Code work | the design's last edit (decisions live only in project files) and all of the build; the proposal is `docs/store-split.md` on branch `docs/store-split`, not merged |
+| R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | all of it - `--setenv` carries secrets (`crates/tools/src/exec/confine.rs:2589`); the token should be rotated once it is passed another way |
+| R131 | `cargo clippy -- -D warnings` fails on main | Code work | `mergequeue/capacity.rs:19` (`neg_cmp_op_on_partial_ord`) and `mergequeue/review/placement_tests.rs:66` (useless `format!`) |
+| R132 | `skills_path.rs` refuses its own session as written by another process, once under load | Code work | the root cause; seen once in a full gate, 6 reruns and the next gate passed |
+| R133 | The head's small hangs and orderings | Code work | the 30 s attach wait (`crates/tui/src/head.rs:240`) with no word on screen, the one-shot env report's order, the macOS `osascript` clipboard read with no deadline |
+| R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | a reproduction: whether it happens only while a turn or job runs, and at which row; `walking_down_from_far_up_a_long_session_reaches_the_tail_while_rows_arrive` passes on main |
 | T16 | W9's open questions | Code work | item 7 (call ids are positional per turn); unclear: item 6 asked lubuntu3 whether RAGFlow signals "no coverage" in a field, no answer is recorded |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
 | R100 | A remote session in a firecode VM: `--host` and `--vm` as one placement | Needs the operator | the live proof on lab2x1: a real `firecode` copy carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, the copy-out's cost |
@@ -763,11 +771,73 @@ Today an orchestrating Claude Code session learns that a package finished throug
 - Permission asks can be relayed through `experimental["claude/channel/permission"]`.
 - Claude Code must be started with `--dangerously-load-development-channels server:leticode`. It works in interactive sessions only, and custom channels are not on the allowlist.
 - Keep `letibot-mcp wait` as the fallback for sessions started without the flag.
-- **The plugin** is what replaces the flag, the alias and the per-seat Monitors. One installable plugin carries the leticode MCP server, its channel, the room waiter and the skills, so a session gets push without being started specially. Custom channels are not on Claude Code's allowlist today, so check what an approved plugin needs (marketplace entry, review) before building.
+- **Package events, the design:** one watcher thread per held head (`Bridge::hold`), started when the client sends `notifications/initialized`. It loops on `Head::wait` and sends a notification only when the answer changes (turn ended, an ask by its id, a failure, a provider trouble), so a quiet session is said once.
+- **The allowlist, as documented on 2026-11-07:** "A channel published to your own marketplace still needs `--dangerously-load-development-channels` to run, since it isn't on the approved allowlist." Only Anthropic's allowlist (`claude-plugins-official`) or an organisation's managed `allowedChannelPlugins` with `channelsEnabled: true` lifts it. A plugin still removes the per-session `claude mcp add` and carries the skills.
+- **Open choice:** whether Claude Code wakes on every room message, as letibot sessions now do, or only on one addressed to it, as the bridge does today (`Attention::ToMe`). Every message is a Claude turn each.
+- **The plugin** is what replaces the alias and the per-seat Monitors; the flag stays until the plugin is allowlisted. One installable plugin carries the leticode MCP server, its channel, the room waiter and the skills, so a session gets push without being started specially. Custom channels are not on Claude Code's allowlist today, so check what an approved plugin needs (marketplace entry, review) before building.
 
 Docs: https://code.claude.com/docs/en/channels-reference.md
 
 ---
+
+## R127 - The idle nag names every free head of the plan
+
+**Status:** not started, postponed by the operator on 2026-11-07. left: all of it.
+
+The plan is a DAG and the check exists to keep it moving. Today `unfinished_plan_for` names one ready row (`the_row_to_name`, `crates/tools/src/builtins/todo.rs:1333`), so a plan with five independent heads is worked one at a time. The check should list every ready row, with its author's verb, and say that independent rows go to subagents or jobs in parallel.
+
+- The idle clock compares the check's text, so a list that changes when a row closes is a new check at the base window. That is wanted: closing a row is progress.
+- The head folds the check on its sentences (`crates/tui/src/ui/transcript/notice_card.rs:212`), and the fold changes with the text.
+- A row matching a running job's description is still left out, row by row rather than silencing the whole check.
+
+## R128 - A model switch says it is re-rendering
+
+**Status:** not started. left: all of it.
+
+A switch to a model with another tokenizer re-renders every stored item (`Its N item(s) were RE-RENDERED` in the daemon log; 50 to 812 items seen on lab2x1). A prompt sent during it sits `queued` in the head with no reason, which reads as a hang. The `Filling` event already draws a progress line; the re-render should publish it, and the queued prompt should say it goes when the re-render ends.
+
+## R129 - One store file per project and a shared file
+
+**Status:** proposal. left: the design's last edit and all of the build. The proposal is `docs/store-split.md` on branch `docs/store-split`.
+
+Every daemon writes one `sessions.db` (9.4 GB on 2026-11-06, a WAL that reached 346 MB while long readers held snapshots). Writes retry on busy for up to 60 s, so one slow writer stalls every daemon. The proposal puts each project's sessions, transcripts, jobs and decisions in `projects/<key>.db`, written by that folder's daemon only, and the index, writer leases, queues and host leases in `shared.db`.
+
+- Left in the design: decisions live only in project files. Only the `decisions` tool and the start-up counts read the corpus, and `Store::corpus()` is used only in tests, so no shared copy is needed.
+- First step before building: log every store write over 1 s, so the split is shown to remove the stalls actually seen.
+- A saturated disk stalls both files alike: on 2026-11-07 a test gate linking on the root disk blocked every daemon's reads. Builds on lab2x1 now go to `/build`.
+
+## R130 - The seat's `GH_TOKEN` is readable in `ps`
+
+**Status:** not started. left: all of it.
+
+`confine.rs` passes the seat's secret environment to bwrap as `--setenv NAME VALUE` (`crates/tools/src/exec/confine.rs:2589`), so every user on the box reads `GH_TOKEN` from `ps`. Pass secrets through an inherited environment or a file descriptor bwrap reads, and rotate the token after.
+
+## R131 - `cargo clippy -- -D warnings` fails on main
+
+**Status:** open. left: two findings, both outside this session's changes.
+
+- `crates/harnessd/src/mergequeue/capacity.rs:19`: `if !(spare > 0.0)`, `neg_cmp_op_on_partial_ord`. The NaN case is the point, so say it with `partial_cmp` or a named check.
+- `crates/harnessd/src/mergequeue/review/placement_tests.rs:66`: a `format!` with no arguments.
+
+## R132 - `skills_path.rs` refuses its own session once under load
+
+**Status:** open. left: the root cause.
+
+`an_unknown_skill_name_is_refused_and_runs_nothing` failed once in a full gate with `session s-skills-path is being written by another process` naming the test's own pid, 0 s ago. Six reruns and the next full gate passed. The writer lease is read while the same process still holds it from an earlier open.
+
+## R133 - The head's small hangs and orderings
+
+**Status:** open. left: three items.
+
+- The attach wait (`ATTACH_WAIT`, 30 s, `crates/tui/src/head.rs:240`) shows nothing while it runs.
+- The one-shot env report prints its lines out of order.
+- The macOS clipboard read through `osascript` has no deadline, so a stuck pasteboard owner freezes the head (the Linux read got a 3 s deadline in `c9c8fbca`).
+
+## R134 - Scrolling stops at a line above the tail
+
+**Status:** not reproduced. left: a reproduction from the operator.
+
+Seen twice in the arango window: the view scrolls up and down but not below one line, and only Esc frees it. The head showed `holding your place · 119 line(s) below arrive underneath`. `walking_down_from_far_up_a_long_session_reaches_the_tail_while_rows_arrive` passes on main. Needed: whether it happens only while a turn or a job streams, and whether the stop is always at the newest finished message.
 
 ## T16 - W9's open questions
 
