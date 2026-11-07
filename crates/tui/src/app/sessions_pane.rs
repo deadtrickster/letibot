@@ -583,6 +583,7 @@ impl App {
             feeds,
             folded: self.picker_folds.clone(),
             below: None,
+            ..Input::default()
         }
     }
 
@@ -1159,6 +1160,8 @@ fn role_of(r: pv::Role) -> rano::style::Role {
         pv::Role::Strong => R::Strong,
         pv::Role::Faint => R::Faint,
         pv::Role::Pending => R::Pending,
+        // P2 maps a hue to a theme colour that reads on dark and light; until then it is plain.
+        pv::Role::Hue(_) => R::Plain,
     }
 }
 

@@ -412,6 +412,8 @@ Input (`letibot_plugin::pane::Input`, whose `v` is `V`):
  "feeds": {"sessions":{…}},                            // only the feeds the answering layer declared
  "folded": {"<row id>": true},                         // the host's fold state, by row id
  "below": null | {…},                                  // the layer below's answer, when this layer asked
+ "now_ms": 1762000000000,                             // the host's clock, unix millis: a guest has none
+ "utc_offset_s": 3600,                                // seconds east of UTC, for the LOCAL reading
  "size":  {"w":120,"h":40}}
 ```
 
@@ -425,7 +427,12 @@ Output (`View`):
  "legend": {"<label>":"<what it means>", …},            // the `l` view and the hover text
  "look": null | {"exec":["prog","arg",…]} | {"read":"path"},
  "every_s": 0 | <seconds, >= 5>,
- "state": null | {…}}
+ "state": null | {…},
+ "input": null | {"key":"project/letibot","placeholder":"say something",    // the composer is the pane's
+                    "multiline":true,"footer":"enter sends, alt-enter breaks the line"},
+ "keys": [ <ViewKey>… ],                               // the view's own keys, live in cursor mode
+ "dock": null | "screen" | "right",                    // beside the conversation, or the screen
+ "width": null | 60}                                   // cells a docked column asks for
 ```
 
 `Panel`:
@@ -446,6 +453,9 @@ Output (`View`):
 {"tree":{"rows":[<Row with "children":[<Row>…]>…]}}
 {"markdown":"…"}                                        // itemized: list items and headings are stops
 {"kv":{"rows":[["label","value"],…]}}
+{"stream":{"entries":[ <StreamEntry>… ],"empty":"nothing said yet",          // anchored at the bottom
+            "highlight":"<entry id>",
+            "mentions":{"@s-1793…":{"text":"@fix-room-push","hue":3}}}}
 ```
 
 `Line` is the one grid, laid out by the host (label column, right-aligned value column, glyph column, tail;
@@ -478,11 +488,14 @@ a label too long is truncated with `…`, never clipped):
 
 `Action`: `{"key":"s","label":"start","say":"…"}` (a line to the session's model), `{"key":"r","label":
 "refresh","look":true}`, or `{"key":"x","label":"expand","event":"expand"}` (call the pane again with
-`{"item","action"}`). `role` is one of `muted`, `working`, `attention`, `success`, `failure`, `plain`.
+`{"item","action"}`). `role` is one of `muted`, `working`, `attention`, `success`, `failure`, `plain`,
+`strong`, `faint`, `pending`, or a hue - `hue:0` to `hue:7`, a colour by INDEX that the theme maps (`X4`).
+A hue is refused outside that range, at the wire: `a_hue_outside_the_palette_does_not_parse`.
 
 Keys are the host's, templated: each panel's `key` toggles its view, `f` findings, `l` legend; up/down and
 the wheel move between stops; Enter opens the selected stop's `detail`; Esc leaves what you navigated into and
-closes the pane at the overview, and a plugin cannot bind it to anything else.
+closes the pane at the overview, and a plugin cannot bind it to anything else. `View.keys` adds the pane's own
+shortcuts beside those, and never on top of them.
 
 What `View::validate` and `View::validate_for` refuse, each with a sentence naming the offender
 (`crates/sessionlog/src/pane.rs`):
@@ -494,7 +507,14 @@ What `View::validate` and `View::validate_for` refuse, each with a sentence nami
 - an action that is not exactly one of `say`, `look`, `event`;
 - `every_s` that is neither 0 (never) nor at least 5 seconds;
 - a finding with neither an `id` nor a `what`;
-- a row's `enter`, or an action's `verb`, that the layer's `plugin.toml` does not list in `actions`.
+- a row's `enter`, or an action's `verb`, that the layer's `plugin.toml` does not list in `actions` - and the
+  same for a stream entry's `enter` and a view key's `verb`;
+- a view key that is not one letter of either case or one of `ctrl-k`, `end`, `home`, that is a host key or a
+  host chord (`esc`, `enter`, `tab`, `ctrl-c`), that a panel or an action already took, that is bound twice, or
+  that is not exactly one of `event`, `verb`;
+- an `input` with no `key` - the host keys that pane's history and drafts by it and has none to invent;
+- a `width` without `dock: "right"`, or one outside 20 to 200 cells;
+- a mention in a hue the palette has not got, and a stream entry that asks for a verb with no `id`.
 
 An unknown block kind is not a refusal: it renders as one muted line naming the kind, and unknown fields are
 ignored. The view is also data: the same JSON is what an agent reads.
@@ -505,7 +525,7 @@ A pane never runs a program for its data; it declares which of the host's facts 
 exactly those:
 
 ```toml
-feeds = ["sessions"]        # sessions | queue | room | monitors | jobs | todos | git | github
+feeds = ["sessions"]        # sessions | queue | room | monitors | jobs | todos | git | github | chat
 ```
 
 | feed | is |
@@ -518,6 +538,7 @@ feeds = ["sessions"]        # sessions | queue | room | monitors | jobs | todos 
 | `todos` | the session's todo rows, with their waits and their questions |
 | `git` | the head's reading of the repository: branch, detached, ahead/behind, stash, the action in progress, changed-file counts |
 | `github` | the reviewer seat (`letibot attach github`): each scope's state, and its open pull requests with their review state, last action and age; the seat's identity and whether anything is posted or kept as a draft |
+| `chat` | the operator's conversations, as `letibot_plugin::pane::Chat`: every channel with its label and unread count, the roster per room, the selected channel, `seen` and `opened_seen`, the failed sends, and a WINDOW of the selected channel's messages (`seq, ts, room, author, kind, to, thread, refs, attachments, text`). Built-in or pinned layers only: `Manifest::admit_for` refuses an unpinned layer that declares it, because it is every room the operator sees, DMs included |
 
 `sessions`, `queue` and `room` are fed; the rest are named, and each is one more feed, not a format change.
 Two things a feed says so a plugin need not infer them, both in `queue`: `live` per row (the in-flight states
@@ -545,6 +566,92 @@ cursor was over. Fold state is the host's, by row id, so a fold survives the nex
 carries `facts` (the right-hand column), `under` (the faint line beneath it), `number` (what `/switch N`
 types), `depth` (a flat list that has already walked its own tree) and `open` (`true`/`false`/`"fixed"`, a
 row no key can fold).
+
+#### The stream block
+
+`{"stream":{"entries":[…],"empty":"…","highlight":"<id>","mentions":{…}}}` - the one block the host
+scrolls itself. It is anchored at the bottom, sticks to the tail, keeps the reader's place when older entries
+arrive above, and says `N new - End jumps` while scrolled back. An ENTRY is a stop, so the cursor moves by
+message rather than by screen row:
+
+```jsonc
+{"id":"m-41", "head":[{"text":"operator","role":"hue:2"},"op"], "time":"14:20",
+ "quote":"the line above", "body":"**ping** @s-1793…", "pictures":["ab12"],
+ "facts":["edited"], "role":"plain", "actions":[<Action>…], "enter":{…}}
+{"divider":"today" | "unread", "text":"Today"}      // a divider between two messages
+```
+
+A body is markdown and the host draws it through `rano::markdown`, with the transcript's own options. A
+`pictures` entry is a blob ID the host holds or fetches (`capabilities = ["blobs:room"]`), never bytes. And
+`mentions` maps a token in a body to what it reads as and which hue it takes, so a layer never edits the
+markdown it is handed:
+
+```jsonc
+"mentions": {"@s-1793…": {"text":"@fix-room-push", "hue":3}, "@operator": {"me":true}}
+```
+
+#### The input surface, and the view's own keys
+
+`View.input` makes the host's composer the pane's: the host edits the text, keeps history and drafts per
+`key`, handles paste and the picture chips, and Enter calls the layer's `command_<pane>` hook with
+`{line, key, reply_to, chips, feeds, now_ms, utc_offset_s}`. Text never reaches the layer per keystroke. The
+layer answers acts (below) or a refusal sentence the host shows.
+
+```jsonc
+"input": {"key":"project/letibot", "placeholder":"say something",
+           "multiline":true, "footer":"enter sends, alt-enter breaks the line"}
+"keys":  [{"key":"R","label":"reply","event":"reply"},
+          {"key":"ctrl-k","label":"copy to the end","event":"kill"},
+          {"key":"end","label":"tail","event":"tail"}]
+```
+
+A view key is one letter of either case or one of `ctrl-k`, `end`, `home`. With an input, keys are live only
+in CURSOR MODE - Tab on an empty input enters it, Esc leaves it - because otherwise a letter belongs to the
+text. A letter compares case-blind, since the head's `Key::Char` cannot tell `R` from `r`. The event carries
+the entry under the cursor as `item`; a `verb` on a view key performs one of the person's verbs on it.
+
+#### Acts in an answer
+
+A `command_` (and an `event`) answer may carry acts instead of a view, each one a host verb the manifest
+declares:
+
+```jsonc
+{"acts":[{"verb":"room_say","args":{"room":"project/letibot","text":"hi","thread":39}}]}
+{"refusal":"that channel is not mine"}                 // shown, and nothing performed
+```
+
+`Answer::validate_for` refuses an act whose verb the layer's `actions` does not name, and that is the same
+list a row's `enter` is gated by - an act in an answer is a second door to the same verbs, not a lesser one.
+The verbs the head performs are the ones the native room view sends today (`room_say`, `room_dm`,
+`room_read`, `room_invite`, `room_leave`), plus `copy`, `open`, `pick`. A `command_todo` layer still answers
+the older `{"act":{"name","args"}}`, one act performed by name.
+
+#### Completions: the `complete_` hook
+
+`complete_<name>` is a hook kind of its own, declared in `hooks` beside the pane's. Asked on Tab, and on `@`
+or `/` at a word start, debounced - never per keystroke:
+
+```jsonc
+// in
+{"v":1, "text":"@fix", "cursor":4, "key":"project/letibot", "feeds":{…},
+ "now_ms":1762000000000, "utc_offset_s":3600}
+// out
+{"from":1, "to":4, "candidates":[{"insert":"@fix-room-push","label":"fix-room-push",
+  "note":"project/letibot","hue":3}]}
+```
+
+At most 8 candidates, best first, and the span is byte offsets into the line on character boundaries
+(`letibot_plugin::complete::MAX_CANDIDATES`, `Completion::validate`). The host draws the row, cycles on Tab,
+accepts on Enter and closes on Esc.
+
+#### The clock, and where the host lays the pane
+
+Every pane, command and completion input carries `now_ms` and `utc_offset_s`, so a layer can print `HH:MM`
+today and `Mon D` before that: a guest cannot read a clock, and `ts` on a message is unix millis.
+
+`dock` is where the host puts the pane: `"screen"` (the default, the screen it has always been) or
+`"right"`, a column beside the conversation whose divider and width keys the host owns. `width` is a
+request in cells, 20 to 200, and only means anything with `dock: "right"`.
 
 #### The answer's shape is versioned
 

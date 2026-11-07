@@ -17,6 +17,20 @@ pub use letibot_plugin::pane::{Act, Cell, Fold, Role};
 /// the operator expects to leave with.
 pub const HOST_KEYS: [char; 5] = ['q', 'j', 'k', 'f', 'l'];
 
+/// The chords the host owns on every surface. A view key spelled as one of them is refused for the
+/// same reason [`HOST_KEYS`] is: it is how the person leaves, sends, or enters the cursor.
+/// The arrows, paging and the wheel are not words here - a view key is a letter or [`NAMED_KEYS`].
+pub const HOST_CHORDS: [&str; 4] = ["esc", "enter", "tab", "ctrl-c"];
+
+/// The chords a view may bind by name, beside a letter of either case. `ctrl-k` is the chat's own
+/// (kill to the end of the line) and `home`/`end` move in the stream - none of them is the host's.
+pub const NAMED_KEYS: [&str; 3] = ["ctrl-k", "end", "home"];
+
+/// The narrowest and widest a docked pane may ask for, in cells. A column narrower than this holds
+/// no message, and a wider one is the conversation with a stripe left over.
+pub const MIN_DOCK_W: u32 = 20;
+pub const MAX_DOCK_W: u32 = 200;
+
 /// The shortest the host will re-run a look for - `every_s` is 0 (never) or at least this
 /// many seconds. Anything faster is a pane that spends more time asking than drawing.
 pub const MIN_EVERY_S: u64 = 5;
@@ -62,6 +76,81 @@ pub struct View {
     /// What this pane returned last time, handed back to it on the next call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<Value>,
+    /// The pane's own text input (`X5`). While the pane is open the host's composer is the
+    /// pane's: the host edits the text and keeps history and drafts, the layer is handed a line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<PaneInput>,
+    /// The keys the view binds itself (`X8`). With an input they are live only in cursor mode -
+    /// Tab on an empty input enters it, Esc leaves it - because letters belong to the text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<ViewKey>,
+    /// Where the host lays the pane out (`X10`). Absent is the screen it has always been.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dock: Option<Dock>,
+    /// How many cells wide a docked pane asks for. The host owns the divider and the width keys,
+    /// and honours this within [`MIN_DOCK_W`]..=[`MAX_DOCK_W`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+}
+
+/// The pane's own input surface (`X5`): one composer, keyed so two channels keep two drafts.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PaneInput {
+    /// The history and draft key - the channel, so each room remembers its own line. Required,
+    /// because the host cannot invent the name it keys a person's drafts under.
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    /// Whether Shift+Enter and Alt+Enter make a second line. Absent is a one-line field.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub multiline: bool,
+    /// The hint drawn under the field, in the layer's own words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer: Option<String>,
+}
+
+/// One key the view binds itself (`X8`) - a shortcut on the pane, not on a stop.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ViewKey {
+    /// A letter of either case, or one of [`NAMED_KEYS`].
+    pub key: String,
+    /// What the hint bar says about it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    /// Call the pane again with the entry under the cursor as `item`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+    /// One of the person's verbs, on the entry under the cursor - gated like a row's `enter`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verb: Option<String>,
+}
+
+impl ViewKey {
+    /// The key as the host matches it: lowercased, so a shift and a plain letter cannot be two
+    /// keys the head's `Key::Char` cannot tell apart.
+    pub fn word(&self) -> String {
+        self.key.trim().to_ascii_lowercase()
+    }
+
+    /// What this key asks for, or nothing. Exactly one of `event` and `verb`, like [`Action`].
+    pub fn kind(&self) -> Option<ActionKind> {
+        match (&self.event, &self.verb) {
+            (Some(e), None) => Some(ActionKind::Event(e.clone())),
+            (None, Some(v)) => Some(ActionKind::Verb(v.clone())),
+            _ => None,
+        }
+    }
+}
+
+/// Where the host lays a pane out (`X10`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Dock {
+    /// The screen it has always been: the pane replaces the conversation.
+    #[default]
+    Screen,
+    /// A column beside the conversation, whose width the host owns.
+    Right,
 }
 
 /// The pane's counter in the status row: `3 running`, in one of the palette's roles.
@@ -123,7 +212,7 @@ pub struct Unavailable {
     pub fix: String,
 }
 
-/// One block of a panel. Five kinds the host draws, and every other kind kept by name.
+/// One block of a panel. Six kinds the host draws, and every other kind kept by name.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Block {
     /// `{"lines":[…]}` - the one grid.
@@ -136,6 +225,9 @@ pub enum Block {
     Markdown(String),
     /// `{"kv":{"rows":[["label","value"],…]}}` - rows that carry no id, so no stop either.
     Kv(Vec<(String, String)>),
+    /// `{"stream":{…}}` - messages anchored at the bottom, each entry a stop (`X2`). The host
+    /// draws a body through rano's markdown, sticks to the tail and pages older entries at the top.
+    Stream(Stream),
     /// A kind this host does not draw, by the name the plugin gave it. Drawn as one muted
     /// line naming the kind, which is the honest thing: the plugin's answer is not wrong, this
     /// host is old.
@@ -161,6 +253,7 @@ impl Block {
             "kv" => serde_json::from_value(body.clone())
                 .ok()
                 .map(|k: KvBody| Block::Kv(k.rows)),
+            "stream" => serde_json::from_value(body.clone()).ok().map(Block::Stream),
             other => return Block::Unknown(other.to_string()),
         };
         parsed.unwrap_or_else(|| Block::Unknown(kind.clone()))
@@ -175,6 +268,7 @@ impl Block {
             Block::Tree(_) => "tree",
             Block::Markdown(_) => "markdown",
             Block::Kv(_) => "kv",
+            Block::Stream(_) => "stream",
             Block::Unknown(k) if k.is_empty() => "unknown",
             Block::Unknown(k) => k,
         }
@@ -196,6 +290,7 @@ impl Serialize for Block {
             Block::Tree(t) => m.serialize_entry("tree", t)?,
             Block::Markdown(text) => m.serialize_entry("markdown", text)?,
             Block::Kv(rows) => m.serialize_entry("kv", &KvRef { rows })?,
+            Block::Stream(s) => m.serialize_entry("stream", s)?,
             // The key alone: this host kept the kind and never had a body to keep with it, and
             // inventing one would be a fact the plugin did not say.
             Block::Unknown(kind) => {
@@ -238,6 +333,102 @@ pub struct Tree {
 struct KvBody {
     #[serde(default)]
     rows: Vec<(String, String)>,
+}
+
+/// `{"stream":{"entries":[…],"highlight":"…","mentions":{…}}}` - a chat-shaped list anchored
+/// at the bottom. It is the one block the host scrolls itself: the tail is where the new entries
+/// are, older pages arrive above without moving the reader, and an entry is a stop, so the cursor
+/// moves by message rather than by screen row.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Stream {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<StreamEntry>,
+    /// What to draw when there are no entries - the layer's own sentence, because *this channel is
+    /// empty* and *the window has not arrived* are two different facts and only the layer knows.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub empty: String,
+    /// The entry the layer wants selected - the message a reply or a thread came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<String>,
+    /// Tokens in a body, and how the host draws them: the plugin never edits the markdown it is
+    /// handed, it says how a token in it reads.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mentions: BTreeMap<String, Mention>,
+}
+
+/// One `@token` of a body: the name to show instead of it, and the colour to show it in.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mention {
+    /// What the token reads as - `@s-1793…` drawn as `@fix-room-push`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// A hue (`hue:0` to `hue:7`), by index: the theme picks the colour that reads on both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hue: Option<u8>,
+    /// True for the person reading it, which the host draws the one way it draws `you`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub me: bool,
+}
+
+/// One entry of a stream: a message, or a divider drawn between two of them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StreamEntry {
+    /// The id - an entry is a stop, and an act on it names this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// The header: the speaker in its hue, the title behind the name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub head: Vec<Cell>,
+    /// The time as the LAYER prints it (`14:20`, `Mon D`): a guest has no clock, the input has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<String>,
+    /// The line this one answers, as the layer quotes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+    /// The body, markdown. The host renders it with the transcript's own renderer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// Blob ids the body draws, by reference: the host holds or fetches the bytes, never the layer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pictures: Vec<String>,
+    /// The facts on the right, drawn faint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub facts: Vec<Cell>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<Action>,
+    /// What Enter does on the entry, performed by the host - gated by [`View::validate_for`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enter: Option<Act>,
+    /// The divider this entry is, when it is one. A divider carries no body: the host draws its
+    /// `text` between the message above it and the one below.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub divider: Option<Divider>,
+    /// A divider's word - `today`, `3 new messages`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+}
+
+impl StreamEntry {
+    /// The entry's id, or `""` - the field is absent far more often than not.
+    pub fn id(&self) -> &str {
+        self.id.as_deref().unwrap_or("")
+    }
+
+    /// Whether this entry is a divider rather than a message.
+    pub fn is_divider(&self) -> bool {
+        self.divider.is_some()
+    }
+}
+
+/// Which divider an entry draws: the day the messages under it begin on, or the first one the
+/// person had not seen when they opened the channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Divider {
+    Today,
+    Unread,
 }
 
 /// One row of the grid - the one shape every number goes through, so the columns line up
@@ -479,6 +670,86 @@ pub fn one_letter(s: &str) -> Option<char> {
     }
 }
 
+/// One letter of EITHER case, lowercased - what a view key (`X8`) may be: with an input the plain
+/// letters type and these are live only in cursor mode, so a capital is a key the layer can keep.
+fn letter_of_either_case(s: &str) -> Option<char> {
+    let mut it = s.chars();
+    match (it.next(), it.next()) {
+        (Some(c), None) if c.is_ascii_alphabetic() => Some(c.to_ascii_lowercase()),
+        _ => None,
+    }
+}
+
+/// The verbs one stop can reach: the act its Enter performs, and the ones its letters carry. Both
+/// are doors to the host's own verbs, and [`View::validate_for`] gates them by the same list.
+fn asked<'a>(enter: Option<&'a Act>, actions: &'a [Action]) -> impl Iterator<Item = &'a str> + 'a {
+    enter
+        .map(|a| a.verb())
+        .into_iter()
+        .chain(actions.iter().filter_map(|a| a.verb.as_deref()))
+}
+
+/// Refuse a verb the layer's manifest did not declare, naming where it was asked for and what WAS
+/// declared - the sentence a model reads before it edits the manifest.
+fn gate_verbs<'a>(
+    declared: &[String],
+    at: &str,
+    asked: impl Iterator<Item = &'a str>,
+) -> Result<(), String> {
+    for verb in asked {
+        if declared.iter().any(|d| d == verb) {
+            continue;
+        }
+        return Err(format!(
+            "{at} asks the host to `{verb}`, and the layer's `plugin.toml` does not declare that \
+             action — its `actions` are [{}]",
+            declared.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+/// An answer carrying acts (`X7`): what a `command_` hook answers when the line means something the
+/// HOST performs - `{"acts":[{"verb":"room_say","args":{…}}]}`. The host performs them in order,
+/// and each verb is one the layer's `plugin.toml` declares.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Answer {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acts: Vec<Acted>,
+    /// The sentence the host shows when the layer will not do it - `that channel is not mine`.
+    /// A refusal is an answer, not an error: the person is told, and nothing is performed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
+}
+
+/// One act an answer carries: the host's verb, and the arguments the host performs it with.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Acted {
+    /// The word `plugin.toml`'s `actions` declares - `room_say`, `room_dm`, `copy`, `open`, `pick`.
+    pub verb: String,
+    /// The verb's own arguments, free-form: the host knows its verbs' fields, and typing them here
+    /// would put every future verb in one enum this crate has to grow with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Value>,
+}
+
+impl Answer {
+    /// The answer a layer wrote, or the sentence saying why it is not one.
+    pub fn parse(v: Value) -> Result<Answer, String> {
+        serde_json::from_value(v).map_err(|e| format!("not an answer: {e}"))
+    }
+
+    /// Refuse an answer whose act the manifest did not declare. The same list a row's `enter` is
+    /// gated by ([`View::validate_for`]): an act in an answer is a second door to the same verbs.
+    pub fn validate_for(&self, declared: &[String]) -> Result<(), String> {
+        gate_verbs(
+            declared,
+            "this answer",
+            self.acts.iter().map(|a| a.verb.as_str()),
+        )
+    }
+}
+
 /// What a pane asks the host to run before it is asked again.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -497,29 +768,39 @@ impl View {
         self.validate()?;
         for p in &self.panels {
             for block in p.summary.iter().chain(p.view.iter()) {
-                let Block::Tree(t) = block else { continue };
-                for (_, row) in rows_deep(&t.rows) {
-                    // The row's `enter`, and then its letters. Both reach the host's own verbs
-                    // and both are gated here: a letter is not a lesser door.
-                    let mut asked: Vec<&str> = row
-                        .enter
-                        .as_ref()
-                        .map(|act| act.verb())
-                        .into_iter()
-                        .collect();
-                    asked.extend(row.actions.iter().filter_map(|a| a.verb.as_deref()));
-                    for verb in asked {
-                        if declared.iter().any(|d| d == verb) {
-                            continue;
+                match block {
+                    Block::Tree(t) => {
+                        for (_, row) in rows_deep(&t.rows) {
+                            gate_verbs(
+                                declared,
+                                &format!("row `{}`", row.id()),
+                                asked(row.enter.as_ref(), &row.actions),
+                            )?;
                         }
-                        return Err(format!(
-                            "row `{}` asks the host to `{verb}`, and the layer's `plugin.toml` does \
-                             not declare that action — its `actions` are [{}]",
-                            row.id(),
-                            declared.join(", ")
-                        ));
                     }
+                    // A stream entry is a stop with acts like a row, and a letter on it is not a
+                    // lesser door than Enter.
+                    Block::Stream(s) => {
+                        for (i, e) in s.entries.iter().enumerate() {
+                            gate_verbs(
+                                declared,
+                                &format!("stream entry {i}"),
+                                asked(e.enter.as_ref(), &e.actions),
+                            )?;
+                        }
+                    }
+                    _ => {}
                 }
+            }
+        }
+        // The view's own keys reach the same verbs, so they are gated by the same list.
+        for k in &self.keys {
+            if let Some(verb) = &k.verb {
+                gate_verbs(
+                    declared,
+                    &format!("view key `{}`", k.word()),
+                    std::iter::once(verb.as_str()),
+                )?;
             }
         }
         Ok(())
@@ -553,6 +834,96 @@ impl View {
                 ));
             }
         }
+        // The view's own keys (`X8`): a letter of either case or one of the named chords, never a
+        // host chord, never twice, and one meaning each.
+        let mut view_words: BTreeSet<String> = BTreeSet::new();
+        let mut view_letters: BTreeSet<char> = BTreeSet::new();
+        for k in &self.keys {
+            let word = k.word();
+            if HOST_CHORDS.contains(&word.as_str()) {
+                return Err(format!(
+                    "view key `{word}` is one of the host's {HOST_CHORDS:?}: it is how the person \
+                     leaves, sends or enters the cursor"
+                ));
+            }
+            let letter = letter_of_either_case(&word);
+            if letter.is_none() && !NAMED_KEYS.contains(&word.as_str()) {
+                return Err(format!(
+                    "view key {:?} is not a key: one letter of either case, or one of \
+                     {NAMED_KEYS:?}",
+                    k.key
+                ));
+            }
+            if !view_words.insert(word.clone()) {
+                return Err(format!(
+                    "two view keys take `{word}`: the host matches one, and the other never fires"
+                ));
+            }
+            if let Some(c) = letter
+                && HOST_KEYS.contains(&c)
+            {
+                return Err(format!(
+                    "view key `{word}` is one of the host's {HOST_KEYS:?}"
+                ));
+            }
+            if let Some(c) = letter {
+                if let Some(panel) = panel_keys.get(&c) {
+                    return Err(format!("view key `{word}` is panel `{panel}`'s"));
+                }
+                view_letters.insert(c);
+            }
+            if k.kind().is_none() {
+                return Err(format!(
+                    "view key `{word}` must be exactly one of event, verb"
+                ));
+            }
+        }
+        if let Some(input) = &self.input
+            && input.key.trim().is_empty()
+        {
+            return Err(
+                "input.key is empty: the host keys this pane's history and drafts by it, and has \
+                 none to invent"
+                    .to_string(),
+            );
+        }
+        if let Some(w) = self.width {
+            if self.dock != Some(Dock::Right) {
+                return Err(format!(
+                    "width is {w} and `dock` is not \"right\": only a docked column has a width \
+                     the host honours"
+                ));
+            }
+            if !(MIN_DOCK_W..=MAX_DOCK_W).contains(&w) {
+                return Err(format!(
+                    "width is {w}: a docked column is {MIN_DOCK_W} to {MAX_DOCK_W} cells"
+                ));
+            }
+        }
+        for (pi, p) in self.panels.iter().enumerate() {
+            for block in p.summary.iter().chain(p.view.iter()) {
+                let Block::Stream(s) = block else { continue };
+                for (i, e) in s.entries.iter().enumerate() {
+                    let acted = e.enter.is_some() || e.actions.iter().any(|a| a.verb.is_some());
+                    if acted && e.id().is_empty() {
+                        return Err(format!(
+                            "panel {pi}: stream entry {i} asks the host for a verb and has no id \
+                             - a verb acts on the entry it names"
+                        ));
+                    }
+                }
+                for (token, m) in &s.mentions {
+                    if m.hue.is_some_and(|h| h >= letibot_plugin::pane::HUES) {
+                        return Err(format!(
+                            "panel {pi}: mention `{token}` asks for hue {}: the palette is \
+                             `hue:0` to `hue:{}`",
+                            m.hue.unwrap_or_default(),
+                            letibot_plugin::pane::HUES - 1
+                        ));
+                    }
+                }
+            }
+        }
         for (what, actions) in self.action_sets() {
             let mut seen: BTreeSet<char> = BTreeSet::new();
             for a in actions {
@@ -566,6 +937,11 @@ impl View {
                 }
                 if let Some(panel) = panel_keys.get(&c) {
                     return Err(format!("{what}: action key `{c}` is panel `{panel}`'s"));
+                }
+                if view_letters.contains(&c) {
+                    return Err(format!(
+                        "{what}: action key `{c}` is a view key's, and one key cannot be both"
+                    ));
                 }
                 if !seen.insert(c) {
                     return Err(format!("{what}: two actions take key `{c}`"));
@@ -617,6 +993,11 @@ impl View {
                     Block::Tree(t) => {
                         for (ri, (_, r)) in rows_deep(&t.rows).into_iter().enumerate() {
                             out.push((format!("{what}, row {ri}"), r.actions.as_slice()));
+                        }
+                    }
+                    Block::Stream(s) => {
+                        for (ei, e) in s.entries.iter().enumerate() {
+                            out.push((format!("{what}, entry {ei}"), e.actions.as_slice()));
                         }
                     }
                     Block::Markdown(_) | Block::Kv(_) | Block::Unknown(_) => {}
@@ -973,5 +1354,305 @@ mod tests {
             ],
             ["tripped", "missing", "passed"]
         );
+    }
+
+    /// A stream block as a chat layer writes it: two dividers, messages with every field, and the
+    /// mentions map that colours a token without the layer editing its own markdown.
+    #[test]
+    fn a_stream_block_round_trips() {
+        let json = r##"{"stream":{
+            "entries":[
+                {"divider":"today","text":"Today"},
+                {"id":"m-41","head":[{"text":"operator","role":"hue:2"},"op"],
+                 "time":"14:20","quote":"the line above","body":"**ping** @s-1793…",
+                 "pictures":["ab12"],"facts":["edited"],"role":"plain",
+                 "actions":[{"key":"r","label":"reply","event":"reply"}],
+                 "enter":{"event":"thread"}},
+                {"divider":"unread","text":"3 new messages"},
+                {"id":"m-42","head":["fix-room-push"],"body":"on it"}
+            ],
+            "highlight":"m-42",
+            "mentions":{"@s-1793…":{"text":"@fix-room-push","hue":3},"@operator":{"me":true}}
+        }}"##;
+        let block: Block = serde_json::from_str(json).expect("a stream parses");
+        assert_eq!(block.kind(), "stream");
+        let Block::Stream(s) = &block else {
+            panic!("a stream block, not {:?}", block.kind())
+        };
+        assert_eq!(s.entries.len(), 4);
+        assert!(s.entries[0].is_divider());
+        assert_eq!(s.entries[0].divider, Some(Divider::Today));
+        assert_eq!(s.entries[0].text, "Today");
+        assert_eq!(s.entries[2].divider, Some(Divider::Unread));
+        let m = &s.entries[1];
+        assert_eq!(m.id(), "m-41");
+        assert_eq!(m.head[0].role, Some(Role::Hue(2)), "a speaker in its hue");
+        assert_eq!(m.time.as_deref(), Some("14:20"));
+        assert_eq!(m.pictures, vec!["ab12".to_string()]);
+        assert_eq!(m.actions[0].kind(), Some(ActionKind::Event("reply".into())));
+        assert_eq!(m.enter.as_ref().map(Act::verb), Some("event"));
+        assert_eq!(s.highlight.as_deref(), Some("m-42"));
+        assert_eq!(s.mentions["@s-1793…"].hue, Some(3));
+        assert!(s.mentions["@operator"].me);
+        // Out and back: the block is the JSON the plugin wrote.
+        assert_eq!(
+            serde_json::to_value(&block).unwrap(),
+            serde_json::from_str::<Value>(json).unwrap()
+        );
+        // An empty stream says why it is empty, and is written the same way round.
+        let empty: Block = serde_json::from_str(r#"{"stream":{"empty":"nothing said yet"}}"#)
+            .expect("an empty stream parses");
+        assert_eq!(empty.kind(), "stream");
+        assert_eq!(
+            serde_json::to_value(&empty).unwrap(),
+            serde_json::json!({"stream": {"empty": "nothing said yet"}})
+        );
+    }
+
+    /// `stream` is additive: a head that predates it knows the five kinds and keeps every other one
+    /// by name, so the document still parses, still validates, and draws one muted line naming the
+    /// kind instead of an empty panel.
+    #[test]
+    fn an_old_head_draws_a_stream_as_its_kind() {
+        /// The old head's table, spelled out because that build cannot be linked in here: the five
+        /// kinds it drew, and every other kind kept by name.
+        fn as_an_old_head_draws_it(v: &Value) -> Block {
+            let kind = v
+                .as_object()
+                .and_then(|m| m.keys().next().cloned())
+                .unwrap_or_default();
+            match Block::of(v.clone()) {
+                b @ (Block::Lines(_)
+                | Block::Table(_)
+                | Block::Tree(_)
+                | Block::Markdown(_)
+                | Block::Kv(_)) => b,
+                _ => Block::Unknown(kind),
+            }
+        }
+        let doc = serde_json::json!({"panels":[{"id":"chat","key":"c","summary":[
+            {"stream":{"entries":[{"id":"m-1","body":"hello"}]}}
+        ]}]});
+        // The old head keeps the kind by name and draws its one muted line.
+        let old = as_an_old_head_draws_it(&doc["panels"][0]["summary"][0]);
+        assert_eq!(old, Block::Unknown("stream".into()));
+        assert_eq!(old.kind(), "stream", "and the line names it");
+
+        // This head parses it, and both heads read the document as valid: an old host is not a bad
+        // plugin, and the block's own kind is the same word either way.
+        let v: View = serde_json::from_value(doc).expect("the document parses");
+        let Block::Stream(s) = &v.panels[0].summary[0] else {
+            panic!("this head draws the stream")
+        };
+        assert_eq!(s.entries[0].id(), "m-1");
+        assert_eq!(v.panels[0].summary[0].kind(), "stream");
+        assert!(v.validate().is_ok(), "{:?}", v.validate());
+        assert!(v.validate_for(&[]).is_ok(), "it performs nothing by itself");
+    }
+
+    /// A view key (`X8`) is bound once: two keys spelled the same are one key the host matches and
+    /// one that never fires.
+    #[test]
+    fn a_key_bound_twice_is_refused() {
+        let two = |first: &str, second: &str| {
+            parsed(&format!(
+                r#"{{"input":{{"key":"project/letibot"}},"keys":[
+                    {{"key":"{first}","label":"reply","event":"reply"}},
+                    {{"key":"{second}","label":"again","event":"reply"}}]}}"#
+            ))
+        };
+        let why = two("R", "r").validate().unwrap_err();
+        assert!(why.contains("two view keys take `r`"), "{why}");
+        assert!(two("ctrl-k", "ctrl-k").validate().is_err());
+
+        // Two different keys stand, of either case and from the named set.
+        let v = two("R", "ctrl-k");
+        assert!(v.validate().is_ok(), "{:?}", v.validate());
+        assert_eq!(v.keys[0].kind(), Some(ActionKind::Event("reply".into())));
+
+        // And a key with two meanings, or none, is refused for the same reason an action is.
+        let both = parsed(r#"{"keys":[{"key":"R","event":"reply","verb":"room_say"}]}"#);
+        assert!(both.validate().unwrap_err().contains("exactly one"));
+        let none = parsed(r#"{"keys":[{"key":"R","label":"nothing"}]}"#);
+        assert!(none.validate().unwrap_err().contains("exactly one"));
+        // A key that is not a key at all - the arrows are not words in this vocabulary.
+        let word = parsed(r#"{"keys":[{"key":"pgup","event":"up"}]}"#);
+        assert!(word.validate().unwrap_err().contains("not a key"));
+    }
+
+    /// The chords the host owns are the host's: a view cannot take the key the person leaves, sends
+    /// or enters the cursor with.
+    #[test]
+    fn a_view_key_on_a_host_chord_is_refused() {
+        for chord in HOST_CHORDS {
+            let v = parsed(&format!(
+                r#"{{"keys":[{{"key":"{chord}","label":"x","event":"x"}}]}}"#
+            ));
+            let why = v.validate().unwrap_err();
+            assert!(why.contains("host"), "{chord}: {why}");
+            assert!(why.contains(chord), "{chord}: {why}");
+        }
+        // `f` and `l` stay the host's too, as panel keys always were.
+        let v = parsed(r#"{"keys":[{"key":"f","event":"x"}]}"#);
+        assert!(v.validate().is_err());
+        // The named set is the layer's, and a panel's letter is not.
+        assert!(
+            parsed(r#"{"keys":[{"key":"home","event":"top"}]}"#)
+                .validate()
+                .is_ok()
+        );
+        let panel = parsed(
+            r#"{"panels":[{"id":"p","key":"t","summary":[{"lines":[]}]}],
+                "keys":[{"key":"t","event":"x"}]}"#,
+        );
+        assert!(panel.validate().unwrap_err().contains("panel `p`'s"));
+    }
+
+    /// An answer carries acts (`X7`), and each is one the manifest declares - the same list a row's
+    /// `enter` is gated by, because it is a second door to the same verbs.
+    #[test]
+    fn an_undeclared_act_in_an_answer_is_refused() {
+        let answer = Answer::parse(serde_json::json!({
+            "acts": [
+                {"verb": "room_say", "args": {"room": "host", "text": "ping"}},
+                {"verb": "shell", "args": {"cmd": "rm -rf /"}}
+            ]
+        }))
+        .expect("an answer parses");
+        let declared = vec!["room_say".to_string(), "copy".to_string()];
+        let why = answer.validate_for(&declared).unwrap_err();
+        assert!(why.contains("`shell`"), "the act is named: {why}");
+        assert!(
+            why.contains("room_say, copy"),
+            "and what was declared: {why}"
+        );
+
+        // The declared ones stand, arguments and all.
+        let ok = Answer::parse(serde_json::json!(
+            {"acts":[{"verb":"room_say","args":{"room":"host","text":"ping"}}]}
+        ))
+        .expect("an answer parses");
+        assert!(ok.validate_for(&declared).is_ok());
+        assert_eq!(ok.acts[0].args.as_ref().unwrap()["text"], "ping");
+
+        // A refusal is an answer too: it performs nothing, so it declares nothing.
+        let refusal = Answer::parse(serde_json::json!(
+            {"refusal":"that channel is not mine"}
+        ))
+        .expect("a refusal parses");
+        assert!(refusal.acts.is_empty());
+        assert!(refusal.validate_for(&[]).is_ok());
+    }
+
+    /// A document written before H0 is written back out BYTE for byte: the fields it had, in the
+    /// order it had them, and none of the new ones. That is the whole promise of an additive
+    /// package - every pane document, and every layer that wrote one, parses and re-serialises
+    /// unchanged.
+    #[test]
+    fn an_old_pane_document_round_trips_byte_identical() {
+        let doc = concat!(
+            r##"{"title":"tiers","badge":{"text":"2 waiting","role":"attention"},"##,
+            r##""panels":[{"id":"p","key":"t","title":"tiers","denominator":"rows","##,
+            r##""summary":[{"lines":[{"label":"one","value":"1/2","bar":{"frac":0.5},"##,
+            r##""tail":"up","role":"success","id":"one","detail":"d","##,
+            r##""actions":[{"key":"s","label":"start","say":"go"}]}]}],"##,
+            r##""view":[{"table":{"columns":["a"],"rows":[{"id":"r1","cells":["x"],"##,
+            r##""facts":["1"],"under":["u"],"number":1,"open":true,"role":"muted","##,
+            r##""detail":"d","actions":[{"key":"e","label":"go","event":"go"}],"##,
+            r##""enter":{"switch":"s-1"}}]}}],"##,
+            r##""unavailable":{"why":"w","fix":"f"}}],"##,
+            r##""findings":[{"id":"f","what":"w","panel":"p","severity":"tripped","##,
+            r##""detail":"d","evidence":{"n":1},"fix":"x","verify":"y","##,
+            r##""actions":[{"key":"r","look":true}]}],"##,
+            r##""legend":{"a":"b"},"look":{"read":"s.json"},"every_s":30,"state":{"seen":1}}"##
+        );
+        let v: View = serde_json::from_str(doc).expect("an old document parses");
+        assert_eq!(v.title, "tiers");
+        assert!(v.input.is_none() && v.keys.is_empty() && v.dock.is_none() && v.width.is_none());
+        assert!(v.validate().is_ok(), "{:?}", v.validate());
+        assert_eq!(
+            serde_json::to_string(&v).expect("it serialises"),
+            doc,
+            "the document is the same bytes"
+        );
+    }
+
+    /// One document using every field H0 added, accepted as a whole - and each of them refused
+    /// where the host cannot honour it.
+    #[test]
+    fn a_document_using_each_new_field_validates() {
+        let doc = serde_json::json!({
+            "title": "project/letibot",
+            "input": {"key": "project/letibot", "placeholder": "say something",
+                      "multiline": true, "footer": "enter sends, alt-enter breaks the line"},
+            "keys": [{"key": "T", "label": "reply", "event": "reply"},
+                     {"key": "ctrl-k", "label": "copy", "verb": "copy"}],
+            "dock": "right",
+            "width": 60,
+            "panels": [{"id": "chat", "key": "c", "summary": [{"stream": {
+                "empty": "nothing said yet",
+                "highlight": "m-42",
+                "mentions": {"@s-1793…": {"text": "@fix-room-push", "hue": 3}},
+                "entries": [
+                    {"divider": "unread", "text": "3 new"},
+                    {"id": "m-42", "head": [{"text": "operator", "role": "hue:2"}],
+                     "time": "14:20", "body": "hi", "pictures": ["ab12"],
+                     "facts": ["edited"],
+                     "actions": [{"key": "r", "label": "reply", "verb": "room_say"}],
+                     "enter": {"verb": "room_read", "id": "m-42"}}
+                ]}}]}]
+        });
+        let v: View = serde_json::from_value(doc.clone()).expect("every new field parses");
+        let input = v.input.as_ref().expect("an input");
+        assert_eq!(input.key, "project/letibot");
+        assert!(input.multiline);
+        assert_eq!(v.dock, Some(Dock::Right));
+        assert_eq!(v.width, Some(60));
+        assert_eq!(v.keys.len(), 2);
+        assert_eq!(
+            v.keys[1].kind(),
+            Some(ActionKind::Verb("copy".into())),
+            "a view key reaches a host verb"
+        );
+        assert_eq!(v.panels[0].summary[0].kind(), "stream");
+        // Written back as it came, and accepted for the acts its manifest declares.
+        assert_eq!(serde_json::to_value(&v).unwrap(), doc);
+        let declared = vec![
+            "room_say".to_string(),
+            "room_read".to_string(),
+            "copy".to_string(),
+        ];
+        assert!(v.validate().is_ok(), "{:?}", v.validate());
+        assert!(
+            v.validate_for(&declared).is_ok(),
+            "{:?}",
+            v.validate_for(&declared)
+        );
+
+        // The same stream entry with an undeclared verb is refused - by the entry, not the row walk.
+        let why = v.validate_for(&["copy".to_string()]).unwrap_err();
+        assert!(why.contains("stream entry 1"), "{why}");
+        assert!(why.contains("`room_read`"), "{why}");
+        // And a view key's verb is gated too.
+        let keys_only = parsed(r#"{"keys":[{"key":"R","verb":"room_say"}]}"#);
+        let why = keys_only.validate_for(&[]).unwrap_err();
+        assert!(why.contains("view key `r`"), "{why}");
+
+        // A panel's letter in a view key, a dock width the host would not honour, a mention in a hue
+        // the palette has not got, and a verb on an entry with no id: each refused, in its own words.
+        let wide = parsed(r#"{"dock":"right","width":400}"#);
+        assert!(wide.validate().unwrap_err().contains("20 to 200"));
+        let undocked = parsed(r#"{"width":60}"#);
+        assert!(undocked.validate().unwrap_err().contains("not \"right\""));
+        let hue = parsed(
+            r##"{"panels":[{"id":"c","key":"c","summary":[{"stream":{
+                "mentions":{"@x":{"hue":9}}}}]}]}"##,
+        );
+        assert!(hue.validate().unwrap_err().contains("hue:0"));
+        let anonymous = parsed(
+            r#"{"panels":[{"id":"c","key":"c","summary":[{"stream":{
+                "entries":[{"body":"hi","enter":{"verb":"room_say","id":"m-1"}}]}}]}]}"#,
+        );
+        assert!(anonymous.validate().unwrap_err().contains("no id"));
     }
 }

@@ -42,11 +42,15 @@ pub enum Feed {
     /// it last did, and whether anything is posted or kept as a draft. Fed by
     /// `plugins/builtin/github`.
     Github,
+    /// The operator's own conversations: the channels with their unread counts, the roster per
+    /// room, the selected channel and the window of its messages (`Chat`). The one feed that is
+    /// not a view of the session's work, so only a built-in or a PINNED layer may declare it.
+    Chat,
 }
 
 impl Feed {
     /// Every feed this contract names, in the order a document lists them.
-    pub const ALL: [Feed; 8] = [
+    pub const ALL: [Feed; 9] = [
         Feed::Sessions,
         Feed::Monitors,
         Feed::Jobs,
@@ -55,6 +59,7 @@ impl Feed {
         Feed::Queue,
         Feed::Room,
         Feed::Github,
+        Feed::Chat,
     ];
 
     /// The wire's spelling - the same word in `plugin.toml` and in `Input::feeds`.
@@ -68,6 +73,7 @@ impl Feed {
             Feed::Queue => "queue",
             Feed::Room => "room",
             Feed::Github => "github",
+            Feed::Chat => "chat",
         }
     }
 
@@ -224,9 +230,12 @@ pub struct Cell {
     pub role: Option<Role>,
 }
 
-/// The palette's roles, as C3 names them.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
+/// How many hues a role can name: `hue:0` to `hue:7`. A theme maps each to a colour that reads
+/// on dark and light, so the host never takes an RGB from a plugin - the whole point of a hue.
+pub const HUES: u8 = 8;
+
+/// The palette's roles, as C3 names them, plus the eight hues a speaker list needed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Role {
     Muted,
     Working,
@@ -241,6 +250,84 @@ pub enum Role {
     Faint,
     /// A turn is running in it.
     Pending,
+    /// A colour by INDEX rather than by meaning: `hue:3` is the third of [`HUES`], and the theme
+    /// decides which colour that is. It exists because *this speaker is blue* is a decision a
+    /// chat makes and a palette of meanings cannot hold.
+    Hue(u8),
+}
+
+impl Role {
+    /// The role a wire word names. A word this build does not know and a hue outside the palette
+    /// are both refused by name: a role is drawn, and a role guessed at is a colour nobody chose.
+    pub fn parse(word: &str) -> Result<Role, String> {
+        Ok(match word {
+            "muted" => Role::Muted,
+            "working" => Role::Working,
+            "attention" => Role::Attention,
+            "success" => Role::Success,
+            "failure" => Role::Failure,
+            "plain" => Role::Plain,
+            "strong" => Role::Strong,
+            "faint" => Role::Faint,
+            "pending" => Role::Pending,
+            other => match other.strip_prefix("hue:") {
+                Some(n) => {
+                    let n: u8 = n.parse().map_err(|_| {
+                        format!(
+                            "`{other}` is not a role: a hue is `hue:0` to `hue:{}",
+                            HUES - 1
+                        )
+                    })?;
+                    if n >= HUES {
+                        return Err(format!(
+                            "`{other}` is outside the palette: the hues are `hue:0` to `hue:{}",
+                            HUES - 1
+                        ));
+                    }
+                    Role::Hue(n)
+                }
+                None => {
+                    return Err(format!(
+                        "`{other}` is not a role: the palette is muted, working, attention, \
+                         success, failure, plain, strong, faint, pending, and `hue:0` to `hue:{}",
+                        HUES - 1
+                    ));
+                }
+            },
+        })
+    }
+
+    /// The hue this role is, when it is one.
+    pub fn hue(self) -> Option<u8> {
+        match self {
+            Role::Hue(n) => Some(n),
+            _ => None,
+        }
+    }
+}
+
+impl serde::Serialize for Role {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Role::Muted => s.serialize_str("muted"),
+            Role::Working => s.serialize_str("working"),
+            Role::Attention => s.serialize_str("attention"),
+            Role::Success => s.serialize_str("success"),
+            Role::Failure => s.serialize_str("failure"),
+            Role::Plain => s.serialize_str("plain"),
+            Role::Strong => s.serialize_str("strong"),
+            Role::Faint => s.serialize_str("faint"),
+            Role::Pending => s.serialize_str("pending"),
+            Role::Hue(n) => s.collect_str(&format_args!("hue:{n}")),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Role {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Role, D::Error> {
+        let word = String::deserialize(d)?;
+        Role::parse(&word).map_err(serde::de::Error::custom)
+    }
 }
 
 impl Cell {
@@ -351,6 +438,119 @@ pub struct Input {
     /// inserted by the stack rather than by a host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub below: Option<serde_json::Value>,
+    /// The host's clock, unix millis. A guest cannot read one, and a chat needs today versus
+    /// yesterday; absent from a host that predates it, which is a host with no clock rather than
+    /// one at 1970.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub now_ms: Option<u64>,
+    /// The person's local offset from UTC, in seconds east of it - `3600` in Berlin's winter. The
+    /// host's `now_ms` is one instant; the day and the hour a pane prints are the local reading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub utc_offset_s: Option<i32>,
+}
+
+/// The `chat` feed's shape (X1): the head's own room view, cut down to what a pane draws.
+///
+/// It is the operator's conversations, so it is the one feed whose declaration is checked against
+/// the LAYER and not only against the manifest: a built-in or a pinned layer may read it, and a
+/// session's own unpinned layer may not (`letibot_plugins::Manifest::admit_for`).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Chat {
+    /// Every channel the person can see, in the host's order - the switcher's list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<ChatChannel>,
+    /// The channel whose messages are in `messages`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected: Option<String>,
+    /// Who is in each room, by channel name - what `@` completes from.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub roster: std::collections::BTreeMap<String, Vec<String>>,
+    /// The newest `seq` the person has been shown.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub seen: u64,
+    /// The newest `seq` that was on screen when the channel was opened: the unread divider sits
+    /// between the two, and it survives the next answer.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub opened_seen: u64,
+    /// Sends that have not landed, so a layer draws them as unsent rather than as sent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<ChatFailed>,
+    /// The selected channel's window: the viewport plus one page each way, at most 200 messages.
+    /// A window and not the history, because the host owns paging (an act asks for an older page).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<ChatMessage>,
+}
+
+/// One room in the switcher: its wire name, the label the host shows, and how much is unseen.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ChatChannel {
+    /// `host`, `project/<key>` or `dm` - the name an act spells.
+    pub room: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub unread: u64,
+}
+
+/// One send the room did not take. `text` is what the person typed, so it can be offered again.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ChatFailed {
+    pub room: String,
+    pub text: String,
+    /// The coordinator's own words for it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub why: String,
+}
+
+/// One message, as the room's wire has it. Nothing is reformatted: a body is markdown the host
+/// renders, and `ts` is unix millis against the input's `now_ms`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ChatMessage {
+    pub seq: u64,
+    pub ts: u64,
+    /// The room it was said in.
+    pub room: String,
+    pub author: String,
+    /// The seat it came from: `operator`, `agent`, `external` or `system`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    /// The one principal it is addressed to - a DM's only reader besides the author.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// The `seq` it answers, in the same room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<ChatRef>,
+    /// Pictures and files it carries, by blob id - the bytes never reach the plugin.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<ChatAttachment>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+}
+
+/// A pointer from a message to a row another part of letibot owns - a todo, a queue row.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ChatRef {
+    pub kind: String,
+    pub id: String,
+}
+
+/// One picture or file a message carries, by the id a body's `![alt](blob:ID)` names.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ChatAttachment {
+    /// The sha256 hex of the bytes.
+    pub id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mime: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub bytes: u64,
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
 }
 
 #[cfg(test)]
@@ -368,7 +568,7 @@ mod tests {
         assert!(why.contains("monitors"), "and the ones it does know: {why}");
         // Every feed the plan names is here, so a later pane adds no mechanism.
         for name in [
-            "sessions", "monitors", "jobs", "todos", "git", "queue", "room", "github",
+            "sessions", "monitors", "jobs", "todos", "git", "queue", "room", "github", "chat",
         ] {
             assert!(Feed::parse(name).is_ok(), "{name}");
         }
@@ -379,8 +579,11 @@ mod tests {
         // The reviewer seat's feed, which `plugins/builtin/github` declares.
         assert_eq!(Feed::parse("github"), Ok(Feed::Github));
         assert_eq!(Feed::Github.name(), "github");
+        // The operator's conversations, which only a built-in or a pinned layer may declare.
+        assert_eq!(Feed::parse("chat"), Ok(Feed::Chat));
+        assert_eq!(Feed::Chat.name(), "chat");
         // `ALL` is the list the refusal prints, so a feed missing from it is a feed nobody can use.
-        assert_eq!(Feed::ALL.len(), 8);
+        assert_eq!(Feed::ALL.len(), 9);
         for feed in Feed::ALL {
             assert_eq!(Feed::parse(feed.name()), Ok(feed), "{}", feed.name());
         }
@@ -465,5 +668,108 @@ mod tests {
         assert!(wire.get("folded").is_none(), "an empty map is not sent");
         assert!(wire.get("state").is_none());
         assert_eq!(serde_json::from_value::<Input>(wire).unwrap(), input);
+    }
+
+    /// A field an input gained - the clock and the offset - is absent from a host that predates
+    /// it and round-trips when it is there: an added field is not a version.
+    #[test]
+    fn the_clock_is_in_the_input_and_absent_from_an_old_host() {
+        let clocked = Input {
+            v: V,
+            now_ms: Some(1_762_000_000_000),
+            utc_offset_s: Some(3600),
+            ..Input::default()
+        };
+        let wire = serde_json::to_value(&clocked).expect("serialises");
+        assert_eq!(wire["now_ms"], json!(1_762_000_000_000u64));
+        assert_eq!(wire["utc_offset_s"], json!(3600));
+        assert_eq!(serde_json::from_value::<Input>(wire).unwrap(), clocked);
+
+        // An input written before the clock has neither key, and is not a clock at 1970.
+        let old = serde_json::from_value::<Input>(json!({"v": V, "size": {"w": 80, "h": 24}}))
+            .expect("an old input parses");
+        assert_eq!(old.now_ms, None);
+        assert_eq!(old.utc_offset_s, None);
+        let wire = serde_json::to_value(&old).unwrap();
+        assert!(
+            wire.get("now_ms").is_none(),
+            "and is written back as it came"
+        );
+        assert!(wire.get("utc_offset_s").is_none());
+    }
+
+    /// A hue is a colour by index, and the palette is eight wide: `hue:8` is a role no theme can
+    /// map, so it is refused at the wire rather than drawn as the plain role nobody chose.
+    #[test]
+    fn a_hue_outside_the_palette_does_not_parse() {
+        for n in 0..HUES {
+            let role = Role::parse(&format!("hue:{n}")).expect("inside the palette");
+            assert_eq!(role, Role::Hue(n));
+            assert_eq!(role.hue(), Some(n));
+            assert_eq!(
+                serde_json::to_value(role).unwrap(),
+                json!(format!("hue:{n}")),
+                "and it is written as the word it was read from"
+            );
+        }
+        for word in ["hue:8", "hue:200", "hue:", "hue:three", "hue:-1"] {
+            let why = Role::parse(word).expect_err("outside the palette is not a role");
+            assert!(why.contains(word), "the word is named: {why}");
+            assert!(why.contains("hue:0"), "and the palette: {why}");
+            assert!(
+                serde_json::from_value::<Role>(json!(word)).is_err(),
+                "{word} must not parse off the wire either"
+            );
+        }
+        // The meanings are unchanged, and a cell carries a hue like any other role.
+        assert_eq!(Role::parse("attention"), Ok(Role::Attention));
+        assert_eq!(Role::parse("strong").unwrap().hue(), None);
+        let cell = Cell::role("@fix-room-push", Role::Hue(3));
+        assert_eq!(
+            serde_json::to_value(&cell).unwrap(),
+            json!({"text": "@fix-room-push", "role": "hue:3"})
+        );
+        assert_eq!(
+            serde_json::from_value::<Cell>(json!({"text": "x", "role": "hue:3"})).unwrap(),
+            Cell::role("x", Role::Hue(3))
+        );
+    }
+
+    /// The `chat` feed's shape: the wire's own fields, a window of messages, and the two marks the
+    /// unread divider sits between. Round-tripped as a whole, because a field that only appears
+    /// inside one message is a field a layer cannot ask for.
+    #[test]
+    fn the_chat_feed_carries_what_the_wire_has() {
+        let doc = json!({
+            "channels": [{"room": "project/letibot", "label": "letibot", "unread": 3}],
+            "selected": "project/letibot",
+            "roster": {"project/letibot": ["operator", "fix-room-push"]},
+            "seen": 41,
+            "opened_seen": 39,
+            "failed": [{"room": "project/letibot", "text": "hi", "why": "refused"}],
+            "messages": [{
+                "seq": 41, "ts": 1_762_000_000_000u64, "room": "project/letibot",
+                "author": "operator", "kind": "operator", "to": "fix-room-push",
+                "thread": 39, "refs": [{"kind": "todo", "id": "T7"}],
+                "attachments": [{"id": "ab12", "mime": "image/png", "name": "shot.png", "bytes": 900}],
+                "text": "ping @fix-room-push"
+            }]
+        });
+        let feed: Chat = serde_json::from_value(doc.clone()).expect("the feed parses");
+        assert_eq!(feed.channels[0].unread, 3);
+        assert_eq!(feed.selected.as_deref(), Some("project/letibot"));
+        assert_eq!(feed.roster["project/letibot"].len(), 2);
+        assert_eq!((feed.seen, feed.opened_seen), (41, 39));
+        assert_eq!(feed.failed[0].why, "refused");
+        let m = &feed.messages[0];
+        assert_eq!((m.seq, m.ts), (41, 1_762_000_000_000));
+        assert_eq!(m.to.as_deref(), Some("fix-room-push"));
+        assert_eq!(m.thread, Some(39));
+        assert_eq!(m.refs[0].id, "T7");
+        assert_eq!(m.attachments[0].id, "ab12");
+        assert_eq!(m.text, "ping @fix-room-push");
+        assert_eq!(serde_json::to_value(&feed).unwrap(), doc);
+        // An empty feed is a room with nothing in it, and it says so by saying nothing.
+        assert_eq!(serde_json::to_value(Chat::default()).unwrap(), json!({}));
     }
 }

@@ -420,6 +420,8 @@ impl App {
             feeds,
             folded: self.queue_folds.clone(),
             below: None,
+            // The clock (`X9`) is the host's to send, and this head fills neither field yet.
+            ..Input::default()
         }
     }
 

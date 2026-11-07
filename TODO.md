@@ -926,7 +926,9 @@ On 2026-11-07 four packages on lubuntu1, each with subagents running cargo at fu
 
 ## R150 - Plugin extension points: the head's UI moves out to plugins
 
-**Status:** both reviews written. left: the operator's answers (`docs/plugin-extension-points-wide.md` §8, 13 questions with defaults), then the build per its §6.
+**Status:** H0 landed; P1-P6 not started. left: the operator's answers (`docs/plugin-extension-points-wide.md` §8, 13 questions with defaults), then the build per its §6.
+
+H0 (the contract types only, in `crates/plugin-sdk`, `crates/sessionlog/src/pane.rs`, `crates/plugins`): the `stream` block (`Stream`, `StreamEntry`, `Divider`, `Mention`), a role's `hue:0`-`hue:7`, the `chat` feed and its window (`Feed::Chat`, `Chat`), `View.input`/`keys`/`dock`/`width` with their refusals, acts in an answer (`Answer`, `Acted`), the clock in the input (`now_ms`, `utc_offset_s`), the `complete_` hook's types and prefix, and `blobs:room`. All additive with serde defaults: an old pane document round-trips byte-identically, and no existing layer changes. Two things are TYPES and not yet behaviour, and P5 must wire them: no host fills `now_ms`/`utc_offset_s` (the head's two pane inputs say so), and `Manifest::admit_for` - the rule that the `chat` feed is a built-in's or a pinned layer's - is not yet called by `Stack`'s admission, which needs the scope and the trust standing in one place.
 
 `docs/plugin-extension-points.md` is the first review, scoped to the room chat: its decisions can be a plugin, its mechanics stay host. Ten host additions (X1-X10: a `chat` feed, a `stream` block, pictures by blob id, theme hues, an input surface, a `complete_` hook, acts in answers, cursor-mode keys, a clock in the input, and dock/built-in/exec/read fixes for the other panes) and packages H0, P5, P6 beside room-tui's P2-P4. The operator's ruling: the native renderer stays only as a safety net until the built-in chat plugin is proven, then goes. The review was too room-focused, so a second one covers the whole harness and head before questions 2-6 are answered.
 

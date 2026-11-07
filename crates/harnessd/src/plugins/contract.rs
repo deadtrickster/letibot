@@ -280,6 +280,7 @@ fn example() -> View {
         }),
         every_s: 30,
         state: Some(json!({"seen": 1})),
+        ..View::default()
     }
 }
 

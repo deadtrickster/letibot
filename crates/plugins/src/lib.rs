@@ -118,6 +118,7 @@ pub const HOOK_PREFIXES: &[&str] = &[
     "link_",
     "command_",
     "tool_",
+    "complete_",
 ];
 
 /// The hook kinds this host asks: every prefix of [`HOOK_PREFIXES`] something in this tree builds a

@@ -70,6 +70,9 @@ pub enum Capability {
     Exec(String),
     /// GET from `<host>`.
     Http(String),
+    /// Name blobs the host already holds, by id, without ever seeing their bytes (`X3`). One
+    /// spelling per store, and `room` is the only store this build serves.
+    Blobs(String),
 }
 
 impl Capability {
@@ -85,6 +88,22 @@ impl Capability {
         if let Some(rest) = s.strip_prefix("read:") {
             return read_path(rest).map(Capability::ReadPath);
         }
+        // `blobs:<store>`, refused by name for a store this build does not serve: a capability
+        // nobody implements is a layer that draws an empty picture and looks broken.
+        if let Some(rest) = s.strip_prefix("blobs:") {
+            let rest = rest.trim();
+            return match rest {
+                "room" => Ok(Capability::Blobs("room".to_string())),
+                "" => Err(
+                    "capability `blobs:` names no store after it — `.letibot` knows `room`"
+                        .to_string(),
+                ),
+                other => Err(format!(
+                    "capability `blobs:{other}` names no store this host serves — it serves \
+                     `blobs:room`"
+                )),
+            };
+        }
         for (prefix, ctor) in [
             ("exec:", Capability::Exec as fn(String) -> Capability),
             ("http:", Capability::Http as fn(String) -> Capability),
@@ -99,8 +118,8 @@ impl Capability {
             }
         }
         Err(format!(
-            "unknown capability `{s}` — the spellings are `read`, `read:<path>`, `exec:<program>` \
-             and `http:<host>`"
+            "unknown capability `{s}` — the spellings are `read`, `read:<path>`, `exec:<program>`, \
+             `http:<host>` and `blobs:room`"
         ))
     }
 }
@@ -170,6 +189,7 @@ impl std::fmt::Display for Capability {
             Capability::ReadPath(p) => write!(f, "read:{p}"),
             Capability::Exec(p) => write!(f, "exec:{p}"),
             Capability::Http(h) => write!(f, "http:{h}"),
+            Capability::Blobs(store) => write!(f, "blobs:{store}"),
         }
     }
 }
@@ -416,6 +436,27 @@ impl Manifest {
             "manifest hooks and module exports disagree — {}",
             why.join("; ")
         ))
+    }
+
+    /// [`Manifest::admit`], and the one rule about the LAYER rather than about its answers: the
+    /// `chat` feed is every message the operator sees, DMs included, so only a built-in or a
+    /// PINNED layer may read it (the reviews' question 9, built on its default). A session's own
+    /// layer is the case the rule exists for - nobody vouched for it.
+    pub fn admit_for(&self, exports: &[String], scope: Scope, pinned: bool) -> Result<(), String> {
+        self.admit(exports)?;
+        if self.feeds.contains(&letibot_plugin::pane::Feed::Chat)
+            && scope != Scope::BuiltIn
+            && !pinned
+        {
+            return Err(format!(
+                "the layer `{}` is a {scope} layer, asks for the `chat` feed, and is not pinned. \
+                 That feed is every message in every room the operator sees, DMs included, so it \
+                 is handed to a built-in or a pinned layer only — pin it (`/plugin trust {}`), or \
+                 drop `chat` from `feeds`",
+                self.name, self.name
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -879,8 +920,98 @@ type = "string"
     fn a_hook_kind_needs_a_name_after_its_prefix() {
         assert!(is_hook_kind("pane_dashboard"));
         assert!(is_hook_kind("on_tool_call"));
+        assert!(is_hook_kind("complete_chat"), "X6's hook kind");
         assert!(!is_hook_kind("pane_"));
         assert!(!is_hook_kind("dashboard"));
         assert!(!is_hook_kind(""));
+    }
+
+    /// The chat layer's own manifest: the hooks X6 added, the acts X7 added, and the blob store
+    /// X3 added. Every one of them is a word this host now speaks, and a manifest is where a layer
+    /// says it means to use it.
+    const A_CHAT_LAYER: &str = r#"
+name = "chat"
+purpose = "the room's messages, drawn the way this project reads them"
+hooks = ["pane_chat", "command_chat", "complete_chat", "on_tool_call"]
+capabilities = ["blobs:room"]
+feeds = ["chat", "room"]
+actions = ["room_say", "room_dm", "room_read", "room_invite", "room_leave", "copy", "open", "pick"]
+contract = 1
+"#;
+
+    #[test]
+    fn a_manifest_declaring_a_new_act_and_the_complete_hook_is_accepted() {
+        let m = Manifest::parse(A_CHAT_LAYER).expect("the chat layer's manifest must parse");
+        assert!(m.hooks.contains(&"complete_chat".to_string()));
+        assert_eq!(
+            m.feeds,
+            vec![
+                letibot_plugin::pane::Feed::Chat,
+                letibot_plugin::pane::Feed::Room
+            ]
+        );
+        assert!(
+            m.actions.iter().any(|a| a == "room_say"),
+            "an act is one more word here: {:?}",
+            m.actions
+        );
+        assert_eq!(m.capabilities, vec![Capability::Blobs("room".to_string())]);
+        // The declared spelling is what the stack view prints back.
+        assert_eq!(m.capabilities[0].to_string(), "blobs:room");
+        m.admit_for(
+            &[
+                "pane_chat".to_string(),
+                "command_chat".to_string(),
+                "complete_chat".to_string(),
+                "on_tool_call".to_string(),
+            ],
+            Scope::BuiltIn,
+            false,
+        )
+        .expect("a built-in is admitted");
+
+        // A store this host does not serve is refused by name, not silently granted.
+        let why = Manifest::parse(&A_CHAT_LAYER.replace("blobs:room", "blobs:github"))
+            .expect_err("no such store");
+        assert!(why.contains("blobs:github"), "{why}");
+        assert!(why.contains("blobs:room"), "and what it serves: {why}");
+    }
+
+    /// The operator's conversations are not data a layer nobody vouched for gets to read. A pinned
+    /// session layer may; an unpinned one is refused at admit, and the sentence says how to fix it.
+    #[test]
+    fn an_unpinned_layer_asking_for_the_chat_feed_is_refused_at_admit() {
+        let m = Manifest::parse(A_CHAT_LAYER).expect("the chat layer's manifest parses");
+        let exports: Vec<String> = m.hooks.clone();
+
+        // A built-in runs freely by definition, and a pinned layer has been vouched for.
+        m.admit_for(&exports, Scope::BuiltIn, false)
+            .expect("a built-in may read the chat");
+        m.admit_for(&exports, Scope::Session, true)
+            .expect("a pinned session layer may read the chat");
+
+        let why = m
+            .admit_for(&exports, Scope::Session, false)
+            .expect_err("an unpinned session layer may not");
+        assert!(why.contains("`chat`"), "the feed is named: {why}");
+        assert!(why.contains("not pinned"), "and why: {why}");
+        assert!(why.contains("session"), "and the scope: {why}");
+        assert!(
+            why.contains("/plugin trust chat"),
+            "and the one command that fixes it: {why}"
+        );
+        // A project or user layer is no more pinned than a session's, and is refused the same way.
+        for scope in [Scope::Project, Scope::User] {
+            assert!(m.admit_for(&exports, scope, false).is_err(), "{scope}");
+        }
+
+        // The rule is about the chat feed alone: the same layer without it is admitted anywhere.
+        let other = Manifest::parse(
+            &A_CHAT_LAYER.replace("feeds = [\"chat\", \"room\"]", "feeds = [\"room\"]"),
+        )
+        .expect("a room-only layer parses");
+        other
+            .admit_for(&exports, Scope::Session, false)
+            .expect("no chat, no refusal");
     }
 }

@@ -285,8 +285,9 @@ fn blocks<'a>(panel: usize, list: &'a [pv::Block], f: &mut impl FnMut(Walk<'a>))
                     }));
                 }
             }
-            // No items: the kind is drawn by `Walk::Block`, as one muted line naming it.
-            pv::Block::Unknown(_) => {}
+            // No items: the kind is drawn by `Walk::Block`, as one muted line naming it. A stream
+            // is a renderer of its own and lands in P2; until then it names itself the same way.
+            pv::Block::Unknown(_) | pv::Block::Stream(_) => {}
         }
     }
 }
@@ -356,7 +357,7 @@ pub(crate) fn target_of(view: &pv::View, screen: Screen, index: usize) -> Option
                 pv::Block::Table(t) => Target::Row(t.rows.get(item)?),
                 pv::Block::Tree(t) => Target::Row(pv::rows_deep(&t.rows).get(item)?.1),
                 pv::Block::Markdown(text) => Target::Markdown(markdown_items(text).get(item)?.0),
-                pv::Block::Kv(_) | pv::Block::Unknown(_) => return None,
+                pv::Block::Kv(_) | pv::Block::Unknown(_) | pv::Block::Stream(_) => return None,
             }
         }
     })
@@ -378,6 +379,8 @@ pub(crate) fn role(r: Option<pv::Role>) -> Role {
         Some(pv::Role::Faint) => Role::Faint,
         Some(pv::Role::Pending) => Role::Pending,
         Some(pv::Role::Plain) | None => Role::Plain,
+        // P2 maps a hue to a theme colour that reads on dark and light; until then it is plain.
+        Some(pv::Role::Hue(_)) => Role::Plain,
     }
 }
 
@@ -816,6 +819,13 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
                     out.push(pane::faint(format!(
                         "   {kind} — this head does not draw that block kind"
                     )));
+                }
+                // H0 carries the contract and P2 draws the stream; until then it names itself, as
+                // a kind this head does not know does, rather than claiming the pane is empty.
+                pv::Block::Stream(_) => {
+                    out.push(pane::faint(
+                        "   stream — this head does not draw that block kind",
+                    ));
                 }
                 _ => {}
             }

@@ -7,6 +7,7 @@
 /// An added field is not a version: a host keeps answering the old version or refuses by name.
 pub const V: u32 = 1;
 
+pub mod complete;
 pub mod condition;
 pub mod notice;
 pub mod pane;
@@ -49,6 +50,7 @@ mod tests {
         "link_",
         "command_",
         "tool_",
+        "complete_",
     ];
 
     fn admitted(hook: &str) -> bool {
@@ -62,6 +64,8 @@ mod tests {
         assert!(admitted(tool_call::HOOK), "{}", tool_call::HOOK);
         assert!(admitted(tool_result::HOOK), "{}", tool_result::HOOK);
         assert!(admitted(&condition::hook("coderabbit")));
+        assert!(admitted(&complete::hook("chat")));
+        assert!(admitted(&pane::hook("chat")));
         for kind in notice::KINDS {
             let hook = notice::hook(kind);
             assert!(admitted(&hook), "{hook}");
