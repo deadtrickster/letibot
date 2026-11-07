@@ -46,6 +46,7 @@ pub(super) fn backoff(attempt: u32) -> Duration {
 
 /// Run `f` until it is not busy, or until `budget` has passed since the first attempt. Generic
 /// over the error so the store's `rusqlite::Error` and `StoreError` share one ladder.
+#[track_caller]
 pub(super) fn retry_busy<T, E>(
     budget: Duration,
     busy: impl Fn(&E) -> bool,
@@ -60,17 +61,51 @@ pub(super) fn retry_busy<T, E>(
                 std::thread::sleep(pause);
                 attempt += 1;
             }
-            other => return other,
+            other => {
+                said_if_slow(start.elapsed(), attempt, std::panic::Location::caller());
+                return other;
+            }
         }
     }
 }
 
+/// A store call that took longer than this is logged: one slow writer stalls every daemon
+/// sharing the file, and the store split is to be measured against the stalls actually seen.
+pub const SLOW_CALL: Duration = Duration::from_secs(1);
+
+/// One line on stderr for a call over [`SLOW_CALL`], naming the store method by its line.
+/// Written, not `eprintln!`: a daemon whose stderr closed must not panic in its store.
+fn said_if_slow(took: Duration, retries: u32, at: &std::panic::Location<'_>) {
+    if let Some(line) = slow_line(took, retries, at) {
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "{line}");
+    }
+}
+
+/// [`said_if_slow`]'s line, or `None` for a call under [`SLOW_CALL`].
+pub(super) fn slow_line(
+    took: Duration,
+    retries: u32,
+    at: &std::panic::Location<'_>,
+) -> Option<String> {
+    (took >= SLOW_CALL).then(|| {
+        format!(
+            "store: a call at {}:{} took {} ms ({retries} busy retries)",
+            at.file(),
+            at.line(),
+            took.as_millis()
+        )
+    })
+}
+
 /// [`retry_busy`] for one store operation with the default [`BUSY_RETRY_TOTAL`].
+#[track_caller]
 pub(super) fn retry_store<T>(f: impl FnMut() -> Result<T>) -> Result<T> {
     retry_busy(BUSY_RETRY_TOTAL, StoreError::is_busy, f)
 }
 
 /// [`retry_busy`] for one rusqlite call with the default [`BUSY_RETRY_TOTAL`].
+#[track_caller]
 pub(super) fn retry_sql<T>(f: impl FnMut() -> rusqlite::Result<T>) -> rusqlite::Result<T> {
     retry_busy(BUSY_RETRY_TOTAL, is_busy_sql, f)
 }

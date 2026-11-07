@@ -392,3 +392,21 @@ fn a_batch_with_a_hole_is_refused_by_the_trigger() {
     );
     assert_eq!(s.item_count(&tr).unwrap(), 0);
 }
+
+/// A store call over a second is one line naming where it was called from; a quick one is none.
+#[test]
+fn a_slow_store_call_is_one_line_naming_its_caller() {
+    #[track_caller]
+    fn here() -> &'static std::panic::Location<'static> {
+        std::panic::Location::caller()
+    }
+    let at = here();
+    assert_eq!(
+        super::slow_line(Duration::from_millis(999), 0, at),
+        None,
+        "a call under a second is not logged"
+    );
+    let line = super::slow_line(Duration::from_millis(1834), 12, at).expect("a slow call");
+    assert!(line.contains("tests.rs:"), "{line}");
+    assert!(line.contains("took 1834 ms (12 busy retries)"), "{line}");
+}

@@ -3445,12 +3445,14 @@ impl Store {
 
     /// One autocommit write statement, taken again while the store is busy. Every write method
     /// takes this, and a retry writes once because the statement either ran or did not.
+    #[track_caller]
     fn exec<P: Params + Clone>(&self, sql: &str, p: P) -> rusqlite::Result<usize> {
         busy::retry_sql(|| self.conn().execute(sql, p.clone()))
     }
 
     /// A write transaction: `BEGIN IMMEDIATE`, the body, `COMMIT`, taken again while busy.
     /// IMMEDIATE because a deferred transaction that reads first holds a lock it cannot upgrade.
+    #[track_caller]
     pub fn write_tx<T>(
         &self,
         mut body: impl FnMut(&rusqlite::Transaction<'_>) -> Result<T>,

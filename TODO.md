@@ -56,7 +56,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R116 | Claude Code as a merge-queue reviewer through headless `claude -p` | Code work | all of it - no `claude -p`, `--json-schema` or `structured_output` use exists under `crates/` |
 | R117 | The leticode MCP bridge pushes package and queue events into Claude Code as a channel | Code work | queue events on the channel (rooms and held sessions already push), and the plugin; a self-published channel plugin still needs `--dangerously-load-development-channels` during the preview |
 | R127 | The idle nag names every free head of the plan, so independent rows run in parallel | Code work | all of it - `the_row_to_name` (`crates/tools/src/builtins/todo.rs:1333`) picks one ready row; postponed by the operator on 2026-11-07 |
-| R129 | One store file per project and a shared file, so one daemon's write cannot stall another's | Code work | the design's last edit (decisions live only in project files) and all of the build; the proposal is `docs/store-split.md` on branch `docs/store-split`, not merged |
+| R129 | One store file per project and a shared file, so one daemon's write cannot stall another's | Code work | the design's last edit (decisions live only in project files), the slow-call logs read across the daemons, and all of the build; the proposal is `docs/store-split.md` on branch `docs/store-split`, not merged |
 | R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Code work | a remote placement: its keep-list and `plan.env` go into the ssh command line (`EnvSource::Remote`), where `ps` on both boxes reads them; and the operator rotates the token |
 | R131 | `cargo clippy -- -D warnings` fails on main | Code work | `mergequeue/capacity.rs:19` (`neg_cmp_op_on_partial_ord`) and `mergequeue/review/placement_tests.rs:66` (useless `format!`) |
 | R132 | `skills_path.rs` refuses its own session as written by another process, once under load | Code work | the root cause; seen once in a full gate, 6 reruns and the next gate passed |
@@ -795,7 +795,7 @@ The plan is a DAG and the check exists to keep it moving. Today `unfinished_plan
 Every daemon writes one `sessions.db` (9.4 GB on 2026-11-06, a WAL that reached 346 MB while long readers held snapshots). Writes retry on busy for up to 60 s, so one slow writer stalls every daemon. The proposal puts each project's sessions, transcripts, jobs and decisions in `projects/<key>.db`, written by that folder's daemon only, and the index, writer leases, queues and host leases in `shared.db`.
 
 - Left in the design: decisions live only in project files. Only the `decisions` tool and the start-up counts read the corpus, and `Store::corpus()` is used only in tests, so no shared copy is needed.
-- First step before building: log every store write over 1 s, so the split is shown to remove the stalls actually seen.
+- First step, built: every store call over 1 s writes `store: a call at <file>:<line> took N ms (R busy retries)` to the daemon's log (`busy::SLOW_CALL`). Left: collect a few days of those lines across the daemons on lab2x1, and check that the split separates the writers they name.
 - A saturated disk stalls both files alike: on 2026-11-07 a test gate linking on the root disk blocked every daemon's reads. Builds on lab2x1 now go to `/build`.
 
 ## R130 - The seat's `GH_TOKEN` is readable in `ps`
@@ -818,7 +818,10 @@ Every daemon writes one `sessions.db` (9.4 GB on 2026-11-06, a WAL that reached 
 
 **Status:** open. left: the root cause.
 
-`an_unknown_skill_name_is_refused_and_runs_nothing` failed once in a full gate with `session s-skills-path is being written by another process` naming the test's own pid, 0 s ago. Six reruns and the next full gate passed. The writer lease is read while the same process still holds it from an earlier open.
+`an_unknown_skill_name_is_refused_and_runs_nothing` failed once in a full gate with `session s-skills-path is being written by another process` naming the test's own pid, 0 s ago. Six reruns and the next full gate passed.
+
+- A second claim from one process is refused by design (`writer::me` suffixes the owner with a nanosecond, so two claims in one process are two claims), so the refusal means a claim on that store was still held.
+- Two candidates, neither confirmed: an earlier `Claim` in the same test not yet dropped when the dispatch reopened the session, or two fixtures in parallel getting the same `TempDir` name (`harnessd-skills-path-store-<pid>-<now_ns>`), the second wiping and reusing the first's store. An atomic counter in that name rules out the second for nothing.
 
 ## R133 - The one-shot env report prints its lines out of order
 
