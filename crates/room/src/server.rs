@@ -14,6 +14,13 @@ use std::sync::{Arc, Mutex};
 /// The id prefix of a project's review queue session, `s-gatekeeper-<project key>`.
 const GATEKEEPER: &str = "s-gatekeeper-";
 
+/// The project key a queue seat (`s-gatekeeper-<key>` and its reviewer children) serves.
+fn queue_seat_project(name: &str) -> Option<&str> {
+    let key = name.strip_prefix(GATEKEEPER)?;
+    let key = key.split("-sub-").next().unwrap_or(key);
+    (!key.is_empty()).then_some(key)
+}
+
 use crate::chat::{self, Chat, Seat};
 use crate::item::Speaker;
 use crate::lease::{CoordinatorLease, LEASE_BEAT_EVERY_MS};
@@ -1465,10 +1472,34 @@ impl Server {
 
     /// Is this message one `name` (in `seat`, `project`) may read?
     fn visible(&self, name: &str, seat: Seat, project: &str, m: &chat::Message) -> bool {
+        if queue_seat_project(name).is_some() && m.author != name {
+            return self.queue_seat_hears(name, m);
+        }
         if m.room == chat::DM_ROOM {
             return m.author == name || m.to.as_deref() == Some(name);
         }
         self.may_see(name, seat, project, &m.room)
+    }
+
+    /// A queue seat hears no broadcast and no `@` mention. It hears the operator, and its own
+    /// project's sessions, only when they DM it or ask it: the one-to-one doors.
+    fn queue_seat_hears(&self, name: &str, m: &chat::Message) -> bool {
+        if m.to.as_deref() != Some(name) {
+            return false;
+        }
+        if m.kind == Seat::Operator {
+            return true;
+        }
+        let one_to_one = m.room == chat::DM_ROOM || m.refs.iter().any(|r| r.kind == "ask");
+        one_to_one && self.queue_seat_kin(name, &m.author)
+    }
+
+    /// Is `other` a session of the project the queue seat `name` serves?
+    fn queue_seat_kin(&self, name: &str, other: &str) -> bool {
+        let Some(key) = queue_seat_project(name) else {
+            return false;
+        };
+        other == chat::OPERATOR || self.seat_and_project_of(other).1 == key
     }
 
     /// Does anybody on this host answer to `name`? A session the room has merely seen before is NOT
@@ -1709,6 +1740,12 @@ impl Server {
                 };
                 if to.is_empty() || to == name || !self.is_known(&to) {
                     return refuse(Some(id), crate::Refused::UnknownAddressee { name: to });
+                }
+                if queue_seat_project(&to).is_some()
+                    && seat != Seat::Operator
+                    && !self.queue_seat_kin(&to, name)
+                {
+                    return refuse(Some(id), crate::Refused::QueueSeatOwnProject { session: to });
                 }
                 let attachments = match self.attach_blobs(attachments) {
                     Ok(a) => a,
@@ -2409,6 +2446,12 @@ impl Server {
         };
         if room == chat::DM_ROOM || !self.may_see(name, seat, project, &room) {
             return refuse(crate::Refused::UnknownChatRoom { room });
+        }
+        if queue_seat_project(&target).is_some()
+            && seat != Seat::Operator
+            && !self.queue_seat_kin(&target, name)
+        {
+            return refuse(crate::Refused::QueueSeatOwnProject { session: target });
         }
         let (tseat, tproject) = self.seat_and_project_of(&target);
         if !self.may_see(&target, tseat, &tproject, &room) {
