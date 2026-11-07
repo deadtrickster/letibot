@@ -905,6 +905,38 @@ impl App {
                 },
             })
             .collect();
+        // And the ones other daemons hold, such as the `~` session: the same predicate read off the
+        // fleet scan, which applies it to the store.
+        let home = std::env::var("HOME").unwrap_or_default();
+        let mut mine = mine;
+        for f in &self.fleet_mine {
+            if mine.iter().any(|s| s.id == f.id) {
+                continue;
+            }
+            mine.push(rooms::SessInfo {
+                id: f.id.clone(),
+                name: if f.title.is_empty() {
+                    letibot_sessionlog::registry::short_id(&f.id)
+                } else {
+                    f.title.clone()
+                },
+                project: if !home.is_empty() && f.workspace == home {
+                    "~".into()
+                } else {
+                    std::path::Path::new(&f.workspace)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                },
+                state: match f.state {
+                    letibot_sessionlog::FleetState::Running => "running",
+                    letibot_sessionlog::FleetState::Idle => "idle",
+                    letibot_sessionlog::FleetState::Asking => "asking",
+                    letibot_sessionlog::FleetState::DaemonDown => "daemon down",
+                    letibot_sessionlog::FleetState::Unreachable(_) => "unreachable",
+                },
+            });
+        }
         self.rooms.sessions = mine;
         // The queue's own sessions: a queue-origin session and whatever it spawned (its reviewers).
         let queue: BTreeSet<String> = self

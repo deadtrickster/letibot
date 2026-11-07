@@ -70,6 +70,9 @@ fn shell_word(s: &str) -> String {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Fleet {
     pub rows: Vec<FleetRow>,
+    /// The operator's own top-level sessions of other daemons (`is_operator_top_level`): the
+    /// `~` session beside a repository's. Listed beside the packages, never among them.
+    pub mine: Vec<FleetRow>,
     /// Stopped packages older than the window, counted and not listed.
     pub unlisted: usize,
 }

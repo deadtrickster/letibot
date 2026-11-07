@@ -897,6 +897,8 @@ pub struct App {
     /// Package sessions of other folders' daemons, as last read, and what reads them. `None`
     /// reader means this head cannot see another daemon (a replay, a test).
     pub(crate) fleet: Vec<letibot_sessionlog::FleetRow>,
+    /// The operator's own top-level sessions of other daemons, for the rooms sidebar.
+    pub(crate) fleet_mine: Vec<letibot_sessionlog::FleetRow>,
     pub(crate) fleet_reader: Option<letibot_sessionlog::FleetReader>,
     pub(crate) fleet_unlisted: usize,
     pub(crate) fleet_job: Option<std::sync::mpsc::Receiver<letibot_sessionlog::Fleet>>,
@@ -1436,6 +1438,7 @@ impl App {
             git_job: None,
             git_reader: std::sync::Arc::new(crate::gitfield::read_state),
             fleet: Vec::new(),
+            fleet_mine: Vec::new(),
             fleet_reader: None,
             fleet_unlisted: 0,
             fleet_job: None,
