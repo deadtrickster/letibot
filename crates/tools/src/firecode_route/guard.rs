@@ -15,6 +15,32 @@ pub const MANIFESTS: &[&str] = &[
     "yarn.lock",
 ];
 
+/// Directories whose ignored contents a build may write.
+const OUTPUTS: &[&str] = &[
+    "node_modules",
+    "dist",
+    "build",
+    ".next",
+    ".docusaurus",
+    ".cache",
+];
+
+/// Files and directories something on the host runs by itself (direnv, mise, editors, git hooks
+/// managers), so a write there is code on the host even when git ignores it.
+const AUTO_DIRS: &[&str] = &[".vscode", ".idea", ".husky", ".mise"];
+const AUTO_FILES: &[&str] = &[".envrc", ".tool-versions", "mise.toml", ".mise.toml"];
+
+fn auto_executed(p: &Path) -> bool {
+    p.components().any(|c| {
+        c.as_os_str()
+            .to_str()
+            .is_some_and(|c| AUTO_DIRS.contains(&c))
+    }) || p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| AUTO_FILES.contains(&n))
+}
+
 const KEEP_BYTES: u64 = 1 << 20;
 const KEEP_TOTAL: u64 = 256 << 20;
 
@@ -30,6 +56,8 @@ pub struct Snapshot {
     root: PathBuf,
     tracked: BTreeMap<PathBuf, Kept>,
     untracked: BTreeSet<PathBuf>,
+    /// Ignored files outside the build outputs.
+    ignored: BTreeMap<PathBuf, Kept>,
     /// Git's own files and `.npmrc`: `None` is absent.
     guarded: BTreeMap<PathBuf, Option<Vec<u8>>>,
 }
@@ -50,23 +78,27 @@ impl Report {
 
     pub fn sentences(&self) -> Vec<String> {
         let mut out = Vec::new();
+        if !self.unrestorable.is_empty() {
+            out.push(format!(
+                "REFUSED-NOT-RESTORED: the call changed {} and the original could not be put \
+                 back (over the 1 MiB snapshot limit). Restore it with git before trusting this \
+                 tree",
+                self.unrestorable.join(", ")
+            ));
+        }
         if !self.refused.is_empty() {
             out.push(format!(
-                "REFUSED and put back: the call wrote {} - git hooks, git config and .npmrc are \
-                 never changed by a firecode-only call",
+                "REFUSED and put back: the call wrote {} - git hooks and info, git config, .npmrc and \
+                 files the host runs by itself (.envrc, .vscode, .idea, .husky, mise) are never \
+                 changed by a firecode-only call",
                 self.refused.join(", ")
             ));
         }
         if !self.reverted.is_empty() {
             out.push(format!(
-                "put back: the call changed {} outside `node_modules/` and the package manifests",
+                "put back: the call changed {} outside `node_modules/`, the build outputs and the package \
+                 manifests",
                 self.reverted.join(", ")
-            ));
-        }
-        if !self.unrestorable.is_empty() {
-            out.push(format!(
-                "CHANGED AND NOT RESTORED (too large to snapshot, restore with git): {}",
-                self.unrestorable.join(", ")
             ));
         }
         if !self.kept.is_empty() {
@@ -137,7 +169,22 @@ fn guarded_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
     if let Ok(rd) = std::fs::read_dir(&hooks) {
         v.extend(rd.flatten().map(|e| e.path()));
     }
+    if let Ok(rd) = std::fs::read_dir(git_path("info")?) {
+        v.extend(rd.flatten().map(|e| e.path()));
+    }
     Ok(v)
+}
+
+/// Ignored files a build is not entitled to write: everything but `node_modules/` and the
+/// usual build output directories.
+fn ignored(root: &Path) -> Result<BTreeSet<PathBuf>, String> {
+    let mut args: Vec<String> = ["ls-files", "-z", "-o", "-i", "--exclude-standard", "--"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    args.extend(OUTPUTS.iter().map(|d| format!(":(exclude,glob)**/{d}/**")));
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    Ok(nul_paths(&git(root, &refs)?).into_iter().collect())
 }
 
 /// Read the protected tree. Fails when `root` is not a git repository: the guard has nothing to
@@ -164,6 +211,25 @@ pub fn snapshot(root: &Path) -> Result<Snapshot, String> {
             },
         );
     }
+    let mut kept_ignored = BTreeMap::new();
+    for rel in ignored(root)? {
+        let Ok(meta) = std::fs::symlink_metadata(root.join(&rel)) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let keep = meta.len() <= KEEP_BYTES && total + meta.len() <= KEEP_TOTAL;
+        let body = keep.then(|| std::fs::read(root.join(&rel)).ok()).flatten();
+        total += body.as_ref().map_or(0, |b| b.len() as u64);
+        kept_ignored.insert(
+            rel,
+            Kept {
+                len: meta.len(),
+                body,
+            },
+        );
+    }
     let mut guarded = BTreeMap::new();
     for p in guarded_paths(root)? {
         let body = std::fs::read(&p).ok();
@@ -173,6 +239,7 @@ pub fn snapshot(root: &Path) -> Result<Snapshot, String> {
         root: root.to_path_buf(),
         tracked,
         untracked: untracked(root)?,
+        ignored: kept_ignored,
         guarded,
     })
 }
@@ -203,7 +270,11 @@ pub fn restore(snap: &Snapshot) -> Report {
                 }
                 let _ = std::fs::remove_file(&abs);
                 if std::fs::write(&abs, was).is_ok() {
-                    rep.reverted.push(rel.display().to_string());
+                    if auto_executed(rel) {
+                        rep.refused.push(rel.display().to_string());
+                    } else {
+                        rep.reverted.push(rel.display().to_string());
+                    }
                 } else {
                     rep.unrestorable.push(rel.display().to_string());
                 }
@@ -217,10 +288,15 @@ pub fn restore(snap: &Snapshot) -> Report {
                 continue;
             }
             if std::fs::remove_file(root.join(rel)).is_ok() {
-                rep.reverted.push(rel.display().to_string());
+                if auto_executed(rel) {
+                    rep.refused.push(rel.display().to_string());
+                } else {
+                    rep.reverted.push(rel.display().to_string());
+                }
             }
         }
     }
+    restore_ignored(snap, &mut rep);
     for (abs, was) in &snap.guarded {
         if std::fs::read(abs).ok() == *was {
             continue;
@@ -245,4 +321,50 @@ pub fn restore(snap: &Snapshot) -> Report {
         }
     }
     rep
+}
+
+/// Ignored files outside the build outputs: changed ones are put back, new ones removed.
+fn restore_ignored(snap: &Snapshot, rep: &mut Report) {
+    let root = &snap.root;
+    let mut note = |rel: &Path, rep: &mut Report| {
+        let name = rel.display().to_string();
+        if auto_executed(rel) {
+            rep.refused.push(name);
+        } else {
+            rep.reverted.push(name);
+        }
+    };
+    for (rel, kept) in &snap.ignored {
+        let abs = root.join(rel);
+        let now = std::fs::read(&abs).ok();
+        let same = match (&kept.body, &now) {
+            (Some(was), Some(now)) => was == now,
+            (None, Some(now)) => now.len() as u64 == kept.len,
+            _ => false,
+        };
+        if same {
+            continue;
+        }
+        match &kept.body {
+            Some(was) => {
+                if let Some(d) = abs.parent() {
+                    let _ = std::fs::create_dir_all(d);
+                }
+                let _ = std::fs::remove_file(&abs);
+                if std::fs::write(&abs, was).is_ok() {
+                    note(rel, rep);
+                } else {
+                    rep.unrestorable.push(rel.display().to_string());
+                }
+            }
+            None => rep.unrestorable.push(rel.display().to_string()),
+        }
+    }
+    if let Ok(now) = ignored(root) {
+        for rel in now {
+            if !snap.ignored.contains_key(&rel) && std::fs::remove_file(root.join(&rel)).is_ok() {
+                note(&rel, rep);
+            }
+        }
+    }
 }

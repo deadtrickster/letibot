@@ -120,9 +120,17 @@ impl Bash {
                         routed.output.exit
                     ));
                 }
+                // A change the guard could not undo leads the result, ahead of the output.
+                let (alarms, notes): (Vec<String>, Vec<String>) = routed
+                    .notes
+                    .into_iter()
+                    .partition(|n| n.starts_with("REFUSED-NOT-RESTORED"));
+                if !alarms.is_empty() {
+                    text = format!("{}\n\n{text}", alarms.join("\n"));
+                }
                 let mut inv = Invocation::ok(text)
                     .with_note(format!("ran in firecode, not in the seat: {key}"));
-                for n in routed.notes {
+                for n in notes {
                     inv = inv.with_note(n);
                 }
                 Err(Box::new(inv))

