@@ -195,6 +195,10 @@ struct QueueTable {
     #[serde(default)]
     #[allow(dead_code)]
     stuck_repeat_seconds: Option<i64>,
+    /// Read by `leticode-config` too; accepted here for the same reason.
+    #[serde(default)]
+    #[allow(dead_code)]
+    mute: Vec<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]

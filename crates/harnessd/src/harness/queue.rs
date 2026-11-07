@@ -352,7 +352,14 @@ impl Harness {
             .collect();
         // The repository this session is the project of - read only when there is news.
         // Every repository of the workspace - one, or each of a one-org project folder's.
-        let mine = crate::mergequeue::repositories_of_workspace(&self.cfg.workspace);
+        let all_mine = crate::mergequeue::repositories_of_workspace(&self.cfg.workspace);
+        // Muted repositories are not this session's news. A Branch review rooted here is
+        // still its own work and is told regardless.
+        let mute = self.cfg.leticode.queue_mute();
+        let mine: Vec<String> = all_mine
+            .into_iter()
+            .filter(|k| !crate::mergequeue::is_muted(k, mute))
+            .collect();
         let mut out = Vec::new();
         // Green again: an emergency this session was told about is over - said once,
         // and forgotten, so the next red of the same tip is news again.

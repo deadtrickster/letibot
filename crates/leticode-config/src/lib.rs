@@ -206,6 +206,7 @@
 //! [queue]
 //! stuck_after_seconds = 900     # a row stuck this long is the census's (`Stuck::is_news`)
 //! stuck_repeat_seconds = 7200   # and the census is said again this often
+//! mute = ["stroppy-rust"]       # repositories of a folder project this session is not told about
 //!
 //! [nag]
 //! after_seconds = 60            # the idle window before the plan-check (TODO_NAG_AFTER)
@@ -234,6 +235,11 @@
 //! line**, because a number nobody reads and a number read wrongly are the same defect from the
 //! screen: `[nag] after_seconds = "60"` is refused where it was written, rather than silently
 //! being a minute.
+//!
+//! `[queue] mute` names repositories of a one-org folder that the session is not woken for: a
+//! name matches a repository by its directory name under the folder (`stroppy-rust`) or by its
+//! repository key (the path `git::repository_key` gives). The queue still gates and lands a muted
+//! repository and the pane still shows it. It unions across levels like `[warnings] mute`.
 //!
 //! The head's three tables are read here and resolved THERE (`tui/src/prefs.rs`, `visibility.rs`
 //! and `keys/bindings.rs`): the surface names, the warning codes and the verbosity switches are
@@ -1294,10 +1300,13 @@ pub struct VerbosityKeys {
 /// daemon's own - fifteen minutes before a stuck row is the census's
 /// (`mergequeue::stuck::STUCK_AFTER_MS`), and two hours between two sayings of it
 /// (`builtins::todo::STUCK_REPEAT`) - and those constants stay the defaults' one home.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueueKeys {
     pub stuck_after_seconds: Option<u64>,
     pub stuck_repeat_seconds: Option<u64>,
+    /// Repositories the session is not told the gate's news of. A union across levels, because
+    /// muting only narrows what a session hears.
+    pub mute: Vec<String>,
 }
 
 /// `[nag]` in a `leticode.toml`: the idle plan-check's window, the shortest re-arm an operator
@@ -1540,8 +1549,8 @@ fn queue_keys(
     text: &str,
     user: bool,
 ) -> Result<QueueKeys, String> {
-    let keys = "the keys are `stuck_after_seconds` and `stuck_repeat_seconds` - the merge \
-                queue's census; the rest of `[queue]` is the queue's own reader";
+    let keys = "the keys are `stuck_after_seconds`, `stuck_repeat_seconds` and `mute` - the \
+                merge queue's census and the repositories it is silent about; the rest of `[queue]` is the queue's own reader";
     let table = table_at(value, path, text, "queue", keys)?;
     let mut out = QueueKeys::default();
     // The queue's own reader owns the other keys of this table and refuses a name neither knows,
@@ -1554,6 +1563,28 @@ fn queue_keys(
             }
             "stuck_repeat_seconds" => {
                 out.stuck_repeat_seconds = Some(seconds_at(v, &from, "queue", key)?)
+            }
+            "mute" => {
+                let items = v.as_array().ok_or_else(|| {
+                    format!(
+                        "{from}: [queue] mute is a list of repository names, as strings; {keys}"
+                    )
+                })?;
+                for item in items {
+                    let name = item.as_str().and_then(non_empty).ok_or_else(|| {
+                        format!(
+                            "{from}: [queue] mute holds {} - every entry is a repository's \
+                             directory name or key, as a non-empty string",
+                            match item.as_str() {
+                                Some(s) => format!("{s:?}"),
+                                None => kind_of(item).to_string(),
+                            }
+                        )
+                    })?;
+                    if !out.mute.contains(&name) {
+                        out.mute.push(name);
+                    }
+                }
             }
             _ => {}
         }
@@ -1901,6 +1932,15 @@ impl LeticodeConfig {
                     .queue
                     .stuck_repeat_seconds
                     .or(self.queue.stuck_repeat_seconds),
+                mute: {
+                    let mut m = self.queue.mute.clone();
+                    for n in &other.queue.mute {
+                        if !m.contains(n) {
+                            m.push(n.clone());
+                        }
+                    }
+                    m
+                },
             },
             room: RoomKeys {
                 tie_breaker: other
@@ -1931,6 +1971,11 @@ impl LeticodeConfig {
     /// beside the constant (`mergequeue::stuck::STUCK_AFTER_MS`).
     pub fn stuck_after_seconds(&self) -> Option<u64> {
         self.queue.stuck_after_seconds
+    }
+
+    /// The `[queue] mute` names, both levels unioned.
+    pub fn queue_mute(&self) -> &[String] {
+        &self.queue.mute
     }
 
     /// What this session does when its provider answers a usage limit with a known reset: the
@@ -3523,6 +3568,13 @@ mod tests {
                 "[queue] stuck_after_seconds",
                 3,
             ),
+            ("qmute", "\n[queue]\nmute = \"a\"\n", "mute is a list", 3),
+            (
+                "qmute_entry",
+                "\n[queue]\nmute = [\"a\", 3]\n",
+                "mute holds integer",
+                3,
+            ),
             (
                 "queue_kind",
                 "\n[queue]\nstuck_repeat_seconds = true\n",
@@ -3576,6 +3628,29 @@ mod tests {
             );
             assert!(err.contains(want), "{tag}: {err}");
         }
+    }
+
+    /// `[queue] mute` reads from both levels and unions, each name once.
+    #[test]
+    fn a_queue_mute_unions_across_the_levels() {
+        let dir = project_dir("qmute_levels");
+        let user = write_file(
+            &sub(&dir, "user"),
+            "[queue]\nmute = [\"stroppy-rust\", \"x\"]\n",
+        );
+        let project = write_file(
+            &sub(&dir, "project"),
+            "[queue]\nmute = [\"x\", \"stroppy-cloud\"]\nstuck_after_seconds = 60\n",
+        );
+        let merged = LeticodeConfig::load_as(&user, Level::User)
+            .unwrap()
+            .overridden_by(&LeticodeConfig::load(&project).unwrap());
+        assert_eq!(
+            merged.queue_mute(),
+            ["stroppy-rust", "x", "stroppy-cloud"],
+            "both levels, the user's first, each once"
+        );
+        assert_eq!(merged.stuck_after_seconds(), Some(60));
     }
 
     /// A floor above the ceiling is a ladder with no room in it, refused by name.
