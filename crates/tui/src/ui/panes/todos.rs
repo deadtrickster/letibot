@@ -84,7 +84,9 @@ impl App {
                 waits_on: if asks_operator(t) {
                     Some("you".into())
                 } else {
-                    wait_of(t).map(|w| self.wait_label(&w))
+                    // A peer's answer and an answer owed are said and not opened: the head holds
+                    // no table of asks, so there is nothing behind the words to jump to.
+                    waits_words(t).or_else(|| wait_of(t).map(|w| self.wait_label(&w)))
                 },
                 // The mark follows the STOP, whichever half the row is on: rano draws its mark from
                 // this flag alone, so a model's row left at `false` is a stop the cursor walks onto
@@ -422,11 +424,39 @@ fn need_words(n: &TodoNeed) -> String {
             clean_line(question),
             options_words(options)
         ),
-        TodoNeed::Answered { question, reply } => format!(
-            "answered — \"{}\": {}",
+        // The asker's side: the peer, the words it was asked, and the number the room settles.
+        TodoNeed::Ask {
+            ask,
+            of,
+            room,
+            question,
+        } => format!(
+            "the session `{}` — asked \"{}\" (ask #{ask} in {})",
+            clean_line(of),
             clean_line(question),
-            clean_line(reply)
+            clean_line(room)
         ),
+        // And the side that owes the answer: the number is what a settle quotes back, so the row
+        // says which ask it is rather than only that somebody is waiting.
+        TodoNeed::Owed { ask } => format!("you owe an answer to ask #{ask}"),
+        TodoNeed::Answered {
+            question,
+            reply,
+            ask,
+        } => match ask {
+            // A settled ask says which one it was: the row is released, and the number is what a
+            // person quotes when they ask the room what happened to it.
+            Some(ask) => format!(
+                "answered — \"{}\": {} (ask #{ask})",
+                clean_line(question),
+                clean_line(reply)
+            ),
+            None => format!(
+                "answered — \"{}\": {}",
+                clean_line(question),
+                clean_line(reply)
+            ),
+        },
         // Kept rather than dropped - a plan is what would be lost - and said as the one thing this
         // build can honestly say about it.
         TodoNeed::Unknown => "an edge this build does not know".into(),

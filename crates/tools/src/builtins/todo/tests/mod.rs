@@ -165,6 +165,57 @@ fn children_runtime(board: Arc<TodoBoard>) -> (ToolRuntime, Arc<TodoBoard>, Arc<
     (ToolRuntime::new(reg, Box::new(backend)), own, fake)
 }
 
+// -- a row waiting on another session ---------------------------------
+
+/// The fake room: two sessions that can be asked, one that is gone, and the ids it hands out.
+/// Everything the tool needs from the link, and none of the room's own work - who may be asked,
+/// the dedup, and the grace are the room's, and are tested where the room is.
+struct FakeRoom {
+    /// Every ask the tool made, in order: the target, the room as the CALL spelled it (so a test
+    /// can show the default was left to the link), and the question.
+    asked: std::sync::Mutex<Vec<(String, Option<String>, String)>>,
+}
+
+impl super::AskLink for FakeRoom {
+    fn ask(&self, of: &str, room: Option<&str>, question: &str) -> Result<AskMade, String> {
+        self.asked.lock().unwrap().push((
+            of.to_string(),
+            room.map(str::to_string),
+            question.to_string(),
+        ));
+        // The id is the room's, so the fake mints a stable one per target: a test can then settle
+        // it by number, which is all the edge carries.
+        let (id, note) = match of {
+            "serenedb" => (4211, None),
+            "arango" => (
+                4212,
+                Some("`arango` is not connected now — the question waits for it".to_string()),
+            ),
+            "this session" => return Err("you cannot wait on your own answer".to_string()),
+            other => return Err(format!("`{other}` is not a top-level session on this host")),
+        };
+        Ok(AskMade {
+            id,
+            // The room resolves the room, the way `say` does: the call's own name when it gave
+            // one, and the asker's project room otherwise.
+            room: room.unwrap_or("proj").to_string(),
+            note,
+        })
+    }
+}
+
+/// The tool with a room behind it, on `board`, and the fake that stands in for it.
+fn ask_tool(board: Arc<TodoBoard>) -> (TodoWriteTool, Arc<FakeRoom>) {
+    let fake = Arc::new(FakeRoom {
+        asked: std::sync::Mutex::new(Vec::new()),
+    });
+    (
+        super::TodoWriteTool::new(board).with_asks(fake.clone()),
+        fake,
+    )
+}
+
+mod ask;
 mod board;
 mod cap;
 mod children;

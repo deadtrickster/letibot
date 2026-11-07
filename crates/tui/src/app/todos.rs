@@ -917,6 +917,21 @@ pub(crate) fn wait_of(t: &letibot_sessionlog::event::TodoEntry) -> Option<WaitOn
     }
 }
 
+/// What a row waits on that the pane SAYS and cannot open: another session's answer, and the answer
+/// this session owes somebody. [`wait_of`]'s sibling - a job and a child are links because the head
+/// holds their tables, and a peer is only a name.
+pub(crate) fn waits_words(t: &letibot_sessionlog::event::TodoEntry) -> Option<String> {
+    use letibot_sessionlog::event::TodoNeed;
+    t.needs.iter().find_map(|n| match n {
+        // The peer, by its handle: that is the name a person reads on the other session's board.
+        TodoNeed::Ask { of, .. } => Some(of.clone()),
+        // The OWED side: the row is the model's own work, and what it waits on is the person
+        // sitting in front of it - which is the pane's `you` one register down.
+        TodoNeed::Owed { .. } => Some("your answer".to_string()),
+        _ => None,
+    })
+}
+
 /// One drawn `waits on …` link: the pane row it is on, the columns its words cover, and the row it belongs to,
 /// which is its place among the session rows the pane DREW and not an index into the board.
 #[derive(Debug, Clone, PartialEq, Eq)]

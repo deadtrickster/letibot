@@ -175,7 +175,8 @@ fn an_answer_unblocks_the_row_and_attaches_the_reply() {
         row.needs,
         vec![TodoNeed::Answered {
             question: QUESTION.into(),
-            reply: "the operator chose \"postgres\"".into()
+            reply: "the operator chose \"postgres\"".into(),
+            ask: None,
         }]
     );
     let said = nag_for(&board.snapshot()).expect("the row is asked about again");
@@ -213,7 +214,8 @@ fn a_restated_row_keeps_its_answer_and_is_not_asked_again() {
         board.snapshot()[0].needs,
         vec![TodoNeed::Answered {
             question: QUESTION.into(),
-            reply: "the operator abstained".into()
+            reply: "the operator abstained".into(),
+            ask: None,
         }]
     );
     let tool = TodoWriteTool::new(board.clone());

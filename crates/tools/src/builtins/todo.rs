@@ -278,7 +278,8 @@ impl TodoBoard {
                 }
                 // And the operator's question comes off with them - the door the check names
                 // for a model that worked the answer out itself. An ANSWER stays: it is the
-                // operator's word on the row, not a wait.
+                // operator's word on the row, not a wait. An ASK comes off, and A's own pass then
+                // withdraws the question in the room, so the peer stops being nagged about it.
                 Wait::Detach => {
                     let before = row.needs.len();
                     row.needs.retain(|n| {
@@ -288,6 +289,7 @@ impl TodoBoard {
                                 | TodoNeed::Monitor { .. }
                                 | TodoNeed::Child { .. }
                                 | TodoNeed::Operator { .. }
+                                | TodoNeed::Ask { .. }
                         )
                     });
                     row.needs.len() != before
@@ -545,26 +547,99 @@ impl TodoBoard {
     }
 }
 
+/// How an ask ended, as A's pass applies it: the outcome, and the one spelling every row and every
+/// notice uses for it. Its words become the row's `TodoNeed::Answered` reply, so a settled row says
+/// which of the four endings it met without a second field to keep in step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AskSettle {
+    /// The peer answered, with these words.
+    Answered(String),
+    /// The peer will not answer, and said why.
+    Declined(String),
+    /// The peer's session was deleted - shut down for good. The only `DOWN`: a daemon that exited
+    /// is a restart the operator owes, and it settles nothing.
+    Down,
+    /// Taken back, by `by`: the asker itself, or the operator.
+    Withdrawn(String),
+}
+
+impl AskSettle {
+    /// The sentence the settled row carries, in the words the design spells - *"`serenedb` answered:
+    /// 5433"*. `of` is the peer's handle, which is what a reader needs to know who spoke.
+    pub fn reply(&self, of: &str) -> String {
+        match self {
+            AskSettle::Answered(text) => format!("`{of}` answered: {text}"),
+            AskSettle::Declined(text) => format!("`{of}` declined: {text}"),
+            AskSettle::Down => format!(
+                "`{of}` was shut down for good (its session was deleted) - no answer will arrive"
+            ),
+            AskSettle::Withdrawn(by) => format!("the ask was withdrawn by {by}"),
+        }
+    }
+}
+
+impl TodoBoard {
+    /// Apply a settled ask to every row that carries it: the `Ask` edge becomes
+    /// [`TodoNeed::Answered`] with the settle's words and the ask's id, in place, so the row is
+    /// released with what it waited for still on it. Every half is read, because the pass does not
+    /// know which author's row asked. Returns how many rows moved - zero on a second call, which is
+    /// what makes the daemon's room pass idempotent over a restart.
+    pub fn settle_ask(&self, ask: u64, settle: &AskSettle) -> usize {
+        let mut moved = 0usize;
+        for half in [&self.todos, &self.operator, &self.parent, &self.queue] {
+            let mut half = half.lock().unwrap_or_else(|e| e.into_inner());
+            for row in half.iter_mut() {
+                for need in row.needs.iter_mut() {
+                    let TodoNeed::Ask {
+                        ask: id,
+                        of,
+                        question,
+                        ..
+                    } = need
+                    else {
+                        continue;
+                    };
+                    if *id != ask {
+                        continue;
+                    }
+                    let reply = settle.reply(of);
+                    *need = TodoNeed::Answered {
+                        question: question.clone(),
+                        reply,
+                        ask: Some(ask),
+                    };
+                    moved += 1;
+                }
+            }
+        }
+        if moved > 0 {
+            self.version.fetch_add(1, Ordering::SeqCst);
+        }
+        moved
+    }
+}
+
 /// The reply the operator gave to this question on this row, if they have answered it.
 fn answered_reply<'a>(row: &'a TodoItem, question: &str) -> Option<&'a str> {
     row.needs.iter().find_map(|n| match n {
-        TodoNeed::Answered { question: q, reply } if q.trim() == question.trim() => {
-            Some(reply.as_str())
-        }
+        TodoNeed::Answered {
+            question: q, reply, ..
+        } if q.trim() == question.trim() => Some(reply.as_str()),
         _ => None,
     })
 }
 
-/// A restated row's edges, with the operator's answers kept: an answer is the operator's word,
-/// so a restatement that leaves it out does not take it off, and a question already answered on
-/// this row is dropped rather than asked again.
+/// A restated row's edges, with the operator's answers and the room's asks kept: an answer is the
+/// operator's word, and an ask is a question a peer is already being nagged about, so a restatement
+/// that leaves either out does not take it off. A question already answered on this row is dropped
+/// rather than asked again.
 fn keep_answers(had: &[TodoNeed], sent: &[TodoNeed]) -> Vec<TodoNeed> {
-    let answers: Vec<&TodoNeed> = had
+    let kept: Vec<&TodoNeed> = had
         .iter()
-        .filter(|n| matches!(n, TodoNeed::Answered { .. }))
+        .filter(|n| matches!(n, TodoNeed::Answered { .. } | TodoNeed::Ask { .. }))
         .collect();
     let answered = |question: &str| {
-        answers.iter().any(
+        kept.iter().any(
             |n| matches!(n, TodoNeed::Answered { question: q, .. } if q.trim() == question.trim()),
         )
     };
@@ -573,11 +648,14 @@ fn keep_answers(had: &[TodoNeed], sent: &[TodoNeed]) -> Vec<TodoNeed> {
         .filter(|n| match n {
             TodoNeed::Operator { question, .. } => !answered(question),
             TodoNeed::Answered { .. } => false,
+            // An ask is made by `wait_on`, which is the only door that talks to the room: one the
+            // plan spells is not carried, and the row's own is put back below with its id.
+            TodoNeed::Ask { .. } => false,
             _ => true,
         })
         .cloned()
         .collect();
-    out.extend(answers.into_iter().cloned());
+    out.extend(kept.into_iter().cloned());
     out
 }
 
@@ -652,6 +730,9 @@ impl TodoBoard {
                     row.needs[i] = TodoNeed::Answered {
                         question: question.trim().to_string(),
                         reply: reply.to_string(),
+                        // The operator is not an ask: the room's own id is what a peer's reply
+                        // carries, and this door is theirs alone.
+                        ask: None,
                     };
                     drop(half);
                     self.version.fetch_add(1, Ordering::SeqCst);
@@ -669,7 +750,8 @@ pub enum Wait {
     /// Wait on this - a [`TodoNeed::Job`] or a [`TodoNeed::Child`], already resolved to the full
     /// handle by the caller. Attaching one the row already has is not a change.
     On(TodoNeed),
-    /// Take the row's job and child waits off, and leave its row edges where they are.
+    /// Take the row's job, child, monitor, operator and ask waits off, and leave its row edges and
+    /// its answers where they are.
     Detach,
 }
 
@@ -1311,6 +1393,9 @@ fn all_on_the_operator(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> bool
             // blocked only on them is not a plan to fix either.
             let rooted = unmet.iter().all(|(name, fate)| match fate {
                 NeedFate::OperatorAsked | NeedFate::JobRunning | NeedFate::MonitorWatching => true,
+                // And a peer that was asked: the answer comes through the room's pass, so the rest
+                // of the plan keeps going and this row is nobody's to unblock.
+                NeedFate::PeerAsked => true,
                 // A room item the room is working on is a root too: not the plan's to move, and a
                 // plan blocked only on it is not a plan to fix.
                 NeedFate::RoomWorking => true,
@@ -1382,6 +1467,11 @@ pub enum NeedFate {
     /// The operator was asked a question and has not answered it; the name beside it is the
     /// question. Blocked, and the rest of the plan keeps going.
     OperatorAsked,
+    /// Another session was asked a question and has not answered it; the name beside it is that
+    /// session and the question. [`NeedFate::OperatorAsked`]'s sibling: a peer is outside the
+    /// plan's hands too, so the row is a root of the check's silence and the settlement is the
+    /// room's to deliver.
+    PeerAsked,
 }
 
 /// The rows the check may speak about, read as a graph - split by whether they can start.
@@ -1486,6 +1576,18 @@ fn unmet_needs(
             TodoNeed::Operator { question, .. } => {
                 out.push((question.clone(), NeedFate::OperatorAsked))
             }
+            // An ask is the peer's answer and nothing here can move it, so the row is blocked and
+            // the fate is quiet: the settlement arrives through A's room pass, and the sentence
+            // names the door that takes the wait off.
+            TodoNeed::Ask {
+                of, question, ask, ..
+            } => out.push((
+                format!("`{of}` — \"{}\" (ask #{ask})", question.trim()),
+                NeedFate::PeerAsked,
+            )),
+            // The other side of an ask is MET: the asker's row waits for this board, not the
+            // other way round, so the row that carries it is the model's own work now.
+            TodoNeed::Owed { .. } => {}
             TodoNeed::Answered { .. } => {}
             TodoNeed::Unknown => out.push((String::new(), NeedFate::UnknownKind)),
         }
@@ -1546,6 +1648,16 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
                  you find the answer, take the wait off — `todo_write` {{\"wait_on\": \
                  [{{\"content\": \"{}\", \"detach\": true}}]}} — and say in your reply what you \
                  decided and why",
+                row.content.trim()
+            ),
+            // A peer is a person's sibling one door over: the answer arrives by itself, the row is
+            // not the model's to unblock, and the detach door is named for a wait it gives up on.
+            NeedFate::PeerAsked => format!(
+                "the SESSION {name}, which has not answered yet. Keep going with the rest of the \
+                 plan meanwhile — the answer reaches you by itself and this row is released when it \
+                 does. If the wait is pointless, take it off — `todo_write` {{\"wait_on\": \
+                 [{{\"content\": \"{}\", \"detach\": true}}]}} — which also withdraws the question \
+                 from the room.",
                 row.content.trim()
             ),
         })
@@ -1651,6 +1763,7 @@ fn blocked_said(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> String {
         "waiting on a child that is still running",
         "waiting on a job that is still running",
         "waiting on the operator",
+        "waiting on another session",
     ] {
         let lines: Vec<String> = blocked
             .iter()
@@ -1669,8 +1782,8 @@ fn blocked_said(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> String {
 }
 
 /// [`blocked_said`]'s classification, split out because a closure cannot be called by name in the
-/// filter there. A row goes with the operator, then the child, then the job, then plain rows: the
-/// lead names the thing the plan is least able to answer.
+/// filter there. A row goes with the operator, then a peer, then the child, then the job, then plain
+/// rows: the lead names the thing the plan is least able to answer.
 fn lead_of(unmet: &[(String, NeedFate)]) -> &'static str {
     // The operator first: a person is the blocker the plan can least move, and the lead that
     // carries the instruction to keep going and try the question meanwhile.
@@ -1679,6 +1792,11 @@ fn lead_of(unmet: &[(String, NeedFate)]) -> &'static str {
         .any(|(_, fate)| matches!(fate, NeedFate::OperatorAsked))
     {
         "waiting on the operator"
+    } else if unmet
+        .iter()
+        .any(|(_, fate)| matches!(fate, NeedFate::PeerAsked))
+    {
+        "waiting on another session"
     } else if unmet
         .iter()
         .any(|(_, fate)| matches!(fate, NeedFate::ChildRunning(_)))
@@ -1769,12 +1887,54 @@ pub trait ChildTodos: Send + Sync {
     }
 }
 
+/// One ask the room took, as the todo tool needs it back: the id the row's edge carries, the room
+/// it was asked in, and anything the room said about the target that the model should read now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskMade {
+    /// The room's id for the ask - the `seq` of the message that carried the question. It is what
+    /// `TodoNeed::Ask` holds and what A's pass matches a settle on.
+    pub id: u64,
+    /// The room it was asked in, as the room resolved it: `room` is optional in the call, so the
+    /// edge records where the question actually went rather than an absent field.
+    pub room: String,
+    /// The room's own sentence about the target - *"`serenedb` is not connected now"* - when it has
+    /// one. Said to the model verbatim; nothing here interprets it.
+    pub note: Option<String>,
+}
+
+/// The room, as `todo_write`'s `ask` needs it: one question put to another session, synchronously,
+/// so every refusal reaches the model in the same call. The room decides who may be asked - a
+/// subagent, the operator, an unknown or ambiguous handle and this session itself are its refusals -
+/// because it is the one process that knows the handles on this host.
+pub trait AskLink: Send + Sync {
+    /// Ask `of` `question`, in `room` or in the room `say` would default to. `Err` is the refusal,
+    /// written to be shown to the model as it stands.
+    fn ask(&self, of: &str, room: Option<&str>, question: &str) -> Result<AskMade, String>;
+}
+
+/// No room behind this tool - a runtime built without a daemon, and the sentence it says.
+pub struct NoAsks;
+
+impl AskLink for NoAsks {
+    fn ask(&self, of: &str, _room: Option<&str>, _question: &str) -> Result<AskMade, String> {
+        Err(format!(
+            "`{of}` cannot be asked anything: this session has no room, and an ask is carried by \
+             one. The box's coordinator is a daemon of its own (`harnessd --room`), and no socket \
+             was there when this session opened. The OPERATOR's answer needs no room — `wait_on` \
+             with `operator` asks them."
+        ))
+    }
+}
+
 /// The write tool. Holds the board; the harness holds the same `Arc`.
 pub struct TodoWriteTool {
     board: Arc<TodoBoard>,
     /// The daemon's child-board resolver - `None` in a runtime with no daemon behind it, in which
     /// case a `target` write is refused by name rather than quietly aimed at this session's board.
     children: Option<Arc<dyn ChildTodos>>,
+    /// The daemon's room link, for the one field that leaves this session: `wait_on`'s `ask`. `None`
+    /// in a runtime with no room, and the refusal says so rather than silently not asking.
+    asks: Option<Arc<dyn AskLink>>,
 }
 
 impl TodoWriteTool {
@@ -1782,6 +1942,7 @@ impl TodoWriteTool {
         TodoWriteTool {
             board,
             children: None,
+            asks: None,
         }
     }
 
@@ -1791,7 +1952,15 @@ impl TodoWriteTool {
         TodoWriteTool {
             board,
             children: Some(children),
+            asks: None,
         }
+    }
+
+    /// Seat the tool with the session's ROOM: the half that lets a row wait on another session's
+    /// answer. Additive, so a runtime with no room keeps asking the operator and nothing else.
+    pub fn with_asks(mut self, asks: Arc<dyn AskLink>) -> Self {
+        self.asks = Some(asks);
+        self
     }
 }
 
@@ -1814,16 +1983,16 @@ impl Tool for TodoWriteTool {
              one, so retire a row by marking it `completed`. A row whose trimmed text matches \
              one already there moves that row's state and its edges; a new text adds a row. To \
              move ONE row without re-sending the list, name it in `update`.\n\n\
-             A row is a TITLE, and the pane cuts a long one at its right edge: put the part \
-             worth reading whole after ` — ` as the row's DETAIL. Length is never refused; a row \
-             over 4096 bytes, or a write past 256 rows, is, to bound what the board stores.\n\n\
              A row the OPERATOR postponed comes back `[p]`: it is theirs, not work you are asked \
              for, and `postponed` is not a status you may send.\n\n\
+             Length is never refused; a row over 4096 bytes, or a write past 256 rows, is refused.\n\n\
              A row may WAIT — on another row, a child, a job, a monitor or the operator's answer \
              (`needs`), and `wait_on` attaches a wait to a row already on the board. An operator \
              wait is a card on their screen: they pick an option, type their own answer, or \
              abstain — and an abstention is an answer, so proceed and state the assumption you \
-             proceed on.",
+             proceed on. `wait_on`'s `ask` asks ANOTHER SESSION the same way, in a room: it is the \
+             only door that asks, because asking is a side effect, and the answer settles the row \
+             by itself.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1923,7 +2092,8 @@ impl Tool for TodoWriteTool {
                         "description": "Rows already on the board, quoted exactly, that \
                                         wait on a `job` (a handle or a name), a `child` (an \
                                         id `task` handed back), the `operator`'s answer, \
-                                        or `detach: true` to take the waits off. A call of \
+                                        another SESSION's answer (`ask`), or \
+                                        `detach: true` to take the waits off. A call of \
                                         its own.",
                         "items": {
                             "type": "object",
@@ -1942,6 +2112,15 @@ impl Tool for TodoWriteTool {
                                         }
                                     },
                                     "required": ["question", "options"]
+                                },
+                                "ask": {
+                                    "type": "object",
+                                    "properties": {
+                                        "session": {"type": "string"},
+                                        "room": {"type": "string"},
+                                        "question": {"type": "string"}
+                                    },
+                                    "required": ["session", "question"]
                                 },
                                 "detach": {"type": "boolean"}
                             },
@@ -1991,7 +2170,8 @@ impl TodoWriteTool {
                          `update` (one of YOUR rows, quoted), `operator` (one of the OPERATOR's \
                          rows, quoted), `target` (a child's board) and `wait_on` (rows already on \
                          the board, quoted, that wait on a `job`, a `child`, the `operator`'s \
-                         answer, or `detach: true` to take the waits off).",
+                         answer, another session's answer through `ask`, or `detach: true` to take \
+                         the waits off).",
                     );
                 }
             }
@@ -2219,8 +2399,9 @@ impl TodoWriteTool {
             "`wait_on` is a list of {\"content\": \"<the row, quoted exactly>\", \"job\": \"<a \
              handle or name `job_list` prints>\"}, or \"child\": \"<a session id `task` handed \
              back, or its slug>\" in place of `job`, or \"operator\": {\"question\": \"…\", \"options\": \
-             [\"…\", \"…\"]} to wait on the operator's answer, or \"detach\": true to take the \
-             row's waits off."
+             [\"…\", \"…\"]} to wait on the operator's answer, or \"ask\": {\"session\": \"<another \
+             session>\", \"room\": \"<a room, optional>\", \"question\": \"…\"} to wait on \
+             another session's answer, or \"detach\": true to take the row's waits off."
                 .to_string()
         };
         let Some(list) = v.as_array() else {
@@ -2230,6 +2411,9 @@ impl TodoWriteTool {
             return refused("`wait_on` is empty".into(), shape());
         }
         let mut plan: Vec<(String, Wait)> = Vec::with_capacity(list.len());
+        // What the room said about the asks it took - *"not connected now"* - said to the model in
+        // this call, because the grace it starts is a thing the model has to know about.
+        let mut room_said: Vec<String> = Vec::new();
         for (i, entry) in list.iter().enumerate() {
             let n = i + 1;
             let Some(obj) = entry.as_object() else {
@@ -2238,7 +2422,7 @@ impl TodoWriteTool {
             for key in obj.keys() {
                 if !matches!(
                     key.as_str(),
-                    "content" | "job" | "child" | "detach" | "operator"
+                    "content" | "job" | "child" | "detach" | "operator" | "ask"
                 ) {
                     return refused(
                         format!("wait_on entry {n} has an unknown field `{key}`"),
@@ -2249,19 +2433,19 @@ impl TodoWriteTool {
             let Some(content) = obj.get("content").and_then(|c| c.as_str()) else {
                 return refused(format!("wait_on entry {n} has no `content`"), shape());
             };
-            let said: Vec<&str> = ["job", "child", "detach", "operator"]
+            let said: Vec<&str> = ["job", "child", "detach", "operator", "ask"]
                 .into_iter()
                 .filter(|k| obj.contains_key(*k))
                 .collect();
             let [which] = said.as_slice() else {
                 return refused(
                     format!(
-                        "wait_on entry {n} names {} of `job`, `child`, `operator` and `detach`",
+                        "wait_on entry {n} names {} of `job`, `child`, `operator`, `ask` and `detach`",
                         said.len()
                     ),
                     "each entry says exactly ONE thing about its row: the job it waits on, the \
-                     child it waits on, the question it waits on the operator for, or \
-                     `\"detach\": true`. Send two entries for two waits."
+                     child it waits on, the question it waits on the operator for, the question it \
+                     asks another session, or `\"detach\": true`. Send two entries for two waits."
                         .into(),
                 );
             };
@@ -2289,6 +2473,79 @@ impl TodoWriteTool {
                             return refused(
                                 format!("wait_on entry {n}'s `operator` is refused: {why}"),
                                 OPERATOR_SHAPE.into(),
+                            );
+                        }
+                    }
+                }
+                // Another SESSION, asked through the room: the one wait this tool cannot check
+                // itself, so the ask is made here and the room's refusal is the model's, in the
+                // same call. The handle the room resolves is the one the edge records.
+                "ask" => {
+                    let Some(a) = obj.get("ask").and_then(|a| a.as_object()) else {
+                        return refused(
+                            format!("wait_on entry {n}'s `ask` is not an object"),
+                            ASK_SHAPE.into(),
+                        );
+                    };
+                    if let Some(key) = a
+                        .keys()
+                        .find(|k| !matches!(k.as_str(), "session" | "room" | "question"))
+                    {
+                        return refused(
+                            format!("wait_on entry {n}'s `ask` has an unknown field `{key}`"),
+                            ASK_SHAPE.into(),
+                        );
+                    }
+                    let of = a
+                        .get("session")
+                        .and_then(|s| s.as_str())
+                        .map(str::trim)
+                        .unwrap_or("");
+                    let question = a
+                        .get("question")
+                        .and_then(|q| q.as_str())
+                        .map(str::trim)
+                        .unwrap_or("");
+                    if of.is_empty() {
+                        return refused(
+                            format!("wait_on entry {n}'s `ask` names no `session`"),
+                            ASK_SHAPE.into(),
+                        );
+                    }
+                    if question.is_empty() {
+                        return refused(
+                            format!("wait_on entry {n}'s `ask` has an empty `question`"),
+                            ASK_SHAPE.into(),
+                        );
+                    }
+                    let room = a
+                        .get("room")
+                        .and_then(|r| r.as_str())
+                        .map(str::trim)
+                        .filter(|r| !r.is_empty());
+                    let Some(link) = &self.asks else {
+                        return refused(
+                            format!("`{of}` cannot be asked anything: this session has no room"),
+                            "the todo tool was seated without a room link, so nothing in this \
+                             runtime can carry a question to another session. The operator's \
+                             answer needs no room — `\"operator\": {…}` asks them."
+                                .into(),
+                        );
+                    };
+                    match link.ask(of, room, question) {
+                        Ok(made) => {
+                            room_said.extend(made.note);
+                            Wait::On(TodoNeed::Ask {
+                                ask: made.id,
+                                of: of.to_string(),
+                                room: made.room,
+                                question: question.to_string(),
+                            })
+                        }
+                        Err(why) => {
+                            return refused(
+                                format!("`{of}` cannot be asked that: {why}"),
+                                ASK_SHAPE.into(),
                             );
                         }
                     }
@@ -2380,6 +2637,23 @@ impl TodoWriteTool {
              Restating one of YOUR rows in `todos` restates its `needs` too, so a `todos` entry \
              without the wait takes it off.\n"
         ));
+        // The ask needs its own paragraph: it is the one wait whose edge is also a question in a
+        // room, so the model has to know the id and that a restatement keeps it.
+        if !room_said.is_empty()
+            || plan
+                .iter()
+                .any(|(_, w)| matches!(w, Wait::On(TodoNeed::Ask { .. })))
+        {
+            out.push_str(
+                "A row waiting on another session's answer is not asked about until it arrives: the \
+                 question is a row on that session's board and is nagged there, and the room is the \
+                 one that settles it, so nothing here has to wait on it. Restating the row keeps the \
+                 ask; `detach` takes it off and withdraws the question from the room.\n",
+            );
+            for note in &room_said {
+                out.push_str(&format!("{note}\n"));
+            }
+        }
         Invocation::ok(out)
     }
 }
@@ -2771,6 +3045,15 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
                  row when they answer it; you cannot write one. A row you restate keeps the answers \
                  it already has, so leave them out.",
             )),
+            // And asking another session is a SIDE EFFECT - a question posted in a room - so it
+            // cannot ride in on a restatement of the plan. `wait_on` is the one door that asks.
+            Some("ask") => Err(Invocation::failed(
+                format!(
+                    "{where_} has kind `ask`, which only `wait_on` makes: asking is a side effect \
+                     in a room, and `todos` is a restatement you may replay"
+                ),
+                ASK_SHAPE,
+            )),
             Some(other) => Err(Invocation::failed(
                 format!("{where_} has kind `{other}`, which this build cannot evaluate"),
                 "the kinds of need are `row` — another row on this list, by its exact `content` — \
@@ -2806,6 +3089,14 @@ const OPERATOR_SHAPE: &str = "an `operator` wait is {\"question\": \"<one questi
      {\"content\": \"<the row>\", \"operator\": {\"question\": …, \"options\": […]}}. At least \
      two options, each a short distinct choice: the operator is given them as a list to pick from, \
      and can always add a note, type their own answer or abstain besides.";
+
+/// What an `ask` wait looks like, for the sentence a refusal ends with. `wait_on` only: asking is
+/// a side effect in a room, and `needs` is a restatement somebody could replay.
+const ASK_SHAPE: &str = "an `ask` wait is {\"content\": \"<the row>\", \"ask\": {\"session\": \
+     \"<another session's handle>\", \"room\": \"<a room, optional>\", \"question\": \"<one \
+     question>\"}} — through `wait_on` only, because asking is a side effect and `todos`' `needs` \
+     cannot spell it. The session must be a top-level session on this host; `room` defaults to the \
+     room `say` would post in.";
 
 /// An `operator` wait, checked: the one validation `todos`' `needs` and `wait_on` share. The
 /// question must say something and there must be a real choice - at least two options, none empty
@@ -2865,7 +3156,11 @@ fn waits(t: &TodoItem) -> bool {
     t.needs.iter().any(|need| {
         !matches!(
             need,
-            TodoNeed::Answered { .. } | TodoNeed::Room { working: false, .. }
+            TodoNeed::Answered { .. }
+                | TodoNeed::Room { working: false, .. }
+                // An ask one is owed is met: it is the ASKER's row that waits, and saying this
+                // board is waiting would silence the very row that has to be worked on.
+                | TodoNeed::Owed { .. }
         )
     })
 }
@@ -2954,11 +3249,14 @@ fn render_rows(todos: &[TodoItem], keep: impl Fn(&TodoItem) -> bool) -> String {
                     .needs
                     .iter()
                     // A room edge with nothing coming is not a wait, and the line says `waiting on`:
-                    // listing it would tell the model to wait for what it must finish.
+                    // listing it would tell the model to wait for what it must finish. An `owed`
+                    // edge is the same, one door over: it is met, and the asker's row waits.
                     .filter(|need| {
                         !matches!(
                             need,
-                            TodoNeed::Answered { .. } | TodoNeed::Room { working: false, .. }
+                            TodoNeed::Answered { .. }
+                                | TodoNeed::Room { working: false, .. }
+                                | TodoNeed::Owed { .. }
                         )
                     })
                     .map(|need| match need {
@@ -2980,6 +3278,20 @@ fn render_rows(todos: &[TodoItem], keep: impl Fn(&TodoItem) -> bool) -> String {
                         TodoNeed::Operator { question, .. } => {
                             format!("the OPERATOR — asked \"{}\"", question.trim())
                         }
+                        // The peer, by its handle and its words - *"`serenedb` - asked \"which
+                        // port?\" (ask #4211 in host)"* - so the model reads who holds it and
+                        // which ask the room will settle.
+                        TodoNeed::Ask {
+                            ask,
+                            of,
+                            room,
+                            question,
+                        } => format!(
+                            "the session `{}` - asked \"{}\" (ask #{ask} in {room})",
+                            of.trim(),
+                            question.trim()
+                        ),
+                        TodoNeed::Owed { .. } => unreachable!("filtered above"),
                         TodoNeed::Answered { .. } => unreachable!("filtered above"),
                         TodoNeed::Unknown => "a kind this build cannot evaluate".to_string(),
                     })
@@ -2991,7 +3303,9 @@ fn render_rows(todos: &[TodoItem], keep: impl Fn(&TodoItem) -> bool) -> String {
                     .needs
                     .iter()
                     .filter_map(|need| match need {
-                        TodoNeed::Answered { question, reply } => Some(format!(
+                        TodoNeed::Answered {
+                            question, reply, ..
+                        } => Some(format!(
                             "  (answered: you asked \"{}\" — {})",
                             question.trim(),
                             reply

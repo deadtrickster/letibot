@@ -891,9 +891,11 @@ The two negatives over the floor are `"the enormous amount of context-only messa
 
 ## R136 - Answer waits: a row waits on another top-level session's answer
 
-**Status:** open. left: the build.
+**Status:** open. left: the build, steps 1, 4, 5, 7 and 8 of `docs/answer-waits.md`; steps 2, 3 and 6 are built on branch `remote/83414738`.
 
 The design is `docs/answer-waits.md`. A's row carries an `Ask` edge, the room holds the ask, B gets a row on its own board saying A waits, and only B's explicit `answer` or `decline` settles it. The contract under it: top-level sessions are services. A session gone for 5 minutes raises an operator ask to restart it and settles nothing. An ask ends only by answer, decline, withdrawal by A or the operator, or B's session being deleted (`Retire`, the one `DOWN`). Claude Code seats are asked through bridge tools `room_answer`, `room_decline`, `room_asks`.
+
+Built here: `TodoNeed::Ask { ask, of, room, question }`, `TodoNeed::Owed { ask }` and `Answered.ask` in the store, the wire and both conversions; `wait_on`'s `ask` through a new `crates/tools` seat, `AskLink`/`AskMade`, that `harnessd`'s room link is to implement (`fn ask(of, room, question) -> Result<AskMade, String>)`, with `needs`' refusal of `ask`, `keep_answers` keeping an ask through a restatement, `detach`, `NeedFate::PeerAsked` as a root of the check, `TodoBoard::settle_ask` and the four settle sentences in `AskSettle::reply`; and the head drawing of both shapes. Still open: the room's own state and frames (step 1), the link and verbs (step 4), the passes that write `Owed` rows and apply settles (step 5), the two-daemon end-to-end test (step 7), and `docs/room.md` (step 8).
 
 ## R137 - Todo graphs that span projects
 

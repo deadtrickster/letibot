@@ -3502,3 +3502,84 @@ fn the_fold_is_remembered_by_the_next_head() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The asker's row: the pane says which session it is waiting on, and the row's own card words it
+/// out with the question and the ask's number. Both halves are read off the one board the head was
+/// sent, so the pane and the card cannot disagree about who is being waited on.
+#[test]
+fn a_row_waiting_on_another_session_is_drawn_with_the_peer_and_the_ask() {
+    use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoNeed, TodoStatus};
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(ServerFrame::Todos {
+        session_id: "s1".into(),
+        todos: vec![
+            TodoEntry {
+                content: "wire the port".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Model,
+                when: None,
+                needs: vec![TodoNeed::Ask {
+                    ask: 4211,
+                    of: "serenedb".into(),
+                    room: "host".into(),
+                    question: "which port?".into(),
+                }],
+            },
+            TodoEntry {
+                content: "write the notes".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Model,
+                when: None,
+                needs: Vec::new(),
+            },
+        ],
+    });
+    a.key(Key::CtrlT);
+    let lines = a.todos_lines(160);
+    let row = lines
+        .iter()
+        .find(|l| l.contains("wire the port"))
+        .cloned()
+        .unwrap_or_default();
+    assert!(row.contains("waits on serenedb"), "{lines:#?}");
+    // The row's card: opened by identity, the way the pane's own Enter opens it.
+    a.todos_open = Some(TodoStop::Theirs("wire the port".into()));
+    let card = a.todos_open_lines(120).join("\n");
+    assert!(
+        card.contains("the session `serenedb` — asked \"which port?\" (ask #4211 in host)"),
+        "{card}"
+    );
+}
+
+/// And the side that owes the answer: the pane says the answer is the person's, and the card says
+/// which ask it is. The row stays open work - an owed ask is met, so the check still asks for it.
+#[test]
+fn a_row_that_owes_an_answer_is_drawn_as_waiting_on_the_person() {
+    use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoNeed, TodoStatus};
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(ServerFrame::Todos {
+        session_id: "s1".into(),
+        todos: vec![TodoEntry {
+            content: "`arango` asked you #4211 — wire the port: which port?".into(),
+            status: TodoStatus::InProgress,
+            by: TodoBy::Model,
+            when: None,
+            needs: vec![TodoNeed::Owed { ask: 4211 }],
+        }],
+    });
+    a.key(Key::CtrlT);
+    let lines = a.todos_lines(160);
+    let row = lines
+        .iter()
+        .find(|l| l.contains("asked you #4211"))
+        .cloned()
+        .unwrap_or_default();
+    assert!(row.contains("waits on your answer"), "{lines:#?}");
+    a.todos_open = Some(TodoStop::Theirs(
+        "`arango` asked you #4211 — wire the port: which port?".into(),
+    ));
+    let card = a.todos_open_lines(120).join("\n");
+    assert!(card.contains("you owe an answer to ask #4211"), "{card}");
+}
