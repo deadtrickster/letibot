@@ -557,7 +557,7 @@ fn a_press_in_the_pane_takes_the_keyboard_and_one_outside_gives_it_back() {
 #[test]
 fn the_crossing_chord_is_in_help() {
     let a = app();
-    let help = help_lines(&a.cfg, 140).join("\n");
+    let help = help_lines(&a.cfg, 140, &a.key_overrides).join("\n");
     assert!(help.contains("ctrl-]"), "{help}");
     assert!(help.contains("alt-s"), "{help}");
 }

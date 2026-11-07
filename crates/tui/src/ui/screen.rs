@@ -970,7 +970,7 @@ impl App {
                 self.pane_window(rows, room)
             }
             Drawn::Surface(Surface::Help) => {
-                let help = help_lines(&self.cfg, w);
+                let help = help_lines(&self.cfg, w, &self.key_overrides);
                 self.pane_window(help, room)
             }
             Drawn::Surface(Surface::Stats) => {

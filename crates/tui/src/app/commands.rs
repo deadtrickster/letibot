@@ -98,7 +98,7 @@ impl App {
                 .unwrap_or(0);
             Visibility::of(Profile::ALL[(at + 1) % Profile::ALL.len()])
         } else {
-            match Visibility::parse(typed) {
+            match Visibility::parse_with(typed, &self.profiles) {
                 Ok(Change::Set(v)) => v,
                 Ok(Change::Switch(s, l)) => self.visibility.with(s, l),
                 Err(said) => {

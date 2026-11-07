@@ -300,6 +300,117 @@ impl Profile {
     }
 }
 
+/// The profiles `leticode.toml` defines: a name, and the set of things it shows. Held on the
+/// [`App`] beside the five `&'static` ones because a config profile has no `'static` table to be -
+/// and *a profile is its list of shown things*, which is exactly a [`Visibility`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Profiles {
+    named: Vec<(String, Visibility)>,
+}
+
+impl Profiles {
+    /// Resolve `[verbosity.<name>] show = [..]` against the head's own switch names: an entry is
+    /// `SWITCH` (shown `open`) or `SWITCH=LEVEL`. A word this build does not know, or a level the
+    /// switch does not hold, is refused with the line it was written on; that profile is dropped
+    /// and the file's others stand, because one bad word is not three good ones.
+    pub fn resolve(keys: &leticode_config::VerbosityKeys) -> (Profiles, Vec<String>) {
+        let mut named = Vec::new();
+        let mut problems = Vec::new();
+        for p in &keys.profiles {
+            if Profile::parse(&p.name).is_some() {
+                problems.push(format!(
+                    "{}: [verbosity.{}] is one of the head's own five profiles - a file may add \
+                     a profile and may not redefine one the head's start and its cycle read",
+                    p.from, p.name
+                ));
+                continue;
+            }
+            let mut vis = Visibility::empty();
+            let mut bad = false;
+            for word in &p.show {
+                match switch_and_level(word) {
+                    Ok((s, l)) => vis = vis.with(s, l),
+                    Err(said) => {
+                        problems.push(format!("{}: [verbosity.{}] {said}", p.from, p.name));
+                        bad = true;
+                    }
+                }
+            }
+            if !bad {
+                named.push((p.name.clone(), vis));
+            }
+        }
+        (Profiles { named }, problems)
+    }
+
+    /// The set a profile name stands for - a config profile only: the five are [`Profile`]'s.
+    pub fn parse(&self, word: &str) -> Option<Visibility> {
+        let t = word.trim().to_ascii_lowercase();
+        self.named
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(&t))
+            .map(|(_, v)| *v)
+    }
+
+    /// The name a set is, when a config profile is exactly this set - what makes the name
+    /// round-trip through `head.toml` and the status row.
+    pub fn name_of(&self, vis: Visibility) -> Option<&str> {
+        self.named
+            .iter()
+            .find(|(_, v)| *v == vis)
+            .map(|(n, _)| n.as_str())
+    }
+
+    /// Every profile the file defined, in the order it defined them - the picker and `/verbosity`
+    /// list them after the head's own five.
+    pub fn named(&self) -> &[(String, Visibility)] {
+        &self.named
+    }
+}
+
+/// One word of a `[verbosity.<name>] show` list, as a switch and a level: `tools` is `open`, and
+/// `thinking=folded` is what it says. The level must be one the switch holds - `edits=folded` is a
+/// fold on a thing with no body, and reading it as `open` would be a guess.
+fn switch_and_level(word: &str) -> Result<(Show, Level), String> {
+    let (name, level) = match word.split_once('=') {
+        Some((n, l)) => (n.trim(), Some(l)),
+        None => (word.trim(), None),
+    };
+    let Some(show) = Show::ALL.into_iter().find(|s| s.name() == name) else {
+        return Err(format!(
+            "`{word}` names no switch - a profile lists {} (and `SWITCH=LEVEL`)",
+            names(
+                &Show::ALL
+                    .iter()
+                    .map(|s| s.name().to_string())
+                    .collect::<Vec<_>>()
+            )
+        ));
+    };
+    let Some(level) = level else {
+        return Ok((show, Level::Open));
+    };
+    let Some(level) = Level::parse(level) else {
+        return Err(format!(
+            "`{word}` names no level - the three are hidden, folded and open"
+        ));
+    };
+    if !show.levels().contains(&level) {
+        return Err(format!(
+            "`{}` is not a level of `{name}` - that switch holds {}",
+            level.as_str(),
+            names(
+                &show
+                    .levels()
+                    .iter()
+                    .map(|l| l.as_str().to_string())
+                    .collect::<Vec<_>>()
+            )
+        ));
+    }
+    Ok((show, level))
+}
+
 /// The set of switches in force. The set is the state and the profile is a question asked of it, so
 /// a reader who takes `normal` and turns one switch up has a set that is no profile and the status
 /// row says `custom` rather than pretending otherwise.
@@ -394,8 +505,19 @@ impl Visibility {
 
     /// The name of this state, for the status row, `/status` and `head.toml`: the profile's name when
     /// the set is one, and `custom` with the switches that differ from the head's start when it is
-    /// not. It round-trips through `parse`, which is what makes it a name and not a caption.
+    /// not. It round-trips through `parse`, which is what makes it a name and not a caption. The
+    /// head's five first, then the file's - see [`Visibility::as_str_with`].
     pub fn as_str(self) -> String {
+        self.as_str_with(&Profiles::default())
+    }
+
+    /// [`Visibility::as_str`] with the profiles `leticode.toml` defines: a set that IS one of
+    /// them is named by it, so `head.toml` keeps the name the operator wrote rather than
+    /// `custom thinking=open`.
+    pub fn as_str_with(self, profiles: &Profiles) -> String {
+        if let Some(name) = profiles.name_of(self) {
+            return name.to_string();
+        }
         if let Some(p) = self.profile() {
             return p.name.to_string();
         }
@@ -413,6 +535,21 @@ impl Visibility {
     /// function `head.toml` is read with. A bare switch name turns it on, on and off being the
     /// operator's words for the two ends. The refusal is a sentence because the caller repeats it.
     pub fn parse(typed: &str) -> Result<Change, String> {
+        Self::parse_with(typed, &Profiles::default())
+    }
+
+    /// [`Visibility::parse`] with the profiles `leticode.toml` defines: a name those tables hold
+    /// is a whole set, read exactly as written there (absence is `hidden`, which is what makes the
+    /// list a sentence). Nothing else in the vocabulary moves.
+    pub fn parse_with(typed: &str, profiles: &Profiles) -> Result<Change, String> {
+        if let Some(v) = profiles.parse(typed) {
+            return Ok(Change::Set(v));
+        }
+        Self::parse_named(typed)
+    }
+
+    /// The head's own vocabulary half of [`Visibility::parse_with`].
+    fn parse_named(typed: &str) -> Result<Change, String> {
         let t = typed.trim().to_ascii_lowercase();
         if t.is_empty() {
             return Err(VISIBILITY_REFUSAL.to_string());

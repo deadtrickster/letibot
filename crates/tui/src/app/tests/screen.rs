@@ -654,7 +654,7 @@ fn a_click_on_the_label_of_an_open_pane_toggles_it_closed() {
 #[test]
 fn the_help_names_every_pane_chord_and_what_a_click_and_the_wheel_do() {
     let cfg = plain_cfg(200);
-    let help = crate::ui::panes::help::help_lines(&cfg, 200).join("\n");
+    let help = crate::ui::panes::help::help_lines(&cfg, 200, &Default::default()).join("\n");
     for needle in [
         "ctrl-g",
         "ctrl-q",

@@ -30,6 +30,51 @@ The names are spelled there and nowhere in `letibot-harnessd`, which asks for pa
 still arrives whole, ahead of every note). The operator's rule: *"leticode can support claude.md. but
 not letibot"*, *"i want letibot stay a framework, a runtime"*.
 
+### Config, not a plugin: the numbers and the head's keys
+
+A fixed number or a list of names is a key, not an extension point - a plugin for them would cost a
+build and a pin to change a number. Six tables, at the user level and the project's over it, each
+with today's value as its documented default (`crates/leticode-config`'s module doc has the whole
+list, and `crates/leticode-config`'s tests are what keep the defaults honest):
+
+```toml
+[queue]
+stuck_after_seconds = 900     # a row stuck this long is the merge queue's census
+stuck_repeat_seconds = 7200   # and the census is said again this often
+
+[nag]
+after_seconds = 60            # the idle window before the plan-check
+floor_seconds = 10            # the shortest re-arm an operator add earns
+repeat_cap_seconds = 1800     # the ceiling the doubled interval retreats to
+
+[room]
+tie_breaker = "deepseek/deepseek-flash"   # the model that arbitrates the room's items
+
+[warnings]
+mute = ["model_slow_first_byte"]  # codes the head files and never draws
+coalesce = true                   # notices of one kind inside a minute are one counted row
+
+[keys]
+"todos.d" = "f"                   # SURFACE.KEY, as the bar spells them, to one other key
+
+[verbosity.mine]                  # a profile IS the list of things it shows
+show = ["edits", "tools=folded", "system"]
+```
+
+Three rules. **The project's value wins** over the user's, key by key, as the models do - and
+`[keys]`' two ends, `mute` and a profile, are suppressions, so they resolve differently: a mute
+UNIONS (a project file must not unsay what the operator muted for every project) and a profile of
+the same name is replaced. **A bad value says its file and line** - `[nag] after_seconds = "60"`
+is refused where it was written, not silently read as a minute. And **a binding is rebound within
+its surface, never the head's global chords**: `esc`, `ctrl-c` and the pane chords are refused as
+a target and as a source, because a surface never sees them and the bar would advertise a press
+that does nothing (W8 of the first review).
+
+A mute is by KIND and not by copy, which is the point of the table: the 127
+`model_slow_first_byte` dismissals a head's `head.toml` can carry are one line here. `head.toml`
+still holds what a head decides for itself - the rung it is on, the folds, `retired` - and
+`leticode.toml` holds what a project or a box says.
+
 ## The permission model
 
 `crates/tools/src/permission.rs` is opencode's model, ported: a rule is `{permission, pattern,

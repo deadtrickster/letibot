@@ -139,6 +139,44 @@ impl Default for HeadPrefs {
     }
 }
 
+/// The `leticode.toml` levels as THIS process reads them: the user's file, then the nearest
+/// project file at or above the session's workspace over it, key by key. `[warnings]`, `[keys]`
+/// and `[verbosity.<name>]` are a head's own vocabulary, so they are read here and resolved in
+/// `app` - which is where a word this build does not know is refused, with the line it came from.
+/// A file that will not parse is a problem and the level below, never a head that will not start:
+/// `head.toml`'s own rule for a value it cannot read.
+pub fn leticode(workspace: &str) -> (leticode_config::LeticodeConfig, Vec<String>) {
+    let mut problems = Vec::new();
+    let user = match leticode_config::load_user() {
+        Ok(u) => u,
+        Err(why) => {
+            problems.push(format!("leticode.toml (user): {why}"));
+            leticode_config::LeticodeConfig::default()
+        }
+    };
+    // A workspace that is not there is the absent-file case: this head is not seated in a
+    // project, so only the box's own file can say anything to it.
+    let project = match workspace.trim() {
+        "" => leticode_config::LeticodeConfig::default(),
+        ws => match leticode_config::LeticodeConfig::discover(Path::new(ws)) {
+            // The user file is one file, not two: a workspace under `~/.config/letibot` would
+            // otherwise read the box's own level a second time and call it the project's.
+            Some(path) if Some(&path) == user.path.as_ref() => {
+                leticode_config::LeticodeConfig::default()
+            }
+            None => leticode_config::LeticodeConfig::default(),
+            Some(path) => match leticode_config::LeticodeConfig::load(&path) {
+                Ok(p) => p,
+                Err(why) => {
+                    problems.push(format!("leticode.toml: {why}"));
+                    leticode_config::LeticodeConfig::default()
+                }
+            },
+        },
+    };
+    (user.overridden_by(&project), problems)
+}
+
 /// `$XDG_CONFIG_HOME/letibot/head.toml`, or `~/.config/letibot/head.toml`.
 /// `None` when neither variable is set, which is a head with nowhere to write
 /// and says so rather than writing into the working directory.

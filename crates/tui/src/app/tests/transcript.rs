@@ -1654,7 +1654,7 @@ fn the_bar_says_what_ctrl_v_does_and_names_the_verb_that_does_the_rest() {
         !bar.contains("tab"),
         "tab is still on the bar under another spelling: {bar}"
     );
-    let help = help_lines(&a.cfg, 140).join("\n");
+    let help = help_lines(&a.cfg, 140, &a.key_overrides).join("\n");
     assert!(
         help.contains("tab"),
         "tab left the bar AND the help screen, which is not the trade: {help}"

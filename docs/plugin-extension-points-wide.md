@@ -603,12 +603,30 @@ Owns `tools/src/runtime.rs` (`digest_` before spill), `tui/src/ui/screen.rs` (`l
 `a_pinned_tool_layer_runs_an_exec_look_through_admit_unasked`,
 `a_tool_read_look_in_a_confined_session_reads_the_view_not_the_host`.
 
-### K9 - config keys (S, independent)
+### K9 - config keys (S, independent) - **landed 2026-11**
 
 Owns `leticode-config/src/lib.rs` (`[queue]`, `[nag]`, `[room] tie_breaker`), `tui/src/prefs.rs`
 (`[warnings]`, `[keys]`, `[verbosity.*]`), `tui/src/app/keys/bindings.rs` (read the overrides).
 Done when: `a_muted_warning_kind_is_never_drawn`, `a_rebound_key_is_honoured_and_a_global_chord_is_not_rebindable`,
 `a_verbosity_profile_is_a_list_of_shown_things`, `queue_constants_come_from_config_with_todays_defaults`.
+
+As built: the six tables are read at BOTH levels in `leticode-config` - `[queue]
+stuck_after_seconds`/`stuck_repeat_seconds`, `[nag] after_seconds`/`floor_seconds`/
+`repeat_cap_seconds`, `[room] tie_breaker`, `[warnings] mute`/`coalesce`, `[keys]`,
+`[verbosity.<name>] show = [...]` - and the project's value wins key by key. The two exceptions to
+"the project wins" are both suppressions and both union, `[skills] pin`'s rule: `mute` (a project
+must not unsay what the operator muted) and a profile of the same name (replaced). Every refusal
+names its file and line. The runtime threads what it owns: `[nag]` and `[queue] stuck_repeat_seconds`
+become one `NagTimings` (the four numbers' one home is still `crates/tools/src/builtins/todo/nag.rs`),
+`[queue] stuck_after_seconds` reaches the census through `stuck::after_ms` (`STUCK_AFTER_MS` for
+`None`), and `[room] tie_breaker` replaces the `DEEPSEEK` literal the coordinator hardcoded. The
+head's three are read here and RESOLVED there (the surface names, the warning codes and the switches
+are its vocabulary), and `[keys]`' global-chord rule is W8's: a binding is rebound within its
+surface, never the escape - the refusal lists the chords.
+
+The other numbers §4.3 points at are NOT keyed and are not touched: `serve.rs:26-47` and
+`capacity.rs:11-52` (`REVIEW_DEADLINE_MS`, `MAX_REVIEWING`, `PER_HOST_MAX`, `CORES_PER_REVIEWER`, …)
+stay constants, since the operator's ask for the queue was *the census's thresholds*.
 
 ### K10 - `command_` everywhere, `lifecycle_`, self verbs (M, after H0)
 

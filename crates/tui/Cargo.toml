@@ -29,6 +29,12 @@ serde_json.workspace = true
 # (`localtime_r`). Raw mode and the window size are rano's now (`rano::term`). `libc` is
 # already in the tree via the token core.
 libc = "0.2"
+# **The seat's config layer**, read by the head for its own three tables: `[warnings]` (what it
+# files and never draws), `[keys]` (a surface's binding moved) and `[verbosity.<name>]` (a profile
+# as the list of things it shows). Read here and RESOLVED in `app`, because the surface names, the
+# warning codes and the switches are this process's vocabulary - and the file keeps the line the
+# refusal names.
+leticode-config.workspace = true
 # The incremental markdown engine (`rano::syntax::Stream`). Same deliberate absolute
 # path and the same reasoning as `crates/ui/Cargo.toml`: rano is the operator-local
 # tree-sitter hub, and a second tree-sitter integration in this process is the thing

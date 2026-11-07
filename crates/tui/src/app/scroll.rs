@@ -308,6 +308,7 @@ impl App {
                 &self.absorbed,
                 &self.notes,
                 &self.dismissed,
+                &self.quiet,
                 &self.read_marks,
                 self.items[k].item_id.as_str(),
             );

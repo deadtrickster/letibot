@@ -185,6 +185,16 @@ struct QueueTable {
     reviewers_at_once: Option<i64>,
     #[serde(default)]
     reviewer_hosts: Option<Vec<String>>,
+    /// The census's two numbers. Read by `leticode-config`'s `[queue]` parser, from the user's
+    /// file and the project's over it - `Config::leticode`, not this reader - and accepted here
+    /// only so that a project writing them does not make this reader refuse the table. Two
+    /// readers of one number would be two answers.
+    #[serde(default)]
+    #[allow(dead_code)]
+    stuck_after_seconds: Option<i64>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    stuck_repeat_seconds: Option<i64>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -402,6 +412,24 @@ mod tests {
         let e = for_repository(&repo).unwrap_err();
         assert!(e.contains("\"firecode\""), "{e}");
         assert!(e.contains("\"host\"") && e.contains("\"vm\""), "{e}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// K9: the census's two numbers are `leticode-config`'s - read from the user's file and the
+    /// project's over it - and this reader ACCEPTS them rather than refusing the whole table. A
+    /// project that moves its census's threshold must not lose its target.
+    #[test]
+    fn the_census_numbers_are_accepted_here_and_read_by_the_config() {
+        let (dir, repo) = file(
+            "[queue]\ntarget = \"main\"\nstuck_after_seconds = 900\nstuck_repeat_seconds = \
+             7200\n",
+        );
+        let s = for_repository(&repo).unwrap();
+        assert_eq!(s.target.as_deref(), Some("main"));
+        // And the reader that owns them reads the same file.
+        let cfg = LeticodeConfig::load(&dir.join("leticode.toml")).unwrap();
+        assert_eq!(cfg.queue.stuck_after_seconds, Some(900));
+        assert_eq!(cfg.queue.stuck_repeat_seconds, Some(7200));
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -236,9 +236,14 @@ impl Harness {
             return crate::sessions::QueueNews::none();
         };
         let now = letibot_sessionlog::registry::now_ms();
+        // The project's `[queue] stuck_after_seconds`, or the daemon's own threshold: the clock's
+        // arming and the sentence have to read ONE number, or the census arrives early or late.
+        let after = crate::mergequeue::stuck::after_ms(self.cfg.leticode.stuck_after_seconds());
         crate::sessions::QueueNews {
-            says: census.is_news(now),
-            matures_in: census.news_in_ms(now).map(std::time::Duration::from_millis),
+            says: census.is_news(now, after),
+            matures_in: census
+                .news_in_ms(now, after)
+                .map(std::time::Duration::from_millis),
         }
     }
 
@@ -248,8 +253,9 @@ impl Harness {
     pub fn stuck_census_text(&self) -> Option<String> {
         let now = letibot_sessionlog::registry::now_ms();
         let census = self.stuck_census()?;
+        let after = crate::mergequeue::stuck::after_ms(self.cfg.leticode.stuck_after_seconds());
         census
-            .is_news(now)
+            .is_news(now, after)
             .then(|| crate::mergequeue::notices::stuck_census(&census, now))
     }
 

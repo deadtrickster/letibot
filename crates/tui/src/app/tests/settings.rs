@@ -1318,7 +1318,7 @@ fn a_mode_picker_without_choices_says_so() {
 #[test]
 fn the_help_screen_names_both_settings_and_what_a_bare_one_does() {
     let a = app();
-    let screen = help_lines(&a.cfg, 140).join("\n");
+    let screen = help_lines(&a.cfg, 140, &a.key_overrides).join("\n");
     assert!(screen.contains("/verbosity"), "{screen}");
     assert!(screen.contains("/diff"), "{screen}");
     let line = screen
@@ -1330,6 +1330,125 @@ fn the_help_screen_names_both_settings_and_what_a_bare_one_does() {
             || screen.lines().nth(line + 1).unwrap_or("").contains("split"),
         "the help screen names `/diff` without saying what it takes:\n{screen}"
     );
+}
+
+// ---- K9: `[verbosity.<name>]` in `leticode.toml` ----
+
+/// One profile, as the reader hands the head over: the name and the list of things it shows.
+fn profile(name: &str, show: &[&str]) -> leticode_config::ProfileKeys {
+    leticode_config::ProfileKeys {
+        name: name.into(),
+        show: show.iter().map(|s| s.to_string()).collect(),
+        from: letibot_tools::exec::boundary::Origin {
+            file: std::path::PathBuf::from("/tmp/leticode.toml"),
+            line: 7,
+            user: false,
+        },
+    }
+}
+
+/// K9's done-test: a profile a file defines IS the list of things it shows - what it names is
+/// open, a `SWITCH=LEVEL` is that level, and what it leaves out is hidden. The head then reads
+/// its name wherever a profile name is read (the verb, `head.toml`, the status row), and a word
+/// the head's own switch table does not know is refused with the line it was written on.
+#[test]
+fn a_verbosity_profile_is_a_list_of_shown_things() {
+    let keys = leticode_config::VerbosityKeys {
+        profiles: vec![profile(
+            "mine",
+            &["edits", "tools=folded", "thinking=folded", "raw-calls"],
+        )],
+    };
+    let (profiles, said) = Profiles::resolve(&keys);
+    assert!(
+        said.is_empty(),
+        "a well-formed profile was refused: {said:?}"
+    );
+    // A set none of the head's five is: `normal` with the raw markup showing, which a reader can
+    // want and no `Profile` constant names. (It must also be one the ladder can DRAW, which is why
+    // `thinking` is on here: `tools` and `system` without it is a set `undrawable` refuses.)
+    let want = Visibility::empty()
+        .with(Show::Edits, Level::Open)
+        .with(Show::Tools, Level::Folded)
+        .with(Show::Thinking, Level::Folded)
+        .with(Show::RawCalls, Level::Open);
+    assert_eq!(
+        profiles.parse("mine"),
+        Some(want),
+        "a profile is its list: named is open, level is what it says, absent is hidden"
+    );
+    assert_eq!(
+        Visibility::parse_with("mine", &profiles),
+        Ok(Change::Set(want)),
+        "the reader the verb and `head.toml` use does not know the name"
+    );
+
+    // A head with the file's profiles reads the name and says it back - the name survives a
+    // restart because `head.toml` keeps `verbosity = \"mine\"` and not `custom ...`.
+    let mut a = App::new(plain_cfg(80));
+    a.profiles = profiles.clone();
+    assert_eq!(a.set_verbosity("mine"), None);
+    assert_eq!(a.visibility, want, "`/verbosity mine` did not take");
+    assert_eq!(
+        a.verbosity_name(),
+        "mine",
+        "the status row names the set `custom …` instead of the profile it is"
+    );
+    assert_eq!(a.prefs().verbosity, "mine", "what `head.toml` keeps");
+    // And it is a row on the card, after the head's own five, or the only way to it is the file.
+    a.pick = Some(Pick::Verbosity);
+    let rows = a.pick_values();
+    assert!(
+        rows.iter().any(|(name, _)| name == "mine"),
+        "the profile is not on the card: {rows:?}"
+    );
+
+    // A word the head has not got, and a level the switch does not hold: both refused, with the
+    // line, and the profile is dropped rather than half-applied.
+    for (show, want) in [
+        ("wat", "names no switch"),
+        ("edits=folded", "is not a level of `edits`"),
+    ] {
+        let (profiles, said) = Profiles::resolve(&leticode_config::VerbosityKeys {
+            profiles: vec![profile("wide", &[show])],
+        });
+        assert!(
+            profiles.named().is_empty(),
+            "{show}: a refused profile landed"
+        );
+        assert_eq!(said.len(), 1, "{show}: {said:?}");
+        assert!(
+            said[0].starts_with("/tmp/leticode.toml:7:"),
+            "{show}: the refusal does not name the file and the line: {}",
+            said[0]
+        );
+        assert!(said[0].contains(want), "{show}: {}", said[0]);
+    }
+
+    // The head's own five are the head's: a file may add a profile and may not redefine the one
+    // its start and its cycle read.
+    let (profiles, said) = Profiles::resolve(&leticode_config::VerbosityKeys {
+        profiles: vec![profile("normal", &["tools"])],
+    });
+    assert!(profiles.named().is_empty());
+    assert!(
+        said[0].contains("one of the head's own five"),
+        "{}",
+        said[0]
+    );
+
+    // And no `[verbosity]` at all is the head that shipped: the five, and `custom` for a set
+    // none of them is.
+    let (none, said) = Profiles::resolve(&leticode_config::VerbosityKeys::default());
+    assert!(none.named().is_empty() && said.is_empty());
+    let mut bare = App::new(plain_cfg(80));
+    assert_eq!(
+        bare.verbosity_name(),
+        "normal",
+        "the head's start is `normal`"
+    );
+    assert_eq!(bare.set_verbosity("loud"), None);
+    assert_eq!(bare.verbosity_name(), "loud");
 }
 
 /// A config pane with `n` daemon rows under the head's own, so it outgrows a short terminal.

@@ -593,6 +593,41 @@ impl Surface {
         }
     }
 
+    /// The surface's name in `leticode.toml`'s `[keys]`: one word, because a key in a TOML table
+    /// is `"todos.d" = "f"` and `short_name`'s "subagent's output" is prose. `letter_says`'s
+    /// article test and the bar's own words are unaffected; this is the config's vocabulary and
+    /// the refusal a bad surface name gets lists every one of them.
+    pub(crate) fn key_name(self) -> &'static str {
+        match self {
+            Surface::Help => "help",
+            Surface::Stats => "stats",
+            Surface::Picker => "picker",
+            Surface::Config => "config",
+            Surface::Todos => "todos",
+            Surface::TodoRow => "todo-row",
+            Surface::Queue => "queue",
+            Surface::QueueEntry => "queue-entry",
+            Surface::Standing => "standing",
+            Surface::Skills => "skills",
+            Surface::Subagents => "subagents",
+            Surface::SubOut => "subout",
+            Surface::Jobs => "jobs",
+            Surface::JobOut => "jobout",
+            Surface::Monitors => "monitors",
+            Surface::PluginPane => "pane",
+            Surface::PluginDetail => "detail",
+            Surface::Listing => "listing",
+            Surface::Rooms => "rooms",
+        }
+    }
+
+    /// The surface a `[keys]` name names, or `None` for a word this head has no surface for.
+    pub(crate) fn of_key_name(word: &str) -> Option<Surface> {
+        Surface::ALL
+            .into_iter()
+            .find(|s| s.key_name().eq_ignore_ascii_case(word.trim()))
+    }
+
     /// What a surface takes that is not a key: the typed path a list advertises.
     pub(crate) fn typed_says(self) -> Option<&'static str> {
         match self {
@@ -704,10 +739,20 @@ impl App {
     /// The binding a key reaches on surface `s`, guard and all - the dispatch's question.
     pub(crate) fn binding_for(&self, s: Surface, k: &Key) -> Option<Binding> {
         let empty = self.editor.text().is_empty();
-        s.bindings()
-            .iter()
-            .copied()
-            .find(|b| b.on.iter().any(|o| o.matches(k)) && (b.guard == Guard::Always || empty))
+        s.bindings().iter().copied().find(|b| {
+            (b.guard == Guard::Always || empty)
+                && b.on
+                    .iter()
+                    .any(|o| self.key_overrides.moved(s, *o).matches(k))
+        })
+    }
+
+    /// The keys of one binding as the bar and the help say them, with `[keys]`'s moves applied: a
+    /// rebound key the bar still spelled the old way would advertise a press that does nothing,
+    /// which is the one thing W8's rule exists to prevent.
+    pub(crate) fn keys_label(&self, s: Surface, on: &[On]) -> String {
+        let moved: Vec<On> = on.iter().map(|o| self.key_overrides.moved(s, *o)).collect();
+        keys_label(&moved)
     }
 
     /// The words for a row-dependent binding, from the row under the cursor.
@@ -814,7 +859,7 @@ impl App {
             if s == Surface::Queue && !self.queue_key_moves(b.act) {
                 continue;
             }
-            let label = keys_label(b.on);
+            let label = self.keys_label(s, b.on);
             // Navigation keys that do the same thing read as one run (`↑↓ pgup/pgdn scroll`);
             // two keys for one act read as a choice (`enter or tab opens the card`).
             let moving = b.on.iter().all(|o| {
@@ -852,42 +897,53 @@ impl App {
         }
     }
 
-    /// The help's row for surface `s`: how it is opened, and what it is and its keys  -
-    /// generated, so the help cannot name a key the surface does not take. `None` for a surface
-    /// nothing opens by name (an overlay its list opens).
-    pub(crate) fn surface_help(s: Surface) -> Option<(String, String)> {
-        let opened = match (s.chord(), s.verb()) {
-            (Some((c, _)), Some(v)) => format!("{c}  {v}"),
-            (None, Some(v)) => v.to_string(),
-            (Some((c, _)), None) => c.to_string(),
-            (None, None) => return None,
-        };
-        let keys: Vec<String> = s
-            .bindings()
-            .iter()
-            .filter_map(|b| match b.says {
-                Says::Text(t) => Some(format!("{} {t}", keys_label(b.on))),
-                Says::Row => Some(format!("{} acts on the row", keys_label(b.on))),
-                // Both directions on the help screen: it is read without a list in front of
-                // it, so a reader is owed what the key does in either state of the switch.
-                Says::Switch(help) => Some(format!("{} {help}", keys_label(b.on))),
-                Says::Nothing => None,
-            })
-            .collect();
-        let guarded = s
-            .bindings()
-            .iter()
-            .any(|b| b.on.iter().any(|o| matches!(o, On::Char(_))));
-        let mut text = s.about().to_string();
-        if !keys.is_empty() {
-            text.push_str(": ");
-            text.push_str(&keys.join(", "));
-        }
-        if guarded {
-            text.push_str(" (letters act only on an empty prompt)");
-        }
-        Some((opened, text))
+    /// The help's row for surface `s`, with THIS head's `[keys]` in force - what the head's own
+    /// tests ask. The help screen is a free function of `cfg` and the overrides
+    /// ([`surface_help_keys`]), because `ui::panes::help` draws from those and has no `App`.
+    #[cfg(test)]
+    pub(crate) fn surface_help(&self, s: Surface) -> Option<(String, String)> {
+        surface_help_keys(s, &self.key_overrides)
     }
+}
+
+/// [`App::surface_help`] as a function of the table and the moves - for the help screen, which is
+/// drawn from `cfg` and the overrides and has no `App` to ask.
+pub(crate) fn surface_help_keys(s: Surface, keys: &KeyOverrides) -> Option<(String, String)> {
+    let opened = match (s.chord(), s.verb()) {
+        (Some((c, _)), Some(v)) => format!("{c}  {v}"),
+        (None, Some(v)) => v.to_string(),
+        (Some((c, _)), None) => c.to_string(),
+        (None, None) => return None,
+    };
+    let label = |on: &[On]| {
+        let moved: Vec<On> = on.iter().map(|o| keys.moved(s, *o)).collect();
+        keys_label(&moved)
+    };
+    let listed: Vec<String> = s
+        .bindings()
+        .iter()
+        .filter_map(|b| match b.says {
+            Says::Text(t) => Some(format!("{} {t}", label(b.on))),
+            Says::Row => Some(format!("{} acts on the row", label(b.on))),
+            // Both directions on the help screen: it is read without a list in front of
+            // it, so a reader is owed what the key does in either state of the switch.
+            Says::Switch(help) => Some(format!("{} {help}", label(b.on))),
+            Says::Nothing => None,
+        })
+        .collect();
+    let guarded = s
+        .bindings()
+        .iter()
+        .any(|b| b.on.iter().any(|o| matches!(o, On::Char(_))));
+    let mut text = s.about().to_string();
+    if !listed.is_empty() {
+        text.push_str(": ");
+        text.push_str(&listed.join(", "));
+    }
+    if guarded {
+        text.push_str(" (letters act only on an empty prompt)");
+    }
+    Some((opened, text))
 }
 
 /// The keys of a binding as one label: `↑↓`, `enter`, `pgup/pgdn`.
@@ -901,4 +957,230 @@ fn keys_label(on: &[On]) -> String {
     } else {
         labels.join(" or ")
     }
+}
+
+/// The surface keys `leticode.toml`'s `[keys]` moves: `(surface, from, to)`, resolved against the
+/// tables in this file. Empty is the shipped head.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct KeyOverrides {
+    moves: Vec<(Surface, On, On)>,
+}
+
+impl KeyOverrides {
+    /// Resolve each `[keys]` line: the name is `SURFACE.KEY` - the surface's [`Surface::key_name`]
+    /// and a key as [`word_of`] spells it - and the value is the key it becomes. Refused with the
+    /// line it was written on: a surface this head has not got, a word that is no key, a word the
+    /// head claims GLOBALLY (W8: a binding is rebound within its surface and never the escape), a
+    /// key the surface does not bind, and a target another binding of that surface already takes.
+    pub(crate) fn resolve(keys: &leticode_config::KeyKeys) -> (KeyOverrides, Vec<String>) {
+        let mut moves = Vec::new();
+        let mut problems = Vec::new();
+        for r in &keys.rebind {
+            let (surface, key) = r
+                .name
+                .rsplit_once('.')
+                .expect("the reader refuses a dotless name");
+            let Some(surface) = Surface::of_key_name(surface) else {
+                problems.push(format!(
+                    "{}: [keys] `{}` names no surface - the surfaces are {}",
+                    r.from,
+                    surface_tail(&r.name),
+                    names(
+                        &Surface::ALL
+                            .iter()
+                            .map(|s| s.key_name().to_string())
+                            .collect::<Vec<_>>()
+                    )
+                ));
+                continue;
+            };
+            let from = match binding_word(key, r, &mut problems) {
+                Some(on) => on,
+                None => continue,
+            };
+            if !surface.bindings().iter().any(|b| b.on.contains(&from)) {
+                problems.push(format!(
+                    "{}: [keys] `{}` is not a key of the {} - it takes {}",
+                    r.from,
+                    key,
+                    surface.key_name(),
+                    surface_keys(surface)
+                ));
+                continue;
+            }
+            let to = match target_word(&r.key, r, &mut problems) {
+                Some(on) => on,
+                None => continue,
+            };
+            if let Some(clash) = surface
+                .bindings()
+                .iter()
+                .find(|b| b.on.contains(&to) && !b.on.contains(&from))
+            {
+                problems.push(format!(
+                    "{}: [keys] `{}` is already taken on the {} - {}",
+                    r.from,
+                    r.key,
+                    surface.key_name(),
+                    clash_words(clash)
+                ));
+                continue;
+            }
+            moves.push((surface, from, to));
+        }
+        (KeyOverrides { moves }, problems)
+    }
+
+    /// The key `on` reaches on surface `s`: itself, or what the file moved it to.
+    pub(crate) fn moved(&self, s: Surface, on: On) -> On {
+        self.moves
+            .iter()
+            .find(|(surface, from, _)| *surface == s && *from == on)
+            .map(|(_, _, to)| *to)
+            .unwrap_or(on)
+    }
+}
+
+/// The words of the keys the head claims whatever is open: `key_dispatch`'s Esc and ctrl-c, the
+/// two `Show` chords, and every arm of `key_chords`. A rebinding may not target one - a surface
+/// never sees it, so the key would be advertised and do nothing (W8).
+pub(crate) const GLOBAL_CHORDS: &[&str] = &[
+    "esc", "ctrl-c", "ctrl-^", "ctrl-]", "ctrl-e", "ctrl-g", "ctrl-l", "ctrl-n", "ctrl-o",
+    "ctrl-p", "ctrl-q", "ctrl-r", "ctrl-s", "ctrl-t", "ctrl-v", "ctrl-x",
+];
+
+/// A key as `[keys]` spells it, when it is one the vocabulary knows and a surface may take: one
+/// character as the terminal sends it, or one of these names. The reverse of [`On::label`] where
+/// that label is a word, and the pair is one table so a name and its key cannot drift.
+const NAMED_KEYS: &[(&str, On)] = &[
+    ("up", On::Up),
+    ("down", On::Down),
+    ("left", On::Left),
+    ("right", On::Right),
+    ("enter", On::Enter),
+    ("tab", On::Tab),
+    ("del", On::Delete),
+    ("delete", On::Delete),
+    ("end", On::End),
+    ("pgup", On::Page),
+    ("pgdn", On::Page),
+    ("page", On::Page),
+    ("ctrl-z", On::Undo),
+    ("ctrl-k", On::KillToEnd),
+];
+
+/// What one written word is: a key a surface may take, one the head owns globally, or a word this
+/// build does not know.
+pub(crate) enum Word {
+    On(On),
+    Global,
+    Unknown,
+}
+
+pub(crate) fn word_of(word: &str) -> Word {
+    let w = word.trim();
+    if let Some((_, on)) = NAMED_KEYS.iter().find(|(n, _)| w.eq_ignore_ascii_case(n)) {
+        return Word::On(*on);
+    }
+    if GLOBAL_CHORDS.iter().any(|g| w.eq_ignore_ascii_case(g)) {
+        return Word::Global;
+    }
+    let mut chars = w.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Word::On(On::Char(c)),
+        _ => Word::Unknown,
+    }
+}
+
+/// The `SURFACE.KEY` name's key half, as a binding key - or the refusal that says which mistake
+/// it is.
+fn binding_word(key: &str, r: &leticode_config::Rebind, problems: &mut Vec<String>) -> Option<On> {
+    match word_of(key) {
+        Word::On(on) => Some(on),
+        Word::Global => {
+            problems.push(format!(
+                "{}: [keys] `{}` is one of the head's global chords - a binding is rebound within \
+                 its surface, and the chords are the head's whatever is open",
+                r.from, key
+            ));
+            None
+        }
+        Word::Unknown => {
+            problems.push(format!(
+                "{}: [keys] `{}` is not a key this head spells - it takes a letter, or {}",
+                r.from,
+                key,
+                names(
+                    &NAMED_KEYS
+                        .iter()
+                        .map(|(n, _)| n.to_string())
+                        .collect::<Vec<_>>()
+                )
+            ));
+            None
+        }
+    }
+}
+
+/// What a binding does, in one clause - the half of a refusal that says which binding already owns
+/// the key the file moved something onto.
+fn clash_words(b: &Binding) -> String {
+    match b.says {
+        Says::Text(t) | Says::Switch(t) => t.to_string(),
+        Says::Row => "the row's act".to_string(),
+        Says::Nothing => "a key this surface already takes".to_string(),
+    }
+}
+
+/// The new key, or the refusal - W8's half, said on its own because a rebind TOWARDS a chord is
+/// the mistake that would take a surface key and make it a key nothing reaches.
+fn target_word(key: &str, r: &leticode_config::Rebind, problems: &mut Vec<String>) -> Option<On> {
+    match word_of(key) {
+        Word::On(on) => Some(on),
+        Word::Global => {
+            problems.push(format!(
+                "{}: [keys] `{}` is one of the head's global chords and is not rebindable - a \
+                 binding is rebound within its surface, never the head's own escape",
+                r.from, key
+            ));
+            None
+        }
+        Word::Unknown => {
+            problems.push(format!(
+                "{}: [keys] `{}` is not a key this head spells - it takes a letter, or {}",
+                r.from,
+                key,
+                names(
+                    &NAMED_KEYS
+                        .iter()
+                        .map(|(n, _)| n.to_string())
+                        .collect::<Vec<_>>()
+                )
+            ));
+            None
+        }
+    }
+}
+
+/// The key half of a `SURFACE.KEY` name, for a refusal that named a surface this head has not got.
+fn surface_tail(name: &str) -> &str {
+    name.split_once('.').map(|(s, _)| s).unwrap_or(name)
+}
+
+/// Every key a surface's table takes, as one list - what a refusal owes a reader who asked for a
+/// key the surface does not bind.
+fn surface_keys(surface: Surface) -> String {
+    let mut words: Vec<String> = Vec::new();
+    for b in surface.bindings() {
+        for o in b.on {
+            let w = match o {
+                On::Char(c) => c.to_string(),
+                other => other.label(),
+            };
+            if !words.contains(&w) {
+                words.push(w);
+            }
+        }
+    }
+    words.join(" ")
 }

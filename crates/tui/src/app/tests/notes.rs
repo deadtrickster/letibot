@@ -2826,3 +2826,75 @@ fn ctrl_n_then_a_queued_row_draws_no_notice() {
         a.read_marks
     );
 }
+
+/// K9's done-test: a warning kind `[warnings] mute` names is never drawn, and nothing else about
+/// it changes - it is filed, counted and findable, exactly as a retired note is. The file half
+/// (`[warnings] mute` -> this list) is `crates/leticode-config`'s own test; this is the half that
+/// is the screen's.
+#[test]
+fn a_muted_warning_kind_is_never_drawn() {
+    let said = "compacted: 940188 → 9181 tokens, kept as a 9000-character summary, nothing \
+                dropped, on transcript s#t25.";
+    let compacted = || {
+        env(
+            1,
+            SessionEvent::Warning {
+                code: "compacted".into(),
+                detail: said.into(),
+                compaction: None,
+            },
+        )
+    };
+
+    // The premise: with nothing muted the code IS a row in the conversation.
+    let mut plain = App::new(plain_cfg(80));
+    assert_eq!(
+        plain.apply(ServerFrame::Event(compacted())),
+        Disposition::Rendered
+    );
+    assert!(
+        plain.screen(80, 24).join("\n").contains("940k → 9k tokens"),
+        "the premise: an unmuted row is drawn"
+    );
+
+    let mut muted = App::new(plain_cfg(80));
+    muted.quiet = Quiet {
+        muted: vec!["compacted".to_string()],
+        coalesce: true,
+    };
+    assert_eq!(
+        muted.apply(ServerFrame::Event(compacted())),
+        // Read and filed as always: the mute is the DRAWING's, not the event's.
+        Disposition::Rendered
+    );
+    let drawn = muted.screen(80, 24).join("\n");
+    assert!(
+        !drawn.contains("940k → 9k tokens"),
+        "a muted kind was drawn:\n{drawn}"
+    );
+    // And it is still there: held, counted, and one verb from being read.
+    assert_eq!(muted.notes.len(), 1, "the note was dropped, not muted");
+    assert_eq!(muted.retired_notes(), 1, "and it is not counted as hidden");
+    let listed = muted.notes_lines().join("\n");
+    assert!(
+        listed.contains("compacted"),
+        "a muted note left `/notes` as well as the screen: {listed}"
+    );
+
+    // The kind and not the copy: a second copy of the same code is muted with the first, which
+    // is the whole point of one line in a file instead of 127 `retired` keys.
+    let mut other = App::new(plain_cfg(80));
+    other.quiet = muted.quiet.clone();
+    other.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::Warning {
+            code: "compacted".into(),
+            detail: "compacted: 12 → 3 tokens, kept as a 30-character summary.".into(),
+            compaction: None,
+        },
+    )));
+    assert!(
+        !other.screen(80, 24).join("\n").contains("12 → 3 tokens"),
+        "a second copy of a muted kind was drawn"
+    );
+}

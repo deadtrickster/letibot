@@ -190,6 +190,49 @@
 //! because a silently ignored key is the bug class being fixed and a silently
 //! widened capability is the worse of the two.
 //!
+//! # Config, not a plugin: the numbers and the head's keys
+//!
+//! A fixed number or a list of names is a key here, not an extension point: a layer for them
+//! would cost a build and a pin to change a number. Six tables, each with today's value as its
+//! documented default, so a file that says nothing is the daemon that shipped:
+//!
+//! ```toml
+//! [queue]
+//! stuck_after_seconds = 900     # a row stuck this long is the census's (`Stuck::is_news`)
+//! stuck_repeat_seconds = 7200   # and the census is said again this often
+//!
+//! [nag]
+//! after_seconds = 60            # the idle window before the plan-check (TODO_NAG_AFTER)
+//! floor_seconds = 10            # the shortest re-arm an operator add earns (OPERATOR_ADD_NAG_AFTER)
+//! repeat_cap_seconds = 1800     # the ceiling the doubled interval retreats to (NAG_REPEAT_CAP)
+//!
+//! [room]
+//! tie_breaker = "deepseek/deepseek-flash"   # the model that arbitrates the room's items
+//!
+//! [warnings]
+//! mute = ["model_slow_first_byte"]  # codes the head files and never draws
+//! coalesce = true                   # notices of one kind inside a minute are one counted row
+//!
+//! [keys]
+//! "todos.d" = "f"                   # SURFACE.KEY as the bar spells them, to one other key
+//!
+//! [verbosity.mine]                  # a profile IS the list of things it shows
+//! show = ["edits", "tools", "thinking=folded"]
+//! ```
+//!
+//! Three rules, and they are the whole of it. **The project's value wins** over the user's,
+//! key by key, as the models do - so a project and a box-wide setting are one question with one
+//! answer. The two LISTs that are suppressions instead union, `[skills] pin`'s rule: `mute` says
+//! the head must not draw a kind, and a project file - writable by the sessions it governs -
+//! must not unsay what the operator muted for every project. And **a bad value says its file and
+//! line**, because a number nobody reads and a number read wrongly are the same defect from the
+//! screen: `[nag] after_seconds = "60"` is refused where it was written, rather than silently
+//! being a minute.
+//!
+//! The head's three tables are read here and resolved THERE (`tui/src/prefs.rs`, `visibility.rs`
+//! and `keys/bindings.rs`): the surface names, the warning codes and the verbosity switches are
+//! that process's vocabulary, so a word it does not know is refused with the line it came from.
+//!
 //! # The loud failures
 //!
 //! The operator lost hours to a config that silently did not reach a session -
@@ -495,6 +538,22 @@ pub struct LeticodeConfig {
     /// The `[provider]` table: what a session does when its provider says the model is limited.
     /// See [`ProviderKeys`] and [`LeticodeConfig::limit_policy`].
     pub provider: ProviderKeys,
+    /// The `[nag]` table: the idle plan-check's window, floor and ceiling. `None`s are the
+    /// clock's own numbers; see [`NagKeys`] and [`LeticodeConfig::nag_timings`].
+    pub nag: NagKeys,
+    /// The `[queue]` table's two census numbers. See [`QueueKeys`].
+    pub queue: QueueKeys,
+    /// The `[room]` table: the model the room's tie-breaker arbitrates on.
+    pub room: RoomKeys,
+    /// The `[warnings]` table: what the head files and never draws. Read by the head, in
+    /// `tui/src/prefs.rs`, because the codes are that process's vocabulary.
+    pub warnings: WarningKeys,
+    /// The `[keys]` table: a surface's binding moved to another key. Read by the head, in
+    /// `tui/src/app/keys/bindings.rs`.
+    pub keys: KeyKeys,
+    /// The `[verbosity.<profile>]` tables: the profiles the operator composes, each the list of
+    /// what it shows. Read by the head, in `tui/src/app/visibility.rs`.
+    pub verbosity: VerbosityKeys,
 }
 
 /// What a session does when its provider answers a usage limit with a known reset: the
@@ -996,6 +1055,422 @@ pub fn memory_policy_at(
     p
 }
 
+/// The file and line a value was written on, for a refusal that has to name it.
+fn at(path: &Path, text: &str, needle: &str, user: bool) -> Origin {
+    Origin {
+        file: path.to_path_buf(),
+        line: line_of(text, needle),
+        user,
+    }
+}
+
+/// The table a key should be, or a refusal naming the file and the table's line. Every table
+/// below is walked by hand rather than by serde for this reason: serde names the table and this
+/// names the line the operator wrote.
+fn table_at<'a>(
+    value: &'a toml::Value,
+    path: &Path,
+    text: &str,
+    name: &str,
+    keys: &str,
+) -> Result<&'a toml::Table, String> {
+    value.as_table().ok_or_else(|| {
+        format!(
+            "{}:{}: [{name}] is a table; {keys}",
+            path.display(),
+            line_of(text, name)
+        )
+    })
+}
+
+/// A whole number of seconds, at least one: every duration here is a schedule, and `0` would
+/// arm a clock for ever rather than never.
+fn seconds_at(v: &toml::Value, from: &Origin, table: &str, key: &str) -> Result<u64, String> {
+    let n = v.as_integer().ok_or_else(|| {
+        format!(
+            "{from}: [{table}] {key} is a whole number of seconds, not {}",
+            kind_of(v)
+        )
+    })?;
+    u64::try_from(n).ok().filter(|n| *n > 0).ok_or_else(|| {
+        format!(
+            "{from}: [{table}] {key} = {n} — a schedule is at least one second, so `0` here \
+             would arm a clock that never comes due"
+        )
+    })
+}
+
+/// One line of `[keys]`: `SURFACE.KEY = "key"`. Both words are the head's vocabulary, so this
+/// reader keeps them as written and keeps the line to refuse them by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rebind {
+    /// `SURFACE.KEY`, as the hint bar and `/help` spell them - `todos.d`.
+    pub name: String,
+    /// The key it becomes, as a key is spelled - `f`, `enter`, `ctrl-z`.
+    pub key: String,
+    /// The line it was written on: the head refuses a name or a key it does not know, there.
+    pub from: Origin,
+}
+
+/// `[warnings]` in a `leticode.toml`: what the head files and never draws, and whether a burst of
+/// one kind is one counted row. See the module doc for the two rules it inherits.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WarningKeys {
+    /// Warning codes the head files but does not draw. A code and not a copy: `head.toml`'s
+    /// `retired` retires one note at a time, and this retires the kind.
+    pub mute: Vec<Entry<String>>,
+    /// Whether notices of one kind inside a minute become one counted row. `None` is the head's
+    /// own answer, which is *yes* - the burst is what keeps a hundred slow bytes one line.
+    pub coalesce: Option<bool>,
+}
+
+/// `[keys]` in a `leticode.toml`: one surface's key, moved. A binding is rebound within its
+/// surface and never a global chord, because a chord is the head's own escape.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct KeyKeys {
+    pub rebind: Vec<Rebind>,
+}
+
+/// `[verbosity.<profile>]` in a `leticode.toml`: a profile IS the list of things it shows, and
+/// the words are the head's switch names - `tools`, `thinking=folded`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileKeys {
+    pub name: String,
+    pub show: Vec<String>,
+    pub from: Origin,
+}
+
+/// The `[verbosity]` table: every profile this level defines, in the file's order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VerbosityKeys {
+    pub profiles: Vec<ProfileKeys>,
+}
+
+/// `[queue]` in a `leticode.toml`: the two numbers of the merge queue's census. `None` is the
+/// daemon's own - fifteen minutes before a stuck row is the census's
+/// (`mergequeue::stuck::STUCK_AFTER_MS`), and two hours between two sayings of it
+/// (`builtins::todo::STUCK_REPEAT`) - and those constants stay the defaults' one home.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QueueKeys {
+    pub stuck_after_seconds: Option<u64>,
+    pub stuck_repeat_seconds: Option<u64>,
+}
+
+/// `[nag]` in a `leticode.toml`: the idle plan-check's window, the shortest re-arm an operator
+/// add earns (X13's floor), and the ceiling a repeated check retreats to. `None` is the daemon's
+/// own, which is [`letibot_tools::builtins::todo::NagTimings::default`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NagKeys {
+    pub after_seconds: Option<u64>,
+    pub floor_seconds: Option<u64>,
+    pub repeat_cap_seconds: Option<u64>,
+}
+
+impl NagKeys {
+    /// Whether the file said anything, so the disclosure does not claim a setting nobody made.
+    pub fn is_empty(&self) -> bool {
+        self.after_seconds.is_none()
+            && self.floor_seconds.is_none()
+            && self.repeat_cap_seconds.is_none()
+    }
+
+    /// The clock's numbers: today's four, overridden by what this level wrote.
+    pub fn timings(&self) -> letibot_tools::builtins::todo::NagTimings {
+        let mut t = letibot_tools::builtins::todo::NagTimings::default();
+        let secs = std::time::Duration::from_secs;
+        if let Some(s) = self.after_seconds {
+            t.window = secs(s);
+        }
+        if let Some(s) = self.floor_seconds {
+            t.floor = secs(s);
+        }
+        if let Some(s) = self.repeat_cap_seconds {
+            t.cap = secs(s);
+        }
+        t
+    }
+}
+
+/// `[room]` in a `leticode.toml`: the model that arbitrates the room's items. `None` is
+/// `room::coordinator::DEEPSEEK`, the operator's own *"with deepseek as default"*.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RoomKeys {
+    pub tie_breaker: Option<String>,
+}
+
+fn warning_keys(
+    value: &toml::Value,
+    path: &Path,
+    text: &str,
+    user: bool,
+) -> Result<WarningKeys, String> {
+    let keys = "the keys are `mute` (a list of warning codes) and `coalesce` (true or false)";
+    let table = table_at(value, path, text, "warnings", keys)?;
+    let mut out = WarningKeys::default();
+    for (key, v) in table {
+        let from = at(path, text, key, user);
+        match key.as_str() {
+            "mute" => {
+                let Some(items) = v.as_array() else {
+                    return Err(format!(
+                        "{from}: [warnings] mute is a list of warning codes, as strings; \
+                         {keys}"
+                    ));
+                };
+                for item in items {
+                    let code = item.as_str().and_then(non_empty).ok_or_else(|| {
+                        format!(
+                            "{from}: [warnings] mute holds {} - every entry is a warning code, \
+                             as a string",
+                            match item.as_str() {
+                                Some(s) => format!("{s:?}"),
+                                None => kind_of(item).to_string(),
+                            }
+                        )
+                    })?;
+                    out.mute.push(Entry {
+                        from: at(path, text, &format!("\"{code}\""), user),
+                        value: code,
+                    });
+                }
+            }
+            "coalesce" => {
+                out.coalesce = Some(v.as_bool().ok_or_else(|| {
+                    format!(
+                        "{from}: [warnings] coalesce is true or false, not {}",
+                        kind_of(v)
+                    )
+                })?);
+            }
+            other => {
+                return Err(format!("{from}: [warnings] `{other}` is not a key; {keys}"));
+            }
+        }
+    }
+    Ok(out)
+}
+
+impl WarningKeys {
+    /// The two levels as one: the mutes union, each once, and `coalesce` is the project's answer
+    /// when it gave one. See the module doc for why a mute is a union.
+    pub fn overridden_by(&self, other: &WarningKeys) -> WarningKeys {
+        let mut mute = self.mute.clone();
+        for e in &other.mute {
+            if !mute.iter().any(|m| m.value == e.value) {
+                mute.push(e.clone());
+            }
+        }
+        WarningKeys {
+            mute,
+            coalesce: other.coalesce.or(self.coalesce),
+        }
+    }
+}
+
+fn key_keys(value: &toml::Value, path: &Path, text: &str, user: bool) -> Result<KeyKeys, String> {
+    let keys =
+        "every key is `\"SURFACE.KEY\" = \"key\"` - a surface's binding moved to another key";
+    let table = table_at(value, path, text, "keys", keys)?;
+    let mut out = KeyKeys::default();
+    for (name, v) in table {
+        let from = at(path, text, name, user);
+        let key = v.as_str().and_then(non_empty).ok_or_else(|| match v.as_str() {
+            Some(_) => format!(
+                "{from}: [keys] `{name}` = \"\" names no key - write the key it becomes, e.g. \"f\""
+            ),
+            None => format!(
+                "{from}: [keys] `{name}` is one key, as a string, not {}; {keys}",
+                kind_of(v)
+            ),
+        })?;
+        if !name.contains('.') {
+            return Err(format!(
+                "{from}: [keys] `{name}` names no surface - a binding is written \
+                 \"SURFACE.KEY\", as the hint bar spells it (`todos.d`)"
+            ));
+        }
+        out.rebind.push(Rebind {
+            name: name.clone(),
+            key,
+            from,
+        });
+    }
+    Ok(out)
+}
+
+impl KeyKeys {
+    /// The two levels as one, by name: a project's rebinding of one key replaces the user's, and
+    /// every other name stands.
+    pub fn overridden_by(&self, other: &KeyKeys) -> KeyKeys {
+        let mut rebind: Vec<Rebind> = self
+            .rebind
+            .iter()
+            .filter(|r| !other.rebind.iter().any(|o| o.name == r.name))
+            .cloned()
+            .collect();
+        rebind.extend(other.rebind.iter().cloned());
+        KeyKeys { rebind }
+    }
+}
+
+fn verbosity_keys(
+    value: &toml::Value,
+    path: &Path,
+    text: &str,
+    user: bool,
+) -> Result<VerbosityKeys, String> {
+    let keys = "each profile is `[verbosity.NAME]` with one key, `show`, the list of things it \
+                shows";
+    let table = table_at(value, path, text, "verbosity", keys)?;
+    let mut out = VerbosityKeys::default();
+    for (name, v) in table {
+        let from = at(path, text, name, user);
+        let Some(body) = v.as_table() else {
+            return Err(format!(
+                "{from}: [verbosity.{name}] is a table with one key, `show`; {keys}"
+            ));
+        };
+        let mut show: Option<Vec<String>> = None;
+        for (key, list) in body {
+            if key != "show" {
+                return Err(format!(
+                    "{from}: [verbosity.{name}] `{key}` is not a key; {keys}"
+                ));
+            }
+            let Some(items) = list.as_array() else {
+                return Err(format!(
+                    "{from}: [verbosity.{name}] show is a list of the things it shows, as \
+                     strings; {keys}"
+                ));
+            };
+            let mut words = Vec::with_capacity(items.len());
+            for item in items {
+                let word = item.as_str().and_then(non_empty).ok_or_else(|| {
+                    format!(
+                        "{from}: [verbosity.{name}] show holds {} - every entry is a switch \
+                         name, as a string",
+                        match item.as_str() {
+                            Some(s) => format!("{s:?}"),
+                            None => kind_of(item).to_string(),
+                        }
+                    )
+                })?;
+                words.push(word);
+            }
+            show = Some(words);
+        }
+        // A profile with no `show` is a name for hiding everything, which `conversation` already
+        // is - and a name that draws nothing is a setting that reads as a broken one.
+        let Some(show) = show else {
+            return Err(format!(
+                "{from}: [verbosity.{name}] has no `show` list; {keys}"
+            ));
+        };
+        out.profiles.push(ProfileKeys {
+            name: name.clone(),
+            show,
+            from,
+        });
+    }
+    Ok(out)
+}
+
+impl VerbosityKeys {
+    /// The two levels as one, by name: a project's profile of the same name replaces the user's,
+    /// so a project may tighten or widen a box-wide profile without renaming it.
+    pub fn overridden_by(&self, other: &VerbosityKeys) -> VerbosityKeys {
+        let mut profiles: Vec<ProfileKeys> = self
+            .profiles
+            .iter()
+            .filter(|p| !other.profiles.iter().any(|o| o.name == p.name))
+            .cloned()
+            .collect();
+        profiles.extend(other.profiles.iter().cloned());
+        VerbosityKeys { profiles }
+    }
+}
+
+fn queue_keys(
+    value: &toml::Value,
+    path: &Path,
+    text: &str,
+    user: bool,
+) -> Result<QueueKeys, String> {
+    let keys = "the keys are `stuck_after_seconds` and `stuck_repeat_seconds` - the merge \
+                queue's census; the rest of `[queue]` is the queue's own reader";
+    let table = table_at(value, path, text, "queue", keys)?;
+    let mut out = QueueKeys::default();
+    // The queue's own reader owns the other keys of this table and refuses a name neither knows,
+    // so this one reads what it knows and leaves the rest where it is.
+    for (key, v) in table {
+        let from = at(path, text, key, user);
+        match key.as_str() {
+            "stuck_after_seconds" => {
+                out.stuck_after_seconds = Some(seconds_at(v, &from, "queue", key)?)
+            }
+            "stuck_repeat_seconds" => {
+                out.stuck_repeat_seconds = Some(seconds_at(v, &from, "queue", key)?)
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+fn nag_keys(value: &toml::Value, path: &Path, text: &str, user: bool) -> Result<NagKeys, String> {
+    let keys = "the keys are `after_seconds`, `floor_seconds` and `repeat_cap_seconds`";
+    let table = table_at(value, path, text, "nag", keys)?;
+    let mut out = NagKeys::default();
+    for (key, v) in table {
+        let from = at(path, text, key, user);
+        match key.as_str() {
+            "after_seconds" => out.after_seconds = Some(seconds_at(v, &from, "nag", key)?),
+            "floor_seconds" => out.floor_seconds = Some(seconds_at(v, &from, "nag", key)?),
+            "repeat_cap_seconds" => {
+                out.repeat_cap_seconds = Some(seconds_at(v, &from, "nag", key)?)
+            }
+            other => return Err(format!("{from}: [nag] `{other}` is not a key; {keys}")),
+        }
+    }
+    // A floor above the cap is a ladder that cannot be climbed: every re-arm is clamped into
+    // `[floor, cap]` and the two ends would cross.
+    if let (Some(floor), Some(cap)) = (out.floor_seconds, out.repeat_cap_seconds)
+        && floor > cap
+    {
+        return Err(format!(
+            "{}: [nag] floor_seconds = {floor} is above repeat_cap_seconds = {cap} - the check \
+             is clamped between the two, and a floor past the ceiling is a space no re-arm can \
+             land in",
+            path.display()
+        ));
+    }
+    Ok(out)
+}
+
+fn room_keys(value: &toml::Value, path: &Path, text: &str, user: bool) -> Result<RoomKeys, String> {
+    let keys = "the one key is `tie_breaker`, the model that arbitrates the room's items";
+    let table = table_at(value, path, text, "room", keys)?;
+    let mut out = RoomKeys::default();
+    for (key, v) in table {
+        let from = at(path, text, key, user);
+        match key.as_str() {
+            "tie_breaker" => {
+                out.tie_breaker = Some(v.as_str().and_then(non_empty).ok_or_else(|| {
+                    match v.as_str() {
+                        Some(_) => format!("{from}: [room] tie_breaker = \"\" names no model"),
+                        None => format!(
+                            "{from}: [room] tie_breaker is a model name, as a string, not {}",
+                            kind_of(v)
+                        ),
+                    }
+                })?);
+            }
+            other => return Err(format!("{from}: [room] `{other}` is not a key; {keys}")),
+        }
+    }
+    Ok(out)
+}
+
 impl LeticodeConfig {
     /// The walk-up: the nearest `leticode.toml` at or above `workspace`, the way `.env`
     /// and `.git` are found, so a session started in a subdirectory still reaches the
@@ -1085,6 +1560,32 @@ impl LeticodeConfig {
             provider: match &file.provider {
                 Some(v) => provider_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
                 None => ProviderKeys::default(),
+            },
+            // The six tables below refuse with their own file and line (`{from}`), so their
+            // message is the whole sentence and there is nothing to prefix.
+            nag: match &file.nag {
+                Some(v) => nag_keys(v, path, &text, level == Level::User)?,
+                None => NagKeys::default(),
+            },
+            queue: match &file.queue {
+                Some(v) => queue_keys(v, path, &text, level == Level::User)?,
+                None => QueueKeys::default(),
+            },
+            room: match &file.room {
+                Some(v) => room_keys(v, path, &text, level == Level::User)?,
+                None => RoomKeys::default(),
+            },
+            warnings: match &file.warnings {
+                Some(v) => warning_keys(v, path, &text, level == Level::User)?,
+                None => WarningKeys::default(),
+            },
+            keys: match &file.keys {
+                Some(v) => key_keys(v, path, &text, level == Level::User)?,
+                None => KeyKeys::default(),
+            },
+            verbosity: match &file.verbosity {
+                Some(v) => verbosity_keys(v, path, &text, level == Level::User)?,
+                None => VerbosityKeys::default(),
             },
         };
 
@@ -1227,7 +1728,53 @@ impl LeticodeConfig {
                     other.provider.fallback.clone()
                 },
             },
+            // The three numbers the runtime threads, and the head's three tables: the project's
+            // answer for each key, and the two lists that are suppressions (`mute`, and a profile
+            // of the same name) resolve in their own types' `overridden_by`.
+            nag: NagKeys {
+                after_seconds: other.nag.after_seconds.or(self.nag.after_seconds),
+                floor_seconds: other.nag.floor_seconds.or(self.nag.floor_seconds),
+                repeat_cap_seconds: other.nag.repeat_cap_seconds.or(self.nag.repeat_cap_seconds),
+            },
+            queue: QueueKeys {
+                stuck_after_seconds: other
+                    .queue
+                    .stuck_after_seconds
+                    .or(self.queue.stuck_after_seconds),
+                stuck_repeat_seconds: other
+                    .queue
+                    .stuck_repeat_seconds
+                    .or(self.queue.stuck_repeat_seconds),
+            },
+            room: RoomKeys {
+                tie_breaker: other
+                    .room
+                    .tie_breaker
+                    .clone()
+                    .or_else(|| self.room.tie_breaker.clone()),
+            },
+            warnings: self.warnings.overridden_by(&other.warnings),
+            keys: self.keys.overridden_by(&other.keys),
+            verbosity: self.verbosity.overridden_by(&other.verbosity),
         }
+    }
+
+    /// The idle plan-check's clock, as this file configures it: `[nag]`'s three numbers over the
+    /// clock's own, and the census's repeat from `[queue]` - one value, because one clock arms
+    /// both and a session that took two would drift.
+    pub fn nag_timings(&self) -> letibot_tools::builtins::todo::NagTimings {
+        let mut t = self.nag.timings();
+        if let Some(s) = self.queue.stuck_repeat_seconds {
+            t.census_repeat = std::time::Duration::from_secs(s);
+        }
+        t
+    }
+
+    /// How long a row must be stuck before the census says so: `[queue] stuck_after_seconds`, or
+    /// the daemon's own number - `None` is the caller's [`crate::QueueKeys`] default, which lives
+    /// beside the constant (`mergequeue::stuck::STUCK_AFTER_MS`).
+    pub fn stuck_after_seconds(&self) -> Option<u64> {
+        self.queue.stuck_after_seconds
     }
 
     /// What this session does when its provider answers a usage limit with a known reset: the
@@ -1383,12 +1930,26 @@ struct LeticodeConfigFile {
     judge_model: Option<String>,
     #[serde(default)]
     roles: BTreeMap<String, toml::Value>,
-    /// The `[queue]` table, read by its own parser, which refuses an unknown key inside it
-    /// by name; accepted here only so this reader does not refuse the file for carrying
-    /// it. It sets no model and no capability, so the boundary above stands.
+    /// The `[queue]` table, read by its own parser: the two census numbers are
+    /// [`queue_keys`]'s, and the rest belongs to the queue's own reader
+    /// (`harnessd/src/mergequeue/settings.rs`), which refuses a name neither knows.
     #[serde(default)]
-    #[allow(dead_code)]
     queue: Option<toml::Value>,
+    /// The `[nag]` table, see [`NagKeys`].
+    #[serde(default)]
+    nag: Option<toml::Value>,
+    /// The `[room]` table, see [`RoomKeys`].
+    #[serde(default)]
+    room: Option<toml::Value>,
+    /// The `[warnings]` table, see [`WarningKeys`].
+    #[serde(default)]
+    warnings: Option<toml::Value>,
+    /// The `[keys]` table, see [`KeyKeys`].
+    #[serde(default)]
+    keys: Option<toml::Value>,
+    /// The `[verbosity]` table, see [`VerbosityKeys`].
+    #[serde(default)]
+    verbosity: Option<toml::Value>,
     /// The `[memory]` table - see [`MemoryKeys`]. A cap is not a capability: it narrows
     /// what a call may hold, and the ceiling above which the operator is asked still holds.
     #[serde(default)]
@@ -2599,5 +3160,253 @@ mod tests {
             ["deepseek"],
             "the same list twice is one list"
         );
+    }
+
+    // ---- K9: config, not a plugin (the plan's §4.3, §6 K9) ----
+
+    /// The six tables read, every key, and a file that says nothing is the daemon that shipped:
+    /// no `[nag]`/`[queue]` number at all, which is `NagTimings::default` and the queue's own
+    /// constants. This is the "byte-identical at the defaults" half of K9's target.
+    #[test]
+    fn the_six_tables_are_read_and_an_empty_file_is_the_shipped_daemon() {
+        let dir = project_dir("k9_read");
+        let empty = write_file(&sub(&dir, "empty"), "main_model = \"local\"\n");
+        let none = LeticodeConfig::load(&empty).unwrap();
+        assert_eq!(none.nag, NagKeys::default());
+        assert_eq!(none.queue, QueueKeys::default());
+        assert_eq!(none.room, RoomKeys::default());
+        assert!(none.warnings.mute.is_empty());
+        assert_eq!(none.warnings.coalesce, None);
+        assert!(none.keys.rebind.is_empty());
+        assert!(none.verbosity.profiles.is_empty());
+        assert_eq!(
+            none.nag_timings(),
+            letibot_tools::builtins::todo::NagTimings::default(),
+            "no key is the clock every daemon already had"
+        );
+        assert_eq!(none.stuck_after_seconds(), None);
+
+        let full = write_file(
+            &sub(&dir, "full"),
+            "[queue]\nstuck_after_seconds = 900\nstuck_repeat_seconds = 7200\n\
+             [nag]\nafter_seconds = 60\nfloor_seconds = 10\nrepeat_cap_seconds = 1800\n\
+             [room]\ntie_breaker = \"glm-coding/glm-5.3\"\n\
+             [warnings]\nmute = [\"model_slow_first_byte\", \"denied\"]\ncoalesce = false\n\
+             [keys]\n\"todos.d\" = \"f\"\n\
+             [verbosity.mine]\nshow = [\"edits\", \"thinking=folded\"]\n",
+        );
+        let c = LeticodeConfig::load(&full).unwrap();
+        assert_eq!(c.queue.stuck_after_seconds, Some(900));
+        assert_eq!(c.queue.stuck_repeat_seconds, Some(7200));
+        assert_eq!(c.nag.after_seconds, Some(60));
+        assert_eq!(c.nag.floor_seconds, Some(10));
+        assert_eq!(c.nag.repeat_cap_seconds, Some(1800));
+        assert_eq!(c.room.tie_breaker.as_deref(), Some("glm-coding/glm-5.3"));
+        assert_eq!(
+            c.warnings
+                .mute
+                .iter()
+                .map(|e| e.value.as_str())
+                .collect::<Vec<_>>(),
+            ["model_slow_first_byte", "denied"]
+        );
+        assert_eq!(c.warnings.coalesce, Some(false));
+        assert_eq!(c.keys.rebind.len(), 1);
+        assert_eq!(c.keys.rebind[0].name, "todos.d");
+        assert_eq!(c.keys.rebind[0].key, "f");
+        assert_eq!(
+            c.verbosity.profiles[0].name, "mine",
+            "a profile is its name and the list of what it shows"
+        );
+        assert_eq!(c.verbosity.profiles[0].show, ["edits", "thinking=folded"]);
+
+        // The clock's four, as the file and the shipped default make them: `[nag]`'s three and
+        // the census's repeat from `[queue]`.
+        let t = c.nag_timings();
+        assert_eq!(t.window, std::time::Duration::from_secs(60));
+        assert_eq!(t.floor, std::time::Duration::from_secs(10));
+        assert_eq!(t.cap, std::time::Duration::from_secs(1800));
+        assert_eq!(t.census_repeat, std::time::Duration::from_secs(7200));
+        assert_eq!(c.stuck_after_seconds(), Some(900));
+    }
+
+    /// A bad value says its FILE AND LINE, table by table - the operator's target for K9, and the
+    /// reason these six tables are walked by hand instead of by serde, which names the table.
+    #[test]
+    fn a_bad_value_in_every_table_is_refused_with_its_file_and_line() {
+        let dir = project_dir("k9_lines");
+        // The line a refusal names is the one the value was WRITTEN on: a table's key is on the
+        // file's third line here, and a `[verbosity.<name>]` profile's own line is the second -
+        // its `show` list is refused against the profile, which is what the operator edits.
+        for (tag, body, want, line) in [
+            (
+                "nag",
+                "\n[nag]\nafter_seconds = \"60\"\n",
+                "[nag] after_seconds",
+                3,
+            ),
+            (
+                "nagzero",
+                "\n[nag]\nfloor_seconds = 0\n",
+                "at least one second",
+                3,
+            ),
+            (
+                "queue",
+                "\n[queue]\nstuck_after_seconds = -2\n",
+                "[queue] stuck_after_seconds",
+                3,
+            ),
+            (
+                "queue_kind",
+                "\n[queue]\nstuck_repeat_seconds = true\n",
+                "[queue]",
+                3,
+            ),
+            (
+                "coalesce",
+                "\n[warnings]\ncoalesce = \"yes\"\n",
+                "coalesce is true or false",
+                3,
+            ),
+            ("mute", "\n[warnings]\nmute = \"a\"\n", "mute is a list", 3),
+            ("keys", "\n[keys]\nd = \"f\"\n", "names no surface", 3),
+            (
+                "keys_value",
+                "\n[keys]\n\"todos.d\" = 3\n",
+                "`todos.d` is one key",
+                3,
+            ),
+            (
+                "profile",
+                "\n[verbosity.mine]\nshow = \"tools\"\n",
+                "show is a list",
+                2,
+            ),
+            (
+                "profile_key",
+                "\n[verbosity.mine]\nhide = []\n",
+                "`hide` is not a key",
+                2,
+            ),
+            (
+                "room",
+                "\n[room]\ntie_breaker = 3\n",
+                "tie_breaker is a model name",
+                3,
+            ),
+            (
+                "room_key",
+                "\n[room]\nmodel = \"x\"\n",
+                "`model` is not a key",
+                3,
+            ),
+        ] {
+            let path = write_file(&sub(&dir, tag), body);
+            let err = LeticodeConfig::load(&path).expect_err(tag);
+            assert!(
+                err.contains(&format!("leticode.toml:{line}:")),
+                "{tag}: the refusal names the file and the line: {err}"
+            );
+            assert!(err.contains(want), "{tag}: {err}");
+        }
+    }
+
+    /// A floor above the ceiling is a ladder with no room in it, refused by name.
+    #[test]
+    fn a_nag_floor_above_the_repeat_cap_is_refused() {
+        let dir = project_dir("k9_floor");
+        let bad = write_file(
+            &sub(&dir, "crossed"),
+            "[nag]\nfloor_seconds = 3600\nrepeat_cap_seconds = 60\n",
+        );
+        let err = LeticodeConfig::load(&bad).expect_err("the two ends crossed");
+        assert!(err.contains("floor_seconds"), "{err}");
+        assert!(err.contains("repeat_cap_seconds"), "{err}");
+    }
+
+    /// The project's value wins over the user's, key by key - the target's third clause - and the
+    /// two suppression lists (`mute`, and a profile of the same name) resolve as they should: a
+    /// mute unions, because a project must not unsay what the operator muted for every project.
+    #[test]
+    fn the_projects_value_wins_and_a_mute_unions_across_the_levels() {
+        let dir = project_dir("k9_levels");
+        let user = write_file(
+            &sub(&dir, "user"),
+            "[nag]\nafter_seconds = 90\nrepeat_cap_seconds = 900\n\
+             [queue]\nstuck_after_seconds = 600\n\
+             [room]\ntie_breaker = \"deepseek/deepseek-flash\"\n\
+             [warnings]\nmute = [\"model_slow_first_byte\"]\ncoalesce = true\n\
+             [keys]\n\"todos.d\" = \"f\"\n\"rooms.r\" = \"u\"\n\
+             [verbosity.mine]\nshow = [\"tools\"]\n",
+        );
+        let project = write_file(
+            &sub(&dir, "project"),
+            "[nag]\nafter_seconds = 30\n\
+             [queue]\nstuck_after_seconds = 120\n\
+             [room]\ntie_breaker = \"glm-coding/glm-5.3\"\n\
+             [warnings]\nmute = [\"denied\"]\ncoalesce = false\n\
+             [keys]\n\"todos.d\" = \"x\"\n\
+             [verbosity.mine]\nshow = [\"edits\", \"tools\"]\n",
+        );
+        let merged = LeticodeConfig::load_as(&user, Level::User)
+            .unwrap()
+            .overridden_by(&LeticodeConfig::load(&project).unwrap());
+        assert_eq!(
+            merged.nag.after_seconds,
+            Some(30),
+            "the project's window, not the user's"
+        );
+        assert_eq!(
+            merged.nag.repeat_cap_seconds,
+            Some(900),
+            "and the user's cap stays where the project said nothing"
+        );
+        assert_eq!(merged.queue.stuck_after_seconds, Some(120));
+        assert_eq!(
+            merged.room.tie_breaker.as_deref(),
+            Some("glm-coding/glm-5.3")
+        );
+        assert_eq!(merged.warnings.coalesce, Some(false));
+        assert_eq!(
+            merged
+                .warnings
+                .mute
+                .iter()
+                .map(|e| e.value.as_str())
+                .collect::<Vec<_>>(),
+            ["model_slow_first_byte", "denied"],
+            "both levels' mutes, the user's first"
+        );
+        assert_eq!(merged.keys.rebind.len(), 2, "one replaced, one kept");
+        assert_eq!(
+            merged
+                .keys
+                .rebind
+                .iter()
+                .find(|r| r.name == "todos.d")
+                .map(|r| r.key.as_str()),
+            Some("x"),
+            "the project's rebinding of one key replaces the user's"
+        );
+        assert_eq!(
+            merged
+                .verbosity
+                .profiles
+                .iter()
+                .find(|p| p.name == "mine")
+                .map(|p| p.show.clone()),
+            Some(vec!["edits".to_string(), "tools".to_string()]),
+            "a project's profile of the same name replaces the user's"
+        );
+        // And the mute keeps the LINE it came from, because the head refuses an unknown code there.
+        let denied = merged
+            .warnings
+            .mute
+            .iter()
+            .find(|e| e.value == "denied")
+            .expect("the project's mute");
+        assert_eq!(denied.from.file, project);
+        assert_eq!(denied.from.line, 8, "the line the code is written on");
     }
 }

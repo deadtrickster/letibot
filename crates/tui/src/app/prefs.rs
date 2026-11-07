@@ -3,6 +3,14 @@
 
 use super::*;
 
+/// Is this a warning code - or a family of codes - that this build knows? A mute names a KIND,
+/// and the kind a note is drawn under is `warning::family`'s answer, so both spellings count.
+fn known_warning(code: &str) -> bool {
+    letibot_sessionlog::warning::TABLE
+        .iter()
+        .any(|(c, _)| *c == code || letibot_sessionlog::warning::family(c) == code)
+}
+
 impl App {
     /// The theme `head.toml` names, and its `color.` lines, made the look of every role. The file
     /// is `themes/NAME.toml` beside it; `terminal` or no key is the terminal's own palette. What
@@ -199,6 +207,11 @@ impl App {
     }
 
     pub fn load_prefs(&mut self) {
+        // The head's three `leticode.toml` tables first, because the verbosity below is read
+        // against the profiles they define - and a `[keys]` line decides what a key does from the
+        // first press. They are independent of `head.toml`, so they are read before its absence
+        // can stop this function.
+        self.load_rules();
         self.prefs_path = self.prefs_path.clone().or_else(crate::prefs::path);
         let Some(path) = self.prefs_path.clone() else {
             return;
@@ -209,7 +222,7 @@ impl App {
         // The set comes back too: the card could change it and the file did not keep it, so a
         // reader who chose `conversation` got `normal` on every restart. `Visibility::parse` is
         // the reader the card and the verb use, and the head's start is the base it reads against.
-        self.visibility = match Visibility::parse(&p.verbosity) {
+        self.visibility = match Visibility::parse_with(&p.verbosity, &self.profiles) {
             Ok(Change::Set(v)) => v,
             // A bare switch name in the file is a change against the head's start, for the
             // same reason it is one on the verb: *this switch, from where I am*.
@@ -281,6 +294,48 @@ impl App {
         }
     }
 
+    /// The head's own name for the set in force, as the status row, `/status` and `head.toml` say
+    /// it: a config profile's name when the set is one, the head's own five next, and `custom …`
+    /// otherwise. One reader, so the three cannot disagree about what the screen is called.
+    pub(crate) fn verbosity_name(&self) -> String {
+        self.visibility.as_str_with(&self.profiles)
+    }
+
+    /// Take the `leticode.toml` levels as this head reads them: `[warnings]`' mute list and
+    /// `coalesce`, `[keys]`' rebindings and `[verbosity.<name>]`' profiles. Each word is the head's
+    /// vocabulary, so the resolution lives in the module that owns it and every refusal names the
+    /// file and the line it was written on - and is SAID, not obeyed, which is `head.toml`'s rule
+    /// for a value this build cannot read.
+    pub(crate) fn load_rules(&mut self) {
+        let (cfg, said) = crate::prefs::leticode(&self.wiring.workspace);
+        let mut problems = said;
+        self.quiet = crate::app::Quiet {
+            muted: cfg.warnings.mute.iter().map(|e| e.value.clone()).collect(),
+            coalesce: cfg.warnings.coalesce.unwrap_or(true),
+        };
+        // A code nothing knows is a mute that would never fire, which is the silently-ignored
+        // key this tree names: it is said with the line, and the rest of the list stands.
+        for e in &cfg.warnings.mute {
+            if !known_warning(&e.value) {
+                problems.push(format!(
+                    "{}: [warnings] mute `{}` is not a warning code this build knows - the codes \
+                     are in `letibot_sessionlog::warning::TABLE`",
+                    e.from, e.value
+                ));
+            }
+        }
+        self.quiet.muted.retain(|code| known_warning(code));
+        let (overrides, key_said) = KeyOverrides::resolve(&cfg.keys);
+        self.key_overrides = overrides;
+        problems.extend(key_said);
+        let (profiles, profile_said) = Profiles::resolve(&cfg.verbosity);
+        self.profiles = profiles;
+        problems.extend(profile_said);
+        if !problems.is_empty() {
+            self.say(&problems.join(" · "));
+        }
+    }
+
     /// The head's current choices, as the file holds them.
     pub(crate) fn prefs(&self) -> crate::prefs::HeadPrefs {
         crate::prefs::HeadPrefs {
@@ -293,7 +348,7 @@ impl App {
             tools: fold_word(self.tools).into(),
             raw_calls: self.raw_calls,
             todos_fold_done: self.todos_fold_done,
-            verbosity: self.visibility.as_str(),
+            verbosity: self.verbosity_name(),
             retired: self.dismissed.clone(),
             todo_template: self.todo_template.clone(),
             todo_seed: self.todo_seed.clone(),
@@ -377,7 +432,7 @@ impl App {
         ));
         rows.push(head(
             "verbosity",
-            self.visibility.as_str(),
+            self.verbosity_name(),
             ConfigEdit::Head(HeadSetting::Verbosity),
         ));
         rows.push(head(

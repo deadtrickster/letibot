@@ -47,10 +47,8 @@ pub(crate) const WALL_CONTINUES: usize = 3;
 // The plan check's schedule is the board's own and lives beside it, because two runtimes serve it:
 // a session from its turns, and the bridge's Claude Code seat from its tool calls (`docs/seat-todo.md`).
 // The three types stay `pub` under their old names: an integration test drives a clock by hand.
-pub use letibot_tools::builtins::todo::{NagHold, QueueNews, TodoNagClock};
-pub(crate) use letibot_tools::builtins::todo::{
-    TODO_NAG_AFTER, the_check_may_ask_about, the_plan_as_checked,
-};
+pub use letibot_tools::builtins::todo::{NagHold, NagTimings, QueueNews, TodoNagClock};
+pub(crate) use letibot_tools::builtins::todo::{the_check_may_ask_about, the_plan_as_checked};
 // What only the idle-nag suite below reads: it composes the sentence and drives the ladder
 // itself, so it takes these under the names they had before the schedule moved.
 #[cfg(test)]
@@ -341,9 +339,10 @@ pub struct Sessions<'a> {
     /// Each session's idle plan-check clock - absent for a session with nothing to check. See
     /// [`TodoNagClock`], the one clock shared with the thread that serves a subagent.
     nags: HashMap<String, TodoNagClock>,
-    /// The window a session's clock is made with - [`TODO_NAG_AFTER`] in every daemon, and a
-    /// field only so a test can drive a delivery without sleeping through a minute.
-    nag_window: Duration,
+    /// The numbers every session's clock is made with: `[nag]`'s three over the clock's own, and
+    /// the census's repeat from `[queue]` - [`NagTimings::default`] is the daemon that shipped, and
+    /// a field so a test can drive a delivery without sleeping through a minute.
+    nag: NagTimings,
     /// When to next look for a tool call nothing will answer. See `arm_sweep`.
     sweep_at: Option<Instant>,
     /// When to next look for a subagent this worker holds that has been idle long enough to park - 's idle-child policy, for the children served here rather than on their own thread.
@@ -692,7 +691,7 @@ impl<'a> Sessions<'a> {
             seated: HashMap::new(),
             fabric_seen: HashMap::new(),
             nags: HashMap::new(),
-            nag_window: TODO_NAG_AFTER,
+            nag: cfg.leticode.nag_timings(),
             sweep_at: None,
             park_at: None,
             // Due at once: the first idle pass looks. A daemon that started between a review's
@@ -954,7 +953,7 @@ impl<'a> Sessions<'a> {
             seated: HashMap::new(),
             fabric_seen: HashMap::new(),
             nags: HashMap::new(),
-            nag_window: self.nag_window,
+            nag: self.nag,
             sweep_at: None,
             park_at: None,
             // The daemon's own clocks are the daemon's. A court with a review clock or an
@@ -2380,11 +2379,11 @@ impl<'a> Sessions<'a> {
             &self.parts.tasks,
             letibot_sessionlog::registry::now_ms(),
         );
-        let window = self.nag_window;
+        let timings = self.nag;
         let clock = self
             .nags
             .entry(session_id.to_string())
-            .or_insert_with(|| TodoNagClock::with_window(window));
+            .or_insert_with(|| TodoNagClock::with_timings(timings));
         clock.hold(hold);
         clock.queue(news);
         clock.operator_added(&rows, Instant::now(), &children, &jobs);
@@ -2403,11 +2402,11 @@ impl<'a> Sessions<'a> {
             &self.parts.tasks,
             letibot_sessionlog::registry::now_ms(),
         );
-        let window = self.nag_window;
+        let timings = self.nag;
         let clock = self
             .nags
             .entry(session_id.to_string())
-            .or_insert_with(|| TodoNagClock::with_window(window));
+            .or_insert_with(|| TodoNagClock::with_timings(timings));
         clock.hold(hold);
         clock.queue(news);
         clock.rearm(&rows, Instant::now(), &children, &jobs);
@@ -2700,7 +2699,7 @@ impl<'a> Sessions<'a> {
     /// delivery has to be drivable without sleeping through [`TODO_NAG_AFTER`]. Clocks that already
     /// exist take the new window, and every session is re-armed with it.
     pub fn set_nag_window(&mut self, window: Duration) {
-        self.nag_window = window;
+        self.nag.window = window;
         // And every session's own thread, which keeps its own clock. A court made after this
         // is given the new window by `court_of`. A session that moved its clock is disarmed and
         // re-armed on the session's own thread, on the rows it holds there.
@@ -2723,6 +2722,7 @@ impl<'a> Sessions<'a> {
     /// for the plan's window and [`TodoNagClock::set_repeat`] is one level down. A test that
     /// waited two hours for the second delivery would not be a test.
     pub fn set_stuck_repeat(&mut self, repeat: Duration) {
+        self.nag.census_repeat = repeat;
         let courted: Vec<String> = self.courts.keys().cloned().collect();
         for id in courted {
             if let Some(court) = self.courts.get(&id) {

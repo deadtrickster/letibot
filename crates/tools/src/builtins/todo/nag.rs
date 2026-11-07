@@ -32,6 +32,29 @@ pub const NAG_REPEAT_CAP: Duration = Duration::from_secs(30 * 60);
 /// queue is not a stalled plan, and the rate is chosen against the queue's own units.
 pub const STUCK_REPEAT: Duration = Duration::from_secs(2 * 60 * 60);
 
+/// The four numbers the clock's two schedules are made of, as one value: the idle window before the
+/// plan-check, the shortest re-arm an operator add earns, the ceiling a repeated check retreats to,
+/// and how often the queue's census is said again. `[nag]` and `[queue]` in `leticode.toml` set
+/// them; [`Default`] is the four constants above - today's daemon, and the one home for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NagTimings {
+    pub window: Duration,
+    pub floor: Duration,
+    pub cap: Duration,
+    pub census_repeat: Duration,
+}
+
+impl Default for NagTimings {
+    fn default() -> Self {
+        NagTimings {
+            window: TODO_NAG_AFTER,
+            floor: OPERATOR_ADD_NAG_AFTER,
+            cap: NAG_REPEAT_CAP,
+            census_repeat: STUCK_REPEAT,
+        }
+    }
+}
+
 /// Whether a row is work the idle plan-check may speak about. A `Completed`, `Postponed` or
 /// `Cancelled` row owes nothing
 pub fn the_check_may_ask_about(
@@ -116,6 +139,12 @@ impl QueueNews {
 pub struct TodoNagClock {
     /// How long after the last turn or board move the check comes due.
     window: Duration,
+    /// The ceiling the repeated check retreats to - [`NAG_REPEAT_CAP`] unless `leticode.toml`'s
+    /// `[nag] repeat_cap_seconds` said otherwise, on `window`'s own rule one gate down.
+    cap: Duration,
+    /// The shortest re-arm an operator add earns - [`OPERATOR_ADD_NAG_AFTER`], or the file's
+    /// `[nag] floor_seconds`. A person who has just added a row is not reading anything.
+    floor: Duration,
     /// When the check comes due, or `None` for a session with nothing to check - which is
     /// the common case, and the one that keeps the waiter's sleep unbounded (the worker's
     /// `next_nag_at` returns NIL; a child's `take_own_work_until` gets `None`).
@@ -144,7 +173,7 @@ pub struct TodoNagClock {
     queue: QueueNews,
     /// How long between two deliveries of the census - [`STUCK_REPEAT`] in every daemon, and a
     /// field for `window`'s reason exactly: a test that waited two hours would not be a test. See
-    /// [`Self::set_repeat`].
+    /// [`Self::set_repeat`], and `[queue] stuck_repeat_seconds` for the key that sets it.
     repeat: Duration,
     /// When the census is next due, or `None` when nothing is stuck - a deadline of its own
     /// beside the plan's. A notice whose text carries a GROWING NUMBER cannot be paced by
@@ -171,18 +200,21 @@ pub enum NagHold {
 }
 
 impl TodoNagClock {
-    /// The production clock: the window every session gets, whoever serves it.
-    /// `pub` for `serve_child_under`'s signature, which a test drives - the constructor
-    /// a caller should reach for is this one, `with_window` is the tests' door.
+    /// The production clock: the numbers every session gets, whoever serves it - today's four,
+    /// because a daemon with no `[nag]` in `leticode.toml` is the daemon that shipped.
+    /// `pub` for `serve_child_under`'s signature, which a test drives - the constructor a caller
+    /// should reach for is [`Self::with_timings`], and `with_window` is the tests' door.
     pub fn new() -> Self {
-        Self::with_window(TODO_NAG_AFTER)
+        Self::with_timings(NagTimings::default())
     }
 
-    /// A clock with a different window - the tests' door, and only theirs: driving the
-    /// schedule has to be possible without sleeping through the window it pins.
-    pub fn with_window(window: Duration) -> Self {
+    /// A clock on `leticode.toml`'s numbers: `[nag]` over [`NagTimings::default`], and the
+    /// census's repeat from `[queue]`. See [`NagTimings`].
+    pub fn with_timings(t: NagTimings) -> Self {
         TodoNagClock {
-            window,
+            window: t.window,
+            cap: t.cap,
+            floor: t.floor,
             due: None,
             armed_for: None,
             nagged: None,
@@ -190,9 +222,29 @@ impl TodoNagClock {
             repeats: 0,
             hold: NagHold::Running,
             queue: QueueNews::none(),
-            repeat: STUCK_REPEAT,
+            repeat: t.census_repeat,
             census_due: None,
             census_said_at: None,
+        }
+    }
+
+    /// A clock with a different window - the tests' door, and only theirs: driving the
+    /// schedule has to be possible without sleeping through the window it pins.
+    pub fn with_window(window: Duration) -> Self {
+        Self::with_timings(NagTimings {
+            window,
+            ..NagTimings::default()
+        })
+    }
+
+    /// The numbers this clock runs on, as one value - what `Sessions` hands to a court, so a
+    /// session's own thread keeps the four the daemon opened it with.
+    pub fn timings(&self) -> NagTimings {
+        NagTimings {
+            window: self.window,
+            floor: self.floor,
+            cap: self.cap,
+            census_repeat: self.repeat,
         }
     }
 
@@ -343,12 +395,12 @@ impl TodoNagClock {
     }
 
     /// How long after the last delivery the same notice may be sent again - the base window
-    /// doubled once per delivery, capped at [`NAG_REPEAT_CAP`] because a reminder that has retreated
+    /// doubled once per delivery, capped at [`Self::cap`] because a reminder that has retreated
     /// into an hour is a plan that can stall unnoticed for an afternoon.
     fn interval(&self) -> Duration {
         let mut interval = self.window;
         for _ in 0..self.repeats {
-            interval = (interval * 2).min(NAG_REPEAT_CAP);
+            interval = (interval * 2).min(self.cap);
         }
         interval
     }
@@ -380,7 +432,7 @@ impl TodoNagClock {
             return;
         }
         if nag_should_arm(todos, None, children, jobs) {
-            self.due = Some(now + self.window.min(OPERATOR_ADD_NAG_AFTER));
+            self.due = Some(now + self.window.min(self.floor));
         }
     }
 

@@ -152,6 +152,7 @@ pub(crate) fn is_absorbed(
     absorbed: &std::collections::HashMap<String, String>,
     notes: &[(Placed, Note)],
     dismissed: &[String],
+    quiet: &crate::app::Quiet,
     marks: &[(String, u64)],
     item_id: &str,
 ) -> bool {
@@ -159,7 +160,8 @@ pub(crate) fn is_absorbed(
         dismissed.contains(key)
             || notes.iter().any(|(place, n)| {
                 note_key(n) == *key
-                    && (matches!(place, Placed::Seam(_)) || note_retired(dismissed, marks, n))
+                    && (matches!(place, Placed::Seam(_))
+                        || note_retired(dismissed, quiet, marks, n))
             })
     })
 }

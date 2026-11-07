@@ -4,13 +4,18 @@
 use crate::ui::render::{RenderConfig, row_strings};
 use rano::agent::help::HelpPane;
 
-pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
+pub(crate) fn help_lines(
+    cfg: &RenderConfig,
+    w: usize,
+    keys: &crate::app::KeyOverrides,
+) -> Vec<String> {
     // The panes' rows are generated from their key tables: how each is opened, what it is, and
     // every key it takes, read from `Surface::bindings`, the table its keys are dispatched from -
-    // so help cannot name a key the pane does not take, nor miss one it does.
+    // so help cannot name a key the pane does not take, nor miss one it does. `keys` is
+    // `leticode.toml`'s `[keys]`: a rebound key is the one in force, so it is the one named.
     let panes: Vec<(String, String)> = crate::app::Surface::ALL
         .into_iter()
-        .filter_map(crate::app::App::surface_help)
+        .filter_map(|s| crate::app::surface_help_keys(s, keys))
         .collect();
     let rows = [
         (

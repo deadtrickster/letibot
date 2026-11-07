@@ -1713,6 +1713,7 @@ dependencies = [
  "letibot-transcript",
  "letibot-ui",
  "letibot-vt",
+ "leticode-config",
  "libc",
  "rano",
  "serde",

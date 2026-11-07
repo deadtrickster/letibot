@@ -11,6 +11,12 @@ use super::desk;
 /// twice.
 pub const STUCK_AFTER_MS: u64 = 15 * 60 * 1000;
 
+/// [`STUCK_AFTER_MS`], or the project's `[queue] stuck_after_seconds` when the file named one.
+/// One reader of the two, because the census's arming, its sentence and its identity each ask.
+pub fn after_ms(setting: Option<u64>) -> u64 {
+    setting.map_or(STUCK_AFTER_MS, |s| s.saturating_mul(1000))
+}
+
 /// How often the census is said again while the rows stay stuck - the rate this notice has
 /// of its own. Two hours, in the queue's own units
 pub const STUCK_REPEAT_MS: u64 = 2 * 60 * 60 * 1000;
@@ -45,20 +51,21 @@ impl Stuck {
     }
 
     /// Whether the census is the idle pass's business: there are rows stuck, and the oldest has
-    /// been stuck longer than [`STUCK_AFTER_MS`]. One row that went bad a minute ago is the
+    /// been stuck longer than `after_ms` - [`STUCK_AFTER_MS`], or the project's
+    /// `[queue] stuck_after_seconds` ([`after_ms`]). One row that went bad a minute ago is the
     /// transition's, and saying it again adds nothing.
-    pub fn is_news(&self, now_ms: u64) -> bool {
-        !self.is_empty() && self.oldest_age_ms(now_ms) >= STUCK_AFTER_MS
+    pub fn is_news(&self, now_ms: u64, after_ms: u64) -> bool {
+        !self.is_empty() && self.oldest_age_ms(now_ms) >= after_ms
     }
 
     /// How long until it is: the deadline a clock arms for when rows are stuck but too young. The
     /// crossing is not an event anything rings, so without a deadline here the census would wait
     /// for a turn a quiet session may never take. `None` when nothing is stuck or it is news.
-    pub fn news_in_ms(&self, now_ms: u64) -> Option<u64> {
-        if self.is_empty() || self.is_news(now_ms) {
+    pub fn news_in_ms(&self, now_ms: u64, after_ms: u64) -> Option<u64> {
+        if self.is_empty() || self.is_news(now_ms, after_ms) {
             return None;
         }
-        Some(STUCK_AFTER_MS - self.oldest_age_ms(now_ms))
+        Some(after_ms - self.oldest_age_ms(now_ms))
     }
 
     /// The counts as one clause - `3 failed · 5 conflict`.

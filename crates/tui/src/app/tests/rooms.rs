@@ -419,7 +419,9 @@ fn the_bar_says_what_the_roster_key_would_do() {
     assert!(bar.contains("r roster: hides the offline members"), "{bar}");
     assert!(!bar.contains("lists the offline"), "{bar}");
     // The help lists both, because it is read without a pane in front of it.
-    let (_, help) = App::surface_help(Surface::Rooms).expect("rooms is in the help");
+    let (_, help) = a
+        .surface_help(Surface::Rooms)
+        .expect("rooms is in the help");
     assert!(
         help.contains("r roster: lists or hides the offline members"),
         "{help}"

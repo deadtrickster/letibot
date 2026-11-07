@@ -183,14 +183,37 @@ impl App {
                 .iter()
                 .map(|p| (p.name.to_string(), p.why.to_string()))
                 .collect();
+            // And the profiles `leticode.toml` defines, after the head's five: a profile a file adds
+            // is a profile the card must offer, or the only way to it is the file again. Its `why`
+            // is the list itself, because that IS the profile - spelled as the switches the head
+            // draws, so a reader can see what they are choosing.
+            rows.extend(self.profiles.named().iter().map(|(name, vis)| {
+                let shows: Vec<String> = Show::ALL
+                    .iter()
+                    .filter(|s| vis.shows(**s))
+                    .map(|s| format!("{}={}", s.name(), vis.level(*s).as_str()))
+                    .collect();
+                (
+                    name.clone(),
+                    format!(
+                        "the file's own — {}",
+                        if shows.is_empty() {
+                            "nothing but the conversation".to_string()
+                        } else {
+                            shows.join(" ")
+                        }
+                    ),
+                )
+            }));
             // And the set in force, when no profile names it: the rows above are the table and the
             // set is runtime state, so a set off the ladder would have no row. Its name is the
             // `custom ...` string `as_str` writes to be typed back, which is what `pick_current` marks.
-            if self.visibility.profile().is_none()
-                && !rows.iter().any(|(v, _)| v == &self.visibility.as_str())
+            if self.profiles.name_of(self.visibility).is_none()
+                && self.visibility.profile().is_none()
+                && !rows.iter().any(|(v, _)| v == &self.verbosity_name())
             {
                 rows.push((
-                    self.visibility.as_str(),
+                    self.verbosity_name(),
                     "the set in force — no profile names it, and Enter on this row keeps it"
                         .to_string(),
                 ));
@@ -222,7 +245,7 @@ impl App {
     /// custom set is marked like any other state instead of matching nothing.
     pub(crate) fn pick_current(&self) -> String {
         match self.pick {
-            Some(Pick::Verbosity) => self.visibility.as_str(),
+            Some(Pick::Verbosity) => self.verbosity_name(),
             Some(Pick::Repo) => self
                 .git_pinned
                 .as_deref()

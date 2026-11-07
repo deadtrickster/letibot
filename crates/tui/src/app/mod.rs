@@ -476,6 +476,17 @@ pub struct App {
     /// resync. A note is a disclosure and not a record, so retired is not deleted: it is hidden,
     /// counted and findable. The keys live in `head.toml` because a restart is how the wall came back.
     pub(crate) dismissed: Vec<String>,
+    /// The warning KINDS `leticode.toml`'s `[warnings] mute` names, and whether a burst of one
+    /// kind is one counted row: filed and counted, and never drawn. One line for a kind rather
+    /// than a `retired` key per copy - the 127 dismissals of `model_slow_first_byte` a head can
+    /// carry are this one entry. See [`crate::prefs::leticode`].
+    pub(crate) quiet: Quiet,
+    /// The surface keys `leticode.toml`'s `[keys]` moved, resolved against the tables in
+    /// `app::keys::bindings`.
+    pub(crate) key_overrides: KeyOverrides,
+    /// The profiles `leticode.toml`'s `[verbosity.<name>]` tables define, each the set of things
+    /// it shows.
+    pub(crate) profiles: Profiles,
     /// What this reader has read, by kind: the watermark `ctrl-n` leaves. A copy whose words
     /// differ is a different key, so a hide cannot say what the reader means; the newest `ts` per
     /// code can. Per kind, so a warning kind never seen before still has no mark to be older than.
@@ -1284,6 +1295,9 @@ impl App {
             dec_content_len: 0,
             dec_content_room: 0,
             dismissed: Vec::new(),
+            quiet: Quiet::shipped(),
+            key_overrides: KeyOverrides::default(),
+            profiles: Profiles::default(),
             read_marks: Vec::new(),
             heads: 0,
             hist_renders: 0,
@@ -1633,6 +1647,10 @@ pub use editor::*;
 pub(crate) use events::*;
 pub(crate) use hits::*;
 pub use keys::*;
+// The two `[keys]` values the bar and the help screen read, named here because `keys` is a private
+// module of `app` and `ui` is its sibling: a help screen that named the key a rebinding replaced
+// would be the advertisement W8 forbids.
+pub(crate) use keys::bindings::{KeyOverrides, surface_help_keys};
 pub(crate) use links::{link_path_lines, osc8_spans};
 pub(crate) use notes::*;
 pub(crate) use panes::*;

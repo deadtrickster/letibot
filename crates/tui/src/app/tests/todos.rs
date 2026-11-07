@@ -3428,7 +3428,9 @@ fn the_bar_says_d_shows_the_group_and_then_that_it_folds_it() {
         "the bar still offers the act that already happened: {bar}"
     );
     // The help lists both, because it is read without a list in front of it.
-    let (_, help) = App::surface_help(Surface::Todos).expect("the todos pane is in the help");
+    let (_, help) = a
+        .surface_help(Surface::Todos)
+        .expect("the todos pane is in the help");
     assert!(
         help.contains("folds the done group, or shows it again"),
         "{help}"

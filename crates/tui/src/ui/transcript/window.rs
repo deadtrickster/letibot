@@ -762,6 +762,7 @@ impl App {
             lift,
             run_tools,
             dismissed,
+            quiet,
             read_marks,
             absorbed,
             ..
@@ -805,10 +806,11 @@ impl App {
             if note_next {
                 // A retired note contributes nothing, not its text and not the blank above it: the reading has
                 // happened, and skipping the blank is what makes the wall go rather than become a column of gaps.
-                if !crate::app::note_retired(dismissed, read_marks, &notes[*note_upto].1) {
+                if !crate::app::note_retired(dismissed, quiet, read_marks, &notes[*note_upto].1) {
                     // One row per kind, counted: a burst of notices of the same kind is drawn once at its first live
                     // member, and the others draw nothing at all, not even the blank.
-                    let burst = crate::app::burst_at(notes, dismissed, read_marks, *note_upto);
+                    let burst =
+                        crate::app::burst_at(notes, dismissed, quiet, read_marks, *note_upto);
                     let drawn: Option<DrawnNote> = match &burst {
                         crate::app::Burst::Drawn => None,
                         // Every note but a pane's ending is a card's one line, and a click opens it whole: where it
@@ -947,6 +949,7 @@ impl App {
                     absorbed,
                     notes,
                     dismissed,
+                    quiet,
                     read_marks,
                     items[*hist_upto].item_id.as_str(),
                 );

@@ -222,7 +222,7 @@ fn a_parked_review_is_not_a_stuck_landing() {
 
     let census = of(&s, &[repo.to_string()]).expect("the census");
     assert!(census.is_empty(), "{census:?}");
-    assert!(!census.is_news(u64::MAX / 2));
+    assert!(!census.is_news(u64::MAX / 2, STUCK_AFTER_MS));
 }
 
 /// The age is the oldest row's own `state_ms`: when it entered the state it is stuck in, which is
@@ -252,21 +252,33 @@ fn a_young_census_is_not_news_and_says_when_it_will_be() {
 
     let census = of(&s, &[repo.to_string()]).expect("the census");
     // A minute in: the transition's news, and the census waits out the rest of the quarter-hour.
-    assert!(!census.is_news(1_000 + 60_000), "{census:?}");
+    assert!(
+        !census.is_news(1_000 + 60_000, STUCK_AFTER_MS),
+        "{census:?}"
+    );
     assert_eq!(
-        census.news_in_ms(1_000 + 60_000),
+        census.news_in_ms(1_000 + 60_000, STUCK_AFTER_MS),
         Some(STUCK_AFTER_MS - 60_000)
     );
     // Exactly at the line, and past it.
-    assert!(census.is_news(1_000 + STUCK_AFTER_MS), "{census:?}");
-    assert!(census.is_news(1_000 + 8 * 3_600_000), "{census:?}");
-    assert_eq!(census.news_in_ms(1_000 + 8 * 3_600_000), None);
+    assert!(
+        census.is_news(1_000 + STUCK_AFTER_MS, STUCK_AFTER_MS),
+        "{census:?}"
+    );
+    assert!(
+        census.is_news(1_000 + 8 * 3_600_000, STUCK_AFTER_MS),
+        "{census:?}"
+    );
+    assert_eq!(
+        census.news_in_ms(1_000 + 8 * 3_600_000, STUCK_AFTER_MS),
+        None
+    );
 
     // And nothing stuck is never news, however long the daemon runs.
     let empty = of(&s, &["/tmp/no-queue-here".to_string()]).expect("the census");
     assert!(empty.is_empty());
-    assert!(!empty.is_news(u64::MAX / 2));
-    assert_eq!(empty.news_in_ms(0), None);
+    assert!(!empty.is_news(u64::MAX / 2, STUCK_AFTER_MS));
+    assert_eq!(empty.news_in_ms(0, STUCK_AFTER_MS), None);
     assert_eq!(empty.said(), "");
 }
 
@@ -406,4 +418,68 @@ fn what_the_scoped_read_costs() {
         census.total
     );
     assert_eq!(census.total, 20, "and it counts only this project's rows");
+}
+
+/// K9's done-test: the queue's two census numbers come from `leticode.toml`'s `[queue]`, and with
+/// no key at all they are today's daemon, number for number - the phase's other half, *every key
+/// at its default is byte-identical to today*.
+#[test]
+fn queue_constants_come_from_config_with_todays_defaults() {
+    // The daemon that shipped: fifteen minutes, and the same as the constant the doc names.
+    assert_eq!(STUCK_AFTER_MS, 15 * 60 * 1000);
+    assert_eq!(after_ms(None), STUCK_AFTER_MS);
+    // And the file's answer, in the file's own unit: seconds.
+    assert_eq!(after_ms(Some(900)), 900_000);
+    assert_eq!(after_ms(Some(1)), 1_000);
+
+    // A census's arming and its sentence both read the one number, so a project that says *five
+    // minutes* is news at five and not at fifteen.
+    let (_dir, s) = store("stuck-config");
+    let repo = "/tmp/stuck-config";
+    a_landing(&s, repo, "m-one", MergeState::Failed, 1_000);
+    let census = of(&s, &[repo.to_string()]).expect("the census");
+    let five = after_ms(Some(300));
+    assert!(!census.is_news(1_000 + 60_000, five), "{census:?}");
+    assert!(census.is_news(1_000 + 300_000, five), "{census:?}");
+    assert_eq!(census.news_in_ms(1_000 + 60_000, five), Some(240_000));
+
+    // The two keys through the reader, and the plan-check's four alongside them: `[nag]` over
+    // `NagTimings::default`, with the census's repeat coming from `[queue]`.
+    let dir = std::env::temp_dir().join(format!("letibot-k9-queue-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(crate::leticode_config::FILE_NAME);
+    std::fs::write(
+        &file,
+        "[queue]\nstuck_after_seconds = 300\nstuck_repeat_seconds = 600\n",
+    )
+    .unwrap();
+    let none = crate::leticode_config::LeticodeConfig::load(&file).unwrap();
+    assert_eq!(after_ms(none.stuck_after_seconds()), five);
+    assert_eq!(
+        none.nag_timings(),
+        letibot_tools::builtins::todo::NagTimings {
+            census_repeat: std::time::Duration::from_secs(600),
+            ..letibot_tools::builtins::todo::NagTimings::default()
+        },
+        "`[queue] stuck_repeat_seconds` is the clock's census repeat"
+    );
+    std::fs::write(
+        &file,
+        "[nag]\nafter_seconds = 90\nrepeat_cap_seconds = 1200\n",
+    )
+    .unwrap();
+    let nag = crate::leticode_config::LeticodeConfig::load(&file).unwrap();
+    let timings = nag.nag_timings();
+    assert_eq!(timings.window, std::time::Duration::from_secs(90));
+    assert_eq!(timings.cap, std::time::Duration::from_secs(1200));
+    let shipped = letibot_tools::builtins::todo::NagTimings::default();
+    assert_eq!(
+        shipped.census_repeat,
+        letibot_tools::builtins::todo::STUCK_REPEAT,
+        "and the census's repeat at its default is the constant it always was"
+    );
+    assert_eq!(timings.census_repeat, shipped.census_repeat);
+    assert_eq!(after_ms(None), STUCK_AFTER_MS, "and the queue's own is too");
+    let _ = std::fs::remove_dir_all(&dir);
 }

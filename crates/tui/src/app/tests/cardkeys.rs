@@ -853,7 +853,8 @@ fn the_waiting_line_is_about_what_is_not_on_the_screen() {
 /// /help names the card keys, alt-r/alt-p, and that ctrl-c twice asks rather than quits.
 #[test]
 fn the_help_names_the_card_keys() {
-    let help = help_lines(&app().cfg, 200).join("\n");
+    let a = app();
+    let help = help_lines(&a.cfg, 200, &a.key_overrides).join("\n");
     for words in [
         "alt-a brings",
         "alt-r reseats",

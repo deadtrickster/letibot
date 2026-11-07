@@ -8,6 +8,26 @@ use letibot_sessionlog::view::{SettledDecision, Warned};
 /// box.
 pub(crate) const NOTES_KEPT: usize = 64;
 
+/// What this head keeps quiet: the warning kinds `leticode.toml`'s `[warnings] mute` names, and
+/// whether a burst of one kind is one counted row (`[warnings] coalesce`, whose default is
+/// today's head). One value because the drawing walk reads the two together, and a kind's mute is
+/// answered before its burst is counted.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Quiet {
+    pub(crate) muted: Vec<String>,
+    pub(crate) coalesce: bool,
+}
+
+impl Quiet {
+    /// The head's own answer: nothing muted, and bursts counted.
+    pub(crate) fn shipped() -> Quiet {
+        Quiet {
+            muted: Vec::new(),
+            coalesce: true,
+        }
+    }
+}
+
 impl App {
     /// Post a transient line, which lives for [`NOTICE_MS`] of wall time and then gets out of the way. It does not
     /// take the input line's place, since a head that did left nowhere to see what you were typing for the rest of
@@ -48,14 +68,16 @@ impl App {
         let at = self.items.len();
         // A note joining a burst changes a row that is already drawn: the count lives in the first member's seam and
         // the walk is incremental, so the rewind goes to the row before it. The chain is with the previous note of
-        // its KIND, since the wall interleaves two codes.
-        let head = coalescable(&n).and_then(|_| {
-            let prev = self
-                .notes
-                .iter()
-                .rposition(|(place, o)| matches!(place, Placed::Seam(_)) && chains(o, &n))?;
-            Some(burst_head(&self.notes, prev))
-        });
+        // its KIND, since the wall interleaves two codes - and `[warnings] coalesce = false` means nothing joins.
+        let head = coalescable(&n)
+            .filter(|_| self.quiet.coalesce)
+            .and_then(|_| {
+                let prev = self
+                    .notes
+                    .iter()
+                    .rposition(|(place, o)| matches!(place, Placed::Seam(_)) && chains(o, &n))?;
+                Some(burst_head(&self.notes, prev))
+            });
         let head = head.and_then(|i| match self.notes[i].0 {
             Placed::Seam(at) => Some(at),
             Placed::Before => None,
@@ -85,11 +107,13 @@ impl App {
         }
     }
 
-    /// Is this note one the reader has retired? A retired note is not rendered and nothing else changes: it stays in
-    /// `notes`, [`App::notes_lines`] lists it, [`App::retired_notes`] counts it. The key set and the watermark are
-    /// two ways to the one question.
+    /// Is this note one the reader does not see? A retired note is not rendered and nothing else changes: it stays in
+    /// `notes`, [`App::notes_lines`] lists it, [`App::retired_notes`] counts it. The key set, the
+    /// muted kinds and the watermark are three ways to the one question.
     pub(crate) fn is_retired(&self, n: &Note) -> bool {
-        self.dismissed.contains(&note_key(n)) || already_read(&self.read_marks, n)
+        self.dismissed.contains(&note_key(n))
+            || muted(&self.quiet, n)
+            || already_read(&self.read_marks, n)
     }
 
     /// What this reader has read of one kind of notice - the newest `ts` a `ctrl-n`
@@ -620,8 +644,20 @@ pub(crate) fn chains(a: &Note, b: &Note) -> bool {
 
 /// Is this note one the reader has retired? - [`App::is_retired`] as a free function, for the
 /// walk and for [`burst_at`], which hold the head's fields destructured.
-pub(crate) fn note_retired(dismissed: &[String], marks: &[(String, u64)], n: &Note) -> bool {
-    dismissed.contains(&note_key(n)) || already_read(marks, n)
+pub(crate) fn note_retired(
+    dismissed: &[String],
+    quiet: &Quiet,
+    marks: &[(String, u64)],
+    n: &Note,
+) -> bool {
+    dismissed.contains(&note_key(n)) || muted(quiet, n) || already_read(marks, n)
+}
+
+/// Is this note's KIND one `[warnings] mute` names? The kind is what `ctrl-n` retires by - the
+/// warning code, or `family`'s answer for one that carries an id - so a mute says it once per
+/// kind instead of once per copy.
+pub(crate) fn muted(quiet: &Quiet, n: &Note) -> bool {
+    note_kind(n).is_some_and(|kind| quiet.muted.iter().any(|m| m == kind))
 }
 
 /// The `ts` of note `j` when it may chain with `kind` - drawn, coalescable, the same kind.
@@ -691,9 +727,15 @@ pub(crate) enum Burst {
 pub(crate) fn burst_at(
     notes: &[(Placed, Note)],
     dismissed: &[String],
+    quiet: &Quiet,
     marks: &[(String, u64)],
     i: usize,
 ) -> Burst {
+    // `[warnings] coalesce = false` is one row per notice and no counting: the reader asked for
+    // every copy, and a burst would draw one of them.
+    if !quiet.coalesce {
+        return Burst::Single;
+    }
     let Some((kind, _)) = coalescable(&notes[i].1) else {
         return Burst::Single;
     };
@@ -701,7 +743,7 @@ pub(crate) fn burst_at(
     // them, and an index range would count a neighbour as a member.
     let live: Vec<usize> = (burst_head(notes, i)..=burst_end(notes, i))
         .filter(|&j| chained_ts(notes, j, kind).is_some())
-        .filter(|&j| !note_retired(dismissed, marks, &notes[j].1))
+        .filter(|&j| !note_retired(dismissed, quiet, marks, &notes[j].1))
         .collect();
     if live.first() != Some(&i) {
         return Burst::Drawn;

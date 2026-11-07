@@ -3,7 +3,7 @@
 //! a chord the bar names is the chord the dispatch runs.
 
 use super::*;
-use crate::app::keys::bindings::{Guard, On, Says};
+use crate::app::keys::bindings::{Act, Guard, On, Says};
 
 /// A plain letter always carries the empty-composer guard - the letters are the operator's
 /// to type first. The queue pane's `a`/`v`/`d`/`r` had no guard where the subagents pane's
@@ -78,14 +78,15 @@ fn running_child(a: &mut App) {
 /// added later with words cannot be missing from either.
 #[test]
 fn every_binding_that_says_something_is_on_the_bar_and_in_the_help() {
-    let help = help_lines(&app().cfg, 400).join("\n");
+    let head = app();
+    let help = help_lines(&head.cfg, 400, &head.key_overrides).join("\n");
     for s in Surface::ALL {
         let mut a = app();
         a.session_id = "s1".into();
         running_child(&mut a);
         a.push_surface(s);
         let bar = a.hint_bar(1000);
-        let row = App::surface_help(s);
+        let row = a.surface_help(s);
         for b in s.bindings() {
             // What each binding says on the bar, by the route the bar takes: a `Text` says itself
             // and a `Switch` asks the head which way it stands - so one the head has no words for
@@ -238,5 +239,150 @@ fn every_says_literal_on_the_conversation_bar_does_what_it_says() {
             }
             other => panic!("the bar names {other:?} and no test drives it"),
         }
+    }
+}
+
+// ---- K9: `[keys]` in `leticode.toml` ----
+
+/// One `[keys]` line, as the reader hands it over: the name, the key, and the line it was on.
+fn rebind(name: &str, key: &str) -> leticode_config::Rebind {
+    leticode_config::Rebind {
+        name: name.into(),
+        key: key.into(),
+        from: letibot_tools::exec::boundary::Origin {
+            file: std::path::PathBuf::from("/tmp/leticode.toml"),
+            line: 7,
+            user: false,
+        },
+    }
+}
+
+/// K9's done-test: a rebound key is honoured - the new key reaches the binding, the old one does
+/// not, and the bar and the help say the new one - and a key the head claims GLOBALLY is not
+/// rebindable, which is W8's rule: a binding is rebound within its surface, never the escape.
+#[test]
+fn a_rebound_key_is_honoured_and_a_global_chord_is_not_rebindable() {
+    let keys = leticode_config::KeyKeys {
+        rebind: vec![rebind("todos.d", "f")],
+    };
+    let (overrides, said) = KeyOverrides::resolve(&keys);
+    assert!(said.is_empty(), "a well-formed line was refused: {said:?}");
+
+    let mut a = app();
+    a.session_id = "s1".into();
+    running_child(&mut a);
+    a.key_overrides = overrides;
+    a.push_surface(Surface::Todos);
+
+    // The new key reaches what `d` did, and `d` no longer does.
+    let moved = a
+        .binding_for(Surface::Todos, &Key::Char('f'))
+        .expect("`f` is not bound on the todos pane after the rebinding");
+    assert_eq!(moved.act, Act::FoldDone, "`f` reaches another act");
+    assert!(
+        !a.binding_for(Surface::Todos, &Key::Char('d'))
+            .is_some_and(|b| b.act == Act::FoldDone),
+        "the old key still reaches the binding it was moved off"
+    );
+
+    // And nothing advertises the old key: the bar's words for the move are `f`'s, and the help's
+    // are too - an advertisement of a press that does nothing is the defect W8 names. The two
+    // screens ask the binding different questions (the bar says what a press would do NOW, the
+    // help says both directions of a switch), so each is read for what it writes.
+    let now = a
+        .switch_says(&moved)
+        .expect("the binding still says something");
+    let bar = a.surface_hint(Surface::Todos);
+    assert!(bar.contains(&format!("f {now}")), "{bar}");
+    assert!(!bar.contains(&format!("d {now}")), "{bar}");
+    let both = match moved.says {
+        Says::Text(t) | Says::Switch(t) => t,
+        Says::Row | Says::Nothing => panic!("the moved binding has no words: {moved:?}"),
+    };
+    let (_, help) = a
+        .surface_help(Surface::Todos)
+        .expect("the pane is in the help");
+    assert!(help.contains(&format!("f {both}")), "{help}");
+    assert!(!help.contains(&format!("d {both}")), "{help}");
+
+    // A global chord, as the target and as the source: both refused, with the line.
+    for (name, key) in [
+        ("todos.w", "ctrl-c"),
+        ("todos.w", "esc"),
+        ("todos.ctrl-r", "x"),
+    ] {
+        let (overrides, said) = KeyOverrides::resolve(&leticode_config::KeyKeys {
+            rebind: vec![rebind(name, key)],
+        });
+        assert!(
+            overrides.moved(Surface::Todos, On::Char('w')) == On::Char('w'),
+            "{name} = {key} was applied as well as refused"
+        );
+        assert_eq!(said.len(), 1, "{name} = {key}: {said:?}");
+        assert!(
+            said[0].contains("/tmp/leticode.toml:7:"),
+            "the refusal does not name the file and the line: {}",
+            said[0]
+        );
+        assert!(
+            said[0].contains("global"),
+            "the refusal does not say why: {}",
+            said[0]
+        );
+    }
+
+    // A surface or a key this head has not got is refused by name, with the line.
+    for (name, key, want) in [
+        ("nowhere.d", "f", "names no surface"),
+        ("todos.z", "f", "is not a key of the todos"),
+        ("todos.d", "zz", "is not a key this head spells"),
+        ("todos.d", "n", "already taken on the todos"),
+    ] {
+        let (_, said) = KeyOverrides::resolve(&leticode_config::KeyKeys {
+            rebind: vec![rebind(name, key)],
+        });
+        assert_eq!(said.len(), 1, "{name} = {key}: {said:?}");
+        assert!(
+            said[0].starts_with("/tmp/leticode.toml:7:"),
+            "the refusal does not name the file and the line: {}",
+            said[0]
+        );
+        assert!(said[0].contains(want), "{name} = {key}: {}", said[0]);
+    }
+
+    // And with no `[keys]` at all, nothing moves: the shipped head is the table as written.
+    let (none, said) = KeyOverrides::resolve(&leticode_config::KeyKeys::default());
+    assert!(said.is_empty() && none.moved(Surface::Todos, On::Char('d')) == On::Char('d'));
+    assert_eq!(
+        none.moved(Surface::Todos, On::Char('d')),
+        On::Char('d'),
+        "the default override moves a key"
+    );
+}
+
+/// The refusal list is the head's own chords, and the half of it a table can prove is proved here:
+/// every chord a surface advertises and every chord a switch names is a word the rebinding refuses.
+/// The rest (esc, ctrl-c, and the chords with no table to read) are arms of `key_chords` and
+/// `key_dispatch`, so they are the list's own word - stated once, in [`GLOBAL_CHORDS`].
+#[test]
+fn the_global_chords_are_the_ones_the_tables_advertise() {
+    use crate::app::keys::bindings::{GLOBAL_CHORDS, Word, word_of};
+    let advertised = Surface::ALL
+        .iter()
+        .filter_map(|s| s.chord())
+        .chain(Show::ALL.iter().filter_map(|s| s.chord()));
+    for (name, _) in advertised {
+        assert!(
+            GLOBAL_CHORDS.contains(&name),
+            "the head claims {name} whatever is open and `[keys]` would let a surface take it"
+        );
+    }
+    // Every word on the list is a word the reader knows, so a rebind onto one is a refusal that
+    // says WHY rather than "not a key".
+    for c in GLOBAL_CHORDS {
+        assert!(
+            matches!(word_of(c), Word::Global),
+            "`{c}` is on the refusal list and its own parser does not recognise it"
+        );
     }
 }
