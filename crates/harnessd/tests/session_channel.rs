@@ -973,8 +973,9 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
     let dir = TempDir::new("harnessd-session-channel-refusal");
     let path = dir.path().join("sessions.db");
     // The review queue's own session hosts the reviewers (`Harness::serve_reviews` serves only
-    // there), so the father of the branch here IS that session - the id `gatekeeper::session` derives
-    // from this fixture's workspace, which is what `Sessions` computes for the daemon it builds.
+    // there) - the id `gatekeeper::session` derives from this fixture's workspace. The queue starts
+    // no worker of its own (its role has no `task`), so the child that did the work is a project
+    // session's, as in production, and the refusal reaches it from the queue as a peer's message.
     let main_id = letibot_harnessd::sessions::gatekeeper::session(std::path::Path::new("/tmp"));
 
     let parts = parts_for(&config(&main_id, Endpoint::new("127.0.0.1", 1), &path));
@@ -996,7 +997,7 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
     let stub = Stub::answering_by(
         vec![work, verdict, after],
         4,
-        vec![("[parent]", hearing)],
+        vec![("message from session", hearing)],
         parts.vocab.clone(),
     );
 
@@ -1005,12 +1006,13 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
     let cfg = config(&main_id, stub.endpoint.clone(), &path);
     let registry = Registry::new();
     let mut father = a_session(&main_id, &parts, &cfg, registry.clone());
+    let project = a_session("s-the-project", &parts, &cfg, registry.clone());
 
     // The child that did the work - a real one, through the real `task` tool, so it has a
     // session of its own to be sent back to.
-    let child_id = father.spawn("do the work, then stop and wait");
-    let child_hub = father.hub_of(&registry, &child_id);
-    father.wait_until_parked(&child_id);
+    let child_id = project.spawn("do the work, then stop and wait");
+    let child_hub = project.hub_of(&registry, &child_id);
+    project.wait_until_parked(&child_id);
 
     // The review row, claimed by this daemon's queue: its id and its session ARE the child.
     let branch = "agent/the-work".to_string();
@@ -1037,9 +1039,8 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
         "the child was not told what the review said: {heard_it}"
     );
     assert!(
-        heard_it.starts_with("[parent] "),
-        "and the message is the same one every door hands a session, tagged by the relation: \
-         {heard_it}"
+        heard_it.starts_with(&format!("message from session `{main_id}`: ")),
+        "and the message is the same one every door hands a session, naming the queue: {heard_it}"
     );
     assert!(
         !user_rows(&child_hub)
