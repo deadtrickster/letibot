@@ -66,6 +66,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R144 | The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag | Code work | the head's pane for a seat's board; the board, its waits and its nag are landed |
 | R152 | `tests/launcher.sh` stubs outlived their run, and four of its cases had drifted | Code work | putting `tests/launcher.sh` in the merge gate |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
+| R153 | Placing a session on a busy host times out at 20 s | Code work | all of it |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
 | R150 | Plugin extension points: the harness and head open to plugins | Needs the operator | answers to the 13 questions in `docs/plugin-extension-points-wide.md` §8 (each has a default), then packages K1-K11, P5 and P6; H0 (the pane contract types) and the room UI P0-P4 are landed |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
@@ -927,6 +928,12 @@ H0 (the contract types only, in `crates/plugin-sdk`, `crates/sessionlog/src/pane
 **Status:** fixed. left: putting `tests/launcher.sh` in the merge gate.
 
 Twenty `python3 /tmp/tmp.*/bin/harnessd` stubs were still listening on lab2x1 on 2026-11-07, 20 to 27 days old - all from before `0f9ddad8` gave the file its EXIT-trap cleanup. The trap does not run on SIGKILL (a runner's timeout), so the python stubs now poll `LBT_OWNER`, the test script's pid, and leave once it is gone. The same run showed four cases failing on `main` before this change: the python start stub crashed on the launcher's `--resolve-session` store query (no `--socket`), `daemon_argv` counted that query as a daemon start, and `scripts/migrate-notes.sh` was missing from the bash-3.2 guard. All cases pass now. Nothing runs this file in the gate, so the drift went unseen.
+
+## R153 - Placing a session on a busy host times out at 20 s
+
+**Status:** open. left: all of it.
+
+On 2026-11-07 four placements failed at the same step while their host was building: `making the mirror` and `handing the bundle to the remote repository` got no answer within 20 s, the ssh was killed and the daemon shut down before the brief was sent. A retry minutes later always worked. Also seen: an ssh `Connection closed` on lubuntu3 while three packages opened connections at once (sshd `MaxStartups`), and `remote_call_slow` warnings with budgets under a tenth of a second. The placement's one-off steps should take a budget sized for a loaded host, and the link should reuse one ssh connection per host (`ControlMaster`) instead of opening one per call. Beside R149, which sizes the build width.
 
 ## R134 - Scrolling stops at a line above the tail
 
