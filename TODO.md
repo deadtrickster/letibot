@@ -911,7 +911,9 @@ The design and the five packages are `docs/room-tui.md`, from a study of flowy's
 
 ## R144 - The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag
 
-**Status:** open. left: the design and the build.
+**Status:** built. left: nothing but the head's todo pane, which lists sessions and not seats (a `crates/tui` change, outside this row's brief).
+
+The design and the build are `docs/seat-todo.md`: `seat_todo` in the shared store under the handle `cc@<project>` (schema 41), three MCP tools - `todo_write` with the session's own schema, `todos` to read the board back, `todo_answer` for the operator's reply - and a watcher that runs the session's `TodoNagClock` over the seat's packages and pushes `unfinished_plan`'s own sentence as a channel notification. The schedule moved out of `crates/harnessd/src/sessions.rs` into `letibot_tools::builtins::todo::nag`, so the daemon and the seat run one clock and not two, and harnessd re-exports it under its old names. What a `wait_on` a seat may write: a package's turn end (a package is a child while its turn is in flight), a package's open job (through the new `JobTable` seam), and a question for the operator, which has no card and is answered in the conversation and recorded with `todo_answer`.
 
 A Claude Code seat orchestrating letibot sessions has no board: its waits live in Monitors and its own memory. The bridge should serve the same `todo_write` / `todos` / `update` tools a session has, kept in the store under the seat's handle, with `wait_on` edges to letibot sessions, their jobs, room asks (R136) and the operator. The same idle check nags the seat through the channel push when a row is ready or in progress with no wait. Then Monitors are not needed for waiting on packages, and a seat's plan is visible on the head's todo pane like any session's.
 
