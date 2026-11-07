@@ -436,12 +436,14 @@ fn unshown_refusal(
     let shown = files.describe(path, total);
     match cover {
         crate::files::Cover::Never => Invocation::failed(
-            format!("this session has not been shown lines {first}-{last} of `{path}`"),
             format!(
-                "an edit may only replace lines a tool has shown this session, so that a \
-                 write never lands on text the model is remembering rather than reading. \
-                 This session has been shown {shown} of `{path}`. {read}. Nothing was \
-                 written."
+                "this session has not been shown lines {first}-{last} of `{path}`: `read` them first"
+            ),
+            format!(
+                "an edit may only replace lines `read` (or the `grep` tool's hits) has shown this \
+                 session, so that a write never lands on text the model is remembering rather \
+                 than reading. Output of `bash` (`cat`, `grep -n`, `sed -n`) does not count. This \
+                 session has been shown {shown} of `{path}`. {read}. Nothing was written."
             ),
         ),
         _ => Invocation::failed(
