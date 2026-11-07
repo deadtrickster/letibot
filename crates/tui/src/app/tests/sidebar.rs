@@ -301,3 +301,42 @@ fn a_queue_orchestrator_and_a_package_session_are_not_listed() {
     let ids: Vec<&str> = a.rooms.sessions.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, ["s-op"]);
 }
+
+fn cells_of(row: &str) -> Vec<char> {
+    crate::app::keyhints::cells(row)
+}
+
+/// A hover is the surface's own: lighting a row of the transcript leaves the sidebar's cells
+/// alone, and the other way round.
+#[test]
+fn a_hover_does_not_cross_the_sidebars_border() {
+    let mut a = sidebar_with_rooms();
+    a.screen(160, 24);
+    let border = 160 - a.sidebar.last_w - 1;
+    let plain = a.screen(160, 24);
+    // A transcript hover with no columns of its own, on a row the sidebar also draws on.
+    let y = plain.iter().position(|r| r.contains("alpha")).unwrap();
+    a.pointer_at = Some((3, y as u16));
+    a.hovered = Some(crate::app::pointer::Hovered {
+        rows: vec![(y, None)],
+    });
+    let mut lit = plain.clone();
+    a.paint_pointer(&mut lit);
+    assert_ne!(lit[y], plain[y], "the hover painted nothing");
+    let (c0, c1) = (cells_of(&plain[y]), cells_of(&lit[y]));
+    assert_eq!(c0, c1, "same text");
+    // The sidebar side of the row is byte for byte the unlit one.
+    let side = |r: &str| r.split('│').next_back().unwrap_or("").to_string();
+    assert_eq!(side(&lit[y]), side(&plain[y]), "border {border}");
+
+    // And a hover on the sidebar row leaves the transcript side as it was.
+    a.pointer_at = Some((border as u16 + 3, y as u16));
+    a.hovered = Some(crate::app::pointer::Hovered {
+        rows: vec![(y, None)],
+    });
+    let mut lit = plain.clone();
+    a.paint_pointer(&mut lit);
+    assert_ne!(lit[y], plain[y]);
+    let main = |r: &str| r.rsplit_once('│').map_or(r, |(m, _)| m).to_string();
+    assert_eq!(main(&lit[y]), main(&plain[y]));
+}
