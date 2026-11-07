@@ -574,10 +574,14 @@ fn pair_tool_calls(rows: Vec<Value>, own_author: &std::collections::HashSet<Stri
     // Ids opened by the assistant message being answered right now, in order, so
     // the fillers go in the order the calls were made.
     let mut owed: Vec<String> = Vec::new();
+    // Rows recorded while calls were still running - a room note, a monitor firing - wait here
+    // until the results land, so a note between a call and its result never orphans the result.
+    let mut held: Vec<Value> = Vec::new();
 
     for row in rows {
         let mut row = row;
-        if row.get("role").and_then(|r| r.as_str()) == Some("tool") {
+        let role = row.get("role").and_then(|r| r.as_str()).map(str::to_string);
+        if role.as_deref() == Some("tool") {
             let id = row
                 .get("tool_call_id")
                 .and_then(|v| v.as_str())
@@ -586,6 +590,9 @@ fn pair_tool_calls(rows: Vec<Value>, own_author: &std::collections::HashSet<Stri
             if let Some(at) = owed.iter().position(|o| *o == id) {
                 owed.remove(at);
                 out.push(row);
+                if owed.is_empty() {
+                    out.append(&mut held);
+                }
                 continue;
             }
             // An orphan has no assistant message above it opening this id: dropped, because a
@@ -595,12 +602,17 @@ fn pair_tool_calls(rows: Vec<Value>, own_author: &std::collections::HashSet<Stri
             }
             row = person_ran(row);
         }
-        // Any other role, an operator's own result included, closes the answering window, so
-        // whatever is still owed is owed for ever and is filled here.
+        if role.as_deref() != Some("assistant") && !owed.is_empty() {
+            held.push(row);
+            continue;
+        }
+        // The next assistant message closes the answering window, so whatever is still owed is
+        // owed for ever and is filled here, then the held rows follow in their order.
         for id in std::mem::take(&mut owed) {
             out.push(unanswered(&id));
         }
-        if row.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+        out.append(&mut held);
+        if role.as_deref() == Some("assistant") {
             owed = row
                 .get("tool_calls")
                 .and_then(|v| v.as_array())
@@ -619,6 +631,7 @@ fn pair_tool_calls(rows: Vec<Value>, own_author: &std::collections::HashSet<Stri
     for id in owed {
         out.push(unanswered(&id));
     }
+    out.append(&mut held);
     trailing_system_becomes_user(&mut out);
     out
 }
@@ -1610,11 +1623,10 @@ mod pairing_tests {
         assert_eq!(m.len(), 4, "system + three, nothing added: {m:?}");
     }
 
-    /// The question exchange's shape, and the order of its rows: the result answers the call,
-    /// then the person's two rows follow. A `User` row between the proposal and the result closes
-    /// `pair_tool_calls`' window, so the call reads "no result was recorded" beside its answer.
+    /// The question exchange's shape: the result answers the call and the person's two rows
+    /// follow it, in whichever order the session wrote them.
     #[test]
-    fn the_question_exchange_pairs_only_when_the_result_follows_its_call() {
+    fn the_question_exchange_pairs_in_either_order() {
         let asked = TranscriptItem::User {
             speaker: letibot_transcript::Speaker::Agent,
             parts: vec![UserPart::Text {
@@ -1666,10 +1678,9 @@ mod pairing_tests {
             "the person's own words must reach the model as a turn of theirs: {m:?}"
         );
 
-        // And the control: the order the `!` line uses is wrong HERE. The same three rows
-        // with the person's half first is what this test exists to keep out of the transcript,
-        // and it is a real defect rather than a stylistic one - the call reads as unanswered.
-        let wrong = convert(
+        // The other order - the person's half written first - reaches the provider the same
+        // way: the rows between a call and its result wait until the result has answered it.
+        let swapped = convert(
             "sys",
             &[
                 user("go"),
@@ -1680,11 +1691,66 @@ mod pairing_tests {
             ],
             false,
         );
+        assert_paired(&swapped);
         assert!(
-            wrong.iter().any(|r| r["content"]
+            !swapped.iter().any(|r| r["content"]
                 .as_str()
                 .is_some_and(|c| c.contains("no result was recorded"))),
-            "the control must actually reproduce the defect it is the control for: {wrong:?}"
+            "a row between a call and its result orphaned the result: {swapped:?}"
+        );
+    }
+
+    /// A note recorded while calls were running - a room message, a monitor firing - sits
+    /// between the calls and their results. Every result still answers its call, and the note
+    /// follows them.
+    #[test]
+    fn a_note_between_calls_and_their_results_waits_for_the_results() {
+        let m = convert(
+            "sys",
+            &[
+                user("go"),
+                calls(&["c-1", "c-2"]),
+                user("room: a message for everyone"),
+                result("c-1"),
+                result("c-2"),
+            ],
+            false,
+        );
+        assert_paired(&m);
+        assert!(
+            !m.iter().any(|r| r["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("no result was recorded"))),
+            "{m:?}"
+        );
+        let at = |want: &dyn Fn(&Value) -> bool| m.iter().position(want).unwrap();
+        let note = at(&|r| r["content"] == "room: a message for everyone");
+        let last = at(&|r| r["tool_call_id"] == "c-2");
+        assert!(note > last, "the note goes after the results: {m:?}");
+    }
+
+    /// A call that never got a result is still filled, and a note held behind it is not lost.
+    #[test]
+    fn a_held_note_survives_a_call_that_never_answered() {
+        let m = convert(
+            "sys",
+            &[
+                user("go"),
+                calls(&["c-1"]),
+                user("room: a note"),
+                calls(&["c-2"]),
+                result("c-2"),
+            ],
+            false,
+        );
+        assert_paired(&m);
+        assert!(m.iter().any(|r| r["content"] == "room: a note"), "{m:?}");
+        assert!(
+            m.iter().any(|r| r["tool_call_id"] == "c-1"
+                && r["content"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("no result was recorded"))),
+            "{m:?}"
         );
     }
 
