@@ -325,5 +325,6 @@ fn plural(w: &Waiting) -> &'static str {
         Waiting::Monitor(_) => "monitors",
         Waiting::Child(_) => "subagents",
         Waiting::Ask(_) => "asks",
+        Waiting::Limit(_) => "limits",
     }
 }

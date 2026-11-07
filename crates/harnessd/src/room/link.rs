@@ -1551,6 +1551,7 @@ mod tests {
                 to: None,
                 thread: None,
                 refs: Vec::new(),
+                attachments: Vec::new(),
             })
             .expect("the operator says");
         assert!(

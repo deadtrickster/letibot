@@ -12,7 +12,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 65;
+pub const PROTOCOL_VERSION: u32 = 66;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -1343,8 +1343,13 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 65,
-            "the match above was last reconciled with the frame list at 65. 65 added \
+            PROTOCOL_VERSION, 66,
+            "the match above was last reconciled with the frame list at 66. 66 added \
+             `Waiting::Limit`, the usage-limit fact a session's activity carries - `paused until \
+             21:02:27 UTC`, or `glm limited until 21:02:27 UTC, on deepseek`. A version-65 head has \
+             no arm for the variant and would fail to decode the whole `ActivityChanged` (serde has \
+             no catch-all on it, deliberately), so a session that met a limit would blind an old \
+             head to what it is waiting on. 65 added \
              `ServerFrame::RoomChatPushed`, the unsolicited half of the operator's chat: the \
              coordinator's push reaches a head without a poll, and a version-64 head cannot decode \
              it, so the number moves. 64 added \

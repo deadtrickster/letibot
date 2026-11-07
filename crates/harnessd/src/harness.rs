@@ -439,6 +439,17 @@ pub struct Harness {
     /// What the next fork's note carries below the record: one line per unit a compaction evicted,
     /// taken by [`Harness::fork_onto`] and written into the base it makes.
     recall_map: Vec<letibot_turn::evict::Unit>,
+    /// The park a usage limit put this session in: the turn it stopped is owed again at
+    /// `until_ms`, by the daemon's own clock. See `harness::limit`.
+    limit_park: Option<limit::LimitPark>,
+    /// The models this session has been told are limited, and when each lifts - the fact a fallback
+    /// list is filtered by, so a switch never lands on a model that is limited too.
+    limited: limit::Limited,
+    /// The way back a limit-driven switch earns: the model it left, and when that one may answer again.
+    limit_return: Option<limit::LimitReturn>,
+    /// The status row's limit words, shared with the activity source: `paused until 21:02:27 UTC`,
+    /// or `glm limited until 21:02:27 UTC, on deepseek`.
+    limit_row: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 /// A confirmation of `allow-all` waiting for a person: the daemon's half of the card another head's ask
@@ -1564,6 +1575,7 @@ mod error;
 mod hub_io;
 mod job_window;
 mod jobs;
+mod limit;
 mod models;
 mod nags;
 mod open;

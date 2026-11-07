@@ -514,6 +514,18 @@ pub struct Config {
     /// says nothing about the model - the request never came back - so one is weather and a run of
     /// them is the model. 3 unless a session's own `leticode.toml` says otherwise.
     pub fallback_after_timeouts: u32,
+    /// What a session does when the provider puts a time on a usage limit: `[provider] on_limit` in
+    /// a `leticode.toml`, else `switch` with a fallback list and `wait` without one. The operator's
+    /// ruling is that a session never fails on a limit with a known reset.
+    pub on_limit: crate::leticode_config::OnLimit,
+    /// How long the last resort waits before trying a rate limit that named NO instant again, and
+    /// how many such waits it takes before the turn fails as it used to. Five minutes, three times:
+    /// a limit somebody else's clock lifts is worth three more calls, and not an afternoon.
+    pub limit_retry_wait: std::time::Duration,
+    pub limit_retry_rounds: u32,
+    /// The clock a limit park is measured by. [`LimitClock::Wall`] in a daemon, and a test hands in
+    /// its own so a park of five hours is measured without sleeping through it.
+    pub limit_clock: LimitClock,
     /// What the fabric block in the system prompt is, said by whoever composed
     /// it (`Sessions`): live, cached with its age, or unreachable. `None` when
     /// there is no seat, and then there is no block.
@@ -647,6 +659,33 @@ pub struct Config {
     /// round fails as a timeout. `None` is the provider's own ten minutes, which is right for a box
     /// that has no opinion; an operator who must react to a model API timeout sets its own patience.
     pub provider_timeout: Option<std::time::Duration>,
+}
+
+/// The clock a limit park is measured by. The daemon reads the box's own; a test hands in a fixed
+/// one, so a park of five hours is measured without sleeping through it and a resume happens when
+/// the test says the reset has passed.
+#[derive(Debug, Clone, Default)]
+pub enum LimitClock {
+    /// This box's clock, the only one a daemon ever uses.
+    #[default]
+    Wall,
+    /// A clock a test sets by hand, in Unix millis.
+    Fixed(std::sync::Arc<std::sync::atomic::AtomicU64>),
+}
+
+impl LimitClock {
+    pub fn now_ms(&self) -> u64 {
+        match self {
+            LimitClock::Wall => letibot_sessionlog::event::now_ms(),
+            LimitClock::Fixed(at) => at.load(std::sync::atomic::Ordering::SeqCst),
+        }
+    }
+
+    /// A fixed clock at `ms`, for a test that drives the park - and the handle it moves.
+    pub fn fixed(ms: u64) -> (LimitClock, std::sync::Arc<std::sync::atomic::AtomicU64>) {
+        let handle = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(ms));
+        (LimitClock::Fixed(handle.clone()), handle)
+    }
 }
 
 /// Who decides a gated call. A gate that says "allowed" because nothing is wired is worse than no
@@ -1510,6 +1549,11 @@ impl Config {
             // Three timeouts in a row, which is what a session gets before the daemon stops believing
             // the provider is merely slow.
             fallback_after_timeouts: 3,
+            // A daemon with no file says `wait`: the answer that never throws a turn away.
+            on_limit: crate::leticode_config::OnLimit::Wait,
+            limit_retry_wait: std::time::Duration::from_secs(300),
+            limit_retry_rounds: 3,
+            limit_clock: LimitClock::Wall,
             // No overrides until `run` loads the operator's `prompts.toml`. `Default`
             // is the byte-identical case: a daemon that never reads the file composes
             // the built-in prompt for every seat.

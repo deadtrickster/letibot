@@ -556,6 +556,11 @@ fn court_main(
                 let pass = Instant::now();
                 let rang = s.deliver_due_censuses();
                 crate::instruments::worker_pass("queue-census", pass, rang);
+                // And the provider's own clock: a usage limit's park resumes the turn it stopped, and a
+                // switch that limit forced is undone once its model answers again.
+                let pass = Instant::now();
+                let back = s.resume_due_limits();
+                crate::instruments::worker_pass("limit", pass, back);
                 let pass = Instant::now();
                 let parked = s.park_idle_children();
                 crate::instruments::worker_pass("park", pass, parked);
@@ -795,11 +800,61 @@ impl<'a> Sessions<'a> {
         }
     }
 
+    /// Every parked session whose reset has come, and every switch back a limit owes - the
+    /// provider's own clock, on the worker's idle arm beside the plan-checks and the census. A park
+    /// resumes the SAME turn: the prompt that was refused is still the last thing said, so the door
+    /// opens a turn carrying the notice the park left behind.
+    pub fn resume_due_limits(&mut self) -> usize {
+        let mut resumed = self.ask_courts(|s| s.resume_due_limits());
+        let due: Vec<String> = self
+            .open
+            .iter()
+            .filter(|(_, h)| h.limit_park_due(h.limit_now_ms()))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for session_id in due {
+            let out = self.turn(&session_id, Door::Limit, |h| match h.take_a_due_park() {
+                Some(notice) => h.resume_after_limit(notice).map(Some),
+                None => Ok(None),
+            });
+            match out {
+                Some(Ok(_)) => resumed += 1,
+                Some(Err(e)) => eprintln!("  {session_id} · the turn a limit parked -> {e}"),
+                None => {}
+            }
+        }
+        // And the way back: a switch a limit forced is undone once that model answers again, which
+        // is not a turn at all - `/models` between turns is the same act.
+        let back: Vec<String> = self
+            .open
+            .iter()
+            .filter(|(_, h)| h.limit_return_due(h.limit_now_ms()))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for session_id in back {
+            if let Some(h) = self.open.get_mut(&session_id)
+                && let Some(said) = h.return_from_a_limit()
+            {
+                if let Some(hub) = self.registry.get(&session_id) {
+                    hub.warn("limit_returned", said);
+                }
+                resumed += 1;
+            }
+        }
+        resumed
+    }
+
     /// What this session is holding the daemon up for - the per-harness half of
     /// [`Sessions::idle_exit_refusal`]. Its own function so the two readers answer with one
     /// body
     fn court_refusal(&self, session_id: &str) -> Option<String> {
         let h = self.open.get(session_id)?;
+        if let Some(park) = h.limit_park() {
+            return Some(format!(
+                "{session_id} is parked until its provider's limit lifts ({})",
+                park.model
+            ));
+        }
         if let Some(why) = h.park_refusal() {
             return Some(format!("{session_id}: {why}"));
         }
@@ -2395,12 +2450,31 @@ impl<'a> Sessions<'a> {
             // is what links a session to a coordinator that started after it.
             self.has_a_room().then_some(self.room_at).flatten(),
             self.park_at,
+            self.next_limit_at(),
             self.idle_exit_at,
             self.plugins_due_at(),
         ]
         .into_iter()
         .flatten()
         .min()
+    }
+
+    /// When the earliest limit clock falls due, as an `Instant` from the harnesses' own clocks: the
+    /// park that resumes a session, and the switch back a limit owes. `None` when nothing is
+    /// limited, which is the common case and the one that arms no deadline at all.
+    fn next_limit_at(&self) -> Option<Instant> {
+        let now = Instant::now();
+        self.open
+            .values()
+            .filter_map(|h| {
+                let clock = h.limit_now_ms();
+                let due = [h.limit_park_until(), h.limit_return_at()]
+                    .into_iter()
+                    .flatten()
+                    .min()?;
+                Some(now + Duration::from_millis(due.saturating_sub(clock)))
+            })
+            .min()
     }
 
     /// Whether any session this `Sessions` holds speaks in the box's room - the one question

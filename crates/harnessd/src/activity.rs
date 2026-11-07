@@ -30,6 +30,10 @@ pub struct Facts {
     pub monitors: Vec<String>,
     /// The cards nobody has answered, oldest first.
     pub asks: Vec<String>,
+    /// The limit this session is under, in the daemon's own words - `paused until 21:02:27 UTC`, or
+    /// `glm limited until 21:02:27 UTC, on deepseek`. At most one, and it is a fact about the
+    /// provider rather than about the work.
+    pub limits: Vec<String>,
 }
 
 /// The list, in the order a reader reads it - and the one place the entries are
@@ -53,6 +57,9 @@ pub fn compose(f: &Facts) -> Activity {
     waiting_on.extend(f.at_work.iter().cloned());
     waiting_on.extend(f.monitors.iter().map(|m| Waiting::Monitor(m.clone())));
     waiting_on.extend(f.asks.iter().map(|a| Waiting::Ask(a.clone())));
+    // A limit is said whatever else holds the session: a parked one has no turn, and one that has
+    // moved is working - and in both cases the operator's next question is *where are my turns*.
+    waiting_on.extend(f.limits.iter().map(|w| Waiting::Limit(w.clone())));
     Activity::of(waiting_on)
 }
 
@@ -71,6 +78,7 @@ pub fn source(
     monitors: Option<Arc<Monitors>>,
     monitor_cursor: Arc<AtomicUsize>,
     prompt_in_flight: Arc<AtomicBool>,
+    limit_row: Arc<std::sync::Mutex<Option<String>>>,
 ) -> ActivitySource {
     Arc::new(move |hub: &Hub| {
         let facts = facts_of(
@@ -79,6 +87,7 @@ pub fn source(
             monitors.as_ref(),
             &monitor_cursor,
             &prompt_in_flight,
+            &limit_row,
         );
         compose(&facts)
     })
@@ -92,6 +101,7 @@ pub fn facts_of(
     monitors: Option<&Arc<Monitors>>,
     monitor_cursor: &AtomicUsize,
     prompt_in_flight: &AtomicBool,
+    limit_row: &std::sync::Mutex<Option<String>>,
 ) -> Facts {
     let (round, calls) = hub.turn_shape();
     // The prompt's own span wins, and the hub's round is the fallback for a hub nobody is
@@ -104,6 +114,12 @@ pub fn facts_of(
         // model's next turn, and a wake is a settlement some thread has already queued.
         delivery: hub.work_pending(),
         asks: hub.open_ask_ids(),
+        limits: limit_row
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .into_iter()
+            .collect(),
         ..Facts::default()
     };
     if let Some(m) = monitors {
@@ -157,6 +173,7 @@ mod tests {
             None,
             Arc::new(AtomicUsize::new(0)),
             Arc::new(AtomicBool::new(false)),
+            Default::default(),
         ));
         let done = JobCompletion {
             memory: None,
@@ -232,6 +249,7 @@ mod tests {
             ],
             monitors: vec!["ci".into()],
             asks: vec!["adj-1".into()],
+            limits: Vec::new(),
         };
         assert_eq!(
             compose(&busy),
@@ -354,6 +372,7 @@ mod tests {
             None,
             Arc::new(AtomicUsize::new(0)),
             Arc::new(AtomicBool::new(false)),
+            Default::default(),
         ));
         watch.hold(vec![JobCompletion {
             memory: None,

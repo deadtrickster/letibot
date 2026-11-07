@@ -35,6 +35,9 @@ pub enum Door {
     /// operator's ruling: *"when it finally applied the turn didnt continue"*. The
     /// model that refused has already been replaced.
     Fallback,
+    /// The turn a limit park owes, opened at the reset: the provider named when its limit lifts and
+    /// the daemon waited for it rather than failing the turn.
+    Limit,
 }
 
 impl Door {
@@ -49,6 +52,7 @@ impl Door {
             Door::OperatorShell => "bang",
             Door::Reseat => "reseat",
             Door::Fallback => "fallback",
+            Door::Limit => "limit",
         }
     }
 
@@ -244,11 +248,26 @@ fn settle(
     if let Err(e) = &out
         && !is_wall(&out)
     {
-        publish_failure(h.hub(), h.last_turn_id(), e);
-        // A switch that fails says how to go back - the operator's session was switched to a model
-        // whose every request was refused, and the screen named the refusal and nothing else.
-        if let Some(said) = h.switch_back_notice(e) {
-            h.hub().warn("model_switch_refused", said);
+        match e {
+            // A park is not a failure of the work: the provider put a time on its limit and the same
+            // turn is owed again at that instant. The head still needs a terminal frame or its
+            // spinner stays up for the session's life, and `TurnInterrupted` is the only event that
+            // ends a turn without a verdict - the park's own warning has the news.
+            HarnessError::LimitParked { said } => {
+                h.hub().publish(SessionEvent::TurnInterrupted {
+                    turn_id: h.last_turn_id().to_string(),
+                    reason: said.clone(),
+                    partial_kept: false,
+                });
+            }
+            _ => {
+                publish_failure(h.hub(), h.last_turn_id(), e);
+                // A switch that fails says how to go back - the operator's session was switched to a model
+                // whose every request was refused, and the screen named the refusal and nothing else.
+                if let Some(said) = h.switch_back_notice(e) {
+                    h.hub().warn("model_switch_refused", said);
+                }
+            }
         }
     }
     // The wall is the one failure that must still compact, and the two outcomes take two

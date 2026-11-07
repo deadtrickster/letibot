@@ -31,11 +31,16 @@ pub enum Waiting {
     Child(String),
     /// A card is open and nobody has answered it. The one entry that does not end by itself.
     Ask(String),
+    /// A usage limit with a known reset: the provider's own clock is holding this session. The words
+    /// are the daemon's, because what they say depends on which answer the limit policy took -
+    /// `paused until 21:02:27 UTC` while it waits, `glm limited until 21:02:27 UTC, on deepseek`
+    /// while it works elsewhere - and a head that re-worded them would say something else.
+    Limit(String),
 }
 
 impl Waiting {
     /// The word the wire and a head's line use for the kind - `turn`, `calls`, `delivery`, `job`,
-    /// `monitor`, `child`, `ask`.
+    /// `monitor`, `child`, `ask`, `limit`.
     pub fn kind(&self) -> &'static str {
         match self {
             Waiting::Turn => "turn",
@@ -45,6 +50,7 @@ impl Waiting {
             Waiting::Monitor(_) => "monitor",
             Waiting::Child(_) => "child",
             Waiting::Ask(_) => "ask",
+            Waiting::Limit(_) => "limit",
         }
     }
 
@@ -53,6 +59,7 @@ impl Waiting {
         match self {
             Waiting::Turn | Waiting::Calls | Waiting::Delivery => "",
             Waiting::Job(id) | Waiting::Monitor(id) | Waiting::Child(id) | Waiting::Ask(id) => id,
+            Waiting::Limit(words) => words,
         }
     }
 
@@ -60,9 +67,14 @@ impl Waiting {
     /// entry, and how `leticode_status` names it as data. One function rather than one per reader,
     /// because two spellings of the same fact is the drift this file exists to stop.
     pub fn label(&self) -> String {
-        match self.id() {
-            "" => self.kind().to_string(),
-            id => format!("{} {id}", self.kind()),
+        match self {
+            // A limit's words are the whole label: they already read as a sentence a person acts
+            // on, and `limit paused until ...` would say the same thing twice.
+            Waiting::Limit(words) => words.clone(),
+            _ => match self.id() {
+                "" => self.kind().to_string(),
+                id => format!("{} {id}", self.kind()),
+            },
         }
     }
 
@@ -84,6 +96,7 @@ impl Waiting {
             Waiting::Monitor(_) => 4,
             Waiting::Child(_) => 5,
             Waiting::Ask(_) => 6,
+            Waiting::Limit(_) => 7,
         }
     }
 }

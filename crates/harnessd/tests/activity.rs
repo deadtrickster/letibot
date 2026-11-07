@@ -86,6 +86,7 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
         None,
         cursor.clone(),
         prompt.clone(),
+        Default::default(),
     ));
 
     // A session nobody has touched: quiet, and saying so changes nothing.
@@ -299,6 +300,7 @@ fn arming_a_watcher_publishes_the_child_the_session_now_waits_on() {
         None,
         Arc::new(AtomicUsize::new(0)),
         Arc::new(AtomicBool::new(false)),
+        Default::default(),
     ));
     assert!(hub.activity().is_quiet(), "nothing is watched yet");
 
@@ -326,6 +328,7 @@ fn a_running_child_is_an_entry_and_one_the_model_parked_is_not() {
         None,
         Arc::new(AtomicUsize::new(0)),
         Arc::new(AtomicBool::new(false)),
+        Default::default(),
     ));
 
     watch.watch("s-kid".into());
@@ -388,6 +391,7 @@ fn a_publish_returns_while_the_settlement_queue_is_held() {
         None,
         Arc::new(AtomicUsize::new(0)),
         Arc::new(AtomicBool::new(false)),
+        Default::default(),
     ));
     // A settlement in the queue, so the value the publisher re-derives is not the empty one.
     watch.queue_for_test(child_settlement("s-held-queue", "j8032"));
@@ -449,6 +453,7 @@ fn a_session_closing_itself_does_not_wedge_a_publisher() {
         None,
         Arc::new(AtomicUsize::new(0)),
         Arc::new(AtomicBool::new(false)),
+        Default::default(),
     ));
     watch.hold(vec![child_settlement("s-stopping", "j9001")]);
     assert_eq!(
@@ -529,6 +534,7 @@ fn the_line_is_right_while_a_watcher_lives_and_after_it_has_gone() {
         None,
         Arc::new(AtomicUsize::new(0)),
         Arc::new(AtomicBool::new(false)),
+        Default::default(),
     ));
     board.upsert_model(&[(
         "land the fix".into(),

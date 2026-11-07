@@ -548,6 +548,22 @@ fn session_fallback(cfg: &mut Config) {
     if let Some(n) = cfg.leticode.fallback_after_timeouts {
         cfg.fallback_after_timeouts = n;
     }
+    // And what a usage limit does. The file's own word, else switch when a list exists and wait
+    // without one - the operator's ruling is that a limit with a known reset never fails a session.
+    cfg.on_limit = cfg.leticode.limit_policy();
+    eprintln!(
+        "  on a usage limit: {} — {}",
+        cfg.on_limit.as_str(),
+        match cfg.on_limit {
+            crate::leticode_config::OnLimit::Switch => {
+                "the session moves to the next fallback model that is not limited and moves back \
+                 after the reset"
+            }
+            crate::leticode_config::OnLimit::Wait => {
+                "the session waits for the reset and resumes the turn by itself"
+            }
+        }
+    );
 }
 
 pub fn run(args: &[String]) -> Result<i32, String> {

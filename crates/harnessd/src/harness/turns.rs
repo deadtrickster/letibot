@@ -2328,6 +2328,22 @@ impl Harness {
         tail: &[TranscriptItem],
         key_asks: &mut usize,
     ) -> Result<(Result<TurnOk, TurnFailure>, letibot_http::retry::Ladder), HarnessError> {
+        // A prompt that arrives while the session is parked WAITS, and nothing is sent: the
+        // provider's own clock has not reached the reset, and one more call would only meet the
+        // same refusal. The prompt is already a row, so the turn the reset opens answers it.
+        if let Some(park) = self.limit_park.clone()
+            && park.until_ms > self.limit_now_ms()
+        {
+            return Err(HarnessError::LimitParked {
+                said: format!(
+                    "this session is paused until {} on the {} limit, so nothing was sent: the \
+                     prompt above waits for the reset, and the daemon answers it then with the \
+                     turn the limit stopped.",
+                    park.until_words(),
+                    park.model
+                ),
+            });
+        }
         let mut tried_fallbacks: Vec<String> = Vec::new();
         // One steering per round, outside the retry loop. A failed attempt
         // hands what it took back to this value, and the retried attempt's greedy poll
@@ -2339,6 +2355,9 @@ impl Harness {
         let mut ladder = letibot_http::retry::Ladder::new(letibot_http::retry::Policy::new(
             self.cfg.http_retries,
         ));
+        // How many of the LONG waits this round has taken - a rate limit that named no instant is
+        // worth a few five-minute beats and not an afternoon. Bounded by `limit_retry_rounds`.
+        let mut limit_retries = 0u32;
         let outcome = loop {
             // The operator's own line, answered before the attempt rather than after
             // it - the window they type in. What comes back says when the switch
@@ -2435,37 +2454,97 @@ impl Harness {
             // key arm, since a refused key is that card's news and not the endpoint's weather.
             self.outage_failed(&e);
             let Some(wait) = ladder.failed(&e) else {
-                // The ladder has nothing left to wait for, and the session may still have somewhere to go, but not
-                // this round: the MODEL refused and a fallback list exists, so the switch is recorded for the end of
-                // this turn and the round is not re-issued. A transport failure gets not even that.
-                let next = self.fall_back_from(&e, &mut tried_fallbacks);
-                // The provider's own trouble, as a type, here and not per attempt: a ladder of five
-                // attempts on one 429 is one fact, and an automation wakes once for it.
-                self.publish_trouble(&e, next.clone());
-                if let Some(next) = next {
-                    let was = self.provider_line();
-                    // Whether a turn was armed decides what may be promised: this turn is the continuation a
-                    // fallback earns when one is already running, and then no second turn is opened, so the
-                    // sentence must not say one is.
-                    let opens_a_turn = self.fallback_continuation.is_some();
-                    // The outage is this notice's to tell: one row per outage, and this is it, since the session
-                    // is moving and the count belongs in that sentence. Taken, so `settle_outage` finds nothing.
-                    let outage = self.outage.take();
-                    // And the row the reader has been watching settles here, because this ending is
-                    // not the ladder's: the session moves, so the row says where it went. Without it the
-                    // row would still be saying `retrying` in a session that had stopped trying.
-                    if let Some(o) = outage.as_ref()
-                        && o.attempts >= 2
-                    {
-                        let line = format!("{}, and the session moves to {next}", o.gave_up());
-                        self.publish_series(o, Some(line));
+                // The ladder is spent, and what comes next is the limit rule's to say: the operator's
+                // ruling is that a provider which named its reset never costs a session its turn.
+                let here = self.model_name();
+                match self.after_the_ladder(&e, &mut tried_fallbacks) {
+                    limit::AfterTheLadder::Parked { said } => {
+                        // The provider's own trouble, as a type, with the reset on it: this is what
+                        // tells a head and the bridge `limited until X`.
+                        self.publish_trouble(&e, None);
+                        // Nothing is retrying any more, so the outage row is over - and the park's
+                        // own warning is the news that replaces it.
+                        self.outage = None;
+                        return Err(HarnessError::LimitParked { said });
                     }
-                    self.hub.warn(
-                        "model_endpoint_retry",
-                        fallback_notice(&was, &next, &e, opens_a_turn, outage.as_ref()),
-                    );
+                    limit::AfterTheLadder::Retry if limit_retries < self.cfg.limit_retry_rounds => {
+                        limit_retries += 1;
+                        self.publish_trouble(&e, None);
+                        self.hub.warn(
+                            "limit_retry",
+                            format!(
+                                "the provider is rate limiting this session and named no instant \
+                                 to wait for, so the daemon waits {} and takes the round again \
+                                 ({} of {}). Nothing was recorded by the round that failed.",
+                                crate::restart::span(self.cfg.limit_retry_wait),
+                                limit_retries,
+                                self.cfg.limit_retry_rounds,
+                            ),
+                        );
+                        match self.sleep_unless_closed(self.cfg.limit_retry_wait) {
+                            Waited::Out => {
+                                ladder = letibot_http::retry::Ladder::new(
+                                    letibot_http::retry::Policy::new(self.cfg.http_retries),
+                                );
+                                continue;
+                            }
+                            Waited::Closed => break Err(TurnFailure::Http(e)),
+                            Waited::Interrupted => {
+                                let reason = self.hub.take_queued_interrupt().unwrap_or_default();
+                                stop_children_first(Some(&self.subagents), &self.hub);
+                                self.stopped.store(true, Ordering::SeqCst);
+                                self.last_turn_id = sink.turn_id.clone().unwrap_or_default();
+                                self.settle_outage(false);
+                                return Err(HarnessError::Endpoint {
+                                    said: format!(
+                                        "stopped while waiting out a rate limit: {reason}. The \
+                                         provider said {e} and named no instant, so the daemon was \
+                                         waiting before taking the round again. Nothing was \
+                                         recorded by the round that failed."
+                                    ),
+                                    cause: e,
+                                });
+                            }
+                        }
+                    }
+                    other => {
+                        // A move the limit rule earned, or today's path: a failure that is not a
+                        // limit, or a limit with no rounds left, where a quota or a 5xx may still
+                        // earn one. The sentence and the row are the same either way.
+                        let next = match other {
+                            limit::AfterTheLadder::Moved { next } => Some(next),
+                            _ => self.fall_back_from(&e, &mut tried_fallbacks),
+                        };
+                        // The provider's own trouble, as a type, here and not per attempt: a ladder of five
+                        // attempts on one 429 is one fact, and an automation wakes once for it.
+                        self.publish_trouble(&e, next.clone());
+                        if let Some(next) = next {
+                            let was = here;
+                            // Whether a turn was armed decides what may be promised: this turn is the continuation a
+                            // fallback earns when one is already running, and then no second turn is opened, so the
+                            // sentence must not say one is.
+                            let opens_a_turn = self.fallback_continuation.is_some();
+                            // The outage is this notice's to tell: one row per outage, and this is it, since the session
+                            // is moving and the count belongs in that sentence. Taken, so `settle_outage` finds nothing.
+                            let outage = self.outage.take();
+                            // And the row the reader has been watching settles here, because this ending is
+                            // not the ladder's: the session moves, so the row says where it went. Without it the
+                            // row would still be saying `retrying` in a session that had stopped trying.
+                            if let Some(o) = outage.as_ref()
+                                && o.attempts >= 2
+                            {
+                                let line =
+                                    format!("{}, and the session moves to {next}", o.gave_up());
+                                self.publish_series(o, Some(line));
+                            }
+                            self.hub.warn(
+                                "model_endpoint_retry",
+                                fallback_notice(&was, &next, &e, opens_a_turn, outage.as_ref()),
+                            );
+                        }
+                        break Err(TurnFailure::Http(e));
+                    }
                 }
-                break Err(TurnFailure::Http(e));
             };
             // Nothing is published here: the wait is not news. The attempt that just failed moved the row
             // (`outage_failed`), and a row per attempt - three in three seconds for one endpoint - is the wall.
@@ -2807,7 +2886,7 @@ impl Harness {
 
     /// The model is out and a `[fallback] models` entry exists, tried once each. Records the move without making it: a re-issued round carries the old turn's rest, which a thinking-mode provider refuses.
     /// Triggers: provider refusal, spent account, 5xx, or a long timeout run. Metered names only.
-    fn fall_back_from(
+    pub(crate) fn fall_back_from(
         &mut self,
         e: &letibot_turn::HttpError,
         tried: &mut Vec<String>,
@@ -2824,8 +2903,18 @@ impl Harness {
         for name in self.cfg.fallback.clone() {
             // Once each, and never the model that just refused the round. A name
             // already spent is skipped; a name that IS what is answering would be a
-            // no-op switch and the same failure one attempt later.
+            // no-op switch and the same failure one attempt later. A name the provider has
+            // already PUT A TIME ON is skipped too - a fallback that is limited as well is not a
+            // fallback, and landing there would spend the turn to learn what this session knows.
             if tried.contains(&name) || name == here {
+                continue;
+            }
+            if self.limited_until(&name).is_some() {
+                self.fallback_skip(
+                    &name,
+                    "the provider has already put a time on this model's own limit, so a switch \
+                     there would meet the same refusal",
+                );
                 continue;
             }
             tried.push(name.clone());
@@ -2858,7 +2947,8 @@ impl Harness {
             self.pend_switch(Some(pc), target.clone());
             // And the work goes on by itself: `run_turn` opens this turn when the one that met the refusal has
             // ended, with the notice as its user item. Not when THIS turn is already a continuation, or a fallback
-            // chain would ping-pong between two names for ever.
+            // chain would ping-pong between two names for ever - which a limit chain would too, one turn later:
+            // the next turn finds the model it moved to limited as well and moves on from there.
             if !self.in_fallback_continuation() {
                 self.fallback_continuation = Some(fallback_continuation_notice(&here, &target, e));
             }

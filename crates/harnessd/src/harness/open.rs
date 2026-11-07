@@ -3101,6 +3101,11 @@ impl Harness {
             recall,
             // Nothing evicted yet: a session's first compaction is what fills this.
             recall_map: Vec::new(),
+            // No limit until the provider puts a time on one, and nothing limited to filter by.
+            limit_park: None,
+            limited: Default::default(),
+            limit_return: None,
+            limit_row: Default::default(),
         };
         h.announce_the_open(stale, stale_for_model);
         h.import_the_foreign_conversation();
@@ -3131,6 +3136,7 @@ impl Harness {
             self.monitors.clone(),
             self.monitor_cursor.clone(),
             self.prompt_in_flight.clone(),
+            self.limit_row.clone(),
         ));
         self.publish_activity();
         // And what this session's harness HOLDS - the half of a session's memory that is

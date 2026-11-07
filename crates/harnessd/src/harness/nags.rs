@@ -258,6 +258,11 @@ impl Harness {
     pub fn nag_hold(&self) -> crate::sessions::NagHold {
         use crate::sessions::NagHold;
         use letibot_sessionlog::NagPause;
+        // The provider's clock first: a parked session's plan-check and its census are both turns,
+        // and a turn is what the model just refused. Nothing is armed until the park resumes it.
+        if self.limit_park.is_some() {
+            return NagHold::Parked;
+        }
         match self.cfg.nags_paused {
             None => NagHold::Running,
             Some(NagPause::UntilResumed) => NagHold::Paused { until: None },

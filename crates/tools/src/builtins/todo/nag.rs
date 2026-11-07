@@ -164,6 +164,10 @@ pub enum NagHold {
     Paused {
         until: Option<Instant>,
     },
+    /// The provider's own clock holds this session: a usage limit with a known reset. Nothing is
+    /// armed, neither the plan-check nor the queue's census: both are turns, and the model just
+    /// refused one. The park's own deadline brings the session back.
+    Parked,
 }
 
 impl TodoNagClock {
@@ -221,6 +225,11 @@ impl TodoNagClock {
         if let NagHold::Paused { until } = self.hold {
             self.due = until;
             self.arm_census(now);
+            return;
+        }
+        if matches!(self.hold, NagHold::Parked) {
+            self.due = None;
+            self.census_due = None;
             return;
         }
         // A row the model has already moved to in progress is not asked about again until the

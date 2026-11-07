@@ -168,6 +168,16 @@ pub const TABLE: &[(&str, Class)] = &[
     // the handling - and when the retries are exhausted the turn fails under
     // `turn_failed`, which is a failure.
     ("model_endpoint_retry", Class::Routine),
+    // A usage limit the provider put a time on: the session is parked until the reset and the turn
+    // is owed again there. Nothing failed and nothing was lost - the wait IS the handling.
+    ("limit_park", Class::Routine),
+    // The reset came, and the turn the park stopped went on by itself.
+    ("limit_resumed", Class::Routine),
+    // A switch a limit forced was undone once the limited model's own instant had passed.
+    ("limit_returned", Class::Routine),
+    // A rate limit that named no instant: the long beat before the round is taken again. Past the
+    // few the config allows, the turn fails under its own name.
+    ("limit_retry", Class::Routine),
     // The endpoint that did not answer came back: the recovery is the news, and a recovery
     // not said is how somebody believes the endpoint is still down. Said once per outage, with
     // the count and how long it was out.
@@ -777,13 +787,13 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_75_routine_15_refused_and_95_failures() {
+    fn the_table_is_79_routine_15_refused_and_95_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 185, "the table's size");
-        assert_eq!(count(Class::Routine), 75);
+        assert_eq!(TABLE.len(), 189, "the table's size");
+        assert_eq!(count(Class::Routine), 79, "the four limits are routine");
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
         assert_eq!(count(Class::Failure), 95);
         // A code with an id is read by its family.

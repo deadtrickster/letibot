@@ -37,6 +37,12 @@ pub enum HarnessError {
         said: String,
         cause: letibot_turn::HttpError,
     },
+    /// The provider put a time on a usage limit, so the session is parked until it and the same
+    /// turn is owed again there. Not a failure of the work: `said` is the whole account, and the
+    /// turn's ending is published as the park rather than as a failure.
+    LimitParked {
+        said: String,
+    },
 }
 
 impl HarnessError {
@@ -95,6 +101,7 @@ impl std::fmt::Display for HarnessError {
                  fire. Raise --max-tool-rounds if the task is this big."
             ),
             HarnessError::NoProgress { evidence } => write!(f, "{evidence}"),
+            HarnessError::LimitParked { said } => write!(f, "{said}"),
         }
     }
 }
