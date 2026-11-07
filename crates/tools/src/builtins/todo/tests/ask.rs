@@ -25,8 +25,7 @@ fn waiting(content: &str) -> TodoItem {
 }
 
 fn invoke(tool: &TodoWriteTool, args: &Value) -> Invocation {
-    let jobs: Option<&[crate::exec::JobView]> = None;
-    tool.write(args, jobs)
+    tool.write(args, None)
 }
 
 /// A `wait_on` call - the one field that leaves this session, over a job table that is empty.
