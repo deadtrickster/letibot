@@ -1379,6 +1379,7 @@ mod sessions_list;
 mod sessions_override;
 mod sessions_way_out;
 mod settings;
+mod sidebar;
 mod skills;
 mod slugs;
 mod standing;

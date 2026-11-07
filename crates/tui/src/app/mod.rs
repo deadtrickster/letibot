@@ -481,6 +481,8 @@ pub struct App {
     /// than a `retired` key per copy - the 127 dismissals of `model_slow_first_byte` a head can
     /// carry are this one entry. See [`crate::prefs::leticode`].
     pub(crate) quiet: Quiet,
+    /// The rooms sidebar: on or off, focused, and the rows it drew.
+    pub(crate) sidebar: sidebar::Sidebar,
     /// The surface keys `leticode.toml`'s `[keys]` moved, resolved against the tables in
     /// `app::keys::bindings`.
     pub(crate) key_overrides: KeyOverrides,
@@ -1296,6 +1298,7 @@ impl App {
             dec_content_room: 0,
             dismissed: Vec::new(),
             quiet: Quiet::shipped(),
+            sidebar: sidebar::Sidebar::default(),
             key_overrides: KeyOverrides::default(),
             profiles: Profiles::default(),
             read_marks: Vec::new(),
@@ -1632,6 +1635,7 @@ pub(crate) mod runclick;
 mod scroll;
 mod session;
 mod sessions_pane;
+pub(crate) mod sidebar;
 pub(crate) mod standing;
 mod surface;
 mod term_pane;

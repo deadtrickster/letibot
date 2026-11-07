@@ -659,6 +659,11 @@ impl App {
             // `/skills` is the box's skills, and `/skills NAME rest` hands one over: the body is the daemon's to
             // inject, since it loads the skill, writes the person's message and runs the turn.
             "skills" => self.toggle_surface(Surface::Skills),
+            _ if verb_arg(cmd, "rooms").is_some_and(|a| a.starts_with("sidebar")) => {
+                let arg = verb_arg(cmd, "rooms").unwrap_or("");
+                self.sidebar_command(arg.trim_start_matches("sidebar"));
+                None
+            }
             "rooms" => self.toggle_surface(Surface::Rooms),
             // `/search TEXT` over the channel the room view has selected: the loaded messages, since
             // the ring is the history. `/search` with no text closes it again.
@@ -1368,7 +1373,7 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
     (
         "rooms",
         "open or close the chat rooms: the host room, one room per project and your DMs; what you \
-         type posts as operator",
+         type posts as operator; `/rooms sidebar on|off` keeps the list beside the transcript",
     ),
     (
         "dm",

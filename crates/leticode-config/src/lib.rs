@@ -212,6 +212,9 @@
 //! floor_seconds = 10            # the shortest re-arm an operator add earns (OPERATOR_ADD_NAG_AFTER)
 //! repeat_cap_seconds = 1800     # the ceiling the doubled interval retreats to (NAG_REPEAT_CAP)
 //!
+//! [ui]
+//! rooms_sidebar = false                 # Rooms, Sessions and Queues beside the transcript
+//!
 //! [room]
 //! tie_breaker = "deepseek/deepseek-flash"   # the model that arbitrates the room's items
 //!
@@ -551,6 +554,8 @@ pub struct LeticodeConfig {
     pub queue: QueueKeys,
     /// The `[room]` table: the model the room's tie-breaker arbitrates on.
     pub room: RoomKeys,
+    /// The `[ui]` table: head layout switches. See [`UiKeys`].
+    pub ui: UiKeys,
     /// The `[warnings]` table: what the head files and never draws. Read by the head, in
     /// `tui/src/prefs.rs`, because the codes are that process's vocabulary.
     pub warnings: WarningKeys,
@@ -1342,6 +1347,34 @@ pub struct RoomKeys {
     pub tie_breaker: Option<String>,
 }
 
+/// `[ui]` in a `leticode.toml`: how the head lays itself out. `rooms_sidebar` keeps the Rooms,
+/// Sessions and Queues list beside the transcript; `None` is off.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UiKeys {
+    pub rooms_sidebar: Option<bool>,
+}
+
+fn ui_keys(value: &toml::Value, path: &Path, text: &str, user: bool) -> Result<UiKeys, String> {
+    let keys = "the one key is `rooms_sidebar` (true or false)";
+    let table = table_at(value, path, text, "ui", keys)?;
+    let mut out = UiKeys::default();
+    for (key, v) in table {
+        let from = at(path, text, key, user);
+        match key.as_str() {
+            "rooms_sidebar" => {
+                out.rooms_sidebar = Some(v.as_bool().ok_or_else(|| {
+                    format!(
+                        "{from}: [ui] rooms_sidebar is true or false, not {}",
+                        kind_of(v)
+                    )
+                })?);
+            }
+            other => return Err(format!("{from}: [ui] `{other}` is not a key; {keys}")),
+        }
+    }
+    Ok(out)
+}
+
 fn warning_keys(
     value: &toml::Value,
     path: &Path,
@@ -1719,6 +1752,10 @@ impl LeticodeConfig {
                 Some(v) => room_keys(v, path, &text, level == Level::User)?,
                 None => RoomKeys::default(),
             },
+            ui: match &file.ui {
+                Some(v) => ui_keys(v, path, &text, level == Level::User)?,
+                None => UiKeys::default(),
+            },
             warnings: match &file.warnings {
                 Some(v) => warning_keys(v, path, &text, level == Level::User)?,
                 None => WarningKeys::default(),
@@ -1908,6 +1945,9 @@ impl LeticodeConfig {
                     .tie_breaker
                     .clone()
                     .or_else(|| self.room.tie_breaker.clone()),
+            },
+            ui: UiKeys {
+                rooms_sidebar: other.ui.rooms_sidebar.or(self.ui.rooms_sidebar),
             },
             warnings: self.warnings.overridden_by(&other.warnings),
             keys: self.keys.overridden_by(&other.keys),
@@ -2119,6 +2159,9 @@ struct LeticodeConfigFile {
     /// The `[room]` table, see [`RoomKeys`].
     #[serde(default)]
     room: Option<toml::Value>,
+    /// The `[ui]` table, see [`UiKeys`].
+    #[serde(default)]
+    ui: Option<toml::Value>,
     /// The `[warnings]` table, see [`WarningKeys`].
     #[serde(default)]
     warnings: Option<toml::Value>,
@@ -3426,6 +3469,26 @@ mod tests {
             );
             assert!(err.contains(want), "{tag}: {err}");
         }
+    }
+
+    /// `[ui] rooms_sidebar` is read, merged (the project over the user) and refused by name when
+    /// it is not a boolean or when the table holds another key.
+    #[test]
+    fn the_ui_table_reads_rooms_sidebar() {
+        let dir = project_dir("ui_table");
+        let on = write_file(&sub(&dir, "ui-on"), "[ui]\nrooms_sidebar = true\n");
+        assert_eq!(
+            LeticodeConfig::load(&on).unwrap().ui.rooms_sidebar,
+            Some(true)
+        );
+        let none = write_file(&sub(&dir, "ui-none"), "");
+        assert_eq!(LeticodeConfig::load(&none).unwrap().ui.rooms_sidebar, None);
+        let bad = write_file(&sub(&dir, "ui-bad"), "[ui]\nrooms_sidebar = \"yes\"\n");
+        let err = LeticodeConfig::load(&bad).unwrap_err();
+        assert!(err.contains("rooms_sidebar"), "{err}");
+        let other = write_file(&sub(&dir, "ui-key"), "[ui]\nwidth = 3\n");
+        let err = LeticodeConfig::load(&other).unwrap_err();
+        assert!(err.contains("not a key"), "{err}");
     }
 
     // ---- K9: config, not a plugin (the plan's §4.3, §6 K9) ----

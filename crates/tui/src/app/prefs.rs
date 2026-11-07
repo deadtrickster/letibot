@@ -325,6 +325,7 @@ impl App {
             }
         }
         self.quiet.muted.retain(|code| known_warning(code));
+        self.sidebar_set(cfg.ui.rooms_sidebar.unwrap_or(false));
         let (overrides, key_said) = KeyOverrides::resolve(&cfg.keys);
         self.key_overrides = overrides;
         problems.extend(key_said);

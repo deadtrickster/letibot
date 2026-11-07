@@ -61,6 +61,8 @@ pub(crate) enum Target {
     /// A channel row of the `/rooms` list; its one stop is the row's index in
     /// `RoomsView::chan_rows`. A click enters the channel, as Enter in the switcher does.
     RoomChan,
+    /// A row of the rooms sidebar; its one stop is the row's index in `Sidebar::rows`.
+    SideRow,
     /// The decision card; its stops are the ladder's rows.
     Decision,
     /// The quit card; its stops are its two choices.

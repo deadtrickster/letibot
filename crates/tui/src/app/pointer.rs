@@ -261,7 +261,7 @@ impl App {
             // A live call's card lights whole, every row it was drawn in - one card is one door,
             // like a notice. Keyed by the CALL rather than a card index, so one card's rows are the
             // rows that name one call.
-            Target::RoomChan => Some(Hovered::one(
+            Target::RoomChan | Target::SideRow => Some(Hovered::one(
                 row,
                 Some((hit.rect.x, hit.rect.x + hit.rect.w)),
             )),

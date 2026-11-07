@@ -180,6 +180,14 @@ impl App {
                 self.toggle_asks_folded();
                 return None;
             }
+            Key::AltL => {
+                self.sidebar_toggle_key();
+                return None;
+            }
+            Key::AltJ => {
+                self.sidebar_enter_key();
+                return None;
+            }
             k => k,
         };
         // A wheel notch goes to the surface under the pointer - see [`App::wheel_at`]. One
@@ -260,6 +268,10 @@ impl App {
         // The reseat card, behind every card above - it is drawn only while none of them
         // holds the slot (`App::reseat_card_up`), and typing past it pins it.
         if let ControlFlow::Break(r) = self.key_reseat_card(&k) {
+            return r;
+        }
+        // A focused rooms sidebar owns the arrows, Enter, `d` on an empty composer and Esc.
+        if let ControlFlow::Break(r) = self.key_sidebar(&k) {
             return r;
         }
         // An open room switcher owns every key below this line, the letters included: its query is
@@ -852,6 +864,10 @@ pub enum Key {
     /// alt-h: fold what is waiting on you away, or back - the questions' yellow line goes,
     /// and the composer's bottom edge counts them (`app/waiting.rs`).
     AltH,
+    /// alt-l: the rooms sidebar on or off (`app/sidebar.rs`).
+    AltL,
+    /// alt-j: the keyboard into the rooms sidebar.
+    AltJ,
     Backspace,
     Delete,
     Left,
@@ -1004,6 +1020,8 @@ impl Key {
             | Key::AltP
             | Key::AltN
             | Key::AltH
+            | Key::AltL
+            | Key::AltJ
             | Key::PageUp
             | Key::PageDown
             | Key::WheelUp

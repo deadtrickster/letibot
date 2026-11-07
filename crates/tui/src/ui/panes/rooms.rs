@@ -340,6 +340,21 @@ impl RoomsView {
 }
 
 impl App {
+    /// The sidebar's `h` rows, `w` columns each, drawn with the pane's own list. The click rows it
+    /// leaves are the sidebar's, and the pane's are put back.
+    pub(crate) fn sidebar_lines(&mut self, w: usize, h: usize) -> Vec<String> {
+        let palette = self.cfg.palette();
+        let saved = std::mem::take(&mut self.rooms.chan_rows);
+        let lines = self.rooms_left(w, h);
+        let drawn = std::mem::replace(&mut self.rooms.chan_rows, saved);
+        self.sidebar.rows = drawn
+            .into_iter()
+            .map(|(r, c)| (r, crate::app::sidebar::SideRow::Chan(c)))
+            .collect();
+        let lines: Vec<Line> = lines.into_iter().map(|l| padded(l, w)).collect();
+        row_strings(&lines, palette)
+    }
+
     fn rooms_left(&mut self, lw: usize, room: usize) -> Vec<Line> {
         let channels = self.rooms.channels();
         let picked = self.rooms.selected();
