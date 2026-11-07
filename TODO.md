@@ -54,7 +54,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R114 | Embeddings as the second similarity tier, for every similarity caller | Code work | item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase case scored against the worst measured negative, the per-round cost on lab2x1 |
 | R118 | A GitHub reviewer seat: `letibot attach github` reviews every PR and answers as @letibot | Code work | the seat in the daemon so the pane has a feed, a mirror per repository, the review panel, R116's verdict, R114's similarity offers |
 | R116 | Claude Code as a merge-queue reviewer through headless `claude -p` | Code work | all of it - no `claude -p`, `--json-schema` or `structured_output` use exists under `crates/` |
-| R117 | The leticode MCP bridge pushes package and queue events into Claude Code as a channel | Code work | all of it - no `claude/channel` capability exists under `crates/`; Claude Code side is a research preview |
+| R117 | The leticode MCP bridge pushes package and queue events into Claude Code as a channel | Code work | package and queue events on the channel (rooms already push), and leticode as an approved Claude Code plugin so the channel needs no development flag |
 | T16 | W9's open questions | Code work | item 7 (call ids are positional per turn); unclear: item 6 asked lubuntu3 whether RAGFlow signals "no coverage" in a field, no answer is recorded |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
 | R100 | A remote session in a firecode VM: `--host` and `--vm` as one placement | Needs the operator | the live proof on lab2x1: a real `firecode` copy carrying a commit out, a resumed session keeping its clone, the guest's `cargo test` with no card, the copy-out's cost |
@@ -755,7 +755,7 @@ Docs: https://code.claude.com/docs/en/headless.md
 
 ## R117 - The leticode MCP bridge pushes package and queue events into the orchestrating Claude Code session as a channel
 
-**Status:** not started. left: all of it - the bridge declares no `claude/channel` capability and sends no `notifications/claude` (grep under `crates/`, 2026-11-03). Claude Code's side is a research preview that needs `--dangerously-load-development-channels`.
+**Status:** half built. The bridge declares `claude/channel` (`crates/bridge/src/mcp.rs:122`) and pushes room messages as `notifications/claude/channel` (`crates/bridge/src/rooms.rs:383`). left: push package and queue events on the same channel, and package leticode as a Claude Code plugin so the channel loads without `--dangerously-load-development-channels` and its confirmation dialog.
 
 Today an orchestrating Claude Code session learns that a package finished through a tracked background `leticode-wait` per session. A channel replaces that: the bridge is already an MCP server, so it can declare `capabilities.experimental["claude/channel"]` and send `notifications/claude/channel` with `{content, meta}` when a session ends its turn, asks, fails, or a queue row changes state. An idle Claude Code session starts a turn on it.
 
@@ -763,6 +763,7 @@ Today an orchestrating Claude Code session learns that a package finished throug
 - Permission asks can be relayed through `experimental["claude/channel/permission"]`.
 - Claude Code must be started with `--dangerously-load-development-channels server:leticode`. It works in interactive sessions only, and custom channels are not on the allowlist.
 - Keep `letibot-mcp wait` as the fallback for sessions started without the flag.
+- **The plugin** is what replaces the flag, the alias and the per-seat Monitors. One installable plugin carries the leticode MCP server, its channel, the room waiter and the skills, so a session gets push without being started specially. Custom channels are not on Claude Code's allowlist today, so check what an approved plugin needs (marketplace entry, review) before building.
 
 Docs: https://code.claude.com/docs/en/channels-reference.md
 
