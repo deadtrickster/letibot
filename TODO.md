@@ -67,6 +67,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R156 | A Claude Code seat's nag repeats on every package job and offers the packages' jobs as its own waits | Code work | all of it |
 | R157 | Built-in panes `b-sessions`/`pane_sessions` and `b-irc`/`pane_nicks` trap with symbol-less backtraces | Code work | a reproduction (reported by gatekeeper@arangodb, room #1029), the cause, the fix |
 | R154 | The channel push says turns, not work: idle-with-open-work and a held job's exit are silent, and a lost turn end is never replayed | Code work | all of it |
+| R159 | `←`/`→` in the `/sessions` tree collapse the wrong row, and `←` throws the cursor to another project | Code work | all of it |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
 | R150 | Plugin extension points: the harness and head open to plugins | Needs the operator | the operator's answers to the 13 questions in `docs/plugin-extension-points-wide.md` §8 (each has a default and is built on it meanwhile); K2-K6, K11 and P6 to build; H0, P5, K7, K8, K9, K10 are landed and K1 is in flight |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
@@ -1015,6 +1016,16 @@ Seen the first evening the seat board ran (R144): with one row in progress and t
 **Status:** open. left: a reproduction, the cause, the fix.
 
 gatekeeper@arangodb (room #1029, 2026-11-07) saw `b-sessions`/`pane_sessions` and `b-irc`/`pane_nicks` both trap, with backtraces of 17 and 18 frames and no symbols. Likely new since R151 installed the built-in panes at a head's door, so these are now compiled and asked in sessions that never asked them. The trap should be reproduced with the session's input, the modules built with names kept so a backtrace says where, and the cause fixed.
+
+## R159 - `←`/`→` in the `/sessions` tree collapse the wrong row
+
+**Status:** open. left: all of it.
+
+Reported by the operator on 2026-11-08, in the head's `/sessions` tree: to project arangodb, into the session arango, expanded it, then pressed `←` - everything collapsed and the cursor jumped to the next project. Every tree UI's rule is: `←` on an EXPANDED row collapses that row alone and the cursor stays on it; `←` on a closed row or a leaf moves the cursor to its PARENT and collapses nothing else; `→` expands the row under the cursor, and `→` on an already open row moves the cursor to its first child.
+
+What the head does now (`App::picker_fold`, `crates/tui/src/app/keys/panes.rs:372`): `←` on a session row closes its PARENT (or, with the parent in another group, the whole group), so the row the person was on disappears and `picker_sel` stays where it was - which is now the next project's line. `→` on a session only ever opens it, so a key that should walk into the tree does nothing on a row that is already open. The bar's words for the two keys say `→ opens its subagents` and `← closes them`, which is not what a tree does either.
+
+Done when: `←` on an expanded session collapses only it with the cursor kept; `←` on a leaf moves the cursor to its parent and collapses nothing; `←` on a closed project moves nothing to another project; `→` expands, and `→` again lands on the first child; every existing tree test still passes.
 
 ## R134 - Scrolling stops at a line above the tail
 
