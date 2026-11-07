@@ -276,3 +276,28 @@ fn the_chosen_width_persists_and_the_configured_one_starts_it() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The Sessions section lists the operator's own top-level sessions and nothing else: not the
+/// queue's orchestrator, not a package's session, not a child.
+#[test]
+fn a_queue_orchestrator_and_a_package_session_are_not_listed() {
+    let mut a = app();
+    let mut gatekeeper = brief("s-gatekeeper-c2f63a0e6a17", "queue", false);
+    gatekeeper.origin = letibot_sessionlog::SessionOrigin::Operator;
+    let mut queue = brief("s-q", "queue", false);
+    queue.origin = letibot_sessionlog::SessionOrigin::Queue;
+    let mut package = brief("s-pkg", "package", false);
+    package.origin = letibot_sessionlog::SessionOrigin::Package;
+    let mut child = brief("s-child", "child", false);
+    child.parent_session_id = Some("s-op".into());
+    a.sessions = vec![
+        brief("s-op", "mine", false),
+        gatekeeper,
+        queue,
+        package,
+        child,
+    ];
+    a.rooms_sync_sessions();
+    let ids: Vec<&str> = a.rooms.sessions.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["s-op"]);
+}

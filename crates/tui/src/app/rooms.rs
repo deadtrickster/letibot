@@ -878,10 +878,16 @@ impl App {
         let mine: Vec<_> = self
             .sessions
             .iter()
+            // The one test the session picker and `--continue` use, so none of them can differ.
             .filter(|b| {
-                b.parent_session_id.is_none()
-                    && b.live
-                    && b.origin == letibot_sessionlog::SessionOrigin::Operator
+                b.live
+                    && letibot_sessionlog::is_operator_top_level(&letibot_sessionlog::GroupRow {
+                        id: &b.session_id,
+                        parent: b.parent_session_id.as_deref(),
+                        origin: b.origin,
+                        role: None,
+                        title: &b.title,
+                    })
             })
             .map(|b| rooms::SessInfo {
                 id: b.session_id.clone(),

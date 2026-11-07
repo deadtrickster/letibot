@@ -1559,6 +1559,9 @@ fn enter_and_click_switch_to_a_session_and_d_opens_the_dm() {
     let c = crate::app::rooms::Chan::Session("s-x".into());
     a.rooms_go(c.clone());
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-x".into())));
+    // Switching leaves the rooms view; it is opened again for the DM key.
+    assert!(!a.is_open(Surface::Rooms));
+    let _ = a.command("rooms");
 
     a.rooms_go(c.clone());
     a.key(Key::Char('d'));
