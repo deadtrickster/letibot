@@ -4,6 +4,7 @@
 
 pub mod cards;
 pub mod chat;
+pub mod chat_compose;
 pub mod composer;
 pub mod diff_popup;
 pub mod editor;

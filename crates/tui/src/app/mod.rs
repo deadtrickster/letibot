@@ -522,6 +522,9 @@ pub struct App {
     /// The composer: multi-line, with history, a kill ring, undo batching, a paste ledger and the
     /// two interrupt double-taps.
     pub(crate) editor: Editor,
+    /// The room composer's own state - the history, drafts, reply target and completion cycle of
+    /// the input in front - keyed by the input's key (`app::chat_input`).
+    pub(crate) compose: chat_input::Compose,
     /// Folds. Reasoning starts folded; tool output starts folded.
     pub reasoning: Fold,
     pub tools: Fold,
@@ -1283,6 +1286,7 @@ impl App {
             acked: Counters::default(),
             scroll: 0,
             editor: Editor::new(),
+            compose: Default::default(),
             model: String::new(),
             call_targets: std::collections::HashMap::new(),
             call_ms: std::collections::HashMap::new(),

@@ -67,7 +67,8 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R139 | Room UI P0: attachment and blob wire, the head push frame, stubs for P1-P4 | Code work | built and tested on the branch: `Attachment` + coordinator blob store, room protocol 9, `ServerFrame::RoomChatPushed` + sessionlog 65, the seat's blob allowlist, and the TUI's five stub modules with the room keys dispatching to them; left: the merge queue's gate once the branch is approved |
 | R141 | Room UI P2: message rendering (markdown, code colours, grouping, speaker colours, names, unread divider, pictures) | Code work | built and tested on the branch: the `Stream` renderer (`crates/tui/src/ui/chat`), the `RoomsView`-to-`Stream` adapter (`crates/tui/src/app/chat_adapter.rs`) as the one reader of `Msg`, and `/rooms` drawing blocks; left: the merge queue's gate once the branch is approved |
 | R140 | Room UI P1: live chat push to the head, agents attach pictures | Code work | all of it, after R139 |
-| R142 | Room UI P3: composer (`@` completion, room `/` verbs, history and drafts, reply, pasted pictures) | Code work | all of it, after R139 |
+| R142 | Room UI P3: composer (`@` completion, room `/` verbs, history and drafts, reply, pasted pictures) | Code work | built and tested on the branch: `@` completion and the room's `/` verbs through H0's `Complete`/`Candidate` types (the roster, connected before away, prefix before substring, six in the row), history and drafts keyed by the input's `key`, the reply target and its strip, the completion row, and chips that become `![name](blob:ID)`; left: the 3-line key hook in `keys/` and `rooms_outgoing` in `composer.rs`, neither file P3's own, then the merge queue's gate |
+| R141 | Room UI P2: message rendering (markdown, code colours, grouping, speaker colours, names, unread divider, pictures) | Code work | all of it, after R139 |
 | R143 | Room UI P4: navigation (message cursor, jump to unread, `Ctrl+K` switcher, search, picture cache) | Code work | all of it, after R139 |
 | R144 | The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag | Code work | the head's pane for a seat's board; the board, its waits and its nag are landed |
 | R152 | `tests/launcher.sh` stubs outlived their run, and four of its cases had drifted | Code work | putting `tests/launcher.sh` in the merge gate |
@@ -909,6 +910,8 @@ A session's identity is stable on its host only. Answer waits (R136) assume a st
 ## R139 to R143 - The room in the TUI, as good as flowy's chat
 
 **Status:** P0 (R139) and P1 (R140) built and tested on their branches; P2 to P4 open. left: their landing through the merge queue, then P2 to P4.
+
+**Status:** P0 (R139) and P3 (R142) built and tested on their branches; P1, P2 and P4 open. left: P0's and P3's landing through the merge queue, then P1, P2 and P4.
 
 The design and the five packages are `docs/room-tui.md`, from a study of flowy's web console and Go TUI. P0 (R139) lands first and alone: `Attachment` and a coordinator blob store, `ROOM_PROTOCOL_VERSION` 9, `ServerFrame::RoomChatPushed` with sessionlog protocol 65, and the TUI stub modules and key bindings so P1 to P4 never edit one file. P1 (R140) pushes chat to heads, P2 (R141) renders messages, P3 (R142) is the composer, P4 (R143) is navigation and the picture cache. Each package names its done-tests in the doc. Defaults taken on the doc's open questions: bump the protocol, blobs on the coordinator (8 MiB each), no reactions, no thread folding, search within the 500-message ring, agents see a picture's name and size only. Answer waits (R136) take room protocol 10.
 
