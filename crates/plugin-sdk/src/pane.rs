@@ -12,10 +12,10 @@
 /// to say which one it draws (`letibot_plugins::MOVED`, the manifest's `[contracts]`).
 pub const V: u32 = 3;
 
-/// The most session rows a host puts in the `sessions` feed. A guest pays fuel per byte it parses
-/// and the hook's budget is fixed, so a store that has held thousands of sessions would
-/// otherwise trap every pane that reads the feed.
-pub const SESSION_FEED_ROWS: usize = 400;
+/// The most session rows a host puts in the `sessions` feed. A guest pays about 130k fuel a row
+/// against a 50M hook budget, so a store of thousands of sessions would trap every pane that
+/// reads the feed.
+pub const SESSION_FEED_ROWS: usize = 250;
 
 /// Cut `rows` to [`SESSION_FEED_ROWS`], keeping the ones a person is in, then the ones that moved
 /// last. `key` is `(wanted regardless, last moved ms)`; the order of what is kept is unchanged.
