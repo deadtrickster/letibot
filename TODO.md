@@ -61,7 +61,6 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | the next stop's line from `~/.local/state/letibot/scroll-stalls.log`, which the head now writes at each stop |
 | R137 | Todo graphs that span projects | Code work | the build of `docs/cross-project-todo.md` (P1-P6) and its four open questions |
 | R138 | Stable session identities across hosts, through migrations | Code work | the build of `docs/cross-host-identity.md` (Q1-Q7) and its five open questions; until then asks are same-host only |
-| R136 | Answer waits: a row waits on another top-level session's answer | Landed | all eight steps of `docs/answer-waits.md` on room protocol 10: the room's ask state, the `wait_on` edge, the `answer`/`decline` verbs, the passes, the end-to-end test and the docs |
 | R144 | The MCP bridge gives Claude Code seats a todo board with `wait_on` and the idle nag | Code work | the head's pane for a seat's board; the board, its waits and its nag are landed |
 | R152 | `tests/launcher.sh` stubs outlived their run, and four of its cases had drifted | Code work | putting `tests/launcher.sh` in the merge gate |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
