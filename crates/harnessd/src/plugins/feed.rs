@@ -125,6 +125,17 @@ fn home() -> String {
     std::env::var("HOME").unwrap_or_default()
 }
 
+/// The checkout a session's tree belongs to: [`repository_of`]'s folder, or the tree itself when it
+/// is in no repository. A pane's relative `read` resolves here first (see `look::Trees`).
+pub(crate) fn checkout_of(workspace: &Path) -> PathBuf {
+    let named = repository_of(workspace);
+    if named.is_empty() {
+        workspace.to_path_buf()
+    } else {
+        PathBuf::from(named)
+    }
+}
+
 /// The folder of `workspace`'s git common directory - the checkout a worktree was cut from, which is
 /// what a person means by *this project*. `--git-common-dir`, not `--show-toplevel`, because inside
 /// a worktree the top level IS the worktree; absolute, because a plain repo answers `.git`.

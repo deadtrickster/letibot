@@ -166,7 +166,7 @@ fn a_read_look_outside_the_workspace_is_refused() {
         &LookSpec::Read {
             read: secret.display().to_string(),
         },
-        &root,
+        look::Trees::one(&root),
         &[Capability::Read],
     );
     assert_eq!(result["exit"], json!(1), "{result}");
@@ -182,7 +182,7 @@ fn a_read_look_outside_the_workspace_is_refused() {
         &LookSpec::Read {
             read: "../plan.json".into(),
         },
-        &root,
+        look::Trees::one(&root),
         &[Capability::Read],
     );
     assert_eq!(climbing["exit"], json!(1), "{climbing}");
@@ -196,7 +196,7 @@ fn a_read_look_without_the_read_capability_is_refused() {
         &LookSpec::Read {
             read: "plan.json".into(),
         },
-        &root,
+        look::Trees::one(&root),
         &[],
     );
     assert_eq!(result["exit"], json!(1), "{result}");
@@ -217,7 +217,7 @@ fn a_read_look_inside_the_workspace_answers_the_text_and_a_missing_file_is_exit_
         &LookSpec::Read {
             read: "plan.json".into(),
         },
-        &root,
+        look::Trees::one(&root),
         &[Capability::Read],
     );
     assert_eq!(result["exit"], json!(0), "{result}");
@@ -229,11 +229,182 @@ fn a_read_look_inside_the_workspace_answers_the_text_and_a_missing_file_is_exit_
         &LookSpec::Read {
             read: ".letibot/status.json".into(),
         },
-        &root,
+        look::Trees::one(&root),
         &[Capability::Read],
     );
     assert_eq!(missing["exit"], json!(1), "{missing}");
     assert!(!missing["stderr"].as_str().unwrap().is_empty());
+}
+
+/// A pane in a worktree reads the project's files: a relative `read` resolves against the session's
+/// CHECKOUT first, so `.letibot/status.json` is the one the checkout holds - the wall was
+/// `look exit 1` on every dashboard a worktree session opened (R151).
+#[test]
+fn a_relative_read_in_a_worktree_resolves_against_the_checkout() {
+    let root = tempdir("worktree-read");
+    let repo = root.join("proj");
+    let tree = repo.join("worktrees/agent-x");
+    std::fs::create_dir_all(&tree).expect("the tree");
+    let git = |args: &[&str]| {
+        letibot_tools::testing::git(&repo)
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    if !git(&["init", "-q"]) {
+        let _ = std::fs::remove_dir_all(&root);
+        return letibot_tokencore::apparatus::absent("`git`");
+    }
+    letibot_tools::testing::repo_config(&repo);
+    if !git(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "agent-x",
+        tree.to_str().unwrap(),
+    ]) {
+        let _ = std::fs::remove_dir_all(&root);
+        return letibot_tokencore::apparatus::absent("`git worktree`");
+    }
+    // The project's data is in the checkout, and the worktree has none of it - which is what a
+    // gitignored `.letibot/` directory is.
+    std::fs::create_dir_all(repo.join(".letibot")).expect("the project's dir");
+    std::fs::write(
+        repo.join(".letibot/status.json"),
+        "{\"plan\":\"the checkout's\"}",
+    )
+    .expect("a status file");
+    std::fs::write(tree.join("own.json"), "{\"mine\":true}").expect("a file in the worktree");
+
+    let host = PluginHost::discover(
+        "s-worktree",
+        &tree,
+        None,
+        None,
+        Arc::new(FileLoader),
+        Arc::new(FileBuilder),
+    );
+    let trees = host.look_trees();
+    assert_eq!(
+        trees.checkout,
+        std::fs::canonicalize(&repo).expect("the checkout"),
+        "a worktree's checkout is the checkout it was cut from"
+    );
+    let read = look::run(
+        &LookSpec::Read {
+            read: ".letibot/status.json".into(),
+        },
+        trees,
+        &[Capability::Read],
+    );
+    assert_eq!(read["exit"], json!(0), "{read}");
+    assert!(
+        read["stdout"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("the checkout's"),
+        "{read}"
+    );
+    // And a file that is only in the worktree is still an answer: the tree the session stands in is
+    // read too, so the fix does not lose what worked before it.
+    let own = look::run(
+        &LookSpec::Read {
+            read: "own.json".into(),
+        },
+        trees,
+        &[Capability::Read],
+    );
+    assert_eq!(own["exit"], json!(0), "{own}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A rebuild of a pinned layer keeps the operator's pin while its `plugin.toml` asks for the same
+/// powers, and loses it the moment it asks for a new one - the wall was a `/plugin trust` after
+/// every rebuild (R151).
+#[test]
+fn a_rebuild_keeps_a_pin_until_the_manifest_asks_for_a_new_capability() {
+    let root = tempdir("repin");
+    let plugins = root.join("plugins");
+    let dir = plugins.join("deploy");
+    std::fs::create_dir_all(&dir).expect("the layer dir");
+    let manifest = |caps: &str| {
+        format!(
+            "name = \"deploy\"\npurpose = \"a pane\"\nhooks = [\"pane_deploy\"]\n\
+             capabilities = [{caps}]\ncontract = 1\n"
+        )
+    };
+    std::fs::write(dir.join("plugin.toml"), manifest("")).expect("a manifest");
+    std::fs::write(dir.join("plugin.wasm"), b"a module").expect("a module");
+    std::fs::write(dir.join("answer.json"), A_VIEW).expect("an answer");
+    let trust = letibot_plugins::Trust::open(root.join("trust.json"));
+    let host = PluginHost::discover(
+        "s-repin",
+        &root,
+        Some(plugins.clone()),
+        None,
+        Arc::new(FileLoader),
+        Arc::new(FileBuilder),
+    )
+    .with_trust(trust.clone());
+    let hub = Hub::new("s-repin");
+    host.load(&hub, "deploy").expect("the first load");
+    // The operator's own door, `/plugin trust NAME`.
+    trust.pin("deploy", &dir).expect("a pin");
+
+    // A rebuild that declares the same capabilities: the pin moves with the bytes, and `load` says
+    // so instead of handing the person another command to run.
+    std::fs::write(dir.join("next.json"), A_VIEW).expect("a second answer");
+    let said = host.load(&hub, "deploy").expect("the rebuild loads");
+    assert!(said.contains("its pin held"), "{said}");
+    assert!(
+        host.layer("deploy").is_some_and(|l| l.trusted),
+        "and the layer runs freely again without a `/plugin trust`: {said}"
+    );
+    let pin = trust
+        .pins()
+        .into_iter()
+        .find(|p| p.name == "deploy")
+        .expect("the pin is still in force");
+    assert_eq!(
+        pin.capabilities,
+        Some(Vec::new()),
+        "and it still records the powers that were approved"
+    );
+
+    // A rebuild that asks for `read`: a new power is a new review, so the pin is gone and `load`
+    // names the one command that re-pins it and the capability that is new.
+    std::fs::write(dir.join("plugin.toml"), manifest("\"read\"")).expect("a wider manifest");
+    let said = host.load(&hub, "deploy").expect("the wider rebuild loads");
+    assert!(said.contains("not pinned any more"), "{said}");
+    assert!(said.contains("read"), "the capability that is new: {said}");
+    assert!(said.contains("/plugin trust deploy"), "{said}");
+    assert!(
+        !host.layer("deploy").is_some_and(|l| l.trusted),
+        "and it is adjudicated call by call until the person pins it again"
+    );
+}
+
+/// A path that is not there is a refusal naming the path it tried, so a reader is not sent back to
+/// guess which tree the host looked in.
+#[test]
+fn a_read_look_that_is_not_there_names_the_path_it_tried() {
+    let root = tempdir("missing-names");
+    let missing = look::run(
+        &LookSpec::Read {
+            read: ".letibot/status.json".into(),
+        },
+        look::Trees::one(&root),
+        &[Capability::Read],
+    );
+    assert_eq!(missing["exit"], json!(1), "{missing}");
+    let said = missing["stderr"].as_str().unwrap_or_default();
+    assert!(said.contains("is not there"), "{said}");
+    assert!(
+        said.contains(&root.join(".letibot/status.json").display().to_string()),
+        "the path it tried: {said}"
+    );
 }
 
 #[test]
@@ -243,7 +414,7 @@ fn an_exec_look_answers_126_and_runs_nothing() {
         &LookSpec::Exec {
             exec: vec!["rm".into(), "-rf".into(), "/".into()],
         },
-        &root,
+        look::Trees::one(&root),
         &[Capability::Exec("rm".into())],
     );
     assert_eq!(result["exit"], json!(126), "{result}");
@@ -263,7 +434,7 @@ fn a_read_path_tree_is_readable_from_a_pane_look_and_nothing_else_is() {
         &LookSpec::Read {
             read: file.display().to_string(),
         },
-        &workspace,
+        look::Trees::one(&workspace),
         &caps,
     );
     assert_eq!(allowed["exit"], json!(0), "{allowed}");
@@ -277,7 +448,7 @@ fn a_read_path_tree_is_readable_from_a_pane_look_and_nothing_else_is() {
         &LookSpec::Read {
             read: outside.display().to_string(),
         },
-        &workspace,
+        look::Trees::one(&workspace),
         &caps,
     );
     assert_eq!(refused["exit"], json!(1), "{refused}");
@@ -874,6 +1045,58 @@ fn a_session_that_declared_no_tool_installs_no_builtin_layer() {
         .is_none(),
         "nothing asked for the tool, so no layer of the binary's is on this stack"
     );
+}
+
+/// Every built-in pane is on a head's list and opens by its name with no tool declared: the wall was
+/// that a built-in was installed only when a session declared a tool from it, so `irc` and `github`
+/// answered a pane nothing could reach (R151).
+#[test]
+fn every_builtin_pane_is_listed_and_opens_with_no_tool_declared() {
+    let workspace = tempdir("builtin-panes");
+    let host = PluginHost::production("s-panes", &workspace);
+    let hub = Hub::new("s-panes");
+    assert!(
+        host.panes().is_empty(),
+        "no head, no compile: {:?}",
+        host.panes()
+    );
+    PaneDriver::attach(&host, "s-panes", &hub);
+    // Read off the binary's own table, not written down here: a second list drifts.
+    let want: Vec<String> = letibot_builtins::table()
+        .iter()
+        .filter_map(|b| Manifest::parse(b.manifest).ok())
+        .flat_map(|m| {
+            m.hooks
+                .iter()
+                .filter_map(|h| {
+                    h.strip_prefix("pane_")
+                        .filter(|n| !n.is_empty())
+                        .map(|n| format!("{}/{n}", m.name))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(want.len() >= 2, "the binary carries panes: {want:?}");
+    let listed = host.panes();
+    for pane in &want {
+        assert!(
+            listed.contains(pane),
+            "`{pane}` is a built-in pane and no head lists it: {listed:?}"
+        );
+    }
+    // The two that were unreachable open by their names, and the LAYER answers: no feed is its own
+    // sentence on the screen, not the host's refusal panel.
+    for pane in ["irc/nicks", "github/github"] {
+        host.open("s-panes", &hub, pane, (100, 30));
+        let (_, view) = views(&hub)
+            .into_iter()
+            .rfind(|(p, _)| p == pane)
+            .unwrap_or_else(|| panic!("`{pane}` answered nothing"));
+        assert!(
+            view["panels"][0].get("unavailable").is_none(),
+            "`{pane}`: {view}"
+        );
+    }
 }
 
 #[test]
@@ -3294,8 +3517,19 @@ fn a_room_linked_after_the_host_was_built_gets_its_pane() {
     let workspace = tempdir("room-late-pane-ws");
     let host = PluginHost::production("s-late-pane", &workspace);
     let hub = Hub::new("s-late-pane");
+    // A built-in pane is the binary's, so it is here before any room is: the screen says which half
+    // is missing instead of the pane not existing at all (R151).
     host.open("s-late-pane", &hub, "room/room", (100, 30));
-    assert!(host.panes().is_empty(), "no room, no room pane");
+    assert!(
+        host.panes().iter().any(|p| p == "room/room"),
+        "{:?}",
+        host.panes()
+    );
+    let drawn = serde_json::to_string(&views(&hub)).unwrap_or_default();
+    assert!(
+        drawn.contains("hands no `room` feed"),
+        "the layer's own sentence, not the host's refusal: {drawn}"
+    );
     let link = crate::room::link::SessionRoom::connect(
         "s-late-pane",
         server.path(),
@@ -3306,7 +3540,20 @@ fn a_room_linked_after_the_host_was_built_gets_its_pane() {
     )
     .expect("the session connects");
     host.link_room(link, &hub);
-    assert_eq!(host.panes(), vec!["room/room".to_string()]);
+    assert!(
+        host.panes().iter().any(|p| p == "room/room"),
+        "{:?}",
+        host.panes()
+    );
+    let drawn = views(&hub)
+        .into_iter()
+        .rfind(|(p, _)| p == "room/room")
+        .map(|(_, view)| serde_json::to_string(&view).unwrap_or_default())
+        .unwrap_or_default();
+    assert!(
+        !drawn.contains("hands no `room` feed"),
+        "and the connection that arrives is drawn: {drawn}"
+    );
 }
 
 #[test]
@@ -3347,10 +3594,10 @@ fn the_builtin_room_layer_answers_its_pane_with_a_real_room_behind_it() {
         host.panes()
     );
     host.open("s-room-builtin", &hub, "room/room", (100, 30));
-    assert_eq!(
-        host.panes(),
-        vec!["room/room".to_string()],
-        "and the door that asks for it is the door that installs it"
+    assert!(
+        host.panes().iter().any(|p| p == "room/room"),
+        "and the door that asks for it is the door that installs it: {:?}",
+        host.panes()
     );
 
     let (pane, view) = views(&hub)

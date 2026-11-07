@@ -137,7 +137,11 @@ impl PluginStack for StackOver {
             letibot_plugin::condition::LookAsk::Read(read) => {
                 // The same look a pane runs, so the confinement and the capability check are one
                 // implementation rather than two that can disagree.
-                let value = look::run(&LookSpec::Read { read: read.clone() }, &workspace, &caps);
+                let value = look::run(
+                    &LookSpec::Read { read: read.clone() },
+                    self.host.look_trees(),
+                    &caps,
+                );
                 Look::Done(result_of(&value))
             }
             letibot_plugin::condition::LookAsk::Exec(argv) => {

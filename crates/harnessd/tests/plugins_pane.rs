@@ -133,7 +133,11 @@ fn pane_opened(socket: &Path, session: &str) -> Vec<serde_json::Value> {
             continue;
         };
         if let SessionEvent::PluginPane { pane, view } = event {
-            assert_eq!(pane, PANE);
+            // The binary's own panes are announced at the same door - `irc`, `github`, `queue`,
+            // `room`, `sessions` - so the frames this test reads are `PANE`'s alone (R151).
+            if pane != PANE {
+                continue;
+            }
             let titled = view["title"].as_str().unwrap_or_default().to_string();
             seen.push(view);
             // The dashboard is the frame this test is for, so the wait ends on it rather than on a

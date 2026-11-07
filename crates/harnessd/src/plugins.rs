@@ -51,6 +51,9 @@ const PANE_V: u32 = letibot_plugin::pane::V;
 pub struct PluginHost {
     session: String,
     workspace: PathBuf,
+    /// The session's checkout: the repository its tree belongs to (a worktree's is the checkout it
+    /// was cut from), where a pane's relative `read` is looked for first - see [`look::Trees`].
+    checkout: PathBuf,
     /// The session's own plugin directory - where `plugin scaffold` writes and where a
     /// session-scope layer is discovered. Beside the stack, which only knows what it found.
     session_dir: Option<PathBuf>,
@@ -66,6 +69,10 @@ pub struct PluginHost {
     /// coordinator, set by [`PluginHost::with_room`]. `None` in a test's host and on a box with no
     /// coordinator, and the `room` feed is then no key at all rather than an empty room.
     room: Mutex<Option<Arc<dyn room_feed::RoomFeed>>>,
+    /// Whether this host installs the binary's own pane layers at the door a head comes through.
+    /// The daemon's host does ([`PluginHost::production`]); a host built on a test's loader cannot,
+    /// because a fake loader has no engine for a module held in memory.
+    install_builtin_panes: bool,
 }
 
 struct Inner {
@@ -147,6 +154,7 @@ impl PluginHost {
         builder: Arc<dyn Builder>,
     ) -> PluginHost {
         let workspace = workspace.into();
+        let checkout = feed::checkout_of(&workspace);
         let mut stack = Stack::discover(
             session_dir.as_deref(),
             Some(&workspace),
@@ -160,6 +168,7 @@ impl PluginHost {
         PluginHost {
             session: session.into(),
             workspace,
+            checkout,
             session_dir,
             inner: Mutex::new(Inner {
                 stack,
@@ -175,6 +184,7 @@ impl PluginHost {
             builder,
             sessions: None,
             room: Mutex::new(None),
+            install_builtin_panes: false,
         }
     }
 
@@ -256,16 +266,17 @@ impl PluginHost {
         self.answering(hook).is_some_and(|a| a.trusted)
     }
 
-    /// This host as the daemon uses it: rano loads the modules and cargo builds them. The daemon's
-    /// stack seats only the built-ins that declare a tool this session declared, because compiling
-    /// one costs seconds of CPU and a session that seats no layer tool can never call it.
+    /// This host as the daemon uses it: rano loads the modules and cargo builds them. A built-in
+    /// that declares a tool is seated only for a session that declared it; its panes are installed
+    /// at the door a head comes through.
     pub fn production(session: &str, workspace: &Path) -> PluginHost {
-        let host = PluginHost::for_session(
+        let mut host = PluginHost::for_session(
             session,
             workspace,
             Arc::new(rano::RanoLoader),
             Arc::new(CargoBuilder),
         );
+        host.install_builtin_panes = true;
         host.install_builtin_tools(&crate::plugins::declared_tools(session, workspace));
         host
     }
@@ -311,43 +322,56 @@ impl PluginHost {
         PaneDriver::attach(self, "", hub);
     }
 
-    /// Install the built-in whose pane this daemon answers - the room's - the first time a head
-    /// comes through a door that needs it: its four controls are the host's verbs, so the daemon
-    /// that can perform them is the one that must draw it. Lazily, because a compile costs seconds.
-    fn ensure_the_room_pane(&self) {
-        if self.room_source().is_none() {
+    /// Install the binary's built-in pane layers the first time a head comes through a door that
+    /// needs them - a module costs seconds to compile, and a session nobody attached to must not pay
+    /// for one. Every built-in pane is then listed by `/pane`, tool declared or not.
+    fn ensure_builtin_panes(&self) {
+        if !self.install_builtin_panes {
             return;
         }
-        // A layer that already answers the hook is the one that draws it - ours would sit below it
-        // and never be called, and a project that shipped its own room pane has said which it wants.
-        if self.lock().stack.layers().iter().any(|l| {
-            l.manifest
+        for builtin in letibot_builtins::table() {
+            let Ok(manifest) = Manifest::parse(builtin.manifest) else {
+                continue;
+            };
+            let panes: Vec<&String> = manifest
                 .hooks
                 .iter()
-                .any(|h| h.strip_prefix("pane_") == Some(ROOM_HOOK))
-        }) {
-            return;
-        }
-        let Some(builtin) = letibot_builtins::table().iter().find(|b| {
-            Manifest::parse(b.manifest).is_ok_and(|m| {
-                m.hooks
+                .filter(|h| h.strip_prefix("pane_").is_some_and(|n| !n.is_empty()))
+                .collect();
+            if panes.is_empty() {
+                continue;
+            }
+            // A layer that already answers the hook is the one that draws it - ours would sit below
+            // it and never be called, and a project that shipped its own pane has said which it
+            // wants. The layer itself, installed for a declared tool, is that layer too.
+            let answered = {
+                let inner = self.lock();
+                inner
+                    .stack
+                    .layers()
                     .iter()
-                    .any(|h| h.strip_prefix("pane_") == Some(ROOM_HOOK))
-            })
-        }) else {
-            return;
-        };
-        if let Err(why) =
-            self.lock()
-                .stack
-                .register_builtin_bytes(builtin.name, builtin.manifest, builtin.wasm)
-        {
-            eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
+                    .any(|l| !l.disabled && l.manifest.hooks.iter().any(|h| panes.contains(&h)))
+            };
+            if answered {
+                continue;
+            }
+            if let Err(why) = self.lock().stack.register_builtin_bytes(
+                builtin.name,
+                builtin.manifest,
+                builtin.wasm,
+            ) {
+                eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
+            }
         }
     }
 
     pub fn session(&self) -> &str {
         &self.session
+    }
+
+    /// The trees a look reads in: the session's checkout first, then the tree it stands in.
+    pub fn look_trees(&self) -> look::Trees<'_> {
+        look::Trees::new(&self.checkout, &self.workspace)
     }
 
     /// Ask one hook of this session's stack, recording the input for the gate's replay. `None` when
@@ -573,6 +597,61 @@ impl PluginHost {
         applied
     }
 
+    /// What a rebuild did to this layer's pin, as the sentence `plugin load` says: a rebuild that
+    /// asks for nothing new keeps the operator's pin instead of costing another `/plugin trust`.
+    /// `None` when this layer was never pinned, which is the ordinary case and says nothing.
+    fn settle_pin(&self, hub: &Arc<Hub>, name: &str, dir: &Path) -> Option<String> {
+        let trust = self.lock().stack.trust().cloned()?;
+        match trust.rebuilt(name, dir) {
+            Ok(None) => None,
+            Ok(Some(letibot_plugins::Rebuilt::Kept(pin))) => {
+                // The pin moved with the bytes, so decide the layer now rather than at the next
+                // tick: two seconds of "unpinned" is two seconds of a call adjudicated per call.
+                let news = self.lock().stack.refresh_trust();
+                for broken in news {
+                    self.say_broken_pin(hub, &broken);
+                }
+                Some(format!(
+                    "its pin held: `plugin.toml` declares the capabilities that were pinned, so \
+                     `{name}` is still pinned over module sha256 {} and nothing asks you to trust \
+                     it again.",
+                    pin.module
+                ))
+            }
+            Ok(Some(letibot_plugins::Rebuilt::Dropped { new, was })) => Some(if was.is_none() {
+                format!(
+                    "**it is not pinned any more**: nothing recorded which capabilities it was \
+                     pinned with, so a rebuild cannot be judged against them. `/plugin trust \
+                     {name}` pins what is there now, and the powers it declares {}.",
+                    if new.is_empty() {
+                        "are none".to_string()
+                    } else {
+                        format!("are {}", new.join(", "))
+                    }
+                )
+            } else if new.is_empty() {
+                format!(
+                    "**it is not pinned any more**: its `plugin.toml` declares a different set of \
+                     capabilities than the ones that were pinned, so the review that pin recorded \
+                     does not cover this layer. `/plugin trust {name}` pins it again, and every \
+                     call is adjudicated until then."
+                )
+            } else {
+                format!(
+                    "**it is not pinned any more**: its `plugin.toml` now declares {}, which was \
+                     not there when it was pinned — a wider layer is a new review, and the pin \
+                     approved the old powers. `/plugin trust {name}` pins it again, and every call \
+                     is adjudicated until then.",
+                    new.join(", ")
+                )
+            }),
+            Err(why) => Some(format!(
+                "its pin could not be re-decided: {why} — `/plugin trust {name}` pins what is \
+                 there now."
+            )),
+        }
+    }
+
     /// A layer was pinned and its bytes moved - said once, by name, to the head's warnings and the
     /// model's notices. `plugin_untrusted` and not `plugin_refused`: nothing was refused and nothing
     /// is broken, but every call it makes is adjudicated again until somebody pins it.
@@ -676,7 +755,7 @@ impl PluginHost {
             };
             let look = spec.map(|spec| {
                 let caps = self.caps_of(&by);
-                look::run(&spec, &self.workspace, &caps)
+                look::run(&spec, self.look_trees(), &caps)
             });
             self.render(
                 hub,
@@ -880,7 +959,7 @@ impl PluginHost {
                     .layer(&by)
                     .map(|l| l.manifest.capabilities.clone())
                     .unwrap_or_default();
-                let result = look::run(&spec, &self.workspace, &caps);
+                let result = look::run(&spec, self.look_trees(), &caps);
                 state = view.state.clone();
                 req = Req {
                     look: Some(result),
@@ -1040,9 +1119,10 @@ impl PluginHost {
             return Err(Refused::new(
                 format!("`{name}` answers no hook this host runs"),
                 format!(
-                    "its plugin.toml declares {:?}, and the kinds are {}",
+                    "its plugin.toml declares {:?}, and the hook kinds are the prefixes {} \
+                     (`on_tool_call` and `on_tool_result` are the `on_` ones)",
                     cand.manifest.hooks,
-                    contract::KINDS.join(", ")
+                    letibot_plugins::SERVED_KINDS.join(", ")
                 ),
             ));
         }
@@ -1130,14 +1210,19 @@ impl PluginHost {
             .into_iter()
             .filter(|p| p.starts_with(&format!("{name}/")))
             .collect();
+        let pin_note = self.settle_pin(hub, name, &dir);
         Ok(format!(
             "loaded `{name}` as layer `{id}` — the shadow gate passed and it is answering now, with \
-             no restart.\n\n{}\n\npanes it draws: {}",
+             no restart.\n\n{}\n\npanes it draws: {}{}",
             said.join("\n"),
             if mine.is_empty() {
                 "none (a layer that answers no pane hook)".to_string()
             } else {
                 mine.join(", ")
+            },
+            match &pin_note {
+                Some(note) => format!("\n\n{note}"),
+                None => String::new(),
             }
         ))
     }
@@ -1425,9 +1510,10 @@ impl PluginHost {
                         Refused::new(
                             format!("layer `{}` answers no hook this host runs", layer.id),
                             format!(
-                                "its plugin.toml declares {:?}; the kinds are {}",
+                                "its plugin.toml declares {:?}; the hook kinds are the prefixes \
+                                 {} (`on_tool_call` and `on_tool_result` are the `on_` ones)",
                                 layer.manifest.hooks,
-                                contract::KINDS.join(", ")
+                                letibot_plugins::SERVED_KINDS.join(", ")
                             ),
                         )
                     })?;
@@ -1682,15 +1768,15 @@ fn pane_list(panes: &[String]) -> String {
 
 impl PaneDriver for PluginHost {
     fn attach(&self, _session_id: &str, hub: &Arc<Hub>) {
-        // The room's pane is installed at this door: a head arriving is the first moment the pane
-        // is worth a compile (see [`PluginHost::ensure_the_room_pane`]).
-        self.ensure_the_room_pane();
+        // The built-in panes are installed at this door: a head arriving is the first moment a pane
+        // is worth a compile (see [`PluginHost::ensure_builtin_panes`]).
+        self.ensure_builtin_panes();
         self.announce(hub);
     }
 
     fn open(&self, _session_id: &str, hub: &Arc<Hub>, pane: &str, size: (u32, u32)) {
         // A head that asks for a pane without having been announced one still gets it.
-        self.ensure_the_room_pane();
+        self.ensure_builtin_panes();
         self.record_size(pane, size);
         self.render(hub, pane, Req::fresh());
     }
@@ -1718,7 +1804,7 @@ impl PaneDriver for PluginHost {
                 hub,
                 pane,
                 Req {
-                    look: spec.map(|spec| look::run(&spec, &self.workspace, &caps)),
+                    look: spec.map(|spec| look::run(&spec, self.look_trees(), &caps)),
                     event: Some((item.to_string(), action.to_string())),
                     may_look: true,
                 },
