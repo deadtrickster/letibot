@@ -136,6 +136,9 @@ fn an_idle_session_with_an_open_job_is_one_event_and_the_jobs_exit_is_another() 
     );
     let (tx, rx) = mpsc::channel();
     letibot_bridge::push::watch(&head).attach(tx);
+    // The head asks for the daemon's job list on attach, and an empty reply landing after the job
+    // starts would replace it. The registry has no job table, so let the reply land first.
+    std::thread::sleep(Duration::from_secs(3));
 
     turn_with_a_job(&hub, "t1", "the long one is running", "j82015");
 
