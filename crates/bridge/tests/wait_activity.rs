@@ -62,6 +62,21 @@ fn said(hub: &Hub, text: &str) {
 }
 
 /// A backgrounded call, which is what puts a handle in the head's own `jobs_open`.
+fn running(id: &str) -> letibot_sessionlog::protocol::JobEntry {
+    letibot_sessionlog::protocol::JobEntry {
+        id: id.into(),
+        command: "sleep 300".into(),
+        slug: String::new(),
+        how: "asked".into(),
+        state: "running".into(),
+        running: true,
+        never_ran: false,
+        redirect: None,
+        produced: 0,
+        elapsed_ms: 0,
+    }
+}
+
 fn started_a_job(hub: &Hub, handle: &str) {
     hub.publish(SessionEvent::ToolFinished {
         turn_id: "t1".into(),
@@ -180,6 +195,8 @@ fn a_wait_holds_on_a_running_job_and_trusts_the_daemons_quiet() {
 
     // --- the parked half: the daemon's `quiet` is the answer, job or no job -----------------
     // The head's own `jobs_open` list still holds a job here, and the daemon says the session is quiet.
+    // The head lists jobs from the daemon's table, which the registry holds.
+    registry.set_jobs(SESSION, vec![running("j8")]);
     started_a_job(&hub, "j8");
     said(&hub, "the turn that parked the server");
     hub.publish(testing::turn_finished("t1"));

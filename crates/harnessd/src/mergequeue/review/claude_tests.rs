@@ -592,7 +592,15 @@ fn a_re_review_passes_resume_with_the_stored_id() {
     );
     claim(&store, head);
     f.pass();
-    let argv = recorded(&f.clones());
+    // The stub writes its argv after the spawn returns; wait for the second run's.
+    let mut argv = recorded(&f.clones());
+    for _ in 0..250 {
+        if argv.iter().any(|a| a == "--resume") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+        argv = recorded(&f.clones());
+    }
     let at = argv
         .iter()
         .position(|a| a == "--resume")

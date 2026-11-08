@@ -103,6 +103,7 @@ pub const HOST_VERBS: &[&str] = &[
     "search",
     "sessions",
     "settings",
+    "signals",
     "skills",
     "standing",
     "stats",

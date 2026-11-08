@@ -174,10 +174,10 @@ fn an_in_progress_row_with_no_wait_is_nagged_once_and_not_again_without_a_change
         json!({"update": [{"content": "ship the pane", "status": "completed"}]}),
     )
     .expect("the update is taken");
-    assert!(
-        nags(&rx, WINDOW * 2).is_empty(),
-        "a finished plan is silent"
-    );
+    // A repeat the clock decided before the update can still be in flight on a loaded host.
+    let _ = nags(&rx, Duration::from_millis(200));
+    let after = nags(&rx, WINDOW * 2);
+    assert!(after.is_empty(), "a finished plan is silent: {after:?}");
 }
 
 #[test]

@@ -1109,11 +1109,13 @@ fn tab_completes_a_slash_command_and_more_tabs_cycle_the_matches() {
     assert_eq!(a.input(), "/switch");
     a.key(Key::Tab);
     assert_eq!(a.input(), "/status");
-    // A verb this head implements is a verb `/s` reaches: `/subagents`, `/search`, `/standing` and
-    // `/skills` joined the cycle with their panes, and naming them here is what keeps this
-    // expectation from pinning a list that moved.
+    // A verb this head implements is a verb `/s` reaches: `/subagents`, `/search`, `/standing`,
+    // `/skills` and `/signals` joined the cycle with their panes, and naming them here is what
+    // keeps this expectation from pinning a list that moved.
     a.key(Key::Tab);
     assert_eq!(a.input(), "/skills");
+    a.key(Key::Tab);
+    assert_eq!(a.input(), "/signals");
     a.key(Key::Tab);
     assert_eq!(a.input(), "/search");
     a.key(Key::Tab);
