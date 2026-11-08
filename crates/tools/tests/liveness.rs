@@ -86,6 +86,10 @@ fn a_job_stuck_in_sleep_with_no_output_is_ended_as_dead_after_the_window() {
         JobState::Killed { by } => assert_eq!(by, DEAD_KILL, "ended for the wrong reason"),
         other => panic!("a dead job must say so, not {}", other.word()),
     }
+    // The record follows the settle and the cgroup's end, so it is waited for, not read once.
+    until(Duration::from_secs(5), || {
+        host.dead_ended().iter().any(|e| e.job == id)
+    });
     let record = host
         .dead_ended()
         .into_iter()

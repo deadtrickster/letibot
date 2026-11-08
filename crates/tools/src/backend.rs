@@ -1177,10 +1177,12 @@ mod tests {
     fn a_local_backend_answers_this_box() {
         let d = tempdir::TempDir::new();
         let b = HostBackend::new(d.path()).expect("a project-rooted backend");
-        assert_eq!(
-            b.machine_memory(),
-            crate::exec::memory::Machine::Here(crate::exec::memory::Meminfo::read())
-        );
+        // Free memory moves between two reads; the machine and its size do not.
+        let crate::exec::memory::Machine::Here(Some(got)) = b.machine_memory() else {
+            panic!("a local backend answers this box: {:?}", b.machine_memory());
+        };
+        let here = crate::exec::memory::Meminfo::read().expect("this box has /proc/meminfo");
+        assert_eq!(got.total, here.total);
         assert_eq!(b.host_label(), None, "there is no other machine to name");
     }
 
