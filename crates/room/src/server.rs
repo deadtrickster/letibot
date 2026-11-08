@@ -1745,7 +1745,10 @@ impl Server {
                     && seat != Seat::Operator
                     && !self.queue_seat_kin(&to, name)
                 {
-                    return refuse(Some(id), crate::Refused::QueueSeatOwnProject { session: to });
+                    return refuse(
+                        Some(id),
+                        crate::Refused::QueueSeatOwnProject { session: to },
+                    );
                 }
                 let attachments = match self.attach_blobs(attachments) {
                     Ok(a) => a,

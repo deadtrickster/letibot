@@ -293,9 +293,23 @@ pub fn runner_harness_foreground(
     runner_harness_with(Some(allow_all()), foreground)
 }
 
+/// A runner that also holds `write` and `edit`, as a seat with both commands and file tools does:
+/// what `bash` changed and what a later `write` is told must meet in one ledger.
+pub fn writing_runner_harness() -> Result<Harness, crate::exec::ExecError> {
+    runner_harness_writing(Some(allow_all()), Default::default(), true)
+}
+
 fn runner_harness_with(
     gate: Option<Box<dyn crate::runtime::Gate>>,
     foreground: crate::builtins::bash::ForegroundPolicy,
+) -> Result<Harness, crate::exec::ExecError> {
+    runner_harness_writing(gate, foreground, false)
+}
+
+fn runner_harness_writing(
+    gate: Option<Box<dyn crate::runtime::Gate>>,
+    foreground: crate::builtins::bash::ForegroundPolicy,
+    writes: bool,
 ) -> Result<Harness, crate::exec::ExecError> {
     let dir = TempDir::new();
     fixture_tree(dir.path());
@@ -309,8 +323,16 @@ fn runner_harness_with(
         .expect("fixture root")
         .with_promote_channel(promote.clone())
         .with_scratch_dir(scratch.path());
-    let registry =
+    let mut registry =
         crate::runner_tools_with(Arc::new(Unavailable), foreground).expect("built-ins register");
+    if writes {
+        registry
+            .register(Box::new(crate::builtins::write::Write))
+            .expect("write registers");
+        registry
+            .register(Box::new(crate::builtins::edit::Edit))
+            .expect("edit registers");
+    }
     let mut rt = ToolRuntime::new(registry, Box::new(backend));
     if let Some(g) = gate {
         rt = rt.with_gate(g);

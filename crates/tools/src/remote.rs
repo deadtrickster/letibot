@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime};
 use letibot_transcript::Backgrounding;
 
 use crate::backend::{BackendError, Command, DirEntry, ExecBackend, Output};
+use crate::exec::memory::{Machine, Meminfo};
 use crate::exec::{
     ExecError, JobId, JobState, JobView, MemoryCap, OutputSlice, ProcessHost, Promotion, Protected,
     Reaped, Reaping, ScopeId, ScopeKind, SpawnRequest, Waited,
@@ -896,6 +897,15 @@ fn poll_budget(left: Duration, bound: Duration) -> Duration {
 /// stopped answering.
 const MASTER_BOUND: Duration = Duration::from_secs(3);
 
+/// The bound on one `/proc/meminfo` read: a single `cat` on a link this session already has. Short,
+/// and never longer than the connection's own bound, because a memory cap is decided in front of a
+/// command that is about to run.
+const MEMINFO_BOUND: Duration = Duration::from_secs(5);
+
+/// How long a host's memory reading stands before another round trip is spent on it. A cap is
+/// decided per call and a builder's memory does not move in half a minute.
+const MEMINFO_TTL: Duration = Duration::from_secs(30);
+
 /// The bound on the local `git` work a placement does: `bundle create`, the `fetch` back. Generous
 /// because it is real work on a real repository: the number only has to be below "for ever".
 pub const GIT_BOUND: Duration = Duration::from_secs(300);
@@ -1316,6 +1326,10 @@ impl RemoteVm {
     }
 }
 
+/// When a host's memory was read, and what it said. A reading that did not answer is a reading
+/// too, so a dead link is asked once per interval rather than once per call.
+type MemoryReading = (Instant, Option<Meminfo>);
+
 /// One host's ssh connection, opened by [`Ssh::connect`] after the two refusals that make it
 /// letibot's own: its identity file, and its host key. Everything about the command line is
 /// [`flags`]'s, and nothing here can be restated by a caller.
@@ -1355,6 +1369,12 @@ pub struct Ssh {
     /// Where a call that has run past [`Ssh::slow_after`] is said, shared by every clone of this
     /// connection. Set once by whoever owns the session's hub ([`Ssh::on_slow`]).
     slow: Arc<Mutex<Option<SlowSink>>>,
+    /// This host's memory and when it was read, so a cap decided per call costs one round trip per
+    /// `meminfo_ttl` rather than one per call. Shared by clones: they reach one machine.
+    meminfo: Arc<Mutex<Option<MemoryReading>>>,
+    /// How long that reading stands. [`MEMINFO_TTL`] in production; a test that wants to see it
+    /// expire says so through [`Ssh::with_meminfo_ttl`].
+    meminfo_ttl: Duration,
 }
 
 /// What a slow call is reported to: `(code, detail)`, the shape of a session warning.
@@ -1394,6 +1414,8 @@ impl Ssh {
             vm: None,
             mark: None,
             slow: Arc::new(Mutex::new(None)),
+            meminfo: Arc::new(Mutex::new(None)),
+            meminfo_ttl: MEMINFO_TTL,
         })
     }
 
@@ -1473,6 +1495,50 @@ impl Ssh {
     /// Say every call that runs past [`Ssh::slow_after`] to `sink`, once per call.
     pub fn on_slow(&self, sink: SlowSink) {
         *self.slow.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
+    }
+
+    /// How long one memory reading stands, [`MEMINFO_TTL`] unless a test says otherwise. Production
+    /// never calls it: the interval is a property of the feature, and the seam exists so a test can
+    /// watch both a cache hit and an expiry without sleeping for half a minute.
+    pub fn with_meminfo_ttl(mut self, ttl: Duration) -> Ssh {
+        self.meminfo_ttl = ttl;
+        self
+    }
+
+    /// This machine's memory, from the reading this connection last took if it is younger than the
+    /// interval, and one round trip otherwise. Cached because a cap is decided per call and a
+    /// builder's free memory does not move in half a minute; a host that did not answer is cached
+    /// too, as `None`, so a dead link does not put a round trip in front of every call.
+    pub fn meminfo(&self) -> Option<Meminfo> {
+        let mut cache = self.meminfo.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, said)) = *cache
+            && at.elapsed() < self.meminfo_ttl
+        {
+            return said;
+        }
+        let said = self.read_meminfo();
+        *cache = Some((Instant::now(), said));
+        said
+    }
+
+    /// The reading itself, in one round trip over the link this connection already has. `None` is a
+    /// host that did not answer — or one with no `/proc/meminfo` — and the caller must say *unknown*
+    /// rather than fall back to the numbers of the box it is running on (R155). Recorded only when
+    /// it fails: a read every half minute is a heartbeat, and a ring of heartbeats evicts the calls a
+    /// reader could act on.
+    fn read_meminfo(&self) -> Option<Meminfo> {
+        let within = MEMINFO_BOUND.min(self.bound);
+        match self.call(
+            "reading the host's memory",
+            "cat /proc/meminfo",
+            Retry::Never,
+            within,
+            Reported::Failures,
+            None,
+        ) {
+            Ok(Call::Answered(out, _, 0)) => Meminfo::parse(&out),
+            _ => None,
+        }
     }
 
     /// When a call is called slow: half its deadline, and never more than [`SLOW_AFTER`]. Always
@@ -4700,6 +4766,16 @@ impl ExecBackend for SshBackend {
         })
     }
 
+    /// This host's memory, read over the session's own link and cached for [`MEMINFO_TTL`]. The cap
+    /// a command here runs under is decided from these numbers: the daemon's box is not the machine
+    /// the command runs on, and a host that did not answer is `None` rather than its figures (R155).
+    fn machine_memory(&self) -> Machine {
+        Machine::There {
+            host: self.host.clone(),
+            mem: self.ssh.meminfo(),
+        }
+    }
+
     /// Where a tool's `cwd` starts: the checkout, not this machine's root.
     fn workdir(&self, cwd: &str) -> Result<String, BackendError> {
         self.in_view(cwd)
@@ -6924,5 +7000,152 @@ user     = "root"
             answers[1]
         );
         assert!(matches!(&answers[2], Ok(b) if b == b"b"));
+    }
+
+    /// A fake ssh that answers one `/proc/meminfo` read from a file the test writes, and logs every
+    /// call it was given. The file absent is a host that did not answer.
+    struct MemRig {
+        dir: PathBuf,
+        ssh: PathBuf,
+        log: PathBuf,
+        answer: PathBuf,
+    }
+
+    impl MemRig {
+        fn new(tag: &str) -> MemRig {
+            let dir = std::env::temp_dir().join(format!(
+                "letibot-meminfo-{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            std::fs::create_dir_all(&dir).expect("the fixture directory");
+            MemRig {
+                ssh: dir.join("ssh"),
+                log: dir.join("ssh.log"),
+                answer: dir.join("meminfo"),
+                dir,
+            }
+        }
+
+        fn written(self, meminfo: &str) -> MemRig {
+            let script = format!(
+                "#!/bin/bash\n\
+                 printf '%s\\n' \"$*\" >> {log}\n\
+                 for last; do :; done\n\
+                 case \"$last\" in\n\
+                 \x20 *'cat /proc/meminfo'*)\n\
+                 \x20   [ -f {answer} ] || exit 1\n\
+                 \x20   cat {answer}; exit 0;;\n\
+                 esac\n\
+                 exit 0\n",
+                log = quote(&self.log.display().to_string()),
+                answer = quote(&self.answer.display().to_string()),
+            );
+            crate::testing::write_stub(&self.ssh, &script);
+            std::fs::write(&self.answer, meminfo).expect("the host's meminfo");
+            self
+        }
+
+        /// The same stub with no answer at all: a host that does not answer.
+        fn silent(self) -> MemRig {
+            let rig = self;
+            crate::testing::write_stub(
+                &rig.ssh,
+                &format!(
+                    "#!/bin/bash\nprintf '%s\\n' \"$*\" >> {log}\nfor last; do :; done\n\
+                     case \"$last\" in *'cat /proc/meminfo'*) exit 1;; esac\nexit 0\n",
+                    log = quote(&rig.log.display().to_string()),
+                ),
+            );
+            rig
+        }
+
+        /// A connection to it, with a bound a fake's silence cannot outlive.
+        fn ssh(&self, tag: &str) -> Ssh {
+            let (_, paths) = paths_for(tag, "fake", "fake.invalid");
+            let host = Host {
+                name: "fake".into(),
+                hostname: "fake.invalid".into(),
+                user: Some("tester".into()),
+                key: None,
+                path: Vec::new(),
+                root: "~/letibot-remote".into(),
+                mise: Some(Mise::Off),
+                ..Host::default()
+            };
+            Ssh::connect(host, Some(self.ssh.clone()), paths)
+                .expect("the connection opens")
+                .with_bound(Duration::from_secs(2))
+        }
+
+        fn calls(&self) -> Vec<String> {
+            std::fs::read_to_string(&self.log)
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| l.contains("cat /proc/meminfo"))
+                .map(str::to_string)
+                .collect()
+        }
+    }
+
+    const FAKE_MEMINFO: &str = "MemTotal:       129000000 kB\nMemFree:  1000 kB\n\
+                                   MemAvailable:   15800000 kB\nSwapFree: 4096 kB\n";
+
+    /// A placement's memory is read off ITS host, over the link the session already has, and the
+    /// card's numbers come from there — the daemon's box is a different machine (R155).
+    #[test]
+    fn a_hosts_memory_is_read_over_its_own_link_and_cached() {
+        let rig = MemRig::new("read").written(FAKE_MEMINFO);
+        let ssh = rig.ssh("mem-read");
+        let said = ssh.meminfo().expect("the host answered");
+        assert_eq!(said.total, 129_000_000 * 1024);
+        assert_eq!(said.available, 15_800_000 * 1024);
+        assert_eq!(said.swap_free, 4096 * 1024);
+        assert_ne!(
+            Some(said),
+            Meminfo::read(),
+            "the placement's figures are not this box's"
+        );
+        // A second call inside the interval costs no round trip: a cap is decided per call.
+        assert_eq!(ssh.meminfo(), Some(said));
+        assert_eq!(rig.calls().len(), 1, "one round trip per interval");
+        let _ = std::fs::remove_dir_all(&rig.dir);
+    }
+
+    /// The interval is a cache and not a lifetime: a reading older than it is taken again, and a
+    /// changed host is a changed answer.
+    #[test]
+    fn a_reading_older_than_the_interval_is_taken_again() {
+        let rig = MemRig::new("ttl").written(FAKE_MEMINFO);
+        let ssh = rig.ssh("mem-ttl").with_meminfo_ttl(Duration::ZERO);
+        let first = ssh.meminfo().expect("the host answered");
+        std::fs::write(&rig.answer, "MemTotal: 1000 kB\nMemAvailable: 500 kB\n")
+            .expect("a host that freed memory");
+        let second = ssh.meminfo().expect("the host answered again");
+        assert_eq!(
+            second.available,
+            500 * 1024,
+            "the second reading is the host's"
+        );
+        assert_ne!(first.available, second.available);
+        assert_eq!(rig.calls().len(), 2);
+        let _ = std::fs::remove_dir_all(&rig.dir);
+    }
+
+    /// A host that does not answer is `None`: the caller has to say *unknown*, and the answer it
+    /// must never get instead is the daemon's own box.
+    #[test]
+    fn a_silent_host_is_unknown() {
+        let rig = MemRig::new("silent").silent();
+        let ssh = rig.ssh("mem-silent");
+        assert_eq!(
+            ssh.meminfo(),
+            None,
+            "a host that says nothing has no numbers"
+        );
+        let _ = std::fs::remove_dir_all(&rig.dir);
     }
 }

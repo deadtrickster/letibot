@@ -491,6 +491,8 @@ fn need_words(n: &TodoNeed) -> String {
         TodoNeed::Row { content } => format!("row `{}`", clean_line(content)),
         TodoNeed::Child { id } => format!("child {}", clean_line(id)),
         TodoNeed::Job { handle } => format!("job {}", clean_line(handle)),
+        // A process this host is running, by its number: there is no table here to open it in.
+        TodoNeed::Pid { pid, .. } => format!("pid {pid}"),
         TodoNeed::Monitor { name } => format!("monitor {}", clean_line(name)),
         // The room's item, by the number the `room` tool takes: the edge the daemon's room pass puts
         // on a `you hold ...` row while the room is working on it, so the row is quiet on purpose and
@@ -541,6 +543,9 @@ fn need_words(n: &TodoNeed) -> String {
                 clean_line(reply)
             ),
         },
+        // Something outside this machine, in the row's own words: the row's line says `waits on`
+        // them and there is nothing behind them to open.
+        TodoNeed::External { what } => clean_line(what),
         // Kept rather than dropped - a plan is what would be lost - and said as the one thing this
         // build can honestly say about it.
         TodoNeed::Unknown => "an edge this build does not know".into(),

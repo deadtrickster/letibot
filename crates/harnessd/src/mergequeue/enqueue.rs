@@ -32,7 +32,9 @@ pub fn enqueue_branch(
     let key = repo.display().to_string();
     let branch = branch.trim();
     if brief.trim().is_empty() {
-        return Err("say what the work is for (`for`): the reviewer judges the branch against it".into());
+        return Err(
+            "say what the work is for (`for`): the reviewer judges the branch against it".into(),
+        );
     }
     let configured = settings::for_repository(repo)
         .ok()
@@ -51,7 +53,9 @@ pub fn enqueue_branch(
         ));
     };
     if branch == target {
-        return Err(format!("`{branch}` is the target itself; name the branch that is to land on it"));
+        return Err(format!(
+            "`{branch}` is the target itself; name the branch that is to land on it"
+        ));
     }
     match gate::declared_gate(repo, &tip) {
         Ok(Some(_)) => {}
@@ -85,7 +89,11 @@ pub fn enqueue_branch(
              so there is nothing to review"
         ));
     }
-    let id = format!("{}-{}", slug(branch), head.chars().take(8).collect::<String>());
+    let id = format!(
+        "{}-{}",
+        slug(branch),
+        head.chars().take(8).collect::<String>()
+    );
     let existing = store.review_rows(Some(&key)).map_err(|e| e.to_string())?;
     if let Some(r) = existing
         .iter()
@@ -144,7 +152,12 @@ mod tests {
     use super::*;
     use crate::mergequeue::serve::tests::{TempDir, commit, repo, sh};
 
-    fn go(store: &Store, repo: &Path, branch: &str, target: Option<&str>) -> Result<ReviewRow, String> {
+    fn go(
+        store: &Store,
+        repo: &Path,
+        branch: &str,
+        target: Option<&str>,
+    ) -> Result<ReviewRow, String> {
         enqueue_branch(store, repo, branch, target, "wire the thing", "s-me", 5)
     }
 
@@ -170,7 +183,10 @@ mod tests {
         assert_eq!(q.brief, "wire the thing");
 
         let held = go(&store, &repo, "feat/x", None).unwrap_err();
-        assert!(held.contains("already held") && held.contains(&q.id), "{held}");
+        assert!(
+            held.contains("already held") && held.contains(&q.id),
+            "{held}"
+        );
 
         let none = enqueue_branch(&store, &repo, "feat/x", None, " ", "s-me", 5).unwrap_err();
         assert!(none.contains("what the work is for"), "{none}");
@@ -201,7 +217,10 @@ mod tests {
         let (dir, repo, store) = fixture("enqueue-push");
         let remote = dir.0.join("remote.git");
         sh(&dir.0, &["init", "-q", "--bare", &remote.to_string_lossy()]);
-        sh(&repo, &["remote", "add", "origin", &remote.to_string_lossy()]);
+        sh(
+            &repo,
+            &["remote", "add", "origin", &remote.to_string_lossy()],
+        );
         sh(&repo, &["push", "-q", "origin", "main"]);
         sh(&repo, &["checkout", "-q", "-b", "feat/z"]);
         commit(&repo, "z.txt", "z\n", "work");

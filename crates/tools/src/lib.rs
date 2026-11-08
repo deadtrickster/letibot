@@ -135,6 +135,7 @@ pub fn read_only_tools(
 /// Add the session tool (`todo_write`) to a registry. It is not in [`read_only_tools`] because its board
 /// is the session's own, yet the read-only roles name it, so every registry they resolve against must
 /// hold it.
+#[allow(clippy::too_many_arguments)] // one argument per door `todo_write` may reach through
 pub fn with_session_tools(
     mut reg: Registry,
     board: std::sync::Arc<builtins::todo::TodoBoard>,
@@ -302,6 +303,7 @@ pub fn runner_tools_with(
     reg.register(Box::new(builtins::jobs::JobList))?;
     reg.register(Box::new(builtins::jobs::JobOutput))?;
     reg.register(Box::new(builtins::jobs::JobWait))?;
+    reg.register(Box::new(builtins::jobs::JobExtend))?;
     reg.register(Box::new(builtins::jobs::JobKill::new()))?;
     reg.register(Box::new(builtins::monitor::Monitor))?;
     // Work on many machines, registered with the exec surface and proved by nothing here: a registry that

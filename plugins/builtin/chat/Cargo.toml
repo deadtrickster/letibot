@@ -1,0 +1,37 @@
+[package]
+name = "letibot-builtin-chat"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "the room as a built-in plugin: runs, hues, mentions, dividers and the quote, and the composer's own lines"
+
+# **Not a member of letibot's workspace, deliberately.** This crate is a GUEST: `crates/builtins`'
+# build script compiles it for `wasm32-unknown-unknown` and the module is `include_bytes!`d into the
+# binary. The root manifest excludes `plugins`, so the workspace never builds a `cdylib` for the host.
+[workspace]
+
+[lib]
+# `cdylib` is the module the host loads; `rlib` is what this crate's own tests link — grouping,
+# hues, the day and the completion's ranking are policy a project overrides, and they are worth
+# testing where they live: natively, with no engine and no wasm toolchain in the way.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# rano ABI v1 — the input region, the answer arena and the result block.
+letibot-guest-abi = { path = "../abi" }
+# **The pane and completion contracts, from the crate that compiles into the host too**: the feed
+# it is handed, the cells it answers with and the candidates it ranks are `letibot_plugin`'s, so a
+# field renamed on one side breaks the other's build.
+letibot-plugin = { path = "../../../crates/plugin-sdk" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+# A guest module is embedded in the daemon's binary, so its size is the binary's size - and this
+# layer is the one that draws a whole conversation, so it takes the size knobs the others do not
+# need: `z` over `s`, and one codegen unit, which is worth 18 KB here.
+opt-level = "z"
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"

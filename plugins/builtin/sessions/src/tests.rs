@@ -32,38 +32,18 @@ fn session(id: &str, title: &str) -> Session {
         nags_paused: false,
         project: PROJECT.into(),
         project_name: "letibot".into(),
+        // The head decides which top-level group a project is in; `own` is the one every test
+        // here means unless it says otherwise.
+        bucket: "own".into(),
         system: None,
     }
 }
 
 /// The answer for a feed, parsed back into the rows this layer draws.
 fn draw(feed: &Feed, folded: &[(&str, bool)]) -> Vec<Out> {
-    let mut path = vec![feed.here.clone()];
-    let mut cur = feed.here.clone();
-    for _ in 0..MAX_DEPTH {
-        match feed.sessions.iter().find(|s| s.id == cur) {
-            Some(s) => match s.parent.clone() {
-                Some(p) => {
-                    path.push(p.clone());
-                    cur = p;
-                }
-                None => break,
-            },
-            None => break,
-        }
-    }
     let folded: std::collections::BTreeMap<String, bool> =
         folded.iter().map(|(k, v)| ((*k).to_string(), *v)).collect();
-    let ctx = Ctx {
-        sessions: &feed.sessions,
-        fleet: &feed.fleet,
-        unlisted: feed.unlisted.as_deref(),
-        here: &feed.here,
-        home: &feed.home,
-        folded: &folded,
-        path,
-    };
-    rows(&ctx)
+    rows(&Ctx::new(feed, &folded))
 }
 
 /// The ids a drawing holds, in order - `[<a node's id>]` for a line that is not a session.
@@ -455,5 +435,27 @@ fn two_projects_are_drawn_in_the_order_the_feed_gives_them() {
             "[~/Projects/other/letibot (1)]",
             "s-b"
         ]
+    );
+}
+
+/// **The synthetic first frame** a daemon asks every built-in pane at a session's door
+/// (`PluginHost::ensure_builtin_panes`): no feed at all is a pane that SAYS so. A layer that passed
+/// instead drew nothing, and a pane that vanishes reads as one somebody closed.
+#[test]
+fn a_host_with_no_feed_is_a_pane_that_says_so() {
+    let input = serde_json::json!({
+        "v": letibot_plugin::pane::V,
+        "size": {"w": 20, "h": 5},
+        "feeds": {},
+    });
+    let bytes = serde_json::to_vec(&input).expect("the input serialises");
+    let text = answer(&bytes).expect("the layer answers rather than vanishing");
+    let view: serde_json::Value = serde_json::from_str(&text).expect("and it is JSON");
+    let said = view.to_string();
+    assert!(said.contains("hands no `sessions` feed"), "{said}");
+    assert_eq!(
+        view["panels"][0]["summary"][0]["tree"]["rows"],
+        serde_json::json!([]),
+        "a pane with no feed claims no rows: {said}"
     );
 }

@@ -320,10 +320,48 @@ pub fn job_event(who: &str, session: &str, e: &Entry) -> (String, Value) {
         "job": e.name,
         "state": state,
     });
+    // A kill ends the work and not the output. The settlement's own notice says so too
+    // (`deliveries::completion_notice`); one sentence, read by both, because a channel reader
+    // is as likely as the model to take *killed* for *finished*.
+    let partial = match letibot_tools::exec::partial_of(&state) {
+        Some(p) => format!("\n  {p}"),
+        None => String::new(),
+    };
     (
         key,
         notification(
-            format!("{who}'s job `{}` ended: {state}{ran}", e.name),
+            format!("{who}'s job `{}` ended: {state}{ran}{partial}", e.name),
+            meta,
+        ),
+    )
+}
+
+/// A SEAT's own job ending (`seat_job_start`): the same frame a held session's job change uses,
+/// with `source: seat` so one client reads one kind of event and `meta.event` says which. Keyed by
+/// the job and its state, so one settlement is one message.
+pub fn seat_job_event(seat: &str, job: &letibot_tokencore::store::SeatJob) -> (String, Value) {
+    let state = if job.state.is_empty() {
+        "settled".to_string()
+    } else {
+        job.state.clone()
+    };
+    let ran = match job.elapsed_ms {
+        0 => String::new(),
+        ms => format!(" after {}", span(ms)),
+    };
+    let key = format!("seat-job-end:{}:{state}", job.handle);
+    let meta = json!({
+        "source": "seat",
+        "event": "job_ended",
+        "seat": seat,
+        "job": job.handle,
+        "state": state,
+        "log": job.log,
+    });
+    (
+        key,
+        notification(
+            format!("your job `{}` ended: {state}{ran}", job.handle),
             meta,
         ),
     )
@@ -671,5 +709,38 @@ mod tests {
             content.contains("j9") && content.contains("41s"),
             "{content}"
         );
+    }
+
+    /// A held job that was killed did not finish. The channel's notice says so, because a reader of
+    /// the channel reads `killed by …` the way the model read it — as an ending (R160).
+    #[test]
+    fn a_killed_jobs_channel_notice_says_its_output_is_partial() {
+        let with = |state: &str| Entry {
+            cursor: 7,
+            kind: "job",
+            state: "ended",
+            name: "j83627".into(),
+            code: String::new(),
+            text: state.into(),
+            ms: Some(600_000),
+            reset_ms: None,
+        };
+        for state in [
+            "killed by its deadline",
+            "killed by the dead check — no output and no CPU progress",
+        ] {
+            let (_, note) = job_event("leticode `s` (/w)", "s", &with(state));
+            let content = note["params"]["content"].as_str().unwrap_or("");
+            assert!(content.contains("j83627"), "{content}");
+            assert!(
+                content.contains("its output is partial"),
+                "`{state}` is not a finish: {content}"
+            );
+            assert!(content.contains("job_extend"), "{content}");
+        }
+        // And a job that really ended says nothing of the kind.
+        let (_, done) = job_event("leticode `s` (/w)", "s", &with("exited 0"));
+        let content = done["params"]["content"].as_str().unwrap_or("");
+        assert!(!content.contains("its output is partial"), "{content}");
     }
 }

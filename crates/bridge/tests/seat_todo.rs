@@ -254,3 +254,181 @@ fn a_wait_on_a_session_this_bridge_does_not_hold_is_refused_by_name() {
         "the row still waits on nothing"
     );
 }
+
+/// Something outside letibot - a review on a forge - as a wait: nothing here can see it end, so the
+/// check is silent on the row until the seat takes the wait off, which is the row moving.
+#[test]
+fn a_row_waiting_on_something_outside_is_quiet_until_the_seat_takes_the_wait_off() {
+    seat_handle();
+    let (_dir, store, folder) = scratch("external");
+    let bridge = bridge(&store, &folder);
+    let (tx, rx) = mpsc::channel();
+    bridge.push_seat(tx);
+    call(
+        &bridge,
+        "todo_write",
+        json!({"todos": [{"content": "push once the review lands", "status": "in_progress"}]}),
+    )
+    .expect("the row is written");
+    let said = call(
+        &bridge,
+        "todo_write",
+        json!({"wait_on": [{"content": "push once the review lands",
+                "external": "R156's review at arangodb"}]}),
+    )
+    .expect("the wait is taken");
+    assert!(
+        said["said"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("the row moves"),
+        "the reply says what ends it: {said}"
+    );
+    assert_eq!(
+        rows(&bridge).remove(0).needs,
+        vec![TodoNeed::External {
+            what: "R156's review at arangodb".into()
+        }],
+        "the wait is on the row, in the seat's own words"
+    );
+    assert!(
+        nags(&rx, WINDOW * 3).is_empty(),
+        "a wait nothing here can see end is not nagged"
+    );
+
+    // The review lands and the seat says so: the row is work again, and it is asked about once.
+    call(
+        &bridge,
+        "todo_write",
+        json!({"wait_on": [{"content": "push once the review lands", "detach": true}]}),
+    )
+    .expect("the wait comes off");
+    let after = nags(&rx, WINDOW + Duration::from_millis(600));
+    assert_eq!(after.len(), 1, "{after:?}");
+    assert!(nag_text(&after[0]).contains("push once the review lands"));
+}
+
+/// A job the SEAT started, as opposed to one of its packages': its end settles a row that waits on
+/// it, and it reaches the seat as ONE `job_ended` - the frame a package's jobs already use.
+#[test]
+fn a_seat_jobs_end_settles_its_row_and_pushes_one_job_ended() {
+    seat_handle();
+    let (_dir, store, folder) = scratch("seat-job");
+    let bridge = bridge(&store, &folder);
+    let (tx, rx) = mpsc::channel();
+    bridge.push_seat(tx);
+    let started = call(
+        &bridge,
+        "seat_job_start",
+        json!({"argv": ["sleep", "300"], "name": "the gate"}),
+    )
+    .expect("a job of the seat's own");
+    let handle = started["job"].as_str().expect("a handle").to_string();
+    assert!(started["log"].as_str().is_some_and(|l| !l.is_empty()));
+    call(
+        &bridge,
+        "todo_write",
+        json!({"todos": [{"content": "wait for the gate", "status": "in_progress"}]}),
+    )
+    .expect("the row is written");
+    call(
+        &bridge,
+        "todo_write",
+        json!({"wait_on": [{"content": "wait for the gate", "job": handle.clone()}]}),
+    )
+    .expect("the seat's own job is a wait it can make");
+    assert_eq!(
+        rows(&bridge).remove(0).needs,
+        vec![TodoNeed::Job {
+            handle: handle.clone()
+        }],
+        "the handle is on the row"
+    );
+    assert!(
+        nags(&rx, WINDOW * 3).is_empty(),
+        "a row waiting on the seat's own job is quiet while it runs"
+    );
+
+    call(&bridge, "seat_job_kill", json!({"job": handle.clone()})).expect("killed");
+    let notes = nags(&rx, WINDOW + Duration::from_millis(900));
+    let ended: Vec<&Value> = notes
+        .iter()
+        .filter(|n| n["params"]["meta"]["event"] == "job_ended")
+        .collect();
+    assert_eq!(ended.len(), 1, "one settlement, one event: {notes:?}");
+    assert_eq!(ended[0]["params"]["meta"]["job"], json!(handle));
+    assert_eq!(ended[0]["params"]["meta"]["source"], "seat");
+    let nags_after: Vec<&Value> = notes
+        .iter()
+        .filter(|n| n["params"]["meta"]["event"] == "todo")
+        .collect();
+    assert_eq!(nags_after.len(), 1, "the row is work again: {notes:?}");
+    assert!(nag_text(nags_after[0]).contains("wait for the gate"));
+
+    // And the listing says how it ended, from the store.
+    let listed = call(&bridge, "seat_jobs", json!({})).expect("the listing");
+    let job = listed["jobs"].as_array().and_then(|j| j.first()).cloned();
+    let job = job.expect("the job is listed");
+    assert_ne!(job["state"], json!("running"), "{job}");
+}
+
+/// A process this host is already running, waited on by its pid: quiet while it is there, settled
+/// when it exits - and a pid the number was reused for is a different process.
+#[test]
+fn a_pid_wait_settles_when_the_process_exits_and_not_when_a_pid_is_reused() {
+    seat_handle();
+    let (_dir, store, folder) = scratch("pid");
+    let bridge = bridge(&store, &folder);
+    let (tx, rx) = mpsc::channel();
+    bridge.push_seat(tx);
+    let mut sleeper = std::process::Command::new("sleep")
+        .arg("300")
+        .spawn()
+        .expect("a process of the test's own");
+    let pid = sleeper.id();
+    call(
+        &bridge,
+        "todo_write",
+        json!({"todos": [{"content": "the gate somebody ran by hand", "status": "in_progress"}]}),
+    )
+    .expect("the row is written");
+    call(
+        &bridge,
+        "todo_write",
+        json!({"wait_on": [{"content": "the gate somebody ran by hand", "pid": pid}]}),
+    )
+    .expect("the process is here, so the wait is a wait");
+    let start = match rows(&bridge).remove(0).needs.as_slice() {
+        [TodoNeed::Pid { pid: p, start }] if *p == pid => *start,
+        other => panic!("the edge is a pid wait with its start time: {other:?}"),
+    };
+    assert!(
+        start > 0,
+        "the start time is read at the moment it is written"
+    );
+    assert!(
+        nags(&rx, WINDOW * 3).is_empty(),
+        "a row waiting on a live process is quiet"
+    );
+
+    sleeper.kill().expect("killed");
+    sleeper.wait().expect("reaped");
+    let after = nags(&rx, WINDOW + Duration::from_millis(900));
+    assert_eq!(after.len(), 1, "the exit settles the row: {after:?}");
+    assert!(nag_text(&after[0]).contains("the gate somebody ran by hand"));
+
+    // The same NUMBER with another start time is another process, and the row is work at once.
+    call(
+        &bridge,
+        "todo_write",
+        json!({"todos": [{"content": "the gate somebody ran by hand", "status": "in_progress",
+                "needs": [{"kind": "pid", "pid": pid, "start": 1}]}]}),
+    )
+    .expect("a pid edge with a start time is taken as given");
+    let again = nags(&rx, WINDOW + Duration::from_millis(900));
+    assert_eq!(
+        again.len(),
+        1,
+        "a reused pid is not the process the row waited on: {again:?}"
+    );
+}

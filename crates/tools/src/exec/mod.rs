@@ -34,12 +34,13 @@ pub use confine::{
     TmpView, Unconfined, ViewSpec,
 };
 pub use host::{
-    Adopted, Aggregate, DeadlineFired, Deadlines, Handover, HostProcesses, JobView, ProcessHost,
-    Promotion, Protected, SpawnRequest, Waited, hand_over, job_label,
+    Adopted, Aggregate, DeadEnded, DeadWarning, DeadlineFired, Deadlines, Handover, HostProcesses,
+    JobView, Liveness, ProcessHost, Promotion, Protected, SpawnRequest, Waited, hand_over,
+    job_label,
 };
 pub use jobs::{
-    DEADLINE_KILL, JobId, JobState, MAX_JOB_NAME, MemoryCap, OutputFile, OutputSlice, Stdin,
-    job_name,
+    DEAD_KILL, DEADLINE_KILL, JobId, JobState, MAX_JOB_NAME, MemoryCap, OutputFile, OutputSlice,
+    PARTIAL, Stdin, job_name, partial_of,
 };
 pub use monitor::{
     ChannelCondition, CommandCondition, CommandExpect, Condition, CustomWatch, Fired, Firing,
@@ -52,8 +53,8 @@ pub use pty::Pty;
 pub use scope::ProcessGroups;
 pub use scope::{
     Cgroup2, DAEMON_LEAF, HOST_KILL, MemoryUse, Migration, NoScopes, Reaped, Reaping, ScopeId,
-    ScopeKind, ScopeTree, SiblingScope, delegate_memory, host_tree, human_bytes, join_script,
-    live_members, memory_use_of,
+    ScopeKind, ScopeTree, SiblingScope, cpu_use_of, delegate_memory, host_tree, human_bytes,
+    join_script, live_members, memory_use_of,
 };
 pub use shell::{ShellConfig, ShellError, ShellSession, Turn};
 pub use term::{TermConfig, TermError, TermSession, TermSink};

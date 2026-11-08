@@ -8,9 +8,9 @@
 //! Every line starts CLOSED, except the chain to where this head is standing.
 
 use letibot_guest_abi as abi;
-use letibot_plugin::pane::{Act, Cell, Fold, Input, Role};
-use serde::Deserialize;
-use serde_json::{Value, json};
+use letibot_plugin::pane::{Act, Cell, Fold, Role};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The groups under a project's `system` branch, in the order the list draws them - the words, and
 /// the sentence under each line. Which session is in which is NOT decided here: the rule needs the
@@ -140,33 +140,126 @@ struct Session {
     system: Option<String>,
 }
 
-/// One row this layer is about to draw.
+/// One row this layer is about to draw - and the row as the wire spells it: this struct is what
+/// `serde_json` writes, so a row is built once instead of into a `Value` tree and then serialized
+/// out of it. A row costs a handful of allocations; the tree cost twenty more per row of them, and
+/// that is the fuel a few hundred rows do not have.
+#[derive(Serialize)]
 struct Out {
     id: String,
+    #[serde(skip_serializing_if = "is_zero")]
     depth: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
     number: Option<usize>,
     cells: Vec<Cell>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     facts: Vec<Cell>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     under: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     open: Option<Fold>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     enter: Option<Act>,
 }
 
-/// What one call needs besides the feed itself.
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// The view as C3 spells it, written straight out for the reason [`Out`] gives.
+#[derive(Serialize)]
+struct View {
+    title: &'static str,
+    panels: [Panel; 1],
+    legend: BTreeMap<&'static str, &'static str>,
+}
+
+#[derive(Serialize)]
+struct Panel {
+    id: &'static str,
+    summary: [Summary; 1],
+}
+
+#[derive(Serialize)]
+struct Summary {
+    tree: Tree,
+}
+
+#[derive(Serialize)]
+struct Tree {
+    rows: Vec<Out>,
+    /// **The plugin's own sentence for an empty list**, because *the daemon has not answered yet*
+    /// and *this project keeps no such rows* are two different facts.
+    empty: &'static str,
+}
+
+/// The empty list's sentence, said once.
+const EMPTY: &str = "none listed yet — the daemon has not answered, or this head is replaying a \
+                    recorded log and has no daemon to ask.";
+
+/// What one call needs besides the feed itself - and, beside the feed, the three indexes a walk
+/// reads once per row. Every one of them was a scan of the whole list when this pane trapped on a
+/// daemon's own session list: a few hundred rows is a few hundred scans per call, and a call's
+/// fuel is what a trap is made of.
 struct Ctx<'a> {
     sessions: &'a [Session],
     fleet: &'a [Fleet],
     unlisted: Option<&'a str>,
     here: &'a str,
     home: &'a str,
-    folded: &'a std::collections::BTreeMap<String, bool>,
+    folded: &'a BTreeMap<String, bool>,
     /// The chain from `here` up to its root, so the way back is always on the list.
     path: Vec<String>,
+    /// A session's id to its place in the feed - the first, as `position` found it.
+    index: HashMap<&'a str, usize>,
+    /// A session's id to the places its children hold, in feed order.
+    kids: HashMap<&'a str, Vec<usize>>,
+    /// A project's key to its members' places, in feed order.
+    by_project: HashMap<&'a str, Vec<usize>>,
 }
 
-impl Ctx<'_> {
+impl<'a> Ctx<'a> {
+    /// The context for one call. The path is the chain from `here` up, capped at [`MAX_DEPTH`], and
+    /// the indexes are built here because every walk below is a lookup and no walk may scan.
+    fn new(feed: &'a Feed, folded: &'a BTreeMap<String, bool>) -> Ctx<'a> {
+        let mut index: HashMap<&str, usize> = HashMap::new();
+        let mut kids: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut by_project: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (i, s) in feed.sessions.iter().enumerate() {
+            index.entry(s.id.as_str()).or_insert(i);
+            by_project.entry(s.project.as_str()).or_default().push(i);
+            if let Some(parent) = s.parent.as_deref() {
+                kids.entry(parent).or_default().push(i);
+            }
+        }
+        let mut path = vec![feed.here.clone()];
+        let mut cur = feed.here.as_str();
+        for _ in 0..MAX_DEPTH {
+            let Some(s) = index.get(cur).map(|&i| &feed.sessions[i]) else {
+                break;
+            };
+            let Some(parent) = s.parent.as_deref() else {
+                break;
+            };
+            path.push(parent.to_string());
+            cur = parent;
+        }
+        Ctx {
+            sessions: &feed.sessions,
+            fleet: &feed.fleet,
+            unlisted: feed.unlisted.as_deref(),
+            here: &feed.here,
+            home: &feed.home,
+            folded,
+            path,
+            index,
+            kids,
+            by_project,
+        }
+    }
+
     fn at(&self, id: &str) -> Option<usize> {
-        self.sessions.iter().position(|s| s.id == id)
+        self.index.get(id).copied()
     }
 
     /// What the person has said about a row: `Some(true)` open, `Some(false)` folded away.
@@ -212,12 +305,18 @@ impl Ctx<'_> {
     /// **The projects this feed holds, in the order it lists them** - the key and the name to draw.
     fn projects(&self, bucket: &str) -> Vec<(&str, &str)> {
         let mut out: Vec<(&str, &str)> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
         for s in self.sessions.iter().filter(|s| s.bucket == bucket) {
-            if !out.iter().any(|(k, _)| *k == s.project) {
+            if seen.insert(s.project.as_str()) {
                 out.push((&s.project, &s.project_name));
             }
         }
         out
+    }
+
+    /// The places a project's members hold, in feed order.
+    fn members(&self, project: &str) -> &[usize] {
+        self.by_project.get(project).map_or(&[], Vec::as_slice)
     }
 
     /// Whether a session is drawn in this branch - the project, and the `system` group when the walk
@@ -235,18 +334,18 @@ impl Ctx<'_> {
     /// Whether session `i` is drawn under `parent` **in this branch** - the fold glyph is about the
     /// tree inside a row, so a child in another branch is not a reason for a `+`.
     fn kids_in(&self, parent: &str, branch: Branch<'_>) -> bool {
-        self.sessions
-            .iter()
-            .enumerate()
-            .any(|(i, s)| s.parent.as_deref() == Some(parent) && self.in_branch(i, branch))
+        self.kids
+            .get(parent)
+            .is_some_and(|kids| kids.iter().any(|&i| self.in_branch(i, branch)))
     }
 
     /// Whether one of `id`'s children is on the chain to the session `here` - the second reason a
     /// row's children are on the list at all (see [`children`]), and so a reason for a `-`.
     fn child_on_path(&self, id: &str) -> bool {
-        self.sessions
-            .iter()
-            .any(|s| s.parent.as_deref() == Some(id) && self.path.contains(&s.id))
+        self.kids.get(id).is_some_and(|kids| {
+            kids.iter()
+                .any(|&i| self.path.contains(&self.sessions[i].id))
+        })
     }
 
     /// A session's fold state - the chain to `here` first, then the person's answer. The glyph is
@@ -382,9 +481,7 @@ fn push_project(
     base: usize,
     legend: &str,
 ) {
-    let members: Vec<usize> = (0..ctx.sessions.len())
-        .filter(|&i| ctx.sessions[i].project == project)
-        .collect();
+    let members = ctx.members(project);
     let key = project.to_string();
     let open = ctx.node_open(&key);
     out.push(node_row(
@@ -398,7 +495,7 @@ fn push_project(
         return;
     }
     // **The project's own tree** - the sessions nobody spawned, and their children.
-    for &i in &members {
+    for &i in members {
         if ctx.sessions[i].system.is_some() || ctx.parent_in(i, project, None) {
             continue;
         }
@@ -545,10 +642,11 @@ fn children(
     // `None` (nobody has said) is closed.
     let depth = depth.min(MAX_INDENT);
     let open = force || ctx.opened(parent) == Some(true);
-    for (i, s) in ctx.sessions.iter().enumerate() {
-        if s.parent.as_deref() != Some(parent) {
-            continue;
-        }
+    let Some(kids) = ctx.kids.get(parent) else {
+        return;
+    };
+    for &i in kids {
+        let s = &ctx.sessions[i];
         // A row belongs to exactly one branch, so a child of another branch is not drawn under it.
         if !ctx.in_branch(i, branch) {
             continue;
@@ -600,40 +698,50 @@ fn name_of(s: &Session) -> String {
 
 /// The right-hand column: what the row IS, in one run of facts.
 fn facts_of(s: &Session) -> Vec<Cell> {
-    let mut facts: Vec<String> = Vec::new();
+    // One string with ` · ` between the facts that are there, not a `Vec<String>` joined at the
+    // end: a join is a second copy of the row's whole right column, once per row, and this is a
+    // list of them.
+    let mut facts = String::new();
     if s.running {
-        facts.push("generating".into());
+        push_fact(&mut facts, format_args!("generating"));
     }
     if !s.live {
         // The whole difference between a row that costs one keystroke and a row that costs a
         // resume.
-        facts.push("on disk".into());
+        push_fact(&mut facts, format_args!("on disk"));
     }
     let rows = if s.stored > 0 { s.stored } else { s.items };
     if rows > 0 {
-        facts.push(format!("{rows} rows"));
+        push_fact(&mut facts, format_args!("{rows} rows"));
     }
     if s.heads > 0 {
-        facts.push(format!(
-            "{} head{}",
-            s.heads,
-            if s.heads == 1 { "" } else { "s" }
-        ));
+        let plural = if s.heads == 1 { "" } else { "s" };
+        push_fact(&mut facts, format_args!("{} head{plural}", s.heads));
     }
     if !s.model.is_empty() {
-        facts.push(s.model.clone());
+        push_fact(&mut facts, format_args!("{}", s.model));
     }
     if facts.is_empty() {
         return Vec::new();
     }
     vec![Cell::role(
-        facts.join(" · "),
+        facts,
         if s.running {
             Role::Pending
         } else {
             Role::Faint
         },
     )]
+}
+
+/// One fact, after the ` · ` that separates it - written into the row's own string, so a fact costs
+/// no allocation of its own.
+fn push_fact(into: &mut String, fact: std::fmt::Arguments<'_>) {
+    use std::fmt::Write;
+    if !into.is_empty() {
+        into.push_str(" · ");
+    }
+    let _ = into.write_fmt(fact);
 }
 
 /// The faint line under every row: the full id, and the workspace when there is one - for a stored
@@ -673,82 +781,82 @@ fn short_id(id: &str) -> &str {
     if tail.len() >= 6 { tail } else { id }
 }
 
+/// **The input this layer reads**: the envelope's own fields, and the `sessions` feed TYPED on the
+/// way in. `letibot_plugin::pane::Input` holds `feeds` as a `Value` tree, so reading the feed from it
+/// parses a daemon's whole session list twice - the second of the two costs is what made this pane
+/// exhaust a call's fuel and trap (`docs/plugin-extension-points.md` §5, the lesson P6 learned on
+/// the chat window). A field this layer does not read is not named here, and serde skips it.
+#[derive(Deserialize)]
+struct Ask {
+    #[serde(default)]
+    folded: BTreeMap<String, bool>,
+    #[serde(default)]
+    feeds: Feeds,
+}
+
+#[derive(Deserialize, Default)]
+struct Feeds {
+    #[serde(default)]
+    sessions: Option<Feed>,
+}
+
+/// **The pane a host hands no `sessions` feed**: one line naming the missing half, because an empty
+/// list and a broken host look identical on a screen and mean opposite things.
+fn no_feed() -> View {
+    View {
+        title: TITLE,
+        panels: [Panel {
+            id: "sessions",
+            summary: [Summary {
+                tree: Tree {
+                    rows: Vec::new(),
+                    empty: "this host hands no `sessions` feed, so there is nothing to list — the \
+                            pane needs a daemon that builds feeds (docs/plugins-plan.md §4.9).",
+                },
+            }],
+        }],
+        legend: BTreeMap::new(),
+    }
+}
+
+/// The pane's title - the head's own list carries the same one, so *which layer drew this* is not a
+/// guess a reader has to make.
+const TITLE: &str = "sessions in this daemon";
+
 /// The pane's answer, or `None` for *unchanged* - a layer with nothing to say passes, and what is
 /// below it (or the head's own list) answers.
 fn answer(bytes: &[u8]) -> Option<String> {
-    let input: Input = serde_json::from_slice(bytes).ok()?;
-    let feed: Feed = serde_json::from_value(input.feeds.get("sessions")?.clone()).ok()?;
-    let mut path = vec![feed.here.clone()];
-    let mut cur = feed.here.clone();
-    for _ in 0..MAX_DEPTH {
-        match feed.sessions.iter().find(|s| s.id == cur) {
-            Some(s) => match s.parent.clone() {
-                Some(p) => {
-                    path.push(p.clone());
-                    cur = p;
-                }
-                None => break,
-            },
-            None => break,
-        }
-    }
-    let ctx = Ctx {
-        sessions: &feed.sessions,
-        fleet: &feed.fleet,
-        unlisted: feed.unlisted.as_deref(),
-        here: &feed.here,
-        home: &feed.home,
-        folded: &input.folded,
-        path,
+    let ask: Ask = serde_json::from_slice(bytes).ok()?;
+    // **A feed the host did not hand is a screen that says so.** Passing would draw nothing at all,
+    // and a pane that vanishes is a pane somebody thinks they closed.
+    let Some(feed) = ask.feeds.sessions else {
+        return serde_json::to_string(&no_feed()).ok();
     };
+    let ctx = Ctx::new(&feed, &ask.folded);
     let drawn = rows(&ctx);
-    let view = json!({
-        "title": "sessions in this daemon",
-        "panels": [{
-            "id": "sessions",
-            "summary": [{"tree": {
-                "rows": drawn.iter().map(row_value).collect::<Vec<Value>>(),
-                // **The plugin's own sentence for an empty list**, because *the daemon has not
-                // answered yet* and *this project keeps no such rows* are two different facts.
-                "empty": "none listed yet — the daemon has not answered, or this head is \
-                          replaying a recorded log and has no daemon to ask.",
-            }}],
+    let view = View {
+        title: TITLE,
+        panels: [Panel {
+            id: "sessions",
+            summary: [Summary {
+                tree: Tree {
+                    rows: drawn,
+                    empty: EMPTY,
+                },
+            }],
         }],
-        "legend": {
-            "WAITING ON YOU": "this session has a question for you — attach to it to answer",
-            "on disk": "the daemon is not holding it; switching to it resumes it",
-        },
-    });
+        legend: BTreeMap::from([
+            (
+                "WAITING ON YOU",
+                "this session has a question for you — attach to it to answer",
+            ),
+            (
+                "on disk",
+                "the daemon is not holding it; switching to it resumes it",
+            ),
+        ]),
+    };
     serde_json::to_string(&view).ok()
-}
-
-/// One row as C3 spells it.
-fn row_value(row: &Out) -> Value {
-    let mut out = serde_json::Map::new();
-    out.insert("id".into(), json!(row.id));
-    // **How far in the row is drawn.** The list is FLAT - C3 nests by `children`, and a list
-    // that has already walked its own tree says the depth instead, which is what keeps a row's
-    // column a function of where it is rather than of how the host happened to read it.
-    if row.depth > 0 {
-        out.insert("depth".into(), json!(row.depth));
-    }
-    if let Some(number) = row.number {
-        out.insert("number".into(), json!(number));
-    }
-    out.insert("cells".into(), json!(row.cells));
-    if !row.facts.is_empty() {
-        out.insert("facts".into(), json!(row.facts));
-    }
-    if !row.under.is_empty() {
-        out.insert("under".into(), json!(row.under));
-    }
-    if let Some(open) = row.open {
-        out.insert("open".into(), json!(open));
-    }
-    if let Some(act) = &row.enter {
-        out.insert("enter".into(), json!(act));
-    }
-    Value::Object(out)
 }
 
 /// The layer's policy, tested natively - see `tests.rs`.

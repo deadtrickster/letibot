@@ -354,8 +354,10 @@ list form takes the shared command, the object form a per-host one; `local` need
 * Three fates that never collapse: `exited N · 1.2s · tail: …`, `stopped · the deadline passed`, `never ran
   — <why>`. A non-zero exit is a **row's** business, not the call's, so four hosts out of five still report;
   a leg with no result is a row saying it never ran, so an omitted cell is unspellable.
-* `deadline_s` (default 600, ceiling 3600) is enforced twice on purpose: this loop kills a leg that outlived
-  it, and the **record** carries the same instant so a daemon that outlives the call still ends it.
+* `deadline_s` is enforced twice on purpose: this loop kills a leg that outlived it, and the **record** carries
+  the same instant so a daemon that outlives the call still ends it. A BLOCKING call defaults it to 600 s
+  (ceiling 3600); a `background: true` fanout is a job and has **no default deadline at all**, because ten
+  minutes is nothing next to a fuzz campaign or a cold build (R160).
 * **`background: true` returns ONE handle at once**: the branches start in the call, the waiting does not, and
   a thread of the fanout's own is the only writer of a row. `job_output` mid-run reads an append-only journal,
   and the **settlement carries the table**, cut at 24 lines. A restart loses the parent's settlement (the

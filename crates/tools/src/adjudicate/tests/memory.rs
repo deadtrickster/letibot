@@ -7,7 +7,7 @@ use super::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::exec::memory::{MemoryAsk, MemoryGrant};
+use crate::exec::memory::{Machine, Meminfo, MemoryAsk, MemoryGrant};
 use crate::runtime::Gate;
 
 /// Answers every card with one option and counts the cards it was shown.
@@ -33,9 +33,12 @@ fn ask(bytes: Option<u64>, available: u64) -> MemoryAsk {
     MemoryAsk {
         command: "cargo test --workspace".into(),
         bytes,
-        ceiling: 8 * GIB,
-        available,
-        total: 128 * GIB,
+        ceiling: Some(8 * GIB),
+        machine: Machine::Here(Some(Meminfo {
+            total: 128 * GIB,
+            available,
+            swap_free: 0,
+        })),
     }
 }
 

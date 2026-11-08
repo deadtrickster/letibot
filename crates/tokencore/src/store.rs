@@ -42,6 +42,7 @@ mod told;
 pub use leases::{Ask, FIRST_PORT, LEASES_SQL, Lease};
 pub use procs::{Check, PROCS_SQL, ProcState, ProcessRecord};
 pub use prompts::{PROMPTS_SQL, QueuedPrompt};
+pub use seat::SeatJob;
 pub use told::Told;
 
 /// Why `session.role` is nullable: a role belongs to the SESSION and not to the process, and
@@ -193,7 +194,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 41;
+pub const SCHEMA_VERSION: i64 = 43;
 
 /// What this row's columns mean. Stamped on every corpus row, because a column can keep its
 /// name and its type while changing what it records, and a trainer that pools two meanings
@@ -206,6 +207,14 @@ pub const CORPUS_VERSION: i64 = 1;
 pub const SESSION_INDEXES_SQL: &str = "
 CREATE INDEX IF NOT EXISTS transcript_by_session ON transcript (session_id, created_at);
 CREATE INDEX IF NOT EXISTS session_by_parent ON session (parent_session_id);
+";
+
+/// [`corpus_counts`], index-only: the four columns the five counts read, so every open's
+/// disclosure walks an index of a few megabytes instead of the whole `adjudication` table.
+/// Run beside `SCHEMA_SQL` on a fresh store and by the v42 arm on a migrated one, not inside it.
+pub const CORPUS_INDEXES_SQL: &str = "
+CREATE INDEX IF NOT EXISTS adjudication_corpus_counts
+    ON adjudication (asked, consulted, verdict_by, operator_kind);
 ";
 
 pub const SCHEMA_SQL: &str = r#"
@@ -522,6 +531,24 @@ const APPEND_SQL: &str = "INSERT INTO transcript_item
    (transcript_id, seq, item_id, kind, item_json,
     tok_offset, tok_len, h_k, tokens, created_at)
  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)";
+
+/// The resume's own read: one transcript's rows in order, with the ledger facts they carry.
+const TRANSCRIPT_ITEMS_SQL: &str = "SELECT item_id, item_json, tok_offset, tok_len, h_k, tokens
+               FROM transcript_item WHERE transcript_id = ?1 ORDER BY seq ASC";
+
+/// [`Store::corpus_counts`]'s one statement: five counts as one pass over the covering index v42
+/// adds, because a `SELECT` per count was five passes and three of them read the whole table.
+/// A function so a test can ask SQLite for its plan, the way [`sessions_sql`] is.
+pub(crate) fn corpus_counts_sql() -> String {
+    format!(
+        "SELECT COUNT(*),
+                COALESCE(SUM({ASKED_SQL}), 0),
+                COALESCE(SUM({MEASURED_SQL}), 0),
+                COALESCE(SUM({DISAGREEMENT_SQL}), 0),
+                COALESCE(SUM({MODEL_DECIDED_SQL}), 0)
+           FROM adjudication"
+    )
+}
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -996,6 +1023,15 @@ pub enum TodoNeed {
     /// that job ends, and while it runs the check is silent. The distinction from a `when` is
     /// the whole of why this exists: the two read one handle and mean opposite things.
     Job { handle: String },
+    /// A PROCESS on this host, by pid AND the start time `/proc/<pid>/stat` gave it: a row that
+    /// waits on a command started outside the job bookkeeping - a gate somebody ran by hand. The
+    /// start time is what makes it exact: a number alone would be a different process after reuse.
+    Pid {
+        #[serde(default)]
+        pid: u32,
+        #[serde(default)]
+        start: u64,
+    },
     /// A MONITOR, by the name it was armed under: the row cannot start until it ends, fires,
     /// expires or is retired. While it watches the check is silent, because its firing wakes the
     /// session by itself. A name that is not watching is a monitor that ended.
@@ -1010,6 +1046,13 @@ pub enum TodoNeed {
     Operator {
         question: String,
         options: Vec<String>,
+    },
+    /// Something OUTSIDE this machine's bookkeeping - a review on a forge, a deploy, a person's
+    /// other tool - which no snapshot here can watch. `what` is the row's own words for it, and the
+    /// check stays quiet on the row until it moves: nothing local could ever say this wait ended.
+    External {
+        #[serde(default)]
+        what: String,
     },
     /// An [`TodoNeed::Operator`] edge the operator has ANSWERED: met, always, and kept on the row
     /// as the reply, so a submitted row becomes unblocked with its answer attached. `ask` is the
@@ -1490,12 +1533,14 @@ impl Store {
         }
         self.conn().execute_batch(SCHEMA_SQL)?;
         self.conn().execute_batch(SESSION_INDEXES_SQL)?;
+        self.conn().execute_batch(CORPUS_INDEXES_SQL)?;
         self.conn().execute_batch(queues::QUEUES_SQL)?;
         self.conn().execute_batch(subagents::SUBAGENTS_SQL)?;
         self.conn().execute_batch(modes::MODES_SQL)?;
         self.conn().execute_batch(told::TOLD_SQL)?;
         self.conn().execute_batch(marks::MARKS_SQL)?;
         self.conn().execute_batch(seat::SEAT_TODO_SQL)?;
+        self.conn().execute_batch(seat::SEAT_JOB_SQL)?;
         self.conn().execute_batch(citations::CITATIONS_SQL)?;
         self.conn().execute_batch(writers::WRITERS_SQL)?;
         self.conn().execute_batch(procs::PROCS_SQL)?;
@@ -2096,6 +2141,30 @@ impl Store {
             // session id, because a seat is not a session and its table carries no foreign key.
             self.conn().execute_batch(seat::SEAT_TODO_SQL)?;
         }
+        if from < 42 {
+            // v42: the corpus counts are read at every open, and without this index they scan the
+            // adjudication table - on this box's store, 990 MB per count. One build, at one start.
+            let has_corpus: bool = self.conn().query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'adjudication')",
+                [],
+                |r| r.get(0),
+            )?;
+            if has_corpus {
+                let began = std::time::Instant::now();
+                self.conn().execute_batch(CORPUS_INDEXES_SQL)?;
+                if began.elapsed() > std::time::Duration::from_millis(300) {
+                    eprintln!(
+                        "letibot: indexed the decision corpus for its counts ({} ms, one time)",
+                        began.elapsed().as_millis()
+                    );
+                }
+            }
+        }
+        if from < 43 {
+            // v43: a seat's own background jobs - `job` keyed by the seat's handle, for v41's
+            // reason one table over, with the pid's start time beside it.
+            self.conn().execute_batch(seat::SEAT_JOB_SQL)?;
+        }
         Ok(())
     }
 
@@ -2565,10 +2634,7 @@ impl Store {
 
         let (prefix_tokens, h_init) = Self::stable_prefix_on(conn, &prefix_id)?;
 
-        let mut stmt = conn.prepare(
-            "SELECT item_id, item_json, tok_offset, tok_len, h_k, tokens
-               FROM transcript_item WHERE transcript_id = ?1 ORDER BY seq ASC",
-        )?;
+        let mut stmt = conn.prepare(TRANSCRIPT_ITEMS_SQL)?;
         let rows = stmt.query_map(params![transcript_id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -3454,26 +3520,24 @@ impl Store {
     /// Counts for the startup disclosure: a corpus nobody can see the size of is
     /// a corpus nobody maintains.
     pub fn corpus_counts(&self) -> Result<CorpusCounts> {
-        let one = |sql: &str| -> Result<u64> {
-            let n: i64 = self.conn().query_row(sql, [], |r| r.get(0))?;
-            Ok(n as u64)
-        };
+        let (total, asked, measured, disagreements, model_decided) =
+            self.conn().query_row(&corpus_counts_sql(), [], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                ))
+            })?;
         Ok(CorpusCounts {
-            total: one("SELECT COUNT(*) FROM adjudication")?,
-            decided_by_operator: one(&format!(
-                "SELECT COUNT(*) FROM adjudication WHERE {ASKED_SQL}"
-            ))?,
+            total: total as u64,
+            decided_by_operator: asked as u64,
             // `measured` is `consulted`, not `verdict_by LIKE 'model%'`: that predicate was a
             // tautology which counted every row as measured, and this banner said so.
-            measured: one(&format!(
-                "SELECT COUNT(*) FROM adjudication WHERE {MEASURED_SQL}"
-            ))?,
-            disagreements: one(&format!(
-                "SELECT COUNT(*) FROM adjudication WHERE {DISAGREEMENT_SQL}"
-            ))?,
-            model_decided: one(&format!(
-                "SELECT COUNT(*) FROM adjudication WHERE {MODEL_DECIDED_SQL}"
-            ))?,
+            measured: measured as u64,
+            disagreements: disagreements as u64,
+            model_decided: model_decided as u64,
         })
     }
 

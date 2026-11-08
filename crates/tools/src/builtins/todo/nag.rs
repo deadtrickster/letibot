@@ -9,8 +9,8 @@ use letibot_tokencore::store::TodoItem;
 use super::{
     ChildSessions, RunningJobs, queue_review_in_flight, unfinished_plan,
     waits_on_a_child_with_room_to_breathe, waits_on_a_running_job, waits_on_an_undigested_ending,
-    waits_on_the_room, when_a_queue_reviewer_goes_quiet, when_a_young_child_grows_up,
-    when_an_ending_is_digested,
+    waits_on_something_external, waits_on_the_room, when_a_queue_reviewer_goes_quiet,
+    when_a_young_child_grows_up, when_an_ending_is_digested,
 };
 
 /// How long a session sits IDLE before the unfinished-plan check is sent. The operator's scheduling
@@ -79,6 +79,28 @@ pub fn the_check_may_ask_about(
         // room pass puts a `TodoNeed::Room` edge on the row while the holder's beat is fresh and
         // takes it off in the pass that sees either end, so *does this row carry the edge* IS the fact.
         && !waits_on_the_room(row)
+        // A wait on something outside the machine ends when the ROW moves and at no other moment,
+        // so the check has nothing to steer and everything to break by asking.
+        && !waits_on_something_external(row)
+}
+
+/// What a plan IS, for a once-per-change rule that may not read the sentence: every row's words,
+/// its status and its waits. A seat's notice also names what is running beside the plan - its
+/// packages' jobs, by handle - and a package starting or ending one is not the seat's plan moving
+/// (`docs/seat-todo.md`).
+pub fn the_plan_as_a_key(rows: &[TodoItem]) -> String {
+    let mut key = String::new();
+    for row in rows {
+        key.push_str(row.content.trim());
+        key.push('\u{1f}');
+        key.push_str(&format!("{:?}", row.status));
+        for need in &row.needs {
+            key.push('\u{1f}');
+            key.push_str(&format!("{need:?}"));
+        }
+        key.push('\u{1e}');
+    }
+    key
 }
 
 /// The plan as the idle check reads it - every row, minus the ones it may not speak about.
@@ -155,7 +177,8 @@ pub struct TodoNagClock {
     armed_for: Option<String>,
     /// The plan notice this session was last nagged with - the identity the backoff counts
     /// repeats of. A different notice is a new thing to say at the base window; the same one is a
-    /// repeat at [`Self::interval`].
+    /// repeat at [`Self::interval`]. A session's identity is the sentence itself; a seat's is
+    /// [`the_plan_as_a_key`] of the rows, which is [`Self::keyed_by_plan`].
     nagged: Option<String>,
     /// When `nagged` was sent - the anchor the repeat's interval is measured from. Written and
     /// cleared with `nagged`, so the two cannot disagree about whether a notice is outstanding.
@@ -181,6 +204,10 @@ pub struct TodoNagClock {
     census_due: Option<Instant>,
     /// When the census was last delivered - the anchor its repeat is measured from.
     census_said_at: Option<Instant>,
+    /// Whether what this clock remembers is the PLAN and not the sentence. True for the bridge's
+    /// seat, whose notice names its packages' jobs: a package starting or ending one rewrote the
+    /// sentence, and twenty of those in fifteen minutes were twenty checks of one unchanged plan.
+    keyed_by_plan: bool,
 }
 
 /// Is the operator holding this session's plan-check, and until when - the clock's copy of
@@ -225,7 +252,16 @@ impl TodoNagClock {
             repeat: t.census_repeat,
             census_due: None,
             census_said_at: None,
+            keyed_by_plan: false,
         }
+    }
+
+    /// Key this clock by its PLAN rather than its sentence - the bridge's seat, whose notice names
+    /// its packages' jobs (`docs/seat-todo.md`). A session keeps its sentence: its own jobs are its
+    /// own work, and a notice that gains a job is a notice it has not read.
+    pub fn keyed_by_plan(mut self) -> Self {
+        self.keyed_by_plan = true;
+        self
     }
 
     /// A clock with a different window - the tests' door, and only theirs: driving the
@@ -293,7 +329,7 @@ impl TodoNagClock {
         let floor = self.window;
         let askable = the_plan_as_checked(todos, children, jobs);
         let text = unfinished_plan(&askable, todos, children, jobs);
-        if nag_should_arm(todos, self.nagged.as_deref(), children, jobs) {
+        if self.should_arm(&askable, text.as_deref()) {
             let fresh = now + floor;
             self.due = match (self.due, &self.armed_for) {
                 (Some(d), Some(was)) if Some(was) == text.as_ref() => Some(d.min(fresh)),
@@ -344,6 +380,19 @@ impl TodoNagClock {
         self.armed_for = None;
         self.due = None;
         self.rearm(todos, now, children, jobs);
+    }
+
+    /// Whether this plan is new to this clock - [`nag_should_arm`] with the identity this clock
+    /// keeps: a session's sentence, a seat's plan.
+    fn should_arm(&self, askable: &[TodoItem], text: Option<&str>) -> bool {
+        match text {
+            None => false,
+            Some(text) if !self.keyed_by_plan => self.nagged.as_deref() != Some(text),
+            Some(_) => {
+                let key = the_plan_as_a_key(askable);
+                self.nagged.as_deref() != Some(key.as_str())
+            }
+        }
     }
 
     /// Arm the queue's census, as of `now` - the clock's second subject, on its own deadline. A
@@ -440,11 +489,23 @@ impl TodoNagClock {
     /// is deliberate: a check whose turn failed still counts as said, or the same notice would
     /// come back every window, which is the metronome at a slower rate.
     pub fn said(&mut self, notice: Option<String>, now: Instant) {
-        self.repeats = match (&self.nagged, &notice) {
+        self.record(notice, now);
+    }
+
+    /// [`Self::said`] for a clock keyed by its plan: what is recorded is the plan this notice asked
+    /// about, so the delivery of the same plan is a repeat whatever the packages did meanwhile.
+    pub fn said_plan(&mut self, rows: &[TodoItem], notice: Option<String>, now: Instant) {
+        let key = notice.as_ref().map(|_| the_plan_as_a_key(rows));
+        self.record(key, now);
+    }
+
+    /// The one place a delivery is remembered: its identity, the ladder's step, and the anchor.
+    fn record(&mut self, identity: Option<String>, now: Instant) {
+        self.repeats = match (&self.nagged, &identity) {
             (Some(was), Some(is)) if was == is => self.repeats.saturating_add(1),
             _ => 1,
         };
-        self.nagged = notice;
+        self.nagged = identity;
         self.nagged_at = Some(now);
         self.armed_for = None;
     }

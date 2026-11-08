@@ -84,6 +84,8 @@ pub const READER_ARMS: &[(i64, Arm)] = &[
     (39, Arm::Additive), // transcript_by_session, session_by_parent: new indexes
     (40, Arm::Additive), // session_marks: a new table, which an older reader never names
     (41, Arm::Additive), // seat_todo: a new table, which an older reader never names
+    (42, Arm::Additive), // adjudication_corpus_counts: a new index, which no older reader names
+    (43, Arm::Additive), // seat_job: a new table, which an older reader never names
 ];
 
 /// The floor a store at `version` carries: the newest arm at or below it that [`Arm::Breaks`],

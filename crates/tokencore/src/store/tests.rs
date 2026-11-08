@@ -3187,3 +3187,107 @@ fn named_in_matches_title_or_slug_in_the_workspace() {
     assert_eq!(s.named_in("/w", "STROPPY CONFORMITY").unwrap().len(), 1);
     assert!(s.named_in("/w", "stroppy").unwrap().is_empty());
 }
+
+/// What opening one session reads, keyed and index-only: the corpus counts the banner takes,
+/// the session's own row, and the transcript it resumes. Measured on a copy of this box's 10 GB
+/// store (R158): the counts were 1.80 GB of it, because three of the five scanned `adjudication`.
+#[test]
+fn the_reads_an_open_makes_reach_a_row_by_an_index() {
+    let s = store();
+    let (tr, _prefix) = seeded(&s);
+    let conn = s.connection();
+
+    // A plan over a statement whose parameters are never read: one bind per placeholder, so
+    // `EXPLAIN QUERY PLAN` prepares it and SQLite is not asked what `?1` is.
+    let plan = |sql: &str| -> Vec<String> {
+        let mut st = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let args: Vec<String> = (0..st.parameter_count()).map(|_| "x".into()).collect();
+        let binds: Vec<&dyn rusqlite::ToSql> =
+            args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        st.query_map(binds.as_slice(), |r| r.get::<_, String>(3))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    // A `SCAN` of a TABLE materialises every row of it; a `SCAN` of a covering INDEX reads a
+    // narrow index instead, and is what an aggregate over one table has to cost.
+    let reads_rows =
+        |line: &str| line.starts_with("SCAN") && !line.contains("USING COVERING INDEX");
+
+    for (what, sql) in [
+        ("the corpus counts", corpus_counts_sql()),
+        ("the transcript's rows", TRANSCRIPT_ITEMS_SQL.to_string()),
+        ("the session row", sessions_sql(" WHERE s.id = ?1")),
+    ] {
+        let lines = plan(&sql);
+        assert!(
+            lines.iter().all(|l| !reads_rows(l)),
+            "{what}: a table scan in the plan, 8.2 GB of transcript_item or 946 MB of \
+             adjudication on this box's store: {lines:#?}"
+        );
+    }
+    // Named, not merely absent: the counts are the one statement that must not fall back to the
+    // primary key's index either, because that is 11 MB against the v42 index's 5.
+    let counts = plan(&corpus_counts_sql());
+    assert!(
+        counts
+            .iter()
+            .any(|l| l.contains("adjudication_corpus_counts")),
+        "the counts lost their index and would read the corpus row by row: {counts:#?}"
+    );
+    assert_eq!(
+        tr, "tr-1",
+        "the transcript a resume of this store would open"
+    );
+}
+
+/// A store written before v42 is given the corpus index when it opens. One build, once: the
+/// row this leaves behind is what makes every later open's counts an index read.
+#[test]
+fn a_store_from_before_the_corpus_index_is_migrated_onto_it() {
+    let path = std::env::temp_dir().join(format!(
+        "letibot-corpus-index-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_file(&path);
+    {
+        let s = Store::open(&path).unwrap();
+        let (sid, _prefix) = seeded(&s);
+        s.record_adjudication(&NewAdjudication {
+            request_id: "before-v42".into(),
+            session_id: sid,
+            asked: true,
+            ..Default::default()
+        })
+        .unwrap();
+        // The store a v41 build left: the table and its rows, and no index for the counts.
+        s.connection()
+            .execute_batch(
+                "DROP INDEX adjudication_corpus_counts;
+                 UPDATE schema_version SET version = 41;",
+            )
+            .unwrap();
+    }
+
+    let s = Store::open(&path).unwrap();
+    let has: bool = s
+        .connection()
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master
+               WHERE type = 'index' AND name = 'adjudication_corpus_counts')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(has, "the v42 arm did not build the index at open");
+    assert_eq!(
+        s.corpus_counts().unwrap().decided_by_operator,
+        1,
+        "and the rows written before it still count"
+    );
+    let _ = std::fs::remove_file(&path);
+}

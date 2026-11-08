@@ -928,6 +928,11 @@ pub(crate) fn waits_words(t: &letibot_sessionlog::event::TodoEntry) -> Option<St
         // The OWED side: the row is the model's own work, and what it waits on is the person
         // sitting in front of it - which is the pane's `you` one register down.
         TodoNeed::Owed { .. } => Some("your answer".to_string()),
+        // A process on this host, by its number: said, and openable by nothing here.
+        TodoNeed::Pid { pid, .. } => Some(format!("pid {pid}")),
+        // Something outside this machine, in the row's own words: the pane draws `waits on <what>`
+        // and holds no table behind it, because nothing here can see that wait end.
+        TodoNeed::External { what } => Some(what.clone()),
         _ => None,
     })
 }

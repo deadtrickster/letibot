@@ -115,7 +115,11 @@ fn a_host_broadcast_and_a_mention_do_not_reach_a_gatekeeper_but_a_project_dm_doe
 
     other.say(HOST_ROOM, "ping everyone", None);
     other.say(HOST_ROOM, &format!("hello @{GK}"), None);
-    mine.say(&letibot_room::project_room(A), &format!("@{GK} are you there"), None);
+    mine.say(
+        &letibot_room::project_room(A),
+        &format!("@{GK} are you there"),
+        None,
+    );
     operator.say(HOST_ROOM, "an unaddressed broadcast", None);
     mine.dm(GK, "how does a branch get in?");
 

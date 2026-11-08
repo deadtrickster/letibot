@@ -1,0 +1,16 @@
+name = "chat"
+purpose = "the room, as a built-in plugin: a run of one speaker's messages, a hue per handle, mentions by name, the day and unread dividers, the quote, and what a typed line becomes"
+# **Three hooks, one surface**: the stream the view draws, the line Enter takes, and the candidates
+# Tab ranks. A chat owns the composer while it answers, so all three are the same layer's.
+hooks = ["pane_chat", "command_chat", "complete_chat"]
+# **Nothing.** Every fact this layer draws arrives in the `chat` feed the head builds from its own
+# room view, so the layer runs no program, reads no file and fetches nothing.
+capabilities = []
+# **The operator's own conversations** (`docs/plugin-extension-points.md` X1): a feed only a
+# built-in or a PINNED layer may declare, because it is every message in every room, DMs included.
+feeds = ["chat"]
+# **What a line may cause**: a room message, and a direct message. A layer may answer any act name
+# it likes and the head performs exactly the names this list declares, so this is the whole of what
+# a typed line can do — `/reply`, `/dm`, `>N text` and a plain line are all one of these two.
+actions = ["room_say", "room_dm"]
+contract = 1

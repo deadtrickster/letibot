@@ -7,7 +7,7 @@ use std::time::Duration;
 use letibot_transcript::{Backgrounding, text::tail_lines};
 use serde_json::Value;
 
-use crate::exec::memory::{Ask, Decision, Meminfo, MemoryAsk, MemoryGrant, MemoryPolicy};
+use crate::exec::memory::{Ask, Decision, Machine, MemoryAsk, MemoryGrant, MemoryPolicy};
 use crate::exec::predicate::{Verdict, annotation, refusal};
 use crate::exec::terminal;
 use crate::exec::{JobState, ProcessHost, Promotion, ScopeKind, SpawnRequest, Waited};
@@ -25,6 +25,9 @@ pub struct Bash {
     snapshot_budget_said: std::sync::atomic::AtomicBool,
     /// `[boundary] firecode_only`: where a call that runs a listed program goes instead.
     route: Option<crate::firecode_route::FirecodeRoute>,
+    /// The work tree each run directory is in, remembered: a session runs nearly all of its
+    /// commands in the same place, and a `rev-parse` per call would be a third git call on every one.
+    trees: std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, std::path::PathBuf>>,
 }
 
 impl Bash {
@@ -143,6 +146,136 @@ impl Bash {
         self.foreground = foreground;
         self
     }
+
+    /// The git work tree a run directory is in, asked of git once per directory: `None` when it is
+    /// in none, which is the answer that switches the whole sweep off. A miss is not remembered,
+    /// because a session may `git init` a directory after the first call there.
+    fn tree_of(&self, dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        if let Some(known) = self
+            .trees
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(dir)
+        {
+            return Some(known.clone());
+        }
+        let found = crate::detect::tree(dir)?;
+        self.trees
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(dir.to_path_buf(), found.clone());
+        Some(found)
+    }
+}
+
+/// The directory a command runs in, as a host path: the backend's root joined with the
+/// root-relative `cwd` its spawn is given. `None` for a backend whose files are on another host,
+/// where a local `git status` would read a tree the command never touched.
+fn run_dir(ctx: &InvokeCtx<'_>, cwd: &str) -> Option<std::path::PathBuf> {
+    if ctx.backend.host_label().is_some() {
+        return None;
+    }
+    let root = std::path::PathBuf::from(ctx.backend.root_path()?);
+    Some(root.join(ctx.backend.workdir(cwd).ok()?))
+}
+
+/// The path as this session spells it: relative to where it sits when the file is under it, which
+/// is the spelling the file ledger and the provenance sink are keyed on, else absolute.
+fn spelled(workspace: Option<&std::path::Path>, tree: &std::path::Path, path: &str) -> String {
+    let abs = tree.join(path);
+    workspace
+        .and_then(|w| abs.strip_prefix(w).ok())
+        .map(|rel| rel.to_string_lossy().into_owned())
+        .unwrap_or_else(|| abs.to_string_lossy().into_owned())
+}
+
+/// The git tree a foreground command runs in, snapshotted before it starts and read after it ends.
+/// A struct because the three facts are only useful together, and because the attach below is the
+/// half a test can prove on a box where no process may be started.
+struct Sweep {
+    tree: std::path::PathBuf,
+    base: crate::detect::Before,
+    /// Where the session sits, for the spelling the ledger and the provenance sink are keyed on.
+    workspace: Option<std::path::PathBuf>,
+}
+
+impl Sweep {
+    fn before(tree: std::path::PathBuf, workspace: Option<std::path::PathBuf>) -> Sweep {
+        let base = crate::detect::before(&tree);
+        Sweep {
+            tree,
+            base,
+            workspace,
+        }
+    }
+}
+
+/// What the command changed, attached to its result: one file is the edit it is, several are named
+/// because one result carries one card. `wrote` is the runtime's provenance sink, so bytes this
+/// session's own command wrote do not read as a second writer's later.
+fn attach_changes(
+    inv: &mut Invocation,
+    sweep: &Sweep,
+    files: &crate::files::FileLedger,
+    writes_with: crate::runtime::WritesWith,
+    wrote: &dyn Fn(&str, &[u8]),
+) {
+    // Names first, and only names: one `git status` and a read of the files whose old bytes were
+    // already held. The diff below is computed for the one file a card is drawn for.
+    let changed = crate::detect::changed_since(&sweep.tree, &sweep.base);
+    if changed.is_empty() {
+        return;
+    }
+    let mut drawn = false;
+    if changed.len() == 1
+        && let Some(c) = crate::detect::diff_of(&sweep.tree, &sweep.base, &changed[0])
+    {
+        let was = c.before.clone().unwrap_or_default();
+        // An empty diff draws an empty card, which reads as a bug.
+        if was != c.after {
+            let spelling = spelled(sweep.workspace.as_deref(), &sweep.tree, &c.path);
+            files.mark_whole(&spelling, c.after.as_bytes());
+            wrote(&spelling, c.after.as_bytes());
+            inv.notes.push(format!(
+                "this command changed `{}` — the diff beside it was detected afterwards, \
+                 not made by `edit`",
+                c.path
+            ));
+            inv.edit = Some(crate::edit::FileEdit {
+                path: c.path.clone(),
+                before: was.clone(),
+                after: c.after.clone(),
+                created: c.created,
+                before_digest: crate::spill::content_hash(was.as_bytes()),
+                after_digest: crate::spill::content_hash(c.after.as_bytes()),
+                replacements: 1,
+                changed: crate::edit::changed_span(&was, &c.after),
+            });
+            drawn = true;
+        }
+    }
+    if !drawn {
+        let names: Vec<&str> = changed.iter().take(12).map(String::as_str).collect();
+        let more = changed.len().saturating_sub(names.len());
+        let listed = format!(
+            "{}{}",
+            names.join(", "),
+            match more {
+                0 => String::new(),
+                more => format!(", and {more} more files"),
+            }
+        );
+        inv.notes.push(match changed.len() {
+            1 => format!("this command changed `{listed}`, and no diff could be read back for it"),
+            n => format!(
+                "this command changed {n} file(s): {listed}. One result carries one diff, so none \
+                 is drawn for a change this wide; `git diff` is the one to read."
+            ),
+        });
+    }
+    if let Some(note) = writes_with.after_a_command() {
+        inv.notes.push(note.to_string());
+    }
 }
 
 /// `[exec]` in `leticode.toml`: how long a model's foreground call runs before the runtime
@@ -229,70 +362,88 @@ fn memory_note(job: &crate::exec::jobs::Job) -> Option<String> {
 }
 
 impl Bash {
-    /// The cap this call runs under, or the result that says why it did not start. The rule is
-    /// [`crate::exec::memory::decide`]'s; this is where an ask above the ceiling is put to the
-    /// operator, before anything is spawned.
+    /// The cap this call runs under, or the result that says why it did not start. The machine is
+    /// the BACKEND's: a placement's cap is decided from its host's memory and never from this
+    /// box's, and [`decide_memory`] is where that rule is.
     fn memory_for(
         &self,
         ctx: &InvokeCtx<'_>,
         command: &str,
         args: &Value,
     ) -> Result<Option<u64>, Box<Invocation>> {
-        let ask = Ask::parse(args.get("memory").and_then(|v| v.as_str())).map_err(|e| {
-            Box::new(Invocation::failed(
-                "bash's `memory` is not an amount",
-                format!("nothing was run. {e}."),
-            ))
-        })?;
-        // No `/proc/meminfo` (macOS): there is no memory controller to hold a cap either,
-        // and the result says the run was uncapped through the job's own record.
-        let Some(mem) = Meminfo::read() else {
-            return Ok(None);
-        };
-        match crate::exec::memory::decide(&self.memory, ask, &mem) {
-            Decision::Grant(b) => Ok(Some(b)),
-            Decision::Operator { bytes, ceiling } => {
-                let q = MemoryAsk {
-                    command: command.to_string(),
-                    bytes,
-                    ceiling,
-                    available: mem.available,
-                    total: mem.total,
-                };
-                match ctx.grant_memory(&q) {
-                    MemoryGrant::Granted => Ok(bytes),
-                    MemoryGrant::Refused(why) => Err(Box::new(Invocation::not_run(
-                        "the operator refused the memory this call asked for",
-                        format!(
-                            "nothing was run. You asked for {} for `{}`, which is above the {} \
-                             you may take without asking. The operator said no: {why}. Ask for \
-                             {} or less and it starts at once, or make the work smaller.",
-                            match q.bytes {
-                                Some(b) => format!("{} of memory", crate::exec::human_bytes(b)),
-                                None => "no memory cap".to_string(),
-                            },
-                            q.command,
-                            crate::exec::human_bytes(ceiling),
-                            crate::exec::human_bytes(ceiling),
-                        ),
-                    ))),
-                    MemoryGrant::NotAsked => Err(Box::new(Invocation::not_run(
-                        "nobody could be asked for the memory this call needs",
-                        format!(
-                            "nothing was run. {} — and this session has no one to put that \
-                             question to. Ask for {} or less and it starts at once.",
-                            q.summary(),
-                            crate::exec::human_bytes(ceiling)
-                        ),
-                    ))),
-                }
+        let machine = ctx.backend.machine_memory();
+        decide_memory(&self.memory, command, args, &machine, &mut |q| {
+            ctx.grant_memory(q)
+        })
+    }
+}
+
+/// The memory rule as a tool call meets it: the ask parsed, the decision, and the card when the
+/// decision is the operator's. The machine and the door to the operator are handed in, so a test
+/// can prove the numbers come from the placement's host with no ssh and no person.
+fn decide_memory(
+    policy: &MemoryPolicy,
+    command: &str,
+    args: &Value,
+    machine: &Machine,
+    grant: &mut dyn FnMut(&MemoryAsk) -> MemoryGrant,
+) -> Result<Option<u64>, Box<Invocation>> {
+    let ask = Ask::parse(args.get("memory").and_then(|v| v.as_str())).map_err(|e| {
+        Box::new(Invocation::failed(
+            "bash's `memory` is not an amount",
+            format!("nothing was run. {e}."),
+        ))
+    })?;
+    match crate::exec::memory::decide(policy, ask, machine) {
+        Decision::Uncapped => Ok(None),
+        Decision::Grant(b) => Ok(Some(b)),
+        Decision::Unresolved(why) => Err(Box::new(Invocation::not_run(
+            "this call's memory cannot be resolved on that machine",
+            format!(
+                "nothing was run. {why}. Pass `memory` as a size (`2G`) and it is decided at \
+                 once."
+            ),
+        ))),
+        Decision::Operator { bytes, ceiling } => {
+            let q = MemoryAsk {
+                command: command.to_string(),
+                bytes,
+                ceiling,
+                machine: machine.clone(),
+            };
+            match grant(&q) {
+                MemoryGrant::Granted => Ok(q.bytes),
+                MemoryGrant::Refused(why) => Err(Box::new(Invocation::not_run(
+                    "the operator refused the memory this call asked for",
+                    format!(
+                        "nothing was run. You asked for {} for `{}`, which is above {}. The \
+                         operator said no: {why}. {}",
+                        match q.bytes {
+                            Some(b) => format!("{} of memory", crate::exec::human_bytes(b)),
+                            None => "no memory cap".to_string(),
+                        },
+                        q.command,
+                        q.ceiling_clause(),
+                        q.ask_or_smaller(),
+                    ),
+                ))),
+                MemoryGrant::NotAsked => Err(Box::new(Invocation::not_run(
+                    "nobody could be asked for the memory this call needs",
+                    format!(
+                        "nothing was run. {} — and this session has no one to put that question \
+                         to. {}",
+                        q.summary(),
+                        q.ask_or_smaller(),
+                    ),
+                ))),
             }
         }
     }
 }
 
 /// What a foreground command killed at its deadline says: one sentence, one way out. Raising the
-/// timeout only makes the wait longer, so `background: true` is the only answer offered.
+/// timeout only makes the wait longer, so `background: true` is the only answer offered — and its
+/// output is named as partial, because a cut run is not a finished one.
 fn deadline_killed(body: &str, label: &str, secs: f32) -> String {
     let deadline = if secs < 1.0 {
         format!("{:.0}ms", secs * 1000.0)
@@ -300,7 +451,9 @@ fn deadline_killed(body: &str, label: &str, secs: f32) -> String {
         format!("{secs:.0}s")
     };
     format!(
-        "{body}\n\n[`{label}`] Killed at its {deadline} deadline. Re-run it with `background: true`."
+        "{body}\n\n[`{label}`] Killed at its {deadline} deadline — its output is partial, because \
+         the run was cut and not finished. Re-run it with `background: true`, which has no \
+         deadline of its own."
     )
 }
 
@@ -413,8 +566,8 @@ impl Tool for Bash {
                 "properties": {
                     "command": {"type": "string", "description": "The command line, run by /bin/sh in the workspace."},
                     "cwd": {"type": "string", "description": "Directory to run in, relative to the workspace root. Defaults to the root."},
-                    "timeout_ms": {"type": "integer", "description": "How long this command may run before it is killed and the result says so. Defaults to 120000 (2 minutes). Ignored when background is true. A command you expect to take over a minute belongs in the background — `background: true` runs it with no deadline and its completion is delivered to you — rather than behind a raised timeout_ms."},
-                    "background": {"type": "boolean", "description": "Start the command and return its job id at once instead of waiting."},
+                    "timeout_ms": {"type": "integer", "description": "How long this command may run before it is killed and the result says so. Defaults to 120000 (2 minutes). Ignored when background is true, and a background job has no deadline of its own: `job_extend` gives it one. A command you expect to take over a minute belongs in the background — `background: true` runs it with no deadline and its completion is delivered to you — rather than behind a raised timeout_ms."},
+                    "background": {"type": "boolean", "description": "Start the command and return its job id at once instead of waiting. **It has no deadline of its own**: it runs until it ends, until `job_kill`, or until the dead check ends it — no output and no CPU for `[exec] job_dead_after_seconds` (thirty minutes by default), which is how a wedged run is told from a silent build. `job_extend` gives it a hard deadline, `job_output` reads what it has written, and its completion reaches you on its own."},
                     "wake": {"type": "string", "enum": ["now", "later"], "description": "With background: `later` says you do not need waking for it, so the result is shown at your next turn and a `wait` does not hold on it; use it for a server you leave running. `now`: the moment it ends, even mid-turn. Absent (the default): its end wakes you."},
                     "slug": {"type": "string", "description": "A short name for this job, in your own words — `release-build`, `fold-tests`. It is what the transcript calls this job (and what the jobs pane reads beside the job id), and what `job_output`, `job_kill` and `job_wait` accept in place of the id. It is your stated intent for the work and never a restatement of the command; omit it when you have no name, and no name is derived from the command line."},
                     "scope": {"type": "string", "description": "Which scope owns the process: `turn` (dies at the end of this turn), `session` (dies with the session), or `explicit` (survives the session; requires `scope_name`)."},
@@ -480,16 +633,6 @@ impl Tool for Bash {
             Err(inv) => return *inv,
         };
 
-        // The workspace, not the backend's root: `root_path()` is `/` for an unconfined session,
-        // which is the right answer to is-this-inside-the-boundary and the wrong one for where-is-
-        // the-tree-I-am-watching, so seeded from `/` a shell that rewrites a file hands no diff.
-        let root = ctx
-            .backend
-            .workspace_path()
-            .or_else(|| ctx.backend.root_path())
-            .map(std::path::PathBuf::from);
-        let before = root.as_deref().map(crate::detect::before);
-
         // The second gate, and it is a different mechanism from the first: a
         // session whose backend cannot start processes refuses here however the
         // adjudicator answered. Same asymmetry `write` keeps.
@@ -545,6 +688,28 @@ impl Tool for Bash {
             .get("background")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        // The tree the shell will write into, before anything starts: not simply the workspace, since
+        // a `cd <other-checkout>` writes a repository the workspace may only contain. A background
+        // job is not swept here; its writes are read with the completion that ends it.
+        let sweep = if background {
+            None
+        } else {
+            let asked_cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
+            run_dir(ctx, asked_cwd)
+                .and_then(|dir| {
+                    // A leading `cd <dir> &&` is where the command really runs, and the shell's
+                    // own `cd` is not visible anywhere else, so it decides which tree is read.
+                    let dir = match crate::heredoc::leading_cd(command) {
+                        Some(cd) => dir.join(cd),
+                        None => dir,
+                    };
+                    self.tree_of(&dir)
+                })
+                .map(|tree| {
+                    let workspace = ctx.backend.workspace_path().map(std::path::PathBuf::from);
+                    Sweep::before(tree, workspace)
+                })
+        };
         // The caller's own name for this work, or nothing. Read here rather than derived from
         // `command` anywhere: see [`slug_arg`].
         let slug = slug_arg(args);
@@ -962,7 +1127,10 @@ impl Tool for Bash {
                         u.clause(),
                         match u.cap {
                             Some(cap) => {
-                                crate::exec::memory::ask_after_kill(cap, Meminfo::read().as_ref())
+                                crate::exec::memory::ask_after_kill(
+                                    cap,
+                                    ctx.backend.machine_memory().numbers().as_ref(),
+                                )
                             }
                             None => "It ran uncapped, so the kill was not a cap's.".into(),
                         }
@@ -1007,46 +1175,14 @@ impl Tool for Bash {
             inv = inv.with_note(note);
         }
 
-        // And what it changed. Attached as an edit when it is one file, which is the shape a
-        // script-that-edits has, and named otherwise, because one result carries one card. Either way
-        // the operator is told: a change nobody can see is a change nobody reviewed.
-        if let (Some(root), Some(base)) = (root.as_deref(), before.as_ref()) {
-            // Names first, and only names: one `git status` and a stat each. The diff below is
-            // computed for the one file it is drawn for, never for every file that moved.
-            let changed = crate::detect::changed_since(root, base);
-            match changed.len() {
-                0 => {}
-                1 => {
-                    if let Some(c) = crate::detect::diff_of(root, base, &changed[0]) {
-                        let was = c.before.clone().unwrap_or_default();
-                        inv = inv.with_note(format!(
-                            "this command changed `{}` — the diff beside it was detected \
-                             afterwards, not made by `edit`",
-                            c.path
-                        ));
-                        inv.edit = Some(crate::edit::FileEdit {
-                            path: c.path.clone(),
-                            before: was.clone(),
-                            after: c.after.clone(),
-                            created: c.created,
-                            before_digest: crate::spill::content_hash(was.as_bytes()),
-                            after_digest: crate::spill::content_hash(c.after.as_bytes()),
-                            replacements: 1,
-                            changed: crate::edit::changed_span(&was, &c.after),
-                        });
-                    }
-                }
-                n => {
-                    let names: Vec<&str> = changed.iter().take(12).map(String::as_str).collect();
-                    inv = inv.with_note(format!(
-                        "this command changed {n} file(s): {}{}. No diff is shown for a \
-                         change this wide; `git diff` is the one to read.",
-                        names.join(", "),
-                        if n > names.len() { ", …" } else { "" }
-                    ));
-                }
-            }
-            if base.skipped > 0
+        // And what it changed: the sweep taken before the run, attached to the result now.
+        if let Some(sweep) = &sweep {
+            let files = ctx.files;
+            let writes_with = ctx.writes_with;
+            attach_changes(&mut inv, sweep, files, writes_with, &|path, bytes| {
+                ctx.wrote(path, bytes)
+            });
+            if sweep.base.skipped > 0
                 && !self
                     .snapshot_budget_said
                     .swap(true, std::sync::atomic::Ordering::Relaxed)
@@ -1054,7 +1190,7 @@ impl Tool for Bash {
                 inv = inv.with_note(format!(
                     "{} file(s) were already modified and beyond the snapshot budget, so a \
                      change to one of them is not reported",
-                    base.skipped
+                    sweep.base.skipped
                 ));
             }
         }
@@ -1298,6 +1434,287 @@ fn ask_if_waiting(
 mod tests {
     use super::*;
 
+    // What a command changed, and what the tool attaches for it. No process host is needed here
+    // (this box has no cgroup), so the command is run by the test itself and the sweep is what is
+    // measured: the same file the same way `bash` would have written it, then the attach.
+
+    /// `git` with this box's own config held out of it: the fixtures must commit the same way on
+    /// every machine, and `testing::git` is behind a feature the unit tests are not built with.
+    fn git(root: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .current_dir(root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_AUTHOR_NAME", "letibot fixture")
+            .env("GIT_AUTHOR_EMAIL", "fixture@letibot.invalid")
+            .env("GIT_COMMITTER_NAME", "letibot fixture")
+            .env("GIT_COMMITTER_EMAIL", "fixture@letibot.invalid")
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    }
+
+    /// A repository with two committed files, and a workspace that is its root.
+    fn repo(name: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("letibot-sweep-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("fuzz")).expect("mkdir");
+        std::fs::write(root.join("a.txt"), "one\ntwo\n").expect("write");
+        std::fs::write(root.join("fuzz/list.inc"), "alpha\nbeta\n").expect("write");
+        git(&root, &["init", "-q"]);
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-qm", name]);
+        root
+    }
+
+    fn sweep_of(root: &std::path::Path) -> Sweep {
+        Sweep::before(root.to_path_buf(), Some(root.to_path_buf()))
+    }
+
+    /// Attach over a sweep and say what the row now holds.
+    fn attached(
+        sweep: &Sweep,
+        files: &crate::files::FileLedger,
+    ) -> (Invocation, Vec<(String, Vec<u8>)>) {
+        let wrote: std::sync::Mutex<Vec<(String, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
+        let mut inv = Invocation::ok("ran");
+        attach_changes(
+            &mut inv,
+            sweep,
+            files,
+            crate::runtime::WritesWith {
+                edit: true,
+                write: true,
+            },
+            &|path, bytes| {
+                wrote
+                    .lock()
+                    .unwrap()
+                    .push((path.to_string(), bytes.to_vec()))
+            },
+        );
+        let wrote = wrote.into_inner().unwrap();
+        (inv, wrote)
+    }
+
+    /// The editor's shape: an inline python program that reads a tracked file and writes it back.
+    /// The command is the real one, run here rather than through the boundary this box lacks.
+    #[test]
+    fn a_python_inline_program_that_rewrites_a_tracked_file_draws_its_diff() {
+        let root = repo("python");
+        let sweep = sweep_of(&root);
+        let out = std::process::Command::new("python3")
+            .current_dir(&root)
+            .args([
+                "-c",
+                "p = 'fuzz/list.inc'; s = open(p).read(); open(p, 'w').write(s + 'gamma' + chr(10))",
+            ])
+            .output()
+            .expect("python3");
+        assert!(out.status.success(), "{out:?}");
+
+        let files = crate::files::FileLedger::new();
+        let (inv, wrote) = attached(&sweep, &files);
+        let edit = inv.edit.as_ref().expect("a diff");
+        assert_eq!(edit.path, "fuzz/list.inc");
+        assert_eq!(edit.before, "alpha\nbeta\n");
+        assert_eq!(edit.after, "alpha\nbeta\ngamma\n");
+        assert!(!edit.created);
+        assert!(
+            inv.notes.iter().any(|n| n.contains("detected afterwards")),
+            "{:?}",
+            inv.notes
+        );
+        // The ledger and the provenance sink both learned whose bytes these are.
+        assert_eq!(
+            files.whole_of("fuzz/list.inc"),
+            Some((
+                crate::spill::content_hash(b"alpha\nbeta\ngamma\n"),
+                "alpha\nbeta\ngamma\n".len()
+            ))
+        );
+        assert_eq!(wrote.len(), 1, "{wrote:?}");
+        assert_eq!(wrote[0].0, "fuzz/list.inc");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `sed -i` is the other shape a model reaches for.
+    #[test]
+    fn a_sed_in_place_rewrite_draws_its_diff() {
+        let root = repo("sed");
+        let sweep = sweep_of(&root);
+        let out = std::process::Command::new("sed")
+            .current_dir(&root)
+            .args(["-i", "s/two/TWO/", "a.txt"])
+            .output()
+            .expect("sed");
+        assert!(out.status.success(), "{out:?}");
+
+        let (inv, _wrote) = attached(&sweep, &crate::files::FileLedger::new());
+        let edit = inv.edit.as_ref().expect("a diff");
+        assert_eq!(edit.path, "a.txt");
+        assert_eq!(edit.before, "one\ntwo\n");
+        assert_eq!(edit.after, "one\nTWO\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A `>` redirect onto a path git never had is a creation, not a rewrite.
+    #[test]
+    fn a_redirect_onto_a_new_path_is_a_creation() {
+        let root = repo("redirect");
+        let sweep = sweep_of(&root);
+        std::fs::write(root.join("b.txt"), "new\n").expect("write");
+        let (inv, _wrote) = attached(&sweep, &crate::files::FileLedger::new());
+        let edit = inv.edit.as_ref().expect("a diff");
+        assert_eq!(edit.path, "b.txt");
+        assert!(edit.created, "a file git never had was called a rewrite");
+        assert_eq!(edit.before, "");
+        assert_eq!(edit.after, "new\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A file that was already dirty is diffed against the bytes it held when the call started:
+    /// somebody else's earlier edit is not this command's.
+    #[test]
+    fn a_dirty_file_shows_only_this_commands_change() {
+        let root = repo("dirty");
+        std::fs::write(root.join("a.txt"), "one\ntwo edited by hand\n").expect("write");
+        let sweep = sweep_of(&root);
+        std::fs::write(root.join("a.txt"), "one\nthree edited by hand\n").expect("write");
+
+        let (inv, _wrote) = attached(&sweep, &crate::files::FileLedger::new());
+        let edit = inv.edit.as_ref().expect("a diff");
+        assert_eq!(edit.before, "one\ntwo edited by hand\n");
+        assert_eq!(edit.after, "one\nthree edited by hand\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A command that changed nothing draws nothing, however dirty the tree already was.
+    #[test]
+    fn a_command_that_changed_nothing_attaches_nothing() {
+        let root = repo("nothing");
+        std::fs::write(root.join("a.txt"), "somebody else's work\n").expect("write");
+        let sweep = sweep_of(&root);
+
+        let (inv, wrote) = attached(&sweep, &crate::files::FileLedger::new());
+        assert!(inv.edit.is_none(), "{:?}", inv.notes);
+        assert!(inv.notes.is_empty(), "{:?}", inv.notes);
+        assert!(wrote.is_empty(), "{wrote:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Several files are named and none is drawn, because one result carries one card; past twelve
+    /// the rest are counted rather than dropped without a denominator.
+    #[test]
+    fn several_changed_files_are_named_and_counted() {
+        let root = repo("several");
+        let sweep = sweep_of(&root);
+        for i in 0..15 {
+            std::fs::write(root.join(format!("f{i}.txt")), "new\n").expect("write");
+        }
+
+        let (inv, _wrote) = attached(&sweep, &crate::files::FileLedger::new());
+        assert!(inv.edit.is_none(), "one card, and this is not one file");
+        let note = inv.notes.join("\n");
+        assert!(note.contains("changed 15 file(s)"), "{note}");
+        assert!(note.contains("and 3 more files"), "{note}");
+        assert!(note.contains("`git diff` is the one to read"), "{note}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A rewrite that leaves the same bytes is not a change: an empty card reads as a bug.
+    #[test]
+    fn a_rewrite_that_leaves_the_same_bytes_draws_nothing() {
+        let root = repo("same");
+        let sweep = sweep_of(&root);
+        std::fs::write(root.join("a.txt"), "one\ntwo\n").expect("write");
+
+        let (inv, _wrote) = attached(&sweep, &crate::files::FileLedger::new());
+        assert!(inv.edit.is_none(), "{:?}", inv.notes);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Outside a git tree the sweep is off and the result is exactly what it was: no note, no card.
+    #[test]
+    fn a_workspace_in_no_git_tree_attaches_nothing() {
+        let root =
+            std::env::temp_dir().join(format!("letibot-sweep-not-a-repo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(root.join("a.txt"), "one\n").expect("write");
+        let sweep = Sweep::before(root.clone(), Some(root.clone()));
+        std::fs::write(root.join("a.txt"), "two\n").expect("write");
+
+        let (inv, wrote) = attached(&sweep, &crate::files::FileLedger::new());
+        assert!(inv.edit.is_none());
+        assert!(inv.notes.is_empty(), "{:?}", inv.notes);
+        assert!(wrote.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The path the ledger is marked under is the one the session would use: relative to its
+    /// workspace when the file is under it, absolute when the command wrote outside it.
+    #[test]
+    fn the_spelling_is_the_sessions_own() {
+        let root = repo("spelling");
+        let sweep = sweep_of(&root);
+        std::fs::write(root.join("fuzz/list.inc"), "changed\n").expect("write");
+        let files = crate::files::FileLedger::new();
+        let (inv, wrote) = attached(&sweep, &files);
+        assert_eq!(
+            inv.edit.as_ref().map(|e| e.path.as_str()),
+            Some("fuzz/list.inc")
+        );
+        assert_eq!(wrote[0].0, "fuzz/list.inc");
+
+        // The same tree read from a session that sits elsewhere in it: the path is still the
+        // one that file has under the workspace.
+        let elsewhere = Sweep::before(root.clone(), Some(root.join("fuzz")));
+        std::fs::write(root.join("fuzz/list.inc"), "changed again\n").expect("write");
+        let (inv, wrote) = attached(&elsewhere, &crate::files::FileLedger::new());
+        assert_eq!(
+            inv.edit.as_ref().map(|e| e.path.as_str()),
+            Some("fuzz/list.inc")
+        );
+        assert_eq!(
+            wrote[0].0, "list.inc",
+            "relative to where that session sits"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A command that changed a file is not adjudicated as an edit, so the row names the tools
+    /// that would have been: and only the ones this seat has.
+    #[test]
+    fn the_note_names_only_the_writing_tools_the_seat_has() {
+        let root = repo("nudge");
+        let sweep = sweep_of(&root);
+        std::fs::write(root.join("a.txt"), "one\nchanged\n").expect("write");
+
+        let mut inv = Invocation::ok("ran");
+        let files = crate::files::FileLedger::new();
+        attach_changes(
+            &mut inv,
+            &sweep,
+            &files,
+            crate::runtime::WritesWith {
+                edit: false,
+                write: false,
+            },
+            &|_, _| {},
+        );
+        let note = inv.notes.join("\n");
+        assert!(note.contains("changed `a.txt`"), "{note}");
+        assert!(
+            !note.contains("judges a change before it lands"),
+            "a seat with no writing tool was given advice it cannot take: {note}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The capture trails the pipe, so the beat a block is first seen on can hold nothing of what
     /// the program already wrote - and a card is never revised once it is up. The first reading
     /// warms the decision and the second makes it; a run that wrote nothing still gets its card.
@@ -1486,12 +1903,19 @@ mod tests {
     #[test]
     fn a_deadline_kill_names_one_way_out() {
         // The kill says background, and never "a larger timeout_ms", which the slow-run note on
-        // the same tool calls a longer wait.
+        // the same tool calls a longer wait. It also says the output is partial: a run cut at its
+        // deadline did not finish, and a model that reads it as finished builds on half of it.
         let text = deadline_killed("out", "j3", 120.0);
         assert!(
+            text.contains("[`j3`] Killed at its 120s deadline — its output is partial"),
+            "{text}"
+        );
+        assert!(
             text.ends_with(
-                "[`j3`] Killed at its 120s deadline. Re-run it with `background: true`."
-            )
+                "Re-run it with `background: true`, which has no \
+             deadline of its own."
+            ),
+            "{text}"
         );
         assert!(deadline_killed("out", "j3", 0.3).contains("its 300ms deadline"));
         assert!(!text.contains("timeout_ms"), "{text}");
@@ -1671,5 +2095,164 @@ mod tests {
         assert_eq!(s.access, Access::Exec);
         assert!(!s.access.is_unattended(), "exec must reach the gate");
         assert_eq!(crate::schema::lint_description(&s.description), vec![]);
+    }
+
+    const GIB: u64 = 1 << 30;
+
+    /// The machine R155 was reported on: 123 GiB, 15 GiB free when the ask was made.
+    fn on_lubuntu3(free_gib: u64) -> Machine {
+        Machine::There {
+            host: "lubuntu3".into(),
+            mem: Some(crate::exec::memory::Meminfo {
+                total: 123 * GIB,
+                available: free_gib * GIB,
+                swap_free: 0,
+            }),
+        }
+    }
+
+    fn on_a_silent_lubuntu3() -> Machine {
+        Machine::There {
+            host: "lubuntu3".into(),
+            mem: None,
+        }
+    }
+
+    /// `cargo clippy` asking for 12 GiB, the call in R155's report.
+    fn clippy_12g() -> Value {
+        serde_json::json!({"command": "cargo clippy --workspace", "memory": "12G"})
+    }
+
+    /// What `memory_for` decides for one call, with the card recorded instead of answered.
+    fn decided(
+        machine: &Machine,
+        args: &Value,
+        answer: MemoryGrant,
+    ) -> (Result<Option<u64>, Box<Invocation>>, Vec<MemoryAsk>) {
+        let mut cards: Vec<MemoryAsk> = Vec::new();
+        let got = decide_memory(
+            &MemoryPolicy::default(),
+            "cargo clippy --workspace",
+            args,
+            machine,
+            &mut |q| {
+                cards.push(q.clone());
+                answer.clone()
+            },
+        );
+        (got, cards)
+    }
+
+    /// A placement's cap is decided from the host's numbers and the card says which host they are:
+    /// R155's whole report is a card quoting the daemon's box for a command that ran elsewhere.
+    #[test]
+    fn a_placements_ask_is_decided_from_its_host_and_the_card_names_it() {
+        let (got, cards) = decided(&on_lubuntu3(15), &clippy_12g(), MemoryGrant::Granted);
+        assert_eq!(
+            got.expect("the operator let it have the memory"),
+            Some(12 * GIB)
+        );
+        assert_eq!(cards.len(), 1, "an ask above the ceiling is one card");
+        let card = &cards[0];
+        // Half of lubuntu3's 15 GiB, which is not half of the daemon's box.
+        assert_eq!(card.ceiling, Some(7 * GIB + GIB / 2));
+        assert!(
+            card.summary()
+                .contains("15 GiB of 123 GiB is free on lubuntu3"),
+            "{}",
+            card.summary()
+        );
+        assert!(!card.summary().contains("185"), "{}", card.summary());
+    }
+
+    /// And a LOCAL call is decided from this box, with the card it has always worded: no machine
+    /// named, and the same figures. A change here is a change to every session on this box.
+    #[test]
+    fn a_local_ask_is_unchanged() {
+        let local = Machine::Here(Some(crate::exec::memory::Meminfo {
+            total: 185 * GIB,
+            available: 15 * GIB,
+            swap_free: 0,
+        }));
+        let (_, cards) = decided(&local, &clippy_12g(), MemoryGrant::Granted);
+        assert_eq!(
+            cards[0].summary(),
+            "the model asks for 12 GiB of memory for `cargo clippy --workspace` — above the 7.5 \
+             GiB it may take without asking; 15 GiB of 185 GiB is free now"
+        );
+    }
+
+    /// A host that does not answer ASKS: an amount nobody can compare is the operator's, and both
+    /// the card and the refusal name the host instead of quoting this box's figures.
+    #[test]
+    fn a_silent_host_asks_rather_than_being_sized_from_this_box() {
+        let (got, cards) = decided(&on_a_silent_lubuntu3(), &clippy_12g(), MemoryGrant::Granted);
+        assert_eq!(got.expect("the operator granted it"), Some(12 * GIB));
+        assert_eq!(cards.len(), 1, "an unknown machine is still a question");
+        let said = cards[0].summary();
+        assert!(said.contains("lubuntu3 did not answer"), "{said}");
+        assert!(!said.contains("is free"), "{said}");
+        assert_eq!(
+            cards[0].ceiling, None,
+            "nothing was read to compare against"
+        );
+
+        // Refused, the sentence names the host's silence as the reason there is no ceiling.
+        let (got, _) = decided(
+            &on_a_silent_lubuntu3(),
+            &clippy_12g(),
+            MemoryGrant::Refused("not on that machine".into()),
+        );
+        let refused = got.expect_err("a refusal does not run");
+        assert!(
+            refused.payload.contains("any ceiling at all")
+                && refused.payload.contains("not on that machine"),
+            "{}",
+            refused.payload
+        );
+    }
+
+    /// A fraction of what is free cannot be resolved on a host that did not answer, so the call is
+    /// refused with a sentence the model can act on: there is no number to ask a person for.
+    #[test]
+    fn a_fraction_of_an_unread_machines_memory_is_refused_with_the_hosts_name() {
+        let args = serde_json::json!({"command": "cargo build", "memory": "50%"});
+        let (got, cards) = decided(&on_a_silent_lubuntu3(), &args, MemoryGrant::Granted);
+        assert!(
+            cards.is_empty(),
+            "there is nothing to put to a person: {cards:?}"
+        );
+        let refused = got.expect_err("a fraction of an unknown machine does not run");
+        assert!(
+            refused.payload.contains("lubuntu3") && refused.payload.contains("a size"),
+            "{}",
+            refused.payload
+        );
+    }
+
+    /// A background job has no deadline of its own, and the argument list says so rather than
+    /// leaving a model to infer it from work that ended at a number nobody chose.
+    #[test]
+    fn the_background_arguments_say_a_job_has_no_deadline_of_its_own() {
+        let s = Bash::default().schema();
+        let arg = |name: &str| {
+            s.parameters["properties"][name]["description"]
+                .as_str()
+                .unwrap_or_else(|| panic!("`{name}` has a description"))
+                .to_string()
+        };
+        let background = arg("background");
+        assert!(
+            background.contains("no deadline of its own"),
+            "{background}"
+        );
+        assert!(
+            background.contains("job_dead_after_seconds"),
+            "the window a silent job is measured against is named: {background}"
+        );
+        assert!(background.contains("job_extend"), "{background}");
+        let timeout = arg("timeout_ms");
+        assert!(timeout.contains("no deadline of its own"), "{timeout}");
+        assert!(timeout.contains("job_extend"), "{timeout}");
     }
 }

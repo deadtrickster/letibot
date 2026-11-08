@@ -347,6 +347,40 @@ fn the_check_offers_wait_on_when_a_job_or_a_subagent_is_running() {
     assert!(!said.contains("wait_on"), "{said}");
 }
 
+/// A job a PACKAGE runs is the package's and not the board's: the check names it as that package's
+/// and offers that package's TURN, because a wait on a handle this board does not run would never
+/// end here (`docs/seat-todo.md`).
+#[test]
+fn a_packages_job_is_named_as_the_packages_and_never_offered_as_a_wait_here() {
+    let plan = vec![item("collect K1's build", TodoStatus::InProgress)];
+    let jobs = RunningJobs::none()
+        .running("j83509")
+        .of_package("j83509", "K1");
+    let busy = ChildSessions::none().running("K1", child(60, Some(1), true));
+    let said = nag_with(&plan, &busy, &jobs).expect("an unstated wait is asked about");
+    assert!(
+        said.contains("`K1` is running `j83509`"),
+        "the job is named as the package's: {said}"
+    );
+    assert!(
+        said.contains(r#""child": "K1""#),
+        "and the wait offered is that package's turn: {said}"
+    );
+    assert!(
+        !said.contains(r#""job": "j83509""#),
+        "a package's job is not a wait this board can make: {said}"
+    );
+
+    // A package that is not turning has nothing this board could wait on, and its job is still the
+    // package's - said, with no door.
+    let idle = nag_with(&plan, &ChildSessions::none(), &jobs).expect("the row is still open work");
+    assert!(idle.contains("`K1` is running `j83509`"), "{idle}");
+    assert!(
+        !idle.contains(r#"{"wait_on""#),
+        "no wait is offered that this board could not keep: {idle}"
+    );
+}
+
 /// A row that only reads like a running job is not taken as waiting on it: the wait is stated on
 /// the row, so the check asks, and its offer names the job the row reads like.
 #[test]

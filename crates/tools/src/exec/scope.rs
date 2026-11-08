@@ -728,6 +728,16 @@ pub fn memory_use_of(scope: &ScopeId) -> Option<MemoryUse> {
     memory_use_at(&scope.path)
 }
 
+/// What a scope's processes have burned the CPU for, in microseconds, read from `cpu.stat`. The
+/// one live signal that a job printing nothing is still working, which is what a dead check needs:
+/// `None` is *this host cannot say*, never *zero*, and a caller must not end a job on it.
+pub fn cpu_use_of(scope: &ScopeId) -> Option<u64> {
+    let stat = std::fs::read_to_string(scope.path.join("cpu.stat")).ok()?;
+    stat.lines()
+        .find_map(|l| l.strip_prefix("usage_usec "))
+        .and_then(|n| n.trim().parse().ok())
+}
+
 /// [`MemoryUse`] for one cgroup directory. `None` when the files are not there - a tree without
 /// the controller, or a scope already removed.
 fn memory_use_at(dir: &Path) -> Option<MemoryUse> {

@@ -14,7 +14,7 @@ use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::protocol::{Caps, ServerFrame};
 use letibot_sessionlog::server::serve_registry;
 use letibot_tools::exec::memory::{
-    Ask, Decision, Meminfo, MemoryAsk, MemoryGrant, MemoryPolicy, decide,
+    Ask, Decision, Machine, Meminfo, MemoryAsk, MemoryGrant, MemoryPolicy, decide,
 };
 use letibot_tools::{AdjudicatedGate, Gate};
 
@@ -31,7 +31,8 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
 /// person, and it is reachable on any box with a memory controller.
 fn an_uncapped_ask(mem: &Meminfo) -> MemoryAsk {
     let policy = MemoryPolicy::default();
-    let Decision::Operator { bytes, ceiling } = decide(&policy, Ask::Uncapped, mem) else {
+    let machine = Machine::Here(Some(*mem));
+    let Decision::Operator { bytes, ceiling } = decide(&policy, Ask::Uncapped, &machine) else {
         panic!("an uncapped ask is the operator's, whatever the ceiling is");
     };
     assert_eq!(bytes, None, "uncapped has no size to hold against");
@@ -39,8 +40,7 @@ fn an_uncapped_ask(mem: &Meminfo) -> MemoryAsk {
         command: "cargo build --release".into(),
         bytes,
         ceiling,
-        available: mem.available,
-        total: mem.total,
+        machine,
     }
 }
 

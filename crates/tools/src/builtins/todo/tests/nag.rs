@@ -399,3 +399,88 @@ fn the_first_check_after_an_operator_add_says_the_operator_added_it() {
         "said as waiting: {text}"
     );
 }
+
+/// A seat's once-per-change key is its PLAN; a session's is its sentence. The two clocks are one
+/// type, so both halves are stated here: a package starting and ending twenty jobs rewrites what a
+/// seat's notice names and moves nothing it is about.
+#[test]
+fn a_seat_is_asked_again_for_its_plan_moving_and_not_for_the_jobs_running_beside_it() {
+    use std::time::Instant;
+    let window = Duration::from_millis(200);
+    let t0 = Instant::now();
+    let plan = vec![item("ship the pane", TodoStatus::InProgress)];
+    let none = ChildSessions::none();
+    let job = |n: usize| {
+        let handle = format!("j{}", 8073 + n);
+        RunningJobs::none()
+            .about(handle.clone(), "cargo build -p letibot-tui")
+            .running(handle)
+    };
+
+    // A session: its own job appearing is a new sentence, so it is asked again at the base window.
+    let mut session = TodoNagClock::with_window(window);
+    session.rearm_from(&plan, t0, &none, &no_jobs());
+    assert!(session.due_now(t0 + window), "the first check is due");
+    session.said(nag_for(&plan), t0 + window);
+    session.rearm_from(&plan, t0 + window, &none, &job(0));
+    assert_eq!(
+        session.due_at(),
+        Some(t0 + window + window),
+        "a session's sentence changed, so its window starts again"
+    );
+
+    // A seat: the same twenty jobs, the same row, and the plan is the only key there is.
+    let mut seat = TodoNagClock::with_window(window).keyed_by_plan();
+    seat.rearm_from(&plan, t0, &none, &no_jobs());
+    assert!(seat.due_now(t0 + window), "the first check is due");
+    seat.said_plan(&plan, nag_for(&plan), t0 + window);
+    let ladder = t0 + window + window * 2;
+    for n in 0..20 {
+        let now = t0 + window + Duration::from_millis(1 + n as u64);
+        seat.rearm_from(&plan, now, &none, &job(n));
+        assert_eq!(
+            seat.due_at(),
+            Some(ladder),
+            "job {n} armed nothing: an unchanged plan is said once, on the ladder"
+        );
+        assert!(!seat.due_now(now), "job {n} was a second check of one plan");
+    }
+    // And the ladder is not silence for ever: the plan is asked about again at its own interval.
+    assert!(
+        seat.due_now(ladder),
+        "the repeat is on the clock, not on a job"
+    );
+}
+
+/// A wait on something outside this machine: nothing here can see it end, so the check is silent
+/// on the row until the row moves - and then it is work again, like any other row.
+#[test]
+fn an_external_wait_keeps_its_row_quiet_until_it_moves() {
+    let waiting = TodoItem {
+        needs: vec![TodoNeed::External {
+            what: "R156's review at arangodb".into(),
+        }],
+        ..item("push once the review lands", TodoStatus::InProgress)
+    };
+    assert!(
+        !the_check_may_ask_about(&waiting, &ChildSessions::none(), &no_jobs()),
+        "a wait no snapshot can see is not the check's to ask about"
+    );
+    assert_eq!(
+        nag_for(std::slice::from_ref(&waiting)),
+        None,
+        "so the check is silent"
+    );
+
+    // The row MOVES - the wait taken off, which is the one act that ends it - and it is asked about.
+    let moved = item("push once the review lands", TodoStatus::InProgress);
+    let said = nag_for(&[moved]).expect("the row is work again");
+    assert!(said.contains("push once the review lands"), "{said}");
+
+    // A clock keyed by the plan sees that move too: the same row, one wait fewer, is a new key.
+    assert_ne!(
+        the_plan_as_a_key(&[waiting]),
+        the_plan_as_a_key(&[item("push once the review lands", TodoStatus::InProgress)]),
+        "a wait coming off the row is the plan moving"
+    );
+}

@@ -1677,7 +1677,11 @@ fn an_own_kill_is_not_announced_and_a_scope_ending_is() {
     watchers.watch(mine.0.clone());
     std::thread::sleep(Duration::from_millis(300));
     let rk = host.kill_job(&mine).expect("killed");
-    eprintln!("REAP {} state={:?}", rk.summary(), host.job(&mine).map(|v| v.state));
+    eprintln!(
+        "REAP {} state={:?}",
+        rk.summary(),
+        host.job(&mine).map(|v| v.state)
+    );
     let (state, _, _) = wait_for_settlement(&hub, &mine.0);
     assert_eq!(state, "killed by job_kill", "the head still shows the row");
     std::thread::sleep(Duration::from_millis(700));
@@ -1694,4 +1698,33 @@ fn an_own_kill_is_not_announced_and_a_scope_ending_is() {
     let c = wait_for_completion(&watchers);
     assert_eq!(c.job, other.0);
     assert!(c.state.contains("scope ending"), "{}", c.state);
+}
+
+/// The warning a job is owed before the dead check ends it: it names the job, both numbers, what is
+/// about to happen and the two ways out. Pure, so the sentence is asserted without a daemon and
+/// without waiting out a real window.
+#[test]
+fn the_dead_soon_warning_names_the_job_both_numbers_and_the_way_out() {
+    let w = letibot_tools::exec::DeadWarning {
+        job: letibot_tools::exec::JobId("j83627".into()),
+        silent_for: std::time::Duration::from_secs(24 * 60),
+        window: std::time::Duration::from_secs(1800),
+    };
+    let note = dead_soon_note(&w);
+    assert!(note.contains("`j83627`"), "{note}");
+    assert!(
+        note.contains("24m00s"),
+        "how long it has been silent: {note}"
+    );
+    assert!(
+        note.contains("30m00s"),
+        "the window it is measured against: {note}"
+    );
+    assert!(note.contains("ended as dead"), "{note}");
+    assert!(note.contains("its output is partial"), "{note}");
+    assert!(note.contains("job_extend"), "{note}");
+    assert!(note.contains("job_kill"), "{note}");
+    // The code is the one the `harness` tool's warnings view files it under, so a model reading its
+    // own warnings finds it there rather than in prose it cannot search.
+    assert_eq!(JOB_DEAD_SOON, "job_dead_soon");
 }

@@ -1398,10 +1398,7 @@ fn a_two_line_entry_is_one_block_under_the_pointer_and_the_click() {
         "the task line is not lit: {:?}",
         lit[task]
     );
-    assert!(
-        lit[facts].contains("\x1b[22m"),
-        "the facts line is not lit"
-    );
+    assert!(lit[facts].contains("\x1b[22m"), "the facts line is not lit");
     let before = a.subagents_sel;
     a.key(Key::Click {
         x: 8,

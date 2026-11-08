@@ -190,6 +190,14 @@ pub trait ExecBackend: Send + Sync {
         None
     }
 
+    /// The memory of the machine these tools run on, and its name when it is not this one. A
+    /// backend whose files are here answers this box; a placement reads its own host's
+    /// `/proc/meminfo`, and a host that does not answer is `None` rather than the figures of the
+    /// box the daemon runs on — a cap sized from the wrong machine is the whole of R155.
+    fn machine_memory(&self) -> crate::exec::memory::Machine {
+        crate::exec::memory::Machine::here()
+    }
+
     /// The session's scratch directory, where tools put working artifacts too big for the
     /// transcript. Per-session, set by whoever opened the session. `None` by default, so a tool
     /// that wants one gets a refusal rather than a guess.
@@ -1162,6 +1170,22 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A backend whose files are here answers THIS box's memory, which is what every local session
+    /// has always been decided on: the seam exists for the placement, and its default must not
+    /// change a session that was never placed.
+    #[test]
+    fn a_local_backend_answers_this_box() {
+        let d = tempdir::TempDir::new();
+        let b = HostBackend::new(d.path()).expect("a project-rooted backend");
+        // Free memory moves between two reads; the machine and its size do not.
+        let crate::exec::memory::Machine::Here(Some(got)) = b.machine_memory() else {
+            panic!("a local backend answers this box: {:?}", b.machine_memory());
+        };
+        let here = crate::exec::memory::Meminfo::read().expect("this box has /proc/meminfo");
+        assert_eq!(got.total, here.total);
+        assert_eq!(b.host_label(), None, "there is no other machine to name");
+    }
 
     fn fixture() -> (tempdir::TempDir, HostBackend) {
         let d = tempdir::TempDir::new();

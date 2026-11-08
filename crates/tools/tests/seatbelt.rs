@@ -1107,6 +1107,7 @@ fn firecode_boots_a_vm_from_the_wide_seat_and_the_tight_seat_cannot() {
     let (rc, out) = run_in(&tight, &f.project(), cmd);
     assert_ne!(rc, 0, "a child's seat booted a VM: {out}");
     assert!(!out.contains("firecode-ok"), "{out}");
+}
 
 // ------------------------------------------- `[boundary] firecode_only`, for real
 

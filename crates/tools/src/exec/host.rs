@@ -11,7 +11,8 @@ use std::time::{Duration, Instant, SystemTime};
 use super::ExecError;
 use super::confine::{ConfinePlan, Confinement, Unconfined};
 use super::jobs::{
-    DEADLINE_KILL, Due, Job, JobId, JobState, Lifetime, MemoryCap, OutputFile, OutputSlice,
+    DEAD_KILL, DEADLINE_KILL, Due, Job, JobId, JobState, Lifetime, MemoryCap, OutputFile,
+    OutputSlice,
 };
 use super::monitor::Monitors;
 use super::scope::{
@@ -254,6 +255,21 @@ pub trait ProcessHost: Send + Sync {
     /// rather than defaulted: a default that did nothing would leave the timeout silently the
     /// caller's problem, which is the shape this method exists to end.
     fn arm_deadline(&self, job: &JobId, after: Duration);
+
+    /// Bound a RUNNING job from now, or move the bound it already has, and answer the limit it now
+    /// carries. `None` when this host cannot bound this job — a job of jobs carries its branches'
+    /// own deadline — so a caller never announces a deadline nothing enforces.
+    fn extend_deadline(&self, job: &JobId, after: Duration) -> Option<Duration> {
+        let _ = (job, after);
+        None
+    }
+
+    /// The warning a running job is owed before the dead check ends it, TAKEN so it is said once.
+    /// `None` before four fifths of the window, and on a host with no dead check.
+    fn take_dead_warning(&self, job: &JobId) -> Option<DeadWarning> {
+        let _ = job;
+        None
+    }
 
     /// Block on a handle, never a pattern. `job` waits for one job to leave
     /// `Running`; `scope` waits for a cgroup to empty, and applies the
@@ -562,6 +578,16 @@ impl Deadlines {
         self.armed.notify_all();
     }
 
+    /// Whether this job carries a deadline somebody armed. `job_extend` reads it back rather than
+    /// trusting that arming a job of jobs did something.
+    fn armed_for(&self, job: &JobId) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|d| &d.job.id == job)
+    }
+
     /// End the watchdog: its host is being dropped, so nothing it could fire for has an
     /// owner left. The flag is set under the list's lock and the condvar rung after, so a
     /// watchdog asleep in either wait wakes, reads it and returns, dropping its `Arc`.
@@ -634,6 +660,278 @@ impl Deadlines {
     }
 }
 
+/// The dead check: a running job is ended only when it is DEAD - no output and no CPU progress for
+/// the whole window - because a wall clock cannot tell a fuzz campaign from a wedged `sleep`. A job
+/// that has been given a deadline is skipped here: the caller asked for that clock, and two answers
+/// to *when is it out of time* is one too many.
+pub struct Liveness {
+    /// The window, or `None` when the operator turned the check off. Behind a lock because the
+    /// daemon sets it after the host is built and every tool shares the host.
+    window: Mutex<Option<Duration>>,
+    /// Every job being checked, in spawn order. A job that has ended, or been given a deadline, is
+    /// dropped or reset by the tick that finds it so.
+    watching: Mutex<Vec<Progress>>,
+    /// Rung when a job is registered or the window changes, so the tick re-reads rather than polls.
+    added: Condvar,
+    /// The one warning each job is owed before a dead check ends it, taken by whoever delivers it.
+    warnings: Mutex<Vec<DeadWarning>>,
+    /// What the check ended, for the same reason [`Deadlines::fired`] exists.
+    ended: Mutex<Vec<DeadEnded>>,
+    closed: std::sync::atomic::AtomicBool,
+}
+
+/// One watched job, and the last moment either of the two signals moved.
+struct Progress {
+    job: Arc<Job>,
+    alive_at: Instant,
+    bytes: u64,
+    /// `cpu.stat`'s microseconds, or `None` on a host that cannot say - which is never a kill.
+    cpu: Option<u64>,
+    warned: bool,
+}
+
+/// The warning a job whose clock is running out is owed, once. Taken by the reader that says it, so
+/// a watcher that polls reads it once however often it looks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeadWarning {
+    pub job: JobId,
+    /// How long neither signal has moved.
+    pub silent_for: Duration,
+    /// The window it is measured against - the number the sentence quotes.
+    pub window: Duration,
+}
+
+/// One job the dead check ended, as a record rather than a side effect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeadEnded {
+    pub job: JobId,
+    /// How long the run had been alive.
+    pub after: Duration,
+    /// How long neither signal had moved - the reason it was called dead.
+    pub silent_for: Duration,
+    pub reaping: Reaping,
+}
+
+impl Liveness {
+    /// The default window: thirty minutes of neither output nor CPU. A build or a fuzz campaign
+    /// prints nothing between two steps and burns CPU throughout, which is exactly the case this
+    /// must not end; a wedged `sleep` burns nothing and prints nothing, which is the one it must.
+    pub const DEFAULT_AFTER: Duration = Duration::from_secs(1800);
+
+    /// An empty set, with the tick thread already running.
+    fn new(tree: Arc<dyn ScopeTree>) -> Arc<Liveness> {
+        let l = Arc::new(Liveness {
+            window: Mutex::new(Some(Self::DEFAULT_AFTER)),
+            watching: Mutex::new(Vec::new()),
+            added: Condvar::new(),
+            warnings: Mutex::new(Vec::new()),
+            ended: Mutex::new(Vec::new()),
+            closed: std::sync::atomic::AtomicBool::new(false),
+        });
+        let watch = Arc::clone(&l);
+        // Said on stderr for the same reason the deadline watchdog is: a check that did not start
+        // is a host where only `job_kill` ends anything, and the operator reads that here.
+        if let Err(e) = std::thread::Builder::new()
+            .name("letibot-liveness".into())
+            .spawn(move || watch.run(tree))
+        {
+            eprintln!(
+                "letibot: the dead check did not start ({e}); a background job with no deadline \
+                 is ended by `job_kill` and by nothing else"
+            );
+        }
+        l
+    }
+
+    /// The window in force, or `None` when the check is off.
+    pub fn window(&self) -> Option<Duration> {
+        *self.window.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn set_window(&self, window: Option<Duration>) {
+        *self.window.lock().unwrap_or_else(|e| e.into_inner()) = window;
+        self.added.notify_all();
+    }
+
+    /// Start watching one job. The clock starts now, which is the spawn: a job that has not spoken
+    /// yet has not been silent either.
+    fn watch(&self, job: Arc<Job>) {
+        let mut g = self.watching.lock().unwrap_or_else(|e| e.into_inner());
+        if g.iter().any(|p| p.job.id == job.id) {
+            return;
+        }
+        g.push(Progress {
+            job,
+            alive_at: Instant::now(),
+            bytes: 0,
+            cpu: None,
+            warned: false,
+        });
+        drop(g);
+        self.added.notify_all();
+    }
+
+    /// The next warning, once per job: the reader that says it takes it.
+    fn take_warning(&self, job: &JobId) -> Option<DeadWarning> {
+        let mut g = self.warnings.lock().unwrap_or_else(|e| e.into_inner());
+        let at = g.iter().position(|w| &w.job == job)?;
+        Some(g.remove(at))
+    }
+
+    pub fn warnings(&self) -> Vec<DeadWarning> {
+        self.warnings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// What the check ended, oldest first. The read-back half of the mechanism.
+    pub fn ended(&self) -> Vec<DeadEnded> {
+        self.ended.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn close(&self) {
+        let g = self.watching.lock().unwrap_or_else(|e| e.into_inner());
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(g);
+        self.added.notify_all();
+    }
+
+    /// The tick. Sleeps a tenth of the window (a tenth of a second at the floor, a minute at the
+    /// top), then looks at every job once; returns when its host is gone.
+    fn run(&self, tree: Arc<dyn ScopeTree>) {
+        loop {
+            let window = self.window();
+            let wait = match window {
+                Some(w) => (w / 10).clamp(Duration::from_millis(100), Duration::from_secs(60)),
+                // Off: nothing to time, so the thread waits to be told otherwise rather than
+                // waking ten times a second for a check that is not there.
+                None => Duration::from_secs(30),
+            };
+            {
+                let g = self.watching.lock().unwrap_or_else(|e| e.into_inner());
+                if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                let _ = self
+                    .added
+                    .wait_timeout(g, wait)
+                    .unwrap_or_else(|e| e.into_inner());
+            }
+            if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            if let Some(window) = window {
+                self.scan(tree.as_ref(), window);
+            }
+        }
+    }
+
+    /// A job that has been given a deadline is that deadline's business: it is not watched here, so
+    /// the clock cannot fire on a job whose ending somebody already chose.
+    fn spare(&self, job: &JobId) {
+        self.watching
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|p| &p.job.id != job);
+    }
+
+    /// One look at every watched job: move the clock of each job whose output or CPU advanced, warn
+    /// the one at four fifths of the window, and end the one that has spent the whole of it silent.
+    fn scan(&self, tree: &dyn ScopeTree, window: Duration) {
+        let now = Instant::now();
+        let mut due = Vec::new();
+        let mut warn = Vec::new();
+        {
+            let mut g = self.watching.lock().unwrap_or_else(|e| e.into_inner());
+            g.retain_mut(|p| {
+                if !p.job.state().is_running() {
+                    return false;
+                }
+                let bytes = p.job.capture.lock().expect("capture").produced();
+                let cpu = super::scope::cpu_use_of(&p.job.lifetime().scope);
+                // A host that cannot read the clock cannot prove a job dead: `None` is *we cannot
+                // say*, and ending a job on it is the wall clock this check exists to end.
+                let moved = cpu.is_none() || bytes != p.bytes || p.cpu.is_none() || cpu != p.cpu;
+                p.bytes = bytes;
+                p.cpu = cpu;
+                if moved {
+                    p.alive_at = now;
+                    p.warned = false;
+                }
+                match step(moved, now.duration_since(p.alive_at), window, p.warned) {
+                    Step::Alive => true,
+                    Step::Warn => {
+                        p.warned = true;
+                        warn.push(DeadWarning {
+                            job: p.job.id.clone(),
+                            silent_for: now.duration_since(p.alive_at),
+                            window,
+                        });
+                        true
+                    }
+                    Step::Dead => {
+                        due.push((Arc::clone(&p.job), now.duration_since(p.alive_at)));
+                        false
+                    }
+                }
+            });
+        }
+        if !warn.is_empty() {
+            self.warnings
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .extend(warn);
+        }
+        for (job, silent_for) in due {
+            // Ended the way `job_kill` ends one, and only while it is still running: a job that
+            // exited a moment ago finished, and reaping its cgroup must not be called a kill.
+            if !job.state().is_running() {
+                continue;
+            }
+            let after = job.elapsed();
+            job.settle(JobState::Killed {
+                by: DEAD_KILL.to_string(),
+            });
+            let reaping = tree.end(&job.lifetime().scope);
+            let mut g = self.ended.lock().unwrap_or_else(|e| e.into_inner());
+            g.push(DeadEnded {
+                job: job.id.clone(),
+                after,
+                silent_for,
+                reaping,
+            });
+            bound_records(&mut g, RECORD_LIMIT);
+        }
+    }
+}
+
+/// What one look at one job decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    /// One of the two signals moved: the clock starts again.
+    Alive,
+    /// Nothing moved for four fifths of the window: say so, once.
+    Warn,
+    /// Nothing moved for the whole window: it is dead.
+    Dead,
+}
+
+/// The rule, pure on purpose: a test pins both sides of both edges without sleeping through a
+/// window, and a job that is printing or burning CPU is never the harness's to end.
+fn step(moved: bool, silent: Duration, window: Duration, warned: bool) -> Step {
+    if moved {
+        return Step::Alive;
+    }
+    if silent >= window {
+        return Step::Dead;
+    }
+    if !warned && silent * 5 >= window * 4 {
+        return Step::Warn;
+    }
+    Step::Alive
+}
+
 /// The host implementation: real processes, real cgroups.
 pub struct HostProcesses {
     tree: Arc<dyn ScopeTree>,
@@ -657,6 +955,8 @@ pub struct HostProcesses {
     claimed_slugs: Mutex<Vec<String>>,
     /// The deadlines, and the thread that enforces them. See [`Deadlines`].
     deadlines: Arc<Deadlines>,
+    /// The dead check, and the thread that runs it. See [`Liveness`].
+    liveness: Arc<Liveness>,
     reaps: Mutex<Vec<Reaping>>,
     /// Every promotion, for the same reason `reaps` exists: a lifetime that
     /// changed under the model is a fact somebody has to be able to read back.
@@ -982,6 +1282,7 @@ impl HostProcesses {
         let tree: Arc<dyn ScopeTree> = Arc::from(tree);
         let h = HostProcesses {
             deadlines: Deadlines::new(Arc::clone(&tree)),
+            liveness: Liveness::new(Arc::clone(&tree)),
             tree,
             // Not asked for, and named as such rather than left absent, so a
             // reader of `describe()` cannot mistake silence for a boundary.
@@ -1357,6 +1658,27 @@ impl HostProcesses {
     /// unfalsifiable zero this substrate refuses everywhere else.
     pub fn deadlines_fired(&self) -> Vec<DeadlineFired> {
         self.deadlines.fired()
+    }
+
+    /// How long a job may go with neither output nor CPU before the dead check ends it. `None`
+    /// turns the check off; the daemon sets this from `[exec] job_dead_after_seconds`.
+    pub fn set_dead_after(&self, window: Option<Duration>) {
+        self.liveness.set_window(window);
+    }
+
+    pub fn dead_after(&self) -> Option<Duration> {
+        self.liveness.window()
+    }
+
+    /// The warnings the dead check owes jobs, oldest first. Taken one at a time through
+    /// [`ProcessHost::take_dead_warning`], so a watcher that polls says each one once.
+    pub fn dead_warnings(&self) -> Vec<DeadWarning> {
+        self.liveness.warnings()
+    }
+
+    /// What the dead check ended, oldest first - the same read-back [`Deadlines::fired`] is for.
+    pub fn dead_ended(&self) -> Vec<DeadEnded> {
+        self.liveness.ended()
     }
 
     /// Every job id this host knows, for clause 1's benefit when one is unknown.
@@ -1886,6 +2208,13 @@ impl ProcessHost for HostProcesses {
             .lock()
             .expect("jobs by id")
             .insert(job.id.clone(), Arc::clone(&job));
+        // Watched from the spawn: a job with no deadline is ended only when it is dead, and the
+        // clock that decides that starts here rather than at its first byte. Not for the OPERATOR's
+        // own run - a person's shell waiting for them to type looks exactly like a wedged job, and
+        // it is theirs to end.
+        if !req.tty {
+            self.liveness.watch(Arc::clone(&job));
+        }
         self.jobs.lock().expect("jobs").push(job);
         self.release_settled_captures(SETTLED_CAPTURE_BUDGET);
         self.release_kept_scopes();
@@ -1962,6 +2291,9 @@ impl ProcessHost for HostProcesses {
             .expect("jobs by id")
             .insert(id.clone(), Arc::clone(&job));
         self.jobs.lock().expect("jobs").push(Arc::clone(&job));
+        // An adopted job is watched on the same rule: it was started by a daemon that is gone, and
+        // nothing here knows whether it was given a deadline.
+        self.liveness.watch(Arc::clone(&job));
         // The record's identity is the whole of the evidence that this is the same process. A
         // pid alone would settle a stranger's job, or keep one running for ever, on a box that had
         // reused the number.
@@ -2007,7 +2339,24 @@ impl ProcessHost for HostProcesses {
         }
         if let Some(j) = self.find(job) {
             self.deadlines.arm(j, after);
+            // A run with a deadline is that deadline's business: the dead check must not end it
+            // first on a clock nobody asked for.
+            self.liveness.spare(job);
         }
+    }
+
+    /// Bound a running job from now, or move the bound it has. Refused by `None` for a job of jobs,
+    /// which carries its branches' own deadlines, and for one that has already ended.
+    fn extend_deadline(&self, job: &JobId, after: Duration) -> Option<Duration> {
+        self.arm_deadline(job, after);
+        // `arm_deadline` is silent about whether it armed anything, so the answer is read back
+        // through `Deadlines::armed_for` rather than assumed: a caller must not announce a
+        // deadline nothing enforces.
+        self.deadlines.armed_for(job).then_some(after)
+    }
+
+    fn take_dead_warning(&self, job: &JobId) -> Option<DeadWarning> {
+        self.liveness.take_warning(job)
     }
 
     /// Take a handle that stands for work running elsewhere ([`Aggregate`]). The name it answers
@@ -2478,6 +2827,9 @@ impl Drop for HostProcesses {
     fn drop(&mut self) {
         // The deadline watchdog goes with its host (see `Deadlines::closed`).
         self.deadlines.close();
+        // And the dead check, for the same reason: a tick that outlived its jobs has nothing to
+        // look at and would keep the host's `Arc` alive for the process's life.
+        self.liveness.close();
         let session = self.session.lock().expect("session scope").clone();
         if let Some(s) = session {
             let _ = self.tree.end(&s);
@@ -2688,6 +3040,265 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
 
     use super::*;
 
+    /// The dead check's rule, both sides of both edges: a job that is printing or burning CPU is
+    /// never ended, a silent one is warned about once at four fifths of the window and ended only
+    /// when the whole window has gone. Pure, so a window can be a number rather than a wait.
+    #[test]
+    fn a_job_is_ended_only_when_neither_output_nor_cpu_has_moved_for_the_whole_window() {
+        let w = Duration::from_secs(1800);
+        assert_eq!(step(true, Duration::from_secs(1799), w, false), Step::Alive);
+        assert_eq!(step(true, w, w, true), Step::Alive);
+        // The warning, once: at four fifths exactly, and not before it.
+        assert_eq!(
+            step(false, Duration::from_secs(1439), w, false),
+            Step::Alive
+        );
+        assert_eq!(step(false, Duration::from_secs(1440), w, false), Step::Warn);
+        assert_eq!(step(false, Duration::from_secs(1700), w, true), Step::Alive);
+        // And the end, at the window and not a millisecond before it.
+        assert_eq!(
+            step(false, w - Duration::from_millis(1), w, true),
+            Step::Alive
+        );
+        assert_eq!(step(false, w, w, true), Step::Dead);
+    }
+
+    /// A tree of directories this test owns. The dead check reads `cpu.stat` off a scope's PATH, so
+    /// a directory with a number in it is a cgroup as far as the rule is concerned, and `end` only
+    /// records that it was asked. This is how the mechanism is measured on a box whose own cgroup
+    /// subtree is not delegated: real `Job`s, the real tick thread, real files.
+    struct FakeTree {
+        root: PathBuf,
+        ended: Mutex<Vec<String>>,
+    }
+
+    impl ScopeTree for FakeTree {
+        fn describe(&self) -> String {
+            "a test's directories".into()
+        }
+
+        fn open(
+            &self,
+            kind: ScopeKind,
+            name: &str,
+            _parent: Option<&ScopeId>,
+        ) -> Result<ScopeId, ExecError> {
+            Ok(ScopeId {
+                kind,
+                name: name.into(),
+                path: self.root.join(name),
+            })
+        }
+
+        fn members(&self, _scope: &ScopeId) -> Result<Vec<u32>, ExecError> {
+            Ok(Vec::new())
+        }
+
+        fn end(&self, scope: &ScopeId) -> Reaping {
+            self.ended
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(scope.name.clone());
+            Reaping {
+                scope: scope.clone(),
+                at: SystemTime::now(),
+                mechanism: "a test's directories",
+                observed: Vec::new(),
+                survivors: Vec::new(),
+                waited: Duration::ZERO,
+                removed: false,
+                note: None,
+            }
+        }
+
+        fn migrate(&self, _from: &ScopeId, _to: &ScopeId) -> Result<Migration, ExecError> {
+            Err(ExecError::NoScopes("a test tree moves nothing".into()))
+        }
+
+        fn list(&self) -> Vec<ScopeId> {
+            Vec::new()
+        }
+    }
+
+    /// A directory named after a scope, with this many microseconds of CPU in it.
+    fn a_scope(tree: &Arc<FakeTree>, name: &str, usec: u64) -> ScopeId {
+        let path = tree.root.join(name);
+        std::fs::create_dir_all(&path).expect("a directory");
+        std::fs::write(path.join("cpu.stat"), format!("usage_usec {usec}\n")).expect("a clock");
+        ScopeId {
+            kind: ScopeKind::Session,
+            name: name.into(),
+            path,
+        }
+    }
+
+    /// A job on a scope, with no process behind it: the dead check reads the job's clock off the
+    /// scope and the job's output off its capture, and those are the only two things it looks at.
+    fn a_job(scope: &ScopeId) -> Arc<Job> {
+        Arc::new(Job::new(
+            JobId::next(),
+            "sleep 300".into(),
+            None,
+            Lifetime {
+                scope: scope.clone(),
+                owner: scope.clone(),
+                background: Some(Backgrounding::Asked),
+            },
+            ".".into(),
+            0,
+            DEFAULT_CAPTURE_BYTES,
+            super::super::jobs::Stdin::none(),
+        ))
+    }
+
+    /// A clock that never moves is a dead job: the check ends it, says so, and records why.
+    #[test]
+    fn a_job_whose_cpu_and_output_never_move_is_ended_as_dead() {
+        let root = std::env::temp_dir().join(format!("letibot-dead-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let tree = Arc::new(FakeTree {
+            root: root.clone(),
+            ended: Mutex::new(Vec::new()),
+        });
+        let liveness = Liveness::new(Arc::clone(&tree) as Arc<dyn ScopeTree>);
+        liveness.set_window(Some(Duration::from_millis(300)));
+        let scope = a_scope(&tree, "j-dead", 100);
+        let job = a_job(&scope);
+        liveness.watch(Arc::clone(&job));
+        let until = Instant::now() + Duration::from_secs(10);
+        while job.state().is_running() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!job.state().is_running(), "the dead check never fired");
+        match job.state() {
+            JobState::Killed { by } => assert_eq!(by, DEAD_KILL),
+            other => panic!("a dead job must say so: {}", other.word()),
+        }
+        let ended = liveness.ended();
+        assert_eq!(ended.len(), 1, "one record, one job: {ended:?}");
+        assert!(
+            ended[0].silent_for >= Duration::from_millis(300),
+            "ended after {:?}, before the window it was measured against",
+            ended[0].silent_for
+        );
+        assert_eq!(
+            tree.ended.lock().unwrap().as_slice(),
+            ["j-dead".to_string()],
+            "the job's scope was the one ended"
+        );
+        // And nothing is left watching it: a job that ended is not a job to keep looking at.
+        liveness.scan(tree.as_ref(), Duration::from_millis(300));
+        assert_eq!(liveness.ended().len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The case the rule exists for: a job that is burning CPU or printing is WORKING, and neither
+    /// a window nor the end of one may end it. Two jobs, one signal each.
+    #[test]
+    fn a_job_that_burns_cpu_or_keeps_printing_is_never_ended() {
+        let root = std::env::temp_dir().join(format!("letibot-alive-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let tree = Arc::new(FakeTree {
+            root: root.clone(),
+            ended: Mutex::new(Vec::new()),
+        });
+        let liveness = Liveness::new(Arc::clone(&tree) as Arc<dyn ScopeTree>);
+        liveness.set_window(Some(Duration::from_millis(300)));
+        // One job whose CPU climbs, and one that says something now and then.
+        let busy = a_scope(&tree, "j-busy", 0);
+        let burning = a_job(&busy);
+        let talking = a_job(&a_scope(&tree, "j-talking", 100));
+        liveness.watch(Arc::clone(&burning));
+        liveness.watch(Arc::clone(&talking));
+        let clock = busy.path.join("cpu.stat");
+        let until = Instant::now() + Duration::from_millis(1200);
+        let mut usec = 0u64;
+        while Instant::now() < until {
+            usec += 1_000;
+            std::fs::write(&clock, format!("usage_usec {usec}\n")).unwrap();
+            talking.capture.lock().expect("capture").push(b"tick\n");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            burning.state().is_running(),
+            "a job burning CPU was ended as dead: {}",
+            burning.state().word()
+        );
+        assert!(
+            talking.state().is_running(),
+            "a job that is printing was ended as dead: {}",
+            talking.state().word()
+        );
+        assert!(liveness.ended().is_empty(), "nothing was ended");
+        assert!(tree.ended.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The warning is owed once, at four fifths of the window, and it is TAKEN: a watcher that polls
+    /// says it one time.
+    #[test]
+    fn the_dead_checks_warning_comes_once_and_is_taken_once() {
+        let root = std::env::temp_dir().join(format!("letibot-warn-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let tree = Arc::new(FakeTree {
+            root: root.clone(),
+            ended: Mutex::new(Vec::new()),
+        });
+        let liveness = Liveness::new(Arc::clone(&tree) as Arc<dyn ScopeTree>);
+        let window = Duration::from_millis(1500);
+        liveness.set_window(Some(window));
+        let job = a_job(&a_scope(&tree, "j-warn", 100));
+        liveness.watch(Arc::clone(&job));
+        let until = Instant::now() + Duration::from_secs(10);
+        while liveness.warnings().is_empty() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let warnings = liveness.warnings();
+        assert_eq!(warnings.len(), 1, "one warning per job: {warnings:?}");
+        assert_eq!(warnings[0].job, job.id);
+        assert_eq!(warnings[0].window, window);
+        assert!(
+            warnings[0].silent_for * 5 >= window * 4 && warnings[0].silent_for < window,
+            "warned at {:?}, which is not between four fifths and the window",
+            warnings[0].silent_for
+        );
+        assert!(liveness.take_warning(&job.id).is_some(), "it is said once");
+        assert!(
+            liveness.take_warning(&job.id).is_none(),
+            "and never said twice for one job"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A job somebody has bounded is not the dead check's business, and one the operator turned the
+    /// check off for is nobody's: two ways for a silent-but-working job to be left alone.
+    #[test]
+    fn a_bounded_job_and_a_host_with_the_check_off_are_left_alone() {
+        let root = std::env::temp_dir().join(format!("letibot-spared-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let tree = Arc::new(FakeTree {
+            root: root.clone(),
+            ended: Mutex::new(Vec::new()),
+        });
+        let liveness = Liveness::new(Arc::clone(&tree) as Arc<dyn ScopeTree>);
+        liveness.set_window(Some(Duration::from_millis(300)));
+        let bounded = a_job(&a_scope(&tree, "j-bounded", 100));
+        liveness.watch(Arc::clone(&bounded));
+        liveness.spare(&bounded.id);
+        // And the check off altogether.
+        liveness.set_window(None);
+        let unwatched = a_job(&a_scope(&tree, "j-nobody", 100));
+        liveness.watch(Arc::clone(&unwatched));
+        std::thread::sleep(Duration::from_millis(1200));
+        assert!(
+            bounded.state().is_running(),
+            "a bounded job was ended as dead"
+        );
+        assert!(unwatched.state().is_running(), "the check is off");
+        assert!(liveness.ended().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn the_parent_chain_is_read_past_a_comm_containing_spaces() {
         // The parse everybody gets wrong once: field 2 is `(name)` and the name may
@@ -2760,6 +3371,70 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         assert!(
             started.is_empty() || alive(&started) < started.len(),
             "no deadline thread ended after its host was dropped: {started:?}"
+        );
+    }
+
+    /// The threads a kernel name prefixes, by tid. The dead check's name is 15 bytes in `comm`,
+    /// like the watchdog's, so the prefix is the whole of it that can be read back.
+    fn threads_named(prefix: &str) -> std::collections::BTreeSet<String> {
+        std::fs::read_dir("/proc/self/task")
+            .map(|d| {
+                d.flatten()
+                    .filter(|t| {
+                        std::fs::read_to_string(t.path().join("comm"))
+                            .is_ok_and(|c| c.trim_end().starts_with(prefix))
+                    })
+                    .map(|t| t.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// A dropped host takes its dead check with it. It is a tick loop holding an `Arc` of its own, so
+    /// a leaked one would be a thread per `HostProcesses` for the life of the process, waking every
+    /// minute to look at jobs that no longer exist.
+    #[test]
+    fn a_dropped_host_takes_its_dead_check_with_it() {
+        let before = threads_named("letibot-liven");
+        let h =
+            HostProcesses::with_tree("/tmp", Box::new(super::super::scope::NoScopes::new("test")));
+        let weak = Arc::downgrade(&h.liveness);
+        let mut started: Vec<String> = Vec::new();
+        let named_by = Instant::now() + Duration::from_secs(5);
+        while started.is_empty() && Instant::now() < named_by {
+            started = threads_named("letibot-liven")
+                .difference(&before)
+                .cloned()
+                .collect();
+            if started.is_empty() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        assert!(
+            !started.is_empty() || cfg!(not(target_os = "linux")),
+            "a host starts a dead check"
+        );
+        drop(h);
+        let until = Instant::now() + Duration::from_secs(10);
+        while weak.upgrade().is_some() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            weak.upgrade().is_none(),
+            "**the dead check outlived its host** — the thread still holds it, so it keeps waking \
+             for jobs nobody has any more"
+        );
+        let until = Instant::now() + Duration::from_secs(10);
+        let alive = |started: &[String]| {
+            let now = threads_named("letibot-liven");
+            started.iter().filter(|t| now.contains(*t)).count()
+        };
+        while !started.is_empty() && alive(&started) == started.len() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            started.is_empty() || alive(&started) < started.len(),
+            "no dead-check thread ended after its host was dropped: {started:?}"
         );
     }
 

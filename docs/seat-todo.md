@@ -47,7 +47,13 @@ v41 gains the table at its next open, empty.
 - **`job`** - an open job of one of those packages, by handle (`j…`, from `leticode_status`'s
   `jobs_open`, `crates/bridge/src/head.rs:488`) or by the name it was started under. The seat's job
   table is the union of its packages' open jobs, so the tool's own resolution
-  (`crates/tools/src/builtins/todo.rs:2302`) runs unchanged.
+  (`crates/tools/src/builtins/todo.rs:2302`) runs unchanged. It is not what the check SUGGESTS: a
+  package's job is named as that package's (`K1 is running j83509`) and what a row whose package is
+  busy is offered is that package's TURN, which is a `child` wait (R156).
+- **`external`** - something outside letibot, in the seat's own words: a review on a forge, a
+  deploy, a person's other tool. `wait_on`'s `"external": "…"` or a `needs` entry of that kind.
+  Nothing here can see it end, so the check is silent on that row until the row moves - the seat
+  clears it with `"detach": true` - and the board draws `waits on <what>` (R156).
 - **`operator`** - a question the seat asks a person. There is no card: a card is a head's frame and
   a seat has no head. The row's question is what the nag names, the seat asks in the conversation,
   and the answer arrives by `todo_answer` as the operator's own words, kept on the row as
@@ -58,6 +64,35 @@ v41 gains the table at its next open, empty.
   its own rows resolves as it does in a session, and the check already honours a `Room` edge
   (`crates/tools/src/builtins/todo.rs:1014`). Nothing writes one for a seat yet: answer waits
   (`docs/answer-waits.md`, R136) are what will, and when they do this file does not change.
+
+## A seat's own jobs, and a process it did not start
+
+Two waits a seat has that a session does not need, because nothing else here can watch them
+(R156, extended):
+
+- **`seat_job_start {argv, cwd?, name?}`** runs a command as the SEAT's job - no shell, output to a
+  file under the bridge's rundir, the row in the store's `seat_job` table under the seat's handle.
+  It answers a `j…` handle, and `todo_write {'wait_on': [{'content': …, 'job': 'j9'}]}` takes it:
+  the seat's open jobs are part of its job table, so the two agree. `seat_jobs` lists them with the
+  state each ended in; `seat_job_kill` sends SIGKILL to that exact process. A job's end settles the
+  row AND pushes a `job_ended` channel frame (`meta.source: seat`), so the seat is told the way it
+  is told about a package's job.
+- **`wait_on {'pid': N}`** waits on a process this host is already running - a gate somebody
+  started by hand. The edge records the pid AND `/proc/<pid>/stat`'s start time, read when the row
+  is written: after the number is reused, the pair no longer matches, which is the whole of what
+  makes the wait exact. The seat's watcher reads the process table every pass and stops being
+  quiet on the row when the process goes.
+
+Neither kind is a session's: a daemon has its own process host, and a session that wrote one would
+be asking a runtime that cannot see it.
+
+## The once-per-change key is the PLAN
+A seat is nagged once per change of its plan - its rows, their statuses and their waits
+(`the_plan_as_a_key`, `crates/tools/src/builtins/todo/nag.rs`) - and not once per change of the
+sentence it is spoken in. The sentence names the packages' running jobs, so a held package starting
+or ending one rewrote it: twenty of those in fifteen minutes were twenty checks of one unchanged
+row. `TodoNagClock::keyed_by_plan` is the switch, `said_plan` records a delivery by the plan,
+and the repeat ladder paces the rest. A session keeps its sentence - its own jobs are its own work.
 
 ## A package is a child while its turn is in flight
 

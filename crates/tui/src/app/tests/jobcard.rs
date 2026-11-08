@@ -97,8 +97,15 @@ fn the_notice_parser_reads_the_notice_without_bytes_or_own_command() {
         first.ends_with("· started by s-child · sleep 3; echo done"),
         "{first}"
     );
+    // A kill ends the work and not the output: the card says so, so a reader of the card cannot
+    // take `killed by job_kill` for a finish either (R160).
     assert!(
-        second.contains("ended · output not readable here"),
+        jobs[0].partial,
+        "a killed job's notice says the output is partial"
+    );
+    assert!(
+        second.contains("ended early · output is partial")
+            && second.contains("output not readable here"),
         "{second}"
     );
 }
@@ -167,6 +174,13 @@ fn a_notice_shape_the_parser_does_not_know_is_refused() {
             ONE.replace(
                 "cap\nOutput:",
                 "cap\n  and something the daemon started saying\nOutput:",
+            ),
+        ),
+        (
+            "a line after the partial sentence",
+            THEIRS_NOW.replace(
+                "one you no longer want.\n",
+                "one you no longer want.\n    and something else\n",
             ),
         ),
     ] {

@@ -143,7 +143,7 @@ pub fn as_a_write(
 /// The one line a command that writes a file through a heredoc gets when it is not converted, which is
 /// the far more common case. Conservative on purpose: `cargo build | tee out.log` writes a file and is
 /// not this, since it is a program doing its job rather than file contents written by hand.
-pub fn nudge(command: &str) -> Option<&'static str> {
+pub fn nudge(command: &str, tools: crate::runtime::WritesWith) -> Option<String> {
     let normalised = shell::normalise(command);
     let mut heredoc = false;
     let mut to_a_file = false;
@@ -158,12 +158,33 @@ pub fn nudge(command: &str) -> Option<&'static str> {
             }
         }
     }
-    (heredoc && to_a_file).then_some(
+    if !(heredoc && to_a_file) {
+        return None;
+    }
+    Some(format!(
         "this command writes a file's contents through a heredoc, which leaves no diff, \
-         no path for the gate to judge and no record of the edit — call `write` with the \
-         contents (or `edit` for part of a file) so the change is adjudicated, recorded \
-         and drawn.",
-    )
+         no path for the gate to judge and no record of the edit — {}",
+        tools.advice()?
+    ))
+}
+
+/// The directory a leading `cd <dir> &&` names, when the command opens with one. A shell's own
+/// `cd` is invisible from outside, and this is the shape a command that writes somewhere else takes.
+pub fn leading_cd(command: &str) -> Option<String> {
+    let normalised = shell::normalise(command);
+    let (first, rest) = normalised.stages.split_first()?;
+    if rest.is_empty() {
+        return None;
+    }
+    // `&&` and `;` both run what follows in this same shell, so the directory still holds; `||`
+    // does not, since a `cd` that failed leaves the shell where it was.
+    if !rest
+        .iter()
+        .all(|s| matches!(s.context.as_slice(), [] | [Context::AndThen]))
+    {
+        return None;
+    }
+    cd_directory(first)
 }
 
 /// The directory `cd <dir>` names, when that stage is nothing but that.
@@ -506,26 +527,84 @@ mod tests {
 
     #[test]
     fn the_nudge_is_for_a_heredoc_that_reaches_a_file() {
-        assert!(nudge("mkdir -p d && cat > d/f <<'EOF'\nx\nEOF").is_some());
-        assert!(nudge("cat > f <<EOF\n$x\nEOF").is_some());
+        let both = crate::runtime::WritesWith {
+            edit: true,
+            write: true,
+        };
+        assert!(nudge("mkdir -p d && cat > d/f <<'EOF'\nx\nEOF", both).is_some());
+        assert!(nudge("cat > f <<EOF\n$x\nEOF", both).is_some());
         // Converted, but still the same shape: the runtime is what declines to say
         // both, and it can only do that if this answers about the shape.
-        assert!(nudge("cat > f <<'EOF'\nx\nEOF").is_some());
+        assert!(nudge("cat > f <<'EOF'\nx\nEOF", both).is_some());
         // Nothing was written through a heredoc and a redirect together.
-        assert!(nudge("cat <<'EOF' | bash\nx\nEOF").is_none());
-        assert!(nudge("echo hi > f").is_none());
-        assert!(nudge("cargo build 2>&1 | tee out.log").is_none());
-        assert!(nudge("git status").is_none());
+        assert!(nudge("cat <<'EOF' | bash\nx\nEOF", both).is_none());
+        assert!(nudge("echo hi > f", both).is_none());
+        assert!(nudge("cargo build 2>&1 | tee out.log", both).is_none());
+        assert!(nudge("git status", both).is_none());
     }
 
     #[test]
     fn the_nudge_is_one_line_and_names_both_tools() {
-        let line = nudge("cat > f <<'EOF'\nx\nEOF").unwrap();
+        let line = nudge(
+            "cat > f <<'EOF'\nx\nEOF",
+            crate::runtime::WritesWith {
+                edit: true,
+                write: true,
+            },
+        )
+        .unwrap();
         assert!(!line.contains('\n'), "{line:?}");
         assert!(
             line.contains("`write`") && line.contains("`edit`"),
             "{line}"
         );
+    }
+
+    /// Advice a seat cannot take is not advice: the nudge names the writing tools this seat was
+    /// given, and a seat with neither is told nothing at all.
+    #[test]
+    fn the_nudge_names_only_the_tools_the_seat_has() {
+        let command = "cat > f <<'EOF'\nx\nEOF";
+        let write_only = nudge(
+            command,
+            crate::runtime::WritesWith {
+                edit: false,
+                write: true,
+            },
+        )
+        .unwrap();
+        assert!(write_only.contains("`write`"), "{write_only}");
+        assert!(!write_only.contains("`edit`"), "{write_only}");
+        assert!(
+            nudge(
+                command,
+                crate::runtime::WritesWith {
+                    edit: false,
+                    write: false,
+                },
+            )
+            .is_none(),
+            "a seat with no writing tool was told to write"
+        );
+    }
+
+    /// The directory a command opens with, which is the one a shell's own `cd` would leave it in.
+    #[test]
+    fn a_leading_cd_is_the_directory_the_command_runs_in() {
+        assert_eq!(
+            leading_cd("cd /work/arangodb && python3 -c 'print(1)'").as_deref(),
+            Some("/work/arangodb")
+        );
+        // `;` runs in the same shell, so the directory still holds.
+        assert_eq!(
+            leading_cd("cd d; sed -i s/a/b/ f.txt").as_deref(),
+            Some("d")
+        );
+        // `||` does not: a `cd` that failed leaves the shell where it was.
+        assert!(leading_cd("cd d || python3 -c 'print(1)'").is_none());
+        assert!(leading_cd("python3 -c 'print(1)' && cd d").is_none());
+        assert!(leading_cd("cd").is_none());
+        assert!(leading_cd("cd $HOME && ls").is_none());
     }
 
     #[test]

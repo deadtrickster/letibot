@@ -599,7 +599,14 @@ impl Tool for JobOutput {
                     view.state.word()
                 )
             } else {
-                format!("`{label}` {} and wrote nothing at all.", view.state.word())
+                format!(
+                    "`{label}` {} and wrote nothing at all.{}",
+                    view.state.word(),
+                    match view.state.partial() {
+                        Some(p) => format!(" {p}"),
+                        None => String::new(),
+                    }
+                )
             };
             return Invocation::abstained(
                 format!("`{label}` has produced no output"),
@@ -608,7 +615,7 @@ impl Tool for JobOutput {
         }
 
         let mut inv = Invocation::ok(format!(
-            "{}\n[{} — {}]\n{}{}",
+            "{}\n[{} — {}]\n{}{}{}",
             slice.text(),
             view.state.word(),
             denominator,
@@ -619,6 +626,12 @@ impl Tool for JobOutput {
                 )
             } else {
                 String::new()
+            },
+            // A killed job's window is what it had written when the harness ended it, not a
+            // finish: said here because this is the reader a model takes for the answer.
+            match view.state.partial() {
+                Some(p) => format!("`{label}`: {p}\n"),
+                None => String::new(),
             },
             // The window is bounded and the file is not, so the reader is told where the rest
             // is. Named as a place the bytes are, not as a tool: a confined session cannot
@@ -823,15 +836,24 @@ fn wait_on_job(
         observe_shell_env(ctx, after.as_ref());
     }
     match waited {
-        Waited::Happened { state, took } => Invocation::ok(format!(
-            "`{label}` {} after {}.\n  command: {}\n  output:  {} bytes — read it with \
-             `job_output` job=\"{id}\"{}",
-            state.map(|s| s.word()).unwrap_or_default(),
-            secs(took),
-            clip(&before.command, 160),
-            after.as_ref().map(|v| v.produced).unwrap_or(0),
-            memory_line(after.as_ref())
-        )),
+        Waited::Happened { state, took } => {
+            // A job that was killed wrote what it wrote: the wait is the reader that says an
+            // ending, so it says what kind of ending this is.
+            let partial = state
+                .as_ref()
+                .and_then(|s| s.partial())
+                .or_else(|| after.as_ref().and_then(|v| v.state.partial()));
+            Invocation::ok(format!(
+                "`{label}` {} after {}.\n  command: {}\n  output:  {} bytes — read it with \
+                 `job_output` job=\"{id}\"{}{}",
+                state.map(|s| s.word()).unwrap_or_default(),
+                secs(took),
+                clip(&before.command, 160),
+                after.as_ref().map(|v| v.produced).unwrap_or(0),
+                memory_line(after.as_ref()),
+                partial.map(|p| format!("\n  {p}")).unwrap_or_default()
+            ))
+        }
         // A deadline is its own outcome and carries PROGRESS, not a liveness bit.
         // `ToolOutcome::Timeout` exists precisely so this cannot be mistaken for a
         // completion the caller can build on.
@@ -981,6 +1003,122 @@ fn wait_on_scope(
             ),
         ),
         Err(e) => Invocation::failed(e.to_string(), String::new()),
+    }
+}
+
+// -------------------------------------------------------------- job_extend
+
+/// The longest deadline `job_extend` accepts: a week. Past that the number is a typo, and a caller
+/// asking for one is asking to forget the job rather than to wait for it.
+pub const MAX_EXTEND: Duration = Duration::from_secs(7 * 24 * 3600);
+
+/// What `job_extend` gives a job that asked for no number: an hour, which is longer than any turn
+/// and shorter than a shift.
+pub const DEFAULT_EXTEND: Duration = Duration::from_secs(3600);
+
+/// `job_extend` bounds a running job from now. The way out of the harness's own two clocks: a
+/// background job starts with no deadline at all, and one that has gone quiet enough to be called
+/// dead can be told to expect longer instead of being ended at the end of its window.
+pub struct JobExtend;
+
+impl Tool for JobExtend {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "job_extend",
+            "Give a running job a hard deadline, or move the one it already has. **A \
+             background job has NO deadline of its own** — it runs until it ends, until you stop \
+             it with `job_kill`, or until the dead check ends it (no output and no CPU for \
+             `[exec] job_dead_after_seconds`, thirty minutes by default). `deadline` is seconds \
+             from now and is a hard limit: when it passes the job is killed and its result says \
+             its output is partial. A job with a deadline is not ended by the dead check, so this \
+             is also the answer to *it is silent but working — leave it alone*. Read what a job \
+             has written with `job_output`; `job_list` shows what is running.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "job": {"type": "string", "description": "The job to bound: its id (`j65`) or the name the agent stated when it backgrounded the work (`release-build`)."},
+                    "deadline": {"type": "integer", "description": "Seconds from now. Defaults to 3600 (an hour), at most 604800 (a week). The job is killed when it passes, and the result says the output is partial."}
+                },
+                "required": ["job"]
+            }),
+            // It decides when this session's work is stopped. That is an effect on processes, not
+            // a read of them, so it is declared as one.
+            Access::Exec,
+        )
+    }
+
+    fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
+        let Some(host) = ctx.backend.processes() else {
+            return no_process_host(ctx);
+        };
+        let Some(asked) = args.get("job").and_then(|v| v.as_str()) else {
+            return Invocation::failed(
+                "job_extend needs a job",
+                "call it again with `job` set to a job id or the name you gave it. `job_list` \
+                 shows what is running.",
+            );
+        };
+        let view = match resolve_job(host, asked) {
+            Ok(v) => v,
+            Err(inv) => return inv,
+        };
+        if !view.state.is_running() {
+            return Invocation::not_run(
+                format!("`{}` has already {}", view.label(), view.state.word()),
+                format!(
+                    "An ended job has no clock to move, so nothing was changed. Its output is \
+                     what it wrote: `job_output` with job=\"{}\" reads it.",
+                    view.id.0
+                ),
+            );
+        }
+        let wanted = match args.get("deadline") {
+            None | Some(Value::Null) => DEFAULT_EXTEND.as_secs(),
+            Some(v) => match v.as_u64() {
+                Some(0) => {
+                    return Invocation::failed(
+                        "`deadline` is 0",
+                        "A deadline of zero would kill the job now, which is what `job_kill` is \
+                         for. Give it seconds (`deadline: 3600`), or leave it out for an hour.",
+                    );
+                }
+                Some(s) => s,
+                None => {
+                    return Invocation::failed(
+                        format!("`deadline` is `{v}`, which is not a number of seconds"),
+                        "Give `deadline` as a whole number of seconds from now, or leave it out \
+                         for an hour.",
+                    );
+                }
+            },
+        };
+        let want = Duration::from_secs(wanted).min(MAX_EXTEND);
+        match host.extend_deadline(&view.id, want) {
+            Some(after) => Invocation::ok(format!(
+                "`{}` now has a hard deadline {} from now. It is not ended by the dead check any \
+                 more: it runs until it ends, or until the deadline passes — and then its result \
+                 says its output is partial. `job_kill` ends it at once. It had written {} bytes \
+                 when this call was made.\n",
+                view.label(),
+                secs(after),
+                view.produced
+            )),
+            // A job of jobs has no clock of its own: its branches carry their deadlines on the
+            // machines that run them, and a second answer here would be one too many.
+            None => Invocation::failed(
+                format!(
+                    "`{}` carries no deadline this session can move",
+                    view.label()
+                ),
+                format!(
+                    "Nothing was changed. `{}` is a job of jobs — each branch carries its own \
+                     deadline on the machine that runs it, so the clock to move is that one. \
+                     `job_kill` ends every branch; `job_output` reads the per-host progress; \
+                     `job_wait` blocks on the table.\n",
+                    view.label()
+                ),
+            ),
+        }
     }
 }
 
@@ -1876,6 +2014,40 @@ mod tests {
             runner.0.lock().expect("recorded").as_slice(),
             ["s-1-sub-1".to_string()],
             "the name reached the runner as its handle, and the shared name reached nothing"
+        );
+    }
+
+    /// `job_extend` is the way out of the harness's own clock, and its description says which
+    /// clock that is and what the caller gets: a hard limit, not a liveness hint.
+    #[test]
+    fn the_extend_description_names_the_dead_check_and_the_hard_limit() {
+        let s = JobExtend.schema();
+        assert_eq!(s.access, Access::Exec, "it decides when work is stopped");
+        assert!(
+            s.description.contains("NO deadline of its own"),
+            "{}",
+            s.description
+        );
+        assert!(
+            s.description.contains("job_dead_after_seconds"),
+            "{}",
+            s.description
+        );
+        assert!(
+            s.description.contains("output is partial"),
+            "{}",
+            s.description
+        );
+        assert_eq!(crate::schema::lint_description(&s.description), vec![]);
+        // The two numbers a caller needs, with the ceiling said where it is chosen.
+        assert_eq!(MAX_EXTEND, Duration::from_secs(7 * 24 * 3600));
+        assert_eq!(DEFAULT_EXTEND, Duration::from_secs(3600));
+        let deadline = &s.parameters["properties"]["deadline"];
+        assert!(
+            deadline["description"]
+                .as_str()
+                .is_some_and(|d| d.contains("3600") && d.contains("604800")),
+            "{deadline}"
         );
     }
 }

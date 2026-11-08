@@ -168,7 +168,10 @@ fn review_why(f: &Facts, r: &ReviewRow) -> String {
                 .reviews
                 .iter()
                 .filter(|x| x.state == ReviewState::Waiting && x.id != r.id)
-                .filter(|x| (x.kind != ReviewKind::Target, x.created_ms) < (r.kind != ReviewKind::Target, r.created_ms))
+                .filter(|x| {
+                    (x.kind != ReviewKind::Target, x.created_ms)
+                        < (r.kind != ReviewKind::Target, r.created_ms)
+                })
                 .count();
             let tried = if r.attempts > 0 {
                 format!(
@@ -200,14 +203,21 @@ fn review_why(f: &Facts, r: &ReviewRow) -> String {
         ),
         ReviewState::Blocked => format!(
             "the review could not run: {}. `/queue restart {}` (operator) puts it back in line.",
-            capacity::gist(if r.failure.is_empty() { &r.evidence } else { &r.failure }),
+            capacity::gist(if r.failure.is_empty() {
+                &r.evidence
+            } else {
+                &r.failure
+            }),
             r.id
         ),
         ReviewState::Rejected => format!(
             "refused{}: {}. It returns to the branch's author, and re-enters review when the \
              branch moves past {} or the operator restarts it.",
             by(r),
-            r.reasons.first().map(String::as_str).unwrap_or("no reason recorded"),
+            r.reasons
+                .first()
+                .map(String::as_str)
+                .unwrap_or("no reason recorded"),
             short_sha(r.reviewed_sha.as_deref().unwrap_or(&r.head_sha))
         ),
         ReviewState::CannotDecide => format!(
@@ -288,13 +298,20 @@ fn merge_why(f: &Facts, m: &MergeRow) -> String {
                     m.target
                 )
             } else {
-                format!("{ahead} landing(s) ahead of it on `{}`; one gate runs at a time.", m.target)
+                format!(
+                    "{ahead} landing(s) ahead of it on `{}`; one gate runs at a time.",
+                    m.target
+                )
             }
         }
         MergeState::Gating => format!(
             "leased to {} since {}: rebasing onto `{}` and running the gate. Green lands and \
              pushes it, red fails it.",
-            if m.owner.is_empty() { "the queue" } else { &m.owner },
+            if m.owner.is_empty() {
+                "the queue"
+            } else {
+                &m.owner
+            },
             since(f, m.state_ms),
             m.target
         ),
@@ -344,10 +361,18 @@ fn leases(f: &Facts) -> String {
             since(f, l.acquired_ms),
             since(f, l.heartbeat_ms),
             until(f, expiry),
-            if f.now >= expiry { " STALE: another daemon may take it." } else { "" }
+            if f.now >= expiry {
+                " STALE: another daemon may take it."
+            } else {
+                ""
+            }
         ));
     }
-    for r in f.reviews.iter().filter(|r| r.state == ReviewState::Reviewing) {
+    for r in f
+        .reviews
+        .iter()
+        .filter(|r| r.state == ReviewState::Reviewing)
+    {
         out.push_str(&format!(
             "  review claim `{}`: {} since {}, until {}; guards this entry from a second reviewer\n",
             r.id,
@@ -360,7 +385,11 @@ fn leases(f: &Facts) -> String {
         out.push_str(&format!(
             "  landing claim `{}`: {} since {}; guards the repository's one gate\n",
             m.id,
-            if m.owner.is_empty() { "the queue" } else { &m.owner },
+            if m.owner.is_empty() {
+                "the queue"
+            } else {
+                &m.owner
+            },
             since(f, m.state_ms)
         ));
     }
@@ -383,10 +412,18 @@ fn next(f: &Facts) -> String {
         .collect();
     let mut out = format!(
         "target health: {}\n",
-        if health.is_empty() { "never gated".into() } else { health.join("; ") }
+        if health.is_empty() {
+            "never gated".into()
+        } else {
+            health.join("; ")
+        }
     );
-    let now = if !f.served() && (f.reviews.iter().any(|r| parked(r.state) && r.state.is_open())
-        || f.merges.iter().any(|m| m.state.is_open()))
+    let now = if !f.served()
+        && (f
+            .reviews
+            .iter()
+            .any(|r| parked(r.state) && r.state.is_open())
+            || f.merges.iter().any(|m| m.state.is_open()))
     {
         "nothing: no daemon holds the lease. Starting `letibot` in this repository takes it; a \
          stale lease is taken over after 90 s."
@@ -413,17 +450,28 @@ fn next(f: &Facts) -> String {
         .filter(|m| m.state == MergeState::Queued)
         .min_by_key(|m| (m.fixes.is_none(), m.created_ms))
     {
-        format!("`{}` is gated and landed on `{}` next pass, if its target is green.", m.id, m.target)
+        format!(
+            "`{}` is gated and landed on `{}` next pass, if its target is green.",
+            m.id, m.target
+        )
     } else if let Some(r) = f
         .reviews
         .iter()
         .filter(|r| r.state == ReviewState::Waiting)
         .min_by_key(|r| (r.kind != ReviewKind::Target, r.created_ms))
     {
-        format!("`{}` is claimed for review as soon as a reviewer slot is free.", r.id)
+        format!(
+            "`{}` is claimed for review as soon as a reviewer slot is free.",
+            r.id
+        )
     } else if f.reviews.iter().any(|r| r.state == ReviewState::Reviewing) {
         "the reviewers' verdicts arrive; approval hands the entry to the landing queue.".into()
-    } else if f.reviews.iter().any(|r| matches!(r.state, ReviewState::Rejected | ReviewState::CannotDecide | ReviewState::Blocked)) {
+    } else if f.reviews.iter().any(|r| {
+        matches!(
+            r.state,
+            ReviewState::Rejected | ReviewState::CannotDecide | ReviewState::Blocked
+        )
+    }) {
         "nothing runs by itself: the parked entries wait for their author or the operator.".into()
     } else {
         "nothing: the queue is idle. A new branch enters with `queue` `enqueue`.".into()
@@ -441,9 +489,7 @@ pub fn read(store: &Store, repo: &str, cap: Option<usize>) -> Result<String, Str
 mod tests {
     use super::*;
     use crate::mergequeue::serve::tests::TempDir;
-    use letibot_tokencore::store::{
-        Approval, LeaseClaim, MergePriority, Move, NewReview,
-    };
+    use letibot_tokencore::store::{Approval, LeaseClaim, MergePriority, Move, NewReview};
 
     fn review(store: &Store, id: &str, state: ReviewState) {
         store
@@ -469,7 +515,13 @@ mod tests {
             .unwrap();
         if state != ReviewState::Waiting {
             store
-                .move_review(id, ReviewState::Waiting, ReviewState::Reviewing, &Move::new("me", "claimed").set("owner", "box/1/2"), 2)
+                .move_review(
+                    id,
+                    ReviewState::Waiting,
+                    ReviewState::Reviewing,
+                    &Move::new("me", "claimed").set("owner", "box/1/2"),
+                    2,
+                )
                 .unwrap();
         }
     }
@@ -537,6 +589,9 @@ mod tests {
             "{said}"
         );
         assert!(said.contains("target health: `main` red"), "{said}");
-        assert!(said.contains("next: nothing lands on `main` until a fix does"), "{said}");
+        assert!(
+            said.contains("next: nothing lands on `main` until a fix does"),
+            "{said}"
+        );
     }
 }

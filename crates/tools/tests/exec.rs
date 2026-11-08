@@ -594,6 +594,7 @@ fn the_exec_surface_of_each_role_is_exactly_what_was_decided() {
 const EXEC_TOOLS: &[&str] = &[
     "bash",
     "job_kill",
+    "job_extend",
     "job_wait",
     "job_list",
     "job_output",

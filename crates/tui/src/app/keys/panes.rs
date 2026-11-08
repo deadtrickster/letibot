@@ -6,7 +6,6 @@ use super::bindings::Act;
 use super::*;
 use crate::app::chat_nav::Jump;
 use crate::ui::panes::queue::{Selected, Verb, verb_moves};
-use letibot_plugin::pane::Act as RowAct;
 use std::ops::ControlFlow;
 
 /// The next stop from `at` in a list of `n`, wrapping - the one rule every list's arrows keep.
@@ -367,62 +366,29 @@ impl App {
         }
     }
 
-    /// Right and left on the session picker: a row with rows under it opens and closes, the gesture
-    /// a tree uses everywhere - and what lets a collapsed default afford to be collapsed. A child's
-    /// left closes its PARENT, so left means back up the tree, not nothing on the row just reached.
+    /// `→` and `←` on the session picker, the gesture a tree uses everywhere. `→` expands the row
+    /// under the cursor and, on a row already expanded, walks into its first row under it; `←`
+    /// collapses the row the cursor is on - the row stays, so the cursor stays with it - and, on a
+    /// collapsed row or a leaf, walks out to the row it is drawn under. Neither closes any row but
+    /// the one under the cursor, which is what keeps `←` from throwing the person out of a tree.
     fn picker_fold(&mut self, open: bool) -> ControlFlow<Option<Action>> {
-        // A row that folds is the row's own act, with this key's direction: the layer says which
-        // rows fold (`enter: {fold: true}`), the head keeps the state, and the two arrows are the
-        // gesture Enter toggles.
-        let Some(row) = self.picker_row() else {
-            return ControlFlow::Continue(());
-        };
-        match &row.enter {
-            Some(RowAct::Fold { .. }) => {
-                self.set_row_fold(&row.id, open);
-                return ControlFlow::Break(None);
-            }
-            // A row with no act on Enter that also cannot fold says nothing rather than
-            // appearing to swallow the key.
-            None if row.session.is_none() => {
-                return ControlFlow::Break(None);
-            }
-            _ => {}
-        }
-        // A session's left is the way back up the tree, which is what the arrows mean on a row
-        // that cannot fold: close the parent when it is drawn on this same list, and otherwise
-        // close the GROUP the row is drawn in - back out of the tree you are in, one level up.
-        let Some(i) = row.session else {
-            return ControlFlow::Break(None);
-        };
-        if open {
-            let id = self.sessions[i].session_id.clone();
-            self.set_row_fold(&id, true);
-            return ControlFlow::Break(None);
-        }
         let rows = self.picker_rows();
-        let at = self.picker_sel.min(rows.len().saturating_sub(1));
-        // The edge a row sits on is its parent WHEN the parent is drawn in the same group: that
-        // is the rule the list was drawn by, and a parent in another group is not an edge here.
-        // Then left closes the parent, otherwise the group the row is a root of.
-        let under_same_group = self.sessions[i]
-            .parent_session_id
-            .clone()
-            .and_then(|parent| {
-                let p = rows.iter().position(|r| {
-                    r.session
-                        .is_some_and(|k| self.sessions[k].session_id == parent)
-                })?;
-                (group_at(&rows, p) == group_at(&rows, at)).then_some(parent)
-            });
-        match under_same_group {
-            Some(parent) => self.set_row_fold(&parent, false),
-            None => {
-                if let Some(group) = group_at(&rows, at) {
-                    let id = rows[group].id.clone();
-                    self.set_row_fold(&id, false);
-                }
-            }
+        if rows.is_empty() {
+            return ControlFlow::Continue(());
+        }
+        let at = self.picker_sel.min(rows.len() - 1);
+        let row = rows[at].clone();
+        // The row's own fold, when the key has one to give: `→` expands a closed row, `←`
+        // collapses an open one. The row itself stays on the list, so the cursor needs no move.
+        if (open && row.folds_open()) || (!open && row.is_open()) {
+            self.set_row_fold(&row.id, open);
+            return ControlFlow::Break(None);
+        }
+        // Nothing to fold this way, so the key walks the tree instead: into the row's first row
+        // for `→`, out to the row it is drawn under for `←`. The ends of the tree are the ends of
+        // the gesture, and the cursor does not leave the list it was on.
+        if let Some(to) = tree_step(&self.sessions, &rows, at, open) {
+            self.picker_sel = to;
         }
         ControlFlow::Break(None)
     }
@@ -679,11 +645,38 @@ impl App {
     }
 }
 
-/// The group line a row is drawn under, as an index into the drawn list - the nearest row ABOVE it
-/// whose Enter folds something. `None` for a list with no group lines at all, which is the family
-/// view and a daemon that holds one kind of session.
-fn group_at(rows: &[crate::app::sessions_pane::Listed], at: usize) -> Option<usize> {
-    rows[..at]
-        .iter()
-        .rposition(|r| matches!(r.enter, Some(letibot_plugin::pane::Act::Fold { .. })))
+/// Where a tree key lands: the first row drawn under `at` for `→`, and the row `at` is drawn under
+/// for `←`. The indent is the answer, and a session's own parent edge is the answer where the
+/// indent cannot give one - it stops at three steps, so a grandchild's parent can be drawn at the
+/// child's own column with no shallower row between them.
+fn tree_step(
+    sessions: &[SessionBrief],
+    rows: &[crate::app::sessions_pane::Listed],
+    at: usize,
+    into: bool,
+) -> Option<usize> {
+    let row = rows.get(at)?;
+    if into {
+        // `→` reaches rows under the cursor only where the drawing put them there: a leaf, drawn
+        // with nothing under it, is where the key stops.
+        if !row.is_open() {
+            return None;
+        }
+        return rows
+            .get(at + 1)
+            .filter(|next| next.depth > row.depth)
+            .map(|_| at + 1)
+            .or_else(|| {
+                rows.iter().position(|r| {
+                    r.session
+                        .and_then(|i| sessions.get(i))
+                        .is_some_and(|s| s.parent_session_id.as_deref() == Some(row.id.as_str()))
+                })
+            });
+    }
+    let above = (0..at).rev().find(|&i| rows[i].depth < row.depth);
+    above.or_else(|| {
+        let parent = sessions.get(row.session?)?.parent_session_id.as_deref()?;
+        rows.iter().position(|r| r.id == parent)
+    })
 }

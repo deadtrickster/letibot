@@ -313,7 +313,14 @@ mod tests {
     /// The model of the queue is in the tool, and says who may move what.
     #[test]
     fn explain_states_the_model_and_the_description_fits() {
-        for word in ["ENTRY", "REVIEW ROW", "LANDING ROW", "VERDICT", "LEASES", "WHO MOVES WHAT"] {
+        for word in [
+            "ENTRY",
+            "REVIEW ROW",
+            "LANDING ROW",
+            "VERDICT",
+            "LEASES",
+            "WHO MOVES WHAT",
+        ] {
             assert!(EXPLAIN.contains(word), "{word}");
         }
         let d = QueueTool::new(Arc::new(NoQueue)).schema().description;

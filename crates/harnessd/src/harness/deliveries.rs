@@ -332,6 +332,11 @@ pub(crate) fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
                 s.push_str(&format!("    {line}\n"));
             }
         }
+        // A killed job wrote what it wrote before the harness ended it. The state word says *killed*;
+        // this says what that leaves, because a settlement read as a finish is half an answer.
+        if let Some(p) = letibot_tools::exec::partial_of(&c.state) {
+            s.push_str(&format!("    {p}\n"));
+        }
     }
     if mine {
         // the closing named `job_wait` on every completion, said "you do not need to wait"

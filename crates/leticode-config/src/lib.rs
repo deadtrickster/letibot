@@ -291,6 +291,7 @@ use letibot_tools::exec::boundary::{BoundaryConfig, Entry, Origin};
 use letibot_tools::exec::perimeter::{EnvValue, PerimeterTable, Secret};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub mod instructions;
 pub mod workspace;
@@ -800,13 +801,18 @@ fn provider_keys(
 /// [exec]
 /// auto_background = true   # move a call to the background past the threshold (default)
 /// foreground_seconds = 60 # the threshold
+/// job_dead_after_seconds = 1800 # a background job with no output and no CPU for this long is dead
 /// ```
 ///
-/// `false` keeps the advice only. The project's file wins over the user's.
+/// `false` keeps the advice only. The project's file wins over the user's. `job_dead_after_seconds`
+/// is the ONLY clock a background job has: a job with no deadline is ended when it is dead, never at
+/// a fixed age, because ten minutes is nothing next to a fuzz campaign or a cold build. `0` turns the
+/// check off, and then only `job_kill` ends a job that has wedged.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ExecKeys {
     pub auto_background: Option<bool>,
     pub foreground_seconds: Option<u64>,
+    pub job_dead_after_seconds: Option<u64>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -816,11 +822,16 @@ struct ExecTable {
     auto_background: Option<bool>,
     #[serde(default)]
     foreground_seconds: Option<u64>,
+    #[serde(default)]
+    job_dead_after_seconds: Option<u64>,
 }
 
 fn exec_keys(value: &toml::Value) -> Result<ExecKeys, String> {
     let t: ExecTable = value.clone().try_into().map_err(|e| {
-        format!("[exec]: {e}; the keys are `auto_background` (bool) and `foreground_seconds`")
+        format!(
+            "[exec]: {e}; the keys are `auto_background` (bool), `foreground_seconds` and \
+             `job_dead_after_seconds` (0 turns the dead check off)"
+        )
     })?;
     if t.foreground_seconds == Some(0) {
         return Err("[exec] foreground_seconds must be at least 1".into());
@@ -828,6 +839,7 @@ fn exec_keys(value: &toml::Value) -> Result<ExecKeys, String> {
     Ok(ExecKeys {
         auto_background: t.auto_background,
         foreground_seconds: t.foreground_seconds,
+        job_dead_after_seconds: t.job_dead_after_seconds,
     })
 }
 
@@ -858,6 +870,37 @@ pub fn foreground_policy(
     }
     p
 }
+
+/// How long a background job with no deadline may go with neither output nor CPU before the dead
+/// check ends it: `[exec] job_dead_after_seconds`, the project's over the user's, `None` for a file
+/// that asked for `0` (the check off), and thirty minutes when no file said anything.
+pub fn job_dead_after(
+    user: &LeticodeConfig,
+    workspace: &Path,
+    read_project: bool,
+) -> Option<Duration> {
+    let mut window = Some(DEFAULT_JOB_DEAD_AFTER);
+    let mut apply = |k: &ExecKeys| {
+        if let Some(s) = k.job_dead_after_seconds {
+            window = (s > 0).then(|| Duration::from_secs(s));
+        }
+    };
+    apply(&user.exec);
+    if read_project && let Some(path) = LeticodeConfig::discover(workspace) {
+        match LeticodeConfig::load(&path) {
+            Ok(project) => apply(&project.exec),
+            Err(why) => {
+                eprintln!("  leticode.toml: {why} - this session's [exec] is the level below")
+            }
+        }
+    }
+    window
+}
+
+/// Thirty minutes of neither output nor CPU: what a wedged job costs before the harness calls it
+/// dead. The number the operator's `[exec]` overrides, and the one every sentence about the dead
+/// check quotes when no file set another.
+pub const DEFAULT_JOB_DEAD_AFTER: Duration = Duration::from_secs(1800);
 
 /// `[notes]` in a `leticode.toml`: the git checkout notes are written into, outside every
 /// project tree, and the remote `letibot notes push` sends it to.
@@ -2186,6 +2229,10 @@ impl LeticodeConfig {
                     .exec
                     .foreground_seconds
                     .or(self.exec.foreground_seconds),
+                job_dead_after_seconds: other
+                    .exec
+                    .job_dead_after_seconds
+                    .or(self.exec.job_dead_after_seconds),
             },
             // The user's only: see [`BrowserKeys`].
             browser: if other.level == Level::User {
@@ -3293,6 +3340,39 @@ mod tests {
         assert!(LeticodeConfig::load(&path).is_err());
         let path = write_file(&dir, "[exec]\nauto_bg = true\n");
         assert!(LeticodeConfig::load(&path).unwrap_err().contains("[exec]"));
+    }
+
+    /// `[exec] job_dead_after_seconds` is the ONLY clock a background job has: absent is thirty
+    /// minutes, a project's number wins over the user's, and `0` turns the check off rather than
+    /// arming a window of nothing.
+    #[test]
+    fn the_dead_after_window_is_a_key_and_zero_turns_the_check_off() {
+        let dir = project_dir("job_dead_after");
+        let none = LeticodeConfig::default();
+        assert_eq!(
+            job_dead_after(&none, &dir, true),
+            Some(DEFAULT_JOB_DEAD_AFTER)
+        );
+        assert_eq!(DEFAULT_JOB_DEAD_AFTER, Duration::from_secs(1800));
+        write_file(&dir, "[exec]\njob_dead_after_seconds = 60\n");
+        assert_eq!(
+            job_dead_after(&none, &dir, true),
+            Some(Duration::from_secs(60))
+        );
+        // Nothing said for the project is the level below.
+        assert_eq!(
+            job_dead_after(&none, &dir, false),
+            Some(DEFAULT_JOB_DEAD_AFTER)
+        );
+        write_file(&dir, "[exec]\njob_dead_after_seconds = 0\n");
+        assert_eq!(job_dead_after(&none, &dir, true), None, "zero turns it off");
+        // And a misspelt key refuses the file by name rather than leaving a default in force.
+        let path = write_file(&dir, "[exec]\njob_dead_after = 60\n");
+        let why = LeticodeConfig::load(&path).unwrap_err();
+        assert!(
+            why.contains("[exec]") && why.contains("job_dead_after_seconds"),
+            "{why}"
+        );
     }
 
     /// The project's `[memory] default` beats the box-wide one for a session in it, and the

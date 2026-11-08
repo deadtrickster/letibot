@@ -126,15 +126,18 @@ fn a_head_answers_a_decision_the_daemons_stdin_could_not() {
 /// ask without a second card.
 #[test]
 fn a_head_answers_the_memory_card_above_the_ceiling() {
-    use letibot_tools::exec::memory::{MemoryAsk, MemoryGrant};
+    use letibot_tools::exec::memory::{Machine, Meminfo, MemoryAsk, MemoryGrant};
     use letibot_tools::{AdjudicatedGate, Gate as _};
     const GIB: u64 = 1 << 30;
     let ask = |gib: u64| MemoryAsk {
         command: "cargo test --workspace --no-fail-fast".into(),
         bytes: Some(gib * GIB),
-        ceiling: 8 * GIB,
-        available: 60 * GIB,
-        total: 128 * GIB,
+        ceiling: Some(8 * GIB),
+        machine: Machine::Here(Some(Meminfo {
+            total: 128 * GIB,
+            available: 60 * GIB,
+            swap_free: 0,
+        })),
     };
 
     let hub = Hub::new("s");

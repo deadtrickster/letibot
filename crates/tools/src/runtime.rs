@@ -266,6 +266,61 @@ pub enum OperatorRun<'a> {
 /// run behaves as it does with nobody watching.
 pub type OperatorRuns = std::sync::Arc<dyn Fn(OperatorRun<'_>) + Send + Sync>;
 
+/// The file-writing tools a seat was given. A `bash` call that changed a file says which of them
+/// would have adjudicated and recorded the change, and names only the ones this seat has: advice
+/// a seat cannot take is not advice.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WritesWith {
+    pub edit: bool,
+    pub write: bool,
+}
+
+impl WritesWith {
+    pub fn of(registry: &Registry) -> Self {
+        WritesWith {
+            edit: registry.get("edit").is_some(),
+            write: registry.get("write").is_some(),
+        }
+    }
+
+    /// The tools that make a change adjudicated, recorded and drawn, named in the ones this seat
+    /// holds. `None` for a seat with no writing tool at all.
+    pub fn advice(&self) -> Option<&'static str> {
+        match (self.edit, self.write) {
+            (true, true) => Some(
+                "call `write` with the contents (or `edit` for part of a file) so the change is \
+                 adjudicated, recorded and drawn.",
+            ),
+            (false, true) => Some(
+                "call `write` with the contents so the change is adjudicated, recorded and drawn.",
+            ),
+            (true, false) => Some("call `edit` so the change is adjudicated, recorded and drawn."),
+            (false, false) => None,
+        }
+    }
+
+    /// The same advice, said after a command already wrote the file: the row can show the change,
+    /// but nothing judged it before it landed and nothing says a tool made it.
+    pub fn after_a_command(&self) -> Option<&'static str> {
+        match (self.edit, self.write) {
+            (true, true) => Some(
+                "a command that writes a file is not adjudicated as an edit, and the row says the \
+                 diff was detected rather than made: `edit` and `write` are the two that judge a \
+                 change before it lands.",
+            ),
+            (false, true) => Some(
+                "a command that writes a file is not adjudicated as an edit: `write` is the one \
+                 that judges a change before it lands.",
+            ),
+            (true, false) => Some(
+                "a command that writes a file is not adjudicated as an edit: `edit` is the one \
+                 that judges a change before it lands.",
+            ),
+            (false, false) => None,
+        }
+    }
+}
+
 pub struct InvokeCtx<'a> {
     pub backend: &'a dyn ExecBackend,
     pub spiller: &'a Spiller,
@@ -294,6 +349,9 @@ pub struct InvokeCtx<'a> {
     /// this runtime and its board has an open row ([`Tool::open_plan`]). The `wait_on` offer
     /// a background start carries is said only then.
     pub plan_open: bool,
+    /// Which of the file-writing tools this seat was given, so a `bash` call that wrote a file can
+    /// name the one that would have recorded it. See [`WritesWith`].
+    pub writes_with: WritesWith,
     /// Whether the session this call belongs to ends when this run ends, as a one-shot
     /// does. It is a fact about the run, carried here because the tool must act on it: a
     /// command left in the background would outlive the only thing that could read it.
@@ -1008,6 +1066,11 @@ pub mod roles {
                 "job_output",
                 "job_wait",
                 "job_kill",
+                // `job_extend`: the way out of the harness's own clocks - a background job has no
+                // deadline of its own, and one whose window is running out can be told to wait
+                // longer. Seated with the job verbs, because the warning that precedes a dead
+                // check names it.
+                "job_extend",
                 "monitor",
                 // `pkill`: find by a string, kill by pid, never itself. Seated with the exec
                 // surface, because signalling a process is one.
@@ -2049,6 +2112,7 @@ impl ToolRuntime {
                     .get("todo_write")
                     .and_then(|t| t.open_plan())
                     .unwrap_or(false),
+                writes_with: WritesWith::of(&self.registry),
                 one_shot: self.one_shot,
                 provenance: self.provenance.as_deref(),
                 recall: self.recall.as_deref(),
@@ -2069,14 +2133,14 @@ impl ToolRuntime {
         }
         if let Some(r) = &rewritten {
             invocation = invocation.with_note(r.note.clone());
-        } else if gated && schema.name == "bash" && self.registry.get("write").is_some() {
+        } else if gated && schema.name == "bash" {
             // The near miss: still a file's contents written through a heredoc, and still no
-            // diff and no record, so the row names the tools that would have produced both.
-            // Only for a seat that has them, because advice it cannot take is not advice.
+            // diff and no record, so the row names the tools that would have produced both. Only
+            // the ones this seat has: advice it cannot take is not advice.
             if let Some(nudge) = args
                 .get("command")
                 .and_then(|v| v.as_str())
-                .and_then(crate::heredoc::nudge)
+                .and_then(|c| crate::heredoc::nudge(c, WritesWith::of(&self.registry)))
             {
                 invocation = invocation.with_note(nudge);
             }
@@ -2917,8 +2981,10 @@ mod tests {
         );
         // It took its own seat rather than trading for one: nothing left the list when it
         // arrived, which is the property `max_tools` is declared for. The count is pinned so a
-        // tool added without a decision fails here.
-        assert_eq!(seat.tools.len(), 38, "{:?}", seat.tools);
+        // tool added without a decision fails here. 38 since `job_extend` (R160): a background job
+        // has no deadline of its own, and the warning before a dead check names the way out.
+        // 39 with `screen`.
+        assert_eq!(seat.tools.len(), 39, "{:?}", seat.tools);
         assert!(
             seat.tools.len() <= seat.max_tools,
             "the seat is over its own ceiling: {} > {}",
