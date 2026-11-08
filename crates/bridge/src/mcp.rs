@@ -244,7 +244,7 @@ mod tests {
             said.contains(&format!("As `{me}` you see every room")),
             "{said}"
         );
-        assert!(said.len() <= 640, "{} bytes: {said}", said.len());
+        assert!(said.len() <= 600, "{} bytes: {said}", said.len());
         assert!(!said.contains('\u{2014}'), "no em dash: {said}");
     }
 
@@ -265,7 +265,7 @@ mod tests {
             bytes += t["description"].as_str().unwrap_or("").len();
         }
         assert_eq!(count, 1, "the rule is said once");
-        assert!(bytes <= 2200, "{bytes} bytes of room tool descriptions");
+        assert!(bytes <= 2000, "{bytes} bytes of room tool descriptions");
     }
 
     /// Every tool this build serves, each with a schema - the design's table, and the shape MCP

@@ -532,8 +532,8 @@ mod tests {
         assert_eq!(s.access, Access::Session);
         // The budgets the trim set: the whole schema is what a context pays for, every turn.
         let params = s.parameters.to_string().len();
-        assert!(s.description.len() <= 900, "{} bytes", s.description.len());
-        assert!(params <= 2600, "{params} bytes of parameters");
+        assert!(s.description.len() <= 800, "{} bytes", s.description.len());
+        assert!(params <= 2450, "{params} bytes of parameters");
         assert!(!s.description.contains('\u{2014}'), "no em dash");
     }
 

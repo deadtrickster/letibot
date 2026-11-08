@@ -223,6 +223,7 @@ mod tests {
         a.escalated = true;
         a.asked_ms = 5_000;
         assert_eq!(first, owed_content(&a), "the words carry no clock");
+        assert!(first.len() <= 110, "{} bytes: {first}", first.len());
 
         let mut long = open(8);
         long.question = format!("two\nlines {}", "x".repeat(400));
