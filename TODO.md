@@ -48,7 +48,6 @@ One row per open entry. `left` is what is really left, checked against the tree.
 |---|---|---|---|
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Code work | overlap targeting (which sessions a passing-by line wakes) waits on R163; the R164 before/after numbers; the output cap on the local llama path |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Code work | all of it |
-| R164 | Rooms for orchestration (2/6): signal accounting, was a message acted on | Code work | all of it |
 | R165 | Rooms for orchestration (3/6): a question goes to the owner, not the room | Code work | all of it |
 | R166 | Rooms for orchestration (4/6): kinds, budgets and a stopping rule for agent-only threads | Code work | all of it |
 | R167 | Rooms for orchestration (5/6): peer text is a claim with a source, never an instruction | Code work | all of it |
@@ -101,7 +100,7 @@ Things an agent can do in this repo, ordered by value: stability and UX first.
 
 ## Rooms for orchestration: ownership keeps agents focused (R163-R168)
 
-The operator, 2026-11-08: rooms exist for multi-agent orchestration, not open conversation; the aim is to promote ownership in agents so they stay focused. Agents reach out when they own something or need something from an owner, and stay quiet otherwise. Evidence: docs/reviews/2026-11-08-rooms-research.md (web research, verbatim) and the oracle reading (hands-off/letibot/reviews/2026-11-08-oracle-principles.md); where they agree it is noted per entry. Build order: R169, then R163 and R164 (R164 is the instrument every later change is measured with), then R165-R168.
+The operator, 2026-11-08: rooms exist for multi-agent orchestration, not open conversation; the aim is to promote ownership in agents so they stay focused. Agents reach out when they own something or need something from an owner, and stay quiet otherwise. Evidence: docs/reviews/2026-11-08-rooms-research.md (web research, verbatim) and the oracle reading (hands-off/letibot/reviews/2026-11-08-oracle-principles.md); where they agree it is noted per entry. Build order: R169, then R163, then R165-R168, each measured with R164's signal accounting (`room signals`, `/signals`).
 
 ## R169 - Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet
 
@@ -135,16 +134,6 @@ Echoes: research failure mode 2 (over-acknowledgement) and the interruption-cost
 Presence is not capability: `connected` proves a process polls, not that an agent can act. The roster shows state derived from harness facts, no agent input: in a turn (since when), idle (last turn ended T ago, last model call ok or failed), rate-limited until T, provider error, waiting on (an open ask, a queue wait), stopped; `connected` stays as a low-level fact. "Working on" is derived too: the in-progress todo row, repo/branch/worktree, the last files edited; an optional one-line declared status only with a TTL (default 30 min, max 4 h), cleared when its row closes, shown beside the derived one when they disagree. Ownership is a lease reusing the queue's lease machinery: `own {scope: path glob | topic, ttl}`, renewed by editing files or acting on rows in scope, expiring otherwise; overlapping live claims are refused naming the holder; `hand {scope, to, note}` needs the receiver's `accept` (closed loop), and until then the old owner holds it; a stopped owner's claims are flagged to the operator. An ask to a seat that cannot act escalates at once.
 Echoes: research §5 P1-P3 (Slack presence vs status, Dourish & Bellotti "derived from the work", SRE one owner and explicit handover); oracle "availability is probed, never configured" and "an unreadable sensor must never resolve to cold".
 **Done when**: the roster shows derived state and working-on for every seat, `own`/`hand`/`accept` work with expiry and refusal, and an ask to a rate-limited seat reaches the operator at once; measured by asks sent to seats that could not act, orphaned scopes, edit conflicts between sessions.
-
----
-
-## R164 - Rooms for orchestration (2/6): signal accounting, was a message acted on
-
-**Status:** open, filed 2026-11-08. left: all of it.
-
-For each room message the coordinator records what followed within about 30 minutes: a thread reply, an ask settled, a todo row with a ref to it, an ownership claim, a `read` of its thread. Per-sender and per-kind acted-on rates in `/rooms`. This is the instrument for R165-R168: every number they set (budgets, caps, TTLs) is a guess until this measures it.
-Echoes: research rec. 7; oracle "measure, don't assert", "counters cannot see content", "sample the stored data, not the status".
-**Done when**: each message carries its acted-on outcome, `/rooms` shows the scorecard, and the rates are queryable for before/after comparisons.
 
 ---
 
