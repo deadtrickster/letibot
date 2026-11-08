@@ -350,7 +350,7 @@ own right**, addressed as R93.<id>; the list below groups them by what to fix fi
 
 ## R74 - What the 2026-10-11 landings left open
 
-**Status:** audited 2026-11 (nine fixed, seven already done, six not a session's to settle, 37 since settled), then worked (4, 11, 12, 16, 20, 23, 25, 33 and 40 closed — 40 in two passes, the second moving the last eighteen inline `mod tests` blocks over 800 lines, one commit each, `d009e1ee`..`ea2d720f`, and nothing over 800 lines is left). left: item 39 (a live gate on lubuntu1/2 - the seam and the rows' naming are held by tests, and the operator's fleet key is not in this placement).
+**Status:** audited 2026-11 (nine fixed, seven already done, six not a session's to settle, 37 since settled), then worked (4, 11, 12, 16, 20, 23, 25, 33 and 40 closed — 40 in two passes, the second moving eighteen inline `mod tests` blocks over 800 lines, one commit each: twelve landed then, the six whose moves conflicted with newer tests were redone fresh here, `7b9067b2`..`a34bf718`, and nothing over 800 lines is left). left: item 39 (a live gate on lubuntu1/2 - the seam and the rows' naming are held by tests, and the operator's fleet key is not in this placement).
 
 Everything merged on 2026-10-11 (main `cf47e65`: R61, R64, R65, R66 instrumentation, R67, R68, R69,
 R71, R72 + follow-up, R73, the no-llama build), and the gaps each landing reported or a check
@@ -509,13 +509,17 @@ nothing to design.
   `harnessd/src/cli.rs` 1 065; `tools/src/firecode.rs` 1 011; `bridge/src/head.rs` 969;
   `sessionlog/src/hub.rs` 922; `sessionlog/src/protocol.rs` 912; `code/src/shell.rs` 900;
   `harnessd/src/subagent_record.rs` 852; `tools/src/builtins/bash.rs` 830;
-  `provider/src/messages.rs` 825. Each is its own commit (`d009e1ee`..`ea2d720f`) and each crate's
-  `--lib` names the same tests before and after: 78 provider, 84 plugins, 59 code, 64 leticode-config,
-  229 sessionlog (three files), 1 613 tools (six), 1 380 harnessd (four), 95 bridge. Every block is
-  the same code — its non-space characters at `f1751e17` against the new file's, the one body line a
-  move had to change being `protocol/tests.rs`'s `include_str!` path. **Nothing over 800 lines is
-  left**: the largest inline block is `room/src/server.rs` (784), then `tools/src/exec/shell.rs` (768)
-  and `vt/src/screen.rs` (747).
+  `provider/src/messages.rs` 825 (sizes as that pass measured them; some files have grown since).
+  Twelve of them are commits in this tree (`530ceb38`, `c6542f6e` and the ten beside them) and each
+  crate's `--lib` names the same tests before and after: 78 provider, 84 plugins, 59 code, 64
+  leticode-config, 229 sessionlog (three files), 1 613 tools (six), 1 380 harnessd (four), 95 bridge.
+  Every block is the same code — its non-space characters at `f1751e17` against the new file's, the
+  one body line a move had to change being `protocol/tests.rs`'s `include_str!` path. The six whose
+  moves were lost to newer tests in the same files were redone fresh in 2026-11 (`7b9067b2`,
+  `2fdbb12f`, `7c79894a`, `88e7f1dd`, `30c940cb`, `a34bf718`), and item 40 below has their sizes and
+  the counts now. **Nothing over 800 lines is left**: the largest inline block is
+  `crates/llama/tests/gguf.rs` (799), then `room/src/server.rs` (785) and `tools/src/exec/shell.rs`
+  (769).
 - 41 **DONE** — R60's three: scrollback (`vt::Screen::HISTORY_ROWS`/`view`), panes numbered on the
   wire, and a confined pane (`wrap_terminal`, no `--new-session`), each with a test.
 
@@ -644,8 +648,29 @@ nothing to design.
     live landing itself is still open — see the audit's item 39 above.
 40. R70 — move the largest inline test blocks into sibling files (unblocked now the big edits have
     landed).
-    — ✓ closed: item 40 above — every inline `mod tests` over 800 lines is a sibling file now
-    (eighteen of them, one commit each) and the largest one left is 784 lines.
+    — ✓ closed: eighteen inline `mod tests` blocks over 800 lines, one commit each. Twelve were in
+    the tree already (`530ceb38` leticode-config/lib, `c6542f6e` plugins/stack, `500de9ef`
+    sessionlog/registry, `cebaf08a` sessionlog/hub, `f46d5391` tools/exec/host, `bdaa5d93`
+    tools/exec/confine, `1e7caaaa` tools/remote, `6a09ec3d` tools/firecode, `b5e0c5ec`
+    harnessd/mergequeue/gate, `f9cd96f7` harnessd/room/link, `8c609b1a` harnessd/cli); the six
+    whose moves conflicted with newer tests were redone fresh on this tree — `7b9067b2`
+    provider/messages (826 lines), `2fdbb12f` sessionlog/protocol (926), `7c79894a` tools/runtime
+    (1468), `88e7f1dd` tools/builtins/bash (871), `30c940cb` harnessd/subagent_record (853),
+    `a34bf718` bridge/head (973). Every one kept its crate's test count — `--lib -- --list` before
+    and after: provider 78, sessionlog 230, tools 1636 (1635 run, 1 ignored), harnessd 1384, bridge
+    105. The whole crate was run green for provider (78 + fake_provider's 17), sessionlog (230 + 26
+    targets) and bridge (157 across 29 targets); tools' integration targets were not rerun, and
+    harnessd's lib run is red on the same two both times — `claude_tests`,
+    `the_runs_table_holds_a_process_until_it_is_dead` and
+    `the_time_limit_ends_the_run_with_sigint_and_the_row_says_why`, which `killpg` a stub this
+    seat's PID namespace never lets die.
+    — COUNTED, not eyeballed: each `mod tests {` is walked to its matching `}` on a copy of the file
+    whose strings, raw strings, char literals and comments are blanked with the newlines kept, and
+    the answer is accepted only when the line it lands on is `}` at the `mod`'s own indent — a
+    plain brace walk stops at a `}` inside a shell fixture and undercounts (host.rs read as 1466,
+    not 2001). That census (2026-11-08) finds 331 inline `mod tests` blocks under `crates/` and
+    none over 800 lines: the largest is 799 (`crates/llama/tests/gguf.rs`), then 785
+    (`crates/room/src/server.rs`).
 41. R60 — the three things `!term` did not do: **built on `r60-term`**, see R60.
     — ✓ fixed in 26913ddd, test a_second_pane_runs_beside_the_first_and_each_is_named_by_its_number
 
