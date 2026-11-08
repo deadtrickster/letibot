@@ -25,8 +25,13 @@ const PATIENCE: Duration = Duration::from_secs(60);
 
 /// How long each phase is measured over. Long enough that a full core shows up as seconds
 /// rather than as a rounding error - and not the whole of this file's wall clock: seven windows are
-/// 21 s of sleeping, each opened by a settle of at least [`cpu::SPAN`], so 28 s is the floor.
+/// 21 s of sleeping, each opened by two settles of at least [`cpu::SPAN`] around a [`TICK`], so
+/// 56 s is the floor.
 const WINDOW: Duration = Duration::from_secs(3);
+
+/// Longer than the daemon's idle tick (`plugins::POLL_EVERY`, 2 s), so whatever a tick starts has
+/// started before the second settle.
+const TICK: Duration = Duration::from_secs(3);
 
 /// What counts as idle. A spinning session thread spends about WINDOW of CPU; a waiting
 /// daemon spends a few milliseconds, its accept loop polling every 20 ms. A tenth of the window
@@ -76,6 +81,11 @@ impl Drop for TempDir {
 /// busy - [`WINDOW`] of wall clock, with the rate asserted against [`idle_budget`]. Two numbers
 /// are reported: how long it took to go quiet (the box's) and what it then spent (the daemon's).
 fn assert_idle(what: &str) -> Duration {
+    // Settle, wait out one idle tick, settle again: work a tick starts (the built-in panes'
+    // compile after a head attaches) is the daemon's one-off, not a loop, and must not land in
+    // the window.
+    cpu::wait_until_idle(what);
+    std::thread::sleep(TICK);
     let settled = cpu::wait_until_idle(what);
     let before = cpu::this_process();
     std::thread::sleep(WINDOW);
