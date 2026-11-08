@@ -4084,6 +4084,7 @@ pub(crate) fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
         && !matches!(seat, Seat::Runner | Seat::Gatekeeper | Seat::NotesKeeper)
     {
         r.tools.push("flowy".into());
+        r.max_tools += 1;
     }
     // `web_search` is seated only when something is behind it, and a subagent inherits that. Conditional because a
     // tool schema is prompt bytes, so seating it unconditionally would re-prefill every stored conversation to add a
