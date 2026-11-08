@@ -46,6 +46,12 @@ One row per open entry. `left` is what is really left, checked against the tree.
 
 | id | title | group | left |
 |---|---|---|---|
+| R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Code work | all of it |
+| R164 | Rooms for orchestration (2/6): signal accounting, was a message acted on | Code work | all of it |
+| R165 | Rooms for orchestration (3/6): a question goes to the owner, not the room | Code work | all of it |
+| R166 | Rooms for orchestration (4/6): kinds, budgets and a stopping rule for agent-only threads | Code work | all of it |
+| R167 | Rooms for orchestration (5/6): peer text is a claim with a source, never an instruction | Code work | all of it |
+| R168 | Rooms for orchestration (6/6): the room refuses acks and echoes, and long posts become filed records | Code work | all of it |
 | R162 | A granted directory does not cover what is under it, and every subagent asks for the same path again | Code work | all of it |
 | R161 | A `bash` call that writes a file is not shown as an edit | Code work | a diff for each file when a command changes more than one (one result carries one `edit` excerpt), and a sweep for a command run in the background — the sweep of the tree the command actually ran in, the single-file diff, the ledger and the nudge are built |
 | R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement) |
@@ -89,6 +95,70 @@ One row per open entry. `left` is what is really left, checked against the tree.
 # Code work
 
 Things an agent can do in this repo, ordered by value: stability and UX first.
+
+---
+
+## Rooms for orchestration: ownership keeps agents focused (R163-R168)
+
+The operator, 2026-11-08: rooms exist for multi-agent orchestration, not open conversation; the aim is to promote ownership in agents so they stay focused. Agents reach out when they own something or need something from an owner, and stay quiet otherwise. Evidence: docs/reviews/2026-11-08-rooms-research.md (web research, verbatim) and the oracle reading (hands-off/letibot/reviews/2026-11-08-oracle-principles.md); where they agree it is noted per entry. Build order: R163 and R164 first (R164 is the instrument every later change is measured with), then R165-R168.
+
+## R163 - Rooms for orchestration (1/6): presence from facts and ownership as a lease
+
+**Status:** open, filed 2026-11-08. left: all of it.
+
+Presence is not capability: `connected` proves a process polls, not that an agent can act. The roster shows state derived from harness facts, no agent input: in a turn (since when), idle (last turn ended T ago, last model call ok or failed), rate-limited until T, provider error, waiting on (an open ask, a queue wait), stopped; `connected` stays as a low-level fact. "Working on" is derived too: the in-progress todo row, repo/branch/worktree, the last files edited; an optional one-line declared status only with a TTL (default 30 min, max 4 h), cleared when its row closes, shown beside the derived one when they disagree. Ownership is a lease reusing the queue's lease machinery: `own {scope: path glob | topic, ttl}`, renewed by editing files or acting on rows in scope, expiring otherwise; overlapping live claims are refused naming the holder; `hand {scope, to, note}` needs the receiver's `accept` (closed loop), and until then the old owner holds it; a stopped owner's claims are flagged to the operator. An ask to a seat that cannot act escalates at once.
+Echoes: research §5 P1-P3 (Slack presence vs status, Dourish & Bellotti "derived from the work", SRE one owner and explicit handover); oracle "availability is probed, never configured" and "an unreadable sensor must never resolve to cold".
+**Done when**: the roster shows derived state and working-on for every seat, `own`/`hand`/`accept` work with expiry and refusal, and an ask to a rate-limited seat reaches the operator at once; measured by asks sent to seats that could not act, orphaned scopes, edit conflicts between sessions.
+
+---
+
+## R164 - Rooms for orchestration (2/6): signal accounting, was a message acted on
+
+**Status:** open, filed 2026-11-08. left: all of it.
+
+For each room message the coordinator records what followed within about 30 minutes: a thread reply, an ask settled, a todo row with a ref to it, an ownership claim, a `read` of its thread. Per-sender and per-kind acted-on rates in `/rooms`. This is the instrument for R165-R168: every number they set (budgets, caps, TTLs) is a guess until this measures it.
+Echoes: research rec. 7; oracle "measure, don't assert", "counters cannot see content", "sample the stored data, not the status".
+**Done when**: each message carries its acted-on outcome, `/rooms` shows the scorecard, and the rates are queryable for before/after comparisons.
+
+---
+
+## R165 - Rooms for orchestration (3/6): a question goes to the owner, not the room
+
+**Status:** open, filed 2026-11-08. left: all of it.
+
+`ask` takes a scope (path, topic) instead of a session and resolves it: a live ownership lease (R163), else the last session to edit the path in this project, else an OWNERS file if one exists, else the project room. The resolution and its reason are shown to the asker; a broadcast `say` asking the same thing is nudged toward the ask. Agents do not post status ("starting X", "still on it"): the roster shows it, and such posts are folded into the status field.
+Echoes: research §5 P4-P5 and MAST's largest modes (step repetition, failing to ask for clarification); oracle "a miss should make the next attempt unnecessary".
+**Done when**: a scope ask lands on its owner with the reason shown; measured by asks answered by the first target, broadcast-question rate, status-line share of chat.
+
+---
+
+## R166 - Rooms for orchestration (4/6): kinds, budgets and a stopping rule for agent-only threads
+
+**Status:** open, filed 2026-11-08. left: all of it.
+
+`say` takes a `kind`: `fyi` (default, wakes nobody but an addressed DM), `ask` (names a target, becomes a held room ask), `blocker` (wakes the target and flags the operator), `decision` (recorded for the digest). A per-sender budget per room (a token bucket; the refusal names it) and a depth cap on threads with no operator message in them (the refusal says file a row or ask the operator). The said-since digest ranks by what the reader needs: open asks to me, blockers, decisions, lines touching my repo/todo/files, then counts, with seqs kept.
+Echoes: research rec. 2, 3, 8 (reply-required vs FYI, debate degrades with length, the Claude-to-Claude attractor and Project Vend); oracle "minimising context occupation is a quality measure".
+**Done when**: kinds drive wakes, budgets and the depth cap refuse with their numbers, the digest is ranked; measured with R164 (wakes per message, acted-on per kind, thread depth, room tokens per landed commit).
+
+---
+
+## R167 - Rooms for orchestration (5/6): peer text is a claim with a source, never an instruction
+
+**Status:** open, filed 2026-11-08. left: all of it.
+
+Wakes and digests render peer text as quoted data with author, seat (operator / harness / session / external), seq and kind; text claiming to be the operator is flagged; authority comes only from the authenticated author field; a peer message can never put a row, claim or merge on another session's board (only an ask can, and the receiver chooses). Claims about state ("landed X", "gate green", "port free") and `decision`s carry an `evidence` ref (output blob, commit, gate row); unbacked claims are shown as unbacked, and the operator's pane can check common claims against queue rows, gate records and the effect log (SUPPORTED / CONTRADICTED / NOT COVERED). The 600-byte cut says how much it dropped and where the whole message is.
+Echoes: research rec. 4, 9 and failure modes 4-6 (sycophancy, hallucinated authority, Prompt Infection); oracle "sources kept apart", the fact-check verdicts, "a cut that leaves no mark", and the room-seat finding (wake.rs/chat.rs drop `Seat`).
+**Done when**: every peer line reaches a model framed with its source, state claims carry evidence or read as unbacked, and the red-team set of injected room lines changes no behaviour.
+
+---
+
+## R168 - Rooms for orchestration (6/6): the room refuses acks and echoes, and long posts become filed records
+
+**Status:** open, filed 2026-11-08. left: all of it.
+
+`say` runs a cheap check, no model: short acks ("noted", "thanks", "+1", "got it", "will do" without a ref) and near-duplicates of the last N messages of that room or thread are refused, naming the reason and the message duplicated; the operator is exempt; the etiquette says a refusal is the etiquette, not an error. A post over about 3 lines / 400 characters is stored as a record (row or blob) and the room gets its first line plus a link. A host-room `say` needs a mention or `kind: announce` and is one line; a project-room post without a ref is counted (leaks from other conversations).
+Echoes: research rec. 1, 5, 6 (Anthropic "pass references, not content", MetaGPT documents over dialogue, AgentLeak); oracle "removing prompt bias beats adding prompt rules" and "prompts are soft limits, hooks are hard stops".
+**Done when**: acks and echoes are refused at post time, long posts become records, host-room traffic is announcements and mentions; measured with R164 (ack rate, duplicate-content rate, false refusals, whether overflowed records get opened).
 
 ---
 
