@@ -374,23 +374,90 @@ pub fn channel_notification(m: &Value) -> Value {
     if let Some(t) = m["thread"].as_u64() {
         meta.insert("thread".into(), json!(t.to_string()));
     }
-    let me = handle();
-    let content = match serde_json::from_value::<letibot_room::Message>(m.clone()) {
-        Ok(msg) => {
-            let names_you = msg.to.as_deref().is_some_and(|t| is_me(t, &me))
-                || letibot_room::chat::mentions(&msg.text)
-                    .iter()
-                    .any(|n| is_me(n, &me))
-                || group_mention(&msg.text, &me).is_some();
-            msg.delivered(names_you, letibot_room::chat::MAX_TEXT)
-        }
-        Err(_) => line(m),
-    };
+    let content = delivered(m, &handle());
     json!({
         "jsonrpc": "2.0",
         "method": "notifications/claude/channel",
         "params": { "content": content, "meta": meta },
     })
+}
+
+/// A pushed message as Claude Code reads it: the room's header line, then the text quoted. Built
+/// here from the frame's JSON, since the bridge takes only the protocol number from the room crate.
+fn delivered(m: &Value, me: &str) -> String {
+    let text = m["text"].as_str().unwrap_or("");
+    let to = m["to"].as_str();
+    let named = mentions_in(text);
+    let names_you = to.is_some_and(|t| is_me(t, me))
+        || named.iter().any(|n| is_me(n, me))
+        || group_mention(text, me).is_some();
+    let room = m["room"].as_str().unwrap_or("?");
+    let kind = m["kind"].as_str().unwrap_or("session");
+    let to_word = if names_you && room == "dm" {
+        "dm".to_string()
+    } else if names_you && to.is_some() {
+        "you".to_string()
+    } else if names_you {
+        "@you".to_string()
+    } else {
+        let mut all: Vec<String> = to.map(str::to_string).into_iter().collect();
+        for n in named {
+            if !all.contains(&n) {
+                all.push(n);
+            }
+        }
+        if all.is_empty() {
+            "all".to_string()
+        } else {
+            all.iter()
+                .map(|n| format!("@{n}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+    };
+    let seat = if kind == "system" { "harness" } else { kind };
+    let mut head = format!(
+        "#{} [{room}] from {} ({seat}) to {to_word}",
+        m["seq"],
+        m["author"].as_str().unwrap_or("?")
+    );
+    if let Some(t) = m["thread"].as_u64() {
+        head.push_str(&format!(", re #{t}"));
+    }
+    for r in m["refs"].as_array().into_iter().flatten() {
+        head.push_str(&format!(
+            ", {} {}",
+            r["kind"].as_str().unwrap_or("?"),
+            r["id"].as_str().unwrap_or("?")
+        ));
+    }
+    if kind != "operator" && !names_you {
+        head.push_str(", passing by");
+    }
+    let quoted: Vec<String> = text.lines().map(|l| format!("> {l}")).collect();
+    format!("{head}\n{}", quoted.join("\n"))
+}
+
+/// The `@name`s in a text, lowercase and without the `@`.
+fn mentions_in(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut prev = ' ';
+    for (i, c) in text.char_indices() {
+        if c == '@' && !(prev.is_alphanumeric() || prev == '_') {
+            let name: String = text[i + 1..]
+                .chars()
+                .take_while(|c| {
+                    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '@' | ':' | '*')
+                })
+                .collect();
+            let name = name.trim_end_matches([':', '@']).to_lowercase();
+            if !name.is_empty() {
+                out.push(name);
+            }
+        }
+        prev = c;
+    }
+    out
 }
 
 /// The group mention in `text` that addresses the bridge `me`, as written (`cc@folder:*`).
@@ -1447,6 +1514,18 @@ mod tests {
         assert_eq!(
             content,
             "#43 [host] from operator (operator) to all\n> stop at six"
+        );
+        let peer = serde_json::json!({
+            "seq": 44, "ts": 0, "room": "host", "author": "s-a", "kind": "session",
+            "to": null, "thread": 40, "text": "@s-b status?",
+        });
+        let content = super::channel_notification(&peer)["params"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        assert_eq!(
+            content,
+            "#44 [host] from s-a (session) to @s-b, re #40, passing by\n> @s-b status?"
         );
     }
 

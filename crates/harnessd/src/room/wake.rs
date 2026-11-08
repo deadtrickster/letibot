@@ -283,7 +283,7 @@ pub fn missed_line(count: u64, since_ms: u64, now: u64) -> String {
         )
     };
     format!(
-        "[room] the room connection was down: {count} event(s) for this session are lost{gap}. \
+        "[room] the room connection was down: {count} event(s) for this session, not replayed{gap}. \
          Read the state: `room queue <tag>`, `room holding`, `room questions`. A claim held then \
          was given back."
     )
