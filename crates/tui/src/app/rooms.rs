@@ -756,7 +756,7 @@ impl App {
         // operator's to send somewhere real.
         self.set_composer(text.trim());
         self.say(&format!(
-            "{which} is gone, so nothing is selected - up or down picks a channel"
+            "{which} is gone, so nothing is selected - up or down picks a room"
         ));
     }
 

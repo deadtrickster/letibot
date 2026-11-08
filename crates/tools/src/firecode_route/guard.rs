@@ -326,7 +326,7 @@ pub fn restore(snap: &Snapshot) -> Report {
 /// Ignored files outside the build outputs: changed ones are put back, new ones removed.
 fn restore_ignored(snap: &Snapshot, rep: &mut Report) {
     let root = &snap.root;
-    let mut note = |rel: &Path, rep: &mut Report| {
+    let note = |rel: &Path, rep: &mut Report| {
         let name = rel.display().to_string();
         if auto_executed(rel) {
             rep.refused.push(name);

@@ -1548,7 +1548,12 @@ mod tests {
         let sweep = sweep_of(&root);
         let out = std::process::Command::new("sed")
             .current_dir(&root)
-            .args(["-i", "s/two/TWO/", "a.txt"])
+            // BSD sed takes the backup suffix as its own argument, GNU sed takes none.
+            .args(if cfg!(target_os = "macos") {
+                &["-i", "", "s/two/TWO/", "a.txt"][..]
+            } else {
+                &["-i", "s/two/TWO/", "a.txt"][..]
+            })
             .output()
             .expect("sed");
         assert!(out.status.success(), "{out:?}");
