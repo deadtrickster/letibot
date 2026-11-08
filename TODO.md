@@ -56,7 +56,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R168 | Rooms for orchestration (6/6): the room refuses acks and echoes, and long posts become filed records | Code work | all of it |
 | R162 | A granted directory does not cover what is under it, and every subagent asks for the same path again | Code work | a grant covers what is under it at that access, a tree's grants are shared with its subagents, one path is one card, and the card names the asker — built; left: an end-to-end run against a real `bwrap` view, which this box cannot open |
 | R161 | A `bash` call that writes a file is not shown as an edit | Code work | a diff for each file when a command changes more than one (one result carries one `edit` excerpt), and a sweep for a command run in the background — the sweep of the tree the command actually ran in, the single-file diff, the ledger and the nudge are built |
-| R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement) |
+| R74 | What the 2026-10-11 landings left open | Code work | items 34-36, recorded OPEN and not scheduled (item 39 closed by a live landing on lubuntu1, c6161345) |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | leticl's `:turn-finished` arm (`src/session/seq-gap.lisp:254`) does not read `ends_turn`, so every round's end is drawn as the turn's end |
 | R121 | What a command boundary holds is hardcoded and invisible | Code work | built: items 1-8, a `leticode` seat with no shell has its file tools held to its own perimeter, and R95's carry-over calls `boundary::env_refusal`. left only what is ruled, not pending: `grants_rw` and `secrets` are the user file's alone (operator ruling 2026-11-05), a perimeter's `env` reaches no remote or VM command, and a background job's output file keeps `GH_TOKEN` unmasked |
 | R126 | Reviewers fan out to the declared hosts, opt-in | Needs the operator | setting `[queue] reviewer_hosts` in the operator's `leticode.toml` and one live review on lab2x1 (the fan-out is landed and tested against fakes, never against a real host) |
@@ -350,7 +350,7 @@ own right**, addressed as R93.<id>; the list below groups them by what to fix fi
 
 ## R74 - What the 2026-10-11 landings left open
 
-**Status:** audited 2026-11 (nine fixed, seven already done, six not a session's to settle, 37 since settled), then worked (4, 11, 12, 16, 20, 23, 25, 33 and 40 closed — 40 in two passes, the second moving eighteen inline `mod tests` blocks over 800 lines, one commit each: twelve landed then, the six whose moves conflicted with newer tests were redone fresh here, `7b9067b2`..`a34bf718`, and nothing over 800 lines is left). left: item 39 (a live gate on lubuntu1/2 - the seam and the rows' naming are held by tests, and the operator's fleet key is not in this placement).
+**Status:** audited 2026-11 (nine fixed, seven already done, six not a session's to settle, 37 since settled), then worked (4, 11, 12, 16, 20, 23, 25, 33 and 40 closed — 40 in two passes, the second moving eighteen inline `mod tests` blocks over 800 lines, one commit each: twelve landed then, the six whose moves conflicted with newer tests were redone fresh here, `7b9067b2`..`a34bf718`, and nothing over 800 lines is left). left: items 34-36, recorded OPEN and not scheduled. Item 39 closed by a live landing through the queue with its gate on lubuntu1, which also found and fixed c6161345.
 
 Everything merged on 2026-10-11 (main `cf47e65`: R61, R64, R65, R66 instrumentation, R67, R68, R69,
 R71, R72 + follow-up, R73, the no-llama build), and the gaps each landing reported or a check
@@ -644,8 +644,13 @@ nothing to design.
 38. R63 — a thread per root session (unblocked by R68).
     — ✓ fixed in f68c90b0, test a_held_turn_in_one_session_does_not_delay_another
 39. R62 — the gate on lubuntu1/2; R61's `GateRunner` is the seam.
-    — ✓ fixed in 5d3b2f05, test the_tree_and_the_repository_arrive_and_the_steps_run_there; the
-    live landing itself is still open — see the audit's item 39 above.
+    — ✓ fixed in 5d3b2f05, test the_tree_and_the_repository_arrive_and_the_steps_run_there.
+    Live landing on 2026-11-08 with `--gate-host lubuntu1`, a throwaway repo and store: a
+    `leticode` seat enqueued `greet`, a gatekeeper reviewer approved it, `main`'s tip went green
+    (`lubuntu1 gate`), the branch was rebased, gated on lubuntu1 (`hostname` printed
+    `lubuntu1.h.khaprov.com`) and landed. The run found that a repository recreated at the same
+    path left every pass unjudged with `git bundle` "bad object" - fixed in c6161345, test
+    a_repository_recreated_at_the_same_path_is_sent_whole.
 40. R70 — move the largest inline test blocks into sibling files (unblocked now the big edits have
     landed).
     — ✓ closed: eighteen inline `mod tests` blocks over 800 lines, one commit each. Twelve were in
