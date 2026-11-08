@@ -47,7 +47,8 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | id | title | group | left |
 |---|---|---|---|
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Code work | the R164 before/after numbers; the output cap on the local llama path |
-| R163 | A session's DM to a Claude Code seat is addressed to a different session | Code work | the room no longer re-addresses a dm (built and held by `crates/room/tests/dm.rs`); left: a live dm from a session to a `cc@<folder>` bridge on the box |
+| R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Code work | all of it |
+| R170 | A session's DM to a Claude Code seat is addressed to a different session | Code work | the room no longer re-addresses a dm (built and held by `crates/room/tests/dm.rs`); left: a live dm from a session to a `cc@<folder>` bridge on the box |
 | R164 | Rooms for orchestration (2/6): signal accounting, was a message acted on | Code work | all of it |
 | R165 | Rooms for orchestration (3/6): a question goes to the owner, not the room | Code work | all of it |
 | R166 | Rooms for orchestration (4/6): kinds, budgets and a stopping rule for agent-only threads | Code work | all of it |
@@ -200,6 +201,8 @@ Wanted: the operator allows one tab from the popup, and the extension attaches `
 ---
 
 ## R163 - A session's DM to a Claude Code seat is addressed to a different session
+
+## R170 - A session's DM to a Claude Code seat is addressed to a different session
 
 **Status:** the room no longer re-addresses a dm. left: a live dm between a session and a `cc@<folder>` bridge on the box, to read the four rows' shape off the real log.
 
