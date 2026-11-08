@@ -43,6 +43,8 @@ sha2 = "0.10"
 # `setsid(2)`, for starting a daemon that does not die with the MCP process that spawned
 # it — the same detachment `scripts/letibot`'s `detach` gets from `setsid`/perl.
 libc = "0.2"
+# The browser bridge runs under launchd or systemd socket activation and exits when idle.
+letibot-activation.workspace = true
 
 [dev-dependencies]
 # **The fixture that writes an executable needs `write_stub`**, which is the one place in this tree

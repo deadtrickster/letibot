@@ -12,8 +12,12 @@ extension worker ──HTTP 127.0.0.1:8790 + bearer token──▶ letibot brows
 
 ## Install
 
-1. Start the bridge: `letibot browser`. On the first run it makes `~/.config/letibot/browser.token`
-   (mode 0600) and prints the token once. Later runs say where the file is.
+1. `letibot browser install`. It writes a launchd agent (macOS,
+   `~/Library/LaunchAgents/io.letibot.browser.plist`) or a systemd user socket and service
+   (Linux, `letibot-browser.socket` and `.service`), and loads it. The manager then holds
+   127.0.0.1:8790 and the session socket, and starts the bridge on the first connection. It makes
+   `~/.config/letibot/browser.token` (mode 0600) if missing and prints the token once, with these
+   steps.
 2. In Chrome open `chrome://extensions`, turn on Developer mode, click Load unpacked and pick
    `extensions/chrome` in this repository.
 3. Open the extension's options (Details, Extension options), paste the token, leave the port
@@ -32,7 +36,40 @@ port = 8790
 extension_id = "kbaoealgdkldcgaojgdehmdaaekkmffd"
 ```
 
-`letibot browser --port N` overrides the port for one run.
+`letibot browser install --port N` overrides the port. After changing the port, run `install`
+again: the agent carries it.
+
+## Controls
+
+All under `letibot browser`:
+
+| verb | does |
+|---|---|
+| `install` | write and load the agent or units, make the token if missing |
+| `uninstall` | unload and remove them |
+| `start` | run the bridge now (`launchctl kickstart`, `systemctl --user start`) |
+| `stop` | stop the running bridge; activation keeps listening and the next connection starts it |
+| `restart` | stop and start, running the binary on disk now: the step after a rebuild |
+| `off`, `on` | disable or enable activation entirely (`launchctl bootout`/`bootstrap`, `systemctl --user disable`/`enable --now` the socket) |
+| `status` | installed, activation on, running (pid, binary, whether it was rebuilt since it started), port, socket path, open grants |
+| `logs` | follow the log: `~/Library/Logs/letibot/browser.log` on macOS, the journal on Linux |
+
+The agent runs the `letibot` binary `install` was run from, resolved, so a rebuild in place plus
+`restart` is the whole update. `status` says STALE when the binary on disk is newer than the
+running bridge, and names any part of the installed agent that differs from what `install` would
+write now (another binary, port or socket path); `install` again rewrites it.
+
+The bridge exits 0 after 10 minutes with no request, no open look or drive grant and no ask stream.
+It stops polling its sockets before it exits, so a connection that arrives meanwhile waits in the
+manager's socket and starts the next bridge. Log lines never carry the token.
+
+The session socket stays at `<rundir>/browser.sock`, the daemon sockets' directory. launchd cannot
+expand `$TMPDIR`, so `install` writes the resolved path into the agent; if the rundir moves,
+`status` says the installed path is stale.
+
+Plain `letibot browser` (and `--port N`) is a foreground run for debugging, with the setup text on
+stderr. While activation is on it refuses, because the manager holds the port: `letibot browser off`
+first, `on` after.
 
 ## Use
 
@@ -107,7 +144,7 @@ Revoke, any of:
 
 The session uses the `screen` tool's `tab` op: `grants`, `shot`, `read`, `click`, `type`, `key`,
 `navigate`, `scroll`. `grants` reports the kind, `look` or `drive`. A session with no grant is refused with "no tab is allowed for this session -
-the operator allows one from the extension popup". If `letibot browser` is not running, the tool
+the operator allows one from the extension popup". If the bridge is neither installed nor running, the tool
 says so.
 
 What the session can do, and only on the allowed tab:

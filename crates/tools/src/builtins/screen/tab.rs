@@ -66,8 +66,9 @@ fn ask(socket: &Path, req: &Value) -> Result<Value, Box<Invocation>> {
         fail(
             "`letibot browser` is not running",
             format!(
-                "nothing answers on {}. The operator starts it on this machine with `letibot \
-                 browser`, then allows a tab for this session from the extension popup.",
+                "nothing answers on {}. The operator installs it once on this machine with \
+                 `letibot browser install` (it then starts on demand), then allows a tab for \
+                 this session from the extension popup.",
                 socket.display()
             ),
         )

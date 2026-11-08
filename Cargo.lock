@@ -1401,6 +1401,7 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 name = "letibot"
 version = "0.6.0"
 dependencies = [
+ "letibot-activation",
  "letibot-bridge",
  "letibot-dialect-glm",
  "letibot-dialect-qwen",
@@ -1419,6 +1420,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "letibot-activation"
+version = "0.6.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "letibot-backend"
 version = "0.6.0"
 dependencies = [
@@ -1429,6 +1437,7 @@ dependencies = [
 name = "letibot-bridge"
 version = "0.6.0"
 dependencies = [
+ "letibot-activation",
  "letibot-harnessd",
  "letibot-room",
  "letibot-sessionlog",

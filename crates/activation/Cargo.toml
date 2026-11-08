@@ -1,0 +1,11 @@
+[package]
+name = "letibot-activation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# `launch_activate_socket`, `getsockname`, `poll` and `kill(pid, 0)`: raw syscalls, no runtime.
+libc = "0.2"

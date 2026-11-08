@@ -349,7 +349,8 @@ VERBS
                               turns, feedback, session ID, sql
   boundary [--mode NAME]      what a command gets: paths, network, env, hidden
   notes path|push             the notes checkout, and the one step that pushes it
-  browser [--port N]          the Chrome extension's bridge on 127.0.0.1 (docs/browser.md)
+  browser [VERB]              the Chrome extension's bridge on 127.0.0.1 (docs/browser.md):
+                              install, start, stop, restart, off, on, status, logs
   fb --session S [+|-] NOTE   mark a session's last turn from a shell
   migrate SESSION --to HOST   move a session's whole daemon to a host, or back with
                               `--to local` (`letibot --migrate` is the same verb)

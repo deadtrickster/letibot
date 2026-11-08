@@ -475,8 +475,93 @@ impl Drop for Look<'_> {
     }
 }
 
-/// `letibot browser`'s body once the CLI has read the config: bind, print, serve.
+/// The launchd label and the systemd unit base name.
+pub const LABEL: &str = "io.letibot.browser";
+pub const UNIT: &str = "letibot-browser";
+
+/// An activated bridge with no request, grant or open stream for this long exits.
+pub const IDLE: Duration = Duration::from_secs(10 * 60);
+
+/// Whether an activated bridge may exit now. A grant is held by the extension's poll and an
+/// ask stream by its turn; either keeps the bridge, however quiet the wire is.
+pub fn idle_exit(idle_for: Duration, grants: usize, streams: usize) -> bool {
+    letibot_activation::serve::idle_due(idle_for, IDLE, grants + streams)
+}
+
+/// The two sockets the manager holds: the extension's TCP port and the daemons' unix socket.
+pub fn sockets(port: u16, unix: &Path) -> Vec<letibot_activation::Socket> {
+    vec![
+        letibot_activation::Socket::Tcp {
+            name: "http".into(),
+            host: [127, 0, 0, 1].into(),
+            port,
+        },
+        letibot_activation::Socket::Unix {
+            name: "sock".into(),
+            path: unix.to_path_buf(),
+        },
+    ]
+}
+
+/// The agent or units for a bridge on `port`, run as `program browser`. The unix socket path
+/// is resolved now, because launchd cannot expand `$TMPDIR`.
+pub fn spec(
+    port: u16,
+    program: &Path,
+    env: Vec<(String, String)>,
+    home: &Path,
+) -> letibot_activation::Spec {
+    letibot_activation::Spec {
+        label: LABEL.into(),
+        unit: UNIT.into(),
+        description: "letibot browser bridge".into(),
+        program: vec![program.to_string_lossy().into_owned(), "browser".into()],
+        env,
+        sockets: sockets(port, &letibot_tools::builtins::screen::browser_socket()),
+        log: log_path(home),
+    }
+}
+
+/// launchd's log for the bridge. Under systemd its stderr is in the journal.
+pub fn log_path(home: &Path) -> PathBuf {
+    home.join("Library/Logs/letibot/browser.log")
+}
+
+/// Where a running bridge notes its pid and binary, for `status`.
+pub fn state_path() -> PathBuf {
+    crate::daemon::rundir().join("browser.state")
+}
+
+/// The setup steps, with the token when it was made just now.
+pub fn setup_text(token_path: &Path, new_token: Option<&str>) -> String {
+    let ext = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions/chrome");
+    let ext = ext.canonicalize().unwrap_or(ext);
+    let status = match new_token {
+        Some(t) => format!(
+            "a new token, shown this once:\n\n    {t}\n\n  kept in {}, mode 0600",
+            token_path.display()
+        ),
+        None => format!("you have a token already, in {}", token_path.display()),
+    };
+    format!(
+        "letibot browser: {status}\n\n\
+         Setup, once:\n\
+         \x20 1. chrome://extensions, turn on Developer mode\n\
+         \x20 2. Load unpacked: {}\n\
+         \x20 3. the extension's options: paste the token, Save. The popup picks the session.\n\
+         `letibot browser install` starts the bridge on demand from then on; after a rebuild,\n\
+         `letibot browser restart` runs the new binary. More: docs/browser.md\n",
+        ext.display()
+    )
+}
+
+/// `letibot browser`'s body once the CLI has read the config. Started by launchd or systemd
+/// it takes their sockets, logs no token and exits when idle; in the foreground it binds both
+/// itself and runs until killed.
 pub fn run(port: u16, extension_id: &str, token_path: &Path) -> Result<(), String> {
+    use letibot_activation::intake::{self, Listener};
+    use std::os::fd::AsRawFd;
+    let managed = letibot_activation::activated();
     let (token, created) = token(token_path)?;
     let inbox = ask::default_inbox().ok_or("no $HOME: the picture inbox has no default")?;
     ask::sweep(&inbox);
@@ -485,7 +570,27 @@ pub fn run(port: u16, extension_id: &str, token_path: &Path) -> Result<(), Strin
         _ => PathBuf::from(std::env::var_os("HOME").ok_or("no $HOME")?)
             .join(".local/share/letibot/sessions.db"),
     };
-    let listener = bind(SocketAddr::from(([127, 0, 0, 1], port)))?;
+    let sock = letibot_tools::builtins::screen::browser_socket();
+    let (listener, unix) = match managed {
+        Some(m) => {
+            let mut got = intake::take(m, &sockets(port, &sock))?.into_iter();
+            match (got.next(), got.next()) {
+                (Some(Listener::Tcp(t)), Some(Listener::Unix(u))) => (t, u),
+                _ => {
+                    return Err(format!(
+                        "{} passed the sockets in the wrong shape",
+                        m.as_str()
+                    ));
+                }
+            }
+        }
+        None => (
+            bind(SocketAddr::from(([127, 0, 0, 1], port)))?,
+            tab::bind(&sock)?,
+        ),
+    };
+    // The Host door checks the port actually held, which under activation is the agent's.
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
     let server = Arc::new(Server {
         token: token.clone(),
         origin: format!("chrome-extension://{extension_id}"),
@@ -497,37 +602,122 @@ pub fn run(port: u16, extension_id: &str, token_path: &Path) -> Result<(), Strin
         patience: crate::tools::DEFAULT_TIMEOUT,
         tabs: Arc::default(),
     });
-    let sock = letibot_tools::builtins::screen::browser_socket();
-    let unix = tab::bind(&sock)?;
-    let tabs = server.tabs.clone();
-    std::thread::Builder::new()
-        .name("browser-sock".into())
-        .spawn(move || tab::serve_socket(unix, tabs))
-        .map_err(|e| format!("the socket thread: {e}"))?;
+    let by = managed.map_or(String::new(), |m| format!("started by {}, ", m.as_str()));
     eprintln!(
-        "letibot browser: listening on 127.0.0.1:{port} for {}, sessions on {}",
+        "letibot browser: {by}listening on 127.0.0.1:{port} for {}, sessions on {}",
         server.origin,
         sock.display()
     );
-    let ext = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions/chrome");
-    let ext = ext.canonicalize().unwrap_or(ext);
-    let status = if created {
-        format!(
-            "a new token, shown this once:\n\n    {token}\n\n  kept in {}, mode 0600",
+    match (managed, created) {
+        (None, _) => eprintln!("{}", setup_text(token_path, created.then_some(&*token))),
+        (Some(_), true) => eprintln!(
+            "letibot browser: a new token was made in {} (mode 0600); paste it from there",
             token_path.display()
-        )
-    } else {
-        format!("you have a token already, in {}", token_path.display())
-    };
-    eprintln!(
-        "letibot browser: {status}\n\n\
-         Setup, once:\n\
-         \x20 1. chrome://extensions, turn on Developer mode\n\
-         \x20 2. Load unpacked: {}\n\
-         \x20 3. the extension's options: paste the token, Save. The popup picks the session.\n\
-         More: docs/browser.md\n",
-        ext.display()
+        ),
+        (Some(_), false) => {}
+    }
+    let state = state_path();
+    let _ = letibot_activation::state::State::this_process().write(&state);
+    for l in [listener.as_raw_fd(), unix.as_raw_fd()] {
+        // SAFETY: O_NONBLOCK on a listener this process owns; accepts stop at WouldBlock.
+        unsafe {
+            let fl = libc::fcntl(l, libc::F_GETFL);
+            libc::fcntl(l, libc::F_SETFL, fl | libc::O_NONBLOCK);
+        }
+    }
+    let activity = Arc::new(letibot_activation::serve::Activity::default());
+    let cache: Arc<Mutex<Option<(Instant, Vec<sessions::Row>)>>> = Arc::default();
+    letibot_activation::serve::poll_loop(
+        &[listener.as_raw_fd(), unix.as_raw_fd()],
+        Duration::from_secs(1),
+        |i| {
+            if i == 0 {
+                while let Ok((stream, _)) = listener.accept() {
+                    let _ = stream.set_nonblocking(false);
+                    activity.touch();
+                    let busy = activity.busy();
+                    let (server, cache) = (server.clone(), cache.clone());
+                    let _ = std::thread::Builder::new()
+                        .name("browser-conn".into())
+                        .spawn(move || {
+                            let _busy = busy;
+                            handle(stream, &server, &cache)
+                        });
+                }
+            } else {
+                while let Ok((stream, _)) = unix.accept() {
+                    let _ = stream.set_nonblocking(false);
+                    let busy = activity.busy();
+                    let (tabs, act) = (server.tabs.clone(), activity.clone());
+                    let _ = std::thread::Builder::new()
+                        .name("browser-tab".into())
+                        .spawn(move || {
+                            let _busy = busy;
+                            tab::connection(stream, &tabs, &|| act.touch())
+                        });
+                }
+            }
+        },
+        || {
+            managed.is_some()
+                && idle_exit(
+                    activity.idle_for(),
+                    server.tabs.holds(),
+                    activity.in_flight(),
+                )
+        },
     );
-    serve(listener, server);
+    if letibot_activation::state::State::read(&state).is_some_and(|s| s.pid == std::process::id()) {
+        let _ = std::fs::remove_file(&state);
+    }
+    eprintln!(
+        "letibot browser: idle for {} min with no grant and no stream; exiting, the next \
+         connection starts it again",
+        IDLE.as_secs() / 60
+    );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_exit_waits_for_quiet_grants_and_streams() {
+        assert!(idle_exit(IDLE, 0, 0));
+        assert!(!idle_exit(IDLE - Duration::from_secs(1), 0, 0));
+        assert!(!idle_exit(IDLE * 3, 1, 0), "an open grant keeps it");
+        assert!(!idle_exit(IDLE * 3, 0, 1), "an open ask stream keeps it");
+    }
+
+    #[test]
+    fn the_spec_names_the_daemons_socket_and_the_agent_log() {
+        let s = spec(
+            8791,
+            Path::new("/opt/lb/letibot"),
+            Vec::new(),
+            Path::new("/h"),
+        );
+        assert_eq!(s.program, vec!["/opt/lb/letibot", "browser"]);
+        assert_eq!(
+            s.sockets[1],
+            letibot_activation::Socket::Unix {
+                name: "sock".into(),
+                path: letibot_tools::builtins::screen::browser_socket(),
+            }
+        );
+        assert_eq!(s.log, Path::new("/h/Library/Logs/letibot/browser.log"));
+        assert!(
+            letibot_activation::render::plist(&s)
+                .contains("<key>SockServiceName</key>\n\t\t\t<string>8791</string>")
+        );
+    }
+
+    #[test]
+    fn the_setup_text_names_install_and_restart() {
+        let t = setup_text(Path::new("/t/browser.token"), None);
+        assert!(t.contains("letibot browser install"), "{t}");
+        assert!(t.contains("letibot browser restart"), "{t}");
+        assert!(t.contains("/t/browser.token"));
+    }
 }

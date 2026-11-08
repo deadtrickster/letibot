@@ -52,6 +52,9 @@ pub const ANSWER_WITHIN: Duration = Duration::from_secs(40);
 
 const LINE_MAX: u64 = 64 * 1024;
 
+/// The socket act `letibot browser status` asks. It does not count as use.
+pub const STATUS: &str = "status";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// Opened by an ask, for `shot` and `read`, until the turn that took the question ends.
@@ -167,6 +170,20 @@ impl Tabs {
             g.looks.remove(session);
             g.prune();
         }
+    }
+
+    /// Open grants, drive and look: an idle bridge with one is not idle.
+    pub fn count(&self) -> usize {
+        let g = self.lock();
+        g.grants.len() + g.looks.len()
+    }
+
+    /// The grants that keep an activated bridge up. Drive grants count only while the worker
+    /// polls: after Chrome closes they would otherwise hold it forever.
+    pub fn holds(&self) -> usize {
+        let g = self.lock();
+        let live = g.seen.is_some_and(|at| at.elapsed() < WORKER_STALE);
+        g.looks.len() + if live { g.grants.len() } else { 0 }
     }
 
     /// Whether any grant is open, so the worker's poll is worth holding.
@@ -381,9 +398,13 @@ fn log(session: &str, url: &str, act: &str, outcome: &Result<Value, String>) {
 }
 
 /// Answer one socket request: `{session, act, args}` -> `{ok, grant, result}` or `{ok, error}`.
+/// `{act: "status"}` needs no session and answers `{ok, grants, pid}` for `letibot browser status`.
 pub fn answer(tabs: &Tabs, req: &Value) -> Value {
     let session = req.get("session").and_then(Value::as_str).unwrap_or("");
     let act = req.get("act").and_then(Value::as_str).unwrap_or("");
+    if act == STATUS {
+        return json!({ "ok": true, "grants": tabs.count(), "pid": std::process::id() });
+    }
     if session.is_empty() {
         return json!({ "ok": false, "error": "the request names no session" });
     }
@@ -436,11 +457,23 @@ pub fn serve_socket(listener: UnixListener, tabs: Arc<Tabs>) {
         let tabs = tabs.clone();
         let _ = std::thread::Builder::new()
             .name("browser-tab".into())
-            .spawn(move || connection(stream, &tabs));
+            .spawn(move || connection(stream, &tabs, &|| {}));
     }
 }
 
-fn connection(stream: UnixStream, tabs: &Tabs) {
+/// The open grant count of the bridge on `socket`, if one answers within two seconds.
+pub fn ask_status(socket: &Path) -> Option<usize> {
+    let mut s = UnixStream::connect(socket).ok()?;
+    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+    writeln!(s, "{}", json!({ "act": STATUS })).ok()?;
+    let mut line = String::new();
+    BufReader::new(s).take(LINE_MAX).read_line(&mut line).ok()?;
+    let v: Value = serde_json::from_str(&line).ok()?;
+    v["grants"].as_u64().map(|n| n as usize)
+}
+
+/// One daemon's connection. `used` is called per request other than [`STATUS`].
+pub fn connection(stream: UnixStream, tabs: &Tabs, used: &dyn Fn()) {
     let Ok(mut out) = stream.try_clone() else {
         return;
     };
@@ -460,7 +493,12 @@ fn connection(stream: UnixStream, tabs: &Tabs) {
             return;
         }
         let reply = match serde_json::from_str::<Value>(&line) {
-            Ok(req) => answer(tabs, &req),
+            Ok(req) => {
+                if req.get("act").and_then(Value::as_str) != Some(STATUS) {
+                    used();
+                }
+                answer(tabs, &req)
+            }
             Err(e) => json!({ "ok": false, "error": format!("the request is not JSON: {e}") }),
         };
         if writeln!(out, "{reply}").is_err() {
@@ -624,6 +662,18 @@ mod tests {
         tabs.unlook("s-a", "ask-1");
         assert_eq!(tabs.grant("s-a").unwrap_err(), NO_GRANT);
         assert!(!tabs.any());
+    }
+
+    #[test]
+    fn status_needs_no_session_and_counts_both_kinds_of_grant() {
+        let tabs = Tabs::default();
+        tabs.sync(vec![("s-a".into(), grant(1))], |_| Ok(()));
+        tabs.look("s-b", "ask-1", 2, "https://example.com/", "t");
+        let v = answer(&tabs, &json!({ "act": STATUS }));
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["grants"], 2);
+        assert_eq!(tabs.count(), 2);
+        assert_eq!(tabs.holds(), 2, "the worker just synced");
     }
 
     #[test]

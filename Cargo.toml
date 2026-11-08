@@ -10,6 +10,9 @@ members = [
     "crates/dialect-glm",
     "crates/dialect-qwen",
     "crates/tokencore",
+    # Socket activation (launchd, systemd --user) for the long-lived helpers: the browser
+    # bridge first, the room coordinator next. Depends on libc only.
+    "crates/activation",
     # The event table's type and its non-blocking channel (and, behind `store`, the writer
     # thread and the `letibot stats` reader) — docs/metrics.md, TODO R81.
     "crates/metrics",
@@ -176,3 +179,4 @@ letibot-harnessd = { path = "crates/harnessd", default-features = false }
 letibot-opencode = { path = "crates/opencode" }
 letibot-claude = { path = "crates/claude" }
 letibot-bridge = { path = "crates/bridge" }
+letibot-activation = { path = "crates/activation" }

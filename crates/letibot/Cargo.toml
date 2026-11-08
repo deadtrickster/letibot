@@ -66,6 +66,8 @@ letibot-bridge.workspace = true
 # The `[github] post` and `token_path` a seat starts with come from `leticode.toml` at both
 # levels: the user's own file, and the project file that may stop the seat.
 leticode-config.workspace = true
+# `letibot browser install|start|stop|...`: the agent or units and the verbs that drive them.
+letibot-activation.workspace = true
 
 [dev-dependencies]
 # The apparatus machinery, for the one test that needs a machine with listening
