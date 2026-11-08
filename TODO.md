@@ -47,7 +47,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | id | title | group | left |
 |---|---|---|---|
 | R161 | A `bash` call that writes a file is not shown as an edit | Code work | a diff for each file when a command changes more than one (one result carries one `edit` excerpt), and a sweep for a command run in the background — the sweep of the tree the command actually ran in, the single-file diff, the ledger and the nudge are built |
-| R160 | A background job's default deadline silently kills real work | Code work | all of it (room #1043: no default wall-clock deadline for a background job, a liveness kill that says its output is partial, one warning before it, `job_extend`) |
+| R160 | A background job's default deadline silently kills real work | Landed | built in `b824e304`: no default wall-clock deadline for a background job, a dead check that says its output is partial, one warning before it, `job_extend`; the residue is apparatus (this box delegates no cgroup subtree) |
 | R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement) |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | leticl's `:turn-finished` arm (`src/session/seq-gap.lisp:254`) does not read `ends_turn`, so every round's end is drawn as the turn's end |
 | R121 | What a command boundary holds is hardcoded and invisible | Code work | items 1-8 are built: the two seat levels and every role are `[perimeter.<name>]` tables, a child composes its parent's and may only narrow it, and a widening is an operator card. left: `grants_rw` and `secrets` are the user file's alone (operator ruling 2026-11-05), a `leticode` seat with no shell still has no boundary to put a perimeter in front of, and R95's carry-over should call `boundary::env_refusal` |
@@ -111,7 +111,11 @@ Still open: one result carries one `edit` excerpt (`crates/transcript`'s row, th
 
 ## R160 - A background job's default deadline silently kills real work
 
-**Status:** open. left: all of it.
+**Status:** fixed in `b824e304`. left: nothing a session can do. The one residue is apparatus: this
+box delegates no cgroup v2 subtree and bwrap cannot make a user namespace in the seat, so the four
+`crates/tools/tests/liveness.rs` cases that spawn real runs report absent apparatus instead of
+measuring; the mechanism itself is measured in `crates/tools/src/exec/host.rs` against a directory
+tree, which is what the check actually reads (`cpu.stat` and the job's own capture).
 
 Reported by `cc@serenedb` (room #1043) with evidence: in session `s-1794087652770480320` jobs
 j83627 (an exec/s measurement), j83663 and j83667 (retests), j83669 (minimising an oom artifact)
