@@ -43,9 +43,10 @@ pub mod stream;
 
 pub use capture::{CaptureSession, FrameCapture};
 pub use compaction::{
-    CompactionOutcome, Harvest, OverrunPlan, SUMMARY_FIDELITY_PER_MILLE, SUMMARY_INSTRUCTION,
-    SUMMARY_SECTIONS, SummaryAsk, SummaryBudget, TAIL_BECAUSE, TailPlan, TailSplit,
-    UNFINISHED_REASONING_NOTICE, WIRE_SECTIONS, WRITE_ROOM, carried_text, fold_tail_room,
+    CHARS_PER_TOKEN, CompactionOutcome, Harvest, OverrunPlan, PINNED_PER_MILLE,
+    SUMMARY_FIDELITY_PER_MILLE, SUMMARY_INSTRUCTION, SUMMARY_SECTIONS, Section, SummaryAsk,
+    SummaryBudget, TAIL_BECAUSE, TailPlan, TailSplit, Template, UNFINISHED_REASONING_NOTICE,
+    WIRE_SECTIONS, WRITE_ROOM, carried_text, fold_tail_room, instruction_with,
     parse_summary_sections, plan_compaction_tail, plan_cut, plan_fold, plan_overrun, plan_tail,
     run_compaction, summarise_first_half, summarise_overrun, summary_budget, summary_instruction,
     tail_because, tail_budget, tail_split_of, undo_refused_summary,

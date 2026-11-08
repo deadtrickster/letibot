@@ -458,6 +458,27 @@ impl Manifest {
                 ));
             }
         }
+        // A `steer_` or `compact_` export is the ONE name the host asks: the turn has one end and a
+        // compaction one record, so a layer under another name would sit on the stack and never fire.
+        for (prefix, asked) in [
+            (letibot_plugin::steer::PREFIX, letibot_plugin::steer::HOOK),
+            (
+                letibot_plugin::compact::PREFIX,
+                letibot_plugin::compact::HOOK,
+            ),
+        ] {
+            if let Some(hook) = self
+                .hooks
+                .iter()
+                .find(|h| h.starts_with(prefix) && h.as_str() != asked)
+            {
+                return Err(format!(
+                    "the layer `{}` declares `{hook}`, and this host asks `{asked}` and nothing \
+                     else: a name nothing asks would sit on the stack and never fire",
+                    self.name
+                ));
+            }
+        }
         // The tool half first: its sentence names the tool AND the export, which is what a model
         // about to fix the manifest needs.
         for tool in &self.tools {
@@ -1183,6 +1204,21 @@ contract = 1
             why.contains("lifecycle_open"),
             "the events are named: {why}"
         );
+        // And a turn-end or a compaction export is the ONE name the host asks: a second name would
+        // sit on the stack and never fire, which looks exactly like a layer that does nothing.
+        for (declared, asked) in [
+            ("steer_continue", letibot_plugin::steer::HOOK),
+            ("compact_short", letibot_plugin::compact::HOOK),
+        ] {
+            let m = Manifest::parse(&layer(declared)).expect("it parses");
+            let why = m
+                .admit(&[declared.to_string()])
+                .expect_err("a name nothing asks");
+            assert!(why.contains(asked), "`{declared}`: {why}");
+            let good = Manifest::parse(&layer(asked)).expect("it parses");
+            good.admit(&[asked.to_string()])
+                .expect("the name the host asks is admitted");
+        }
     }
 
     /// The operator's own acts are not a layer's to perform: `queue_op` is a person's verdict on the

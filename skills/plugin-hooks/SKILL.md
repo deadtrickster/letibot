@@ -21,12 +21,15 @@ right one is most of the work; after that it is a small wasm module and no relea
 | a session's own boundary needs words or a row — it opened, was re-seated, came back after a restart, was closed | **`lifecycle_<event>`** | at that boundary, with the facts of what changed |
 | a command printed four thousand lines the model has to hold | **`digest_<name>`**, as in `digest_compilers` | on every output, before the spill policy budgets it |
 | a word on the screen names a ticket, a build or a wiki page, and nothing links it | **`link_<name>`**, as in `link_gh` | once per frame, for the words the head's own references did not know |
+| a turn ended when the work was unfinished, or ended when it should have gone on | **`steer_`** — `steer_turn` | at every turn's end, with the harness's own detectors as the facts |
+| a compaction dropped what this project must not lose | **`compact_`** — `compact_summary` | once per compaction, before the record is written |
 | the idle plan-check names the wrong row, or nags at the wrong pace | **`nag_todo`** | on every plan-check the harness is about to deliver |
 
 The contract for some of these and for a pane is the `plugin_hooks` tool, **read from the host's
 own types**: read it before writing anything, and read it again after a refusal.
 `plugin_hooks {"hook":"condition"}` is one kind; no argument is all of them. `adjudicate_floor`,
-`digest_`, `link_`, `nag_`, `tool_` and `command_` are written out below: the host has no page for them yet.
+`digest_`, `link_`, `nag_`, `tool_`, `command_`, `steer_` and `compact_` are written out below: the
+host has no page for them yet.
 
 ### `adjudicate_floor` — the gate's floor
 
@@ -62,8 +65,8 @@ in the layer of the session it governs.
 | a `/` verb the head asks before it answers the line itself | **`command_`** | `command_<verb>`, as in `command_todo` | the verb, as in `/todo …` |
 | a tool in the model's own tool list | **`tool_`** | `tool_<name>`, as in `tool_claude_transcript` | the `tool` list the model is sent |
 
-`plugin_hooks` has no page for `tool_`, `command_`, `complete_`, `digest_`, `link_` or `nag_`: their
-shapes are below, and they are the whole contract.
+`plugin_hooks` has no page for `tool_`, `command_`, `complete_`, `digest_`, `link_`, `nag_`, `steer_`
+or `compact_`: their shapes are below, and they are the whole contract.
 
 ### `pane_<name>` — a screen
 
@@ -195,6 +198,50 @@ Only `http` and `https` targets are drawn: a head cannot ask a terminal whether 
 should open, so anything else is refused whole - an answer of the wrong length links nothing. A trap
 leaves the words the text they were.
 
+### `steer_turn` — the turn's end
+
+```toml
+name = "after-a-record"
+hooks = ["steer_turn"]
+capabilities = []
+```
+
+The one export name is `steer_turn` and `Manifest::admit` refuses any other: a turn has one end, so a
+second name would sit on the stack and never fire. The input is
+`{"v": 1, "reply_tail": "…", "open_rows": […], "native": "…"|
+null, "intent": "…"|null, "deliverable": {"uncommitted": […]}|null,
+"claim": {"line", "resident", "window"}|null, "stall_rounds": 0, "after": "turn"|"compaction",
+"budget": {"continues_left": 1}}` - the harness's own detectors, and `native`, the sentence the
+harness itself would have appended (`null` when it was going to end the turn).
+
+The answer is `{"continue": "…sentence…"}` or `{"stop": true}` and one of them. It **replaces**
+the harness's decision: a `stop` ends a turn the harness would have nudged, and a `continue` carries
+on a turn it would have ended - which is how *keep going after a compaction* becomes a project's own
+rule (`"after": "compaction"`). Two things are the host's and not yours: a continuation when
+`budget.continues_left` is 0, and any continuation of a turn the operator interrupted. Both are
+refused, on the session's log, and the harness's own answer stands.
+
+### `compact_summary` — what a compaction carries
+
+```toml
+name = "our-record"
+hooks = ["compact_summary"]
+capabilities = []
+```
+
+The one export name is `compact_summary`. The input is
+`{"v": 1, "sections": ["## Objective", …], "candidates": [{"id": "agents_md", "kind":
+"agents_md", "tokens": 900, "score": 1}], "budget": {"summary_tokens": 8000, "pinned_tokens":
+2000}}` - the headings the harness's own record asks for, and everything this conversation could pin.
+The answer is `{"sections": […], "extra_instruction": "…", "pin": ["agents_md", "row:1"],
+"after": "continue"|"wait"}`.
+
+`pin` names candidate ids, in the order the pin budget is spent, and the host reads the text and
+carries it verbatim. **A pin past `pinned_tokens` is cut and the cut is said** rather than dropped in
+silence, and a section or an id the host did not offer is refused: you choose among what it scored,
+and never what to keep versus what to lose. `after` is whether the session goes on after the record -
+`continue` is what the wall always did. When to compact and how big the record is are not yours.
+
 ### `nag_todo` — which row the plan-check names, in what words, when next
 
 ```toml
@@ -249,8 +296,9 @@ A `tool_` layer is the one kind that also needs `plugin {"action":"load"}`, beca
 seated when the layer applies: a tool a session has not loaded is not in the model's tool list.
 
 `scaffold` has a template for `pane`, `notice`, `on_tool_call`, `on_tool_result` and `condition`. For
-`digest_`, `link_`, `nag_`, `command_` or `tool_`, scaffold the nearest one and rename the export in
-`plugin.toml` and in `src/lib.rs` - the shape above is the whole of what you are writing.
+`digest_`, `link_`, `nag_`, `steer_`, `compact_`, `command_` or `tool_`, scaffold the nearest one and
+rename the export in `plugin.toml` and in `src/lib.rs` - the shape above is the whole of what you are
+writing.
 
 ## The rules that catch people
 

@@ -3130,6 +3130,7 @@ impl Harness {
             resumed: resume,
             lifecycle_facts: stale_facts.clone(),
             compacting: false,
+            folded: false,
             swept_calls: Default::default(),
             wall_anchor,
             render: parts.wiring.clone(),

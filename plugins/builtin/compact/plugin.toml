@@ -1,0 +1,10 @@
+name = "compact"
+purpose = "what a compaction carries: the harness's own record sections, and the project's AGENTS.md and open rows pinned verbatim"
+# `compact_summary` is the one name the host asks, and `Manifest::admit` refuses any other: a
+# session compacts one conversation at a time, so a second name would never fire.
+hooks = ["compact_summary"]
+# The candidates arrive scored and the pinned text is read by the host under this layer's
+# capabilities: an empty list is the whole of what it may reach, which is why it can pin a file it
+# has never seen.
+capabilities = []
+contract = 1

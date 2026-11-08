@@ -1769,6 +1769,9 @@ impl Harness {
         // turn is not the end of the loop, and what it must not become is a loop where the harness argues with
         // the model. One is the error signal, two is the harness insisting, and an explanation is a real answer.
         let mut nudges_left = 1usize;
+        // The `steer_` input's `after`, taken once per turn: the mark a compaction's fork leaves
+        // describes the TURN that follows it, not one round of that turn (X14).
+        let mut after_a_record: Option<letibot_plugin::steer::After> = None;
         // And a worktree child about to finish with its work outside its branch: the same budget of one, told
         // what is uncommitted once, and then its answer stands, with the parent's completion carrying the line if
         // the tree is still dirty.
@@ -2017,6 +2020,9 @@ impl Harness {
             // this loop's own convergence and the only thing that knows whether the turn goes on.
             if calls.is_empty() {
                 self.append_offer_rows(&mut staged)?;
+                // Taken rather than read: `after` describes THIS turn, and a later turn begins on a
+                // record only if something folded again between them (X14).
+                let after = *after_a_record.get_or_insert_with(|| self.after_the_fold());
                 // A model that stopped because the context is full when it is not: first, ahead of the intent check,
                 // since the excuse is usually why a promise was not kept. It goes through `append_notice`, because the
                 // turn is over and the loop continuing is what makes it a correction rather than a report.
@@ -2025,28 +2031,72 @@ impl Harness {
                 if context_claim.is_some() {
                     goes_on = !claim_in_reasoning;
                 }
-                // The turn boundary, and the one the error signal is about: a turn that ends with no tool call is
-                // exactly the case of a model that says it will start something and forgets. The diff runs before the
-                // reply leaves, reading the assistant's text out of the rows just appended.
-                if !goes_on
-                    && !self.cheap_turn
-                    && nudges_left > 0
-                    && let Some(steer) = self.close_the_turn(&ok.turn_id, &appended)
-                {
-                    nudges_left -= 1;
-                    notices.push((Facts::Steer, steer));
-                    goes_on = true;
-                }
-                // The branch is the deliverable, after the intent check, so a turn that promised work and did not
-                // start it hears about the promise first. Not on a round cut short: an interrupt is the turn being
-                // ENDED, and a nudge that continued it would be the harness overruling the stop.
-                if !goes_on
-                    && !ok.truncated
-                    && !self.cheap_turn
-                    && let Some(steer) = end_of_work.at_turn_end(self.deliverable.as_ref())
-                {
-                    notices.push((Facts::Steer, steer));
-                    goes_on = true;
+                // The turn's end, as one decision (X14). The harness's own two detectors are
+                // computed first and as they always were - their budgets are per turn, so a layer
+                // that overrules them has not taken one from anybody - and a `steer_` layer's answer
+                // replaces what they said. The claim's correction above and a queued operator
+                // message below are not continue-or-stop decisions: a false sentence is corrected
+                // and a person's message is answered whoever is on the stack. A cheap wake is not
+                // offered to a layer at all: silence is the expected end of a turn woken by
+                // passing-by room talk, and no layer may put that noise back.
+                if !goes_on && !self.cheap_turn {
+                    let here = letibot_plugin::steer::Here {
+                        continues_left: nudges_left,
+                        interrupted: ok.truncated,
+                    };
+                    // Not on a round cut short: an interrupt is the turn being ENDED, and a nudge
+                    // that continued it would be the harness overruling the stop.
+                    let mut native: Option<String> = None;
+                    let mut intent = None;
+                    if !ok.truncated {
+                        // The turn boundary, and the one the error signal is about: a turn that ends
+                        // with no tool call is exactly a model that says it will start something and
+                        // forgets. The diff runs before the reply leaves, reading the assistant's text
+                        // out of the rows just appended.
+                        intent = (nudges_left > 0)
+                            .then(|| self.close_the_turn(&ok.turn_id, &appended))
+                            .flatten();
+                        native = intent.clone();
+                        if intent.is_some() {
+                            // The one continuation a turn has, spent where it always was.
+                            nudges_left -= 1;
+                        }
+                        // The branch is the deliverable, after the intent check, so a turn that
+                        // promised work and did not start it hears about the promise first.
+                        if native.is_none() {
+                            native = end_of_work.at_turn_end(self.deliverable.as_ref());
+                        }
+                    }
+                    let decided = self.steer_at_the_turn_end(
+                        TurnEnd {
+                            reply: &text,
+                            claim: &context_claim,
+                            native: native.clone(),
+                            intent,
+                            stall_rounds: progress.stalled_run(),
+                            after,
+                        },
+                        &here,
+                    );
+                    // One `Stop` ends the turn the harness would have carried on; `None` is the
+                    // layer saying nothing the host can use, and the harness's own answer stands.
+                    let said = match decided {
+                        Some(letibot_plugin::steer::Decision::Continue(sentence)) => {
+                            // A continuation the harness would not have taken is the turn's one
+                            // continuation, so it spends the budget; one that repeats the
+                            // harness's own leaves the harness's own accounting alone.
+                            if native.is_none() {
+                                nudges_left = 0;
+                            }
+                            Some(sentence)
+                        }
+                        Some(letibot_plugin::steer::Decision::Stop) => None,
+                        None => native,
+                    };
+                    if let Some(said) = said {
+                        notices.push((Facts::Steer, said));
+                        goes_on = true;
+                    }
                 }
                 // A message queued while the head was running is a prompt, not a footnote: the engine appends what it
                 // finds at the step boundary, and a turn that made no tool call must not return with the message
@@ -3104,6 +3154,59 @@ impl Harness {
         }
     }
 
+    /// The `steer_` input's `after`, off the flag a compaction's fork leaves. Taken, so it describes
+    /// one turn: the next turn begins on a record only if something folded again between them.
+    pub(crate) fn after_the_fold(&mut self) -> letibot_plugin::steer::After {
+        if std::mem::take(&mut self.folded) {
+            letibot_plugin::steer::After::Compaction
+        } else {
+            letibot_plugin::steer::After::Turn
+        }
+    }
+
+    /// The turn's end offered to a `steer_` layer (X14), with the harness's own detectors as the facts
+    /// it reads to overrule them. `None` is *no layer decided* - no layer on the stack, a trap, or an
+    /// answer the host refused - and the harness's own answer then stands.
+    fn steer_at_the_turn_end(
+        &self,
+        at: TurnEnd<'_>,
+        here: &letibot_plugin::steer::Here,
+    ) -> Option<letibot_plugin::steer::Decision> {
+        use letibot_plugin::steer;
+        let host = self.plugin_host()?;
+        // Asked before the facts are gathered: a session with no layer must not pay a `git status`
+        // for a deliverable nothing reads.
+        if !host.answers(steer::HOOK) {
+            return None;
+        }
+        let input = steer::Input {
+            v: letibot_plugin::V,
+            reply_tail: reply_tail(at.reply),
+            open_rows: self.plan_rows(),
+            native: at.native,
+            intent: at.intent,
+            deliverable: self
+                .deliverable
+                .as_ref()
+                .and_then(|d| d.uncommitted())
+                .map(|uncommitted| steer::Deliverable { uncommitted }),
+            claim: at.claim.as_ref().and_then(|(line, facts)| match facts {
+                Facts::ContextClaim { resident, window } => Some(steer::Claim {
+                    line: line.clone(),
+                    resident: *resident,
+                    window: *window,
+                }),
+                _ => None,
+            }),
+            stall_rounds: at.stall_rounds,
+            after: at.after,
+            budget: steer::Budget {
+                continues_left: here.continues_left,
+            },
+        };
+        host.steer(&self.hub, &input, here)
+    }
+
     /// The intent diff at a turn boundary, or `None` when there is nothing to say, which is the common case. Two
     /// questions, both asking whether the turn stopped with something it said it would do still open: the ledger's
     /// declared intentions and the model's own plan. Both are true and are joined. The prose half is opt-in.
@@ -4036,6 +4139,29 @@ fn fallback_notice(
          recorded by the turn that failed. `/models` moves the session back, and the list is in \
          `[fallback] models` in providers.toml."
     )
+}
+
+/// What the harness's own detectors saw at a turn's end, gathered for the `steer_` layer that may
+/// overrule them (X14). Borrowed rather than owned: every field is something the loop already holds.
+struct TurnEnd<'a> {
+    reply: &'a str,
+    claim: &'a Option<(String, Facts)>,
+    /// The sentence the harness itself would append, or `None` when it decided to end the turn.
+    native: Option<String>,
+    /// The intent detector's finding on its own, which the native sentence may or may not be.
+    intent: Option<String>,
+    stall_rounds: usize,
+    after: letibot_plugin::steer::After,
+}
+
+/// The reply's tail, clipped: enough for a layer to read the promises in it, and not so much that a
+/// long answer becomes the layer's whole context.
+fn reply_tail(text: &str) -> String {
+    const TAIL_CHARS: usize = 1_500;
+    let chars: Vec<char> = text.chars().collect();
+    chars[chars.len().saturating_sub(TAIL_CHARS)..]
+        .iter()
+        .collect()
 }
 
 /// The ending for a turn somebody stopped while the retry ladder was waiting: the stop is the

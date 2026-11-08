@@ -245,6 +245,10 @@ pub struct Harness {
     /// True only while [`Harness::compact`] is running its summary turn. See the
     /// context-wall check in `run_rounds` for why that turn must be exempt.
     compacting: bool,
+    /// Whether the conversation was just folded into a record, so the next turn begins on one. Read
+    /// at the turn's end as the `steer_` input's `after` (X14) and taken there, so it describes one
+    /// turn rather than the rest of the session.
+    folded: bool,
     /// Where the abandoned-call sweep stopped last time, so it reads the turn that was added rather
     /// than the whole conversation after every turn.
     swept_calls: crate::harness::turns::SweptCalls,

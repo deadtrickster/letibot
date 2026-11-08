@@ -122,6 +122,8 @@ pub const HOOK_PREFIXES: &[&str] = &[
     "adjudicate_",
     "lifecycle_",
     "nag_",
+    "steer_",
+    "compact_",
 ];
 
 /// The hook kinds this host asks: every prefix of [`HOOK_PREFIXES`] something in this tree builds a
@@ -140,6 +142,8 @@ pub const SERVED_KINDS: &[&str] = &[
     "digest_",
     "link_",
     "nag_",
+    "steer_",
+    "compact_",
 ];
 
 /// The prefixes the runtime recognises and this host never asks: nothing in the tree builds a hook

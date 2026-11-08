@@ -682,8 +682,14 @@ impl Harness {
     pub fn compact_with(&mut self, fold: crate::wall::Fold) -> Result<CompactReport, HarnessError> {
         let before = self.measure_resident().tokens;
         self.compacting = true;
+        // A compaction forks, so the turn that follows begins on a record: the `steer_` input's
+        // `after` says so (X14), and a `compact_` layer's `wait` takes it back inside.
+        self.folded = true;
         let out = self.compact_inner(fold);
         self.compacting = false;
+        if out.is_err() {
+            self.folded = false;
+        }
         if out.is_ok() {
             let base = self.measure_resident();
             let transcript = self.session.transcript_id.clone();
@@ -976,6 +982,9 @@ impl Harness {
                         self.session.ledger.len() as u64,
                     ),
                     carried: "",
+                    // A re-seat that summarises is not a compaction: X15's hook is not asked, so
+                    // the record is written on the harness's own template.
+                    template: None,
                 });
             let mark = self.session.items.len();
             let witness = self.session.witness().cloned();
@@ -1048,6 +1057,92 @@ impl Harness {
             })
             .map(|r| r.content.clone())
             .collect()
+    }
+
+    /// What this compaction could pin, as the host scores it: the project's `AGENTS.md` first, then the
+    /// rows still open. The text rides beside the candidate because only the host reads it - a layer pins
+    /// an id, and `compact::Answer::validate` refuses one this list does not hold (X15).
+    fn compaction_candidates(&self) -> Vec<(letibot_plugin::compact::Candidate, String)> {
+        let mut out = Vec::new();
+        // Through the session's own backend: a placed session's `AGENTS.md` is on that host, and the
+        // daemon's read of the local path would be a tree the session cannot see.
+        let reader =
+            crate::standing_notes::Reader::new(&*self.runtime.backend, &self.cfg.workspace);
+        let agents = ["AGENTS.md", "agents.md", "Agents.md"]
+            .iter()
+            .map(|name| reader.root().join(name))
+            .find_map(|path| reader.read(&path));
+        if let Some(text) = agents.filter(|text| !text.trim().is_empty()) {
+            out.push((
+                letibot_plugin::compact::Candidate {
+                    id: "agents_md".to_string(),
+                    kind: "agents_md".to_string(),
+                    tokens: pin_tokens(&text),
+                    score: 1.0,
+                },
+                text,
+            ));
+        }
+        for (i, row) in self.plan_rows().iter().enumerate() {
+            out.push((
+                letibot_plugin::compact::Candidate {
+                    id: format!("row:{}", i + 1),
+                    kind: "row".to_string(),
+                    tokens: pin_tokens(row),
+                    score: 0.9,
+                },
+                row.clone(),
+            ));
+        }
+        out
+    }
+
+    /// The record's template, when a `compact_` layer answers (X15), and whether the session goes on
+    /// after the record. `None` is the harness's own: nothing here decides WHEN to compact or how big
+    /// the record is - those stay the wall's - and a pin past the pin budget is cut, with the cut said
+    /// so a record that lost `AGENTS.md` is not silent.
+    fn ask_the_compactor(
+        &self,
+        budget: &letibot_turn::SummaryBudget,
+    ) -> Option<(letibot_turn::Template, letibot_plugin::compact::After)> {
+        let host = self.plugin_host()?;
+        // Asked before the candidates are read: a session with no layer must not pay a read of the
+        // project's `AGENTS.md` at every compaction.
+        if !host.answers(letibot_plugin::compact::HOOK) {
+            return None;
+        }
+        let candidates = self.compaction_candidates();
+        let input = letibot_plugin::compact::Input {
+            v: letibot_plugin::V,
+            sections: letibot_turn::Template::headings(),
+            candidates: candidates.iter().map(|(c, _)| c.clone()).collect(),
+            budget: letibot_plugin::compact::Budget {
+                summary_tokens: budget.tokens,
+                pinned_tokens: budget.pinned(),
+            },
+        };
+        let answer = host.compact(&self.hub, &input)?;
+        let pins = answer.fit(&input, input.budget.pinned_tokens);
+        if let Some(said) = pins.cut_said() {
+            self.hub.warn("compaction_pin_cut", said);
+        }
+        Some((
+            letibot_turn::Template {
+                sections: answer.kept_sections(&input).to_vec(),
+                extra: answer.extra_instruction.clone(),
+                pinned: pins
+                    .kept
+                    .iter()
+                    .filter_map(|pin| {
+                        candidates
+                            .iter()
+                            .find(|(c, _)| c.id == pin.id)
+                            .map(|(_, text)| (pin.id.clone(), text.clone()))
+                    })
+                    .collect(),
+            },
+            answer.after,
+        ))
     }
 
     /// Compaction is one summary turn appended to the conversation itself, unless the conversation arrived with
@@ -1254,9 +1349,18 @@ impl Harness {
                     prefix_tokens + per_item.iter().sum::<u64>(),
                 );
                 let carried = letibot_turn::carried_text(&tail);
+                // X15: a layer chooses what the record carries, before the summary turn is asked. A
+                // `wait` takes back the mark the fork would otherwise leave - the session does not go
+                // on by itself, so the turn that follows is not one after a compaction (X14).
+                let asked = self.ask_the_compactor(&budget);
+                self.folded = asked
+                    .as_ref()
+                    .map(|(_, after)| *after == letibot_plugin::compact::After::Continue)
+                    .unwrap_or(true);
                 let ask = letibot_turn::SummaryAsk {
                     budget,
                     carried: &carried,
+                    template: asked.as_ref().map(|(template, _)| template),
                 };
                 let mark = self.session.items.len();
                 let witness = self.session.witness().cloned();
@@ -2024,6 +2128,12 @@ pub(crate) fn smaller_tail(
     } else {
         split
     }
+}
+
+/// What a pin costs, in ledger tokens: the same ratio the rest of this module estimates with, since a
+/// pin is text competing with the record for one window and never a measured count.
+fn pin_tokens(text: &str) -> u64 {
+    (text.chars().count() as u64).div_ceil(letibot_turn::CHARS_PER_TOKEN)
 }
 
 /// The closing line of an automatic compaction, in one unit, said once, shared by both doors so they cannot word

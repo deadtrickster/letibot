@@ -9,6 +9,7 @@ pub const V: u32 = 1;
 
 pub mod adjudicate;
 pub mod command;
+pub mod compact;
 pub mod complete;
 pub mod condition;
 pub mod digest;
@@ -17,6 +18,7 @@ pub mod link;
 pub mod nag;
 pub mod notice;
 pub mod pane;
+pub mod steer;
 pub mod tool_call;
 pub mod tool_result;
 
@@ -60,6 +62,8 @@ mod tests {
         "complete_",
         "adjudicate_",
         "lifecycle_",
+        "steer_",
+        "compact_",
     ];
 
     fn admitted(hook: &str) -> bool {
@@ -82,6 +86,8 @@ mod tests {
         assert!(admitted(&digest::hook("compilers")));
         assert!(admitted(&link::hook("gh")));
         assert!(admitted(nag::HOOK), "{}", nag::HOOK);
+        assert!(admitted(steer::HOOK), "{}", steer::HOOK);
+        assert!(admitted(compact::HOOK), "{}", compact::HOOK);
         assert!(admitted(&pane::hook("chat")));
         for kind in notice::KINDS {
             let hook = notice::hook(kind);

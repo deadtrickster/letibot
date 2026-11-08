@@ -332,6 +332,12 @@ impl PluginHost {
         self.answering(hook).is_some_and(|a| a.trusted)
     }
 
+    /// Whether any layer of this session answers `hook` at all - what a caller asks before it pays
+    /// to build an input nothing would read.
+    pub fn answers(&self, hook: &str) -> bool {
+        self.answering(hook).is_some()
+    }
+
     /// This host as the daemon uses it: rano loads the modules and cargo builds them. A built-in
     /// that declares a tool is seated only for a session that declared it; its panes are installed
     /// at the door a head comes through.
@@ -345,6 +351,10 @@ impl PluginHost {
         host.install_builtin_panes = true;
         host.install_builtin_tools(&crate::plugins::declared_tools(session, workspace));
         host.install_builtin_nags();
+        // The third door's other half: a built-in whose hook is neither a pane nor a tool decides
+        // something on every session, and the harness's own decision is a LAYER only if it is on
+        // the stack.
+        host.install_builtin_deciders();
         host
     }
 
@@ -435,6 +445,43 @@ impl PluginHost {
                     .register_builtin_bytes(builtin.name, builtin.manifest, builtin.wasm)
             {
                 // The stack has recorded the failure; this is the line the daemon's log shows.
+                eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
+            }
+        }
+    }
+
+    /// Put the binary's OWN `steer_`/`compact_` decisions on this stack: the built-in layers whose
+    /// hooks are neither a pane (a head's door) nor a tool (a project's declaration), so they were
+    /// installed at no door at all. A `nag_` built-in comes through
+    /// [`PluginHost::install_builtin_nags`].
+    fn install_builtin_deciders(&self) {
+        for builtin in letibot_builtins::table() {
+            let Ok(manifest) = Manifest::parse(builtin.manifest) else {
+                continue;
+            };
+            let decides = manifest.hooks.iter().any(|h| {
+                h.starts_with(letibot_plugin::steer::PREFIX)
+                    || h.starts_with(letibot_plugin::compact::PREFIX)
+            });
+            if !decides {
+                continue;
+            }
+            // A layer that already answers the hook is the one that decides: the built-in belongs
+            // under it, and a stack that put it above would silently overrule the project.
+            let answered = {
+                let inner = self.lock();
+                inner.stack.layers().iter().any(|l| {
+                    !l.disabled && l.manifest.hooks.iter().any(|h| manifest.hooks.contains(h))
+                })
+            };
+            if answered {
+                continue;
+            }
+            if let Err(why) = self.lock().stack.register_builtin_bytes(
+                builtin.name,
+                builtin.manifest,
+                builtin.wasm,
+            ) {
                 eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
             }
         }
@@ -683,6 +730,71 @@ impl PluginHost {
                 None
             }
         }
+    }
+
+    /// The turn-end decision through `steer_turn` (X14), with the host's two rules applied: the
+    /// continuation budget and an interrupted turn are refused here rather than trusted to the
+    /// layer, and a refusal says so. `None` is the harness's own decision.
+    pub fn steer(
+        &self,
+        hub: &Arc<Hub>,
+        input: &letibot_plugin::steer::Input,
+        here: &letibot_plugin::steer::Here,
+    ) -> Option<letibot_plugin::steer::Decision> {
+        use letibot_plugin::steer;
+        let value = serde_json::to_value(input).ok()?;
+        let resolved = self.ask(hub, steer::HOOK, &value)?;
+        let answer = resolved.answer?;
+        let by = resolved.by.clone().unwrap_or_default();
+        let parsed = match steer::Answer::parse(answer.clone()) {
+            Ok(parsed) => parsed,
+            Err(why) => {
+                self.complain(
+                    hub,
+                    &by,
+                    &format!("{why}. The harness's own decision stands"),
+                );
+                return None;
+            }
+        };
+        match parsed.decide(here) {
+            Ok(decision) => Some(decision),
+            Err(why) => {
+                self.complain(
+                    hub,
+                    &by,
+                    &format!("{why}. The harness's own decision stands"),
+                );
+                None
+            }
+        }
+    }
+
+    /// One compaction's template through `compact_summary` (X15): the sections the record keeps, a
+    /// layer's own sentence, and what it pins. `None` is the harness's own record - no layer, a
+    /// trap, or an answer naming something this compaction did not offer.
+    pub fn compact(
+        &self,
+        hub: &Arc<Hub>,
+        input: &letibot_plugin::compact::Input,
+    ) -> Option<letibot_plugin::compact::Answer> {
+        use letibot_plugin::compact;
+        let value = serde_json::to_value(input).ok()?;
+        let resolved = self.ask(hub, compact::HOOK, &value)?;
+        let answer = resolved.answer?;
+        let by = resolved.by.clone().unwrap_or_default();
+        let parsed = match compact::Answer::parse(answer.clone()) {
+            Ok(parsed) => parsed,
+            Err(why) => {
+                self.complain(hub, &by, &format!("{why}. The harness's own record stands"));
+                return None;
+            }
+        };
+        if let Err(why) = parsed.validate(input) {
+            self.complain(hub, &by, &format!("{why}. The harness's own record stands"));
+            return None;
+        }
+        Some(parsed)
     }
 
     /// One sentence for this session's model, queued once: a failure said every call is noise the
@@ -1837,7 +1949,9 @@ fn synthetic_pane_input(feeds: &BTreeMap<String, Value>) -> Value {
 /// asked yet: the SDK's own synthetic example of that kind. A layer that cannot answer it traps on
 /// its own first frame, which is the cheapest defect to find.
 fn synthetic_for(hook: &str, feeds: &BTreeMap<String, Value>) -> Value {
-    use letibot_plugin::{condition, digest, link, nag, notice, tool_call, tool_result};
+    use letibot_plugin::{
+        compact, condition, digest, link, nag, notice, steer, tool_call, tool_result,
+    };
     let value = if hook.starts_with("pane_") {
         return synthetic_pane_input(feeds);
     } else if hook == tool_call::HOOK {
@@ -1852,6 +1966,10 @@ fn synthetic_for(hook: &str, feeds: &BTreeMap<String, Value>) -> Value {
         serde_json::to_value(link::Input::synthetic())
     } else if hook.starts_with(nag::PREFIX) {
         serde_json::to_value(nag::Input::synthetic())
+    } else if hook == steer::HOOK {
+        serde_json::to_value(steer::Input::synthetic())
+    } else if hook == compact::HOOK {
+        serde_json::to_value(compact::Input::synthetic())
     } else {
         serde_json::to_value(notice::Notice::synthetic())
     };
@@ -1867,7 +1985,9 @@ fn accepted(
     declared: &[String],
     input: &Value,
 ) -> Result<String, String> {
-    use letibot_plugin::{condition, digest, link, nag, notice, tool_call, tool_result};
+    use letibot_plugin::{
+        compact, condition, digest, link, nag, notice, steer, tool_call, tool_result,
+    };
     if hook.starts_with("pane_") {
         let view = validated(answer, hook, hook, declared)?;
         return Ok(format!("a view the host can drive — \"{}\"", view.title));
@@ -1971,6 +2091,31 @@ fn accepted(
         let input: nag::Input =
             serde_json::from_value(input.clone()).map_err(|e| format!("not a nag input ({e})"))?;
         return Ok(out.said(&input));
+    }
+    if hook == steer::HOOK {
+        let out = steer::Answer::parse(answer.clone())?;
+        return Ok(match out {
+            steer::Answer::Continue(text) => format!("it carries the turn on: {text}"),
+            steer::Answer::Stop => "it ends the turn".to_string(),
+        });
+    }
+    if hook == compact::HOOK {
+        let out = compact::Answer::parse(answer.clone())?;
+        let mut said = Vec::new();
+        if !out.sections.is_empty() {
+            said.push(format!("the record keeps {}", out.sections.join(", ")));
+        }
+        if let Some(extra) = &out.extra_instruction {
+            said.push(format!("it adds: {extra}"));
+        }
+        if !out.pin.is_empty() {
+            said.push(format!("it pins {}", out.pin.join(", ")));
+        }
+        said.push(match out.after {
+            compact::After::Continue => "and the session goes on after it".to_string(),
+            compact::After::Wait => "and the session waits after it".to_string(),
+        });
+        return Ok(said.join(", "));
     }
     let out: notice::NoticeOut =
         serde_json::from_value(answer.clone()).map_err(|e| format!("not a notice ({e})"))?;

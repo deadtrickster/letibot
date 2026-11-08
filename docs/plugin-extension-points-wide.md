@@ -662,6 +662,60 @@ Owns `harnessd/src/harness/turns.rs` turn-end block only (:1932-1983, after K2 l
 `agents_md_is_pinned_by_the_builtin_compact_layer`,
 `the_builtin_compact_layer_asks_what_summary_instruction_asked`.
 
+What landed:
+
+- **Two names, not two families.** `steer_turn` and `compact_summary` (`letibot_plugin::steer::HOOK`,
+  `::compact::HOOK`). A turn has one end and a session compacts one conversation at a time, so a
+  second name would sit on the stack and never fire - and `Manifest::admit` now refuses one, the
+  same rule `lifecycle_`'s events have. Both prefixes are on `HOOK_PREFIXES` and `SERVED_KINDS`, and
+  the `plugin-hooks` skill teaches the two contracts (a test holds that list to the skill).
+- **`steer_turn` replaces the decision, and the detectors are its input.** The input is
+  `reply_tail`, `open_rows`, `native` (the sentence the harness itself would have appended, or
+  `null`), `intent` (the intent detector's finding on its own - X14's `intent_diff`, as the harness
+  words it), `deliverable {uncommitted}`, `claim {line, resident, window}`, `stall_rounds`, `after`
+  and `budget {continues_left}`; the answer is `{"continue": …}` or `{"stop": true}`. `native` is
+  there for the reason the built-in layer exists at all: a layer that changes nothing says the
+  harness's own sentence back. The harness's two detectors are computed first and exactly as they
+  were - their budgets are per turn, so a layer that overrules them has taken nothing from anybody.
+  `continues_left` is `nudges_left`; a layer's continuation the harness would NOT have taken spends
+  it, and one that repeats `native` leaves the harness's accounting alone, so a session with the
+  built-in layer behaves as it did before this package.
+- **The two host rules are the host's**: `Answer::decide` refuses a continue past
+  `budget.continues_left` and any continue of an interrupted turn, `PluginHost::steer` says the
+  refusal on the session's log, and the harness's own decision then stands. An interrupted turn now
+  gates the *intent* nudge as well: before this, only the deliverable check was held back on a round
+  cut short, which is the same stop the rule is about.
+- **Two things stayed outside the door, and they are not continue-or-stop decisions.** The context
+  claim's correction (a false sentence is corrected, and its `goes_on` is incidental) and a queued
+  operator message (a person's prompt is answered by somebody). A project can neither suppress nor
+  reword them; both are still facts the layer is handed (`claim`, and the reply itself).
+- **`continue after compaction` is a project's rule, and the fact behind it is the host's**: a
+  compaction's fork sets `Harness::folded`, the turn-end takes it (`after_the_fold`), so the next
+  turn's input says `after: "compaction"` once and the turn after that does not. A `compact_`
+  layer's `after: "wait"` withholds the mark. The wall's own continuation (`wall_goes_on`,
+  `WALL_CONTINUES`) is still `turn_tail.rs`'s and this package does not own it.
+- **`compact_summary` chooses what the record carries.** The input is the harness's `sections`,
+  `candidates` (`agents_md`, then `row:<n>` - the host reads `AGENTS.md` through the session's own
+  backend, so a placed session reads its own tree) and `budget {summary_tokens, pinned_tokens}`;
+  the answer is `sections`, `extra_instruction`, `pin` and `after`. A section or a pin the host did
+  not offer is refused at the hook; a pin past `pinned_tokens` is cut in the order asked for, and
+  the cut is said (`compaction_pin_cut`). `pinned_tokens` is `SummaryBudget::pinned()`: a quarter of
+  the record's room (`PINNED_PER_MILLE`).
+- **The template is data.** `turn/src/compaction.rs` now holds `SECTIONS` (heading + the line saying
+  what goes under it), `RULES` and the three leads; `instruction_with(budget, &Template)` renders
+  them, a chosen template included, and `summary_instruction` is the default template rendered by
+  the same function. A test pins the rendering to the instruction as it was written longhand, so no
+  session's compaction prompt moved. `Template {sections, extra, pinned}` also carries the pinned
+  text, which is how the host puts `AGENTS.md` in front of the summariser.
+- **A third door for built-ins.** `PluginHost::install_builtin_deciders` runs at `production()` and
+  puts a built-in whose hook is neither a pane (a head's door) nor a tool (a project's declaration)
+  on every session's stack - such a layer was installed at no door at all. `nag_`'s built-in comes
+  through `install_builtin_nags` (K3), which runs beside it. A project layer that answers the hook
+  already is the one that decides, so the built-in sits under it.
+- **What is not in this package**: notes and the tmux reminder as candidates (only `agents_md` and
+  the open rows are scored); a `/reseat summarise` does not ask `compact_summary` (it is not a
+  compaction, and its template is the harness's); a head card still reads none of it (K6).
+
 ### K5 - `review_` and `brief_` (M, after K1)
 
 Owns `tools/src/gatekeeper.rs` (`review_prompt` composes from the answer),

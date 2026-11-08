@@ -96,6 +96,10 @@ Your reply ended inside reasoning with no output. Write the summary now.";
 /// the record takes 15% of the room.
 pub const SUMMARY_FIDELITY_PER_MILLE: u64 = 150;
 
+/// How much of the record's room its pins may take, in per-mille: a quarter, so the record still has
+/// room to say what it did while `AGENTS.md` is carried verbatim (X15's `pinned_tokens`).
+pub const PINNED_PER_MILLE: u64 = 250;
+
 /// The least a budget may be, so a small window still buys a record that can enumerate something.
 /// Never above what the summary turn can actually write - see [`summary_budget`].
 pub const MIN_SUMMARY_TOKENS: u64 = 2_000;
@@ -164,6 +168,12 @@ impl SummaryBudget {
                 self.tokens, self.room, SUMMARY_FIDELITY_PER_MILLE
             ),
         }
+    }
+
+    /// What a compaction may spend keeping text verbatim (X15's `pinned_tokens`): a stated share of
+    /// the record's own room, since a pin competes with the record for the same window.
+    pub fn pinned(&self) -> u64 {
+        self.tokens * PINNED_PER_MILLE / 1_000
     }
 }
 
@@ -240,12 +250,210 @@ pub fn carried_text(items: &[TranscriptItem]) -> String {
     out
 }
 
+/// One section of the record: the heading, and the line saying what goes under it. [`SECTIONS`] is
+/// the order the record keeps them in, which is the order every instruction asks for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Section {
+    /// The heading, spelled as the instruction and the record spell it.
+    pub heading: &'static str,
+    /// What belongs under it, or `None` for a heading whose children carry their own asks.
+    pub ask: Option<&'static str>,
+}
+
+/// The record's sections, as data: what [`summary_instruction`] asks for, what a `compact_` layer
+/// chooses among (X15), and what a test holds both texts to.
+pub const SECTIONS: [Section; 8] = [
+    Section {
+        heading: "## Objective",
+        ask: Some("- one or two sentences: what the operator is trying to accomplish"),
+    },
+    Section {
+        heading: "## Important Details",
+        ask: Some(
+            "- one line per thing that constrains the work: a preference, a decision and why it was \
+             taken, a command and what it did, a number still needed, an assumption",
+        ),
+    },
+    Section {
+        heading: "## Work State",
+        ask: None,
+    },
+    Section {
+        heading: "### Completed",
+        ask: Some("- one line per finished piece of work, verified fact or change made"),
+    },
+    Section {
+        heading: "### Active",
+        ask: Some("- one line per thing in progress or being investigated"),
+    },
+    Section {
+        heading: "### Blocked",
+        ask: Some("- one line per blocker, failing command or unknown"),
+    },
+    Section {
+        heading: "## Next Move",
+        ask: Some("- one numbered line per next action, most immediate first"),
+    },
+    Section {
+        heading: "## Relevant Files",
+        ask: Some(
+            "- one line per file the conversation created, changed, read for what it said, or was \
+             sent: its exact path, then why it matters",
+        ),
+    },
+];
+
+/// The rules the record is written by, after its sections: the order is the instruction's.
+pub const RULES: [&str; 6] = [
+    "- One line per thing. A file, a command, a decision, an open question: each gets its own line.",
+    "- Never write \"various\", \"and others\" or \"etc.\"; never fold a group of items into one \
+     entry; never drop an item for being small. A reader who has your record and nothing else cannot \
+     recover what you did not write.",
+    "- Exact strings for exact things: file paths, symbols, commands, error strings, URLs and \
+     identifiers, spelled as they appeared.",
+    "- Drop tool output bodies and reasoning. Carry what was concluded, what was run, what failed and \
+     what is left.",
+    "- If you read or were sent an IMAGE, say so and say what was in it: the picture does not survive \
+     this record.",
+    "- Do not call tools. Do not write about this record or about the conversation being shortened.",
+];
+
+/// Why the record exists - the first thing every instruction says.
+pub const RECORD_LEAD: &str = "The conversation above is what this record stands in for: it is what a \
+     reader will have instead of it, and anything you do not carry into it is lost.";
+
+/// What introduces the sections.
+pub const SECTIONS_LEAD: &str = "Write the record in exactly these sections, in this order, and keep \
+     every one of them even when it is empty:";
+
+/// What introduces the rules.
+pub const RULES_LEAD: &str = "Rules, and the second one is what a record this size gets wrong:";
+
+/// What introduces text a session pinned: it is the record's, and not a thing to summarise.
+pub const PINNED_LEAD: &str = "The session pinned the following. Each is part of the record: carry \
+     it verbatim under its own heading, and do not summarise it.";
+
+/// The instruction's last line.
+pub const INSTRUCTION_TAIL: &str = "Answer with the record and nothing else.";
+
+/// The template a record is written on, as a `compact_` layer may choose it: the headings it keeps,
+/// a sentence of its own, and what the session pinned verbatim. [`Template::default`] is the
+/// harness's own, byte for byte, which is what a session with no layer on the stack gets.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Template {
+    /// The headings to keep. Empty is every one of [`SECTIONS`]; a heading [`SECTIONS`] does not
+    /// have renders nothing, and `compact::Answer::validate` is what refuses it at the hook.
+    pub sections: Vec<String>,
+    /// A layer's own sentence, after the rules.
+    pub extra: Option<String>,
+    /// What is carried verbatim: the name it is pinned under, and its text.
+    pub pinned: Vec<(String, String)>,
+}
+
+impl Template {
+    /// The sections this template keeps, in [`SECTIONS`]' order.
+    pub fn keeps(&self) -> Vec<Section> {
+        SECTIONS
+            .iter()
+            .copied()
+            .filter(|s| self.sections.is_empty() || self.sections.iter().any(|h| h == s.heading))
+            .collect()
+    }
+
+    /// The headings this template keeps, which is what a `compact_` layer is handed to choose among.
+    pub fn headings() -> Vec<String> {
+        SECTIONS.iter().map(|s| s.heading.to_string()).collect()
+    }
+}
+
+/// The instruction for a record of `budget`, on the template a caller chose: the harness's own
+/// template rendered from [`SECTIONS`] and [`RULES`], with the layer's sentence and the session's
+/// pins after them. One renderer, so a chosen template and the default cannot drift apart.
+pub fn instruction_with(budget: &SummaryBudget, template: &Template) -> String {
+    let mut out = String::new();
+    out.push_str(RECORD_LEAD);
+    out.push_str(&format!(
+        "\nYou have room for about {tokens} tokens - roughly {chars} characters, or {lines} lines at \
+         120 characters. USE IT. A record much shorter than that has dropped work that was in the \
+         conversation, and it will be sent back to be written again.\n",
+        tokens = budget.tokens,
+        chars = budget.chars(),
+        lines = budget.lines(),
+    ));
+    out.push_str(SECTIONS_LEAD);
+    for section in template.keeps() {
+        out.push('\n');
+        out.push_str(section.heading);
+        if let Some(ask) = section.ask {
+            out.push('\n');
+            out.push_str(ask);
+        }
+    }
+    out.push('\n');
+    out.push_str(RULES_LEAD);
+    for rule in RULES {
+        out.push('\n');
+        out.push_str(rule);
+    }
+    if let Some(extra) = template.extra.as_deref().map(str::trim)
+        && !extra.is_empty()
+    {
+        out.push('\n');
+        out.push_str(extra);
+    }
+    if !template.pinned.is_empty() {
+        out.push('\n');
+        out.push_str(PINNED_LEAD);
+        for (name, text) in &template.pinned {
+            out.push_str(&format!("\n## pinned: {name}\n{}", text.trim_end()));
+        }
+    }
+    out.push('\n');
+    out.push_str(INSTRUCTION_TAIL);
+    out
+}
+
 /// The instruction for a record that has a size, which is almost every compaction.
 /// [`SUMMARY_INSTRUCTION`] stays for the overrun halves, whose budget is `WRITE_ROOM`. One test
 /// holds the two to the same sections (`the_two_instructions_ask_for_the_same_sections`).
 pub fn summary_instruction(budget: &SummaryBudget) -> String {
-    format!(
-        "\
+    instruction_with(budget, &Template::default())
+}
+
+#[cfg(test)]
+mod the_record_has_a_size {
+    use super::*;
+
+    /// A real session, in ledger units: a 1,440,006-token window, a
+    /// 9,103-token prompt, a headroom of a sixteenth of it, and 1,352,917 tokens resident when the
+    /// compaction fired. The record it produced was 2,250 tokens.
+    fn the_measured_session() -> SummaryBudget {
+        summary_budget(1_440_006, 9_103, 90_000, 1_352_917)
+    }
+
+    /// The size is a stated fraction of the room and not the model's guess: the same three numbers
+    /// any reader can recompute from the report.
+    #[test]
+    fn the_budget_is_a_stated_fraction_of_the_room() {
+        let b = the_measured_session();
+        assert_eq!(b.room, 1_340_903, "window - prefix - headroom");
+        assert_eq!(b.share, 1_340_903 * 150 / 1_000);
+        assert_eq!(
+            (b.share * 1_000 / b.room).abs_diff(SUMMARY_FIDELITY_PER_MILLE),
+            1,
+            "the ratio is the ratio, to the last per mille an integer division can keep: {}",
+            b.share
+        );
+    }
+
+    /// The template is data now (`SECTIONS`, `RULES`, the three leads): this is the instruction as it
+    /// was written out longhand, and the renderer must still produce it byte for byte. A prompt that
+    /// moved is every session's compaction changed.
+    #[test]
+    fn the_template_as_data_renders_what_the_longhand_did() {
+        fn longhand(budget: &SummaryBudget) -> String {
+            format!(
+                "\
 The conversation above is what this record stands in for: it is what a reader will have \
 instead of it, and anything you do not carry into it is lost.
 \
@@ -308,36 +516,60 @@ this record.
 - Do not call tools. Do not write about this record or about the conversation being shortened.
 \
 Answer with the record and nothing else.",
-        tokens = budget.tokens,
-        chars = budget.chars(),
-        lines = budget.lines(),
-    )
-}
-
-#[cfg(test)]
-mod the_record_has_a_size {
-    use super::*;
-
-    /// A real session, in ledger units: a 1,440,006-token window, a
-    /// 9,103-token prompt, a headroom of a sixteenth of it, and 1,352,917 tokens resident when the
-    /// compaction fired. The record it produced was 2,250 tokens.
-    fn the_measured_session() -> SummaryBudget {
-        summary_budget(1_440_006, 9_103, 90_000, 1_352_917)
+                tokens = budget.tokens,
+                chars = budget.chars(),
+                lines = budget.lines(),
+            )
+        }
+        assert_eq!(
+            summary_instruction(&the_measured_session()),
+            longhand(&the_measured_session())
+        );
     }
 
-    /// The size is a stated fraction of the room and not the model's guess: the same three numbers
-    /// any reader can recompute from the report.
+    /// A chosen template keeps only the headings it named, in the record's own order, and a layer's
+    /// sentence and the pins come after the rules: one renderer, three answers.
     #[test]
-    fn the_budget_is_a_stated_fraction_of_the_room() {
+    fn a_layer_chooses_the_headings_the_sentence_and_the_pins() {
         let b = the_measured_session();
-        assert_eq!(b.room, 1_340_903, "window - prefix - headroom");
-        assert_eq!(b.share, 1_340_903 * 150 / 1_000);
-        assert_eq!(
-            (b.share * 1_000 / b.room).abs_diff(SUMMARY_FIDELITY_PER_MILLE),
-            1,
-            "the ratio is the ratio, to the last per mille an integer division can keep: {}",
-            b.share
+        let full = summary_instruction(&b);
+        let chosen = instruction_with(
+            &b,
+            &Template {
+                sections: vec!["## Next Move".to_string()],
+                extra: Some("  Name the branch you will commit to.  ".to_string()),
+                pinned: vec![(
+                    "agents_md".to_string(),
+                    "# the project\nrun the gate".to_string(),
+                )],
+            },
         );
+        assert!(chosen.contains("## Next Move"), "{chosen}");
+        for gone in ["## Objective", "## Important Details", "### Completed"] {
+            assert!(!chosen.contains(gone), "{gone} was not chosen: {chosen}");
+        }
+        assert!(
+            chosen.contains("Name the branch you will commit to."),
+            "{chosen}"
+        );
+        assert!(
+            chosen.find("Do not call tools").expect("the rules")
+                < chosen.find("Name the branch").expect("the sentence"),
+            "a layer adds to the harness's rules rather than replacing them: {chosen}"
+        );
+        assert!(
+            chosen.contains("## pinned: agents_md\n# the project\nrun the gate"),
+            "{chosen}"
+        );
+        assert!(chosen.ends_with(INSTRUCTION_TAIL), "{chosen}");
+        // Every heading [`SECTIONS`] names is what the native text asks for, and `headings()` is
+        // what a `compact_` layer is handed to choose among.
+        assert_eq!(Template::headings().len(), SECTIONS.len());
+        for heading in Template::headings() {
+            assert!(full.contains(&heading), "{heading} in {full}");
+        }
+        // The pins get a stated share of the record's room, never all of it.
+        assert_eq!(b.pinned(), b.tokens / 4);
     }
 
     /// The measured record was a fraction of what it was allowed, and at the wall the bound is the
@@ -550,6 +782,9 @@ pub struct SummaryAsk<'a> {
     /// The verbatim tail, as the words it will be carried as. Empty for a local model, which
     /// carries no tail at all.
     pub carried: &'a str,
+    /// The template a `compact_` layer chose, or `None` for the harness's own - which is what the
+    /// re-seat's summary asks with, since a re-seat is not a compaction (X15).
+    pub template: Option<&'a Template>,
 }
 
 /// Who answers a summary turn.
@@ -697,7 +932,10 @@ fn compact_turn(
 ) -> Result<CompactionOutcome, TurnFailure> {
     let instruction = TranscriptItem::System {
         text: match ask {
-            Some(a) => summary_instruction(&a.budget),
+            Some(a) => match a.template {
+                Some(template) => instruction_with(&a.budget, template),
+                None => summary_instruction(&a.budget),
+            },
             None => SUMMARY_INSTRUCTION.to_string(),
         },
         origin: SystemOrigin::Update,

@@ -878,6 +878,7 @@ fn a_record_that_drops_most_of_the_conversation_is_asked_for_again_with_the_gap_
     let ask = letibot_turn::SummaryAsk {
         budget,
         carried: "",
+        template: None,
     };
     let outcome = letibot_turn::run_compaction(
         &mut engine,

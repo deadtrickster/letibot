@@ -1,0 +1,9 @@
+name = "steer"
+purpose = "the harness's own turn-end decision as a layer: the intent nudge and the deliverable, answered exactly as the harness would have"
+# **`steer_turn` is the one name the host asks**, and `Manifest::admit` refuses any other: the turn
+# has one end, so a layer under a second name would sit on the stack and never fire.
+hooks = ["steer_turn"]
+# The decision is read off the facts the host hands it, and a layer that cannot read or run anything
+# cannot turn a stop into a continuation by asking somebody else.
+capabilities = []
+contract = 1
