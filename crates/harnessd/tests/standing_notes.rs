@@ -106,6 +106,16 @@ fn the_box_a_session_reads_is_the_one_its_config_names() {
     )
     .expect("the box's skill");
 
+    // The built-in skills are in every count; the box adds exactly one.
+    let (nobody, _store) = opened(ws.path(), "nobody");
+    let bare = nobody.config().system.clone();
+    let built_in = bare
+        .split("pinned of ")
+        .nth(1)
+        .and_then(|t| t.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or(0);
+
     let (mine, _store) = opened_over(
         ws.path(),
         "mine",
@@ -124,14 +134,14 @@ fn the_box_a_session_reads_is_the_one_its_config_names() {
         "the instruction file the config points at is in message zero: {system}"
     );
     assert!(
-        system.contains("pinned of 3"),
+        system.contains(&format!("pinned of {}", built_in + 1)),
         "and the skills the config's roots hold are counted in the prompt: {system}"
     );
 
-    let (nobody, _store) = opened(ws.path(), "nobody");
-    let system = &nobody.config().system;
+    let system = &bare;
     assert!(
-        !system.contains("box-nonce-one") && !system.contains("pinned of 3"),
+        !system.contains("box-nonce-one")
+            && !system.contains(&format!("pinned of {}", built_in + 1)),
         "a session whose config names no box reads none of one: {system}"
     );
 }
