@@ -466,6 +466,101 @@ fn a_session_drives_only_the_tab_the_extension_reports_for_it() {
 }
 
 #[test]
+fn an_ask_lets_its_session_look_at_its_tab_until_the_turn_ends() {
+    let f = fixture("look");
+    let body = serde_json::json!({
+        "session": "s-op",
+        "question": "what is this form for?",
+        "url": "https://example.com/form",
+        "title": "Form",
+        "tab": 41,
+    })
+    .to_string();
+    let head = format!(
+        "POST /ask HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: {ORIGIN}\r\nAuthorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\n",
+        f.addr.port()
+    );
+    let addr = f.addr;
+    let client = std::thread::spawn(move || request(addr, &head, &body));
+    let (text, _) = take_prompt(&f.registry);
+    assert!(
+        text.contains("you may look at this tab") && text.contains("act `shot` or `read`"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("(ask b-") && !text.contains(" b-"),
+        "the ask id is the bridge's, not the session's: {text}"
+    );
+
+    post(f.addr, "/tab/sync", &serde_json::json!({"grants": []}));
+    let sock = |req: serde_json::Value| on_socket(&f.sock, &req);
+    let g = sock(serde_json::json!({"session": "s-op", "act": "grants"}));
+    assert_eq!(g["grant"]["tab"], 41, "{g}");
+    assert_eq!(g["grant"]["kind"], "look", "{g}");
+    let click = sock(serde_json::json!({"session": "s-op", "act": "click", "args": {"n": 1}}));
+    assert_eq!(click["ok"], false);
+    assert_eq!(
+        click["error"],
+        "this tab is shared for looking only, because you were asked about it; the operator \
+         allows driving from the popup",
+        "{click}"
+    );
+    let other = sock(serde_json::json!({"session": "s-kid", "act": "shot"}));
+    assert_eq!(other["ok"], false, "only the asked session looks: {other}");
+
+    let worker = std::thread::spawn(move || {
+        let polled = post(addr, "/tab/next", &serde_json::json!({"grants": []}));
+        let cmd = polled["command"].clone();
+        assert_eq!(cmd["kind"], "look", "{polled}");
+        assert_eq!(cmd["tab"], 41, "{polled}");
+        assert_eq!(cmd["act"], "read");
+        post(
+            addr,
+            "/tab/result",
+            &serde_json::json!({"id": cmd["id"], "ok": true, "result": {"url": "https://example.com/form"}}),
+        );
+    });
+    let r = sock(serde_json::json!({"session": "s-op", "act": "read"}));
+    worker.join().unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+
+    let drive = serde_json::json!({"grants": [
+        {"session": "s-op", "tab": 41, "url": "https://example.com/form", "title": "Form"},
+    ]});
+    post(f.addr, "/tab/sync", &drive);
+    let g = sock(serde_json::json!({"session": "s-op", "act": "grants"}));
+    assert_eq!(g["grant"]["kind"], "drive", "a drive grant supersedes: {g}");
+    post(f.addr, "/tab/sync", &serde_json::json!({"grants": []}));
+    let g = sock(serde_json::json!({"session": "s-op", "act": "grants"}));
+    assert_eq!(g["grant"]["kind"], "look", "{g}");
+
+    let hub = f.registry.get("s-op").expect("hub");
+    hub.publish(testing::turn_started("t0"));
+    hub.publish(SessionEvent::TranscriptAppended {
+        item_id: "i-u".into(),
+        kind: "user".into(),
+        ledger_head: String::new(),
+        item: Some(Box::new(TranscriptItem::User {
+            parts: vec![UserPart::Text { text: text.clone() }],
+            speaker: Default::default(),
+        })),
+        body_bytes: 0,
+    });
+    hub.publish(testing::delta("t0", "a sign-up form"));
+    hub.publish(testing::turn_finished("t0"));
+    let said = client.join().expect("the client");
+    assert!(said.contains("\"a sign-up form\""), "{said}");
+    let g = sock(serde_json::json!({"session": "s-op", "act": "grants"}));
+    assert!(
+        g["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("no tab is allowed"),
+        "the look ends with the turn: {g}"
+    );
+}
+
+#[test]
 fn the_tool_and_the_bridge_agree_on_the_socket() {
     assert_eq!(
         letibot_tools::builtins::screen::browser_socket().parent(),

@@ -159,8 +159,8 @@ impl Tool for ScreenTool {
              cells from 0. `read` {id, idle_ms}: rows plus a style map. `shot` {id}: a PNG. \
              `web` {url, width, height, full_page, wait_ms}: a page in headless Chrome as a \
              PNG; `dom` {url}: its text. `list`, `stop` {id}. `tab` {act}: the operator's \
-             Chrome tab, once allowed for this session: grants, shot, read (text and numbered \
-             elements), click {n|selector|x,y}, type {text, n|selector}, key {keys}, navigate \
+             Chrome tab, once allowed for this session (the tab a question came from: grants, \
+             shot, read only): grants, shot, read (text and numbered elements), click {n|selector|x,y}, type {text, n|selector}, key {keys}, navigate \
              {url}, scroll {dy}.",
             serde_json::json!({
                 "type": "object",

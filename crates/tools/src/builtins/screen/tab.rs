@@ -1,6 +1,6 @@
-//! `screen tab`: drive the Chrome tab the operator allowed for this session. The extension holds
-//! the grant and runs the act through CDP; `letibot browser` carries it between here and there on
-//! `<rundir>/browser.sock`. The session can only name an act from a fixed list, never a script.
+//! `screen tab`: drive the Chrome tab the operator allowed for this session, or look at the one
+//! it was asked about. The extension runs the act; `letibot browser` holds the grants and carries
+//! it on `<rundir>/browser.sock`. The session can only name an act from a fixed list, never a script.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -98,6 +98,8 @@ fn ask(socket: &Path, req: &Value) -> Result<Value, Box<Invocation>> {
             .to_string();
         let head = if why.starts_with("no tab is allowed") {
             "no tab allowed"
+        } else if why.starts_with("this tab is shared for looking only") {
+            "look only"
         } else {
             "the tab did not do it"
         };
@@ -170,11 +172,23 @@ pub fn tab(
     }
     .to_string();
     match act {
-        "grants" => Invocation::ok(format!(
-            "tab {} is allowed for this session, at {}",
-            n(&v["grant"], "tab"),
-            s(&v["grant"], "url")
-        )),
+        "grants" => {
+            let g = &v["grant"];
+            Invocation::ok(if s(g, "kind") == "look" {
+                format!(
+                    "tab {} is shared with this session for looking only (`shot`, `read`) while \
+                     it answers the operator's question about it, at {}",
+                    n(g, "tab"),
+                    s(g, "url")
+                )
+            } else {
+                format!(
+                    "tab {} may be driven by this session, at {}",
+                    n(g, "tab"),
+                    s(g, "url")
+                )
+            })
+        }
         "shot" => {
             let bytes = letibot_transcript::media::decode_base64(s(r, "png"));
             let Some(media) = crate::media::Media::of("tab.png", &bytes) else {

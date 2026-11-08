@@ -1,6 +1,8 @@
 // Driving a tab the operator allowed. The grant IS the chrome.debugger attachment, so Chrome's
 // "is debugging this browser" bar is up exactly while a session may act. Commands come from the
 // bridge, run on that tab only, and are a fixed list: no script from the session ever runs here.
+// An ask also lets its session look (shot, read) at the asked tab, without the debugger: the
+// ask's gesture granted activeTab on it, which lasts until the tab navigates.
 
 const GRANTS = "tabGrants";
 const LOAD_MS = 15000;
@@ -10,6 +12,22 @@ const ELEMENTS_MAX = 150;
 
 let deps = null;
 let polling = false;
+
+// "tabId:session" -> open asks. In memory: a restarted worker has lost those streams too.
+const looks = new Map();
+
+export function lookStart(tabId, session) {
+  const k = tabId + ":" + session;
+  looks.set(k, (looks.get(k) || 0) + 1);
+}
+
+export function lookEnd(tabId, session) {
+  const k = tabId + ":" + session;
+  const n = (looks.get(k) || 0) - 1;
+  if (n > 0) looks.set(k, n); else looks.delete(k);
+}
+
+export function poll() { loop(); }
 
 // {tabId: {session, name, url, title}}, in storage.session so a restarted worker keeps it.
 export async function grants() {
@@ -124,8 +142,9 @@ async function loop() {
   try {
     for (;;) {
       const g = await grants();
-      if (!Object.keys(g).length) break;
+      if (!Object.keys(g).length && !looks.size) break;
       let r;
+      const at = Date.now();
       try {
         r = await (await deps.bridge("/tab/next", post({ grants: wire(g) }))).json();
       } catch (_) {
@@ -133,6 +152,8 @@ async function loop() {
         continue;
       }
       await dropRefused(r);
+      // The bridge answers at once while it holds no grant yet (an ask not posted): no busy loop.
+      if (!r.command && Date.now() - at < 1000) await sleep(500);
       if (!r.command) continue;
       const cmd = r.command;
       let body;
@@ -174,6 +195,7 @@ async function where(tabId) {
 }
 
 async function run(cmd) {
+  if (cmd.kind === "look") return look(cmd);
   const g = await grants();
   const entry = Object.entries(g).find(([, v]) => v.session === cmd.session);
   if (!entry) throw new Error("no tab is allowed for this session any more");
@@ -416,4 +438,58 @@ async function scroll(tabId, a) {
   await sleep(300);
   const s = await inPage(tabId, { func: tabRead, args: [0, 0] });
   return { ...(await where(tabId)), scroll_y: s.scroll_y, height: s.height, vh: s.vh };
+}
+
+// ---------------------------------------------------------------- looking, without the debugger
+
+const NO_ACCESS = "Chrome no longer lets the extension see this tab: the permission an ask gives " +
+  "lasts until the tab navigates. The operator asks again from the page to share it.";
+
+async function look(cmd) {
+  const tabId = Number(cmd.tab);
+  if (!looks.has(tabId + ":" + cmd.session)) throw new Error("this tab is not shared with this session any more");
+  if (cmd.act === "shot") return lookShot(tabId);
+  if (cmd.act === "read") return { ...(await where(tabId)), ...(await isolated(tabId, { func: tabRead, args: [TEXT_MAX, ELEMENTS_MAX] })) };
+  throw new Error("this tab is shared for looking only, because you were asked about it; the operator allows driving from the popup");
+}
+
+// The same fixed functions as driving, in the extension's isolated world.
+async function isolated(tabId, { func, args = [] }) {
+  let r;
+  try {
+    [r] = await chrome.scripting.executeScript({ target: { tabId }, world: "ISOLATED", func, args });
+  } catch (_) {
+    throw new Error(NO_ACCESS);
+  }
+  if (!r) throw new Error("the page step returned nothing");
+  return r.result;
+}
+
+// Injected: the viewport in CSS pixels, to scale the capture to the ones read reports.
+function lookViewport() {
+  return { vw: innerWidth, vh: innerHeight };
+}
+
+// captureVisibleTab sees only what the window shows, so a tab behind another is said, not shot.
+async function lookShot(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  if (!tab.active) {
+    throw new Error("the tab is not the active one in its window, so it cannot be captured: " +
+      "the operator switches to it, or use `read`, which works on a background tab");
+  }
+  const { vw, vh } = await isolated(tabId, { func: lookViewport });
+  let shotUrl;
+  try {
+    shotUrl = await deps.withCardHidden(tab, () => chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" }));
+  } catch (e) {
+    throw new Error(NO_ACCESS + " (" + (e.message || e) + ")");
+  }
+  const bmp = await createImageBitmap(await (await fetch(shotUrl)).blob());
+  let png = shotUrl.slice(shotUrl.indexOf(",") + 1);
+  if (Math.abs(bmp.width - vw) > 1) {
+    const c = new OffscreenCanvas(Math.round(vw), Math.round(vh));
+    c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+    png = await deps.blobToB64(await c.convertToBlob({ type: "image/png" }));
+  }
+  return { ...(await where(tabId)), png };
 }

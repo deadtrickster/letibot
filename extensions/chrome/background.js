@@ -3,7 +3,7 @@
 // and the token must never be handed to page script.
 
 import { pumpSSE } from "./sse.js";
-import { setupTabs, allow, revoke, stateOf } from "./tab.js";
+import { setupTabs, allow, revoke, stateOf, lookStart, lookEnd, poll } from "./tab.js";
 
 const DEFAULT_PORT = 8790;
 
@@ -59,16 +59,29 @@ function hostOf(url) {
 
 // ---------------------------------------------------------------- menus
 
+// Preset questions: they only fill the card's box, so the operator can still edit them.
+const PRESETS = {
+  explain: "Explain this in plain words, in the context of the page it is on.",
+  factcheck: "Fact-check this. Verdict first - true, false or unclear - then the evidence, with sources.",
+  pageShot: "Explain this page. The picture is what I see of it.",
+};
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({ id: "ask-sel", title: "Ask letibot about this selection", contexts: ["selection"] });
+  chrome.contextMenus.create({ id: "explain", title: "Explain this with letibot", contexts: ["selection"] });
+  chrome.contextMenus.create({ id: "factcheck", title: "Fact-check this with letibot", contexts: ["selection"] });
   chrome.contextMenus.create({ id: "ask-page", title: "Ask letibot about this page", contexts: ["page"] });
+  chrome.contextMenus.create({ id: "page-shot", title: "Explain this page with letibot (with a picture)", contexts: ["page"] });
   chrome.contextMenus.create({ id: "shot", title: "Screenshot a region -> ask letibot", contexts: ["page", "image", "selection"] });
   chrome.contextMenus.create({ id: "img", title: "Explain this image", contexts: ["image"] });
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "ask-sel") askSelection(tab, info.selectionText || "");
+  else if (info.menuItemId === "explain") askSelection(tab, info.selectionText || "", PRESETS.explain);
+  else if (info.menuItemId === "factcheck") askSelection(tab, info.selectionText || "", PRESETS.factcheck);
   else if (info.menuItemId === "ask-page") openCard(tab, { mode: "page" });
+  else if (info.menuItemId === "page-shot") pageWithPicture(tab);
   else if (info.menuItemId === "shot") screenshotRegion(tab);
   else if (info.menuItemId === "img") explainImage(info.srcUrl, tab);
 });
@@ -140,7 +153,7 @@ async function openCard(tab, { mode, selection = "", image = "", imageContext = 
   } catch (_) { /* a page that refuses injection (the web store, chrome://) has no card */ }
 }
 
-async function askSelection(tab, fallback) {
+async function askSelection(tab, fallback, question = "") {
   // Read the selection now: clicking into the card's question box clears it.
   let selection = fallback;
   try {
@@ -150,7 +163,7 @@ async function askSelection(tab, fallback) {
     });
     if (r && r.result && r.result.trim()) selection = r.result;
   } catch (_) { /* the menu's own copy will do */ }
-  openCard(tab, { mode: "selection", selection: selection.trim() });
+  openCard(tab, { mode: "selection", selection: selection.trim(), question });
 }
 
 // ---------------------------------------------------------------- page -> Markdown
@@ -273,6 +286,8 @@ async function ask(tab, id, session, question) {
   if (!question) { send({ event: "error", data: { error: "Type a question." } }); return; }
   keepaliveStart();
   live.add(id);
+  // The asked session may look at this tab while it answers; the bridge ends that at turn end.
+  lookStart(tab.id, session);
   try {
     const pending = await getPending(tab.id);
     let page = { url: tab.url, title: tab.title, markdown: "" };
@@ -303,11 +318,13 @@ async function ask(tab, id, session, question) {
       image: pending.image || "",
       image_source: ctx.source || "", image_context: ctx.text || "",
       image_alt: ctx.alt || "", image_title: ctx.title || "", image_caption: ctx.caption || "",
+      tab: tab.id,
     };
     await rememberPick(hostOf(tab.url), session);
     const r = await bridge("/ask", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
+    poll();
     // The image rides the first question only; a follow-up in the card is text.
     await setPending(tab.id, { ...pending, image: "" });
     let terminal = false;
@@ -324,6 +341,7 @@ async function ask(tab, id, session, question) {
   } catch (e) {
     send({ event: "error", data: { error: e.message || String(e) } });
   } finally {
+    lookEnd(tab.id, session);
     live.delete(id);
     keepaliveStop();
   }
@@ -420,6 +438,21 @@ async function regionShot(msg, tab) {
   }
 }
 
+// The page ask plus what the operator sees of it, attached the way a region's picture is.
+async function pageWithPicture(tab) {
+  if (!scriptableTab(tab)) return;
+  try {
+    const image = await withCardHidden(tab, () => chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" }));
+    openCard(tab, {
+      mode: "page", image, thumb: await thumbnail(image), question: PRESETS.pageShot,
+      imageContext: { source: "page", text: "" },
+    });
+  } catch (e) {
+    openCard(tab, { mode: "page", question: PRESETS.pageShot });
+    chrome.tabs.sendMessage(tab.id, { type: "lb:event", ev: { event: "error", data: { error: "Screenshot failed: " + (e.message || e) } } }).catch(() => {});
+  }
+}
+
 async function explainImage(srcUrl, tab) {
   if (!scriptableTab(tab) || !srcUrl) return;
   let meta = { alt: "", title: "", caption: "", near: "", dataUrl: "" };
@@ -463,4 +496,4 @@ async function explainImage(srcUrl, tab) {
 }
 
 // Last, so everything it calls is initialised. Its listeners still register synchronously.
-setupTabs({ bridge, keepaliveStart, keepaliveStop, blobToB64 });
+setupTabs({ bridge, keepaliveStart, keepaliveStop, blobToB64, withCardHidden });

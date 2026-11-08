@@ -9,7 +9,8 @@
 //! `browser.token`. Only the operator's live top-level sessions can be asked.
 //!
 //! The same doors front `/tab/*`, through which the extension reports the tabs the operator
-//! allowed and runs the commands sessions send on `<rundir>/browser.sock` (`tab`).
+//! allowed and runs the commands sessions send on `<rundir>/browser.sock` (`tab`). An ask also
+//! opens a look grant on its own tab for as long as the turn that took it runs.
 
 pub mod ask;
 pub mod http;
@@ -281,6 +282,7 @@ fn tab_sync(
                 tab,
                 url: text("url"),
                 title: text("title"),
+                kind: tab::Kind::Drive,
             },
         ));
     }
@@ -289,7 +291,7 @@ fn tab_sync(
         Ok(_) => Err(format!("`{id}` is not a live top-level session of yours")),
         Err(why) => Err(why),
     });
-    let command = if poll && !synced.kept.is_empty() {
+    let command = if poll && server.tabs.any() {
         server.tabs.next(tab::POLL_WAIT)
     } else {
         None
@@ -329,7 +331,8 @@ fn tab_result(stream: &mut TcpStream, server: &Server, body: &[u8]) {
     http::json(stream, 200, allow, &json!({ "taken": waited }));
 }
 
-/// An id the page cannot guess: the stream recognises the ask's own row by it.
+/// An id the page cannot guess. It never reaches the session as text: the stream recognises the
+/// ask's own row by the page fence's mark, which is derived from it.
 fn ask_id() -> Result<String, String> {
     let mut raw = [0u8; 8];
     std::fs::File::open("/dev/urandom")
@@ -401,6 +404,10 @@ fn ask_route(
         Err(why) => return http::error(stream, 409, allow, &why),
     };
     let running = head.snapshot().turn == crate::head::Turn::Running;
+    // Asked about a page, the session may look at it until the turn that took the question ends.
+    let _look = body
+        .tab
+        .map(|t| Look::open(&server.tabs, &row.id, &id, t, &body));
     let text = ask::prompt(&id, &body, &server.limits);
     if let Err(why) = head.prompt_attached(&text, attachments) {
         return http::error(stream, 409, allow, &why);
@@ -421,7 +428,14 @@ fn ask_route(
         );
     }
     let closed = || head.snapshot().closed;
-    let end = ask::stream(stream, &rx, &id, closed, Instant::now() + server.patience);
+    let marker = ask::marker(&id);
+    let end = ask::stream(
+        stream,
+        &rx,
+        &marker,
+        closed,
+        Instant::now() + server.patience,
+    );
     let _ = match end {
         ask::End::Done(how) => http::event(stream, "done", &json!({ "how": how })),
         ask::End::Failed(why) => http::event(stream, "error", &json!({ "error": why })),
@@ -435,6 +449,30 @@ fn ask_route(
         ),
         ask::End::ClientGone => Ok(()),
     };
+}
+
+/// A look grant held for one ask; dropped on every way out of the route.
+struct Look<'a> {
+    tabs: &'a tab::Tabs,
+    session: String,
+    ask: String,
+}
+
+impl<'a> Look<'a> {
+    fn open(tabs: &'a tab::Tabs, session: &str, ask: &str, tab: i64, body: &ask::AskBody) -> Self {
+        tabs.look(session, ask, tab, &body.url, &body.title);
+        Look {
+            tabs,
+            session: session.to_string(),
+            ask: ask.to_string(),
+        }
+    }
+}
+
+impl Drop for Look<'_> {
+    fn drop(&mut self) {
+        self.tabs.unlook(&self.session, &self.ask);
+    }
 }
 
 /// `letibot browser`'s body once the CLI has read the config: bind, print, serve.

@@ -23,7 +23,17 @@ impl Drop for Bridge {
     }
 }
 
+const LOOK_ONLY: &str = "this tab is shared for looking only, because you were asked about it; \
+     the operator allows driving from the popup";
+
 fn answer(req: &Value) -> Value {
+    if req["session"] == "s-look" {
+        let grant = json!({"tab": 9, "url": "https://example.com/q", "title": "Q", "kind": "look"});
+        return match req["act"].as_str().unwrap_or("") {
+            "grants" => json!({"ok": true, "grant": grant}),
+            _ => json!({"ok": false, "error": LOOK_ONLY}),
+        };
+    }
     if req["session"] != "s-op" {
         return json!({"ok": false, "error": "no tab is allowed for this session - the operator allows one from the extension popup"});
     }
@@ -184,4 +194,33 @@ fn no_grant_no_bridge_no_session_and_a_bad_scheme_are_refused_plainly() {
     let mut h = seat(None, &b.path);
     let r = tab(&mut h, json!({"act": "read"}));
     assert!(r.payload.contains("without one"), "{}", r.payload);
+}
+
+#[test]
+fn a_look_grant_says_its_kind_and_a_drive_act_on_it_is_refused_plainly() {
+    let b = bridge("look");
+    let mut h = seat(Some("s-look"), &b.path);
+    let r = tab(&mut h, json!({"act": "grants"}));
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.payload);
+    assert!(
+        r.payload
+            .contains("tab 9 is shared with this session for looking only"),
+        "{}",
+        r.payload
+    );
+    let r = tab(&mut h, json!({"act": "click", "n": 1}));
+    assert!(
+        matches!(&r.outcome, ToolOutcome::Failed { reason, .. } if reason == "look only"),
+        "{:?}",
+        r.outcome
+    );
+    assert!(r.payload.contains(LOOK_ONLY), "{}", r.payload);
+
+    let mut h = seat(Some("s-op"), &b.path);
+    let r = tab(&mut h, json!({"act": "grants"}));
+    assert!(
+        r.payload.contains("tab 7 may be driven by this session"),
+        "{}",
+        r.payload
+    );
 }

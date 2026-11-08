@@ -1,7 +1,9 @@
-//! Driving a tab the operator allowed. The extension holds the grant (a `chrome.debugger`
-//! attachment, whose bar Chrome keeps up) and tells this table about it; a daemon's `screen tab`
-//! call arrives on `<rundir>/browser.sock`, waits in a queue, and the extension's worker pulls it,
-//! runs it on that tab through CDP and posts the result back.
+//! Driving a tab the operator allowed, or looking at one the session was asked about. A drive
+//! grant is the extension's (a `chrome.debugger` attachment, whose bar Chrome keeps up) and it
+//! tells this table about it. A look grant is this bridge's: an ask opens it on the tab it came
+//! from and the end of the turn that took it closes it. A daemon's `screen tab` call arrives on
+//! `<rundir>/browser.sock`, waits in a queue, and the extension's worker pulls it, runs it on that
+//! tab and posts the result back.
 //!
 //! ```text
 //!   screen tab ──unix socket──▶ Tabs ◀──POST /tab/next, /tab/result── extension worker ──CDP──▶ the tab
@@ -20,12 +22,19 @@ use serde_json::{Value, json};
 /// What a session may ask a tab to do. Nothing else reaches the extension.
 pub const ACTS: &[&str] = &["shot", "read", "click", "type", "key", "navigate", "scroll"];
 
+/// What a look grant allows: nothing that changes the page.
+pub const LOOK_ACTS: &[&str] = &["shot", "read"];
+
 /// The argument keys passed through to the extension; any other key is dropped here.
 const ARG_KEYS: &[&str] = &["n", "selector", "x", "y", "text", "keys", "url", "dy"];
 
 /// The sentence a session with no grant gets.
 pub const NO_GRANT: &str =
     "no tab is allowed for this session - the operator allows one from the extension popup";
+
+/// The sentence a look grant gets for any act that is not in [`LOOK_ACTS`].
+pub const LOOK_ONLY: &str = "this tab is shared for looking only, because you were asked about \
+     it; the operator allows driving from the popup";
 
 /// A worker that has not polled for this long is gone (Chrome closed, the extension reloaded),
 /// and its grants with it. It polls at least every [`POLL_WAIT`].
@@ -43,16 +52,34 @@ pub const ANSWER_WITHIN: Duration = Duration::from_secs(40);
 
 const LINE_MAX: u64 = 64 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// Opened by an ask, for `shot` and `read`, until the turn that took the question ends.
+    Look,
+    /// Allowed from the popup, for every act.
+    Drive,
+}
+
+impl Kind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::Look => "look",
+            Kind::Drive => "drive",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grant {
     pub tab: i64,
     pub url: String,
     pub title: String,
+    pub kind: Kind,
 }
 
 impl Grant {
     pub fn to_json(&self) -> Value {
-        json!({ "tab": self.tab, "url": self.url, "title": self.title })
+        json!({ "tab": self.tab, "url": self.url, "title": self.title, "kind": self.kind.as_str() })
     }
 }
 
@@ -69,7 +96,10 @@ struct Command {
 
 #[derive(Default)]
 struct Inner {
+    /// Drive grants, as the extension last reported them.
     grants: BTreeMap<String, Grant>,
+    /// Look grants by session, each with the ask that opened it.
+    looks: BTreeMap<String, (Grant, String)>,
     queue: VecDeque<Command>,
     taken: BTreeMap<String, (String, Reply)>,
     seen: Option<Instant>,
@@ -91,9 +121,58 @@ pub struct Synced {
     pub refused: Vec<(String, String)>,
 }
 
+impl Inner {
+    /// The grant a session acts under: a drive grant supersedes a look grant.
+    fn current(&self, session: &str) -> Option<&Grant> {
+        self.grants
+            .get(session)
+            .or_else(|| self.looks.get(session).map(|(g, _)| g))
+    }
+
+    /// Fail the queued commands of sessions that hold no grant any more.
+    fn prune(&mut self) {
+        let (keep, gone): (VecDeque<Command>, VecDeque<Command>) = std::mem::take(&mut self.queue)
+            .into_iter()
+            .partition(|c| self.current(&c.session).is_some());
+        self.queue = keep;
+        for c in gone {
+            let _ = c.reply.send(Err("the operator revoked this tab".into()));
+        }
+    }
+}
+
 impl Tabs {
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Open a look grant for `session` on the tab an ask came from. A later ask replaces it.
+    pub fn look(&self, session: &str, ask: &str, tab: i64, url: &str, title: &str) {
+        let grant = Grant {
+            tab,
+            url: url.to_string(),
+            title: title.to_string(),
+            kind: Kind::Look,
+        };
+        self.lock()
+            .looks
+            .insert(session.to_string(), (grant, ask.to_string()));
+        self.cv.notify_all();
+    }
+
+    /// Close the look grant `ask` opened; one a later ask opened stays.
+    pub fn unlook(&self, session: &str, ask: &str) {
+        let mut g = self.lock();
+        if g.looks.get(session).is_some_and(|(_, a)| a == ask) {
+            g.looks.remove(session);
+            g.prune();
+        }
+    }
+
+    /// Whether any grant is open, so the worker's poll is worth holding.
+    pub fn any(&self) -> bool {
+        let g = self.lock();
+        !g.grants.is_empty() || !g.looks.is_empty()
     }
 
     /// Replace the table with the extension's own list, which is the truth. A session new to
@@ -107,7 +186,8 @@ impl Tabs {
         let known: Vec<String> = self.lock().grants.keys().cloned().collect();
         let mut out = Synced::default();
         let mut table = BTreeMap::new();
-        for (session, grant) in list {
+        for (session, mut grant) in list {
+            grant.kind = Kind::Drive;
             if table.contains_key(&session) {
                 out.refused.push((
                     session,
@@ -126,14 +206,8 @@ impl Tabs {
         }
         let mut g = self.lock();
         g.seen = Some(Instant::now());
-        let (keep, gone): (VecDeque<Command>, VecDeque<Command>) = std::mem::take(&mut g.queue)
-            .into_iter()
-            .partition(|c| table.contains_key(&c.session));
-        g.queue = keep;
-        for c in gone {
-            let _ = c.reply.send(Err("the operator revoked this tab".into()));
-        }
         g.grants = table;
+        g.prune();
         drop(g);
         self.cv.notify_all();
         out
@@ -142,7 +216,7 @@ impl Tabs {
     /// This session's grant, if the extension is still checking in.
     pub fn grant(&self, session: &str) -> Result<Grant, String> {
         let g = self.lock();
-        let grant = g.grants.get(session).cloned().ok_or(NO_GRANT)?;
+        let grant = g.current(session).cloned().ok_or(NO_GRANT)?;
         match g.seen {
             Some(at) if at.elapsed() < WORKER_STALE => Ok(grant),
             Some(at) => Err(format!(
@@ -150,6 +224,9 @@ impl Tabs {
                  again when it does",
                 at.elapsed().as_secs()
             )),
+            None if grant.kind == Kind::Look => {
+                Err("the extension has not checked in yet; try again in a moment".into())
+            }
             None => Err(NO_GRANT.into()),
         }
     }
@@ -161,9 +238,21 @@ impl Tabs {
         loop {
             g.seen = Some(Instant::now());
             if let Some(c) = g.queue.pop_front() {
-                let tab = g.grants.get(&c.session).map(|t| t.tab);
+                // Checked again here: the drive grant may have gone since, leaving a look.
+                let (tab, kind) = match g.current(&c.session) {
+                    None => {
+                        let _ = c.reply.send(Err("the operator revoked this tab".into()));
+                        continue;
+                    }
+                    Some(t) if t.kind == Kind::Look && !LOOK_ACTS.contains(&c.act.as_str()) => {
+                        let _ = c.reply.send(Err(LOOK_ONLY.into()));
+                        continue;
+                    }
+                    Some(t) => (t.tab, t.kind),
+                };
                 let wire = json!({
-                    "id": c.id, "session": c.session, "tab": tab, "act": c.act, "args": c.args,
+                    "id": c.id, "session": c.session, "tab": tab, "kind": kind.as_str(),
+                    "act": c.act, "args": c.args,
                 });
                 g.taken.insert(c.id.clone(), (c.session, c.reply));
                 return Some(wire);
@@ -186,7 +275,12 @@ impl Tabs {
         let Some((session, reply)) = g.taken.remove(id) else {
             return false;
         };
-        if let (Ok(v), Some(grant)) = (&outcome, g.grants.get_mut(&session)) {
+        let inner = &mut *g;
+        let grant = match inner.grants.get_mut(&session) {
+            Some(d) => Some(d),
+            None => inner.looks.get_mut(&session).map(|(l, _)| l),
+        };
+        if let (Ok(v), Some(grant)) = (&outcome, grant) {
             if let Some(u) = v.get("url").and_then(Value::as_str) {
                 grant.url = u.to_string();
             }
@@ -207,7 +301,9 @@ impl Tabs {
         answer_within: Duration,
     ) -> Result<Value, String> {
         check(act, args)?;
-        self.grant(session)?;
+        if self.grant(session)?.kind == Kind::Look && !LOOK_ACTS.contains(&act) {
+            return Err(LOOK_ONLY.into());
+        }
         let (tx, rx): (_, Receiver<Result<Value, String>>) = channel();
         let id = {
             let mut g = self.lock();
@@ -382,6 +478,7 @@ mod tests {
             tab,
             url: "https://example.com/".into(),
             title: "t".into(),
+            kind: Kind::Drive,
         }
     }
 
@@ -468,6 +565,65 @@ mod tests {
             tabs.next(Duration::ZERO).is_none(),
             "the untaken one left the queue"
         );
+    }
+
+    #[test]
+    fn a_look_grant_shows_and_reads_only_and_a_drive_grant_supersedes_it() {
+        let tabs = Arc::new(Tabs::default());
+        tabs.look("s-a", "ask-1", 9, "https://example.com/q", "Q");
+        tabs.next(Duration::ZERO);
+        let g = tabs.grant("s-a").unwrap();
+        assert_eq!((g.tab, g.kind), (9, Kind::Look));
+        assert_eq!(g.to_json()["kind"], "look");
+        for act in ["click", "type", "key", "scroll"] {
+            let e = tabs
+                .submit("s-a", act, &json!({}), TAKE_WITHIN, ANSWER_WITHIN)
+                .unwrap_err();
+            assert_eq!(e, LOOK_ONLY, "{act}");
+        }
+        let e = tabs
+            .submit(
+                "s-a",
+                "navigate",
+                &json!({"url": "https://example.com/"}),
+                TAKE_WITHIN,
+                ANSWER_WITHIN,
+            )
+            .unwrap_err();
+        assert_eq!(e, LOOK_ONLY);
+        assert!(tabs.next(Duration::ZERO).is_none(), "nothing was queued");
+
+        let t = tabs.clone();
+        let worker = std::thread::spawn(move || {
+            let cmd = t.next(Duration::from_secs(5)).expect("a command");
+            assert_eq!(
+                (cmd["tab"].as_i64(), cmd["kind"].as_str()),
+                (Some(9), Some("look"))
+            );
+            assert!(t.finish(cmd["id"].as_str().unwrap(), Ok(json!({"png": ""}))));
+        });
+        tabs.submit("s-a", "read", &json!({}), TAKE_WITHIN, ANSWER_WITHIN)
+            .expect("a look reads");
+        worker.join().unwrap();
+
+        tabs.sync(vec![("s-a".into(), grant(4))], |_| Ok(()));
+        let g = tabs.grant("s-a").unwrap();
+        assert_eq!((g.tab, g.kind), (4, Kind::Drive), "drive supersedes");
+        tabs.sync(vec![], |_| Ok(()));
+        assert_eq!(
+            tabs.grant("s-a").unwrap().kind,
+            Kind::Look,
+            "a revoked drive leaves the look, never the reverse"
+        );
+
+        tabs.unlook("s-a", "ask-0");
+        assert!(
+            tabs.grant("s-a").is_ok(),
+            "another ask's end keeps this one"
+        );
+        tabs.unlook("s-a", "ask-1");
+        assert_eq!(tabs.grant("s-a").unwrap_err(), NO_GRANT);
+        assert!(!tabs.any());
     }
 
     #[test]

@@ -39,9 +39,17 @@ extension_id = "kbaoealgdkldcgaojgdehmdaaekkmffd"
 Context menu:
 
 - Ask letibot about this selection - the selection, then the page.
+- Explain this with letibot - the selection, with a preset asking for a plain explanation in the
+  page's context.
+- Fact-check this with letibot - the selection, with a preset asking for a verdict first (true,
+  false or unclear), then the evidence with sources.
 - Ask letibot about this page.
+- Explain this page with letibot (with a picture) - the page, plus a screenshot of the viewport
+  attached the way a region's picture is.
 - Screenshot a region -> ask letibot - drag a rectangle, type a question or leave it blank.
 - Explain this image - the image's own pixels, its `alt`, `title` and `figcaption`.
+
+A preset only fills the card's question box: edit it or send it as is.
 
 The popup has the session picker for the current site and the page and region gestures.
 
@@ -54,6 +62,10 @@ the extension: the article or main element, chrome skipped) and the site's `/AGE
 has one (cached per origin for a day, misses included). A region carries the DOM text inside the
 crop, or the whole viewport's text when the crop has none. An image carries the text around it.
 
+Asking a session about a page shares that tab with it for looking: while it answers it may call
+`screen tab` `grants`, `shot` and `read` on that tab, and nothing else (see Drive a tab). The
+prompt says so in one line.
+
 The reply streams until the turn that took the question ends. A question sent while the session
 is busy waits for the session to take it, and the card says so. If the extension's worker dies
 mid-reply the card says the reply stopped; the session keeps answering and the rest is in
@@ -63,6 +75,24 @@ letibot.
 
 A session can act on one tab you allow: click, type, press keys, navigate, scroll, read and
 screenshot it. Nothing else of the browser.
+
+### Look grant
+
+Every ask, a card follow-up included, carries a look grant on the tab it came from: the asked
+session may `grants`, `shot` and `read` that tab, nothing else and no other tab. It lasts from the
+ask until the turn that took the question ends (or the card's stream stops), and then the bridge
+drops it. A follow-up re-opens it. Any other act is refused with "this tab is shared for looking
+only, because you were asked about it; the operator allows driving from the popup". A drive grant
+for the same session supersedes the look grant; a look grant never widens to drive.
+
+No debugger and no bar: the ask's gesture gives the extension `activeTab` on that tab until it
+navigates. `shot` is `chrome.tabs.captureVisibleTab`, scaled to CSS pixels, and works only while
+the tab is the active one in its window (the tool says so otherwise). `read` runs the same fixed
+read function through `chrome.scripting.executeScript` in the isolated world. After the tab
+navigates Chrome stops letting the extension see it, and the session is told to have the
+operator ask again.
+
+### Drive grant
 
 Allow: open the popup on the tab, pick the session, tick "Let <session> drive this tab". The
 extension attaches `chrome.debugger` to that tab, and Chrome shows its "letibot started debugging
@@ -76,7 +106,7 @@ Revoke, any of:
 - close the tab.
 
 The session uses the `screen` tool's `tab` op: `grants`, `shot`, `read`, `click`, `type`, `key`,
-`navigate`, `scroll`. A session with no grant is refused with "no tab is allowed for this session -
+`navigate`, `scroll`. `grants` reports the kind, `look` or `drive`. A session with no grant is refused with "no tab is allowed for this session -
 the operator allows one from the extension popup". If `letibot browser` is not running, the tool
 says so.
 
@@ -162,14 +192,16 @@ block out, says so in the card, and the prompt says `[the page's Markdown was no
 
 `POST /ask` takes `{session, question, url, title, selection, markdown, markdown_dropped,
 agents_md, agents_md_dropped, image, image_source, image_context, image_alt, image_title,
-image_caption}` and answers an SSE stream: `accepted` `{ask, session, name, project}`, `status`
+image_caption, tab}`, where `tab` is the Chrome tab id the look grant is opened on and answers an SSE stream: `accepted` `{ask, session, name, project}`, `status`
 `{text}`, `delta` `{text}`, then `done` `{how: ended|interrupted}` or `error` `{error}`.
 
 `POST /tab/sync` and `POST /tab/next` take `{grants: [{session, tab, url, title}]}` and answer
 `{kept, refused: [{session, why}], command}`; `/tab/next` holds up to 20 s for a `command`
-`{id, session, tab, act, args}`. `POST /tab/result` takes `{id, ok, result | error}`.
+`{id, session, tab, kind, act, args}`, while any drive or look grant is open. The look grants are
+the bridge's and are not in the extension's list. `POST /tab/result` takes `{id, ok, result | error}`.
 
-The socket takes `{session, act, args}` and answers `{ok, grant, result}` or `{ok: false, error}`.
+The socket takes `{session, act, args}` and answers `{ok, grant, result}` or `{ok: false, error}`;
+`grant` is `{tab, url, title, kind}`.
 
 The extension's JavaScript is checked by `extensions/chrome/check.sh`, which needs node:
 `firecode exec bash check.sh` from that folder.
