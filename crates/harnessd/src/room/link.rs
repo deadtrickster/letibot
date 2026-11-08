@@ -88,8 +88,6 @@ pub struct SessionRoom {
     /// Each todo row's last seen status, by content. `None` until the first update, which is
     /// the board as it was and not news.
     todo_seen: Mutex<Option<std::collections::BTreeMap<String, String>>>,
-    /// Plain sessions of this daemon, so a daemon-level fact is reported through one of them.
-    plain: bool,
 }
 
 /// Tell the room `session` has taken chat up to `seq`, which is its seen mark: the room retells
@@ -268,13 +266,11 @@ impl SessionRoom {
                 }
             }));
         }
-        let plain = letibot_room::tag_of_session(&key, session).is_none() && !arbiter;
         let room = Arc::new(SessionRoom {
             recent,
             invited,
             mine,
             todo_seen: Mutex::new(None),
-            plain,
             client,
             session: session.to_string(),
             socket: socket.to_path_buf(),
