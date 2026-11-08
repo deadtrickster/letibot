@@ -1,0 +1,22 @@
+{
+  "name": "leticode",
+  "owner": {
+    "name": "deadtrickster",
+    "email": "i.khaprov@gmail.com",
+    "url": "https://github.com/deadtrickster"
+  },
+  "description": "Plugins of the letibot harness. One today: the leticode bridge, which holds leticode sessions and the rooms as MCP tools and pushes their events into a Claude Code session as a channel.",
+  "plugins": [
+    {
+      "name": "leticode",
+      "source": "./claude-plugin",
+      "description": "Drive leticode sessions from Claude Code: start them, watch their turn ends arrive as channel events, answer their asks, read their transcript and diff, and stop or collect what they committed. Carries the room waiter.",
+      "category": "orchestration",
+      "tags": ["leticode", "mcp", "channel", "rooms", "delegation"],
+      "author": {
+        "name": "deadtrickster",
+        "email": "i.khaprov@gmail.com"
+      }
+    }
+  ]
+}

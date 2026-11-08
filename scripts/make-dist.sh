@@ -14,6 +14,7 @@
 #   harnessd          the daemon — the session, the gate, the model connection
 #   letibot-tui       the head — what a person actually looks at
 #   letibot-askpass   what `sudo` runs inside a session to ask for a password
+#   letibot-mcp       the Claude Code bridge — the MCP server the `leticode` plugin runs
 #
 # **`letibot-askpass` must sit BESIDE `harnessd`** — `crate::sudo::install()`
 # looks for it next to the running binary and installs a `sudo` shim that calls
@@ -101,7 +102,7 @@ set -eu
 #
 # It is a REPOSITORY file, not a build artifact, so it is staged from `scripts/`
 # rather than from `target/release` — see the copy loop below.
-ARCHIVE_BINARIES="harnessd letibot-tui letibot-askpass letibot leticode"
+ARCHIVE_BINARIES="harnessd letibot-tui letibot-askpass letibot leticode letibot-mcp"
 ARCHIVE_LIBRARIES="libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0"
 # The same four for an `*-apple-darwin` triple, which install.sh's LIBRARIES_DARWIN
 # must match (`check-dist-names.sh` holds the two to each other).

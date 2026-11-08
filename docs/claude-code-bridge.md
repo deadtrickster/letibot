@@ -282,7 +282,7 @@ v2 subtree.
 |---|---|
 | B1 | `crates/bridge`: the MCP server and the `wait` verb; tests against a daemon on a temp workspace with a fake provider |
 | B2 | `leticode_events` with the compact progress and the cursor; the report parsed into fields in `status` |
-| B3 | the `/delegate` skill, and registering the server with Claude Code (`claude mcp add`) |
+| B3 | the `/delegate` skill - landed as the plugin's `leticode` skill - and registering the server with Claude Code: `claude mcp add`, or one `/plugin install leticode --marketplace deadtrickster/letibot` now that the plugin exists (`claude-plugin/`) |
 | B4 | `escalate` |
 | Q1 | a bridge-started daemon runs `--no-queue` |
 | B5 | `leticode_queue`, `leticode_submit`, `leticode_queue_verb`, `wait-queue` (needs a stable queue) |

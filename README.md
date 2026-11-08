@@ -43,6 +43,18 @@ The archive is a harness and a head. It carries no model, and nothing answers a 
 reachable: the first message opens the `/models` chooser, and a cloud key is asked for once, saved
 mode 0600, and never enters the session log.
 
+With Claude Code in front of it, one more line installs the plugin that carries the bridge - the
+MCP tools, the channel, the room waiter and the skills ([claude-plugin/](claude-plugin/README.md)):
+
+```text
+/plugin install leticode --marketplace deadtrickster/letibot
+```
+
+Custom channels are not on Claude Code's allowlist, so a session that should receive the bridge's
+channel events still starts with `claude --dangerously-load-development-channels
+plugin:leticode@leticode`. Without the flag the tools and the room waiter work and the channel does
+not.
+
 ## Supported, and not
 
 Supported: Linux (x86_64, aarch64) and macOS on Apple silicon, one person's box, with llama.cpp

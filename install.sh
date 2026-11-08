@@ -10,12 +10,20 @@
 #   $PREFIX/letibot-askpass    what `sudo` runs inside a session to ask for a password
 #   $PREFIX/letibot            the command you type: starts the daemon if needed, attaches a head
 #   $PREFIX/leticode           the same, seated as leticode (shell and web_fetch on, automode-edits)
+#   $PREFIX/letibot-mcp        the Claude Code bridge: the MCP server the `leticode` plugin runs
 #   $PREFIX/libllama.so.0      the tokenizer, which the daemon links
 #   $PREFIX/libggml.so.0       llama.cpp's compute layer, which libllama links
 #   $PREFIX/libggml-cpu.so.0   the CPU backend, which libggml links
 #   $PREFIX/libggml-base.so.0  and its base
 #
 # `$PREFIX` is `LETIBOT_INSTALL_DIR`, defaulting to `~/.local/bin`.
+#
+# # THE CLAUDE CODE PLUGIN, which is a second install and says so
+#
+# `letibot-mcp` is what the `leticode` plugin runs (TODO.md R117, `claude-plugin/`), and the
+# plugin is installed by Claude Code rather than by this script: `/plugin install leticode
+# --marketplace deadtrickster/letibot`. `--help` prints that line, and the closing block prints
+# it once the bridge has landed, so the one thing a person has to do next is in front of them.
 #
 # **FOUR libraries, and the fourth is easy to miss**: `libllama.so.0` needs
 # `libggml.so.0`, and `libggml.so.0` needs `libggml-cpu.so.0`. A package without
@@ -80,7 +88,13 @@ VERSION="${LETIBOT_VERSION:-}"
 # (letibot seated as leticode, the default seat) was tracked and never copied, so a fresh
 # install answered `leticode: command not found`. It is a script beside `letibot`, which
 # it execs; every rule below for the launcher holds for it ([`is_launcher`]).
-BINARIES="harnessd letibot-tui letibot-askpass letibot leticode"
+#
+# **`letibot-mcp` is the Claude Code bridge** (`crates/bridge`, TODO.md R117): the MCP server the
+# `leticode` plugin names by bare name, resolved from PATH — so this directory is where it has to
+# be. It joins `letibot` in the OPTIONAL set below: an archive published before the bridge existed
+# installs everything else and says the plugin cannot run yet, rather than dying on a file that
+# release never carried.
+BINARIES="harnessd letibot-tui letibot-askpass letibot leticode letibot-mcp"
 # The names in BINARIES that are repository scripts, not build products.
 LAUNCHERS="letibot leticode"
 is_launcher() {
@@ -414,8 +428,10 @@ build_from_source() {
         # there. Building it here rather than trusting a target/ left by some earlier build
         # is what makes a fresh checkout install — CI's Linux job only passed because its
         # release step had already built the whole workspace.
+        # `letibot-mcp` comes with `letibot-tui`'s call: the bridge links no llama either, so it
+        # is the same build and the same cloud-only rule.
         cargo build --release --manifest-path "$src/Cargo.toml" \
-            -p letibot-tui --bin letibot-tui -p letibot --bin letibot >&2
+            -p letibot-tui --bin letibot-tui -p letibot --bin letibot -p letibot-bridge --bin letibot-mcp >&2
         out="$src/target/release"
         for want in $BINARIES; do
             [ "$want" = leticode ] && continue
@@ -434,7 +450,7 @@ build_from_source() {
 
     warn "Building letibot from $src — this takes a few minutes..."
     cargo build --release --manifest-path "$src/Cargo.toml" \
-        --bin harnessd --bin letibot-tui --bin letibot-askpass --bin letibot >&2
+        --bin harnessd --bin letibot-tui --bin letibot-askpass --bin letibot --bin letibot-mcp >&2
     out="$src/target/release"
     for want in $BINARIES; do
         [ "$want" = leticode ] && continue
@@ -443,7 +459,59 @@ build_from_source() {
     printf '%s' "$out"
 }
 
+# **The Claude Code plugin's lines, in ONE place.** `--help` prints them before anything is
+# installed and `main`'s closing block prints them once the bridge has landed (TODO.md R117,
+# `claude-plugin/`), so a person is never told two different ways to install it. Tests read the
+# install line from `--help`'s output rather than restating it.
+plugin_lines() {
+    say "Then, in Claude Code, install the leticode plugin -- one line:"
+    say "  /plugin install leticode --marketplace deadtrickster/letibot"
+    say ""
+    say "Custom channels are not on Claude Code's allowlist yet, so a session that should"
+    say "receive the bridge's channel events still starts like this, interactively:"
+    say "  claude --dangerously-load-development-channels plugin:leticode@leticode"
+    say "Without the flag the MCP tools and the room waiter work and the channel does not."
+    say "A server registered by hand with \`claude mcp add\` is \`server:leticode\` instead."
+}
+
+usage() {
+    cat <<'USAGE'
+letibot: the daemon, the head and the Claude Code bridge, into LETIBOT_INSTALL_DIR
+         (default ~/.local/bin)
+
+  sh install.sh           install
+  sh install.sh --help    this
+
+What it installs: harnessd letibot-tui letibot-askpass letibot leticode letibot-mcp, and the
+four llama libraries harnessd links. It installs no model: the head asks for one on the first
+message.
+
+Environment:
+  LETIBOT_INSTALL_DIR   where everything goes   (default: ~/.local/bin)
+  LETIBOT_VERSION       tag or branch           (default: the default branch)
+  LETIBOT_FROM_SOURCE   set to anything to skip the download and build instead
+  LETIBOT_LLAMA_DIR     a llama.cpp checkout    (source builds: required)
+  LETIBOT_LLAMA_LIB     its lib directory       (source builds: required)
+USAGE
+    say ""
+    plugin_lines
+}
+
 main() {
+    # **Before the banner, before the download, before a single file is copied** - and before
+    # the host check, so a box whose libraries are missing can still read what this does.
+    case "${1:-}" in
+        --help | -h)
+            usage
+            exit 0
+            ;;
+        '') ;;
+        *)
+            warn "letibot: unknown argument: $1"
+            usage >&2
+            exit 2
+            ;;
+    esac
     # **Before the banner, before the download, before a single file is copied.**
     # A box that cannot run the binaries should learn that in the first second,
     # not after 16 MB and six files it will have to remove.
@@ -528,7 +596,12 @@ main() {
     # with nothing and no way to get it.
     #
     # Every OTHER name is required, because those are the files `harnessd` needs.
+    #
+    # **`letibot-mcp` is the one exception besides the launchers**, for the same reason and one
+    # more: a published archive predates it, and the Claude Code plugin is a SECOND install that a
+    # box could well skip. It lands when the archive has it and is named as absent when not.
     have_launcher=1
+    have_bridge=0
     for want in $BINARIES; do
         src_file="$from/$want"
         if is_launcher "$want"; then
@@ -555,12 +628,21 @@ main() {
   release asset, or run this from a checkout whose scripts/letibot is present."
             fi
         else
+            if [ "$want" = letibot-mcp ] && [ ! -f "$src_file" ]; then
+                say "  (this release carries no $want, so the Claude Code plugin cannot run yet)"
+                continue
+            fi
             [ -f "$src_file" ] || die "$src_file is missing"
         fi
         # cp+chmod rather than install(1): `install` is in GNU and BSD but not in
         # POSIX, and the difference is not worth a portability question here.
         cp "$src_file" "$INSTALL_DIR/$want" || die "cannot write $INSTALL_DIR/$want"
         chmod 755 "$INSTALL_DIR/$want"
+        # Not `[ ... ] && have_bridge=1`: under `set -e` a false test ends the AND-list and the
+        # script with it.
+        if [ "$want" = letibot-mcp ]; then
+            have_bridge=1
+        fi
     done
     for so in $LIBRARIES; do
         src_so="$from/$so"
@@ -693,6 +775,18 @@ main() {
         say "This release predates the \`letibot\` launcher, so it was not installed."
         say "Run the head directly for now, or install a release that has it:"
         say "  $INSTALL_DIR/letibot-tui"
+    fi
+    say ""
+    # **The Claude Code plugin, which this script cannot install.** Claude Code installs its
+    # own plugins, so the honest next step is its own command plus the flag the channel still
+    # needs. Both lines are printed by `--help` too, and `tests/claude-plugin.sh` reads them
+    # from there rather than restating them.
+    if [ "$have_bridge" = 1 ]; then
+        plugin_lines
+    else
+        say "This release predates \`letibot-mcp\`, the Claude Code bridge, so it was not"
+        say "installed and the \`leticode\` plugin cannot run yet. A newer release has it:"
+        say "  ${LETIBOT_VERSION:-https://github.com/$REPO/releases/latest}"
     fi
 }
 

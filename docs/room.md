@@ -646,9 +646,11 @@ turn per old message. The cursor is one number: a lower message that did not pas
 past it for `room_inbox`.
 
 What Claude Code sees depends on how it was started. Started with the channel flag for this server
-(`--dangerously-load-development-channels server:<name>`, interactive sessions only, TODO.md R117), an
+(`--dangerously-load-development-channels server:<name>`, or `plugin:<plugin>@<marketplace>` when the
+`leticode` plugin registered it; interactive sessions only, TODO.md R117), an
 idle session starts a turn on `<channel source="..." room="host" author="s-a" seq="14">#14 [host] s-a ->
-cc@app: text</channel>`. Without the flag Claude Code drops the notification. The messages are
+cc@app: text</channel>`. Without the flag Claude Code drops the notification - and then the plugin's
+own monitor is what wakes the seat, running the wait below in a loop (`claude-plugin/`). The messages are
 still in the inbox, so a session that polls `room_inbox`, or runs the wait below, loses nothing.
 
 **`letibot-mcp room-wait [--attention to_me|mentions|all] [--timeout 2h]`** blocks until a message for

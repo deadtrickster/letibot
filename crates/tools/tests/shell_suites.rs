@@ -1,16 +1,23 @@
 //! **The shell half of the tree is judged by shell, so it is run from here.** `scripts/letibot`
 //! decides where a run's turns go and `scripts/rrun` decides what a host is sent, each before any
-//! Rust executes; `tests/launcher.sh` and `tests/rrun.sh` are what judges them. Running them inside
-//! `cargo test` puts them in the step every gate already has - four launcher cases drifted unseen
-//! for weeks because nothing ran the file (R152).
+//! Rust executes; `tests/launcher.sh` and `tests/rrun.sh` are what judges them. `install.sh` and the
+//! Claude Code plugin's manifests are the same shape of thing (R117): no `#[test]` reaches a JSON
+//! file or a `/plugin install` line either. Running them inside `cargo test` puts them in the step
+//! every gate already has - four launcher cases drifted unseen for weeks because nothing ran the
+//! file (R152).
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The suites, by their path from the repository root, which is where their headers say to run
-/// them from; each builds its own throwaway home and stubs every binary it reaches.
-const SUITES: &[&str] = &["tests/launcher.sh", "tests/rrun.sh"];
+/// them from; the launchers build their own throwaway home and stub every binary they reach, and the
+/// plugin's walks this repository's own files and starts nothing.
+const SUITES: &[&str] = &[
+    "tests/launcher.sh",
+    "tests/rrun.sh",
+    "tests/claude-plugin.sh",
+];
 
 /// What a suite is written in. Without both it cannot run at all, so an absence is said out loud
 /// through `apparatus` rather than read as a pass.
