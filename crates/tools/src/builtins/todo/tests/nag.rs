@@ -484,3 +484,97 @@ fn an_external_wait_keeps_its_row_quiet_until_it_moves() {
         "a wait coming off the row is the plan moving"
     );
 }
+
+/// A child's wait belongs to the row that names it. The seat's R162 row waited on its own package
+/// and the check offered it the R161 package's turn - a different row's child - in the same breath
+/// as saying it waited on nothing.
+#[test]
+fn the_offer_names_the_rows_own_child_and_never_another_rows_package() {
+    let mine = "s-1794160942473352900";
+    let theirs = "s-1794160923261830176";
+    let board = vec![
+        TodoItem {
+            needs: vec![TodoNeed::Child {
+                id: theirs.to_string(),
+            }],
+            ..item("R161 package the excerpts", TodoStatus::InProgress)
+        },
+        TodoItem {
+            needs: vec![TodoNeed::Child {
+                id: mine.to_string(),
+            }],
+            ..item("R162 package the nags", TodoStatus::InProgress)
+        },
+    ];
+    // R161's package is working, so the check is silent about R161's row and only R162's is left.
+    let children = ChildSessions::none().running(theirs, child(60, Some(1), true));
+    let jobs = RunningJobs::none()
+        .running("j85811")
+        .of_package("j85811", theirs)
+        .about("j85811", "cargo test the R162 package the nags");
+    let askable = the_plan_as_checked(&board, &children, &jobs);
+    assert_eq!(askable.len(), 1, "one row is the check's to ask about");
+    let text = unfinished_plan(&askable, &board, &children, &jobs).expect("that row is not done");
+
+    assert!(text.contains("R162 package the nags"), "{text}");
+    assert!(
+        !text.contains(theirs),
+        "the offer steered the row at another row's child: {text}"
+    );
+    assert!(
+        !text.contains("attach the wait instead of answering"),
+        "nothing this row may wait on is running: {text}"
+    );
+
+    // And the offer itself is not gone: a package no row claims is still one this board may
+    // attach, because the row says nothing about a child of its own.
+    let free = ChildSessions::none().running("s-free", child(60, Some(1), true));
+    let jobs = RunningJobs::none()
+        .running("j9")
+        .of_package("j9", "s-free")
+        .about("j9", "cargo test the R162 package the nags");
+    let text = unfinished_plan(&askable, &board, &free, &jobs).expect("the row is not done");
+    assert!(
+        text.contains("\"child\": \"s-free\""),
+        "a package nobody waits on is offered as a turn: {text}"
+    );
+}
+
+/// A chain of rows that bottoms out in a working child is not a plan to fix. "NOTHING can start"
+/// fired every few minutes over plans whose only root was a package that was visibly working,
+/// because the row the chain went through was silent and so was never counted.
+#[test]
+fn a_chain_that_bottoms_out_in_a_working_child_says_nothing_can_start_nothing() {
+    let board = vec![
+        needs(
+            "write the answer up",
+            TodoStatus::Pending,
+            &["collect the child's work"],
+        ),
+        TodoItem {
+            needs: vec![TodoNeed::Child {
+                id: "s-pkg".to_string(),
+            }],
+            ..item("collect the child's work", TodoStatus::InProgress)
+        },
+    ];
+    let children = ChildSessions::none().running("s-pkg", child(5 * 60, Some(5), true));
+    let jobs = no_jobs();
+    let askable = the_plan_as_checked(&board, &children, &jobs);
+    assert_eq!(
+        askable.len(),
+        1,
+        "the row whose child is working is silent: {askable:?}"
+    );
+    assert_eq!(
+        unfinished_plan(&askable, &board, &children, &jobs),
+        None,
+        "the chain ends in a child with room to breathe, so there is nothing to unblock"
+    );
+
+    // A child that has gone quiet past its room to breathe is the stuck case, and it is said.
+    let stuck = ChildSessions::none().running("s-pkg", child(45 * 60, Some(45 * 60), true));
+    let askable = the_plan_as_checked(&board, &stuck, &jobs);
+    let said = unfinished_plan(&askable, &board, &stuck, &jobs).expect("a plan to fix, said");
+    assert!(said.contains("s-pkg"), "{said}");
+}

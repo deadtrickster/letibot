@@ -77,6 +77,7 @@ fn child(
         age: std::time::Duration::from_secs(age_secs),
         quiet_for: quiet_secs.map(std::time::Duration::from_secs),
         working,
+        unknown: None,
     }
 }
 

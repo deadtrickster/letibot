@@ -998,6 +998,9 @@ pub struct RunningChild {
     /// turn rather than `SessionStatus::running`, which is the round's flag and so reads false
     /// through a round's tool calls. Not a verdict: see [`ChildDoing`].
     pub working: bool,
+    /// Why the reader cannot say what this child is doing - a head on another protocol number,
+    /// frames this build could not read. `None` is a child read clearly; `Some` is never *ended*.
+    pub unknown: Option<&'static str>,
 }
 
 /// What the daemon knows about the children a plan waits on: a fact no board can hold, so the
@@ -1052,6 +1055,10 @@ pub struct RunningJobs {
     /// The processes this host still has, as `(pid, /proc/<pid>/stat starttime)`: what a
     /// [`TodoNeed::Pid`] edge resolves against. See [`RunningJobs::pid`].
     pids: BTreeSet<(u32, u64)>,
+    /// Whether a job this reading does NOT list may still be running. A seat whose head skipped
+    /// frames cannot say - the skipped frames include the job list - and an absence of a handle
+    /// is not an ending there.
+    uncertain: bool,
 }
 
 impl RunningJobs {
@@ -1073,6 +1080,19 @@ impl RunningJobs {
     /// narrowing both take.
     pub fn is_running(&self, handle: &str) -> bool {
         self.live.contains(handle)
+    }
+
+    /// The same snapshot, saying that it cannot vouch for what it does not list: the reader is a
+    /// seat whose head is on another protocol number, or skipped frames it could not read, so a
+    /// handle missing from it may still be running. Unknown is running, and never ended.
+    pub fn uncertain(mut self) -> Self {
+        self.uncertain = true;
+        self
+    }
+
+    /// Whether a job this snapshot does not list may still be running - see [`Self::uncertain`].
+    pub fn is_uncertain(&self) -> bool {
+        self.uncertain
     }
 
     /// A job this board does not run but can only reach THROUGH its owner, by the owner's session
@@ -1259,7 +1279,9 @@ pub fn waits_on_a_child_with_room_to_breathe(row: &TodoItem, children: &ChildSes
 /// settlement as a turn, so there is nothing to steer and no deadline of its own is needed.
 pub fn waits_on_a_running_job(row: &TodoItem, jobs: &RunningJobs) -> bool {
     row.needs.iter().any(|need| match need {
-        TodoNeed::Job { handle } => jobs.is_running(handle),
+        // On a snapshot that cannot vouch for its absences a handle it does not hold is a job it
+        // cannot see, not a job that ended: the row stays quiet, and its other waits with it.
+        TodoNeed::Job { handle } => jobs.is_running(handle) || jobs.is_uncertain(),
         // A process named by pid is the same silence: it ends when it ends, and no job table can
         // say so.
         TodoNeed::Pid { pid, start } => jobs.is_running_pid(*pid, *start),
@@ -1471,7 +1493,7 @@ pub fn unfinished_plan_for(
         // The degenerate case, said out loud: an unfinished plan whose ready set is empty is a
         // plan to unblock, and silence would read as nothing to do. Except when everything left
         // waits on the operator - then nothing is the model's to move and the check stays quiet.
-        if all_on_the_operator(&blocked) {
+        if all_on_the_operator(&blocked, board, children, jobs) {
             return None;
         }
         return (!blocked.is_empty()).then(|| (nothing_can_start(&blocked), String::new()));
@@ -1528,9 +1550,13 @@ pub fn unfinished_plan_for(
     // model will not reach for a door nobody named. Appended to the advice's own line, because
     // the head folds a notice only while every line after the bullet is the advice it knows.
     let offer = match next.by {
-        TodoBy::Model | TodoBy::Operator => {
-            the_wait_to_offer(&jobs.likeliest_wait(&next.content), children, jobs)
-        }
+        TodoBy::Model | TodoBy::Operator => the_wait_to_offer(
+            next,
+            &jobs.likeliest_wait(&next.content),
+            board,
+            children,
+            jobs,
+        ),
         _ => None,
     }
     .unwrap_or_default();
@@ -1562,16 +1588,44 @@ pub fn unfinished_plan_for(
 /// subagent itself, and - for a job a PACKAGE runs - that package's turn, which is the only wait a
 /// board like a seat's can make on it (`docs/seat-todo.md`). `None` when there is nothing to offer.
 fn the_wait_to_offer(
+    row: &TodoItem,
     candidates: &[(&'static str, &str, &str, f64)],
+    board: &[TodoItem],
     children: &ChildSessions,
     jobs: &RunningJobs,
 ) -> Option<String> {
-    let [(kind, handle, _, _), _rest @ ..] = candidates else {
+    // A child's wait belongs to the row that NAMES it. A child another row already waits on is
+    // not this row's to attach - that was a row steered at a stranger's turn, in a check that had
+    // just said it waited on nothing - so it is dropped from the offer before the best one is picked.
+    let mine = |id: &str| {
+        row.needs
+            .iter()
+            .any(|n| matches!(n, TodoNeed::Child { id: named } if named == id))
+    };
+    let another_rows = |id: &str| {
+        board.iter().any(|other| {
+            other.content.trim() != row.content.trim()
+                && other
+                    .needs
+                    .iter()
+                    .any(|n| matches!(n, TodoNeed::Child { id: named } if named == id))
+        })
+    };
+    let takeable: Vec<(&'static str, &str, &str, f64)> = candidates
+        .iter()
+        .copied()
+        .filter(|(_, handle, _, _)| {
+            let named = offered_as(jobs, handle);
+            mine(named) || !another_rows(named)
+        })
+        .collect();
+    let [(kind, handle, _, _), _rest @ ..] = takeable.as_slice() else {
         return None;
     };
+    let (kind, handle) = (*kind, *handle);
     // Everything running, said the same way wherever it is named: a person cannot act on a wait
     // the offer never mentions, and a handle alone would read as one this board could make.
-    let described: Vec<String> = candidates
+    let described: Vec<String> = takeable
         .iter()
         .take(3)
         .map(|(_, h, a, _)| said_running(h, a, jobs))
@@ -1610,6 +1664,12 @@ fn the_wait_to_offer(
     ))
 }
 
+/// What an offer would NAME for `handle`: a package's job is offered as that package's turn,
+/// anything else as its own handle.
+fn offered_as<'a>(jobs: &'a RunningJobs, handle: &'a str) -> &'a str {
+    jobs.owner(handle).unwrap_or(handle)
+}
+
 /// One running job or child as the offer names it: `` `j12` (cargo bench) ``, or - for a job a
 /// package runs - `` `K1` is running `j83509` ``, because the board it is said to is not the one
 /// running it and a bare handle would read as a wait that board could make.
@@ -1626,28 +1686,41 @@ fn said_running(handle: &str, about: &str, jobs: &RunningJobs) -> String {
     }
 }
 
-/// Is everything that is blocked waiting, in the end, on the operator? A row is, when every
-/// unmet need is an unanswered question or a row that is itself on the operator. Empty is
-/// `false`: there is nothing to be silent about.
-fn all_on_the_operator(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> bool {
+/// Is everything that is blocked waiting, in the end, on something no pass of this check can move?
+/// A row is, when every unmet need is an unanswered question, a running job, child or process, or
+/// a row that is itself rooted. Empty is `false`: there is nothing to be silent about.
+fn all_on_the_operator(
+    blocked: &[(&TodoItem, Vec<(String, NeedFate)>)],
+    board: &[TodoItem],
+    children: &ChildSessions,
+    jobs: &RunningJobs,
+) -> bool {
     if blocked.is_empty() {
         return false;
     }
-    // A fixed point over the blocked set: start from the rows waiting directly on the operator and
-    // add any row whose every unmet need is the operator or a row already known to be - so a cycle
-    // or a broken edge is never counted, and the loop ends when a pass adds nothing.
+    // A fixed point over the BOARD, not over the blocked set: a row the check is silent about
+    // because its child is working is not in `blocked`, and a row that waits on it bottoms out in
+    // that child - which is how a chain of rows read as a plan to fix while a package was working.
     let mut on: BTreeSet<&str> = BTreeSet::new();
     loop {
         let before = on.len();
-        for (row, unmet) in blocked {
-            if on.contains(row.content.trim()) {
+        for row in board {
+            let key = row.content.trim();
+            if on.contains(key) {
                 continue;
             }
+            let unmet = match blocked.iter().find(|(b, _)| b.content.trim() == key) {
+                Some((_, unmet)) => unmet.clone(),
+                None => unmet_needs(board, row, children, jobs),
+            };
             // A running job and a child still young are roots
             // the check is silent about everywhere else (`todo_write` promises it), so a plan
             // blocked only on them is not a plan to fix either.
             let rooted = unmet.iter().all(|(name, fate)| match fate {
-                NeedFate::OperatorAsked | NeedFate::JobRunning | NeedFate::MonitorWatching => true,
+                NeedFate::OperatorAsked
+                | NeedFate::JobRunning
+                | NeedFate::JobUnseen
+                | NeedFate::MonitorWatching => true,
                 // And a live process: it ends on its own, so nothing here can move it.
                 NeedFate::PidRunning => true,
                 // And a peer that was asked: the answer comes through the room's pass, so the rest
@@ -1664,7 +1737,7 @@ fn all_on_the_operator(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> bool
                 _ => false,
             });
             if rooted {
-                on.insert(row.content.trim());
+                on.insert(key);
             }
         }
         if on.len() == before {
@@ -1715,6 +1788,9 @@ pub enum NeedFate {
     /// It carries no payload because a job needs no steering - the daemon delivers its settlement
     /// as a turn of its own.
     JobRunning,
+    /// A job the reading could not see at all: its board's snapshot does not list it and cannot
+    /// vouch for the list's completeness. Not met, and not an ending either.
+    JobUnseen,
     /// A process this host still has, by pid: [`NeedFate::JobRunning`]'s sibling one door over.
     PidRunning,
     /// A monitor still watching - [`NeedFate::JobRunning`]'s sibling: the row cannot start
@@ -1822,6 +1898,10 @@ fn unmet_needs(
             TodoNeed::Job { handle } => {
                 if jobs.is_running(handle) {
                     out.push((handle.clone(), NeedFate::JobRunning));
+                } else if jobs.is_uncertain() {
+                    // The reader could not see the job list: an absence is not an ending, and the
+                    // row must not read as work that can start.
+                    out.push((handle.clone(), NeedFate::JobUnseen));
                 } else if jobs.is_digesting(handle) {
                     // Ended, and its completion not digested yet - not met until the model has
                     // had a turn with it: see [`waits_on_an_undigested_ending`].
@@ -1901,6 +1981,14 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
             NeedFate::JobRunning => format!(
                 "the job `{name}`, still running — its completion reaches you as soon as it ends"
             ),
+            // The one sentence that says what the reader does NOT know: a missing handle on a
+            // snapshot that skipped frames is not an ended job, and a row read as ready here
+            // would be a row asked to start on a lie.
+            NeedFate::JobUnseen => format!(
+                "the job `{name}`, which this board cannot see — the head it reads is on another \
+                 protocol number or skipped frames it could not read, so an absence is not an \
+                 ending: the wait stands until it can be read"
+            ),
             NeedFate::PidRunning => format!(
                 "the process `{name}`, still running — nothing here reports its exit, so this row \
                  is asked about once it is gone"
@@ -1963,6 +2051,9 @@ pub enum ChildDoing {
     Quiet,
     /// Nothing has been published in it at all, so the daemon has no evidence either way.
     NoEvidence,
+    /// The reader could not read the child's state at all - a head on another protocol number, or
+    /// frames this build skipped. Not an absence of work: an absence of evidence.
+    Unknown,
 }
 
 impl ChildDoing {
@@ -1974,6 +2065,7 @@ impl ChildDoing {
             ChildDoing::BetweenTurns => "between turns",
             ChildDoing::Quiet => "quiet",
             ChildDoing::NoEvidence => "showing nothing yet",
+            ChildDoing::Unknown => "cannot say",
         }
     }
 }
@@ -1982,6 +2074,11 @@ impl ChildDoing {
 /// whether anything has moved. A reader that wants the evidence rather than the name takes
 /// [`child_evidence`].
 pub fn child_doing(child: &RunningChild) -> ChildDoing {
+    // Said before the two axes: they are a verdict on evidence this reader does not have, and a
+    // child whose state could not be read must never be drawn as one that ended or went quiet.
+    if child.unknown.is_some() {
+        return ChildDoing::Unknown;
+    }
     match (child.working, child.quiet_for) {
         // Moving: this is the state the check must NOT speak about.
         (true, Some(gap)) if gap < CHILD_QUIET_ENOUGH_TO_LOOK => ChildDoing::Working,
@@ -1998,6 +2095,9 @@ pub fn child_doing(child: &RunningChild) -> ChildDoing {
 /// The evidence under the name, in the one clause both doors print - a second rendering would be
 /// a second answer about one child.
 pub fn child_evidence(child: &RunningChild) -> String {
+    if let Some(why) = child.unknown {
+        return why.to_string();
+    }
     let turn = if child.working {
         "a turn is in flight"
     } else {
@@ -2033,6 +2133,12 @@ fn child_said(child: &RunningChild) -> String {
         ChildDoing::Quiet | ChildDoing::NoEvidence => format!(
             "{} — check whether it is stuck: `task_result` with its id says where it got to, and \
              `job_kill` stops a child that is wedged",
+            child_evidence(child)
+        ),
+        // Nothing here can look at it, and a guess is worse than the truth: the row waits.
+        ChildDoing::Unknown => format!(
+            "this board cannot say whether it is stuck: {} — unknown is not ended, so the row \
+             waits until it can be read",
             child_evidence(child)
         ),
     }
@@ -2089,7 +2195,7 @@ fn lead_of(unmet: &[(String, NeedFate)]) -> &'static str {
         "waiting on a child that is still running"
     } else if unmet
         .iter()
-        .any(|(_, fate)| matches!(fate, NeedFate::JobRunning))
+        .any(|(_, fate)| matches!(fate, NeedFate::JobRunning | NeedFate::JobUnseen))
     {
         "waiting on a job that is still running"
     } else {
@@ -2119,7 +2225,7 @@ fn nothing_can_start(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> String
             .any(|(_, unmet)| unmet.iter().any(|(_, f)| fate(f)))
     };
     let a_child_is_waiting = any(|f| matches!(f, NeedFate::ChildRunning(_)));
-    let a_job_is_waiting = any(|f| matches!(f, NeedFate::JobRunning));
+    let a_job_is_waiting = any(|f| matches!(f, NeedFate::JobRunning | NeedFate::JobUnseen));
     let mut out = String::from(
         "unblock one of these rather than starting something new: finish a row they wait on, or \
          correct a need that names nothing on this board",

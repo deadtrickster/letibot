@@ -69,6 +69,7 @@ fn child(age_secs: u64, quiet_secs: Option<u64>, working: bool) -> RunningChild 
         age: Duration::from_secs(age_secs),
         quiet_for: quiet_secs.map(Duration::from_secs),
         working,
+        unknown: None,
     }
 }
 

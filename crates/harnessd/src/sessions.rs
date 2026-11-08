@@ -155,6 +155,7 @@ pub(crate) fn child_reading(
             age,
             quiet_for: None,
             working: turn_started,
+            unknown: None,
         };
     };
     let status = hub.status();
@@ -163,6 +164,7 @@ pub(crate) fn child_reading(
         quiet_for: (status.last_ms > 0)
             .then(|| Duration::from_millis(now_ms.saturating_sub(status.last_ms))),
         working: turn_started || hub.turn_in_flight(),
+        unknown: None,
     }
 }
 

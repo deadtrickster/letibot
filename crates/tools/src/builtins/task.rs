@@ -724,6 +724,11 @@ impl TaskStatus {
                 "check whether it is stuck: `job_kill` stops a child that is wedged, and `transcript` \
                  with `session` set to its handle reads what it did"
             }
+            // A reader that could not read the child at all steers nobody: a guess about a state
+            // nobody saw is how a working child gets killed.
+            ChildDoing::Unknown => {
+                "nothing here can say what it is doing, so wait for its answer rather than judging it"
+            }
         };
         Some(format!(
             "it is {} ({}) — {next}",

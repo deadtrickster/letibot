@@ -313,6 +313,7 @@ fn task_result_tells_a_working_child_from_an_idle_one_and_a_wedged_one() {
         age: Duration::from_secs(45 * 60),
         quiet_for: Some(Duration::from_secs(quiet)),
         working,
+        unknown: None,
     };
     let summary = |r: &crate::ToolResult| match &r.outcome {
         letibot_transcript::ToolOutcome::Abstained { reason } => reason.clone(),

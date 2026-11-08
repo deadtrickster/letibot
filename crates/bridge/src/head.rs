@@ -556,6 +556,37 @@ pub struct State {
     pub stopped: bool,
 }
 
+impl State {
+    /// A reading of one session with nothing in it, for a caller outside this module that must
+    /// state a head's snapshot as a value - a seat's plan check, whose tests run without a daemon.
+    pub fn of(session: impl Into<String>) -> State {
+        State {
+            session: session.into(),
+            ..State::default()
+        }
+    }
+
+    /// Whether this reading is whole enough to call an absence an ending. A daemon on another
+    /// protocol number, or frames this build skipped, mean the facts held here may be missing -
+    /// and a turn, child or job that is missing is not one that ended.
+    pub fn is_readable(&self) -> bool {
+        self.unreadable_word().is_none()
+    }
+
+    /// Why it is not, as the clause the plan check prints - `None` when it is.
+    pub fn unreadable_word(&self) -> Option<&'static str> {
+        if self.skew.is_some() {
+            Some(
+                "its daemon is on another protocol number, so this bridge skipped frames it could not read",
+            )
+        } else if self.unreadable > 0 {
+            Some("this bridge skipped frames it could not read from it")
+        } else {
+            None
+        }
+    }
+}
+
 /// The word a provider trouble is filed under - this file's closed vocabulary, so a head that asks
 /// *is the provider stuck* matches four words instead of the daemon's prose. A kind this build does
 /// not know reads as `trouble`, and the raw kind stays in the entry's `code`.
@@ -1752,6 +1783,24 @@ impl Head {
         (g.jobs_open.iter().cloned().collect(), rows)
     }
 
+    /// The background jobs the DAEMON says this session is parked on, by handle - the typed half of
+    /// `waiting_on`, read by the one caller asking whether a job's end is worth a push. Not
+    /// `jobs_open`: a job this session started and did not wait for is not one it is sitting on.
+    pub fn parked_on_jobs(&self) -> Vec<String> {
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .activity
+            .waiting_on()
+            .iter()
+            .filter_map(|w| match w {
+                Waiting::Job(handle) => Some(handle.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Whether this bridge asked the daemon to close this session (`leticode_stop`). The `Bye` that
     /// follows the close is that act arriving, not a failure of the session's to report.
     pub fn stopped_by_bridge(&self) -> bool {
@@ -2666,8 +2715,10 @@ mod tests {
     /// asks again, and ends with the job listed from the daemon's newer answer.
     #[test]
     fn a_job_list_older_than_a_job_event_is_discarded_and_asked_again() {
-        let mut state = State::default();
-        state.jobs_in_flight = true;
+        let mut state = State {
+            jobs_in_flight: true,
+            ..State::default()
+        };
         state.fold(ServerFrame::Event(env(
             7,
             finished(
@@ -2680,7 +2731,7 @@ mod tests {
                 },
             ),
         )));
-        assert!(state.take_jobs_ask() == false, "one ask is already out");
+        assert!(!state.take_jobs_ask(), "one ask is already out");
         // The reply built at seq 5, before the job existed.
         state.fold(jobs_reply(5, &[]));
         assert!(state.jobs_open.is_empty());

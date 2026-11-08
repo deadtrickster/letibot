@@ -23,7 +23,7 @@ use letibot_tools::exec::procs;
 use letibot_tools::runtime::Invocation;
 use serde_json::{Value, json};
 
-use crate::head::{Head, Turn};
+use crate::head::{Head, State, Turn};
 use crate::push::Outbox;
 use crate::seat_jobs::SeatJobs;
 
@@ -220,61 +220,20 @@ impl Seat {
     /// as the plan check reads them, with a signature of the reading: a pass that finds the same
     /// signature does not re-arm and cannot postpone the check.
     fn packages(&self, rows: &[TodoItem]) -> (ChildSessions, RunningJobs, String) {
-        let heads: Vec<Arc<Head>> = self
+        let states: Vec<State> = self
             .heads
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .values()
-            .cloned()
+            .map(|head| head.snapshot())
             .collect();
         let now = Instant::now();
-        let mut children = ChildSessions::none();
-        let mut jobs = RunningJobs::none();
-        let mut working = self.working.lock().unwrap_or_else(|e| e.into_inner());
-        let mut at_work: HashSet<String> = HashSet::new();
+        let (children, mut jobs, from_heads) = {
+            let mut working = self.working.lock().unwrap_or_else(|e| e.into_inner());
+            read_packages(&states, &mut working, now)
+        };
         let mut signature = format!("v{}", self.board.version());
-        for head in heads {
-            let state = head.snapshot();
-            let running = matches!(state.turn, Turn::Running);
-            // A package is a child WHILE ITS TURN IS IN FLIGHT, which is the daemon's own reading of
-            // its task journal: a child that ended is not in the snapshot, and that is what ends the
-            // wait. `jobs_open` is what can be waited on beside it.
-            signature.push_str(&format!(
-                "|{}:{running}:{:?}",
-                head.session, state.jobs_open
-            ));
-            for handle in &state.jobs_open {
-                jobs = jobs
-                    .running(handle.clone())
-                    // A package's job is the PACKAGE's: the check names it as such and offers the
-                    // package's turn instead (`docs/seat-todo.md`).
-                    .of_package(handle.clone(), head.session.clone());
-            }
-            if !still_a_child(running, &state.jobs_open, state.asks.len()) {
-                continue;
-            }
-            at_work.insert(head.session.clone());
-            let entry = working.entry(head.session.clone()).or_insert(Working {
-                since: now,
-                last_seq: state.seq,
-                last_change: now,
-            });
-            // A job of its own running is the package's evidence of work, as a new event is.
-            if state.seq != entry.last_seq || !state.jobs_open.is_empty() {
-                entry.last_seq = state.seq;
-                entry.last_change = now;
-            }
-            children = children.running(
-                head.session.clone(),
-                RunningChild {
-                    age: now.saturating_duration_since(entry.since),
-                    quiet_for: Some(now.saturating_duration_since(entry.last_change)),
-                    working: running || !state.jobs_open.is_empty(),
-                },
-            );
-        }
-        working.retain(|id, _| at_work.contains(id));
-        drop(working);
+        signature.push_str(&from_heads);
         // The seat's own jobs: no daemon runs them, so the check names them as this board's own -
         // and a row waiting on one is quiet until the reaper says it ended.
         for job in self.jobs.open() {
@@ -367,6 +326,81 @@ fn run(seat: &Arc<Seat>, outbox: &Arc<Outbox>) {
         drop(clock);
         std::thread::sleep(PASS);
     }
+}
+
+/// The packages and their open jobs, out of the heads' snapshots, as the plan check reads them.
+/// Split out of [`Seat::packages`] so a test states a package's reading as a value.
+///
+/// A package is a child WHILE ITS TURN IS IN FLIGHT, which is the daemon's own reading of its
+/// task journal: a child that ended is not in the snapshot, and that is what ends the wait. A head
+/// this bridge could not read is the exception - the frames it skipped include the turn state, so
+/// the package is a child that says `cannot say`, never one that ended.
+fn read_packages(
+    states: &[State],
+    working: &mut HashMap<String, Working>,
+    now: Instant,
+) -> (ChildSessions, RunningJobs, String) {
+    let mut children = ChildSessions::none();
+    let mut jobs = RunningJobs::none();
+    let mut at_work: HashSet<String> = HashSet::new();
+    let mut signature = String::new();
+    for state in states {
+        let running = matches!(state.turn, Turn::Running);
+        let unknown = state.unreadable_word();
+        // The trust flag is half the signature: a head that starts or stops being readable is a
+        // change in the plan's reading, so the check must re-arm on it.
+        signature.push_str(&format!(
+            "|{}:{running}:{}:{:?}",
+            state.session,
+            state.is_readable(),
+            state.jobs_open
+        ));
+        for handle in &state.jobs_open {
+            jobs = jobs
+                .running(handle.clone())
+                // A package's job is the PACKAGE's: the check names it as such and offers the
+                // package's turn instead (`docs/seat-todo.md`).
+                .of_package(handle.clone(), state.session.clone());
+        }
+        if unknown.is_some() {
+            // The job list may be one of the skipped frames, so a handle this reading does not
+            // hold may still be running: an absence is not an ending.
+            jobs = jobs.uncertain();
+        } else if !still_a_child(
+            running,
+            &state.jobs_open,
+            state.asks.len(),
+            !state.activity.waiting_on().is_empty(),
+        ) {
+            continue;
+        }
+        at_work.insert(state.session.clone());
+        let entry = working.entry(state.session.clone()).or_insert(Working {
+            since: now,
+            last_seq: state.seq,
+            last_change: now,
+        });
+        // A job of its own running is the package's evidence of work, as a new event is.
+        if state.seq != entry.last_seq || !state.jobs_open.is_empty() {
+            entry.last_seq = state.seq;
+            entry.last_change = now;
+        }
+        children = children.running(
+            state.session.clone(),
+            RunningChild {
+                age: now.saturating_duration_since(entry.since),
+                // An unreadable head's silence is this bridge's blindness, not the package's: the
+                // gap would be a fact about the reading and not about the work.
+                quiet_for: unknown
+                    .is_none()
+                    .then(|| now.saturating_duration_since(entry.last_change)),
+                working: running || !state.jobs_open.is_empty(),
+                unknown,
+            },
+        );
+    }
+    working.retain(|id, _| at_work.contains(id));
+    (children, jobs, signature)
 }
 
 /// The processes the board waits on, by pid and start time - the pair an edge on a process
@@ -583,19 +617,24 @@ fn render(rows: &[TodoItem]) -> String {
 }
 
 /// A package is still the seat's child while its turn runs, while it waits on a job of its own
-/// between turns, or while it holds an ask: a child idle between `job_wait`s has not finished.
+/// between turns, while it holds an ask, or while the DAEMON says it is waiting on anything. The
+/// last is not the same as an open job: `waiting_on` is the job watcher's answer and `jobs_open`
+/// the process host's, and a job whose completion is queued is at work and not running.
 fn still_a_child(
     running: bool,
     jobs_open: &std::collections::BTreeSet<String>,
     asks: usize,
+    waiting: bool,
 ) -> bool {
-    running || !jobs_open.is_empty() || asks > 0
+    running || !jobs_open.is_empty() || asks > 0 || waiting
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use letibot_sessionlog::activity::{Activity, Waiting};
     use letibot_tokencore::store::TodoBy;
+    use letibot_tools::builtins::todo::{ChildDoing, child_doing, has_room_to_breathe};
 
     /// A row with no waits, as a seat writes one.
     fn row(content: &str, status: TodoStatus) -> TodoItem {
@@ -614,11 +653,18 @@ mod tests {
     fn a_package_waiting_on_its_own_job_between_turns_is_still_a_child() {
         let jobs: std::collections::BTreeSet<String> = ["j84628".to_string()].into();
         let none = std::collections::BTreeSet::new();
-        assert!(still_a_child(false, &jobs, 0), "idle on a job of its own");
-        assert!(still_a_child(false, &none, 1), "idle on an ask");
-        assert!(still_a_child(true, &none, 0), "mid-turn");
         assert!(
-            !still_a_child(false, &none, 0),
+            still_a_child(false, &jobs, 0, false),
+            "idle on a job of its own"
+        );
+        assert!(still_a_child(false, &none, 1, false), "idle on an ask");
+        assert!(
+            still_a_child(false, &none, 0, true),
+            "the worker sitting on something IS the fact"
+        );
+        assert!(still_a_child(true, &none, 0, false), "mid-turn");
+        assert!(
+            !still_a_child(false, &none, 0, false),
             "idle with nothing open has ended"
         );
 
@@ -633,6 +679,7 @@ mod tests {
                 age: Duration::from_secs(600),
                 quiet_for: Some(Duration::from_secs(30)),
                 working: false,
+                unknown: None,
             },
         );
         let jobs = RunningJobs::none()
@@ -667,6 +714,7 @@ mod tests {
                 age: Duration::from_secs(60),
                 quiet_for: Some(Duration::from_secs(1)),
                 working: true,
+                unknown: None,
             },
         );
         let t0 = Instant::now();
@@ -714,6 +762,146 @@ mod tests {
             )
             .is_some(),
             "a plan that moved is asked about"
+        );
+    }
+
+    /// A head that is on another protocol number, or that skipped frames this build could not
+    /// read, is not a head that ended its turn: its package is still a child, and a row waiting on
+    /// it is never told it waits on nothing.
+    #[test]
+    fn a_package_whose_head_could_not_be_read_is_never_read_as_idle() {
+        let window = Duration::from_millis(50);
+        let t0 = Instant::now();
+        let mut skewed = State::of("s-pkg");
+        skewed.skew = Some("this bridge speaks 67 and the daemon 68".into());
+        let mut skipped = State::of("s-pkg");
+        skipped.unreadable = 3;
+        for mut state in [skewed, skipped] {
+            state.turn = Turn::Idle;
+            let mut working = HashMap::new();
+            let (children, jobs, _) = read_packages(std::slice::from_ref(&state), &mut working, t0);
+            let package = children
+                .child("s-pkg")
+                .unwrap_or_else(|| panic!("{:?} read a working package as ended", state.skew));
+            assert!(package.unknown.is_some(), "and says why");
+            assert_eq!(child_doing(package), ChildDoing::Unknown);
+            assert!(
+                has_room_to_breathe(package),
+                "nothing here may steer a child it cannot read"
+            );
+
+            let mut waiting = row("R162 package the nags", TodoStatus::InProgress);
+            waiting.needs = vec![TodoNeed::Child { id: "s-pkg".into() }];
+            let rows = vec![waiting];
+            let mut clock = TodoNagClock::with_window(window).keyed_by_plan();
+            let said = a_pass(&mut clock, &rows, &children, &jobs, true, t0, t0 + window);
+            assert!(
+                !matches!(&said, Some(Some(text)) if text.contains("waits on nothing")),
+                "a package nobody could read is not a wait that ended: {said:?}"
+            );
+            assert!(said.is_none(), "so the check says nothing: {said:?}");
+        }
+    }
+
+    /// A row with several waits is quiet while any one of them is still running. Its dead pid and
+    /// its ended job say nothing about the third, and a handle missing from a snapshot that skipped
+    /// frames is unknown - not ended.
+    #[test]
+    fn a_row_with_several_waits_is_quiet_until_the_last_one_ends() {
+        let window = Duration::from_millis(50);
+        let t0 = Instant::now();
+        let mut waited = row("the soak, the gate and the build", TodoStatus::InProgress);
+        waited.needs = vec![
+            TodoNeed::Pid {
+                pid: 4_000_000,
+                start: 1,
+            },
+            TodoNeed::Job {
+                handle: "j1".into(),
+            },
+            TodoNeed::Job {
+                handle: "j2".into(),
+            },
+        ];
+        let rows = vec![waited];
+        let mut clock = TodoNagClock::with_window(window).keyed_by_plan();
+        let mut working = HashMap::new();
+
+        // The head is skewed, so the job list the seat reads never arrived: j2 is running and
+        // invisible, and an absence is not an ending.
+        let mut skewed = State::of("s-pkg");
+        skewed.skew = Some("this bridge speaks 67 and the daemon 68".into());
+        let (children, jobs, _) = read_packages(std::slice::from_ref(&skewed), &mut working, t0);
+        assert!(jobs.is_uncertain(), "a list that was skipped is not a list");
+        let said = a_pass(&mut clock, &rows, &children, &jobs, true, t0, t0 + window);
+        assert!(
+            !matches!(&said, Some(Some(text)) if text.contains("the soak")),
+            "a wait nobody could read was taken for one that ended: {said:?}"
+        );
+
+        // The head reads cleanly and lists j2: still quiet, and for the job's own reason.
+        let mut clean = State::of("s-pkg");
+        clean.jobs_open.insert("j2".into());
+        let (children, jobs, _) = read_packages(std::slice::from_ref(&clean), &mut working, t0);
+        assert!(jobs.is_running("j2"));
+        let said = a_pass(&mut clock, &rows, &children, &jobs, true, t0, t0 + window);
+        assert!(
+            !matches!(&said, Some(Some(text)) if text.contains("the soak")),
+            "the last one is still running: {said:?}"
+        );
+
+        // j2 ends, and now the LAST of the row's waits has ended: the row is work, and asked about.
+        let over = State::of("s-pkg");
+        let (children, jobs, _) = read_packages(std::slice::from_ref(&over), &mut working, t0);
+        let said = a_pass(&mut clock, &rows, &children, &jobs, true, t0, t0 + window);
+        assert!(
+            matches!(&said, Some(Some(text)) if text.contains("the soak, the gate and the build")),
+            "every wait has ended, so the row is work: {said:?}"
+        );
+    }
+
+    /// Seen live with no protocol skew: a package between turns reported `jobs_open: []` while its
+    /// `waiting_on` named a job and a child and its activity was busy. The daemon's own answer is
+    /// the last word - a package the worker is sitting on has not finished.
+    #[test]
+    fn a_package_between_turns_the_daemon_says_it_is_waiting_on_is_still_a_child() {
+        let window = Duration::from_millis(50);
+        let t0 = Instant::now();
+        let mut state = State::of("s-1794-pkg");
+        // The snapshot as the seat read it: nothing in the job table, nothing asked, and the
+        // daemon saying it is at work on a job and a child.
+        state.activity = Activity::of(vec![
+            Waiting::Job("j85996".into()),
+            Waiting::Child("s-1794-sub-1".into()),
+        ]);
+        assert!(state.jobs_open.is_empty(), "the host's table held nothing");
+        assert!(state.asks.is_empty(), "and nothing was asked");
+        assert!(matches!(state.turn, Turn::Idle), "between turns");
+
+        let mut working = HashMap::new();
+        let (children, jobs, _) = read_packages(std::slice::from_ref(&state), &mut working, t0);
+        let package = children
+            .child("s-1794-pkg")
+            .expect("a package the worker is sitting on has not finished");
+        assert!(
+            package.unknown.is_none(),
+            "no skew here: this is the daemon's word"
+        );
+        assert!(
+            has_room_to_breathe(package),
+            "and it is out of the check's hands"
+        );
+
+        let mut waiting = row("R162 package the nags", TodoStatus::InProgress);
+        waiting.needs = vec![TodoNeed::Child {
+            id: "s-1794-pkg".into(),
+        }];
+        let rows = vec![waiting];
+        let mut clock = TodoNagClock::with_window(window).keyed_by_plan();
+        let said = a_pass(&mut clock, &rows, &children, &jobs, true, t0, t0 + window);
+        assert!(
+            said.is_none(),
+            "a package still at work is not a wait that ended: {said:?}"
         );
     }
 }

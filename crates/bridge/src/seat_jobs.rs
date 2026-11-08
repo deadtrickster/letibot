@@ -90,13 +90,30 @@ impl SeatJobs {
     }
 
     /// The jobs still running: what `wait_on {"job": …}` resolves against, and what keeps a row
-    /// that waits on one quiet. The process table decides, so a row written by a bridge that died
-    /// is read by the process that took over.
+    /// that waits on one quiet. A job THIS process holds is read from its own child handle, because
+    /// the process table's answer needs a start time it may disagree about - and a running job read
+    /// as ended is a row asked about work that is still going. The table is the witness only for a
+    /// row a dead bridge left `running`.
     pub fn open(&self) -> Vec<SeatJob> {
-        self.listing()
-            .into_iter()
-            .filter(|j| j.state == "running" && procs::alive(j.pid, j.start))
-            .collect()
+        let live = self.live.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out: Vec<SeatJob> = live
+            .values()
+            .filter(|job| {
+                matches!(
+                    job.child
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .try_wait(),
+                    Ok(None)
+                )
+            })
+            .map(|job| job.record.clone())
+            .collect();
+        out.extend(self.listing().into_iter().filter(|j| {
+            j.state == "running" && !live.contains_key(&j.handle) && procs::alive(j.pid, j.start)
+        }));
+        out.sort_by(|a, b| a.handle.cmp(&b.handle));
+        out
     }
 
     /// Run one command as this seat's job: `argv` verbatim, no shell, output to a file under the
@@ -317,4 +334,57 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A job this process holds is running whatever its store row says about its start time. The
+    /// table's answer needs that time to match, and a job read as ended puts its row back on the
+    /// check while the work is still going - the handle is the fact here.
+    #[test]
+    fn a_job_this_process_holds_is_open_even_when_the_store_row_disagrees_about_its_start() {
+        let dir = std::env::temp_dir().join(format!("seat-jobs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch dir");
+        let store = dir.join("sessions.db");
+        Store::open(&store).expect("the store the daemon's first start makes");
+        let jobs = SeatJobs::new("cc@test", &store, dir.join("jobs"));
+        let started = jobs
+            .start(
+                &[serde_json::json!("sleep"), serde_json::json!("60")],
+                None,
+                None,
+            )
+            .expect("a job of the seat's own");
+        let handle = started["job"].as_str().expect("a handle").to_string();
+        assert!(
+            jobs.open().iter().any(|j| j.handle == handle),
+            "a job this process started is open"
+        );
+
+        // The row a bridge that died leaves behind, with a start time this process disagrees with -
+        // which is the shape that read a running job as one that had ended.
+        let mut row = jobs
+            .listing()
+            .into_iter()
+            .find(|j| j.handle == handle)
+            .expect("the row is on disk");
+        row.start = row.start.wrapping_add(1);
+        Store::open(&store)
+            .expect("the store")
+            .put_seat_job("cc@test", &row)
+            .expect("the row is written as a dead bridge left it");
+        assert!(
+            jobs.open().iter().any(|j| j.handle == handle),
+            "its own handle is the fact: {:?}",
+            jobs.open()
+        );
+
+        jobs.kill(&handle).expect("killed");
+        // Reap the ending here: no reaper thread runs in this test, and a zombie is not a job.
+        let _ = jobs.open();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

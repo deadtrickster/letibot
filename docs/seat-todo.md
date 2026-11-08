@@ -105,10 +105,19 @@ is what makes its parent's `Child` need met. The seat's snapshot is the held hea
 
 `age` is how long the package has been a child, and `quiet_for` is since it last visibly worked:
 its head changed, or it had a job of its own running. A package stays a child between turns while
-it has an open job or an ask. The room to breathe (`CHILD_ROOM_TO_BREATHE`, thirty minutes) is
+it has an open job, an ask, or anything the daemon's own `waiting_on` names - the last is not the
+same as an open job, because `waiting_on` is the job watcher's answer and `jobs_open` the process
+host's. The room to breathe (`CHILD_ROOM_TO_BREATHE`, thirty minutes) is
 measured from `quiet_for`, not `age`, so an hour-long package that is still moving keeps the row
 quiet, and one quiet for thirty minutes is the *stuck* case the notice steers to, exactly as a
 subagent is (`when_a_young_child_grows_up` arms that deadline).
+
+A head the bridge could not read is the exception: `protocol_skew` and `unreadable`
+(`State::is_readable`) mean the frames it skipped include the turn state and the job list, so the
+package is a child that says `cannot say` (`RunningChild::unknown`) and its jobs are a table that
+cannot vouch for its own absences (`RunningJobs::uncertain`). Unknown is running, never ended: a
+row waiting on one stays quiet, and a notice that would have read its wait as met - *in progress
+and waits on nothing*, or *nothing can start* - is not said.
 
 ## How a met wait is detected
 

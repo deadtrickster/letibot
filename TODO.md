@@ -49,6 +49,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Code work | the R164 before/after numbers; the output cap on the local llama path |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Code work | all of it |
 | R171 | A session's DM to a Claude Code seat is addressed to a different session | Code work | the room no longer re-addresses a dm (built and held by `crates/room/tests/dm.rs`); left: a live dm from a session to a `cc@<folder>` bridge on the box |
+| R172 | A Claude Code seat's todo check says false things about running packages | Code work | items 1-4 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, the offer names the row's own child or none, and a chain of rows bottoms out in the working child; left: a live seat against a daemon on another protocol number, and item 5 |
 | R165 | Rooms for orchestration (3/6): a question goes to the owner, not the room | Code work | all of it |
 | R166 | Rooms for orchestration (4/6): kinds, budgets and a stopping rule for agent-only threads | Code work | all of it |
 | R167 | Rooms for orchestration (5/6): peer text is a claim with a source, never an instruction | Code work | all of it |
@@ -233,6 +234,31 @@ The chat control comes from flowy (`letiflow/flowy`, `web/src/components/Message
 ---
 
 ## R173 - A firecode child ends its turn with a job running, and the VM closes under it
+
+## R172 - A Claude Code seat's todo check says false things about running packages
+
+**Status:** items 1-4 built. left: a live seat against a daemon on another protocol number (no test on this box can skew a real daemon), and item 5.
+
+Seen 2026-11-08 in the seat `cc@letibot` (the board is `crates/bridge/src/seat.rs`, the check's text `crates/tools/src/builtins/todo.rs`):
+
+1. A row `R162 package …` waiting on `{"kind": "child", "id": "s-1794160942473352900"}` was told *"It is in progress and waits on nothing"* while `leticode_status` of that session said `state: running, turn: running`. The same check then offered the WRONG child — *"`s-1794160923261830176` is running `j85811` — attach the wait … child: s-1794160923261830176"* — the R161 package, a different row's child.
+2. *"this turn is finished and NOTHING can start"* fired every few minutes while every blocked row bottomed out in children that had started minutes earlier and were visibly working.
+3. A row with several waits (a dead pid, an ended seat job `j1`, a running seat job `j2`) was asked about when the first one ended, though `j2` still ran.
+4. That bridge speaks protocol 67 and the daemons 68 (`protocol_skew` on `leticode_status`), and frames it cannot read are skipped. The skipped frames include the turn state and the job list the seat's `packages()` reads, so a running package reads as idle and a running job as ended.
+
+Wanted: a child's wait is matched to the row that names THAT child id and the offered `{"child": …}` is the row's own child or none; a package whose head reads protocol-skewed or partial state is not read as idle, because unknown means "running, cannot say" and never "ended"; a row with several waits is quiet while any one of them is still running, and the check speaks when the last one ends or when a non-running one is a real block; and "nothing can start" stays quiet when every blocked chain bottoms out in a running child, job or pid that has room to breathe.
+
+Built (items 1-4). The head's reading is a value now: `read_packages` (`crates/bridge/src/seat.rs`) turns the held heads' snapshots into the children-and-jobs the check reads, so a test states one without a daemon. A head that reports `protocol_skew` or has skipped frames (`State::is_readable`, `crates/bridge/src/head.rs`) is not a head that ended its turn: its package is a child carrying `RunningChild::unknown` (`ChildDoing::Unknown`, *cannot say*, never *ended*) and its job list is `RunningJobs::uncertain`, so a row waiting on a handle the snapshot does not hold stays quiet, and `NeedFate::JobUnseen` is the sentence if such a row is ever spoken about. A child's wait belongs to the row that names it: `the_wait_to_offer` drops every candidate whose package another row already waits on, so the offered `{"child": …}` is the row's own child or none. `all_on_the_operator` runs its fixed point over the BOARD and not the narrowed set, so a chain that goes through a row the check is silent about - its child is working - bottoms out in that child and "NOTHING can start" is not said (a child past its thirty minutes still is). And `SeatJobs::open` reads a job this process holds from its own child handle, leaving the process table as the witness only for a row a dead bridge left, so a running seat job is not ended by a start time that disagrees.
+
+Tests: `crates/bridge/src/seat.rs` - `a_package_whose_head_could_not_be_read_is_never_read_as_idle`, `a_package_between_turns_the_daemon_says_it_is_waiting_on_is_still_a_child`, `a_row_with_several_waits_is_quiet_until_the_last_one_ends`; `crates/bridge/src/seat_jobs.rs` - `a_job_this_process_holds_is_open_even_when_the_store_row_disagrees_about_its_start`; `crates/tools/src/builtins/todo/tests/nag.rs` - `the_offer_names_the_rows_own_child_and_never_another_rows_package`, `a_chain_that_bottoms_out_in_a_working_child_says_nothing_can_start_nothing`.
+
+Also built, seen live with NO skew: a package between turns whose snapshot read `jobs_open: []` with `waiting_on: ["job j85996", "child s-…-sub-…"]` and `activity: busy`. `still_a_child` (`crates/bridge/src/seat.rs`) asked only `turn`, `jobs_open` and `asks`, so it read that package as finished. It now also takes the daemon's own `waiting_on` (`State::activity`), which is the last word.
+
+Is that empty `jobs_open` itself a daemon bug? **Not in that shape.** The two facts come from different tables: `waiting_on` is the JOB WATCHER's (`JobWatchers::activity_facts().at_work`, `crates/harnessd/src/activity.rs:145`), which holds a handle while the daemon still owes somebody its completion, while `jobs_open` is the PROCESS HOST's job table (`harness/jobs.rs::job_entries`, `running = JobState::is_running()`), filtered by the head. A job that has exited and whose completion is queued or held for a turn that has not begun is therefore *at work* for the watcher and *not running* for the host - `waiting_on: ["job …"]` with `jobs_open: []` is that window, and it is the design rather than a stale table. The shape that WOULD be a daemon defect is `waiting_on` naming a handle the host has never held - a `job_wait` on a job from before a daemon restart - because no completion can be delivered for it; a live pair off the seat would say which of the two the report was. Either way the check now reads the daemon's answer, so neither shape reads as finished.
+
+---
+
+## R162 - A granted directory does not cover what is under it, and every subagent asks again
 
 **Status:** not started. left: all of it.
 
