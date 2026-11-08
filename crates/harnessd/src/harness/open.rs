@@ -2108,7 +2108,11 @@ impl Harness {
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::pkill::Pkill)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::ps::Ps)))
             .and_then(|_| {
-                registry.register(Box::new(letibot_tools::builtins::screen::ScreenTool::new()))
+                // The session id is how `screen tab` finds the tab the operator allowed it.
+                registry.register(Box::new(
+                    letibot_tools::builtins::screen::ScreenTool::new()
+                        .with_session(cfg.session_id.clone()),
+                ))
             })
             .map_err(|e| HarnessError::Setup(format!("registering the exec tools: {e}")))?;
         // Work across hosts: `fanout` and `scenario`, with the daemon's own process book behind

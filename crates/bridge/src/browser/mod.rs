@@ -7,10 +7,14 @@
 //! Three doors are checked on every request, in order: the `Host` header names loopback (a
 //! rebound DNS name is refused), the `Origin` is the extension's, and the bearer token matches
 //! `browser.token`. Only the operator's live top-level sessions can be asked.
+//!
+//! The same doors front `/tab/*`, through which the extension reports the tabs the operator
+//! allowed and runs the commands sessions send on `<rundir>/browser.sock` (`tab`).
 
 pub mod ask;
 pub mod http;
 pub mod sessions;
+pub mod tab;
 
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -83,6 +87,8 @@ pub struct Server {
     pub limits: Limits,
     /// How long a stream follows a turn before it says so and stops.
     pub patience: Duration,
+    /// The allowed tabs and the commands waiting for them.
+    pub tabs: Arc<tab::Tabs>,
 }
 
 /// Bind the listener, refusing anything that is not a loopback address.
@@ -237,9 +243,88 @@ fn handle(
             Err(why) => http::error(&mut stream, 500, allow, &why),
         },
         ("POST", "/ask") => ask_route(&mut stream, server, cache, &req.body),
-        (_, "/sessions" | "/ask") => http::error(&mut stream, 405, allow, "wrong method"),
+        ("POST", "/tab/sync") => tab_sync(&mut stream, server, cache, &req.body, false),
+        ("POST", "/tab/next") => tab_sync(&mut stream, server, cache, &req.body, true),
+        ("POST", "/tab/result") => tab_result(&mut stream, server, &req.body),
+        (_, "/sessions" | "/ask" | "/tab/sync" | "/tab/next" | "/tab/result") => {
+            http::error(&mut stream, 405, allow, "wrong method")
+        }
         (_, path) => http::error(&mut stream, 404, allow, &format!("no route {path}")),
     }
+}
+
+/// The extension's grant list replaces the table; `/tab/next` then holds the poll open for one
+/// command. The answer says which grants were refused, so the extension detaches those tabs.
+fn tab_sync(
+    stream: &mut TcpStream,
+    server: &Server,
+    cache: &Mutex<Option<(Instant, Vec<sessions::Row>)>>,
+    body: &[u8],
+    poll: bool,
+) {
+    let allow = Some(server.origin.as_str());
+    let v: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(e) => return http::error(stream, 400, allow, &format!("not JSON: {e}")),
+    };
+    let mut list = Vec::new();
+    for g in v["grants"].as_array().into_iter().flatten() {
+        let (Some(session), Some(tab)) = (g["session"].as_str(), g["tab"].as_i64()) else {
+            return http::error(stream, 400, allow, "a grant is {session, tab, url, title}");
+        };
+        let text = |k: &str| g[k].as_str().unwrap_or_default().to_string();
+        list.push((
+            session.to_string(),
+            tab::Grant {
+                tab,
+                url: text("url"),
+                title: text("title"),
+            },
+        ));
+    }
+    let synced = server.tabs.sync(list, |id| match listing(server, cache) {
+        Ok(rows) if rows.iter().any(|r| r.id == id) => Ok(()),
+        Ok(_) => Err(format!("`{id}` is not a live top-level session of yours")),
+        Err(why) => Err(why),
+    });
+    let command = if poll && !synced.kept.is_empty() {
+        server.tabs.next(tab::POLL_WAIT)
+    } else {
+        None
+    };
+    http::json(
+        stream,
+        200,
+        allow,
+        &json!({
+            "kept": synced.kept,
+            "refused": synced.refused.iter()
+                .map(|(s, why)| json!({ "session": s, "why": why }))
+                .collect::<Vec<_>>(),
+            "command": command,
+        }),
+    );
+}
+
+fn tab_result(stream: &mut TcpStream, server: &Server, body: &[u8]) {
+    let allow = Some(server.origin.as_str());
+    let v: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(e) => return http::error(stream, 400, allow, &format!("not JSON: {e}")),
+    };
+    let Some(id) = v["id"].as_str() else {
+        return http::error(stream, 400, allow, "a result is {id, ok, result | error}");
+    };
+    let outcome = if v["ok"].as_bool() == Some(true) {
+        Ok(v["result"].clone())
+    } else {
+        Err(v["error"]
+            .as_str()
+            .unwrap_or("the extension said no")
+            .to_string())
+    };
+    let waited = server.tabs.finish(id, outcome);
+    http::json(stream, 200, allow, &json!({ "taken": waited }));
 }
 
 /// An id the page cannot guess: the stream recognises the ask's own row by it.
@@ -370,10 +455,19 @@ pub fn run(port: u16, extension_id: &str, token_path: &Path) -> Result<(), Strin
         inbox,
         limits: LIMITS,
         patience: crate::tools::DEFAULT_TIMEOUT,
+        tabs: Arc::default(),
     });
+    let sock = letibot_tools::builtins::screen::browser_socket();
+    let unix = tab::bind(&sock)?;
+    let tabs = server.tabs.clone();
+    std::thread::Builder::new()
+        .name("browser-sock".into())
+        .spawn(move || tab::serve_socket(unix, tabs))
+        .map_err(|e| format!("the socket thread: {e}"))?;
     eprintln!(
-        "letibot browser: listening on 127.0.0.1:{port} for {}",
-        server.origin
+        "letibot browser: listening on 127.0.0.1:{port} for {}, sessions on {}",
+        server.origin,
+        sock.display()
     );
     let ext = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions/chrome");
     let ext = ext.canonicalize().unwrap_or(ext);

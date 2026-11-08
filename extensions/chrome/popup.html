@@ -21,6 +21,8 @@
   .dot.ok { background: #2e7d32; } .dot.bad { background: #c0392b; }
   .msg { font-size: 12px; opacity: .8; min-height: 15px; margin-top: 6px; }
   a { color: inherit; opacity: .7; font-size: 12px; }
+  .toggle { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+  .toggle input { width: auto; margin: 0; }
 </style>
 </head>
 <body>
@@ -31,6 +33,11 @@
     <button class="primary" id="page">Ask about this page</button>
     <button class="ghost" id="shot">Screenshot a region</button>
     <div class="msg" id="msg"></div>
+  </section>
+  <section>
+    <h2>Drive this tab</h2>
+    <label class="toggle"><input type="checkbox" id="drive"> <span id="drivelabel">Let the session drive this tab</span></label>
+    <div class="msg" id="drivemsg"></div>
     <a href="options.html" target="_blank">Options (token, port)</a>
   </section>
   <script type="module" src="popup.js"></script>

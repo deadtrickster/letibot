@@ -2,13 +2,14 @@
   "manifest_version": 3,
   "name": "letibot",
   "version": "0.1.0",
-  "description": "Ask a letibot session about the page you are reading: selection, page, a screenshot region or an image.",
+  "description": "Ask a letibot session about the page you are reading, and let one drive a tab you allow.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0fdkWFFG2K+uOY4/150c71AU0/TKVlFX5x97z18qg8VTOd4ziIN4+nQOa7drOHfPKGEEhsBtL35dN5dunIMdNiYzuscb5q7KmYaVRzQahCRcGfpFqC6YhhYIxpB43nCAdUvODfiIucNEe9HVMnsbsNUESJu/xnpdq8YlWtydDcUd9PPvq8U1BmxGDsR7NN/F590qedPucCqoCZ4PrHmi/DZG8Se9dJwzZCv/7Twv0B+7T/z+zFW95Nq0IFfnGOjD2cHBYQ+kTJ2LJZfRITFx2dUE+NWqrZ5MWnnf+9++2h2q4vpqTiJ0qNn1XcpLMiIZrnPTeitUN8UqzUzf0WXylQIDAQAB",
   "permissions": [
     "activeTab",
     "scripting",
     "contextMenus",
-    "storage"
+    "storage",
+    "debugger"
   ],
   "host_permissions": [
     "http://127.0.0.1/*"

@@ -3,6 +3,7 @@
 // and the token must never be handed to page script.
 
 import { pumpSSE } from "./sse.js";
+import { setupTabs, allow, revoke, stateOf } from "./tab.js";
 
 const DEFAULT_PORT = 8790;
 
@@ -89,6 +90,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // A worker restarted mid-stream has an empty set: the card reads that as a reply that stopped.
   if (msg.type === "lb:alive") { sendResponse({ alive: live.has(msg.id) }); return false; }
   if (msg.type === "lb:region" && tab) { regionShot(msg, tab); return false; }
+  if (msg.type === "lb:tabstate") {
+    stateOf(msg.tabId).then((grant) => sendResponse({ grant })).catch((e) => sendResponse({ error: e.message }));
+    return true;
+  }
+  if (msg.type === "lb:allow") {
+    allow(msg.tabId, msg.session, msg.name).then(() => sendResponse({ ok: true }))
+      .catch((e) => sendResponse({ error: e.message || String(e) }));
+    return true;
+  }
+  if (msg.type === "lb:revoke") {
+    revoke(msg.tabId).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ error: e.message }));
+    return true;
+  }
   if (msg.type === "lb:popup") {
     chrome.tabs.query({ active: true, currentWindow: true }, ([t]) => {
       if (!t) return;
@@ -447,3 +461,6 @@ async function explainImage(srcUrl, tab) {
     chrome.tabs.sendMessage(tab.id, { type: "lb:event", ev: { event: "status", data: { text: "Could not read that image (another origin). Use Screenshot a region instead, or ask without it." } } }).catch(() => {});
   }
 }
+
+// Last, so everything it calls is initialised. Its listeners still register synchronously.
+setupTabs({ bridge, keepaliveStart, keepaliveStop, blobToB64 });

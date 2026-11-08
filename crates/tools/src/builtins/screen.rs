@@ -4,6 +4,7 @@
 
 mod keys;
 mod render;
+mod tab;
 mod web;
 
 use std::collections::BTreeMap;
@@ -19,6 +20,7 @@ use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
 pub use render::{CELL_H, CELL_W};
+pub use tab::browser_socket;
 
 const DEFAULT_COLS: usize = 100;
 const DEFAULT_ROWS: usize = 30;
@@ -110,11 +112,25 @@ struct State {
 pub struct ScreenTool {
     state: Mutex<State>,
     tree: OnceLock<Option<Arc<dyn ScopeTree>>>,
+    /// Who this seat is to `letibot browser`: a tab is allowed per session.
+    session: Option<String>,
+    browser: Option<std::path::PathBuf>,
 }
 
 impl ScreenTool {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_session(mut self, id: impl Into<String>) -> Self {
+        self.session = Some(id.into());
+        self
+    }
+
+    /// The bridge's socket, when it is not [`browser_socket`]'s answer (tests).
+    pub fn with_browser_socket(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.browser = Some(path.into());
+        self
     }
 
     fn tree(&self) -> Option<Arc<dyn ScopeTree>> {
@@ -139,28 +155,34 @@ impl Tool for ScreenTool {
             "Run a program on a terminal screen in this seat, then look at it. `start` \
              {cmd, cols, rows, cwd}: default cmd is the letibot head on a throwaway session; \
              returns an id. `keys` {id, keys}: text is literal, `<Enter> <Esc> <Tab> <Up> \
-             <C-c> <M-x> <F1>` are keys, `<<` is `<`. `mouse` {id, x, y, button: left|middle|\
-             right, or move: true, or scroll: up|down}: cells from 0, only if the program \
-             enabled mouse. `read` {id, idle_ms}: rows as text plus a style map (bold, \
-             inverse, colors per run), after output settles. `shot` {id}: a PNG of the screen. \
+             <C-c> <M-x>` are keys, `<<` is `<`. `mouse` {id, x, y, button, move, scroll}: \
+             cells from 0. `read` {id, idle_ms}: rows plus a style map. `shot` {id}: a PNG. \
              `web` {url, width, height, full_page, wait_ms}: a page in headless Chrome as a \
-             PNG; `dom` {url}: its text. `list`, `stop` {id}. Screens end with the session.",
+             PNG; `dom` {url}: its text. `list`, `stop` {id}. `tab` {act}: the operator's \
+             Chrome tab, once allowed for this session: grants, shot, read (text and numbered \
+             elements), click {n|selector|x,y}, type {text, n|selector}, key {keys}, navigate \
+             {url}, scroll {dy}.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "description": "start, keys, mouse, read, shot, web, dom, list or stop."},
+                    "action": {"type": "string", "description": "start, keys, mouse, read, shot, web, dom, list, stop or tab."},
+                    "act": {"type": "string", "description": "tab: grants, shot, read, click, type, key, navigate or scroll."},
+                    "n": {"type": "integer", "description": "tab: an element number from read."},
+                    "selector": {"type": "string", "description": "tab: a CSS selector."},
+                    "text": {"type": "string", "description": "tab type: inserted at the focus, replacing the field."},
+                    "dy": {"type": "integer", "description": "tab scroll: CSS pixels, negative is up."},
                     "id": {"type": "integer", "description": "The screen, from start."},
                     "cmd": {"type": "string", "description": "start: a shell line."},
                     "cols": {"type": "integer"},
                     "rows": {"type": "integer"},
                     "cwd": {"type": "string"},
-                    "keys": {"type": "string"},
-                    "x": {"type": "integer"},
+                    "keys": {"type": "string", "description": "tab key: Enter, Tab, Escape, Backspace, arrows, Shift+Tab, Ctrl+a."},
+                    "x": {"type": "integer", "description": "mouse: a cell; tab click: CSS pixels as in shot."},
                     "y": {"type": "integer"},
-                    "button": {"type": "string"},
+                    "button": {"type": "string", "description": "left, middle or right; the program must enable mouse."},
                     "move": {"type": "boolean"},
                     "scroll": {"type": "string"},
-                    "url": {"type": "string", "description": "web, dom: http(s) or file URL."},
+                    "url": {"type": "string", "description": "web, dom: http(s) or file URL; tab navigate: http(s)."},
                     "width": {"type": "integer"},
                     "height": {"type": "integer"},
                     "full_page": {"type": "boolean"},
@@ -177,6 +199,11 @@ impl Tool for ScreenTool {
         match text(args, "action") {
             Some("read" | "shot" | "list") => Some(Access::Read),
             Some("web" | "dom") => Some(Access::Network),
+            // Looking at the tab reads; anything that acts on it acts on the world.
+            Some("tab") => match text(args, "act") {
+                Some("grants" | "shot" | "read") => Some(Access::Read),
+                _ => Some(Access::Network),
+            },
             _ => None,
         }
     }
@@ -248,6 +275,10 @@ impl Tool for ScreenTool {
             }),
             "web" => web::web(ctx, args),
             "dom" => web::dom(ctx, args),
+            "tab" => {
+                let socket = self.browser.clone().unwrap_or_else(browser_socket);
+                tab::tab(ctx, self.session.as_deref(), &socket, args)
+            }
             "list" => {
                 let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 if st.screens.is_empty() {
@@ -276,7 +307,7 @@ impl Tool for ScreenTool {
             }
             other => Invocation::failed(
                 format!("unknown action `{other}`"),
-                "start, keys, mouse, read, shot, list or stop",
+                "start, keys, mouse, read, shot, web, dom, list, stop or tab",
             ),
         }
     }

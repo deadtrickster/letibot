@@ -6,7 +6,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-MODULES=(background.js sse.js popup.js options.js)
+MODULES=(background.js tab.js sse.js popup.js options.js)
 CLASSIC=(overlay.js regionselect.js)
 
 tmp="$(mktemp -d)"
@@ -42,11 +42,11 @@ else
 fi
 
 # An injected function runs in the page, so a reference to this worker's module scope is a
-# ReferenceError there that no syntax check can see.
+# ReferenceError there that no syntax check can see. tab.js is checked the same way.
 if node check-injected.mjs; then
-	printf '  ok    %-20s (injected scope)\n' background.js
+	printf '  ok    %-20s (injected scope)\n' "background.js tab.js"
 else
-	printf '  FAIL  %-20s (injected scope)\n' background.js
+	printf '  FAIL  %-20s (injected scope)\n' "background.js tab.js"
 	fail=1
 fi
 

@@ -70,7 +70,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | the next stop's line from `~/.local/state/letibot/scroll-stalls.log`, which the head now writes at each stop |
 | R137 | Todo graphs that span projects | Code work | the build of `docs/cross-project-todo.md` (P1-P6) and its four open questions |
 | R138 | Stable session identities across hosts, through migrations | Code work | the build of `docs/cross-host-identity.md` (Q1-Q7) and its five open questions; until then asks are same-host only |
-| R170 | A session drives a Chrome tab the operator allows, through the extension | Code work | all of it |
+| R170 | A session drives a Chrome tab the operator allows, through the extension | Needs the operator | the live run in real Chrome: allow a tab from the popup, a session's `screen tab` shot, read, click, type, key, navigate and scroll on it, and the three revokes (built and tested against a fake worker and a fake bridge) |
 | R172 | The extension is a head: a chat panel on the session's stream | Code work | all of it, after R170 |
 | R173 | A firecode child ends its turn with a job running, and the VM closes under it | Code work | all of it |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
@@ -193,11 +193,13 @@ Echoes: research rec. 1, 5, 6 (Anthropic "pass references, not content", MetaGPT
 
 ## R170 - A session drives a Chrome tab the operator allows, through the extension
 
-**Status:** not started. left: all of it.
+**Status:** built. left: the live run in real Chrome, which no test here can do.
 
-The extension only asks: a right-click goes to a session and the reply streams into the card. Nothing goes back from the session to the page. Operator, 2026-11-08: an agent should be able to drive the tab once allowed.
+The extension only asked: a right-click goes to a session and the reply streams into the card. Operator, 2026-11-08: an agent should be able to drive the tab once allowed.
 
-Wanted: the operator allows one tab from the popup, and the extension attaches `chrome.debugger` (CDP) to it. The session gets a browser tool through `letibot browser` that clicks, types, navigates, reads the DOM and screenshots that tab only. Chrome's "is debugging this browser" bar stays up while allowed, so the grant is visible. Detaching the bar, closing the tab or a popup toggle revokes it. Every action is logged in the session's transcript. No other tab and no cookie or storage read beyond the page itself.
+Built: the popup's "Let <session> drive this tab" switch attaches `chrome.debugger` to the tab (Chrome's debugging bar stays up while allowed); unticking, cancelling the bar or closing the tab revokes it. `letibot browser` keeps the grant table, fed by the extension's own list on every long poll (`/tab/next`, same doors as `/ask`), and takes commands from daemons on `<rundir>/browser.sock`. The `screen` tool's `tab` op (`grants|shot|read|click|type|key|navigate|scroll`) knows its session from `open.rs`. The extension runs a fixed list of CDP acts on that tab only: no evaluate act, no cookies, storage or Network domain, no other tab. Every command is logged on the bridge's stderr. Docs: `docs/browser.md` "Drive a tab", `skills/screen/SKILL.md`. Tests: `crates/bridge/src/browser/tab.rs` (queue, revoke, timeouts, one tab per session, the fixed acts), `crates/bridge/tests/browser.rs` (socket to HTTP worker and back, the refusals, the token door, the socket path), `crates/tools/tests/screen_tab.rs` (the tool against a fake bridge), `extensions/chrome/check.sh`.
+
+**Done when**: on the operator's Chrome, a session's `screen tab` reads, screenshots, clicks a button, types into a React form field that keeps the text, presses Enter and navigates on the allowed tab only, and each of the three revokes makes the next call refuse with the popup sentence.
 
 ---
 

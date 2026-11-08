@@ -52,6 +52,7 @@ struct Fixture {
     addr: SocketAddr,
     inbox: PathBuf,
     _server: letibot_sessionlog::server::ServerHandle,
+    sock: PathBuf,
 }
 
 fn fixture(tag: &str) -> Fixture {
@@ -90,7 +91,13 @@ fn fixture(tag: &str) -> Fixture {
         inbox: inbox.clone(),
         limits: LIMITS,
         patience: Duration::from_secs(60),
+        tabs: Arc::default(),
     });
+    let tabs = server.tabs.clone();
+    let sock = root.join("browser.sock");
+    let unix = browser::tab::bind(&sock).expect("the socket binds");
+    let t = tabs.clone();
+    std::thread::spawn(move || browser::tab::serve_socket(unix, t));
     std::thread::spawn(move || browser::serve(listener, server));
     Fixture {
         _dir: TempDir(root),
@@ -98,6 +105,7 @@ fn fixture(tag: &str) -> Fixture {
         addr,
         inbox,
         _server: server_handle,
+        sock,
     }
 }
 
@@ -335,4 +343,125 @@ fn the_token_is_made_once_private_and_read_back() {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
     let e = browser::token(&path).expect_err("readable by others");
     assert!(e.contains("chmod 600"), "{e}");
+}
+
+fn post(addr: SocketAddr, path: &str, body: &serde_json::Value) -> serde_json::Value {
+    let head = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: {ORIGIN}\r\nAuthorization: Bearer {TOKEN}\r\n",
+        addr.port()
+    );
+    let a = request(addr, &head, &body.to_string());
+    assert_eq!(status(&a), "200", "{a}");
+    serde_json::from_str(a.split("\r\n\r\n").nth(1).unwrap_or_default()).expect("JSON")
+}
+
+fn on_socket(sock: &Path, req: &serde_json::Value) -> serde_json::Value {
+    use std::io::BufRead;
+    let mut s = std::os::unix::net::UnixStream::connect(sock).expect("the socket answers");
+    writeln!(s, "{req}").unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(s).read_line(&mut line).unwrap();
+    serde_json::from_str(&line).expect("one JSON line")
+}
+
+#[test]
+fn a_session_drives_only_the_tab_the_extension_reports_for_it() {
+    let f = fixture("tab");
+    let grants = serde_json::json!({"grants": [
+        {"session": "s-op", "tab": 41, "url": "https://example.com/", "title": "Example"},
+        {"session": "s-pkg", "tab": 42, "url": "https://example.com/b", "title": "B"},
+    ]});
+    let synced = post(f.addr, "/tab/sync", &grants);
+    assert_eq!(synced["kept"], serde_json::json!(["s-op"]), "{synced}");
+    assert_eq!(
+        synced["refused"][0]["session"], "s-pkg",
+        "a package is not the operator's"
+    );
+
+    let refused = on_socket(
+        &f.sock,
+        &serde_json::json!({"session": "s-pkg", "act": "shot"}),
+    );
+    assert_eq!(refused["ok"], false);
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("extension popup"),
+        "{refused}"
+    );
+    let g = on_socket(
+        &f.sock,
+        &serde_json::json!({"session": "s-op", "act": "grants"}),
+    );
+    assert_eq!(g["grant"]["tab"], 41, "{g}");
+
+    let addr = f.addr;
+    let worker = std::thread::spawn(move || {
+        let only_op = serde_json::json!({"grants": [
+            {"session": "s-op", "tab": 41, "url": "https://example.com/", "title": "Example"},
+        ]});
+        let polled = post(addr, "/tab/next", &only_op);
+        let cmd = polled["command"].clone();
+        assert_eq!(cmd["tab"], 41, "{polled}");
+        assert_eq!(cmd["act"], "click");
+        assert_eq!(
+            cmd["args"],
+            serde_json::json!({"n": 3}),
+            "a script key never passes"
+        );
+        let done = post(
+            addr,
+            "/tab/result",
+            &serde_json::json!({"id": cmd["id"], "ok": true,
+                "result": {"url": "https://example.com/next", "verdict": "navigated"}}),
+        );
+        assert_eq!(done["taken"], true);
+    });
+    let r = on_socket(
+        &f.sock,
+        &serde_json::json!({"session": "s-op", "act": "click",
+            "args": {"n": 3, "expression": "document.cookie"}}),
+    );
+    worker.join().unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["result"]["verdict"], "navigated");
+    assert_eq!(r["grant"]["url"], "https://example.com/next");
+
+    let bad = on_socket(
+        &f.sock,
+        &serde_json::json!({"session": "s-op", "act": "eval"}),
+    );
+    assert!(
+        bad["error"].as_str().unwrap().contains("not a tab act"),
+        "{bad}"
+    );
+
+    post(f.addr, "/tab/sync", &serde_json::json!({"grants": []}));
+    let gone = on_socket(
+        &f.sock,
+        &serde_json::json!({"session": "s-op", "act": "read"}),
+    );
+    assert!(
+        gone["error"]
+            .as_str()
+            .unwrap()
+            .contains("no tab is allowed"),
+        "{gone}"
+    );
+
+    let head = format!(
+        "POST /tab/next HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: {ORIGIN}\r\n",
+        f.addr.port()
+    );
+    let a = request(f.addr, &head, "{}");
+    assert_eq!(status(&a), "401", "the tab routes keep the token door: {a}");
+}
+
+#[test]
+fn the_tool_and_the_bridge_agree_on_the_socket() {
+    assert_eq!(
+        letibot_tools::builtins::screen::browser_socket().parent(),
+        Some(daemon::rundir().as_path())
+    );
 }
