@@ -97,9 +97,13 @@ pub(crate) struct ItemCtx<'a> {
     pub(crate) drawn_live: bool,
     /// How long this row's call took, when this head watched it run.
     pub(crate) elapsed_ms: Option<u64>,
-    /// Both sides of the file this row's call changed, when this head watched
+    /// Both sides of every file this row's call changed, when this head watched
     /// it run. See `App::call_edits`.
-    pub(crate) edit: Option<&'a letibot_sessionlog::event::ToolEdit>,
+    pub(crate) edits: &'a [letibot_sessionlog::event::ToolEdit],
+    /// What a settled JOB changed while it ran, by handle: a completion row draws them under the
+    /// notice. See `App::job_edits`.
+    pub(crate) job_edits:
+        &'a std::collections::BTreeMap<String, Vec<letibot_sessionlog::event::ToolEdit>>,
     /// The settled decision this row's call was gated by, when there was one.
     /// See `App::call_decisions`.
     pub(crate) decision: Option<&'a letibot_sessionlog::view::SettledDecision>,
@@ -202,7 +206,11 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
                 ctx.job_tails,
             ),
         ),
-        TranscriptItem::User { .. } => user_row_lines(it, item, ctx),
+        TranscriptItem::User { .. } => {
+            let (class, mut lines) = user_row_lines(it, item, ctx);
+            lines.extend(job_change_rows(item, ctx, ind));
+            (class, lines)
+        }
         TranscriptItem::Reasoning { .. } => reasoning_row_lines(item, ctx, ind),
         TranscriptItem::Assistant { .. } => assistant_row_lines(it, item, ctx, ind),
         TranscriptItem::ToolResult { .. } => tool_result_row_lines(it, item, ctx, newest, ind),
@@ -220,6 +228,47 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
         ),
     }
 }
+
+/// The files a completion says changed while its job ran, drawn under the notice: the daemon took a
+/// snapshot of the tree at the spawn and read it back at the settlement (R161), so these are measured
+/// rather than attributed - a job's row says WHEN, and the provenance line says so.
+pub(crate) fn job_change_rows(item: &TranscriptItem, ctx: &ItemCtx<'_>, ind: usize) -> Vec<String> {
+    let TranscriptItem::User { parts, .. } = item else {
+        return Vec::new();
+    };
+    if ctx.job_edits.is_empty() {
+        return Vec::new();
+    }
+    let text = crate::ui::transcript::user::user_text(parts);
+    let Some(jobs) = crate::ui::transcript::job_card::notice_jobs(&text) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (_, job) in jobs {
+        let Some(edits) = ctx.job_edits.get(&job.id) else {
+            continue;
+        };
+        out.extend(crate::ui::detected_diff_rows(
+            edits,
+            crate::ui::transcript::call::DiffRows {
+                // No header names the file: a settlement's two lines are the job's, so every
+                // excerpt keeps its own name line.
+                target: "",
+                width: ctx.cfg.width.saturating_sub(ind).saturating_sub(2).max(20),
+                cfg: ctx.cfg,
+                diff_split: ctx.diff_split,
+                fold: ctx.tools,
+                under_a_panel: false,
+                provenance: JOB_PROVENANCE,
+            },
+        ));
+    }
+    out
+}
+
+/// What a job's diff says about itself where it is folded: when, and never who.
+pub(crate) const JOB_PROVENANCE: &str =
+    "  changed while it ran — when, not who: another call may have written it too";
 
 /// A row the system wrote into the conversation, drawn as ONE line: `system`, what it says, and
 /// `click for details` with the text whole in the popup - drawn whole it ran to 190 screen rows.

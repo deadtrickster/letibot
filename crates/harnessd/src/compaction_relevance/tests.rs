@@ -135,7 +135,7 @@ fn an_item_is_scored_on_its_own_text() {
             name: "read".into(),
             outcome: letibot_transcript::ToolOutcome::Ok,
             payload: long,
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         })

@@ -1243,7 +1243,7 @@ fn tool_result_line(
             name,
             outcome,
             payload,
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             // An imported row carries no media, and that is a fact about the importer
             // rather than a gap left by accident - the same sentence opencode's importer

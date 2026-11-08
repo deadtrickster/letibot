@@ -338,10 +338,10 @@ impl App {
     pub(crate) fn newest_change(&self) -> Option<FileRef> {
         let live = self.turn.as_ref().and_then(|t| {
             t.calls.iter().rev().find_map(|c| match &c.state {
-                letibot_sessionlog::view::CallState::Finished { edit: Some(e), .. }
-                    if card::Verb::of(crate::ui::drawn_as(&c.name, Some(e))).is_an_edit() =>
+                letibot_sessionlog::view::CallState::Finished { edits, .. }
+                    if card::Verb::of(crate::ui::drawn_as(&c.name, edits.first())).is_an_edit() =>
                 {
-                    Some(FileRef::of(e))
+                    edits.first().map(FileRef::of)
                 }
                 _ => None,
             })
@@ -357,11 +357,16 @@ impl App {
     /// head holds - from the row itself, or from what this head watched the call do.
     pub(crate) fn change_of_row(&self, k: usize) -> Option<FileRef> {
         let it = self.items.get(k)?;
-        let Some(letibot_transcript::TranscriptItem::ToolResult { name, edit, .. }) = &it.item
+        let Some(letibot_transcript::TranscriptItem::ToolResult { name, edits, .. }) = &it.item
         else {
             return None;
         };
-        let edit = self.call_edits.get(&it.item_id).or(edit.as_ref());
+        let edits = self
+            .call_edits
+            .get(&it.item_id)
+            .map(Vec::as_slice)
+            .unwrap_or(edits);
+        let edit = edits.first();
         if !card::Verb::of(crate::ui::drawn_as(name, edit)).is_an_edit() {
             return None;
         }
@@ -385,7 +390,7 @@ impl App {
             None => return,
         };
         let edit = match &state {
-            CallState::Finished { edit, .. } => edit.clone(),
+            CallState::Finished { edits, .. } => edits.first().cloned(),
             _ => None,
         };
         // The verb the card was DRAWN as, so this asks the same question the drawing did.

@@ -2625,7 +2625,7 @@ mod tests {
             full_bytes: 0,
             spill: None,
             repairs: 0,
-            edit: None,
+            edits: Vec::new(),
         }
     }
 
@@ -2635,6 +2635,7 @@ mod tests {
             state: state.into(),
             produced: 4096,
             elapsed_ms,
+            edits: Vec::new(),
         }
     }
 

@@ -574,7 +574,7 @@ fn write_out(
              the rest of the file was left as it was"
         ));
     }
-    inv.edit = Some(FileEdit {
+    inv.edits.push(FileEdit {
         path: path.to_string(),
         before: file.lf.clone(),
         after: after.clone(),
@@ -850,7 +850,7 @@ mod tests {
             r#"{"path":"src/lib.rs","old_string":"pub fn parse_args","new_string":"pub fn parse_argv"}"#,
         );
         assert!(r.is_grounded(), "{}", r.render());
-        let e = r.edit.as_ref().expect("the head is handed both sides");
+        let e = r.edits.first().expect("the head is handed both sides");
         assert!(e.before.contains("parse_args"));
         assert!(e.after.contains("parse_argv"));
         assert!(!e.after.contains("parse_args("));
@@ -1190,7 +1190,7 @@ mod tests {
             h.read_file("dup.rs"),
             "let x = 3;\nlet y = 2;\nlet x = 3;\n"
         );
-        assert_eq!(r.edit.as_ref().unwrap().replacements, 2);
+        assert_eq!(r.edits.first().unwrap().replacements, 2);
     }
 
     #[test]
@@ -1362,7 +1362,7 @@ mod batch_tests {
             "the insertion did not land before the anchor, and did not repeat it: {after}"
         );
         // One card for the whole batch, with both sides of the file.
-        let e = r.edit.as_ref().expect("the head is handed both sides");
+        let e = r.edits.first().expect("the head is handed both sides");
         assert_eq!(e.replacements, 2);
         assert!(e.before.contains("pub fn parse_args"));
         assert!(e.after.contains("/// doc line"));

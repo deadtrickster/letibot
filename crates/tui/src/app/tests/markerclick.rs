@@ -104,7 +104,7 @@ fn a_run_of(think: &str, extra: usize) -> App {
                         .chain((0..extra).map(|j| format!("LINE-{i}-{j}")))
                         .collect::<Vec<_>>()
                         .join("\n"),
-                    edit: None,
+                    edits: Vec::new(),
                     origin: None,
                     media: None,
                 }),
@@ -539,7 +539,7 @@ fn esc_on_a_window_does_not_fold_the_thinking() {
             name: "bash".into(),
             outcome: letibot_transcript::ToolOutcome::Ok,
             payload: "LINE-0\nLINE-1\nLINE-2\nLINE-3".into(),
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         },
@@ -591,7 +591,7 @@ fn ctrl_r_will_not_open_a_run_that_holds_no_thinking() {
                     name: "bash".into(),
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: format!("CONTENTS-{i}"),
-                    edit: None,
+                    edits: Vec::new(),
                     origin: None,
                     media: None,
                 }),

@@ -239,7 +239,7 @@ impl Tool for Say {
                 outcome: e.outcome(),
                 payload: e.to_string(),
                 notes: vec![],
-                edit: None,
+                edits: Vec::new(),
                 needs_in_view: Vec::new(),
                 media: None,
             },

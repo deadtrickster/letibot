@@ -30,7 +30,7 @@ fn tool_result(name: &str, payload: &str) -> TranscriptItem {
         name: name.into(),
         outcome: ToolOutcome::Ok,
         payload: payload.into(),
-        edit: None,
+        edits: Vec::new(),
         origin: None,
         media: None,
     }

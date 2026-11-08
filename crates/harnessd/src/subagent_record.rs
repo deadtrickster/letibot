@@ -1517,7 +1517,7 @@ mod tests {
                 name: "bash".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: "ok".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             }),
@@ -1578,7 +1578,7 @@ mod tests {
             name: "bash".into(),
             outcome: letibot_transcript::ToolOutcome::Ok,
             payload: "ok".into(),
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         };

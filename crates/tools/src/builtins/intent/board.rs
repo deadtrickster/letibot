@@ -77,7 +77,7 @@ impl Todo {
             outcome: e.outcome(),
             payload: format!("{e}{}{}", self.board_summary(), self.backing()),
             notes: vec![],
-            edit: None,
+            edits: Vec::new(),
             needs_in_view: Vec::new(),
             media: None,
         }
@@ -88,7 +88,7 @@ impl Todo {
             outcome: e.outcome(),
             payload: format!("{e}{}{}", self.board_summary(), self.backing()),
             notes: vec![],
-            edit: None,
+            edits: Vec::new(),
             needs_in_view: Vec::new(),
             media: None,
         }
@@ -569,7 +569,7 @@ mod tests {
                 full_bytes: 1,
                 spill: None,
                 repairs: 0,
-                edit: None,
+                edits: Vec::new(),
             });
         }
     }

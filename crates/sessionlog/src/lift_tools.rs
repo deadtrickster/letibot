@@ -40,7 +40,7 @@ pub fn from_tool_event(e: ToolEvent) -> SessionEvent {
             full_bytes,
             spill,
             repairs,
-            edit,
+            edits,
         } => SessionEvent::ToolFinished {
             turn_id,
             call_id,
@@ -50,10 +50,10 @@ pub fn from_tool_event(e: ToolEvent) -> SessionEvent {
             full_bytes,
             spill,
             repairs,
-            // One type on both sides: the runtime's excerpt is
+            // One type on both sides: the runtime's excerpts are
             // `letibot_transcript::ToolEditExcerpt`, and the event enum depends on transcript, not
             // on `tools`, so the lift is the value itself rather than a field-by-field copy.
-            edit,
+            edits,
         },
     }
 }
@@ -154,7 +154,7 @@ mod tests {
                 full_bytes: 90,
                 spill: Some("abcd".into()),
                 repairs: 2,
-                edit: None,
+                edits: Vec::new(),
             },
         ] {
             let kind = e.kind();

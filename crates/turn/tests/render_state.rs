@@ -151,7 +151,7 @@ fn one_batch_and_many_appends_build_the_same_prompt() {
             name: "read".into(),
             outcome: ToolOutcome::Ok,
             payload: "alpha".into(),
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         },

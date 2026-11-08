@@ -51,7 +51,7 @@ fn with_exchange() -> App {
             name: "ask_user_question".into(),
             outcome: letibot_transcript::ToolOutcome::Ok,
             payload: PAYLOAD.into(),
-            edit: None,
+            edits: Vec::new(),
             origin: Some(letibot_transcript::CallOrigin::Operator { who: "dead".into() }),
             media: None,
         },

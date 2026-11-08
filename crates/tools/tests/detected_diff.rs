@@ -50,8 +50,8 @@ fn a_python_inline_program_that_rewrites_a_tracked_file_attaches_its_diff() {
     let r = h.call("bash", &format!("{{\"command\": {}}}", json(command)));
 
     let edit = r
-        .edit
-        .as_ref()
+        .edits
+        .first()
         .unwrap_or_else(|| panic!("no diff attached: {}", r.render()));
     assert_eq!(edit.path, "a.txt");
     assert_eq!(edit.before, "one\ntwo\n");
@@ -74,8 +74,8 @@ fn a_sed_in_place_rewrite_attaches_its_diff() {
     };
     let r = h.call("bash", r#"{"command":"sed -i s/two/TWO/ a.txt"}"#);
     let edit = r
-        .edit
-        .as_ref()
+        .edits
+        .first()
         .unwrap_or_else(|| panic!("no diff attached: {}", r.render()));
     assert_eq!(edit.path, "a.txt");
     assert_eq!(edit.before, "one\ntwo\n");
@@ -90,8 +90,8 @@ fn a_redirect_attaches_the_created_files_diff() {
     };
     let r = h.call("bash", r#"{"command":"echo new > b.txt"}"#);
     let edit = r
-        .edit
-        .as_ref()
+        .edits
+        .first()
         .unwrap_or_else(|| panic!("no diff attached: {}", r.render()));
     assert_eq!(edit.path, "b.txt");
     assert!(edit.created, "a `>` onto a new path is a creation");
@@ -109,8 +109,8 @@ fn a_file_that_was_already_dirty_shows_only_this_calls_change() {
     h.write_file("a.txt", "one\ntwo edited by hand\n");
     let r = h.call("bash", r#"{"command":"sed -i s/two/three/ a.txt"}"#);
     let edit = r
-        .edit
-        .as_ref()
+        .edits
+        .first()
         .unwrap_or_else(|| panic!("no diff attached: {}", r.render()));
     assert_eq!(
         edit.before, "one\ntwo edited by hand\n",
@@ -129,7 +129,7 @@ fn a_command_that_writes_nothing_attaches_nothing() {
     h.write_file("a.txt", "somebody else's work\n");
     let r = h.call("bash", r#"{"command":"git status --short"}"#);
     assert!(
-        r.edit.is_none(),
+        r.edits.is_empty(),
         "a read-only command drew a diff: {}",
         r.render()
     );
@@ -156,7 +156,7 @@ fn a_workspace_that_is_not_a_git_tree_is_unchanged() {
     };
     h.write_file("a.txt", "one\ntwo\n");
     let r = h.call("bash", r#"{"command":"echo three >> a.txt"}"#);
-    assert!(r.edit.is_none(), "{}", r.render());
+    assert!(r.edits.is_empty(), "{}", r.render());
     assert!(
         !r.render().contains("this command changed"),
         "{}",
@@ -186,8 +186,8 @@ fn a_cd_into_another_checkout_is_the_tree_that_is_swept() {
         r#"{"command":"cd other && sed -i s/beta/BETA/ b.txt"}"#,
     );
     let edit = r
-        .edit
-        .as_ref()
+        .edits
+        .first()
         .unwrap_or_else(|| panic!("no diff attached: {}", r.render()));
     assert_eq!(edit.path, "b.txt", "the path is relative to its own tree");
     assert_eq!(edit.before, "alpha\nbeta\n");
@@ -205,7 +205,7 @@ fn a_rewrite_that_leaves_the_same_bytes_attaches_nothing() {
         "bash",
         r#"{"command":"python3 -c \"p = 'a.txt'; s = open(p).read(); open(p, 'w').write(s)\""}"#,
     );
-    assert!(r.edit.is_none(), "{}", r.render());
+    assert!(r.edits.is_empty(), "{}", r.render());
 }
 
 /// The ledger learns the bytes this session's own command wrote, so a later `write` on the same
@@ -216,7 +216,7 @@ fn the_file_ledger_learns_what_a_command_wrote() {
         return;
     };
     let r = h.call("bash", r#"{"command":"sed -i s/two/THREE/ a.txt"}"#);
-    assert!(r.edit.is_some(), "{}", r.render());
+    assert!(!r.edits.is_empty(), "{}", r.render());
     let w = h.call(
         "write",
         r#"{"path":"a.txt","content":"one\nTHREE\nplus\n"}"#,

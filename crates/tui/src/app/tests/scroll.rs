@@ -174,7 +174,7 @@ fn a_scrolled_viewport_holds_while_the_transcript_grows() {
                     .map(|i| format!("output line {i}"))
                     .collect::<Vec<_>>()
                     .join("\n"),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             }),
@@ -480,7 +480,7 @@ fn arrows_walk_the_subagent_output_back_to_its_beginning() {
                     name: "bash".into(),
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload,
-                    edit: None,
+                    edits: Vec::new(),
                     origin: None,
                     media: None,
                 }),
@@ -861,7 +861,7 @@ fn an_open_window_hands_scrolling_on_to_the_conversation_at_its_edges() {
             name: "bash".into(),
             outcome: letibot_transcript::ToolOutcome::Ok,
             payload,
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         },
@@ -923,7 +923,7 @@ fn an_open_result_window_reaches_its_end_comes_back_at_once_and_fits() {
                 name: "bash".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload,
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             }),
@@ -1009,7 +1009,7 @@ fn scroll_still_works_after_ctrl_t() {
                     name: "bash".into(),
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: payload.clone(),
-                    edit: None,
+                    edits: Vec::new(),
                     origin: None,
                     media: None,
                 }),
@@ -1527,7 +1527,7 @@ fn a_page_through_a_run_of_20_000_hidden_rows_stays_under_a_bound() {
                 name: "bash".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: format!("line {i}\n"),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             },
@@ -2295,7 +2295,7 @@ fn the_marker_joins_the_prose_the_tail_walk_rendered_before_it() {
                     name: "bash".into(),
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: format!("output {i}"),
-                    edit: None,
+                    edits: Vec::new(),
                     origin: None,
                     media: None,
                 }),
@@ -3931,7 +3931,7 @@ fn a_reattach_mid_round_does_not_count_the_working_it_has_rows_for() {
             name: "bash".into(),
             outcome: letibot_transcript::ToolOutcome::Ok,
             payload: "the output of a call that already landed".into(),
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         },
@@ -5293,7 +5293,7 @@ fn a_row_that_leaves_the_window_takes_its_call_facts_with_it() {
             testing::content(&id, &format!("row {i}\n{body}")),
         )));
         a.call_ms.insert(id.clone(), 1_000);
-        a.call_edits.insert(id.clone(), edit_excerpt());
+        a.call_edits.insert(id.clone(), vec![edit_excerpt()]);
         a.call_decisions.insert(id.clone(), settled(&id));
     }
     let _ = a.screen(100, 40);

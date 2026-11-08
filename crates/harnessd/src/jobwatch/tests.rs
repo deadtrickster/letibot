@@ -190,6 +190,7 @@ fn settlement_for(hub: &Hub, job: &str) -> Option<(String, u64, u64)> {
             ref state,
             produced,
             elapsed_ms,
+            ..
         } if j == job => Some((state.clone(), produced, elapsed_ms)),
         _ => None,
     })
@@ -244,7 +245,7 @@ fn a_backgrounded_result_through_the_sink_publishes_the_jobs_settlement() {
         full_bytes: 0,
         spill: None,
         repairs: 0,
-        edit: None,
+        edits: Vec::new(),
     });
 
     let (state, _produced, elapsed_ms) = wait_for_settlement(&hub, &id.0);
@@ -379,7 +380,7 @@ fn the_sink_arms_the_watcher_and_that_is_what_makes_a_wait_decline() {
         full_bytes: 0,
         spill: None,
         repairs: 0,
-        edit: None,
+        edits: Vec::new(),
     });
 
     // Synchronously true, with no sleep: the promise exists from the emit.
@@ -1515,6 +1516,7 @@ fn a_settlement_from_a_grandchild_skips_a_parent_that_has_stopped() {
         owner: "s-c2".into(),
         bell: Some(Arc::clone(&bell)),
         recorder: None,
+        sweeps: Arc::clone(&c2_watch.sweeps),
     };
     queue.push(settled("j-pushed", false));
     let up: Vec<String> = root_watch
@@ -1727,4 +1729,72 @@ fn the_dead_soon_warning_names_the_job_both_numbers_and_the_way_out() {
     // The code is the one the `harness` tool's warnings view files it under, so a model reading its
     // own warnings finds it there rather than in prose it cannot search.
     assert_eq!(JOB_DEAD_SOON, "job_dead_soon");
+}
+
+/// A background job's writes: the snapshot its `bash` call handed over at the spawn is what the
+/// settlement reads, and nothing else can read both ends of a job (R161). No process is started
+/// here, because this box has no cgroup, so the seam is driven directly: a real git tree, a real
+/// rewrite, and the queue's own read.
+#[test]
+fn a_jobs_spawn_snapshot_is_read_at_its_settlement() {
+    let dir = std::env::temp_dir().join(format!("letibot-job-sweep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "fixture")
+            .env("GIT_AUTHOR_EMAIL", "fixture@letibot.invalid")
+            .env("GIT_COMMITTER_NAME", "fixture")
+            .env("GIT_COMMITTER_EMAIL", "fixture@letibot.invalid")
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::write(dir.join("a.txt"), "one\n").expect("write");
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "first"]);
+
+    let hub = Hub::new("s-jobs");
+    let watch = JobWatchers::watching_tasks(&hub, None);
+    // What `bash` does at the spawn: one snapshot, taken before anything runs.
+    watch.sweeps().keep(
+        "j1",
+        letibot_tools::detect::Sweep::before(dir.clone(), Some(dir.clone())),
+    );
+    // …and then the job runs and rewrites a file.
+    std::fs::write(dir.join("a.txt"), "one\ntwo\n").expect("write");
+
+    let queue = SettlementQueue {
+        own: Arc::clone(&watch.completions),
+        parent: None,
+        stopped: Arc::clone(&watch.stop),
+        owner: "s-jobs".into(),
+        bell: None,
+        recorder: None,
+        sweeps: Arc::clone(&watch.sweeps),
+    };
+    let found = queue.changes_of("j1").expect("the change the job made");
+    assert_eq!(found.changed, vec!["a.txt".to_string()]);
+    assert_eq!(found.edits.len(), 1, "one file asked for, one diff");
+    assert_eq!(found.edits[0].before, "one\n");
+    assert_eq!(
+        found.edits[0].after, "one\ntwo\n",
+        "the diff is against what the file held when the job started"
+    );
+    assert!(
+        queue.changes_of("j1").is_none(),
+        "a job settles once, so its snapshot is read once"
+    );
+    // And the sentence the settlement carries says WHEN, not WHO: another call may have written the
+    // same tree while the job ran, and neither the snapshot nor the status can attribute a byte.
+    let sentence = changed_sentence(&found.changed);
+    assert!(sentence.starts_with("changed while it ran: "), "{sentence}");
+    assert!(sentence.contains("`a.txt`"), "{sentence}");
+    assert!(sentence.contains("when, not who"), "{sentence}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -51,7 +51,7 @@ fn result(id: &str, name: &str, payload: String) -> TranscriptItem {
         name: name.into(),
         outcome: ToolOutcome::Ok,
         payload,
-        edit: None,
+        edits: Vec::new(),
         origin: None,
         media: None,
     }

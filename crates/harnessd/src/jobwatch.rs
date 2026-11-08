@@ -380,6 +380,24 @@ pub struct JobWatchers {
     /// [`JobWatchers::grace_left`] reads to give a waited-on row a grace after the ending. Per
     /// session, like `held`: what the model read is this model's.
     read: Arc<Mutex<ReadRecord>>,
+    /// Snapshots of the tree a background job was spawned into, keyed by handle: a `bash` call hands
+    /// one over at the spawn and the watcher reads it at the settlement, because only the watcher sees
+    /// both ends of a job (R161).
+    sweeps: Arc<Mutex<HashMap<String, letibot_tools::detect::Sweep>>>,
+}
+
+/// The [`letibot_tools::detect::JobSweeps`] door, which is this set's own map: a tool says what it
+/// spawned into, and the watcher that settles the job reads it. A struct rather than the set itself
+/// because the tool layer may not name a `JobWatchers` - and should not be able to.
+struct Sweeps(Arc<Mutex<HashMap<String, letibot_tools::detect::Sweep>>>);
+
+impl letibot_tools::detect::JobSweeps for Sweeps {
+    fn keep(&self, job: &str, sweep: letibot_tools::detect::Sweep) {
+        self.0
+            .lock()
+            .expect("job sweeps")
+            .insert(job.to_string(), sweep);
+    }
 }
 
 /// The read record behind [`JobWatchers::grace_left`]: each delivered completion's handle (and
@@ -427,6 +445,7 @@ impl JobWatchers {
             // A root session is its own tree: the root and its own id are one.
             root: hub.session_id(),
             read: Arc::new(Mutex::new(ReadRecord::default())),
+            sweeps: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -498,7 +517,16 @@ impl JobWatchers {
             watched: WatchedNow::new(wanted),
             root: hub.session_id(),
             read: Arc::new(Mutex::new(ReadRecord::default())),
+            // A set with no host settles no job, so nothing is ever kept here.
+            sweeps: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    /// The door a tool hands a spawned job's change snapshot through, see
+    /// [`letibot_tools::detect::JobSweeps`]. The harness that holds this set is the one that wires
+    /// it, and a set with no host settles no job, so nothing is ever kept on one.
+    pub fn sweeps(&self) -> Arc<dyn letibot_tools::detect::JobSweeps> {
+        Arc::new(Sweeps(Arc::clone(&self.sweeps)))
     }
 
     /// And the session's subagents settle here too. A separate call because a watcher set
@@ -530,6 +558,8 @@ impl JobWatchers {
             watched: WatchedNow::new(Arc::clone(&self.wanted)),
             root: self.root.clone(),
             read: Arc::clone(&self.read),
+            // Its own: the sweep a child's tool handed over is keyed by a handle of the child's.
+            sweeps: Arc::clone(&self.sweeps),
         })
     }
 
@@ -576,6 +606,7 @@ impl JobWatchers {
             root: tree.root.clone(),
             // Its own, for `held`'s reason: what this session's model has read is its own.
             read: Arc::clone(&self.read),
+            sweeps: Arc::clone(&self.sweeps),
         })
     }
 
@@ -617,6 +648,7 @@ impl JobWatchers {
             bell: self.bell.clone(),
             // The row for a child's ending is the record's own, written wherever it settled.
             recorder: None,
+            sweeps: Arc::clone(&self.sweeps),
         };
         queue.push(c);
     }
@@ -1067,6 +1099,7 @@ impl JobWatchers {
             owner: self.me.clone(),
             bell: self.bell.clone(),
             recorder: self.recorder.lock().expect("job recorder").clone(),
+            sweeps: Arc::clone(&self.sweeps),
         });
         let watching = Arc::clone(&self.watching);
         let settled = Arc::clone(&self.settled);
@@ -1162,9 +1195,21 @@ struct SettlementQueue {
     /// storeless run. Copied in when the queue is built, which is per watch and therefore always
     /// after the harness has had its say.
     recorder: Option<JobRecorder>,
+    /// The spawn snapshots this session's tools handed over, keyed by handle: read here because the
+    /// settlement is the last moment a job's writes are this job's own (R161).
+    sweeps: Arc<Mutex<HashMap<String, letibot_tools::detect::Sweep>>>,
 }
 
 impl SettlementQueue {
+    /// What a job changed while it ran, taken out of the map because one job settles once. `None`
+    /// when nothing was handed over - a job spawned outside a git tree, which is a job nothing here
+    /// can say anything true about.
+    fn changes_of(&self, job: &str) -> Option<letibot_tools::detect::Found> {
+        let sweep = self.sweeps.lock().ok()?.remove(job)?;
+        let found = sweep.found();
+        (!found.changed.is_empty()).then_some(found)
+    }
+
     /// Queue one settlement where its session can still be told, and ring. The `stopped` read
     /// is inside the `own` lock on purpose
     fn push(&self, c: JobCompletion) {
@@ -1514,6 +1559,28 @@ fn own_kill_survivors(host: &dyn ProcessHost, job: &JobId) -> Option<String> {
     )
 }
 
+/// The line a job's settlement carries about what its tree looked like when it ended: the files git
+/// named, and WHEN - never WHO, because another call may have written the same tree while this job ran
+/// and neither the snapshot nor the status can attribute a byte to a process.
+fn changed_sentence(changed: &[String]) -> String {
+    let names: Vec<String> = changed
+        .iter()
+        .take(letibot_tools::detect::MAX_DRAWN_DIFFS)
+        .map(|p| format!("`{p}`"))
+        .collect();
+    let more = changed
+        .len()
+        .saturating_sub(letibot_tools::detect::MAX_DRAWN_DIFFS);
+    format!(
+        "changed while it ran: {}{} (when, not who)",
+        names.join(", "),
+        match more {
+            0 => String::new(),
+            more => format!(", and {more} more files"),
+        }
+    )
+}
+
 fn survivor_notice(
     owner: &str,
     job: &str,
@@ -1591,14 +1658,28 @@ fn watch_one(
                 // And what the job says for itself, when it is a job of jobs - a fanout's
                 // answer IS its per-host table, so the settlement carries it. `None` for every
                 // ordinary job, so nothing a `bash` settlement says changes.
-                let detail = host
+                let mut detail = host
                     .settlement_note(&JobId(job.clone()))
                     .unwrap_or_default();
+                // What it changed while it ran, from the snapshot taken at the spawn. Read here
+                // because this is the last moment it is true, and said as WHEN and not WHO: another
+                // call may have written the same tree in between (R161).
+                let changes = queue.changes_of(&job);
+                if let Some(found) = &changes {
+                    if !detail.is_empty() {
+                        detail.push('\n');
+                    }
+                    detail.push_str(&changed_sentence(&found.changed));
+                }
                 hub.publish(SessionEvent::JobSettled {
                     job: job.clone(),
                     state: word.clone(),
                     produced,
                     elapsed_ms,
+                    edits: changes
+                        .as_ref()
+                        .map(|f| f.edits.iter().map(|e| e.excerpt(3, 400)).collect())
+                        .unwrap_or_default(),
                 });
                 // And the model, which the event does not reach. Queued on THIS session's
                 // own queue - the one that backgrounded it.
@@ -1805,9 +1886,8 @@ impl<S: ToolEventSink> ToolEventSink for JobWatchSink<S> {
             w.watch(handle.clone());
         }
         if let Some(seat) = &self.seat
-            && let ToolEvent::Finished {
-                edit: Some(edit), ..
-            } = &event
+            && let ToolEvent::Finished { edits, .. } = &event
+            && let Some(edit) = edits.first()
         {
             seat.edited(&edit.path);
         }

@@ -74,7 +74,7 @@ fn add_writes_into_the_project_notes_dir_and_reads_back() {
         );
     }
     // And the diff card is there for the head.
-    assert!(r.edit.is_some(), "a write carries its before/after pair");
+    assert!(!r.edits.is_empty(), "a write carries its before/after pair");
 }
 
 /// `add` refuses to overwrite and says what is there; `append` and

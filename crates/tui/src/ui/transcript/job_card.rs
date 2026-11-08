@@ -84,7 +84,14 @@ pub(crate) struct EndedJob {
     /// The notice said the output is partial: a kill ends the work, not the output, and a card
     /// that drew only `killed by …` would read as a finish.
     pub(crate) partial: bool,
+    /// The files that changed in the job's tree while it ran, as the daemon's line names them - its
+    /// own line, because a job says WHEN and not WHO (R161).
+    pub(crate) changed: Option<String>,
 }
+
+/// The opening words of the line a settlement carries about the job's tree, written by
+/// `harnessd`'s `changed_sentence`.
+pub(crate) const CHANGED: &str = "changed while it ran: ";
 
 /// A `[job]` notice group, parsed - whether it is this session's own (`mine`) and the jobs
 /// it reports. `None` for anything that is not exactly the shape `completion_notice` writes.
@@ -144,6 +151,14 @@ pub(crate) fn ended_jobs(group: &str) -> Option<(bool, Vec<EndedJob>)> {
                     return None;
                 }
                 job.memory = Some(m.to_string());
+            } else if let Some(m) = note.strip_prefix(CHANGED) {
+                // What the job's tree looked like when it ended (R161): its own line, never the
+                // command's continuation - a diff card would otherwise be the last half of a shell
+                // line nobody ran.
+                if job.changed.is_some() {
+                    return None;
+                }
+                job.changed = Some(m.to_string());
             } else {
                 // A command's own next line - only before the memory clause, which the daemon
                 // writes after the bullet's last line.
@@ -243,6 +258,7 @@ fn bullet_of(bullet: &str) -> Option<EndedJob> {
         memory: None,
         owner: None,
         partial: false,
+        changed: None,
     })
 }
 
@@ -390,6 +406,12 @@ pub(crate) fn job_lines(j: &EndedJob, mine: bool, tail: Option<&JobTail>) -> [St
             }
             facts
         }
+    };
+    // What changed in the job's tree while it ran, on the line that carries the other facts: the
+    // daemon measured it (R161), and the row is where its diff is drawn.
+    let second = match &j.changed {
+        Some(c) => format!("{second} · changed while it ran: {c}"),
+        None => second,
     };
     [first, format!("  ⎿ {second}")]
 }

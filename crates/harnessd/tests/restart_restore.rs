@@ -1006,7 +1006,7 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
             name: "bash".into(),
             outcome: letibot_transcript::ToolOutcome::Ok,
             payload: "ok".into(),
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         },

@@ -477,6 +477,62 @@ fn store_round_trip_rebuilds_the_same_ledger() {
 }
 
 #[test]
+fn a_stored_row_with_one_edit_excerpt_reads_back_as_a_one_item_list() {
+    // The store holds transcripts written before a call could change several files: their rows carry
+    // `"edit": {…}`, one object. Reading one back is a one-item list, so nothing is migrated and a
+    // resumed daemon draws the row it drew yesterday (R161).
+    let s = store();
+    let (tr, _) = seeded(&s);
+    let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
+    let item = TranscriptItem::ToolResult {
+        call_id: "c".into(),
+        name: "edit".into(),
+        outcome: letibot_transcript::ToolOutcome::Ok,
+        payload: "done".into(),
+        edits: Vec::new(),
+        origin: None,
+        media: None,
+    };
+    let row = ledger.append("it", &[1]).unwrap().clone();
+    s.append_item(&tr, 0, &item, &row, &[1]).unwrap();
+    // The row an OLD daemon wrote: the same item, with the excerpt under the single `edit` key.
+    let old = serde_json::json!({
+        "type": "tool_result",
+        "call_id": "c",
+        "name": "edit",
+        "outcome": {"outcome": "ok"},
+        "payload": "done",
+        "edit": {
+            "path": "a.txt",
+            "created": false,
+            "before_start": 1,
+            "after_start": 1,
+            "before_lines": 2,
+            "after_lines": 2,
+            "truncated": false,
+            "before": "one\nTWO",
+            "after": "one\nTHREE"
+        }
+    });
+    s.conn()
+        .execute(
+            "INSERT INTO transcript_item\n                 (transcript_id, seq, item_id, kind, item_json, tok_offset, tok_len, h_k, tokens, created_at)\n             SELECT transcript_id, 1, 'it-old', 'tool_result', ?1, tok_offset + tok_len, tok_len, h_k, tokens, created_at\n               FROM transcript_item WHERE item_id = 'it'",
+            [old.to_string()],
+        )
+        .unwrap();
+    let back = s.load_transcript(&tr).unwrap();
+    assert_eq!(back.items.len(), 2, "the old row and the one this daemon wrote");
+    match &back.items[1].0 {
+        TranscriptItem::ToolResult { edits, .. } => {
+            assert_eq!(edits.len(), 1, "one object, one item: {edits:?}");
+            assert_eq!(edits[0].path, "a.txt");
+            assert_eq!(edits[0].after, "one\nTHREE");
+        }
+        other => panic!("not a tool result: {other:?}"),
+    }
+}
+
+#[test]
 fn kinds_are_denormalised_correctly() {
     let s = store();
     let (tr, _) = seeded(&s);
@@ -490,7 +546,7 @@ fn kinds_are_denormalised_correctly() {
             reason: "no cover".into(),
         },
         payload: "{}".into(),
-        edit: None,
+        edits: Vec::new(),
         origin: None,
         media: None,
     };

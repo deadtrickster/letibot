@@ -339,7 +339,7 @@ mod tests {
             name: name.into(),
             outcome: ToolOutcome::Ok,
             payload: "…".into(),
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         }

@@ -50,7 +50,7 @@ fn result(a: &mut App, seq: u64, id: &str, call: &str) {
             full_bytes: 1,
             spill: None,
             repairs: 0,
-            edit: None,
+            edits: Vec::new(),
         },
     )));
     a.apply(ServerFrame::Event(env(
@@ -66,7 +66,7 @@ fn result(a: &mut App, seq: u64, id: &str, call: &str) {
                 name: "bash".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: "ok".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             }),
@@ -169,7 +169,7 @@ fn a_row_landing_later_in_a_run_recounts_its_marker_at_once() {
         name: "bash".into(),
         outcome: letibot_transcript::ToolOutcome::Ok,
         payload: "ok".into(),
-        edit: None,
+        edits: Vec::new(),
         origin: None,
         media: None,
     };

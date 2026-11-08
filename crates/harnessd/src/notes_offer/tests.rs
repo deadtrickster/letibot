@@ -88,7 +88,7 @@ fn result(text: &str) -> TranscriptItem {
         name: "read".into(),
         outcome: letibot_transcript::ToolOutcome::Ok,
         payload: text.into(),
-        edit: None,
+        edits: Vec::new(),
         origin: None,
         media: None,
     }

@@ -2584,7 +2584,7 @@ fn a_run_with_notices() -> App {
                     name: name.into(),
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: format!("CONTENTS-{i}"),
-                    edit: None,
+                    edits: Vec::new(),
                     origin: None,
                     media: None,
                 }),

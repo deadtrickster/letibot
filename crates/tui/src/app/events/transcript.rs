@@ -27,7 +27,7 @@ impl App {
                 // announcement, positionally (a round's rows are appended in call order and the ids
                 // repeat). The CARD waits for its body in `record_item`, or the call flickers out.
                 let mut carried: Option<u64> = None;
-                let mut carried_edit: Option<letibot_sessionlog::event::ToolEdit> = None;
+                let mut carried_edit: Option<Vec<letibot_sessionlog::event::ToolEdit>> = None;
                 let mut carried_decision: Option<letibot_sessionlog::view::SettledDecision> = None;
                 if let Some(t) = self.turn.as_mut() {
                     t.appended.push(item_id.clone());
@@ -40,7 +40,9 @@ impl App {
                         // The pair rides across with the duration: same card, same
                         // moment, same positional match.
                         carried_edit = c.and_then(|c| match &c.state {
-                            CallState::Finished { edit: Some(e), .. } => Some(e.clone()),
+                            CallState::Finished { edits, .. } if !edits.is_empty() => {
+                                Some(edits.clone())
+                            }
                             _ => None,
                         });
                         // The approval rides across too: the decision is a fact

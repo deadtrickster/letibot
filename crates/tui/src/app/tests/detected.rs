@@ -46,7 +46,7 @@ fn a_python_edit_detected_after_a_command_draws_its_diff() {
     // beside them says where they came from. Asserted here so that a failure below is known
     // to be the head's and not this.
     assert_eq!(
-        r.edit.as_ref().map(|e| e.path.as_str()),
+        r.edits.first().map(|e| e.path.as_str()),
         Some("X.md"),
         "the sweep did not report the change: {}",
         r.render()
@@ -67,7 +67,7 @@ fn a_python_edit_detected_after_a_command_draws_its_diff() {
     assert!(
         matches!(
             &h.sink.events[at],
-            letibot_tools::ToolEvent::Finished { edit: Some(_), .. }
+            letibot_tools::ToolEvent::Finished { edits, .. } if !edits.is_empty()
         ),
         "the pair has to leave the tool on the event: {:?}",
         h.sink.events[at]
@@ -165,7 +165,21 @@ fn a_detected_panel_folds_the_way_an_edits_does() {
     let cfg = plain_cfg(120);
     let target = "python3 - <<'PYEOF' …";
 
-    let folded = crate::ui::detected_diff_rows(&e, target, 116, &cfg, true, Fold::Folded);
+    let rows = |fold: Fold| {
+        crate::ui::detected_diff_rows(
+            std::slice::from_ref(&e),
+            crate::ui::transcript::call::DiffRows {
+                target,
+                width: 116,
+                cfg: &cfg,
+                diff_split: true,
+                fold,
+                under_a_panel: false,
+                provenance: crate::ui::transcript::call::DETECTED_PROVENANCE,
+            },
+        )
+    };
+    let folded = rows(Fold::Folded);
     assert!(
         folded
             .iter()
@@ -188,7 +202,7 @@ fn a_detected_panel_folds_the_way_an_edits_does() {
         "the folded panel says how it was obtained: {folded:?}"
     );
 
-    let open = crate::ui::detected_diff_rows(&e, target, 116, &cfg, true, Fold::Open);
+    let open = rows(Fold::Open);
     assert!(
         open.len() > folded.len(),
         "unfolded draws the rest of it: {open:?}"
@@ -200,5 +214,68 @@ fn a_detected_panel_folds_the_way_an_edits_does() {
     assert!(
         open.iter().any(|r| r.contains("line 24")),
         "the last row of the change is on the screen: {open:?}"
+    );
+}
+
+/// Two files changed by one command are two diffs on one row, and the row says how many (R161):
+/// the first is drawn as the old single-file panel was, the others are named under it while folded and
+/// drawn whole when the fold is open - a sweep that rewrote twenty files must not bury its command.
+#[test]
+fn two_changed_files_are_two_diffs_and_the_count_is_said() {
+    let one = |path: &str| letibot_transcript::ToolEditExcerpt {
+        path: path.into(),
+        created: false,
+        before_start: 1,
+        after_start: 1,
+        before_lines: 3,
+        after_lines: 3,
+        truncated: false,
+        before: "one\ntwo\nthree".into(),
+        after: "one\nTWO\nthree".into(),
+    };
+    let edits = [one("a.txt"), one("b.txt")];
+    let cfg = plain_cfg(120);
+
+    let rows = |edits: &[letibot_transcript::ToolEditExcerpt], fold: Fold| {
+        crate::ui::detected_diff_rows(
+            edits,
+            crate::ui::transcript::call::DiffRows {
+                target: "python3 -c …",
+                width: 116,
+                cfg: &cfg,
+                diff_split: true,
+                fold,
+                under_a_panel: false,
+                provenance: crate::ui::transcript::call::DETECTED_PROVENANCE,
+            },
+        )
+    };
+    let folded = rows(&edits, Fold::Folded);
+    let said = folded.join("\n");
+    assert!(
+        said.contains("2 files changed"),
+        "the count is said: {said}"
+    );
+    assert!(said.contains("a.txt"), "the first file's diff: {said}");
+    assert!(
+        said.contains("b.txt") && said.contains("diff rows"),
+        "the second is named with what it hides, not dropped: {said}"
+    );
+    assert!(
+        said.contains("these files; not made by `edit`"),
+        "the provenance is said about both: {said}"
+    );
+
+    // And unfolded, each file's diff is drawn.
+    let open = rows(&edits, Fold::Open);
+    let both = open.join("\n");
+    assert!(
+        both.contains("a.txt") && both.contains("b.txt"),
+        "both files are on the screen: {both}"
+    );
+    assert_eq!(
+        both.matches("TWO").count(),
+        2,
+        "the change itself is drawn for each file: {both}"
     );
 }

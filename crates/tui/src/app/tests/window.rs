@@ -36,7 +36,7 @@ fn enter_sends_a_typed_line_past_an_open_ctrl_v_window() {
                 name: "bash".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload,
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             }),

@@ -151,7 +151,8 @@ impl App {
         let holding = |p: &str| crate::gitfield::repo_holding(ws, p);
         if let Some(t) = &self.turn {
             for c in t.calls.iter().rev() {
-                if let CallState::Finished { edit: Some(e), .. } = &c.state
+                if let CallState::Finished { edits, .. } = &c.state
+                    && let Some(e) = edits.first()
                     && let Some(r) = holding(&e.path)
                 {
                     return Some(r);
@@ -160,10 +161,12 @@ impl App {
         }
         for it in self.items.iter().rev().take(400) {
             let found = match it.item.as_ref() {
-                Some(T::ToolResult { edit, .. }) => self
+                Some(T::ToolResult { edits, .. }) => self
                     .call_edits
                     .get(&it.item_id)
-                    .or(edit.as_ref())
+                    .map(Vec::as_slice)
+                    .unwrap_or(edits)
+                    .first()
                     .and_then(|e| holding(&e.path)),
                 Some(T::Assistant { tool_calls, .. }) => tool_calls
                     .iter()

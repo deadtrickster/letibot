@@ -827,7 +827,7 @@ fn a_long_fake_conversation() -> Vec<TranscriptItem> {
             name: "read".into(),
             outcome: letibot_transcript::ToolOutcome::Ok,
             payload: "the file's body, which does not survive the record".into(),
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         });

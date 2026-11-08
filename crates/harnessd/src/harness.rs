@@ -614,7 +614,7 @@ impl Harness {
                     ),
                 },
                 payload,
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             });

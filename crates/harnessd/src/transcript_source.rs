@@ -390,7 +390,7 @@ mod tests {
                 req_id: "r9".into(),
             },
             payload: "nothing ran".into(),
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         });

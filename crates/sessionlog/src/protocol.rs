@@ -12,7 +12,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 68;
+pub const PROTOCOL_VERSION: u32 = 70;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -1368,8 +1368,21 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 68,
-            "the match above was last reconciled with the frame list at 68. 68 added \
+            PROTOCOL_VERSION, 70,
+            "the match above was last reconciled with the frame list at 70. 70 gave \
+             `SessionEvent::JobSettled` an `edits` field: what changed in the job's tree while it ran, \
+             from the snapshot taken at its spawn, so a job's writes are drawn on its card (R161). \
+             `serde(default)`, so a version-69 head parses the event and drops the field - which is \
+             why the number moves: the card would say nothing about a change the daemon measured. \
+             69 made a tool's edit \
+             excerpts a LIST: `SessionEvent::ToolFinished` and `view::CallState::Finished` carry \
+             `edits` instead of the single `edit`, because one `bash` call can change several files \
+             and each is drawn as its own diff (R161). No variant is new and every field is \
+             `serde(default)`, so a version-68 peer still parses; what the bump records is that a \
+             head built before it parses the event and DROPS the field, so a change to two files \
+             would draw no diff at all. The old spelling is read, not migrated: `edits` takes \
+             `alias = \"edit\"` and `one_or_many_edits` reads the one object as a one-item list, so a \
+             stored transcript or a log written before this date draws exactly what it drew. 68 added \
              `ClientFrame::Github` and `ServerFrame::Github`, the daemon's GitHub reviewer seat \
              (R118): `letibot attach github <scope>` asks the DAEMON to hold a scope and is answered \
              with the snapshot its pane is drawn from, so a head that does not know the frames \

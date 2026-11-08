@@ -700,7 +700,7 @@ pub(crate) fn is_edit_card(item: &letibot_transcript::TranscriptItem) -> bool {
     let letibot_transcript::TranscriptItem::ToolResult {
         name,
         outcome,
-        edit,
+        edits,
         ..
     } = item
     else {
@@ -709,7 +709,7 @@ pub(crate) fn is_edit_card(item: &letibot_transcript::TranscriptItem) -> bool {
     if !matches!(outcome, letibot_transcript::ToolOutcome::Ok) {
         return false;
     }
-    edit.is_some() || matches!(card::Verb::of(name), card::Verb::Edit | card::Verb::Write)
+    !edits.is_empty() || matches!(card::Verb::of(name), card::Verb::Edit | card::Verb::Write)
 }
 
 /// What a refused word is told, and the whole of it: the two vocabularies are named by the

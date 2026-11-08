@@ -1271,7 +1271,7 @@ fn a_finished_call_is_finished_while_the_call_beside_it_still_runs() {
             full_bytes: 12,
             spill: None,
             repairs: 0,
-            edit: None,
+            edits: Vec::new(),
         },
     )));
     a.apply(ServerFrame::Event(env(

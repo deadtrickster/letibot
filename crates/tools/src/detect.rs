@@ -47,6 +47,98 @@ pub fn tree(dir: &Path) -> Option<PathBuf> {
     (!top.is_empty()).then(|| PathBuf::from(top))
 }
 
+/// How many changed files are drawn. Each one is a card's worth of rows, and a command or a job that
+/// rewrote a whole directory would bury itself; past this the rest are named, so the count is never
+/// hidden.
+pub const MAX_DRAWN_DIFFS: usize = 12;
+
+/// A tree snapshotted before something ran, and read after it: the two halves of "what changed", in
+/// one value because neither is any use alone. A background job's snapshot is taken at the spawn and
+/// read at the settlement, so this crosses from the tool that spawned it to the watcher that sees it
+/// end - which is why it is here and not inside `bash`'s own file.
+#[derive(Debug, Clone)]
+pub struct Sweep {
+    /// The work tree root the paths are relative to.
+    pub tree: PathBuf,
+    pub base: Before,
+    /// Where the session sits, for the spelling the ledger and the provenance sink are keyed on.
+    pub workspace: Option<PathBuf>,
+}
+
+/// What [`Sweep::found`] found, as the two things a caller can say: the excerpts to draw, and every
+/// path git named - the sentence counts what it could not draw.
+pub struct Found {
+    /// The excerpts to draw, at most [`MAX_DRAWN_DIFFS`].
+    pub edits: Vec<crate::edit::FileEdit>,
+    /// Every path git named, in its order - the denominator a "and N more" needs.
+    pub changed: Vec<String>,
+    /// Where each drawn file sits in the session's own spelling, for the ledger and the sink.
+    pub spelled: Vec<String>,
+}
+
+impl Sweep {
+    /// Take the snapshot. `tree` is a work tree root, as [`tree`] gives it.
+    pub fn before(tree: PathBuf, workspace: Option<PathBuf>) -> Sweep {
+        let base = before(&tree);
+        Sweep {
+            tree,
+            base,
+            workspace,
+        }
+    }
+
+    /// Every file this changed, with the before/after of the ones it draws: the first
+    /// [`MAX_DRAWN_DIFFS`], because each is a card's worth of rows. A rewrite that left the same bytes
+    /// is walked past - an empty diff draws an empty card, which reads as a bug.
+    pub fn found(&self) -> Found {
+        let changed = changed_since(&self.tree, &self.base);
+        let mut edits = Vec::new();
+        let mut spelled = Vec::new();
+        for path in changed.iter().take(MAX_DRAWN_DIFFS) {
+            let Some(c) = diff_of(&self.tree, &self.base, path) else {
+                continue;
+            };
+            let was = c.before.clone().unwrap_or_default();
+            if was == c.after {
+                continue;
+            }
+            spelled.push(self.spelling(&c.path));
+            edits.push(crate::edit::FileEdit {
+                path: c.path.clone(),
+                before: was.clone(),
+                after: c.after.clone(),
+                created: c.created,
+                before_digest: crate::spill::content_hash(was.as_bytes()),
+                after_digest: crate::spill::content_hash(c.after.as_bytes()),
+                replacements: 1,
+                changed: crate::edit::changed_span(&was, &c.after),
+            });
+        }
+        Found {
+            edits,
+            changed,
+            spelled,
+        }
+    }
+
+    /// A path as this session spells it: relative to where it sits when the file is under it, which is
+    /// the spelling the file ledger and the provenance sink are keyed on, else absolute.
+    pub fn spelling(&self, path: &str) -> String {
+        let abs = self.tree.join(path);
+        self.workspace
+            .as_ref()
+            .and_then(|w| abs.strip_prefix(w).ok())
+            .map(|rel| rel.to_string_lossy().into_owned())
+            .unwrap_or_else(|| abs.to_string_lossy().into_owned())
+    }
+}
+
+/// Where a spawned job's snapshot waits for its settlement: the tool that spawned it keeps it here and
+/// the daemon's watcher takes it when the job ends, because only the watcher sees both moments.
+pub trait JobSweeps: Send + Sync {
+    fn keep(&self, job: &str, sweep: Sweep);
+}
+
 /// One file this command changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Changed {

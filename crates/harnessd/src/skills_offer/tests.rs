@@ -70,7 +70,7 @@ fn result(payload: &str) -> TranscriptItem {
         name: "read".into(),
         outcome: ToolOutcome::Ok,
         payload: payload.into(),
-        edit: None,
+        edits: Vec::new(),
         origin: None,
         media: None,
     }

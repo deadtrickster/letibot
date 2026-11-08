@@ -272,7 +272,7 @@ pub fn one_of_each() -> Vec<SessionEvent> {
             full_bytes: 12,
             spill: None,
             repairs: 0,
-            edit: None,
+            edits: Vec::new(),
         },
         turn_finished("t1"),
         SessionEvent::TurnInterrupted {
@@ -356,6 +356,7 @@ pub fn one_of_each() -> Vec<SessionEvent> {
             state: "exited 0".into(),
             produced: 41_392,
             elapsed_ms: 74_206,
+            edits: Vec::new(),
         },
         SessionEvent::JobOutput {
             job: "j7".into(),
@@ -440,7 +441,7 @@ pub fn recorded_session() -> Vec<SessionEvent> {
         full_bytes: 8_412,
         spill: None,
         repairs: 0,
-        edit: None,
+        edits: Vec::new(),
     });
     out.push(appended("s.3", "tool_result"));
     for w in chunks(MARKDOWN) {
@@ -493,7 +494,7 @@ pub fn recorded_items() -> Vec<(String, TranscriptItem)> {
                 name: "read".into(),
                 outcome: ToolOutcome::Ok,
                 payload: "…276 lines…".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             },

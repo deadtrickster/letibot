@@ -5890,7 +5890,7 @@ mod a_childs_state_is_read_from_the_right_facts {
             full_bytes: 1,
             spill: None,
             repairs: 0,
-            edit: None,
+            edits: Vec::new(),
         });
         // The answering round is the one that ends the prompt.
         a_round_opens(&hub, "t2");

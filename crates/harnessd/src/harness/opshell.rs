@@ -89,7 +89,7 @@ impl Harness {
             name: name.to_string(),
             outcome,
             payload: payload.to_string(),
-            edit: None,
+            edits: Vec::new(),
             origin: Some(letibot_transcript::CallOrigin::Operator {
                 who: who.to_string(),
             }),
@@ -245,7 +245,7 @@ impl Harness {
                 name: "bash".to_string(),
                 outcome,
                 payload,
-                edit: None,
+                edits: Vec::new(),
                 origin: Some(letibot_transcript::CallOrigin::Operator {
                     who: who.to_string(),
                 }),

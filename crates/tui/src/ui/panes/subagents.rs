@@ -89,7 +89,9 @@ impl App {
                 // Not this head's session: its cited files are compared with nothing.
                 workspace: "",
                 elapsed_ms: None,
-                edit: None,
+                edits: &[],
+                // Not this head's session either: a job it settled is no row of this child's.
+                job_edits: &Default::default(),
                 decision: None,
                 bound: None,
                 // Nothing here is this head's own echo, so the mark never appears.

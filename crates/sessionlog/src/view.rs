@@ -145,11 +145,16 @@ pub enum CallState {
         full_bytes: u64,
         /// The spill locator, when the output spilled: a head can offer the rest.
         spill: Option<String>,
-        /// Both sides of the file a file-editing call changed, bounded to the region that
+        /// Both sides of every file a file-editing call changed, bounded to the region that
         /// differs - the raw material of the two-panel diff. `#[serde(default)]` is what lets a
-        /// snapshot recorded before the field still load.
-        #[serde(default)]
-        edit: Option<crate::event::ToolEdit>,
+        /// snapshot recorded before the field still load, and `alias` what reads a snapshot that
+        /// recorded the single excerpt as a one-item list.
+        #[serde(
+            default,
+            alias = "edit",
+            deserialize_with = "letibot_transcript::one_or_many_edits"
+        )]
+        edits: Vec<crate::event::ToolEdit>,
     },
 }
 
@@ -567,7 +572,7 @@ impl SessionView {
                 inline_bytes,
                 full_bytes,
                 spill,
-                edit,
+                edits,
                 ..
             } => {
                 if let Some(c) = self.call_mut(call_id) {
@@ -577,7 +582,7 @@ impl SessionView {
                         inline_bytes: *inline_bytes,
                         full_bytes: *full_bytes,
                         spill: spill.clone(),
-                        edit: edit.clone(),
+                        edits: edits.clone(),
                     };
                 }
             }
@@ -1004,7 +1009,7 @@ mod tests {
                 name: "bash".into(),
                 outcome: ToolOutcome::Ok,
                 payload: "the payload".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             }),
@@ -1141,7 +1146,7 @@ mod tests {
                 name: "read".into(),
                 outcome: ToolOutcome::Ok,
                 payload: "y".repeat(10_000),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             },

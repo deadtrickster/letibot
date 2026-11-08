@@ -972,10 +972,18 @@ pub struct App {
     /// row. Absent for a row this head did not watch run, and the card then shows no duration
     /// rather than a fabricated one.
     pub(crate) call_ms: std::collections::HashMap<String, u64>,
-    /// Both sides of the file a settled `edit`/`write` row changed, by item id: what puts a diff on
-    /// the screen at all, since the transcript takes a call over the moment its result row lands.
-    /// Absent for rows older than the turn it carries, which then show the tool's own text.
-    pub(crate) call_edits: std::collections::HashMap<String, letibot_sessionlog::event::ToolEdit>,
+    /// Both sides of every file a settled `edit`/`write`/`bash` row changed, by item id: what puts
+    /// a diff on the screen at all, since the transcript takes a call over the moment its result row
+    /// lands. A list because one call can change several files (R161). Absent for rows older than
+    /// the turn it carries, which then show the tool's own text.
+    pub(crate) call_edits:
+        std::collections::HashMap<String, Vec<letibot_sessionlog::event::ToolEdit>>,
+    /// The files a settled JOB changed while it ran, by handle: the daemon snapshots the tree at the
+    /// spawn and reads it back here, and the completion's row is where they are drawn (R161).
+    /// A `BTreeMap` so the oldest can be dropped when a session settles more jobs than a reader will
+    /// scroll back through.
+    pub(crate) job_edits:
+        std::collections::BTreeMap<String, Vec<letibot_sessionlog::event::ToolEdit>>,
     /// The settled decision a `tool_result` row's call was gated by, by item id: the call id is
     /// round-positional, so it cannot be the key. It keeps the oracle's brief and reply on a card
     /// that has settled, which would otherwise leave with the live card.
@@ -1360,6 +1368,7 @@ impl App {
             call_targets: std::collections::HashMap::new(),
             call_ms: std::collections::HashMap::new(),
             call_edits: std::collections::HashMap::new(),
+            job_edits: std::collections::BTreeMap::new(),
             call_decisions: std::collections::HashMap::new(),
             reasoning: Fold::Folded,
             tools: Fold::Folded,

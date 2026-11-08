@@ -155,7 +155,7 @@ fn result(id: &str, name: &str, outcome: ToolOutcome, payload: String) -> Transc
         name: name.into(),
         outcome,
         payload,
-        edit: None,
+        edits: Vec::new(),
         origin: None,
         media: None,
     }

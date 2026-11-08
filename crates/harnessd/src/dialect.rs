@@ -283,7 +283,7 @@ mod tests {
                 reason: "nothing to read".into(),
             },
             payload: payload.into(),
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         };
@@ -437,7 +437,7 @@ mod tests {
                 name: "read".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: payload.into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             })

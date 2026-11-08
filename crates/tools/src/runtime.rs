@@ -30,10 +30,11 @@ pub struct Invocation {
     pub payload: String,
     /// Clause 1's voice: what the tool did about a miss.
     pub notes: Vec<String>,
-    /// Both sides of a file this call changed, for a head to draw. `None` for every
+    /// Both sides of every file this call changed, for a head to draw. Empty for every
     /// tool that changed nothing, including a write that was a no-op: a diff of no
-    /// change draws an empty card, and an empty card reads as a bug.
-    pub edit: Option<crate::edit::FileEdit>,
+    /// change draws an empty card, and an empty card reads as a bug. `edit`/`write` push
+    /// one; a `bash` call that swept several pushes each (R161).
+    pub edits: Vec<crate::edit::FileEdit>,
     /// Paths this call could not see because they are outside the session's
     /// filesystem view. Read off the boundary, not guessed from the output; empty for
     /// every call that saw everything it named. Non-empty raises a grant decision.
@@ -50,7 +51,7 @@ impl Invocation {
             outcome: ToolOutcome::Ok,
             payload: payload.into(),
             notes: Vec::new(),
-            edit: None,
+            edits: Vec::new(),
             needs_in_view: Vec::new(),
             media: None,
         }
@@ -64,7 +65,7 @@ impl Invocation {
             },
             payload: payload.into(),
             notes: Vec::new(),
-            edit: None,
+            edits: Vec::new(),
             needs_in_view: Vec::new(),
             media: None,
         }
@@ -77,7 +78,7 @@ impl Invocation {
             },
             payload: payload.into(),
             notes: Vec::new(),
-            edit: None,
+            edits: Vec::new(),
             needs_in_view: Vec::new(),
             media: None,
         }
@@ -90,7 +91,7 @@ impl Invocation {
             outcome: ToolOutcome::Timeout,
             payload: payload.into(),
             notes: Vec::new(),
-            edit: None,
+            edits: Vec::new(),
             needs_in_view: Vec::new(),
             media: None,
         }
@@ -104,7 +105,7 @@ impl Invocation {
             outcome: ToolOutcome::NotRun { why: why.into() },
             payload: payload.into(),
             notes: Vec::new(),
-            edit: None,
+            edits: Vec::new(),
             needs_in_view: Vec::new(),
             media: None,
         }
@@ -129,7 +130,7 @@ impl Invocation {
             },
             payload: payload.into(),
             notes: Vec::new(),
-            edit: None,
+            edits: Vec::new(),
             needs_in_view: Vec::new(),
             media: None,
         }
@@ -337,6 +338,9 @@ pub struct InvokeCtx<'a> {
     completion_wanted: Option<&'a CompletionWanted>,
     /// See [`OperatorRun`]. `None` in a runtime with no daemon behind it.
     operator_runs: Option<&'a OperatorRuns>,
+    /// Where a spawned job's change snapshot waits for its settlement: the daemon's watcher sees both
+    /// ends of a background job, so the tool hands it over here. `None` in a runtime with no daemon.
+    job_sweeps: Option<&'a dyn crate::detect::JobSweeps>,
     /// Whether this call is the operator's own, which is what decides whether the command
     /// meets the world their console gives it. Derived from `!gated` rather than passed in,
     /// so a caller cannot disagree: a pty, their shell's rc and no paging follow from it.
@@ -522,6 +526,14 @@ impl InvokeCtx<'_> {
     pub fn want_completion(&self, handle: &str, why: WantedNow) {
         if let Some(f) = self.completion_wanted {
             f(handle, why);
+        }
+    }
+
+    /// Hand a background job's change snapshot to whoever settles it. A no-op when nobody wired it,
+    /// or when there is no snapshot: a job outside a git tree has nothing this can prove.
+    pub fn watch_changes(&self, handle: &str, sweep: Option<crate::detect::Sweep>) {
+        if let (Some(keep), Some(sweep)) = (self.job_sweeps, sweep) {
+            keep.keep(handle, sweep);
         }
     }
 
@@ -1587,6 +1599,9 @@ pub struct ToolRuntime {
     /// What this session's own commands may see. `None` in a runtime with no daemon behind it, and
     /// then a spawn starts its child on the level's default perimeter and no widening is offered.
     pub perimeter: Option<std::sync::Arc<crate::exec::perimeter::Perimeter>>,
+    /// Where a spawned job's change snapshot waits for its settlement. `None` in a runtime with no
+    /// daemon behind it, and then a background job's writes are read by nobody but the model.
+    pub job_sweeps: Option<std::sync::Arc<dyn crate::detect::JobSweeps>>,
 }
 
 /// A call the model proposed and this layer reproposed as a different tool. One shape produces
@@ -1637,6 +1652,7 @@ impl ToolRuntime {
             provenance: None,
             recall: None,
             perimeter: None,
+            job_sweeps: None,
         }
     }
 
@@ -1712,6 +1728,16 @@ impl ToolRuntime {
     /// Wire where a call says it wants a result at once, see [`CompletionWanted`].
     pub fn with_completion_wanted(mut self, f: CompletionWanted) -> Self {
         self.completion_wanted = Some(f);
+        self
+    }
+
+    /// Wire where a spawned job's change snapshot waits for its settlement, see
+    /// [`JobSweeps`](crate::detect::JobSweeps).
+    pub fn with_job_sweeps(
+        mut self,
+        sweeps: Option<std::sync::Arc<dyn crate::detect::JobSweeps>>,
+    ) -> Self {
+        self.job_sweeps = sweeps;
         self
     }
 
@@ -2103,6 +2129,7 @@ impl ToolRuntime {
                 completion_delivered: self.completion_delivered.as_ref(),
                 completion_wanted: self.completion_wanted.as_ref(),
                 operator_runs: self.operator_runs.as_ref(),
+                job_sweeps: self.job_sweeps.as_deref(),
                 // The operator's own run, and only it. `run`'s flag is the whole distinction
                 // between the two entries; see `InvokeCtx::tty`.
                 tty: !gated,
@@ -2244,7 +2271,7 @@ impl ToolRuntime {
             // Never spilled and never truncated: this is the head's copy, not the
             // model's, and clause 5 bounds what goes into the prompt. A head that
             // was handed half a file could not draw a diff at all.
-            edit: invocation.edit,
+            edits: invocation.edits,
             // Carried through untouched, and deliberately not spilled or truncated. The spill
             // path bounds what goes into the prompt, and an image is bounded by its own format;
             // a truncated base64 is not a smaller picture, it is a corrupt one.
@@ -2256,16 +2283,16 @@ impl ToolRuntime {
 
     /// The transcript row for a finished call. The payload is the rendered result, envelope
     /// included, because that is the byte sequence the next prompt replays. The row also
-    /// carries the bounded edit excerpt: it is what a store persists and a resumed head replays.
+    /// carries the bounded edit excerpts: they are what a store persists and a resumed head replays.
     pub fn transcript_item(result: &ToolResult) -> TranscriptItem {
         TranscriptItem::ToolResult {
             call_id: result.call_id.clone(),
             name: result.name.clone(),
             outcome: result.outcome.clone(),
             payload: result.render(),
-            edit: bounded_edit(result),
+            edits: bounded_edits(result),
             origin: None,
-            // Carried whole, and the difference from `bounded_edit` is the design: an edit
+            // Carried whole, and the difference from `bounded_edits` is the design: an edit
             // excerpt is bounded because a head only draws it, while an image is sent, and a
             // bounded image is a truncated data URI the server refuses or renders as garbage.
             media: result.media.clone(),
@@ -2273,11 +2300,11 @@ impl ToolRuntime {
     }
 }
 
-/// The excerpt both the [`ToolEvent::Finished`] and the transcript row carry: three lines of
+/// The excerpts both the [`ToolEvent::Finished`] and the transcript row carry: three lines of
 /// context either side of the change, four hundred lines the cap, so the cost is known here
 /// and not a property of whatever file the model chose. One bound, two carriers.
-fn bounded_edit(r: &ToolResult) -> Option<crate::edit::ToolEditExcerpt> {
-    r.edit.as_ref().map(|e| e.excerpt(3, 400))
+fn bounded_edits(r: &ToolResult) -> Vec<crate::edit::ToolEditExcerpt> {
+    r.edits.iter().map(|e| e.excerpt(3, 400)).collect()
 }
 
 fn finished_event(turn_id: &str, r: &ToolResult) -> ToolEvent {
@@ -2295,7 +2322,7 @@ fn finished_event(turn_id: &str, r: &ToolResult) -> ToolEvent {
             .unwrap_or(rendered.len() as u64),
         spill: r.spill.as_ref().map(|s| s.hash.clone()),
         repairs: r.repairs.len() as u32,
-        edit: bounded_edit(r),
+        edits: bounded_edits(r),
     }
 }
 
@@ -3047,7 +3074,7 @@ mod tests {
             spill: None,
             media: None,
             repairs_told: Vec::new(),
-            edit: Some(crate::edit::FileEdit {
+            edits: vec![crate::edit::FileEdit {
                 path: "f".into(),
                 before: before.clone(),
                 after: after.clone(),
@@ -3056,14 +3083,14 @@ mod tests {
                 after_digest: String::new(),
                 replacements: 1,
                 changed: crate::edit::changed_span(&before, &after),
-            }),
+            }],
         };
         let item = ToolRuntime::transcript_item(&r);
-        let TranscriptItem::ToolResult { edit: row, .. } = &item else {
+        let TranscriptItem::ToolResult { edits: row, .. } = &item else {
             panic!("transcript_item built a {item:?}");
         };
-        let expected = r.edit.as_ref().unwrap().excerpt(3, 400);
-        assert_eq!(row.as_ref(), Some(&expected), "same bound, same excerpt");
+        let expected = r.edits.first().unwrap().excerpt(3, 400);
+        assert_eq!(row.first(), Some(&expected), "same bound, same excerpt");
     }
 
     /// A path in the secret store is not opened to find out what it contains. The refusal is at
@@ -3251,7 +3278,7 @@ mod tests {
         );
 
         assert_eq!(r.name, "write", "the transcript row still says bash");
-        let edit = r.edit.as_ref().expect("a write draws a diff");
+        let edit = r.edits.first().expect("a write draws a diff");
         assert_eq!(edit.path, "crates/workloads/src/banking.rs");
         assert!(edit.created);
         assert_eq!(edit.after, "pub fn balance() -> i64 { 0 }\n");
@@ -3315,7 +3342,7 @@ mod tests {
             std::fs::read_to_string(d.path().join("src/lib.rs")).unwrap(),
             "// the head\npub fn a() {}\n"
         );
-        let edit = r.edit.as_ref().expect("a diff");
+        let edit = r.edits.first().expect("a diff");
         assert!(!edit.created);
         assert_eq!(edit.before, "// the head\n");
     }
@@ -3338,7 +3365,7 @@ mod tests {
         );
         assert_eq!(r.name, "bash");
         assert_eq!(seen.calls()[0].0, "bash");
-        assert!(r.edit.is_none());
+        assert!(r.edits.is_empty());
         assert!(
             r.render().contains("call `write` with the contents"),
             "{}",

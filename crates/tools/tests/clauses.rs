@@ -661,7 +661,7 @@ fn the_head_is_handed_both_sides_and_the_model_is_not() {
         "edit",
         r#"{"path":"README.md","old_string":"a harness","new_string":"a local-first harness"}"#,
     );
-    let e = r.edit.as_ref().expect("the head gets both sides");
+    let e = r.edits.first().expect("the head gets both sides");
     assert_eq!(e.before, "letibot\na harness\n");
     assert_eq!(e.after, "letibot\na local-first harness\n");
     assert!(!e.before.contains('\r') && !e.after.contains('\r'));

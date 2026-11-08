@@ -144,7 +144,7 @@ fn create(ctx: &mut InvokeCtx<'_>, path: &str, content: &str) -> Invocation {
             }
         ));
     }
-    inv.edit = Some(FileEdit {
+    inv.edits.push(FileEdit {
         path: path.to_string(),
         before: String::new(),
         after: content.to_string(),
@@ -229,7 +229,7 @@ fn overwrite(ctx: &mut InvokeCtx<'_>, path: &str, content: &str, bytes: &[u8]) -
             "`{path}` had mixed line endings; the content was written exactly as given"
         ));
     }
-    inv.edit = Some(FileEdit {
+    inv.edits.push(FileEdit {
         path: path.to_string(),
         before: file.lf.clone(),
         after: after.clone(),
@@ -267,7 +267,7 @@ mod tests {
         let r = h.call("write", r#"{"path":"new.txt","content":"hello\n"}"#);
         assert!(r.is_grounded(), "{}", r.render());
         assert_eq!(h.read_file("new.txt"), "hello\n");
-        let e = r.edit.as_ref().unwrap();
+        let e = r.edits.first().unwrap();
         assert!(e.created && e.before.is_empty());
         // The temp file is created 0600 so nothing can read a half-written file; what lands
         // must not keep that, or every file the agent creates is unreadable to everything else.
@@ -368,8 +368,8 @@ mod tests {
         // The disclosure survives the guard: the operator still sees what was replaced, with
         // the old contents on the before side.
         let e = r
-            .edit
-            .as_ref()
+            .edits
+            .first()
             .expect("the write carries its before/after pair");
         assert!(
             e.before.contains("letibot"),
@@ -393,7 +393,7 @@ mod tests {
         assert!(r.render().contains("was not touched"), "{}", r.render());
         assert_eq!(h.mtime("README.md"), before);
         assert!(
-            r.edit.is_none(),
+            r.edits.is_empty(),
             "nothing changed, so the head has no diff to draw"
         );
     }

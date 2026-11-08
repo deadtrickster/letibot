@@ -2786,6 +2786,8 @@ impl Harness {
         // tells the same set the result is wanted the moment it ends, so it is not held for the
         // next break. See `crate::delivery`.
         let wanting = job_watch.clone();
+        // And where a spawned job's change snapshot goes, read by the same set at the settlement.
+        let sweeping = job_watch.clone();
         let runtime = ToolRuntime::new(registry, backend)
             .with_spiller(spiller)
             .with_recall(recall.clone())
@@ -2828,6 +2830,10 @@ impl Harness {
                     }
                 },
             ))
+            // The snapshot a background job's `bash` call takes at the spawn, handed to the set that
+            // settles it: only the watcher sees both ends of a job, so only it can read the change
+            // back (R161). `None` when the backend cannot start processes, and then nothing is kept.
+            .with_job_sweeps(sweeping.as_ref().map(|w| w.sweeps()))
             // The operator's own run can be ANSWERED: the object is installed on the registry here because this is
             // the half that has the pipe, the write end of the operator's stdin having come out of the job the tool
             // spawned. Keyed by session, since a pipe belongs to one session's run.

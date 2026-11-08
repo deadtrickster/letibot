@@ -338,7 +338,7 @@ pub fn reduce(items: &[TranscriptItem], rows: &[String], store: &dyn BodyStore) 
                 call_id,
                 name,
                 outcome,
-                edit,
+                edits,
                 origin,
                 media,
                 ..
@@ -347,7 +347,7 @@ pub fn reduce(items: &[TranscriptItem], rows: &[String], store: &dyn BodyStore) 
                 name,
                 outcome,
                 payload: stub,
-                edit,
+                edits,
                 origin,
                 media,
             },

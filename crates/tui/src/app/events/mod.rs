@@ -121,6 +121,8 @@ impl App {
             self.call_targets.clear();
             self.call_ms.clear();
             self.call_edits.clear();
+            // A handle is per-session too: another session's job was never spawned by this one.
+            self.job_edits.clear();
             self.usage = None;
             self.usage_cache_measured = true;
             self.last_timings = None;
@@ -291,10 +293,11 @@ impl App {
             let mut call_idx = 0usize;
             for item_id in &t.appended {
                 if kinds.get(item_id.as_str()).copied() == Some("tool_result") {
-                    if let Some(CallState::Finished { edit: Some(e), .. }) =
+                    if let Some(CallState::Finished { edits, .. }) =
                         t.calls.get(call_idx).map(|c| &c.state)
+                        && !edits.is_empty()
                     {
-                        self.call_edits.insert(item_id.clone(), e.clone());
+                        self.call_edits.insert(item_id.clone(), edits.clone());
                     }
                     call_idx += 1;
                 }

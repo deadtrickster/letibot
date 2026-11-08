@@ -46,10 +46,10 @@ pub enum ToolEvent {
         /// How many argument repairs this call needed. A head that cannot see this cannot
         /// see a model steadily emitting malformed calls, the signal a dialect is wrong.
         repairs: u32,
-        /// Both sides of the file this call changed, bounded to the region that differs
+        /// Both sides of every file this call changed, bounded to the region that differs
         /// ([`ToolEditExcerpt`]). The one exception to the no-payload rule: the before side
         /// is in neither the transcript nor the model's payload, and is gone once it lands.
-        edit: Option<ToolEditExcerpt>,
+        edits: Vec<ToolEditExcerpt>,
     },
 }
 

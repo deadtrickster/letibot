@@ -4,6 +4,10 @@
 use super::*;
 use letibot_sessionlog::event::SessionEvent;
 
+/// How many settled jobs this head keeps a diff for. A session that settles a hundred jobs settles
+/// them over hours, and the row of the hundredth is scrolled so far back that nobody reaches it.
+const JOB_EDITS_KEPT: usize = 64;
+
 impl App {
     /// Work this session started: a subagent's state, a job settling or writing output. One family of
     /// [`App::event`]'s arms, moved here verbatim; `event` hands it only these variants.
@@ -68,12 +72,24 @@ impl App {
                 }
                 Disposition::Filtered
             }
-            SessionEvent::JobSettled { .. } => {
+            SessionEvent::JobSettled { job, edits, .. } => {
                 // The daemon owns the table: the settlement only says to ask again.
                 // And the count drops by one, so the row above the composer re-asks: a job
                 // settled in a turn this head never watched has no row to fold into, which is
                 // the case a count taken from the pane's rows would get wrong.
                 self.queued.push(Action::ListJobs);
+                // And what it changed while it ran: the daemon measured it between the spawn and
+                // this settlement, and the completion's row is where a diff can be drawn (R161).
+                if !edits.is_empty() {
+                    self.job_edits.insert(job, edits);
+                    // Bounded like the completed handles: a session that settled a hundred jobs
+                    // keeps the last `JOB_EDITS_KEPT`, because an older one's row is scrolled so
+                    // far back that the reader has long stopped scrolling.
+                    while self.job_edits.len() > JOB_EDITS_KEPT {
+                        let oldest = self.job_edits.keys().next().cloned().unwrap_or_default();
+                        self.job_edits.remove(&oldest);
+                    }
+                }
                 Disposition::Filtered
             }
             // A job's output, the answer to the jobs pane's Enter. Not folded into any view:

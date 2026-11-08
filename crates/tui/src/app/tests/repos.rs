@@ -82,7 +82,7 @@ fn edited(a: &mut App, id: &str, path: &str) {
             name: "edit".into(),
             outcome: letibot_transcript::ToolOutcome::Ok,
             payload: "done".into(),
-            edit: Some(letibot_transcript::ToolEditExcerpt {
+            edits: vec![letibot_transcript::ToolEditExcerpt {
                 path: path.into(),
                 created: false,
                 before_start: 1,
@@ -92,7 +92,7 @@ fn edited(a: &mut App, id: &str, path: &str) {
                 truncated: false,
                 before: "fn x() {}".into(),
                 after: "fn y() {}".into(),
-            }),
+            }],
             origin: None,
             media: None,
         },

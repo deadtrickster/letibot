@@ -155,7 +155,7 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
         full_bytes: 1,
         spill: None,
         repairs: 0,
-        edit: None,
+        edits: Vec::new(),
     });
     hub.publish(SessionEvent::TurnFinished {
         turn_id: "t1".into(),
@@ -244,7 +244,7 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
         full_bytes: 1,
         spill: None,
         repairs: 0,
-        edit: None,
+        edits: Vec::new(),
     });
     hub.publish(SessionEvent::TurnFinished {
         turn_id: "t2".into(),

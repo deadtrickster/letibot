@@ -23,7 +23,7 @@ pub(crate) fn tool_result_row_lines(
         tools,
         targets,
         elapsed_ms,
-        edit,
+        edits: live_edits,
         decision,
         diff_split,
         payload_view,
@@ -36,7 +36,7 @@ pub(crate) fn tool_result_row_lines(
         outcome,
         payload,
         call_id,
-        edit: row_edit,
+        edits: row_edits,
         origin,
         media,
     } = item
@@ -61,10 +61,15 @@ pub(crate) fn tool_result_row_lines(
         }
         _ => Vec::new(),
     };
-    // The row's own excerpt when it has one: every row the runtime builds carries the same bounded
-    // pair the event does, so a row read out of a store draws its diff without this head having
+    // The row's own excerpts when it has them: every row the runtime builds carries the same bounded
+    // pairs the event does, so a row read out of a store draws its diffs without this head having
     // watched the call run. The live copy wins when both exist - it is what this head saw.
-    let edit = edit.or(row_edit.as_ref());
+    let edits: &[letibot_transcript::ToolEditExcerpt] = if live_edits.is_empty() {
+        row_edits
+    } else {
+        live_edits
+    };
+    let edit = edits.first();
     // The envelope is the model's, so it is noise on a screen. The bytes are the command's, and an
     // escape that reaches the terminal is a mode change nobody asked for - so each line is walked by
     // `letibot_ui::ansi::line`: SGR painted into the palette's roles, everything else removed whole.
@@ -94,9 +99,20 @@ pub(crate) fn tool_result_row_lines(
     // And a change DETECTED after a command draws one too - below the command's own output rather
     // than instead of it, since the body is what the command SAID and the change is a second thing.
     // The verb is `Ran`, so rano will not draw the panel: [`detected_diff_rows`] is this head's half.
-    let detected = edit
-        .filter(|_| !verb.is_an_edit())
-        .map(|e| detected_diff_rows(e, &target, w.saturating_sub(2), cfg, diff_split, tools));
+    let detected = (!edits.is_empty()).then(|| {
+        detected_diff_rows(
+            edits,
+            DiffRows {
+                target: &target,
+                width: w.saturating_sub(2),
+                cfg,
+                diff_split,
+                fold: tools,
+                under_a_panel: verb.is_an_edit(),
+                provenance: DETECTED_PROVENANCE,
+            },
+        )
+    });
     // The payload's own window: `payload_view` carries *which* row, because several
     // payloads can be unfolded on one screen and a bare offset would page all of them.
     let window = payload_view

@@ -383,7 +383,7 @@ fn a_job_starting_ending_or_a_turn_ending_re_reads_the_count() {
             full_bytes: 1,
             spill: None,
             repairs: 0,
-            edit: None,
+            edits: Vec::new(),
         },
     )));
     assert!(
@@ -403,7 +403,7 @@ fn a_job_starting_ending_or_a_turn_ending_re_reads_the_count() {
             full_bytes: 1,
             spill: None,
             repairs: 0,
-            edit: None,
+            edits: Vec::new(),
         },
     )));
     assert!(
@@ -419,6 +419,7 @@ fn a_job_starting_ending_or_a_turn_ending_re_reads_the_count() {
             state: "exited 0".into(),
             produced: 1,
             elapsed_ms: 2,
+            edits: Vec::new(),
         },
     )));
     assert!(
@@ -456,6 +457,7 @@ fn a_settlement_folds_onto_a_known_job_and_never_invents_one() {
             state: "exited 0".into(),
             produced: 1,
             elapsed_ms: 1,
+            edits: Vec::new(),
         },
     )));
     assert_eq!(a.jobs.len(), 1, "a settlement invented a row");
@@ -473,6 +475,7 @@ fn a_settlement_folds_onto_a_known_job_and_never_invents_one() {
             state: "killed by job_kill".into(),
             produced: 4096,
             elapsed_ms: 2_500,
+            edits: Vec::new(),
         },
     )));
     assert!(a.jobs[0].running, "the head patched its own list");
@@ -1016,7 +1019,7 @@ fn a_job_list_older_than_a_job_event_is_discarded_and_asked_again() {
             full_bytes: 1,
             spill: None,
             repairs: 0,
-            edit: None,
+            edits: Vec::new(),
         },
     )));
     assert!(
@@ -1046,4 +1049,72 @@ fn a_job_list_older_than_a_job_event_is_discarded_and_asked_again() {
     a.apply(stamped(8, vec![daemon_job("j1", "sleep 300", true)]));
     assert_eq!(a.jobs.len(), 1, "the job is listed");
     assert!(!a.take_actions().contains(&Action::ListJobs));
+}
+
+/// A job's completion draws the files it changed while it ran: the daemon snapshots the tree at the
+/// spawn and reads it at the settlement (R161), so the two panels are the job's own measurement - and
+/// the row says WHEN, never WHO, because another call may have written the same tree meanwhile.
+#[test]
+fn a_jobs_completion_draws_the_files_it_changed() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    let change = letibot_transcript::ToolEditExcerpt {
+        path: "fuzz/aql.inc".into(),
+        created: false,
+        before_start: 1,
+        after_start: 1,
+        before_lines: 2,
+        after_lines: 2,
+        truncated: false,
+        before: "alpha\nbeta".into(),
+        after: "alpha\nGAMMA".into(),
+    };
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::JobSettled {
+            job: "j7".into(),
+            state: "exited 0".into(),
+            produced: 12,
+            elapsed_ms: 2_000,
+            edits: vec![change],
+        },
+    )));
+    assert!(
+        a.job_edits.contains_key("j7"),
+        "the settlement's diff was dropped at the fold"
+    );
+
+    // The row the daemon appends, in its own words: two lines for the job, and the detail line the
+    // settlement carries about its tree.
+    let notice = "[job] a job you backgrounded has ended:\n  - `j7` exited 0 after 2.0s\n    changed while it ran: `fuzz/aql.inc` (when, not who)\nOutput: `job_output` job=\"j7\".";
+    a.apply(ServerFrame::Event(env(
+        2,
+        testing::appended("s.j7", "user"),
+    )));
+    a.record_item(
+        "s.j7",
+        TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Agent,
+            parts: vec![UserPart::Text {
+                text: notice.into(),
+            }],
+        },
+    );
+    let screen = a.screen(120, 40).join("\n");
+    assert!(
+        screen.contains("fuzz/aql.inc"),
+        "the completion names the file: {screen}"
+    );
+    assert!(
+        screen.contains("GAMMA"),
+        "the change itself is drawn under the notice:\n{screen}"
+    );
+    assert!(
+        screen.contains("when, not who"),
+        "and it says whose change it is not:\n{screen}"
+    );
 }

@@ -15,7 +15,7 @@ fn a_models_tool_row_is_unmarked_and_its_paint_has_not_moved() {
             name: "bash".into(),
             outcome: letibot_transcript::ToolOutcome::Ok,
             payload: body,
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         },
@@ -86,7 +86,7 @@ fn a_running_tool_call_shows_how_long_it_has_been_running_and_what_it_last_said(
             full_bytes: 214,
             spill: None,
             repairs: 0,
-            edit: None,
+            edits: Vec::new(),
         },
     )));
     let screen = a.screen(120, 24).join("\n");
@@ -142,7 +142,7 @@ fn content_this_head_did_not_write_cannot_reconfigure_the_terminal() {
                 name: "bash".into(),
                 outcome: ToolOutcome::Ok,
                 payload: format!("$ ls\n{EVIL}\nfile.rs"),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             }),
@@ -156,7 +156,7 @@ fn content_this_head_did_not_write_cannot_reconfigure_the_terminal() {
                     reason: format!("the command wrote {EVIL} to stderr"),
                 },
                 payload: "$ false".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             }),
@@ -180,7 +180,7 @@ fn content_this_head_did_not_write_cannot_reconfigure_the_terminal() {
                 name: "edit".into(),
                 outcome: ToolOutcome::Ok,
                 payload: "1 replacement".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             }),
@@ -332,7 +332,7 @@ fn a_call_from_a_snapshot_has_no_duration_rather_than_a_zero_one() {
         full_bytes: 40,
         spill: None,
         repairs: 0,
-        edit: None,
+        edits: Vec::new(),
     });
     let mut a = app();
     a.apply(ServerFrame::Resync {
@@ -378,7 +378,7 @@ fn an_expanded_tool_payload_cannot_turn_the_mouse_off() {
                 name: "bash".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload,
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             }),
@@ -420,7 +420,7 @@ fn a_spilled_result_reads_as_the_harness_working_not_as_damage() {
             full_bytes: 480_000,
             spill: Some("9fa3c1".into()),
             repairs: 0,
-            edit: None,
+            edits: Vec::new(),
         },
     )));
     let screen = a.screen(160, 12).join("\n");
@@ -510,7 +510,7 @@ fn a_settled_call_is_one_row_and_the_row_is_the_one_with_the_result_on_it() {
                 name: "read".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: "# rano TODO\n".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             }),
@@ -548,7 +548,7 @@ fn a_subject_too_long_for_the_row_never_pushes_the_outcome_off_it() {
                     why: "no retrieval backend is attached to this session".into(),
                 },
                 payload: "a\nb\nc\n".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             }),
@@ -583,7 +583,7 @@ fn a_result_whose_round_the_head_cannot_see_says_so_rather_than_borrowing() {
                 name: "read".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: "hello\n".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             }),
@@ -624,7 +624,7 @@ fn a_snapshot_that_carries_a_finished_call_is_seated_and_counts_as_nothing_execu
         full_bytes: 36,
         spill: None,
         repairs: 0,
-        edit: None,
+        edits: Vec::new(),
     });
     let snap = hub.snapshot();
     let turn = snap.turn.as_ref().expect("the daemon keeps the turn");
@@ -864,7 +864,7 @@ fn the_diff_verb_sets_the_style_and_redraws_what_is_already_drawn() {
             full_bytes: 64,
             spill: None,
             repairs: 0,
-            edit: Some(edit_excerpt()),
+            edits: vec![edit_excerpt()],
         },
     )));
     let split = a.screen(120, 30).join("\n");
@@ -1049,7 +1049,7 @@ fn a_restarted_head_still_draws_the_last_turns_edit_panels() {
         full_bytes: 12,
         spill: None,
         repairs: 0,
-        edit: Some(edit_excerpt()),
+        edits: vec![edit_excerpt()],
     });
     hub.publish(testing::appended("s.1", "tool_result"));
     hub.record_item(
@@ -1061,7 +1061,7 @@ fn a_restarted_head_still_draws_the_last_turns_edit_panels() {
             payload: "done".into(),
             // A row from before the field existed: the seeded map is the
             // only carrier here, which is the point of this test.
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         },
@@ -1099,7 +1099,7 @@ fn a_row_from_a_resumed_daemon_draws_its_panel_without_a_turn() {
             name: "edit".into(),
             outcome: letibot_transcript::ToolOutcome::Ok,
             payload: "done".into(),
-            edit: Some(edit_excerpt()),
+            edits: vec![edit_excerpt()],
             origin: None,
             media: None,
         },
@@ -1241,7 +1241,7 @@ fn the_live_event_path_feeds_the_two_panel_view() {
             full_bytes: 64,
             spill: None,
             repairs: 0,
-            edit: Some(edit_excerpt()),
+            edits: vec![edit_excerpt()],
         },
     )));
     let screen = a.screen(120, 24).join("\n");
@@ -1284,7 +1284,7 @@ fn a_settled_edit_row_draws_the_diff_and_keeps_it_across_turns() {
             full_bytes: 64,
             spill: None,
             repairs: 0,
-            edit: Some(edit_excerpt()),
+            edits: vec![edit_excerpt()],
         },
     )));
     // The transcript takes the call over: the row lands, then its body.
@@ -1301,7 +1301,7 @@ fn a_settled_edit_row_draws_the_diff_and_keeps_it_across_turns() {
                     name: "edit".into(),
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: "a.rs: 1 replacement(s). lines 1-3\n\n     1| fn a() {\n     2|     x();\n     3| }\n".into(),
-                    edit: None,
+                    edits: Vec::new(),
                     origin: None,
                     media: None,
                 }),

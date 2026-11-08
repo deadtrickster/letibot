@@ -273,7 +273,7 @@ fn bang_rows(a: &mut App, seq: u64, id: &str, line: &str, payload: &str) {
                 name: "bash".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: payload.into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: Some(letibot_transcript::CallOrigin::Operator { who: "dead".into() }),
                 media: None,
             }),
@@ -298,7 +298,7 @@ fn model_bash_rows(a: &mut App, seq: u64, id: &str, payload: &str) {
                 name: "bash".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: payload.into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             }),
@@ -387,7 +387,7 @@ fn bash_result(payload: &str) -> TranscriptItem {
         name: "bash".into(),
         outcome: letibot_transcript::ToolOutcome::Ok,
         payload: payload.into(),
-        edit: None,
+        edits: Vec::new(),
         origin: Some(letibot_transcript::CallOrigin::Operator { who: "dead".into() }),
         media: None,
     }
@@ -452,6 +452,7 @@ fn item_rendered(
         after: format!("let a = 3;{EVIL}\nlet b = 2;\n"),
     };
     let edit = item_kind_is_edit(&item).then_some(&excerpt);
+    let has_edit = edit.is_some();
     let it = SnapshotItem {
         citations: Vec::new(),
         item_id: "s.1".into(),
@@ -471,7 +472,12 @@ fn item_rendered(
         job_tails: &Default::default(),
         drawn_live: false,
         elapsed_ms: None,
-        edit,
+        edits: if has_edit {
+            std::slice::from_ref(&excerpt)
+        } else {
+            &[]
+        },
+        job_edits: &Default::default(),
         decision: None,
         workspace: "",
         bound: None,
@@ -576,7 +582,7 @@ fn a_result_row(a: &mut App, seq: u64, id: &str, payload: &str) {
                 name: "bash".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: payload.into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             }),
@@ -919,7 +925,7 @@ fn the_counts_are_plain_and_the_seam_is_faint_body() {
                 name: "bash".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: "output".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             },
@@ -1010,7 +1016,7 @@ fn a_turn_mid_run(a: &mut App) {
             name: "read".into(),
             outcome: letibot_transcript::ToolOutcome::Ok,
             payload: "SOMETHING LONG ENOUGH TO HIDE THE ROW".into(),
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         },
@@ -1100,7 +1106,7 @@ fn edit_row(edit: Option<letibot_sessionlog::event::ToolEdit>) -> CallRow {
             inline_bytes: 64,
             full_bytes: 64,
             spill: None,
-            edit,
+            edits: edit.into_iter().collect(),
         },
         started_ms: 1_000,
         started_at: 0,

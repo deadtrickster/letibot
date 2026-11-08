@@ -984,7 +984,7 @@ fn the_payload_window_keeps_the_arrows_from_a_decision_card() {
             name: "bash".into(),
             outcome: letibot_transcript::ToolOutcome::Ok,
             payload,
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         },

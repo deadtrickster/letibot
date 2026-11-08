@@ -864,7 +864,7 @@ fn a_settled_card_keeps_the_decision_that_gated_it() {
             full_bytes: 12,
             spill: None,
             repairs: 0,
-            edit: None,
+            edits: Vec::new(),
         },
     )));
     a.apply(ServerFrame::Event(env(
@@ -880,7 +880,7 @@ fn a_settled_card_keeps_the_decision_that_gated_it() {
                 name: "bash".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: "done".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             }),

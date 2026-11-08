@@ -174,7 +174,7 @@ impl TurnMeter {
             .attr_opt("cap_kib", mem.and_then(|m| m.cap).map(|c| c / 1024))
             .attr_opt("oom_kills", mem.map(|m| m.oom_kills).filter(|n| *n > 0))
             .attr("repairs", r.repairs.len())
-            .attr("edit", r.edit.is_some())
+            .attr("edit", !r.edits.is_empty())
             .attr("spilled", r.spill.is_some())
             .emit();
     }

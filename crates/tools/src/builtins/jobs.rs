@@ -879,7 +879,7 @@ fn wait_on_job(
                 unmeasured_note(silent)
             ),
             notes: vec![],
-            edit: None,
+            edits: Vec::new(),
             needs_in_view: Vec::new(),
             media: None,
         },
@@ -983,7 +983,7 @@ fn wait_on_scope(
                 secs(took)
             ),
             notes: vec![],
-            edit: None,
+            edits: Vec::new(),
             needs_in_view: Vec::new(),
             media: None,
         },

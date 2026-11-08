@@ -4609,7 +4609,7 @@ mod endpoint_retry {
                 name: "grep".into(),
                 outcome: ToolOutcome::Ok,
                 payload: "ok".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             }

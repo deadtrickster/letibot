@@ -115,7 +115,7 @@ fn the_status_row_survives_a_tool_call() {
             full_bytes: 1,
             spill: None,
             repairs: 0,
-            edit: None,
+            edits: Vec::new(),
         },
     )));
     assert!(
@@ -1409,7 +1409,7 @@ fn thinking_that_is_still_arriving_is_one_fold_with_the_run_it_will_join() {
                 name: "read".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: "SOMETHING LONG ENOUGH TO HIDE THE ROW".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             },
@@ -1952,7 +1952,7 @@ fn a_prompt_in_flight_holds_the_row_up_between_its_rounds() {
             full_bytes: 1,
             spill: None,
             repairs: 0,
-            edit: None,
+            edits: Vec::new(),
         },
     )));
     assert!(

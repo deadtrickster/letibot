@@ -61,7 +61,7 @@ fn conversation() -> Vec<(u64, TranscriptItem)> {
                 name: "Bash".into(),
                 outcome: ToolOutcome::Ok,
                 payload: "test result: ok. 3 passed".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             },
@@ -253,7 +253,7 @@ fn the_markdown_says_who_spoke_and_collapses_a_call_to_one_line() {
         name: "Bash".into(),
         outcome: ToolOutcome::Ok,
         payload: "line one\nline two\nline three".into(),
-        edit: None,
+        edits: Vec::new(),
         origin: None,
         media: None,
     };

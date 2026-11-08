@@ -162,7 +162,7 @@ fn the_panel_holds_the_calls_when_their_rows_land() {
                     name: "read".into(),
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: format!("CONTENTS-{path}"),
-                    edit: None,
+                    edits: Vec::new(),
                     origin: None,
                     media: None,
                 }),

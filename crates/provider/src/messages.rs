@@ -505,7 +505,7 @@ pub fn convert_with_tail(
                 outcome: _,
                 payload,
                 // Display-only; the prompt never sees it.
-                edit: _,
+                edits: _,
                 media,
                 origin,
             } => {
@@ -890,7 +890,7 @@ mod tests {
             name: "glob".into(),
             outcome: ToolOutcome::Ok,
             payload: "a".into(),
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         };
@@ -944,7 +944,7 @@ mod tests {
                     reason: "no such dir".into(),
                 },
                 payload: "nothing".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             },
@@ -992,7 +992,7 @@ mod tests {
                     name: "glob".into(),
                     outcome: ToolOutcome::Ok,
                     payload: out.into(),
-                    edit: None,
+                    edits: Vec::new(),
                     origin: None,
                     media: None,
                 },
@@ -1043,7 +1043,7 @@ mod tests {
                 name: "read".into(),
                 outcome: ToolOutcome::Ok,
                 payload: "shot.png — image image/png 2×2 · 1 KiB".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: Some(letibot_transcript::media::Media {
                     mime: "image/png".into(),
@@ -1095,7 +1095,7 @@ mod tests {
                 name: "bash".into(),
                 outcome: ToolOutcome::Ok,
                 payload: "ok".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             },
@@ -1172,7 +1172,7 @@ mod tests {
                 name: "read".into(),
                 outcome: ToolOutcome::Ok,
                 payload: "shot.png — image image/png 2×2 · 1 KiB".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: Some(letibot_transcript::media::Media {
                     mime: "image/png".into(),
@@ -1325,7 +1325,7 @@ mod tests {
                 name: "read".into(),
                 outcome: ToolOutcome::Ok,
                 payload: "shot.png — image image/png 2×2 · 1 KiB".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: Some(letibot_transcript::media::Media {
                     mime: "image/png".into(),
@@ -1414,7 +1414,7 @@ mod tests {
                 name: "read".into(),
                 outcome: ToolOutcome::Ok,
                 payload: "shot.png — image image/png 640×480 · 0 KiB".into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: Some(letibot_transcript::media::Media {
                     mime: "image/png".into(),
@@ -1592,7 +1592,7 @@ mod pairing_tests {
             name: "bash".into(),
             outcome: ToolOutcome::Ok,
             payload: "done".into(),
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         }
@@ -1606,7 +1606,7 @@ mod pairing_tests {
             name: "bash".into(),
             outcome: ToolOutcome::Ok,
             payload: payload.into(),
-            edit: None,
+            edits: Vec::new(),
             origin: Some(letibot_transcript::CallOrigin::Operator { who: "dead".into() }),
             media: None,
         }

@@ -1302,7 +1302,7 @@ impl NotesTool {
             crate::spill::content_hash(after.as_bytes()),
         );
         let changed = crate::edit::changed_span(&before, &after);
-        inv.edit = Some(crate::edit::FileEdit {
+        inv.edits.push(crate::edit::FileEdit {
             path: target
                 .strip_prefix(&fs.root)
                 .map(|p| p.to_string_lossy().to_string())

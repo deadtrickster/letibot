@@ -36,7 +36,7 @@ fn a_row_with_a_body(
         name: "read".into(),
         outcome: ToolOutcome::Ok,
         payload: body.into(),
-        edit: None,
+        edits: Vec::new(),
         origin: None,
         media: None,
     };

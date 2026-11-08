@@ -120,11 +120,17 @@ pub enum TranscriptItem {
         name: String,
         outcome: ToolOutcome,
         payload: String,
-        /// Both sides of the file an edit changed, bounded to what differs: the raw material
+        /// Both sides of every file this call changed, bounded to what differs: the raw material
         /// of the two-panel diff, on the row because a head attaching after a restart is
         /// handed rows rather than events. Display-only - the prompt builders read `payload`.
-        #[serde(default)]
-        edit: Option<ToolEditExcerpt>,
+        /// A list because one `bash` call can change several files (R161).
+        #[serde(
+            default,
+            alias = "edit",
+            deserialize_with = "one_or_many_edits",
+            skip_serializing_if = "Vec::is_empty"
+        )]
+        edits: Vec<ToolEditExcerpt>,
         /// Who asked for this call. A head labels a tool card from the nearest preceding
         /// assistant call, which cannot see a call nobody proposed, so an operator-run call
         /// would be drawn as the model's. `None` is a call the model proposed.
@@ -199,18 +205,18 @@ impl TranscriptItem {
             TranscriptItem::User { parts: p, .. } => parts(p),
             TranscriptItem::ToolResult {
                 payload,
-                edit,
+                edits,
                 media,
                 ..
             } => {
-                // The excerpt is what makes a `read` or an `edit` row large, and it is
-                // carried to the head, so it counts - and so does a picture a tool read, whose
+                // The excerpts are what makes a `read` or an `edit` row large, and they are
+                // carried to the head, so they count - and so does a picture a tool read, whose
                 // bytes are inline on the row for the next round.
                 payload.len()
-                    + edit
-                        .as_ref()
+                    + edits
+                        .iter()
                         .map(|e| e.before.len() + e.after.len())
-                        .unwrap_or(0)
+                        .sum::<usize>()
                     + media.as_ref().map(|m| m.data_ref.len()).unwrap_or(0)
             }
             TranscriptItem::Notice { text, .. } => text.len(),
@@ -245,6 +251,45 @@ pub struct ToolEditExcerpt {
     /// side has no lines in the range (a pure insertion has no `before`).
     pub before: String,
     pub after: String,
+}
+
+/// A stored row's excerpts: the list this tree writes, or the ONE object a row written before the
+/// list existed carries, read as a one-item list - so the store never has to rewrite a row. A
+/// `null` is the empty list, which is what the old `Option` wrote for a call that changed nothing.
+pub fn one_or_many_edits<'de, D>(d: D) -> Result<Vec<ToolEditExcerpt>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{MapAccess, SeqAccess, Visitor};
+    struct Edits;
+    impl<'de> Visitor<'de> for Edits {
+        type Value = Vec<ToolEditExcerpt>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a list of edit excerpts, or the one an older row carries")
+        }
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+        fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+        fn visit_some<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+            d.deserialize_any(self)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut out = Vec::new();
+            while let Some(e) = seq.next_element::<ToolEditExcerpt>()? {
+                out.push(e);
+            }
+            Ok(out)
+        }
+        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+            let one =
+                ToolEditExcerpt::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+            Ok(vec![one])
+        }
+    }
+    d.deserialize_any(Edits)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -482,7 +527,7 @@ mod tests {
             name: "edit".into(),
             outcome: ToolOutcome::Ok,
             payload: "done".into(),
-            edit: Some(ToolEditExcerpt {
+            edits: vec![ToolEditExcerpt {
                 path: "crates/ui/src/style.rs".into(),
                 created: false,
                 before_start: 3,
@@ -492,7 +537,7 @@ mod tests {
                 truncated: false,
                 before: "fn a() {".into(),
                 after: "fn a() {\n    x();".into(),
-            }),
+            }],
             origin: None,
             media: None,
         };
@@ -505,20 +550,69 @@ mod tests {
     fn a_row_written_before_the_edit_existed_reads_as_none() {
         // Rows the store already holds predate the field, and `#[serde(default)]` is what lets
         // them still load - so a resumed daemon does not refuse a session it served yesterday.
-        let item = TranscriptItem::ToolResult {
+        let old = serde_json::json!({"type":"tool_result","call_id":"c1","name":"edit",
+            "outcome":"ok","payload":"done"});
+        let back: TranscriptItem = serde_json::from_value(old).unwrap();
+        match back {
+            TranscriptItem::ToolResult { edits, .. } => {
+                assert!(edits.is_empty(), "no key is no excerpt: {edits:?}")
+            }
+            other => panic!("not a tool result: {other:?}"),
+        }
+    }
+
+    /// The store holds rows written when one excerpt was all a row could carry: `"edit": {…}` must
+    /// read back as a one-item list, because rewriting stored rows is the migration this avoids.
+    #[test]
+    fn a_row_with_one_stored_excerpt_reads_as_a_one_item_list() {
+        let one = serde_json::json!({
+            "path": "a.txt",
+            "created": false,
+            "before_start": 1,
+            "after_start": 1,
+            "before_lines": 2,
+            "after_lines": 2,
+            "truncated": false,
+            "before": "one\nTWO",
+            "after": "one\nTHREE",
+        });
+        // Both spellings of an older row: the object, and the object beside a `null` key.
+        for old in [
+            serde_json::json!({"type":"tool_result","call_id":"c1","name":"edit",
+                "outcome":"ok","payload":"done","edit":one}),
+            serde_json::json!({"type":"tool_result","call_id":"c1","name":"bash",
+                "outcome":"ok","payload":"done","edit":null}),
+        ] {
+            let back: TranscriptItem = serde_json::from_value(old.clone()).unwrap();
+            match back {
+                TranscriptItem::ToolResult { edits, .. } => {
+                    assert_eq!(edits.len(), usize::from(old["edit"].is_object()), "{old}")
+                }
+                other => panic!("not a tool result: {other:?}"),
+            }
+        }
+        // And a row this tree writes carries the list, not the single object.
+        let json = serde_json::to_string(&TranscriptItem::ToolResult {
             call_id: "c1".into(),
-            name: "edit".into(),
+            name: "bash".into(),
             outcome: ToolOutcome::Ok,
             payload: "done".into(),
-            edit: None,
+            edits: vec![ToolEditExcerpt {
+                path: "a.txt".into(),
+                created: false,
+                before_start: 1,
+                after_start: 1,
+                before_lines: 2,
+                after_lines: 2,
+                truncated: false,
+                before: "one\nTWO".into(),
+                after: "one\nTHREE".into(),
+            }],
             origin: None,
             media: None,
-        };
-        let json = serde_json::to_string(&item).unwrap();
-        let old = json.replace(",\"edit\":null", "");
-        assert_ne!(json, old, "the fixture must actually strip the key");
-        let back: TranscriptItem = serde_json::from_str(&old).unwrap();
-        assert_eq!(back, item);
+        })
+        .unwrap();
+        assert!(json.contains("\"edits\":["), "{json}");
     }
 
     /// Who asked for the call, and that an old row says `None`. An operator-run call
@@ -531,7 +625,7 @@ mod tests {
             name: "web_fetch".into(),
             outcome: ToolOutcome::Ok,
             payload: "the page".into(),
-            edit: None,
+            edits: Vec::new(),
             origin: Some(CallOrigin::Operator { who: "dead".into() }),
             media: None,
         };
@@ -688,7 +782,7 @@ mod tests {
             name: "read".into(),
             outcome: ToolOutcome::Ok,
             payload: "a picture".into(),
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: Some(media::Media {
                 mime: "image/png".into(),

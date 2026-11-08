@@ -741,6 +741,7 @@ impl App {
             call_targets,
             call_ms,
             call_edits,
+            job_edits,
             call_decisions,
             hist_class,
             hist_first_class,
@@ -974,7 +975,11 @@ impl App {
                                 job_tails: &self.job_tails,
                                 drawn_live: in_flight.contains(items[*hist_upto].item_id.as_str()),
                                 elapsed_ms: call_ms.get(&items[*hist_upto].item_id).copied(),
-                                edit: call_edits.get(&items[*hist_upto].item_id),
+                                edits: call_edits
+                                    .get(&items[*hist_upto].item_id)
+                                    .map(Vec::as_slice)
+                                    .unwrap_or(&[]),
+                                job_edits,
                                 decision: call_decisions.get(&items[*hist_upto].item_id),
                                 workspace: &self.wiring.workspace,
                                 bound: bound_prompts

@@ -179,40 +179,13 @@ fn run_dir(ctx: &InvokeCtx<'_>, cwd: &str) -> Option<std::path::PathBuf> {
     Some(root.join(ctx.backend.workdir(cwd).ok()?))
 }
 
-/// The path as this session spells it: relative to where it sits when the file is under it, which
-/// is the spelling the file ledger and the provenance sink are keyed on, else absolute.
-fn spelled(workspace: Option<&std::path::Path>, tree: &std::path::Path, path: &str) -> String {
-    let abs = tree.join(path);
-    workspace
-        .and_then(|w| abs.strip_prefix(w).ok())
-        .map(|rel| rel.to_string_lossy().into_owned())
-        .unwrap_or_else(|| abs.to_string_lossy().into_owned())
-}
+/// The sweep this tree gives, or `None` outside a work tree - which is what switches the whole thing
+/// off rather than guessing at mtimes.
+type Sweep = crate::detect::Sweep;
 
-/// The git tree a foreground command runs in, snapshotted before it starts and read after it ends.
-/// A struct because the three facts are only useful together, and because the attach below is the
-/// half a test can prove on a box where no process may be started.
-struct Sweep {
-    tree: std::path::PathBuf,
-    base: crate::detect::Before,
-    /// Where the session sits, for the spelling the ledger and the provenance sink are keyed on.
-    workspace: Option<std::path::PathBuf>,
-}
-
-impl Sweep {
-    fn before(tree: std::path::PathBuf, workspace: Option<std::path::PathBuf>) -> Sweep {
-        let base = crate::detect::before(&tree);
-        Sweep {
-            tree,
-            base,
-            workspace,
-        }
-    }
-}
-
-/// What the command changed, attached to its result: one file is the edit it is, several are named
-/// because one result carries one card. `wrote` is the runtime's provenance sink, so bytes this
-/// session's own command wrote do not read as a second writer's later.
+/// What the command changed, attached to its result as one excerpt per file (R161): up to
+/// [`MAX_DRAWN_DIFFS`] are drawn, the rest named with a count. `wrote` is the runtime's provenance
+/// sink, so bytes this session's own command wrote do not read as a second writer's later.
 fn attach_changes(
     inv: &mut Invocation,
     sweep: &Sweep,
@@ -221,60 +194,60 @@ fn attach_changes(
     wrote: &dyn Fn(&str, &[u8]),
 ) {
     // Names first, and only names: one `git status` and a read of the files whose old bytes were
-    // already held. The diff below is computed for the one file a card is drawn for.
-    let changed = crate::detect::changed_since(&sweep.tree, &sweep.base);
-    if changed.is_empty() {
+    // already held. The diffs below are computed for the files a card is actually drawn for.
+    let found = sweep.found();
+    if found.changed.is_empty() {
         return;
     }
-    let mut drawn = false;
-    if changed.len() == 1
-        && let Some(c) = crate::detect::diff_of(&sweep.tree, &sweep.base, &changed[0])
-    {
-        let was = c.before.clone().unwrap_or_default();
-        // An empty diff draws an empty card, which reads as a bug.
-        if was != c.after {
-            let spelling = spelled(sweep.workspace.as_deref(), &sweep.tree, &c.path);
-            files.mark_whole(&spelling, c.after.as_bytes());
-            wrote(&spelling, c.after.as_bytes());
-            inv.notes.push(format!(
-                "this command changed `{}` — the diff beside it was detected afterwards, \
-                 not made by `edit`",
-                c.path
-            ));
-            inv.edit = Some(crate::edit::FileEdit {
-                path: c.path.clone(),
-                before: was.clone(),
-                after: c.after.clone(),
-                created: c.created,
-                before_digest: crate::spill::content_hash(was.as_bytes()),
-                after_digest: crate::spill::content_hash(c.after.as_bytes()),
-                replacements: 1,
-                changed: crate::edit::changed_span(&was, &c.after),
-            });
-            drawn = true;
-        }
+    for (edit, spelling) in found.edits.iter().zip(&found.spelled) {
+        files.mark_whole(spelling, edit.after.as_bytes());
+        wrote(spelling, edit.after.as_bytes());
+        inv.edits.push(edit.clone());
     }
-    if !drawn {
-        let names: Vec<&str> = changed.iter().take(12).map(String::as_str).collect();
-        let more = changed.len().saturating_sub(names.len());
-        let listed = format!(
-            "{}{}",
-            names.join(", "),
-            match more {
-                0 => String::new(),
-                more => format!(", and {more} more files"),
-            }
-        );
-        inv.notes.push(match changed.len() {
-            1 => format!("this command changed `{listed}`, and no diff could be read back for it"),
-            n => format!(
-                "this command changed {n} file(s): {listed}. One result carries one diff, so none \
-                 is drawn for a change this wide; `git diff` is the one to read."
-            ),
-        });
-    }
+    inv.notes
+        .push(changed_note(&found.changed, inv.edits.len()));
     if let Some(note) = writes_with.after_a_command() {
         inv.notes.push(note.to_string());
+    }
+}
+
+/// How many changed files are drawn - the sweep's own cap, named here because the note below speaks of
+/// it.
+pub const MAX_DRAWN_DIFFS: usize = crate::detect::MAX_DRAWN_DIFFS;
+
+/// What the command changed, in the model's own reading: the files whose diff it is handed, and the
+/// ones it is not - with the denominator, because "and N more" with no total is a number nobody can
+/// act on. Provenance is said every time: a detected change was not adjudicated as an edit.
+fn changed_note(changed: &[String], drawn: usize) -> String {
+    let names: Vec<&str> = changed
+        .iter()
+        .take(MAX_DRAWN_DIFFS)
+        .map(String::as_str)
+        .collect();
+    let more = changed.len().saturating_sub(names.len());
+    let listed = match more {
+        0 => names.join(", "),
+        more => format!("{}, and {more} more files", names.join(", ")),
+    };
+    let n = changed.len();
+    match (drawn, n) {
+        (0, 1) => format!("this command changed `{listed}`, and no diff could be read back for it"),
+        (0, _) => format!(
+            "this command changed {n} files: {listed}. No diff could be read back for any of \
+             them; `git diff` is the one to read"
+        ),
+        (1, 1) => format!(
+            "this command changed `{listed}` — the diff beside it was detected afterwards, \
+             not made by `edit`"
+        ),
+        (d, n) if d == n => format!(
+            "this command changed {n} files: {listed} — a diff is drawn for each, and each one \
+             was detected afterwards, not made by `edit`"
+        ),
+        (d, n) => format!(
+            "this command changed {n} files: {listed}. A diff is drawn for the first {d}; \
+             `git diff` is the one to read for the rest. None of them was made by `edit`"
+        ),
     }
 }
 
@@ -690,10 +663,9 @@ impl Tool for Bash {
             .unwrap_or(false);
         // The tree the shell will write into, before anything starts: not simply the workspace, since
         // a `cd <other-checkout>` writes a repository the workspace may only contain. A background
-        // job is not swept here; its writes are read with the completion that ends it.
-        let sweep = if background {
-            None
-        } else {
+        // job is swept from the same snapshot, but read at the settlement instead of here - only the
+        // daemon's watcher sees both ends of it (R161).
+        let sweep = {
             let asked_cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
             run_dir(ctx, asked_cwd)
                 .and_then(|dir| {
@@ -894,6 +866,9 @@ impl Tool for Bash {
             if let Some(w) = wake {
                 ctx.want_completion(&id.0, w);
             }
+            // And the snapshot goes with the handle: the job's completion is where its writes can be
+            // read, because this call returns before the command has written anything (R161).
+            ctx.watch_changes(&id.0, sweep);
             // One delivery sentence, the handle, and the way to read it ([`super::DELIVERED`]);
             // the envelope adds "STILL RUNNING".
             let mut inv = Invocation::backgrounded(
@@ -1036,6 +1011,9 @@ impl Tool for Bash {
             for n in notes {
                 inv = inv.with_note(n);
             }
+            // The run is still going, so its writes are the completion's to read: the snapshot taken
+            // before the spawn is what the settlement reads (R161).
+            ctx.watch_changes(&id.0, sweep);
             return inv;
         }
 
@@ -1518,7 +1496,7 @@ mod tests {
 
         let files = crate::files::FileLedger::new();
         let (inv, wrote) = attached(&sweep, &files);
-        let edit = inv.edit.as_ref().expect("a diff");
+        let edit = inv.edits.first().expect("a diff");
         assert_eq!(edit.path, "fuzz/list.inc");
         assert_eq!(edit.before, "alpha\nbeta\n");
         assert_eq!(edit.after, "alpha\nbeta\ngamma\n");
@@ -1541,6 +1519,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The operator's arango shape, with the count it really had: one `python3 -c` that rewrites two
+    /// tracked files is two diffs on one row, not a name and an apology (R161).
+    #[test]
+    fn a_python_inline_program_that_rewrites_two_files_draws_both_diffs() {
+        let root = repo("python-two");
+        let sweep = sweep_of(&root);
+        let out = std::process::Command::new("python3")
+            .current_dir(&root)
+            .args([
+                "-c",
+                "for p in ('a.txt', 'fuzz/list.inc'):\n    s = open(p).read()\n    \
+                 open(p, 'w').write(s + 'gamma' + chr(10))",
+            ])
+            .output()
+            .expect("python3");
+        assert!(out.status.success(), "{out:?}");
+
+        let (inv, wrote) = attached(&sweep, &crate::files::FileLedger::new());
+        let paths: Vec<&str> = inv.edits.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec!["a.txt", "fuzz/list.inc"],
+            "one excerpt per file"
+        );
+        assert_eq!(inv.edits[0].before, "one\ntwo\n");
+        assert_eq!(inv.edits[0].after, "one\ntwo\ngamma\n");
+        assert_eq!(inv.edits[1].after, "alpha\nbeta\ngamma\n");
+        // The ledger and the provenance sink learn both files, not only the one a card names.
+        assert_eq!(wrote.len(), 2, "{wrote:?}");
+        let note = inv.notes.join("\n");
+        assert!(note.contains("changed 2 files"), "{note}");
+        assert!(note.contains("detected afterwards"), "{note}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// `sed -i` is the other shape a model reaches for.
     #[test]
     fn a_sed_in_place_rewrite_draws_its_diff() {
@@ -1559,7 +1572,7 @@ mod tests {
         assert!(out.status.success(), "{out:?}");
 
         let (inv, _wrote) = attached(&sweep, &crate::files::FileLedger::new());
-        let edit = inv.edit.as_ref().expect("a diff");
+        let edit = inv.edits.first().expect("a diff");
         assert_eq!(edit.path, "a.txt");
         assert_eq!(edit.before, "one\ntwo\n");
         assert_eq!(edit.after, "one\nTWO\n");
@@ -1573,7 +1586,7 @@ mod tests {
         let sweep = sweep_of(&root);
         std::fs::write(root.join("b.txt"), "new\n").expect("write");
         let (inv, _wrote) = attached(&sweep, &crate::files::FileLedger::new());
-        let edit = inv.edit.as_ref().expect("a diff");
+        let edit = inv.edits.first().expect("a diff");
         assert_eq!(edit.path, "b.txt");
         assert!(edit.created, "a file git never had was called a rewrite");
         assert_eq!(edit.before, "");
@@ -1591,7 +1604,7 @@ mod tests {
         std::fs::write(root.join("a.txt"), "one\nthree edited by hand\n").expect("write");
 
         let (inv, _wrote) = attached(&sweep, &crate::files::FileLedger::new());
-        let edit = inv.edit.as_ref().expect("a diff");
+        let edit = inv.edits.first().expect("a diff");
         assert_eq!(edit.before, "one\ntwo edited by hand\n");
         assert_eq!(edit.after, "one\nthree edited by hand\n");
         let _ = std::fs::remove_dir_all(&root);
@@ -1605,26 +1618,31 @@ mod tests {
         let sweep = sweep_of(&root);
 
         let (inv, wrote) = attached(&sweep, &crate::files::FileLedger::new());
-        assert!(inv.edit.is_none(), "{:?}", inv.notes);
+        assert!(inv.edits.is_empty(), "{:?}", inv.notes);
         assert!(inv.notes.is_empty(), "{:?}", inv.notes);
         assert!(wrote.is_empty(), "{wrote:?}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Several files are named and none is drawn, because one result carries one card; past twelve
-    /// the rest are counted rather than dropped without a denominator.
+    /// Fifteen files: the first twelve are drawn, and the three left over are named with the count -
+    /// a wide sweep draws diffs now, but never an unbounded pile of them.
     #[test]
-    fn several_changed_files_are_named_and_counted() {
+    fn several_changed_files_are_each_drawn_up_to_the_cap_and_counted_past_it() {
         let root = repo("several");
         let sweep = sweep_of(&root);
         for i in 0..15 {
             std::fs::write(root.join(format!("f{i}.txt")), "new\n").expect("write");
         }
 
-        let (inv, _wrote) = attached(&sweep, &crate::files::FileLedger::new());
-        assert!(inv.edit.is_none(), "one card, and this is not one file");
+        let (inv, wrote) = attached(&sweep, &crate::files::FileLedger::new());
+        assert_eq!(inv.edits.len(), MAX_DRAWN_DIFFS, "the cap holds");
+        assert_eq!(
+            wrote.len(),
+            MAX_DRAWN_DIFFS,
+            "only what is drawn is recorded"
+        );
         let note = inv.notes.join("\n");
-        assert!(note.contains("changed 15 file(s)"), "{note}");
+        assert!(note.contains("changed 15 files"), "{note}");
         assert!(note.contains("and 3 more files"), "{note}");
         assert!(note.contains("`git diff` is the one to read"), "{note}");
         let _ = std::fs::remove_dir_all(&root);
@@ -1638,7 +1656,7 @@ mod tests {
         std::fs::write(root.join("a.txt"), "one\ntwo\n").expect("write");
 
         let (inv, _wrote) = attached(&sweep, &crate::files::FileLedger::new());
-        assert!(inv.edit.is_none(), "{:?}", inv.notes);
+        assert!(inv.edits.is_empty(), "{:?}", inv.notes);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1654,7 +1672,7 @@ mod tests {
         std::fs::write(root.join("a.txt"), "two\n").expect("write");
 
         let (inv, wrote) = attached(&sweep, &crate::files::FileLedger::new());
-        assert!(inv.edit.is_none());
+        assert!(inv.edits.is_empty());
         assert!(inv.notes.is_empty(), "{:?}", inv.notes);
         assert!(wrote.is_empty());
         let _ = std::fs::remove_dir_all(&root);
@@ -1670,7 +1688,7 @@ mod tests {
         let files = crate::files::FileLedger::new();
         let (inv, wrote) = attached(&sweep, &files);
         assert_eq!(
-            inv.edit.as_ref().map(|e| e.path.as_str()),
+            inv.edits.first().map(|e| e.path.as_str()),
             Some("fuzz/list.inc")
         );
         assert_eq!(wrote[0].0, "fuzz/list.inc");
@@ -1681,7 +1699,7 @@ mod tests {
         std::fs::write(root.join("fuzz/list.inc"), "changed again\n").expect("write");
         let (inv, wrote) = attached(&elsewhere, &crate::files::FileLedger::new());
         assert_eq!(
-            inv.edit.as_ref().map(|e| e.path.as_str()),
+            inv.edits.first().map(|e| e.path.as_str()),
             Some("fuzz/list.inc")
         );
         assert_eq!(

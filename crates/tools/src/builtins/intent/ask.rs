@@ -415,7 +415,7 @@ impl Tool for AskUserQuestion {
                     outcome: e.outcome(),
                     payload: body,
                     notes: vec![],
-                    edit: None,
+                    edits: Vec::new(),
                     needs_in_view: Vec::new(),
                     media: None,
                 }
@@ -485,7 +485,7 @@ fn accept(q: &Question, a: QuestionAnswer, by: String) -> Invocation {
         outcome: e.outcome(),
         payload: format!("question: {}\n{e}", q.text),
         notes: vec![],
-        edit: None,
+        edits: Vec::new(),
         needs_in_view: Vec::new(),
         media: None,
     };
@@ -512,7 +512,7 @@ fn accept(q: &Question, a: QuestionAnswer, by: String) -> Invocation {
             },
             payload: body,
             notes: vec![],
-            edit: None,
+            edits: Vec::new(),
             needs_in_view: Vec::new(),
             media: None,
         }

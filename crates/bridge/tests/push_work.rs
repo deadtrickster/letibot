@@ -56,7 +56,7 @@ fn turn_with_a_job(hub: &Hub, id: &str, text: &str, job: &str) {
         full_bytes: 0,
         spill: None,
         repairs: 0,
-        edit: None,
+        edits: Vec::new(),
     });
     hub.publish(SessionEvent::TranscriptAppended {
         item_id: format!("i-{id}"),
@@ -178,6 +178,7 @@ fn an_idle_session_with_an_open_job_is_one_event_and_the_jobs_exit_is_another() 
         state: "exited 0".into(),
         produced: 4096,
         elapsed_ms: 41_000,
+        edits: Vec::new(),
     });
     let notes = events(&rx, 1);
     let ended = &notes[0];

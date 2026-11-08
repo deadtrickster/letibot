@@ -79,7 +79,7 @@ fn a_run_of_tool_results_read_from_a_foreign_conversation_is_one_user_turn() {
                 name: "read".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: payload.into(),
-                edit: None,
+                edits: Vec::new(),
                 origin: None,
                 media: None,
             },

@@ -1166,10 +1166,15 @@ pub enum SessionEvent {
         /// How many repairs the call needed. A head that cannot see this cannot see a model steadily
         /// emitting malformed calls.
         repairs: u32,
-        /// Both sides of the file a file-editing call changed, bounded to the region that differs:
-        /// the one payload an event can carry a diff in.
-        #[serde(default)]
-        edit: Option<ToolEdit>,
+        /// Both sides of every file a file-editing call changed, bounded to the region that
+        /// differs: the one payload an event can carry a diff in. A list because one `bash` call
+        /// can change several files, and each is drawn (R161).
+        #[serde(
+            default,
+            alias = "edit",
+            deserialize_with = "letibot_transcript::one_or_many_edits"
+        )]
+        edits: Vec<ToolEdit>,
     },
     /// One ROUND's ending: the generation stopped, and the calls it proposed are the caller's to
     /// run. Whether the prompt is over is [`SessionEvent::TurnFinished`]'s `ends_turn`, because only
@@ -1453,6 +1458,11 @@ pub enum SessionEvent {
         produced: u64,
         /// Wall time from spawn to settlement.
         elapsed_ms: u64,
+        /// Both sides of every file that changed in the job's tree while it ran, bounded to what
+        /// differs - the snapshot is taken at the spawn and read here, so a job's writes are drawn
+        /// on its card (R161). Empty for a job outside a git tree, and for a daemon older than this.
+        #[serde(default)]
+        edits: Vec<ToolEdit>,
     },
     /// A row of the review queue or the merge queue moved: the queue, the row, the state it moved to
     /// and why. The pane re-reads the snapshot on it; the log keeps the sentence. Broadcast to every
@@ -1900,7 +1910,7 @@ mod tests {
             full_bytes: 12,
             spill: None,
             repairs: 0,
-            edit: Some(ToolEdit {
+            edits: vec![ToolEdit {
                 path: "crates/ui/src/diff.rs".into(),
                 created: false,
                 before_start: 22,
@@ -1910,23 +1920,44 @@ mod tests {
                 truncated: false,
                 before: "pub fn render(old: &[&str]) -> Vec<String> {\n".into(),
                 after: "pub fn render(old: &[&str]) -> Vec<String> {\n    let d = diff_lines(old, new);\n".into(),
-            }),
+            }],
         };
         let s = serde_json::to_string(&e).unwrap();
         assert!(s.contains("\"before_start\":22"), "{s}");
+        assert!(s.contains("\"edits\":["), "{s}");
         let back: SessionEvent = serde_json::from_str(&s).unwrap();
         assert_eq!(e, back);
 
         // A log recorded before the field existed has no `edit` key. It must parse, and read as
-        // None - the head then renders exactly what it always rendered.
+        // none - the head then renders exactly what it always rendered.
         let old = r#"{"event":"tool_finished","turn_id":"t1","call_id":"c1",
             "outcome":{"outcome":"ok"},"payload_digest":"fnv1a:1",
             "inline_bytes":12,"full_bytes":12,"repairs":0}"#;
         let back: SessionEvent = serde_json::from_str(old).unwrap();
         assert!(matches!(
             back,
-            SessionEvent::ToolFinished { edit: None, .. }
+            SessionEvent::ToolFinished { ref edits, .. } if edits.is_empty()
         ));
+    }
+
+    /// A log recorded while an event could carry ONE excerpt: the object must read back as a
+    /// one-item list, because a log is not rewritten and a head must draw what it drew before.
+    #[test]
+    fn a_log_with_one_stored_excerpt_reads_as_a_one_item_list() {
+        let old = r#"{"event":"tool_finished","turn_id":"t1","call_id":"c1",
+            "outcome":{"outcome":"ok"},"payload_digest":"fnv1a:1",
+            "inline_bytes":12,"full_bytes":12,"repairs":0,
+            "edit":{"path":"a.txt","created":false,"before_start":1,"after_start":1,
+             "before_lines":2,"after_lines":2,"truncated":false,
+             "before":"one","after":"two"}}"#;
+        let back: SessionEvent = serde_json::from_str(old).unwrap();
+        match back {
+            SessionEvent::ToolFinished { edits, .. } => {
+                assert_eq!(edits.len(), 1, "one object, one item");
+                assert_eq!(edits[0].path, "a.txt");
+            }
+            other => panic!("not a tool finish: {other:?}"),
+        }
     }
 
     /// The flatten that puts an event inside an [`Envelope`] is where a field-name collision shows

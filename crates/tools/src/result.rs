@@ -24,9 +24,10 @@ pub struct ToolResult {
     pub notes: Vec<String>,
     /// Set when the full output went to the spill store.
     pub spill: Option<SpillRef>,
-    /// Both sides of a file this call changed, for a head to draw a diff from. Never prompt bytes, and
-    /// that is the point: the model gets the confirmation in `payload` and the head gets the file.
-    pub edit: Option<crate::edit::FileEdit>,
+    /// Both sides of every file this call changed, for a head to draw a diff from. Never prompt bytes,
+    /// and that is the point: the model gets the confirmation in `payload` and the head gets the
+    /// file. A list because a `bash` call can change several (R161); `edit`/`write` push one.
+    pub edits: Vec<crate::edit::FileEdit>,
     /// Bytes this call read that are not text. Unlike `edit`, this one does become prompt bytes, since
     /// an image is for the model to look at; the payload carries the sentence a text-only reader gets.
     pub media: Option<crate::media::Media>,
@@ -45,7 +46,7 @@ impl ToolResult {
             repairs: Vec::new(),
             notes: Vec::new(),
             spill: None,
-            edit: None,
+            edits: Vec::new(),
             media: None,
             repairs_told: Vec::new(),
         }

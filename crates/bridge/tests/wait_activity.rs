@@ -92,7 +92,7 @@ fn started_a_job(hub: &Hub, handle: &str) {
         full_bytes: 0,
         spill: None,
         repairs: 0,
-        edit: None,
+        edits: Vec::new(),
     });
 }
 

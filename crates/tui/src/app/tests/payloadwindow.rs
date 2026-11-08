@@ -20,7 +20,7 @@ fn result(a: &mut App, seq: u64, id: &str, call: &str, lines: usize) {
             name: "bash".into(),
             outcome: letibot_transcript::ToolOutcome::Ok,
             payload: payload(lines),
-            edit: None,
+            edits: Vec::new(),
             origin: None,
             media: None,
         },

@@ -125,7 +125,7 @@ impl Tool for Read {
                     m.summary()
                 ),
                 notes: Vec::new(),
-                edit: None,
+                edits: Vec::new(),
                 needs_in_view: Vec::new(),
                 media: Some(m),
             };

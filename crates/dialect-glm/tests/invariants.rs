@@ -64,7 +64,7 @@ fn result(id: &str) -> TranscriptItem {
         name: "read".into(),
         outcome: ToolOutcome::Ok,
         payload: format!("contents of {id}"),
-        edit: None,
+        edits: Vec::new(),
         origin: None,
         media: None,
     }

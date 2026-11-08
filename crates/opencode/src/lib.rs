@@ -634,7 +634,7 @@ fn interpret(
                     name,
                     outcome,
                     payload,
-                    edit: None,
+                    edits: Vec::new(),
                     origin: None,
                     // An imported row carries no media: opencode stores an attachment as a
                     // file part whose content is on disk, and this importer reads the message

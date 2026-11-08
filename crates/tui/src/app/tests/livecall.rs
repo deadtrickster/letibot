@@ -102,7 +102,7 @@ fn a_finished_change() -> App {
             full_bytes: 25,
             spill: None,
             repairs: 0,
-            edit: Some(a_change()),
+            edits: vec![a_change()],
         },
     )));
     a.invalidate_history();
@@ -287,7 +287,7 @@ fn a_cards_change_opens_the_popup_its_landed_row_opens() {
                 name: "edit".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: String::new(),
-                edit: Some(a_change()),
+                edits: vec![a_change()],
                 origin: None,
                 media: None,
             }),
@@ -339,7 +339,7 @@ fn the_target_follows_the_call_and_not_its_words() {
             full_bytes: 25,
             spill: None,
             repairs: 0,
-            edit: None,
+            edits: Vec::new(),
         },
     )));
     a.invalidate_history();

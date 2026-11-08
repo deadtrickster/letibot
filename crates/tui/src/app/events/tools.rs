@@ -101,7 +101,7 @@ impl App {
                 inline_bytes,
                 full_bytes,
                 spill,
-                edit,
+                edits,
                 ..
             } => {
                 // A backgrounded call is the job STARTING and the only event that says so - there is
@@ -124,7 +124,7 @@ impl App {
                         inline_bytes,
                         full_bytes,
                         spill,
-                        edit,
+                        edits,
                     };
                 }
                 Disposition::Rendered

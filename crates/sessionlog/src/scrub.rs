@@ -331,6 +331,7 @@ mod tests {
             state: "exited 0".into(),
             produced: 512,
             elapsed_ms: 1_400,
+            edits: Vec::new(),
         });
         let window: Vec<_> = log.retained().cloned().collect();
         let (kept, report) = scrub_replay(log.retained(), &window);

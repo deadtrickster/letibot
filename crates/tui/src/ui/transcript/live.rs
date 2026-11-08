@@ -102,7 +102,9 @@ pub(crate) fn push_turn_pane<'a>(
         let live_calls: Vec<_> = live_calls
             .iter()
             .filter(|c| match &c.state {
-                CallState::Finished { edit: Some(_), .. } => vis.shows(Show::Edits) || show_calls,
+                CallState::Finished { edits, .. } if !edits.is_empty() => {
+                    vis.shows(Show::Edits) || show_calls
+                }
                 _ => !vis.hides_the_working() || show_calls,
             })
             .collect();

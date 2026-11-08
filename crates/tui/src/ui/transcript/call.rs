@@ -136,46 +136,116 @@ pub(crate) fn drawn_as<'a>(
     }
 }
 
+/// What drawing a set of excerpts needs. A struct because the rules are seven facts and a signature
+/// nobody can read, and because the provenance differs between the two callers: a command's sweep and
+/// a job's.
+pub(crate) struct DiffRows<'a> {
+    /// The display target the row's header names, so the first file's own name line is dropped when
+    /// the header already says it.
+    pub(crate) target: &'a str,
+    pub(crate) width: usize,
+    pub(crate) cfg: &'a RenderConfig,
+    pub(crate) diff_split: bool,
+    pub(crate) fold: Fold,
+    /// The edit verb already drew the first file (see the function's note).
+    pub(crate) under_a_panel: bool,
+    /// The sentence under a folded diff: how the change was obtained, in one clause.
+    pub(crate) provenance: &'a str,
+}
+
+/// The sentence under a change a command changed, where it is folded.
+pub(crate) const DETECTED_PROVENANCE: &str =
+    "  detected afterwards — the command changed {these}; not made by `edit`";
+
 /// The rows a change DETECTED after a command draws: rano draws an [`EditDiff`] only for an
 /// edit verb, which is right for the header and wrong for the body. Drawn even while folded,
 /// because a diff behind a fold the reader did not know about is no diff.
+///
+/// A call can change several files (R161), so the first is drawn in full - eight rows folded, all
+/// of them open - and the rest are one line each while folded: a sweep that rewrote twenty files
+/// must not bury the command it belongs to. `under_a_panel` is the edit verb's case, where rano
+/// already drew the first file and every excerpt here is an extra.
 pub(crate) fn detected_diff_rows(
-    e: &letibot_transcript::ToolEditExcerpt,
-    target: &str,
-    width: usize,
-    cfg: &RenderConfig,
-    diff_split: bool,
-    fold: Fold,
+    edits: &[letibot_transcript::ToolEditExcerpt],
+    d: DiffRows<'_>,
 ) -> Vec<String> {
-    let d = edit_diff(e, width, cfg, diff_split);
-    let rows = d.rows_under(target);
-    let keep = if fold.is_open() {
-        rows.len()
-    } else {
-        8.min(rows.len())
-    };
-    let hidden = rows.len() - keep;
-    let mut out: Vec<String> = row_strings(&rows[..keep], cfg.palette())
-        .into_iter()
-        // The two columns rano's own `indent(l, 2)` puts in front of a real edit's rows.
-        .map(|l| format!("  {l}"))
-        .collect();
-    if hidden > 0 {
+    let DiffRows {
+        target,
+        width,
+        cfg,
+        diff_split,
+        fold,
+        under_a_panel,
+        provenance,
+    } = d;
+    let mut out: Vec<String> = Vec::new();
+    if edits.is_empty() {
+        return out;
+    }
+    if edits.len() > 1 {
         out.extend(row_strings(
             &[rano::agent::text::one(
-                format!("  … +{hidden} diff rows · /t unfolds it"),
+                format!("  {} files changed", edits.len()),
                 rano::style::Role::Faint,
             )],
             cfg.palette(),
         ));
     }
+    for (i, e) in edits.iter().enumerate() {
+        // The panel already carries the first file when an edit verb drew it.
+        if under_a_panel && i == 0 {
+            continue;
+        }
+        let d = edit_diff(e, width, cfg, diff_split);
+        let rows = d.rows_under(if i == 0 { target } else { "" });
+        // The first file under a detected verb, and every file with the fold open.
+        if !fold.is_open() && (under_a_panel || i > 0) {
+            out.extend(row_strings(
+                &[rano::agent::text::one(
+                    format!("  {} · +{} diff rows · /t unfolds it", d.path, rows.len()),
+                    rano::style::Role::Faint,
+                )],
+                cfg.palette(),
+            ));
+            continue;
+        }
+        // Every file but the first is all-or-nothing: a line folded, every row open.
+        let keep = if fold.is_open() || i > 0 {
+            rows.len()
+        } else {
+            8.min(rows.len())
+        };
+        let hidden = rows.len() - keep;
+        out.extend(
+            row_strings(&rows[..keep], cfg.palette())
+                .into_iter()
+                // The two columns rano's own `indent(l, 2)` puts in front of a real edit's rows.
+                .map(|l| format!("  {l}")),
+        );
+        if hidden > 0 {
+            out.extend(row_strings(
+                &[rano::agent::text::one(
+                    format!("  … +{hidden} diff rows · /t unfolds it"),
+                    rano::style::Role::Faint,
+                )],
+                cfg.palette(),
+            ));
+        }
+    }
     // Folded, the row says how the diff was obtained itself: the tool's sentence is a `[note]`
     // in the payload, a folded row shows the payload's FIRST line only, and any note ahead of
-    // it hides the provenance.
-    if !fold.is_open() {
+    // it hides the provenance. Nothing is said when nothing was drawn - an edit verb's single file
+    // is the panel rano drew, so a line about how it was obtained would describe a diff this did not
+    // draw.
+    if !fold.is_open() && (!under_a_panel || edits.len() > 1) {
+        let these = if edits.len() > 1 {
+            "these files"
+        } else {
+            "this file"
+        };
         out.extend(row_strings(
             &[rano::agent::text::one(
-                "  detected afterwards — the command changed this file; not made by `edit`",
+                provenance.replace("{these}", these),
                 rano::style::Role::Faint,
             )],
             cfg.palette(),
@@ -227,7 +297,7 @@ pub(crate) fn call_card(
     fold: Fold,
     diff_split: bool,
 ) -> Vec<String> {
-    let mut edit = None;
+    let mut edits: &[letibot_transcript::ToolEditExcerpt] = &[];
     let state = match &c.state {
         CallState::Proposed => Live::Proposed {
             note: c.note.clone(),
@@ -256,10 +326,10 @@ pub(crate) fn call_card(
             inline_bytes,
             full_bytes,
             spill,
-            edit: e,
+            edits: e,
             ..
         } => {
-            edit = e.as_ref();
+            edits = e;
             Live::Finished {
                 outcome: display_outcome(outcome),
                 // A snapshot has no timestamps, and `0.0s` is a measurement that was never
@@ -275,13 +345,13 @@ pub(crate) fn call_card(
     // `ToolCallProposed` carries a bounded display target beside the digest - the
     // path, the pattern, the command line - so a call that is still running says `Running
     // "cargo test --workspace"` rather than `Running bash`. Empty is rendered as nothing.
-    let name = drawn_as(&c.name, edit);
+    let name = drawn_as(&c.name, edits.first());
     let verb = rano::agent::card::Verb::of(name);
     let call = ToolCall {
         name: name.to_string(),
         call_id: c.call_id.clone(),
         // An edit card names its file, and a note's target is its stem and its text.
-        target: match edit {
+        target: match edits.first() {
             Some(e) if name != c.name => e.path.clone(),
             _ => c.target.clone(),
         },
@@ -289,7 +359,8 @@ pub(crate) fn call_card(
         // The before/after view, only for the verbs that draw one: the card indents its
         // body by two and the turn block steps the card in by the activity indent after
         // it has rendered, so the panels are built for the width the row will have.
-        diff: edit
+        diff: edits
+            .first()
             .filter(|_| verb.is_an_edit())
             .map(|e| edit_diff(e, ToolCall::diff_width(cfg.width), cfg, diff_split)),
         decision: c.decision.as_ref().map(settled_decision),
@@ -298,14 +369,18 @@ pub(crate) fn call_card(
     let mut out = row_strings(&call.lines(cfg.width), cfg.palette());
     // The same panel the settled row draws, for the same reason: a diff that appeared only
     // when the card settled would flicker one frame with the change and one without.
-    if let Some(e) = edit.filter(|_| !verb.is_an_edit()) {
+    if !edits.is_empty() {
         out.extend(detected_diff_rows(
-            e,
-            &c.target,
-            ToolCall::diff_width(cfg.width),
-            cfg,
-            diff_split,
-            fold,
+            edits,
+            DiffRows {
+                target: &c.target,
+                width: ToolCall::diff_width(cfg.width),
+                cfg,
+                diff_split,
+                fold,
+                under_a_panel: verb.is_an_edit(),
+                provenance: DETECTED_PROVENANCE,
+            },
         ));
     }
     out
