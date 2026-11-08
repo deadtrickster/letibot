@@ -3058,6 +3058,14 @@ enum Found {
 /// A name under `here` first, as `--session` always meant. Only when nothing there matches, the
 /// operator's own top-level sessions in every folder: queue, package and subagent rows never
 /// match, so a name cannot open work the operator did not start.
+/// A session is "here" when its folder is this one, or one of this folder's own worktrees. Not any
+/// folder below it: from `~` that would be every session there is, and nothing would ever move.
+fn same_folder(ws: &std::path::Path, here: &std::path::Path) -> bool {
+    ws == here
+        || ws.starts_with(here.join("worktrees"))
+        || ws.starts_with(here.join(".claude/worktrees"))
+}
+
 fn find_session(
     all: &[letibot_tokencore::store::StoredSession],
     name: &str,
@@ -3065,7 +3073,7 @@ fn find_session(
 ) -> Result<Found, String> {
     let local: Vec<_> = all
         .iter()
-        .filter(|s| std::path::Path::new(&s.workspace_root).starts_with(here))
+        .filter(|s| same_folder(std::path::Path::new(&s.workspace_root), here))
         .cloned()
         .collect();
     let local_named: Vec<_> = local
@@ -3478,6 +3486,24 @@ mod tests {
             f => panic!("{f:?}"),
         }
         assert!(find_session(&all, "nope", here).is_err());
+    }
+
+    #[test]
+    fn a_folder_below_this_one_is_elsewhere_so_home_moves() {
+        let all = spread(&[
+            ("s-1", "home", "/u", None, None),
+            ("s-2", "stroppy.io", "/u/Projects/stroppy-io", None, None),
+            ("s-3", "wt", "/u/worktrees/x", None, None),
+        ]);
+        let home = std::path::Path::new("/u");
+        match find_session(&all, "stroppy.io", home).unwrap() {
+            Found::Elsewhere(r) => assert_eq!(r[0].id, "s-2"),
+            f => panic!("a session in a subfolder of ~ is not here: {f:?}"),
+        }
+        match find_session(&all, "wt", home).unwrap() {
+            Found::Here(id) => assert_eq!(id, "s-3"),
+            f => panic!("this folder's own worktree is here: {f:?}"),
+        }
     }
 
     #[test]
