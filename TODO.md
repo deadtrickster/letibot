@@ -69,6 +69,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | the next stop's line from `~/.local/state/letibot/scroll-stalls.log`, which the head now writes at each stop |
 | R137 | Todo graphs that span projects | Code work | the build of `docs/cross-project-todo.md` (P1-P6) and its four open questions |
 | R138 | Stable session identities across hosts, through migrations | Code work | the build of `docs/cross-host-identity.md` (Q1-Q7) and its five open questions; until then asks are same-host only |
+| R170 | A session drives a Chrome tab the operator allows, through the extension | Code work | all of it |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
 | R153 | Placing a session on a busy host times out at 20 s | Needs the operator | the live proof on a loaded lab2x1: a placement there while the host is building, and a session's `job_wait` against it; the minute-long arranging budget, the one connection per host and the round a timed-out status query is not are landed |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
@@ -184,6 +185,16 @@ Echoes: research rec. 4, 9 and failure modes 4-6 (sycophancy, hallucinated autho
 `say` runs a cheap check, no model: short acks ("noted", "thanks", "+1", "got it", "will do" without a ref) and near-duplicates of the last N messages of that room or thread are refused, naming the reason and the message duplicated; the operator is exempt; the etiquette says a refusal is the etiquette, not an error. A post over about 3 lines / 400 characters is stored as a record (row or blob) and the room gets its first line plus a link. A host-room `say` needs a mention or `kind: announce` and is one line; a project-room post without a ref is counted (leaks from other conversations).
 Echoes: research rec. 1, 5, 6 (Anthropic "pass references, not content", MetaGPT documents over dialogue, AgentLeak); oracle "removing prompt bias beats adding prompt rules" and "prompts are soft limits, hooks are hard stops".
 **Done when**: acks and echoes are refused at post time, long posts become records, host-room traffic is announcements and mentions; measured with R164 (ack rate, duplicate-content rate, false refusals, whether overflowed records get opened).
+
+---
+
+## R170 - A session drives a Chrome tab the operator allows, through the extension
+
+**Status:** not started. left: all of it.
+
+The extension only asks: a right-click goes to a session and the reply streams into the card. Nothing goes back from the session to the page. Operator, 2026-11-08: an agent should be able to drive the tab once allowed.
+
+Wanted: the operator allows one tab from the popup, and the extension attaches `chrome.debugger` (CDP) to it. The session gets a browser tool through `letibot browser` that clicks, types, navigates, reads the DOM and screenshots that tab only. Chrome's "is debugging this browser" bar stays up while allowed, so the grant is visible. Detaching the bar, closing the tab or a popup toggle revokes it. Every action is logged in the session's transcript. No other tab and no cookie or storage read beyond the page itself.
 
 ---
 
