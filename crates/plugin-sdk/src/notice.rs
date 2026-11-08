@@ -2,7 +2,7 @@
 //! Every injected sentence is offered to this hook before it becomes a row. It changes wording, never a decision.
 //! The name after `notice_` is the kind. [`MUST_SEE`] hooks may reword but not delete.
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 /// The name a notice hook is exported under: `notice_<kind>`.
 pub const PREFIX: &str = "notice_";
@@ -33,6 +33,29 @@ pub const SALVAGE: &str = "salvage";
 /// on, and the questions a raised item puts to the arbiter. Its own kind because it is news about
 /// other sessions on this box, and a layer that rewords one is rewording a disclosure about them.
 pub const ROOM: &str = "room";
+/// The idle plan-check: the turn the harness opens to ask a session with an unfinished plan to go
+/// on. Its own kind because K3 gives a layer the decision behind it (`nag_`), and a layer that
+/// answers this one is answering that sentence.
+pub const NAG: &str = "nag";
+/// The merge queue's census: how many of a project's rows have been stuck longer than the clock
+/// allows. A TURN of its own, so it reaches a session nobody is typing to.
+pub const CENSUS: &str = "census";
+/// A daemon restart: what was restored, what could not be, and the turn that says so.
+pub const RESTART: &str = "restart";
+/// The turn opened when a provider refused and the session moved to another model.
+pub const FALLBACK: &str = "fallback";
+/// Another session's message - a parent's correction, or a peer's.
+pub const PARENT: &str = "parent";
+/// The harness's own correction at a turn's ending: a promise the turn did not keep, or a
+/// deliverable it did not hand over.
+pub const STEER: &str = "steer";
+/// The stall steer, one round before the bound: what the progress detector sees, said so a turn
+/// that was working can say so and carry on.
+pub const STALL: &str = "stall";
+/// A claim about the context that the daemon's own measurement contradicts.
+pub const CONTEXT_CLAIM: &str = "context_claim";
+/// The operator's answer to a row's question, as the model reads it.
+pub const ANSWER: &str = "answer";
 
 /// Every kind the host composes. A hook name outside this list is one nothing ever asks for, and
 /// `plugin_hooks` says so rather than leaving a layer that answers silence.
@@ -48,10 +71,20 @@ pub const KINDS: &[&str] = &[
     GATE,
     SALVAGE,
     ROOM,
+    NAG,
+    CENSUS,
+    RESTART,
+    FALLBACK,
+    PARENT,
+    STEER,
+    STALL,
+    CONTEXT_CLAIM,
+    ANSWER,
 ];
 
 /// The kinds whose notice may not be dropped, only reworded - the host's set, not the
-/// plugin's.
+/// plugin's. A census and an ask are the plan's own two examples: a session never told its rows are
+/// stuck, or that the operator answered, has been lied to by silence.
 pub const MUST_SEE: &[&str] = &[
     JOB,
     TODO,
@@ -62,6 +95,11 @@ pub const MUST_SEE: &[&str] = &[
     GATE,
     SALVAGE,
     ROOM,
+    CENSUS,
+    RESTART,
+    FALLBACK,
+    PARENT,
+    ANSWER,
 ];
 
 /// The export name for one notice kind.
@@ -78,6 +116,185 @@ pub fn known(kind: &str) -> bool {
 /// must-see, because an unknown name cannot be the one a model is owed.
 pub fn droppable(kind: &str) -> bool {
     known(kind) && !MUST_SEE.contains(&kind)
+}
+
+/// One monitor's news in one notice, folded the way the sentence is folded.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Firing {
+    /// The monitor's name, as the model declared it.
+    pub name: String,
+    /// What it watches, when the record still has it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<String>,
+    /// How the ending happened - a fire, an expiry, a retire - when this line is an ending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<String>,
+    /// The sentence this firing itself said.
+    pub said: String,
+    /// Firings this row stands for BESIDES the one it carries.
+    #[serde(default)]
+    pub folded: usize,
+    /// Whether the line is the watch's ENDING rather than something it saw.
+    #[serde(default)]
+    pub ending: bool,
+}
+
+/// One stuck state, and how many of the project's rows are in it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Stuck {
+    /// The state's own word - `failed`, `conflict`, `blocked`.
+    pub state: String,
+    /// How many rows of the project are in it.
+    pub rows: usize,
+}
+
+/// What a notice was composed from, typed per kind so a reader of the facts does not have to parse
+/// the sentence - and so a field added here moves the `plugin_hooks` page rather than drifting from
+/// it. One variant per [`KINDS`] entry; a kind whose site has nothing to hand carries no fields,
+/// which is a fact about the site and not a hole in the contract.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Facts {
+    /// A monitor firing, or an ending: one row per monitor, folded as the sentence is.
+    Monitor { fired: Vec<Firing> },
+    /// The background jobs and subagents a notice is about, by handle.
+    Job { jobs: Vec<String> },
+    /// The todo rows whose condition just became met, by their own words.
+    Todo { rows: Vec<String> },
+    /// The harness's own reminder: a sentence, and nothing it was built from.
+    Nudge,
+    /// A session reseated, restarted onto a new prompt, or moved to a new model.
+    Reseat,
+    /// The merge queue's words about a branch - a verdict, a handover, an emergency.
+    MergeQueue { rows: usize },
+    /// A layer's own failure.
+    Plugin,
+    /// The workspace, or another fact about the ground the session stands on.
+    Workspace { path: String },
+    /// A call the gate admitted without asking anybody.
+    Gate,
+    /// A turn that produced no answer being salvaged.
+    Salvage,
+    /// The host's room, and how many events went into the sentence.
+    Room { items: usize },
+    /// The plan-check, and the rows it names.
+    Nag { rows: Vec<String> },
+    /// The queue census: how many rows, in which states, and the threshold they passed.
+    Census { rows: usize, states: Vec<Stuck> },
+    /// A restart, and how many sentences the turn opens with.
+    Restart { lines: usize },
+    /// The model a refusal moved the session off, and the one it moved to.
+    Fallback { was: String, now: String },
+    /// Another session's message, and who sent it.
+    Parent { from: String },
+    /// A correction at the turn's ending: the harness's own promise check.
+    Steer,
+    /// The stall steer, and the round it was said on.
+    Stall { rounds: usize },
+    /// A claim about the context, against the measurement that contradicts it.
+    ContextClaim { resident: u64, window: u64 },
+    /// The operator's answer, and the row's question it settled.
+    Answer { row: String, question: String },
+}
+
+impl Facts {
+    /// The kind word - the same one [`KINDS`] carries and the hook's name ends in.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Facts::Monitor { .. } => MONITOR,
+            Facts::Job { .. } => JOB,
+            Facts::Todo { .. } => TODO,
+            Facts::Nudge => NUDGE,
+            Facts::Reseat => RESEAT,
+            Facts::MergeQueue { .. } => MERGE_QUEUE,
+            Facts::Plugin => PLUGIN,
+            Facts::Workspace { .. } => WORKSPACE,
+            Facts::Gate => GATE,
+            Facts::Salvage => SALVAGE,
+            Facts::Room { .. } => ROOM,
+            Facts::Nag { .. } => NAG,
+            Facts::Census { .. } => CENSUS,
+            Facts::Restart { .. } => RESTART,
+            Facts::Fallback { .. } => FALLBACK,
+            Facts::Parent { .. } => PARENT,
+            Facts::Steer => STEER,
+            Facts::Stall { .. } => STALL,
+            Facts::ContextClaim { .. } => CONTEXT_CLAIM,
+            Facts::Answer { .. } => ANSWER,
+        }
+    }
+
+    /// The facts as the wire carries them: one object, with the kind on it.
+    pub fn to_value(&self) -> Value {
+        serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+
+    /// The facts back off the wire, or `None` for a document that is not one.
+    pub fn from_value(value: &Value) -> Option<Facts> {
+        serde_json::from_value(value.clone()).ok()
+    }
+
+    /// One value per kind, in [`KINDS`]'s order: the fixture a round-trip test walks, and what a
+    /// page describing the contract shows. Every kind has one, so a kind added without its facts is
+    /// a failing test rather than a variant nobody composes.
+    pub fn one_of_each() -> Vec<Facts> {
+        vec![
+            Facts::Monitor {
+                fired: vec![Firing {
+                    name: "pr-24".into(),
+                    watch: Some("pr o/r#24".into()),
+                    ended: None,
+                    said: "[monitor] `pr-24` fired: its checks finished.".into(),
+                    folded: 0,
+                    ending: false,
+                }],
+            },
+            Facts::Job {
+                jobs: vec!["j7".into()],
+            },
+            Facts::Todo {
+                rows: vec!["land the release".into()],
+            },
+            Facts::Nudge,
+            Facts::Reseat,
+            Facts::MergeQueue { rows: 1 },
+            Facts::Plugin,
+            Facts::Workspace {
+                path: "/home/dead/Projects/x".into(),
+            },
+            Facts::Gate,
+            Facts::Salvage,
+            Facts::Room { items: 1 },
+            Facts::Nag {
+                rows: vec!["land the release".into()],
+            },
+            Facts::Census {
+                rows: 3,
+                states: vec![Stuck {
+                    state: "failed".into(),
+                    rows: 3,
+                }],
+            },
+            Facts::Restart { lines: 2 },
+            Facts::Fallback {
+                was: "glm-coding/glm-5.3".into(),
+                now: "glm/glm-4.6".into(),
+            },
+            Facts::Parent {
+                from: "s-parent".into(),
+            },
+            Facts::Steer,
+            Facts::Stall { rounds: 4 },
+            Facts::ContextClaim {
+                resident: 120_000,
+                window: 200_000,
+            },
+            Facts::Answer {
+                row: "land the release".into(),
+                question: "which database?".into(),
+            },
+        ]
+    }
 }
 
 /// The input: one notice, with the facts it was composed from.
@@ -116,13 +333,27 @@ impl Notice {
         }
     }
 
+    /// One notice, from the facts its site composed it out of - the kind comes off the facts, so a
+    /// site cannot say one kind and hand over another's.
+    pub fn of(text: impl Into<String>, facts: &Facts) -> Notice {
+        Notice::new(facts.kind(), text, facts.to_value())
+    }
+
     /// The synthetic input `plugin test` and the shadow gate use when a session has none
     /// recorded: the plan's own example, a monitor firing.
     pub fn synthetic() -> Notice {
-        Notice::new(
-            MONITOR,
+        Notice::of(
             "[monitor] `pr-24` fired: its checks finished.",
-            json!({"monitor": "pr-24", "why": "its checks finished"}),
+            &Facts::Monitor {
+                fired: vec![Firing {
+                    name: "pr-24".into(),
+                    watch: Some("pr o/r#24".into()),
+                    ended: None,
+                    said: "[monitor] `pr-24` fired: its checks finished.".into(),
+                    folded: 0,
+                    ending: false,
+                }],
+            },
         )
     }
 }
@@ -185,6 +416,7 @@ impl NoticeOut {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// The three markers the stack owns are absent from this contract, so a layer cannot spell
     /// one of them by accident into an answer that also says something.
@@ -222,10 +454,11 @@ mod tests {
         );
     }
 
-    /// The kinds a project may switch off are exactly the two the host has no one owed: a
-    /// firing, and a nudge. Everything else is a fact the model is owed.
+    /// The kinds a project may switch off are the six the host has no one owed: a firing, a nudge,
+    /// a plan-check, a turn's own correction, the stall steer and a context claim. Everything else
+    /// is a fact the model is owed, and a layer may only reword those.
     #[test]
-    fn only_a_firing_and_a_nudge_may_be_dropped() {
+    fn only_the_hosts_own_reminders_may_be_dropped() {
         for kind in KINDS {
             assert_eq!(
                 droppable(kind),
@@ -233,12 +466,48 @@ mod tests {
                 "{kind} disagrees with the must-see list"
             );
         }
-        assert!(droppable(MONITOR));
-        assert!(droppable(NUDGE));
-        assert!(!droppable(MERGE_QUEUE));
+        for kind in [MONITOR, NUDGE, NAG, STEER, STALL, CONTEXT_CLAIM] {
+            assert!(droppable(kind), "{kind} is the harness's own reminder");
+        }
+        for kind in [MERGE_QUEUE, CENSUS, RESTART, FALLBACK, PARENT, ANSWER] {
+            assert!(!droppable(kind), "{kind} is a fact the model is owed");
+        }
         // An unknown kind cannot be the one a model is owed, so it is kept.
         assert!(!droppable("a-kind-nobody-composes"));
         assert!(!known("a-kind-nobody-composes"));
+    }
+
+    /// Every kind's facts survive the wire they reach a layer on: what a layer reads and what a head
+    /// card (X22) renders are the same fields, and the kind rides on them so a site cannot say one
+    /// kind and hand over another's.
+    #[test]
+    fn facts_round_trip_per_kind() {
+        let fixtures = Facts::one_of_each();
+        let mut kinds: Vec<&str> = fixtures.iter().map(|f| f.kind()).collect();
+        for kind in KINDS {
+            assert!(kinds.contains(kind), "no facts fixture for `{kind}`");
+        }
+        kinds.sort_unstable();
+        kinds.dedup();
+        assert_eq!(
+            kinds.len(),
+            KINDS.len(),
+            "one fixture per kind, not a repeat"
+        );
+        for facts in &fixtures {
+            let wire = facts.to_value();
+            assert_eq!(wire["kind"], json!(facts.kind()), "{wire}");
+            assert_eq!(
+                Facts::from_value(&wire).as_ref(),
+                Some(facts),
+                "{} did not survive the wire: {wire}",
+                facts.kind()
+            );
+            // And the notice built from them carries that kind and those facts.
+            let notice = Notice::of("a sentence", facts);
+            assert_eq!(notice.kind, facts.kind());
+            assert_eq!(notice.facts, wire);
+        }
     }
 
     /// The synthetic input is the shape the host hands over: every field present, and the kind's

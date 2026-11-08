@@ -271,7 +271,8 @@ fn a_session_mid_turn_reads_the_line_at_its_next_round_boundary() {
     // harness for its whole life, so nothing else can call in while one runs.
     h.hold_a_turn_open_for_test(true);
     let text = "[restart] The daemon restarted (down 1s). Nothing was running.";
-    h.say_without_a_turn(text).expect("the sentence is filed");
+    h.say_without_a_turn(&letibot_plugin::notice::Facts::Restart { lines: 1 }, text)
+        .expect("the sentence is filed");
     // Not a row yet: it waits for the boundary of the turn that is already running.
     assert!(restart_rows(&h).is_empty(), "{:?}", h.items());
     // And the boundary hands it to the engine, as context in that turn.
@@ -564,7 +565,11 @@ fn a_session_with_no_store_says_restart_restore_is_off() {
         h.restore_after_restart().is_none(),
         "a new session has no history a stop could have cut"
     );
-    h.say_without_a_turn("an earlier row").unwrap();
+    h.say_without_a_turn(
+        &letibot_plugin::notice::Facts::Restart { lines: 1 },
+        "an earlier row",
+    )
+    .unwrap();
     let text = h.restore_after_restart().expect("said");
     assert!(text.contains("this session has no store"), "{text}");
     assert!(text.contains("1h"), "names the restore window: {text}");

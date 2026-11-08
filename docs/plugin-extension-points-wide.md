@@ -14,8 +14,9 @@ The answer, short:
   those.
 - Subagents have no plugin host at all. Every hook is a no-op in a child (§1.1). That is the first
   thing to fix.
-- Half of what the harness says to a model never passes the `notice_` hook: the idle nag, the queue
-  census, every mid-turn injection (§1.3).
+- Half of what the harness says to a model never passed the `notice_` hook: the idle nag, the queue
+  census, every mid-turn injection (§1.3). **Closed by K2**: one door, twenty kinds, and even the
+  sentences a running turn reads are offered to it.
 - A fixed number belongs in a config key. A decision over facts is a hook. I/O, identity, the
   perimeter and the store stay in the core. Several operator asks are config, not plugins (§4.3).
 
@@ -62,27 +63,41 @@ decision. `none` = nothing does. Hook call sites: `on_tool_call` `tools/src/runt
 | retry ladder and model fallback | `take_the_round` :2325, `worth_moving_for` :2790, `fall_back_from` :2810 | none | `fallback_after_timeouts` 3 (`config.rs:1512`) |
 | mid-turn `/mode`, `/models` | `apply_queued_mode` :2565, `apply_queued_model` :2622 | none | |
 | which between-turn source becomes a turn | `wake` :308 | partial, per-source notices | |
-| mid-turn injections: operator prompt, parent message, answers, room, job and child results, monitor firings | `HubSteering::try_next`, `harness/hub_io.rs:162-302` | **none**; between turns the same facts pass `notice_` | |
+| mid-turn injections: operator prompt, parent message, answers, room, job and child results, monitor firings | `HubSteering::try_next`, `harness/hub_io.rs` | hook since K2, per kind: the same facts pass `notice_` on both doors | |
 
 ### 1.3 What the model is told
 
-`notice_` sites by kind (`plugin-sdk/src/notice.rs:39`; droppable only `monitor`, `nudge`):
-`merge_queue` :330, :354, :362; `room` :339; `reseat` :345, :1165; `monitor` :387; `job` :413, :443;
-`todo` :427 (condition met only); `workspace` :466; `nudge` :1982, :2226, :2238; `salvage` :2219;
-`gate` :3093. `plugin` has no site (failures go through `note_to_model` :3027, on purpose).
+Since K2 the answer is *one door*: every sentence below is offered to `notice_<kind>` from
+`turns::say` (`harnessd/src/harness/turns.rs`), and this section is now the inventory of the kinds
+rather than the list of bypasses. The kinds are `plugin-sdk/src/notice.rs`'s `KINDS` (twenty); the
+six droppable ones are `monitor`, `nudge`, `nag`, `steer`, `stall`, `context_claim`, and everything
+else may be reworded only. `plugin` has no site (failures go through `note_to_model`, on purpose: a
+layer's own failure is not handed to the layer that failed).
 
-Model-facing text that skips the hook:
+| text | site | kind |
+|---|---|---|
+| the queue's verdicts, handovers, emergencies | `wake` `turns.rs` | `merge_queue` |
+| the room's bells | `wake`, and `HubSteering::try_next` mid-turn | `room` |
+| what a restart brought back | `wake`, `continue_after_restart` | `restart` |
+| a monitor firing | `wake`, and mid-turn | `monitor` |
+| a job or subagent that settled | `wake`, and mid-turn | `job` |
+| a todo row's condition met | `wake` | `todo` |
+| the workspace gone | `wake` | `workspace` |
+| a call the gate admitted unasked | `flush_gate_admissions` | `gate` |
+| a salvaged round | `judge_the_round` | `salvage` |
+| the harness's own "all reasoning" lines | `judge_the_round` | `nudge` |
+| the turn's own correction | the turn-end block, and mid-turn | `steer` |
+| the stall steer | `rounds`, one round before the bound | `stall` |
+| a claim the measurement contradicts | `judge_context_claim`, both doors | `context_claim` |
+| a reseat, or a restart row | `say_without_a_turn` | `reseat` |
+| the idle plan-check | `nag_turn` `harness/nags.rs` | `nag` |
+| the queue census turn | `census_turn` `harness/queue.rs` | `census` |
+| the fallback continuation | `fall_back_from` (offered where it is armed) | `fallback` |
+| a parent's or a peer's message | `submit_a_parents_message`, `parents_message_turn`, and mid-turn | `parent` |
+| the operator's answer to a row | `HubSteering::try_next` | `answer` |
 
-| text | where |
-|---|---|
-| the idle todo nag | `nag_turn` `harness/nags.rs:183`, text `unfinished_plan_for` `tools/src/builtins/todo.rs:1171` (*"[todo check] Not done"* :1272, advice :1216-1234) |
-| the queue census turn | `census_turn` `harness/queue.rs:259`, `mergequeue/notices.rs:324` |
-| the restart continuation | `continue_after_restart` :539, `restart.rs` `WAKE_TAIL` :548, `RESTART_PROMISES` :555 |
-| the fallback continuation | `continue_after_fallback` :1189, :3801 |
-| a parent's message | `parents_message_turn` :1279, `children.rs:564` |
-| every mid-turn injection | `hub_io.rs:162-302`, `turns.rs:2041`, :2105, :2113 |
-| context-claim lines mid-turn | `context_claim.rs:423`, :487 |
-| operator answers | `operator_ask.rs:55`, injected `hub_io.rs:231` |
+A sentence for a RUNNING turn goes through the door at its PUSH (`queue_mid_turn`), so a dropped
+`steer`, `stall` or `context_claim` never reaches the turn at all.
 
 ### 1.4 The prompt and the per-round tails
 
@@ -539,7 +554,7 @@ Done when (`harnessd/src/plugins/tests.rs`):
 `a_child_inherits_a_pinned_session_layer_and_not_an_unpinned_one`,
 `a_reviewer_child_runs_the_gatekeepers_layers`.
 
-### K2 - one notice door (M, after K1)
+### K2 - one notice door (M, after K1) - **landed 2026-11**
 
 Owns `harnessd/src/harness/turns.rs` (`say`), `harnessd/src/harness/hub_io.rs`,
 `harnessd/src/harness/nags.rs` (call `say` only), `harnessd/src/harness/queue.rs`,
@@ -548,6 +563,40 @@ facts). Done when:
 `every_model_facing_sentence_passes_the_notice_hook` (a recording layer, one fixture per §1.3 row),
 `a_mid_turn_room_wake_is_reworded`, `a_census_cannot_be_dropped`,
 `a_stall_steer_can_be_dropped`, `facts_round_trip_per_kind`.
+
+What landed:
+
+- **One door.** `turns::say(host, hub, facts, text)` is the only place a model-facing sentence is
+  offered to `notice_<kind>`; `Harness::say`, `say_kept` (a kind the model is owed), `say_all` (a
+  batch from one source) and `say_mid_turn` are its callers inside the harness, and
+  `HubSteering::said` is the mid-turn one - a `HubSteering` carries the session's host, so a bell, a
+  parent's message, the operator's answer, a settlement and a firing are offered to the stack the
+  between-turns door asks. A session with no layer gets its sentence back untouched, byte for byte.
+- **Nine kinds** added (`nag`, `census`, `restart`, `fallback`, `parent`, `steer`, `stall`,
+  `context_claim`, `answer`): `KINDS` is twenty, `MUST_SEE` is the fourteen a session is owed, and
+  the six droppable ones are `monitor`, `nudge`, `nag`, `steer`, `stall`, `context_claim`. A `nag`
+  is droppable because it is the harness's own reminder and K3 hands the decision to a layer.
+- **Typed facts.** `notice::Facts` has one variant per kind, with `kind()`, `to_value()`,
+  `from_value()` and `one_of_each()`; the wire is `{"kind": …, …}` and `Notice::of(text, &facts)`
+  takes the kind off the facts, so a site cannot say one kind and hand over another's. A site that
+  has numbers to hand fills them (the census's counts, the claim's fill and window, the two models
+  a fallback names, the row and question an answer settles); one that has none says so.
+- **Where the door sits.** `wake`'s five sources, the firing row, the due-row line, the held batch
+  and the workspace line; the gate admissions; the salvage and both nudges; `nag_turn`,
+  `census_turn`, `continue_after_restart`, `say_without_a_turn`, both parent doors; and the fallback
+  continuation, offered where it is ARMED (`fall_back_from`) because that is where the two models it
+  names are in hand. A sentence for a running turn goes through the door at its **push**
+  (`queue_mid_turn`), so a dropped `steer`, `stall` or `context_claim` never reaches the turn.
+- **`note_to_model` stays outside**, on purpose: a layer's own failure must not be handed to the
+  layer that failed (§4.3).
+- **The page follows the code**: `plugin_hooks`' notice page now names the droppable kinds from
+  `notice::droppable` instead of a hand-written list that went stale the moment a kind was added.
+- Not in this package: K3's `nag_` decision, K4's `steer_`/`compact_` (the turn-end block still
+  decides continue-or-stop itself), and no head card yet reads the facts (K6). One model-facing
+  sentence still bypasses the door on purpose-of-scope: the turn a limit park resumes
+  (`resume_after_limit`, `harness/limit.rs`) opens with `[limit] the limit on … lifted`, and X12's
+  kind list has no kind for it - it is §1.5's park, and giving it a kind is a decision for the
+  package that owns the park's clock rather than one to invent here.
 
 ### K3 - `nag_` and the todo layer (M, after K2)
 

@@ -1,6 +1,7 @@
 //! The plan-check board: the operator's half of the todo list, the sentence the idle clock counts,
 //! and the nudge it delivers as a turn of its own.
 use super::*;
+use letibot_plugin::notice::Facts;
 
 impl Harness {
     /// The operator's half of the board: replaces their rows and leaves the model's alone, so anything reading the
@@ -181,10 +182,19 @@ impl Harness {
     /// unfinished plan is nudged again. The text goes in as `Speaker::Agent`, exactly as `wake` does: the harness talking
     /// to itself, never readable as the operator's. `Ok(None)` is nothing to say, which is a real outcome.
     pub fn nag_turn(&mut self) -> Result<Option<Reply>, HarnessError> {
-        let Some((mut text, named)) = self.nag_notice_naming() else {
+        let Some((text, named)) = self.nag_notice_naming() else {
             return Ok(None);
         };
         self.meter_nag(named.as_deref());
+        // The plan-check goes through the one notice door like every other model-facing sentence:
+        // a layer may reword it, and may drop it, since it is the harness's own reminder and not a
+        // fact somebody is owed. Dropped, no turn is opened.
+        let facts = Facts::Nag {
+            rows: named.iter().cloned().collect(),
+        };
+        let Some(mut text) = self.say(&facts, &text) else {
+            return Ok(None);
+        };
         // A plan-check is a turn the model takes anyway, so it carries the held batch, which is
         // what reaches a session that has a plan and nobody typing.
         let (riding, told) = self.batch_riding_in();

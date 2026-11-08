@@ -841,6 +841,8 @@ fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
     let parent_hub = Hub::new("s-root");
     let mut parent = HubSteering {
         hub: parent_hub.clone(),
+        // No host: these fixtures are about the message's scoping, not about a layer's words.
+        host: None,
         trail: None,
         injected: Arc::new(Mutex::new(VecDeque::new())),
         monitors: None,
@@ -862,6 +864,7 @@ fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
     let child_hub = Hub::new("s-child");
     let mut child = HubSteering {
         hub: child_hub.clone(),
+        host: None,
         trail: None,
         injected: Arc::new(Mutex::new(VecDeque::new())),
         monitors: None,
@@ -1096,6 +1099,7 @@ fn a_parents_message_is_the_childs_steering_and_not_the_operators_words() {
         hub: hub.clone(),
         // No trail: what is asserted is the message the child reads and how it is
         // scoped, and a trail would only add a second place for the same words.
+        host: None,
         trail: None,
         injected: Arc::new(Mutex::new(VecDeque::new())),
         monitors: None,
@@ -1161,6 +1165,7 @@ fn a_handed_back_message_comes_out_of_the_next_poll_still_the_operators() {
     let hub = Hub::new("s-steer");
     let mut steering = HubSteering {
         hub: hub.clone(),
+        host: None,
         trail: None,
         injected: Arc::new(Mutex::new(VecDeque::new())),
         monitors: None,

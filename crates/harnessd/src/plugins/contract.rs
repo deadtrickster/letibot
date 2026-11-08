@@ -47,15 +47,21 @@ fn patch_doc(kind: &str) -> Option<String> {
                 "[monitor] {} — read it",
                 model.text
             ));
+            let droppable = letibot_plugin::notice::KINDS
+                .iter()
+                .filter(|k| letibot_plugin::notice::droppable(k))
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let must_see = letibot_plugin::notice::MUST_SEE.join(", ");
             let rules = format!(
-                "* **Only a firing and a nudge may be dropped.** `drop` is honoured for `monitor` \
-                 and `nudge`, and refused (with the reason said to the model) for `job`, `todo`, \
-                 `reseat`, `merge_queue`, `workspace`, `salvage` and `plugin`: those are facts the \
-                 model is owed, and a layer may reword them.\n\
+                "* **Only the harness's own reminders may be dropped** — {droppable}. `drop` is \
+                 refused (with the reason said to the model) for the rest — {must_see} — because \
+                 those are facts the model is owed, and a layer may reword them.\n\
                  * **The export is named after the notice's KIND** — `notice_monitor`, \
                  `notice_job`, … — so a fix to one firing's wording is not the answerer for the \
-                 queue's verdicts. The kinds are: {}.",
-                letibot_plugin::notice::KINDS.join(", ")
+                 queue's verdicts. The kinds are: {kinds}.",
+                kinds = letibot_plugin::notice::KINDS.join(", ")
             );
             (
                 json!(model),

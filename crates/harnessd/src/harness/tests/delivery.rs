@@ -92,6 +92,8 @@ fn deliveries(
 fn steering(hub: &Arc<Hub>, d: Deliveries) -> HubSteering {
     HubSteering {
         hub: hub.clone(),
+        // No host: these fixtures are about the delivery rules, not about a layer's words.
+        host: None,
         trail: None,
         injected: Arc::new(Mutex::new(VecDeque::new())),
         monitors: None,

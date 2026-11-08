@@ -2,6 +2,40 @@
 //! results and resubmit - with the retry ladder, outage and fallback handling
 //! around it, and the restart restore that starts a turn nobody typed for.
 use super::*;
+use letibot_plugin::notice::Facts;
+
+/// The one notice door, for every caller: the harness's sentence offered to the `notice_<kind>`
+/// layer for the facts' kind, and `None` when a layer dropped a kind that may be dropped. Free
+/// rather than a method because a `HubSteering` says its sentences where no `Harness` is behind it.
+pub(crate) fn say(
+    host: Option<&crate::plugins::PluginHost>,
+    hub: &Arc<Hub>,
+    facts: &Facts,
+    text: &str,
+) -> Option<String> {
+    match host {
+        // No layer in this session: the harness's own sentence, untouched.
+        None => Some(text.to_string()),
+        Some(host) => host.notice(hub, facts.kind(), text, facts.to_value()),
+    }
+}
+
+/// [`say`] for a sentence a RUNNING turn reads at its next step boundary: queued only if a layer
+/// left it standing. A `steer`, a `stall` and a `context_claim` may be dropped; nothing else may.
+pub(crate) fn queue_mid_turn(
+    host: Option<&crate::plugins::PluginHost>,
+    hub: &Arc<Hub>,
+    injected: &Mutex<VecDeque<String>>,
+    facts: &Facts,
+    text: &str,
+) {
+    if let Some(text) = say(host, hub, facts, text) {
+        injected
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(text);
+    }
+}
 
 /// How a wait ended: the time passed, the session is going away, or the operator asked for a stop.
 /// A retry ends at a stop; a store write is the caller's to keep or leave, and `busy_after` says which.
@@ -332,49 +366,45 @@ impl Harness {
         // a firing's wording is not thereby the answerer for the queue's verdicts. Applied per source and not to
         // the joined text, so the facts a layer is handed are the ones its sentence was composed from.
         let queue = self.queue_notices();
-        let mut notices = self.noticed_all(
-            letibot_plugin::notice::MERGE_QUEUE,
-            queue,
-            serde_json::json!({}),
-        );
+        let mut notices = self.say_all(&Facts::MergeQueue { rows: queue.len() }, queue);
         // The room's bells: a room event about this session became a sentence on the connection's own thread,
         // because the thread that hears a bell is not the thread that runs a turn. One notice per event, through
         // the same hook, so a layer may reword it and may not delete it: the model is owed that fact.
         let room = crate::room::wake::take_wake(&self.cfg.session_id);
         let room_cheap = room.cheap;
         let before_room = notices.len();
-        notices.extend(self.noticed_all(
-            letibot_plugin::notice::ROOM,
-            room.lines,
-            serde_json::json!({}),
-        ));
+        let room_items = room.lines.len();
+        notices.extend(self.say_all(&Facts::Room { items: room_items }, room.lines));
         let room_n = notices.len() - before_room;
         // And the children a restart brought back, one line each, saying which came back and which could not.
         // Counted with the queue's notices, since both are facts the daemon found in the store rather than
         // settlements that arrived.
         let restart_taken = self.restart_notices.clone();
         let restarts = std::mem::take(&mut self.restart_notices);
-        notices.extend(self.noticed_all(
-            letibot_plugin::notice::RESEAT,
+        notices.extend(self.say_all(
+            &Facts::Restart {
+                lines: restarts.len(),
+            },
             restarts,
-            serde_json::json!({}),
         ));
         // And the entries the queue has handed to this session, which is the fallback: no reviewer could judge
         // them and the project merges such a branch through its own session. NOT a refused review, which goes to
         // the child that made the branch. Second, because an entry is in one of the two states.
         let handover = self.handover_notices();
-        notices.extend(self.noticed_all(
-            letibot_plugin::notice::MERGE_QUEUE,
+        notices.extend(self.say_all(
+            &Facts::MergeQueue {
+                rows: handover.len(),
+            },
             handover,
-            serde_json::json!({}),
         ));
         // And a target emergency, or a row parked for a person - the one the
         // queue says on the hubs and here.
         let emergency = self.queue_emergency_notices();
-        notices.extend(self.noticed_all(
-            letibot_plugin::notice::MERGE_QUEUE,
+        notices.extend(self.say_all(
+            &Facts::MergeQueue {
+                rows: emergency.len(),
+            },
             emergency,
-            serde_json::json!({}),
         ));
         let queue_n = notices.len();
         let cursor_before = self.monitor_cursor.load(Ordering::SeqCst);
@@ -395,8 +425,7 @@ impl Harness {
                         d.log_firings(&fired);
                     }
                     if let Some(text) = monitor_notice(&fired) {
-                        let facts = monitor_facts(&fired);
-                        firing_row = self.noticed(letibot_plugin::notice::MONITOR, &text, facts);
+                        firing_row = self.say(&monitor_facts(&fired), &text);
                     }
                 }
             }
@@ -422,7 +451,8 @@ impl Harness {
         let mut held_batch = None;
         let mut said: Vec<JobCompletion> = Vec::new();
         if let Some((b, told)) = between {
-            let now = self.noticed_all(letibot_plugin::notice::JOB, b.now, serde_json::json!({}));
+            let jobs = told.iter().map(|c| c.job.clone()).collect::<Vec<_>>();
+            let now = self.say_all(&Facts::Job { jobs }, b.now);
             notices.extend(now);
             held_batch = b.batch;
             said = told;
@@ -436,11 +466,8 @@ impl Harness {
         if !due.is_empty() {
             // the head said "{n} row you attached a condition to is due" for any n.
             let due_line = due_notice(&due);
-            notices.extend(self.noticed(
-                letibot_plugin::notice::TODO,
-                &due_line,
-                serde_json::json!({"rows": due.len()}),
-            ));
+            let rows = due.iter().map(|(text, _, _)| text.clone()).collect();
+            notices.extend(self.say(&Facts::Todo { rows }, &due_line));
         }
         let causes = [
             queue_n,
@@ -452,7 +479,7 @@ impl Harness {
         // The held batch last, after everything said now.
         let held: Vec<String> = match held_batch.as_deref() {
             Some(text) => self
-                .noticed(letibot_plugin::notice::JOB, text, serde_json::json!({}))
+                .say(&Facts::Job { jobs: Vec::new() }, text)
                 .into_iter()
                 .collect(),
             None => Vec::new(),
@@ -475,11 +502,10 @@ impl Harness {
         }
         if !self.cfg.workspace.is_dir() {
             let line = format!("[workspace] {}.", workspace_gone(&self.cfg.workspace));
-            if let Some(line) = self.noticed(
-                letibot_plugin::notice::WORKSPACE,
-                &line,
-                serde_json::json!({}),
-            ) {
+            let facts = Facts::Workspace {
+                path: self.cfg.workspace.display().to_string(),
+            };
+            if let Some(line) = self.say(&facts, &line) {
                 notices.insert(0, line);
             }
         }
@@ -572,6 +598,8 @@ impl Harness {
             parts.push(meanwhile);
         }
         let text = parts.join("\n\n");
+        // A restart is a fact the model is owed, so the door may reword it and cannot drop it.
+        let text = self.say_kept(&Facts::Restart { lines: parts.len() }, text);
         self.trail.begin_turn();
         self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
         // Opened, not successful: the row is what the model reads, and the rounds after it are the
@@ -1045,7 +1073,7 @@ impl Harness {
              stop can be restored or reminded, whatever the {} restore window.",
             crate::restart::span(self.cfg.restore_within)
         );
-        if let Err(e) = self.say_without_a_turn(&text) {
+        if let Err(e) = self.say_without_a_turn(&Facts::Restart { lines: 1 }, &text) {
             eprintln!(
                 "  {} · restart: the notice was not recorded ({e})",
                 self.cfg.session_id
@@ -1130,7 +1158,7 @@ impl Harness {
         // Neither publishes a hub warning, which drew the restart twice for one stop.
         if owed.any() {
             self.restart_notices.push(text.clone());
-        } else if let Err(e) = self.say_without_a_turn(&text) {
+        } else if let Err(e) = self.say_without_a_turn(&Facts::Restart { lines: 1 }, &text) {
             eprintln!("  {sid} · restart: the notice was not recorded ({e})");
         }
         Some(text)
@@ -1181,9 +1209,12 @@ impl Harness {
     /// Tell this session's model something without starting a turn, which is the door a restart with nothing
     /// owed takes. A turn running reads it at that turn's step boundary; an idle session gets a transcript row
     /// and NO wake, because a wake is a model call and the gap it closes is closed when the model next reads.
-    pub(crate) fn say_without_a_turn(&mut self, text: &str) -> Result<(), HarnessError> {
-        let Some(text) = self.noticed(letibot_plugin::notice::RESEAT, text, serde_json::json!({}))
-        else {
+    pub(crate) fn say_without_a_turn(
+        &mut self,
+        facts: &Facts,
+        text: &str,
+    ) -> Result<(), HarnessError> {
+        let Some(text) = self.say(facts, text) else {
             return Ok(());
         };
         if self.prompt_in_flight.load(Ordering::SeqCst) {
@@ -1273,6 +1304,8 @@ impl Harness {
         text: &str,
     ) -> Result<Reply, HarnessError> {
         let said = message_from_a_session(from, text, self.cfg.parent_session_id.as_deref());
+        let facts = Facts::Parent { from: from.into() };
+        let said = self.say_kept(&facts, said);
         self.submit_spoken_as_a_normal_session(Speaker::Agent, &said)
     }
 
@@ -1298,6 +1331,8 @@ impl Harness {
     /// that runs the tail itself ([`crate::turn_tail::run_turn`]).
     pub fn parents_message_turn(&mut self, from: &str, text: &str) -> Result<Reply, HarnessError> {
         let said = message_from_a_session(from, text, self.cfg.parent_session_id.as_deref());
+        let facts = Facts::Parent { from: from.into() };
+        let said = self.say_kept(&facts, said);
         self.submit_spoken(Speaker::Agent, &said)
     }
 
@@ -1950,11 +1985,11 @@ impl Harness {
             // says it there and nowhere the operator reads. A claim found only there is told, never forced.
             let (context_claim, claim_in_reasoning) =
                 match self.judge_context_claim(&mut context_check, &text, false) {
-                    Some(line) => (Some(line), false),
+                    Some((line, facts)) => (Some((line, facts)), false),
                     None => {
                         let thought = reasoning_text(&ok.items);
                         match self.judge_context_claim(&mut context_check, &thought, true) {
-                            Some(line) => (Some(line), true),
+                            Some((line, facts)) => (Some((line, facts)), true),
                             None => (None, false),
                         }
                     }
@@ -1968,7 +2003,7 @@ impl Harness {
                 // A model that stopped because the context is full when it is not: first, ahead of the intent check,
                 // since the excuse is usually why a promise was not kept. It goes through `append_notice`, because the
                 // turn is over and the loop continuing is what makes it a correction rather than a report.
-                let mut notices: Vec<String> = Vec::new();
+                let mut notices: Vec<(Facts, String)> = Vec::new();
                 let mut goes_on = false;
                 if context_claim.is_some() {
                     goes_on = !claim_in_reasoning;
@@ -1982,7 +2017,7 @@ impl Harness {
                     && let Some(steer) = self.close_the_turn(&ok.turn_id, &appended)
                 {
                     nudges_left -= 1;
-                    notices.push(steer);
+                    notices.push((Facts::Steer, steer));
                     goes_on = true;
                 }
                 // The branch is the deliverable, after the intent check, so a turn that promised work and did not
@@ -1993,7 +2028,7 @@ impl Harness {
                     && !self.cheap_turn
                     && let Some(steer) = end_of_work.at_turn_end(self.deliverable.as_ref())
                 {
-                    notices.push(steer);
+                    notices.push((Facts::Steer, steer));
                     goes_on = true;
                 }
                 // A message queued while the head was running is a prompt, not a footnote: the engine appends what it
@@ -2005,8 +2040,8 @@ impl Harness {
                 // A claim in the reasoning does not continue the turn, so its line is only worth saying when something
                 // else does: appended to a turn that then ended it is the last item in the transcript, read at the
                 // head of the next, unrelated turn.
-                if goes_on && let Some(steer) = &context_claim {
-                    notices.insert(0, steer.clone());
+                if goes_on && let Some((steer, facts)) = &context_claim {
+                    notices.insert(0, (facts.clone(), steer.clone()));
                 }
                 // Said from the decision rather than from the calls: a round nudged into another one is not
                 // the turn's end, and a head told it was drew `Responded` and then `Responding` again.
@@ -2014,8 +2049,8 @@ impl Harness {
                 // Through `append_notice` rather than the steering queue: the turn is over, and a message queued for
                 // the next step boundary of a turn that has ended would arrive after the reply the operator waits for.
                 // The loop continuing is what makes it a correction.
-                for steer in &notices {
-                    self.append_notice(letibot_plugin::notice::NUDGE, steer)?;
+                for (facts, steer) in &notices {
+                    self.append_notice(facts, steer)?;
                 }
                 if goes_on {
                     continue;
@@ -2071,10 +2106,8 @@ impl Harness {
                     });
                 }
                 if let Some(steer) = progress.nudge() {
-                    self.injected
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .push_back(steer);
+                    let facts = Facts::Stall { rounds: round + 1 };
+                    self.say_mid_turn(&facts, &steer);
                 }
             }
         }
@@ -2091,7 +2124,7 @@ impl Harness {
         results: &[TranscriptItem],
         turn_id: &str,
         appended: &[TranscriptItem],
-        context_claim: Option<String>,
+        context_claim: Option<(String, Facts)>,
         nudges_left: &mut usize,
     ) -> Result<(), HarnessError> {
         let mut sink = CapturingSink::new(self.hub.clone());
@@ -2135,18 +2168,12 @@ impl Harness {
             && let Some(steer) = self.close_the_turn(turn_id, appended)
         {
             *nudges_left -= 1;
-            self.injected
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push_back(steer);
+            self.say_mid_turn(&Facts::Steer, &steer);
         }
         // And a context claim made by a round that went on to call tools: the model is
         // still working, so the correction rides the step boundary like the nudge above.
-        if let Some(steer) = context_claim {
-            self.injected
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push_back(steer);
+        if let Some((steer, facts)) = context_claim {
+            self.say_mid_turn(&facts, &steer);
         }
         Ok(())
     }
@@ -2259,7 +2286,7 @@ impl Harness {
             // by the engine's own salvage budget: the round after this one either succeeds or comes back as
             // `SalvageExhausted`.
             Err(TurnFailure::BatchTruncated { notices, .. }) => {
-                self.append_notice(letibot_plugin::notice::SALVAGE, &notices.join("\n"))?;
+                self.append_notice(&Facts::Salvage, &notices.join("\n"))?;
                 return Ok(RoundEnd::Again);
             }
             // The operator's own sentence, because it is the only one with evidence: three machine notices
@@ -2267,7 +2294,7 @@ impl Harness {
             // condition, naming the behaviour rather than the mechanism.
             Err(TurnFailure::EmptyLength { .. }) => {
                 self.append_notice(
-                    letibot_plugin::notice::NUDGE,
+                    &Facts::Nudge,
                     "Your reply was all reasoning and nothing was kept. Make the tool call \
                      or give the answer now.",
                 )?;
@@ -2279,7 +2306,7 @@ impl Harness {
             Err(TurnFailure::UnfinishedReasoning { .. }) => {
                 // this arm is the turn ending INSIDE its reasoning, not running out.
                 self.append_notice(
-                    letibot_plugin::notice::NUDGE,
+                    &Facts::Nudge,
                     "Your reply ended inside reasoning with no output. Make the tool call \
                      or give the answer now.",
                 )?;
@@ -2995,7 +3022,14 @@ impl Harness {
             // chain would ping-pong between two names for ever - which a limit chain would too, one turn later:
             // the next turn finds the model it moved to limited as well and moves on from there.
             if !self.in_fallback_continuation() {
-                self.fallback_continuation = Some(fallback_continuation_notice(&here, &target, e));
+                // The sentence goes through the one door HERE, where the two models it names are in
+                // hand: `continue_after_fallback` says what this decided, and the turn opens with it.
+                let said = fallback_continuation_notice(&here, &target, e);
+                let facts = Facts::Fallback {
+                    was: here.clone(),
+                    now: target.clone(),
+                };
+                self.fallback_continuation = Some(self.say_kept(&facts, said));
             }
             return Some(target);
         }
@@ -3019,6 +3053,9 @@ impl Harness {
         HubSteering {
             hub: self.hub.clone(),
             trail: Some(self.trail.clone()),
+            // The same stack the turn's own sentences are offered to, so a bell, a parent's message
+            // or an answer that arrives MID-turn is offered to the layers that own its kind.
+            host: self.plugin_host(),
             injected: self.injected.clone(),
             monitors: self.monitors.clone(),
             monitor_cursor: self.monitor_cursor.clone(),
@@ -3073,12 +3110,18 @@ impl Harness {
         check: &mut crate::context_claim::Check,
         text: &str,
         reasoning: bool,
-    ) -> Option<String> {
+    ) -> Option<(String, Facts)> {
         use crate::context_claim::{REPEATED, Verdict};
         if text.trim().is_empty() {
             return None;
         }
         let fill = self.context_fill();
+        // The numbers the sentence is about, handed with it: the door's facts and the verdict's own
+        // measurement are the same reading, taken once.
+        let facts = Facts::ContextClaim {
+            resident: fill.map(|f| f.resident).unwrap_or(0),
+            window: fill.map(|f| f.window).unwrap_or(0),
+        };
         let mut finding = match reasoning {
             false => check.judge(text, fill)?,
             true => check.judge_reasoning(text, fill)?,
@@ -3092,7 +3135,7 @@ impl Harness {
         finding.log(&self.cfg.daemon_logs(), &self.cfg.session_id);
         crate::instruments::context_claim(&self.cfg.session_id, &finding);
         match finding.verdict {
-            Verdict::Slap(line) => Some(line),
+            Verdict::Slap(line) => Some((line, facts)),
             Verdict::Repeated(detail) => {
                 self.hub.warn(REPEATED, detail);
                 None
@@ -3166,33 +3209,56 @@ impl Harness {
         self.record_notice(text)
     }
 
-    /// One notice through the plugin stack: the sentence to record, or `None` when a layer dropped it. A session
-    /// with no layers gets its sentence back and pays one walk over an empty slice, since the host answers before it
-    /// builds an input when nothing exports the hook.
-    fn noticed(&self, kind: &str, text: &str, facts: serde_json::Value) -> Option<String> {
-        match self.plugin_host() {
-            Some(host) => host.notice(&self.hub, kind, text, facts),
-            None => Some(text.to_string()),
+    /// The one door a model-facing sentence goes through: the harness's words offered to the
+    /// `notice_<kind>` layer for the facts' kind, and `None` when a layer dropped a kind that may be
+    /// dropped. A session with no layer answers at once, so its sentence is byte-identical to the
+    /// one it said before this door existed.
+    pub(crate) fn say(&self, facts: &Facts, text: &str) -> Option<String> {
+        say(self.plugin_host().as_deref(), &self.hub, facts, text)
+    }
+
+    /// [`Harness::say`] for a kind the model is owed: a must-see notice cannot be dropped, so this
+    /// answers the sentence itself. A kind that is NOT must-see must go through `say`, or the
+    /// `Option` it answers would be thrown away here.
+    pub(crate) fn say_kept(&self, facts: &Facts, text: String) -> String {
+        match self.say(facts, &text) {
+            Some(said) => said,
+            // Unreachable while the kind is must-see, and the harness's own words are the right
+            // answer if that ever changes: a fact the model is owed is not lost to a bug.
+            None => text,
         }
     }
 
-    /// [`Harness::noticed`] over the batch a wake composed from one source - the queue's sentences,
-    /// the monitor firings, the jobs that settled.
-    fn noticed_all(&self, kind: &str, lines: Vec<String>, facts: serde_json::Value) -> Vec<String> {
+    /// [`Harness::say`] over the batch a wake composed from one source - the queue's sentences, the
+    /// monitor firings, the jobs that settled.
+    fn say_all(&self, facts: &Facts, lines: Vec<String>) -> Vec<String> {
         if lines.is_empty() {
             return lines;
         }
+        let host = self.plugin_host();
         lines
             .into_iter()
-            .filter_map(|line| self.noticed(kind, &line, facts.clone()))
+            .filter_map(|line| say(host.as_deref(), &self.hub, facts, &line))
             .collect()
+    }
+
+    /// [`Harness::say`] for a sentence a RUNNING turn reads at its next step boundary: queued only if
+    /// a layer left it standing, which a `steer`, a `stall` and a `context_claim` may not.
+    fn say_mid_turn(&self, facts: &Facts, text: &str) {
+        queue_mid_turn(
+            self.plugin_host().as_deref(),
+            &self.hub,
+            &self.injected,
+            facts,
+            text,
+        );
     }
 
     /// A notice this harness injects, said once and dropped if a layer dropped it.
     ///
     /// The kinds are `letibot_plugin::notice`'s; the sentence is the site's own.
-    fn append_notice(&mut self, kind: &str, text: &str) -> Result<(), HarnessError> {
-        let Some(text) = self.noticed(kind, text, serde_json::json!({})) else {
+    fn append_notice(&mut self, facts: &Facts, text: &str) -> Result<(), HarnessError> {
+        let Some(text) = self.say(facts, text) else {
             return Ok(());
         };
         self.record_notice(&text)
@@ -3226,7 +3292,7 @@ impl Harness {
             std::mem::take(&mut *q)
         };
         for line in lines {
-            self.append_notice("gate", &line)?;
+            self.append_notice(&Facts::Gate, &line)?;
         }
         Ok(())
     }

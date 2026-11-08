@@ -240,8 +240,12 @@ operator's own door, so coalescing and the already-watched refusal apply.
 
 The hook is resolved per notice kind (`notice_monitor`, `notice_job`, …), so a fix to one firing's wording
 does not make a layer the answerer for the queue's verdicts. A notice the model is owed (a settlement, a due
-row, a reseat, a queue verdict, the workspace's state, a salvage) may be reworded and not dropped; a firing
-and a nudge may be dropped. A layer's own failure notice never passes through the hook.
+row, a reseat, a restart, a queue verdict or census, the workspace's state, a salvage, the operator's
+answer, a parent's message, a model fallback) may be reworded and not dropped; the harness's own six
+reminders - a firing, a nudge, the plan-check, a turn's correction, the stall steer, a context claim - may
+be dropped, which is `letibot_plugin::notice::MUST_SEE`'s answer and not this page's. `facts` is
+typed per kind (`letibot_plugin::notice::Facts`), so a card renders from it instead of parsing the
+sentence. A layer's own failure notice never passes through the hook.
 
 ### 4.4 `condition`: what a monitor watches
 

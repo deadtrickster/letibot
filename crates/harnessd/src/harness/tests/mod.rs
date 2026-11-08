@@ -45,6 +45,7 @@ mod intent;
 mod jobs;
 mod marks;
 mod misc;
+mod notice_door;
 mod offer_row;
 mod operator_ask;
 mod parentage;

@@ -3,6 +3,7 @@
 //! The decision is `crate::delivery`'s, pure and tested there. This file reads the session's facts and words them.
 
 use super::*;
+use letibot_plugin::notice::Facts;
 use letibot_tools::exec::monitor::{Fired, Firing};
 
 /// One monitor's news in one delivery: what it last said, and how many of its firings the line
@@ -85,26 +86,26 @@ pub(crate) fn notice_row(
 
 /// The firings `monitor_notice` was composed from, as the facts the `notice` hook is handed, so a
 /// layer can build a different sentence out of the same news rather than reword this one.
-pub(crate) fn monitor_facts(fired: &[letibot_tools::exec::monitor::Firing]) -> serde_json::Value {
+pub(crate) fn monitor_facts(fired: &[letibot_tools::exec::monitor::Firing]) -> Facts {
     // Folded, because a layer handed twenty rows for one monitor would write twenty sentences where
     // the composed line writes one - and the count is what tells it the burst happened.
-    let rows: Vec<serde_json::Value> = fold_firings(fired)
+    let rows: Vec<letibot_plugin::notice::Firing> = fold_firings(fired)
         .into_iter()
         .map(|l| {
             let f = fired.iter().rev().find(|f| {
                 f.name == l.name && said_by(f).is_some() && f.fired.happened() != l.ending
             });
-            serde_json::json!({
-                "name": l.name,
-                "watch": f.map(|f| f.watch.clone()),
-                "ended": f.map(|f| f.fired.word()),
-                "said": l.said,
-                "folded": l.folded,
-                "ending": l.ending,
-            })
+            letibot_plugin::notice::Firing {
+                name: l.name,
+                watch: f.map(|f| f.watch.clone()),
+                ended: f.map(|f| f.fired.word()),
+                said: l.said,
+                folded: l.folded,
+                ending: l.ending,
+            }
         })
         .collect();
-    serde_json::json!({"fired": rows})
+    Facts::Monitor { fired: rows }
 }
 
 /// How many ended monitors the pane lists - the newest. A session that ran a repeating watch

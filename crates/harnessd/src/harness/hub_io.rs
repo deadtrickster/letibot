@@ -2,6 +2,7 @@
 //! Hub-shaped, not the harness: built at open, handed to the gate and engine.
 
 use super::*;
+use letibot_plugin::notice::Facts;
 
 // ---------------------------------------------------------------------------
 // Surfacing a denial
@@ -99,11 +100,15 @@ impl DenialSink for HubDenials {
 /// recorded here, because after the engine appends them they are four identical `User` items.
 pub struct HubSteering {
     pub(crate) hub: Arc<Hub>,
+    /// This session's plugin stack, so a wake that arrives mid-turn is offered to the same `notice_`
+    /// layers the between-turns door asks. `None` in a test with no host and in a session with none.
+    pub(crate) host: Option<Arc<crate::plugins::PluginHost>>,
     /// Where the speaker of each injected message is recorded. `None` in a test
     /// that only wants the head's queue.
     pub(crate) trail: Option<Arc<TrailMirror>>,
-    /// Text this harness generated for the next step boundary: the intent diff's
-    /// findings, and a monitor that fired mid-turn.
+    /// Sentences this harness generated for the next step boundary: the intent diff's findings, a
+    /// stalled round's steer, a claim's correction, a restart row. Each has already been through
+    /// the notice door, so what is queued here is what will be said.
     pub(crate) injected: Arc<Mutex<VecDeque<String>>>,
     /// This session's monitors, when it has an exec backend.
     pub(crate) monitors: Option<Arc<Monitors>>,
@@ -143,9 +148,18 @@ pub struct HubSteering {
 }
 
 impl HubSteering {
+    /// A sentence this source composed, through the one door (`turns::say`): a wake that arrives
+    /// mid-turn is offered to the same `notice_` layer the between-turns door asks, and a kind the
+    /// model is owed comes back whatever a layer answered.
+    fn said(&self, facts: &Facts, text: &str) -> String {
+        super::turns::say(self.host.as_deref(), &self.hub, facts, text)
+            .unwrap_or_else(|| text.to_string())
+    }
+
     pub fn new(hub: Arc<Hub>) -> Self {
         HubSteering {
             hub,
+            host: None,
             trail: None,
             injected: Arc::new(Mutex::new(VecDeque::new())),
             monitors: None,
@@ -218,6 +232,7 @@ impl SteeringSource for HubSteering {
                     // `Speaker::Agent`: an operator's words can authorise and be taken back, a parent's
                     // cannot. It arrives at the next round boundary, as context rather than an interrupt.
                     let said = message_from_a_session(&from, &text, self.parent.as_deref());
+                    let said = self.said(&Facts::Parent { from: from.clone() }, &said);
                     if let Some(t) = &self.trail {
                         t.say(Speaker::Agent, &said, Some(Instant::now()));
                     }
@@ -239,10 +254,17 @@ impl SteeringSource for HubSteering {
                     };
                     match settled {
                         Ok(line) => {
+                            let facts = Facts::Answer {
+                                row: content.clone(),
+                                question: question.clone(),
+                            };
+                            // The trail records the operator's own act, BEFORE any layer rewords it:
+                            // a rewritten answer must not be readable as the operator authorising
+                            // whatever a layer put in its place.
                             if let Some(t) = &self.trail {
                                 t.say(Speaker::Operator, &line, Some(Instant::now()));
                             }
-                            Some(SteeringMessage::normal(line))
+                            Some(SteeringMessage::normal(self.said(&facts, &line)))
                         }
                         Err(why) => {
                             self.hub.warn(
@@ -280,7 +302,8 @@ impl SteeringSource for HubSteering {
             crate::room::wake::take(&self.hub.session_id())
         };
         if !room.is_empty() {
-            let text = room.join("\n\n");
+            let facts = Facts::Room { items: room.len() };
+            let text = self.said(&facts, &room.join("\n\n"));
             if let Some(t) = &self.trail {
                 t.say(Speaker::Agent, &text, Some(Instant::now()));
             }
@@ -297,6 +320,7 @@ impl SteeringSource for HubSteering {
             && std::mem::take(&mut self.at_boundary)
             && let Some(text) = d.at_round_boundary()
         {
+            let text = self.said(&Facts::Job { jobs: Vec::new() }, &text);
             if let Some(t) = &self.trail {
                 t.say(Speaker::Agent, &text, Some(Instant::now()));
             }
@@ -322,6 +346,7 @@ impl SteeringSource for HubSteering {
             d.log_firings(&fired);
         }
         let text = monitor_notice(&fired)?;
+        let text = self.said(&monitor_facts(&fired), &text);
         if let Some(t) = &self.trail {
             t.say(Speaker::Agent, &text, Some(Instant::now()));
         }

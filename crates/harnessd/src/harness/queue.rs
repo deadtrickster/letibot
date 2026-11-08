@@ -3,6 +3,7 @@
 //! review board the queue's own session draws.
 
 use super::*;
+use letibot_plugin::notice::Facts;
 
 impl Harness {
     /// Whether this harness is the review queue's own session - the one
@@ -272,7 +273,27 @@ impl Harness {
     /// by the model. As a notice it reached nobody for hours, because a mailbox is read at the model's next
     /// turn and a quiet session has none. The held batch rides in with it, as for any break.
     pub fn census_turn(&mut self, text: &str) -> Result<Reply, HarnessError> {
-        self.submit_spoken(Speaker::Agent, text)
+        // Through the one notice door, with the census's own numbers: a layer may reword this and may
+        // NOT drop it, since a session never told its rows are stuck has been lied to by silence.
+        let facts = match self.stuck_census() {
+            Some(c) => Facts::Census {
+                rows: c.total,
+                states: c
+                    .states
+                    .iter()
+                    .map(|(state, rows)| letibot_plugin::notice::Stuck {
+                        state: state.to_string(),
+                        rows: *rows,
+                    })
+                    .collect(),
+            },
+            None => Facts::Census {
+                rows: 0,
+                states: Vec::new(),
+            },
+        };
+        let text = self.say_kept(&facts, text.to_string());
+        self.submit_spoken(Speaker::Agent, &text)
     }
 
     pub fn queue_notices(&mut self) -> Vec<String> {
