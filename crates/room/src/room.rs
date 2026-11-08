@@ -359,6 +359,10 @@ pub enum Refused {
     NotTheOwners {
         session: String,
     },
+    /// An ownership verb refused, in the sentence that names the holder or the scope.
+    Ownership {
+        why: String,
+    },
 }
 
 impl fmt::Display for Refused {
@@ -573,6 +577,7 @@ impl fmt::Display for Refused {
                 "ask #{ask} is `{asker}`'s: only the session that asked - or the operator's seat - \
                  can take it back"
             ),
+            Refused::Ownership { why } => write!(f, "{why}"),
             Refused::NotTheOwners { session } => write!(
                 f,
                 "`{session}` is not the session this connection speaks for: `retire` is sent by a \

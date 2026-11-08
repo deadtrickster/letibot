@@ -255,6 +255,13 @@ fn member_column(
                     Some(m.name.clone()),
                 ));
             }
+            if !seat.owns.is_empty() {
+                rows.push((
+                    format!("  owns {}", clean_line(&seat.owns.join(", "))),
+                    Role::Faint,
+                    Some(m.name.clone()),
+                ));
+            }
         }
     }
     if hidden > 0 {
@@ -543,6 +550,17 @@ impl App {
             out.push(pane::faint(format!(
                 "  {}",
                 trim_to(&clean_line(doing), rw.saturating_sub(2))
+            )));
+        }
+        if let Some(owns) = self
+            .rooms
+            .seat_of(id)
+            .filter(|x| !x.owns.is_empty())
+            .map(|x| x.owns.join(", "))
+        {
+            out.push(pane::faint(format!(
+                "  owns {}",
+                trim_to(&clean_line(&owns), rw.saturating_sub(7))
             )));
         }
         if dm > 0 {

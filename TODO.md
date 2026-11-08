@@ -46,8 +46,8 @@ One row per open entry. `left` is what is really left, checked against the tree.
 
 | id | title | group | left |
 |---|---|---|---|
-| R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Code work | overlap targeting (which sessions a passing-by line wakes) waits on R163; the R164 before/after numbers; the output cap on the local llama path |
-| R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Code work | ownership leases, ask escalation by presence, overlap wakes (R169's seam) |
+| R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Code work | the R164 before/after numbers; the output cap on the local llama path |
+| R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Code work | the measurements: asks sent to seats that could not act, orphaned scopes, edit conflicts between sessions |
 | R165 | Rooms for orchestration (3/6): a question goes to the owner, not the room | Code work | all of it |
 | R166 | Rooms for orchestration (4/6): kinds, budgets and a stopping rule for agent-only threads | Code work | all of it |
 | R167 | Rooms for orchestration (5/6): peer text is a claim with a source, never an instruction | Code work | all of it |
@@ -104,7 +104,7 @@ The operator, 2026-11-08: rooms exist for multi-agent orchestration, not open co
 
 ## R169 - Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet
 
-**Status:** open, filed 2026-11-08 by the operator. left: overlap targeting (R163), the R164 measurement, the local path's cap.
+**Status:** open, filed 2026-11-08 by the operator. left: the R164 measurement, the local path's cap.
 
 **Built** (branch z-r169):
 - Every delivered message is one header line then its text quoted: `#seq [room] from <author> (<operator|session|external|harness>) to <you|@you|dm|all|@others>[, re #N][, todo t-7][, passing by]` (`Message::delivered`, `crates/room/src/chat.rs`). The same header reaches Claude Code's channel events. Digests are `#seq [room] digest` and a shorter body.
@@ -114,7 +114,9 @@ The operator, 2026-11-08: rooms exist for multi-agent orchestration, not open co
 - A wake carrying only passing-by notes is a cheap turn (`wake::take_wake`, `Harness::cheaply`): thinking off (`TurnRequest::thinking`, GLM's `thinking: disabled`, the local lead closing reasoning) and 512 output tokens (`CHEAP_WAKE_TOKENS`), offers skipped. A cap or reasoning stop ends it silently; the intent and end-of-work nudges do not run. Prompts, addressed notes, results and firings wait for the full turn after it.
 - The room refuses short posts made only of "not for me", "not mine", "no action needed", "noted", "thanks", "+1" and close variants (`chat::is_null_post`, the operator exempt) with "end the turn and say nothing".
 
-**Left:** overlap targeting needs R163: today a passing-by line still wakes every member of the room (cheaply); the seam is the `TODO(R169)` at the wake decision in `crates/harnessd/src/room/link.rs`, which should consult leases and recent files and send the rest to the next digest. The local llama path gets thinking off but no cap (the no-`n_predict` rule). The R164-style before/after numbers (tokens and turns spent on silent wakes, refused null posts) wait on R164.
+**Overlap targeting** is built (R163, branch z-r163): a peer's passing-by line rings only a seat whose work it touches - a scope it owns, a file it edited, its branch or worktree (`SeatCell::overlaps`, at the wake decision in `crates/harnessd/src/room/link.rs`); the rest take it as a note on their next turn, and a seat with nothing to judge by is rung as before.
+
+**Left:** the local llama path gets thinking off but no cap (the no-`n_predict` rule). The R164-style before/after numbers (tokens and turns spent on silent wakes, refused null posts) wait on R164.
 
 The operator: models that receive a message they do not intend to act on overthink it ("this is not for me, I will just reply that it is not for me") and then post exactly that. The right response is silence: no reply, no narration, no reasoning about why it is not theirs.
 - The operator's messages wake unconditionally (the flowy rule, kept). `@mention` and DM stay distinct: a DM is private and addressed, an `@mention` is public and addressed.
@@ -129,12 +131,15 @@ Echoes: research failure mode 2 (over-acknowledgement) and the interruption-cost
 
 ## R163 - Rooms for orchestration (1/6): presence from facts and ownership as a lease
 
-**Status:** open, filed 2026-11-08. left: ownership as a lease, an ask to a seat that cannot act escalating at once, overlap wakes.
+**Status:** open, filed 2026-11-08. left: the measurements in **Done when** (asks sent to seats that could not act, orphaned scopes, edit conflicts), read from R164's ledger and the claims store once the rooms have run on it.
 
 **Built** (branch z-r163):
 - Derived presence in the roster (`crates/room/src/seat.rs`, `docs/room.md` **Presence**): each session's daemon sends `seat {facts}` on the link's tick (`SeatCell`, `crates/harnessd/src/room/seat.rs`); the coordinator joins them with the connection, open asks and queue waits into `stopped`, `unknown`, `rate_limited`, `waiting`, `in_turn`, `provider_error` or `idle` (with the last call's outcome). Connected with no or stale facts is `unknown`, never idle.
 - Derived working-on: the in-progress row, repo/branch/worktree from git's files, the last 3 files edited (from the edit tools' `ToolEvent::Finished`). `room status {text, ttl}` declares a line, 30 min by default, at most 4 h, cleared when its row closes; both are shown when they disagree.
 - Heads: `/rooms` draws `says` and `doing` under each member, the Sessions rows say the derived state (red when the seat cannot act); the rosters behind them are polled while Sessions rows exist, also with the view closed and the sidebar on.
+- Ownership as a lease (`crates/room/src/own.rs`, `docs/room.md` **Ownership**): `room own|hand|accept|release {scope, ttl, to, text}`, kept in the room's items store beside the queues' leases (record `claim`; not tokencore's `queue_lease`, which is one row per repository with a daemon as owner). Overlapping live claims are refused naming the holder; edits in a path scope and an in-progress row naming a topic renew; a hand holds until `accept`; an owner gone past the ask grace is told to the operator once in the project room, and the operator's seat may release. `own {thread}` is `Act::Claim` in R164's ledger. The roster lists `seat.owns`, and `/rooms` draws them.
+- An ask to a seat that cannot act escalates at once (`AskView::cannot`: rate-limited, a provider error, or no connection when asked); a target that stops after the ask keeps the grace. The card names the reason, and the other wordings of the same ask are taken down.
+- R169's seam: a peer's passing-by line rings only a seat it overlaps (owned scope, edited file, branch or worktree); the rest get it as a note on their next turn; nothing to judge by rings as before.
 
 Presence is not capability: `connected` proves a process polls, not that an agent can act. The roster shows state derived from harness facts, no agent input: in a turn (since when), idle (last turn ended T ago, last model call ok or failed), rate-limited until T, provider error, waiting on (an open ask, a queue wait), stopped; `connected` stays as a low-level fact. "Working on" is derived too: the in-progress todo row, repo/branch/worktree, the last files edited; an optional one-line declared status only with a TTL (default 30 min, max 4 h), cleared when its row closes, shown beside the derived one when they disagree. Ownership is a lease reusing the queue's lease machinery: `own {scope: path glob | topic, ttl}`, renewed by editing files or acting on rows in scope, expiring otherwise; overlapping live claims are refused naming the holder; `hand {scope, to, note}` needs the receiver's `accept` (closed loop), and until then the old owner holds it; a stopped owner's claims are flagged to the operator. An ask to a seat that cannot act escalates at once.
 Echoes: research §5 P1-P3 (Slack presence vs status, Dourish & Bellotti "derived from the work", SRE one owner and explicit handover); oracle "availability is probed, never configured" and "an unreadable sensor must never resolve to cold".

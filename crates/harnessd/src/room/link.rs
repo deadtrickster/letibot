@@ -89,7 +89,7 @@ pub struct SessionRoom {
     /// the board as it was and not news.
     todo_seen: Mutex<Option<std::collections::BTreeMap<String, String>>>,
     /// The harness's presence facts, sent on every tick. `None` on a fixture's link.
-    seat: Mutex<Option<Arc<super::seat::SeatCell>>>,
+    seat: Arc<Mutex<Option<Arc<super::seat::SeatCell>>>>,
 }
 
 /// Tell the room `session` has taken chat up to `seq`, which is its seen mark: the room retells
@@ -248,6 +248,7 @@ impl SessionRoom {
         // from the operator, or is said to a room it sits in. A tag's agent and the arbiter work
         // the queue and are never woken by chat.
         let recent: Arc<Mutex<std::collections::VecDeque<letibot_room::Message>>> = Arc::default();
+        let seat: Arc<Mutex<Option<Arc<super::seat::SeatCell>>>> = Arc::default();
         let invited: Arc<Mutex<std::collections::BTreeSet<String>>> = Arc::default();
         // The room its project makes - the host room for a session in no project, which is the
         // coordinator's own. Rule: a session is woken by its own rooms, never by host chatter
@@ -274,6 +275,7 @@ impl SessionRoom {
                 }
             };
             let plain = letibot_room::tag_of_session(&key, session).is_none() && !arbiter;
+            let judge = Arc::clone(&seat);
             client.on_chat(Arc::new(move |m: &letibot_room::Message, names: bool| {
                 {
                     let mut r = recent.lock().unwrap_or_else(|e| e.into_inner());
@@ -285,16 +287,23 @@ impl SessionRoom {
                 // The room's own facts (a todo row done, a queue move) are kind `system` and
                 // wake only the session they are addressed to; a session woke on its own rows.
                 let wakes = m.kind != letibot_room::Seat::System || names;
-                // TODO(R169): a passing-by line should wake only sessions whose work overlaps it
-                // (R163's leases and recent files); until then every member of the room, cheaply.
+                // A peer's passing line rings only a seat whose work it touches (an owned scope, an
+                // edited file, its branch); the rest take it as a note on their next turn. A seat
+                // with nothing to judge by is rung as before.
                 if plain && wakes && m.wakes(&me, names, &sits_in) {
-                    wake::push_chat(
-                        &me,
-                        m.seq,
-                        wake::reach(m, names),
-                        wake::chat_sentence(m, names),
-                    );
-                    bell(&me);
+                    let reach = wake::reach(m, names);
+                    let ring = reach != letibot_room::chat::Reach::Passing
+                        || m.kind == letibot_room::Seat::System
+                        || judge
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .as_ref()
+                            .and_then(|s| s.overlaps(&m.text))
+                            .unwrap_or(true);
+                    wake::push_chat(&me, m.seq, reach, wake::chat_sentence(m, names));
+                    if ring {
+                        bell(&me);
+                    }
                 } else if !wake::seen_meanwhile(&me, m.seq) {
                     // Nothing here will take it as a note, so it is seen on arrival.
                     ack_taken(&me, m.seq);
@@ -306,7 +315,7 @@ impl SessionRoom {
             invited,
             mine,
             todo_seen: Mutex::new(None),
-            seat: Mutex::new(None),
+            seat,
             client,
             session: session.to_string(),
             socket: socket.to_path_buf(),
@@ -391,7 +400,9 @@ impl SessionRoom {
             return;
         };
         let facts = seat.facts(letibot_room::server::now_ms());
-        let _ = self.client.request(&Request::Seat { facts });
+        if let Ok(Response::Seated { owns }) = self.client.request(&Request::Seat { facts }) {
+            seat.set_owns(owns);
+        }
     }
 
     /// Report a fact into this session's project room (or the host's when it has none), off the
@@ -1152,6 +1163,26 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
             body: s("body"),
         },
         "claim" => Request::Claim { id, tag: s("tag") },
+        "own" => Request::Own {
+            id,
+            scope: s("scope"),
+            ttl_ms: n("ttl").map(|m| m.saturating_mul(60_000)),
+            thread: n("thread"),
+        },
+        "hand" => Request::Hand {
+            id,
+            scope: s("scope"),
+            to: s("to"),
+            note: s("text"),
+        },
+        "accept" => Request::Accept {
+            id,
+            scope: s("scope"),
+        },
+        "release" => Request::Release {
+            id,
+            scope: s("scope"),
+        },
         "claim_item" => Request::ClaimItem {
             id,
             item: n("item").ok_or("`claim_item` needs `item`")?,
@@ -1404,7 +1435,8 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
         Response::Members { count } => {
             format!("the room now holds {count} session(s) of this project")
         }
-        Response::Seated => "the room has this session's presence".to_string(),
+        Response::Seated { .. } => "the room has this session's presence".to_string(),
+        Response::Owned { said, .. } => said.clone(),
         Response::Bye { why } => return Err(format!("the room closed the connection: {why}")),
         Response::Welcome { .. } => format!(
             "the room is open to `{me}` (protocol {})",
@@ -1733,6 +1765,7 @@ mod tests {
             asked_ms: 1,
             gone_since_ms: gone.then_some(2),
             escalated: false,
+            cannot: String::new(),
             state,
         };
         let answered = answer_sentence(

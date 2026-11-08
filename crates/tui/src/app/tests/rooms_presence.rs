@@ -18,7 +18,7 @@ fn host_with_seats(a: &mut App) {
         json!({"type": "roster", "room": "host", "rows": [
             {"name": "alpha", "id": "s-x", "kind": "session", "connected": true, "project": "",
              "label": "alpha", "seat": {"state": "in_turn", "since_ms": 1, "connected": true,
-             "says": "in turn 3m", "doing": "letibot@z-r163"}},
+             "says": "in turn 3m", "doing": "letibot@z-r163", "owns": ["crates/room/** 52m left"]}},
             {"name": "beta", "id": "s-y", "kind": "session", "connected": true, "project": "",
              "label": "beta", "seat": {"state": "rate_limited", "until_ms": 9, "words": "",
              "connected": true, "says": "rate-limited, 4m left", "doing": ""}},
@@ -35,6 +35,10 @@ fn the_member_column_draws_the_coordinators_presence_under_each_seat() {
     let at = |n: &str| rows.iter().position(|r| r.contains(n)).unwrap();
     assert!(at("in turn 3m") == at("● s alpha") + 1, "{all}");
     assert!(at("letibot@z-r163") == at("in turn 3m") + 1, "{all}");
+    assert!(
+        at("owns crates/room/**") == at("letibot@z-r163") + 1,
+        "{all}"
+    );
     assert!(row_with(&rows, "rate-limited, 4m left").contains("rate-limited"));
 }
 

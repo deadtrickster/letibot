@@ -583,9 +583,9 @@ fn the_asker_withdraws_and_the_operator_may_too() {
 }
 
 /// An ask of a session that is not connected now is accepted - a service that is briefly down is a
-/// fault to repair, not an answer - and the reply carries the fact so the model is told.
+/// fault to repair, not an answer - and, since that seat cannot act, it escalates at once.
 #[test]
-fn an_ask_of_a_session_that_is_not_connected_starts_its_grace_at_the_ask() {
+fn an_ask_of_a_session_that_is_not_connected_escalates_at_once() {
     let dir = Scratch::new();
     let server = coordinator(&dir);
     let a = seat(&server, "s-a", A, Seat::Session);
@@ -597,6 +597,17 @@ fn an_ask_of_a_session_that_is_not_connected_starts_its_grace_at_the_ask() {
         ask.gone_since_ms.is_some(),
         "the reply says the target is not connected now: {ask:?}"
     );
-    assert!(!ask.escalated, "the grace starts at the ask, not before it");
+    assert!(
+        ask.escalated,
+        "a seat that cannot act is no grace's business"
+    );
+    assert_eq!(ask.cannot, "was stopped when asked");
     assert!(server.gone_since("s-b").is_some());
+    // Back, the escalation is withdrawn.
+    let _b = seat(&server, "s-b", A, Seat::Session);
+    let (by_me, _) = a.asks();
+    assert!(
+        !by_me[0].escalated && by_me[0].cannot.is_empty(),
+        "{by_me:?}"
+    );
 }

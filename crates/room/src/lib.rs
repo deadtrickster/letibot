@@ -7,6 +7,7 @@ pub mod chat;
 pub mod client;
 pub mod item;
 pub mod lease;
+pub mod own;
 pub mod restart;
 pub mod room;
 pub mod seat;

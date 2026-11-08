@@ -130,6 +130,9 @@ pub fn settle_class(settle: &AskSettle) -> &'static str {
 /// The two halves say different things because they are different situations: the asker is told its
 /// target stopped, and the target is told the session waiting on it is not running.
 pub fn escalation_question(ask: &AskView, me: &str) -> String {
+    if ask.asker == me && !ask.cannot.is_empty() {
+        return cannot_question(ask, &ask.cannot, me);
+    }
     if ask.asker == me {
         format!(
             "`{}` stopped and `{me}` waits on its answer to \"{}\" - please restart it",
@@ -151,12 +154,41 @@ pub fn escalation_question(ask: &AskView, me: &str) -> String {
 /// either side. `on` is the room's `escalated` - the other end has been gone past the grace - and
 /// false is the card being withdrawn, which is what happens the moment it comes back.
 pub fn escalations(by_me: &[AskView], of_me: &[AskView], me: &str) -> Vec<(u64, String, bool)> {
-    by_me
-        .iter()
-        .chain(of_me.iter())
-        .filter(|a| a.open())
-        .map(|a| (a.seq, escalation_question(a, me), a.escalated))
-        .collect()
+    let mut out = Vec::new();
+    for a in by_me.iter().chain(of_me.iter()).filter(|a| a.open()) {
+        let now = escalation_question(a, me);
+        // The card is keyed by its words, so a reason that changed takes the other wordings down.
+        if a.asker == me {
+            let gone = AskView {
+                cannot: String::new(),
+                ..a.clone()
+            };
+            for other in std::iter::once(escalation_question(&gone, me))
+                .chain(CANNOT.iter().map(|why| cannot_question(a, why, me)))
+                .filter(|q| *q != now)
+            {
+                out.push((a.seq, other, false));
+            }
+        }
+        out.push((a.seq, now, a.escalated));
+    }
+    out
+}
+
+/// The room's reasons a target cannot act on an ask now: each escalates at once.
+pub const CANNOT: [&str; 3] = [
+    "is rate-limited",
+    "has a provider error",
+    "was stopped when asked",
+];
+
+/// The card for a target that cannot act, by the room's reason. No clock, like the other card.
+fn cannot_question(ask: &AskView, why: &str, me: &str) -> String {
+    format!(
+        "`{}` {why} and `{me}` waits on its answer to \"{}\" - restart it, wait, or answer for it",
+        ask.target,
+        ask.question.trim()
+    )
 }
 
 #[cfg(test)]
@@ -173,12 +205,39 @@ mod tests {
             asked_ms: 1_000,
             gone_since_ms: None,
             escalated: false,
+            cannot: String::new(),
             state,
         }
     }
 
     fn open(seq: u64) -> AskView {
         ask(seq, "s-arango", "s-serenedb", AskState::Open)
+    }
+
+    /// A target that cannot act is its own card, raised at once, and the other wordings of the
+    /// same ask are taken down so a changed reason never leaves a stale card.
+    #[test]
+    fn a_target_that_cannot_act_raises_its_own_card_and_lowers_the_others() {
+        let mut a = open(7);
+        a.escalated = true;
+        a.cannot = "is rate-limited".into();
+        let cards = escalations(&[a], &[], "s-arango");
+        let on: Vec<_> = cards.iter().filter(|c| c.2).collect();
+        assert_eq!(on.len(), 1, "{cards:?}");
+        assert!(
+            on[0].1.contains("`s-serenedb` is rate-limited"),
+            "{}",
+            on[0].1
+        );
+        assert!(
+            cards.iter().any(|c| !c.2 && c.1.contains("stopped and")),
+            "{cards:?}"
+        );
+        assert!(
+            cards
+                .iter()
+                .any(|c| !c.2 && c.1.contains("was stopped when asked"))
+        );
     }
 
     /// A row per OPEN ask of mine, keyed by the ask, and none at all once it has ended - the nag is
@@ -321,11 +380,16 @@ mod tests {
     fn the_operator_card_is_keyed_by_its_own_words_and_says_which_side_stopped() {
         let mut gone = open(7);
         let quiet = escalations(&[gone.clone()], &[], "s-arango");
-        assert_eq!(quiet.len(), 1);
-        assert!(!quiet[0].2, "nothing is owed while the target is up");
+        assert!(
+            quiet.iter().all(|c| !c.2),
+            "nothing is owed while the target is up"
+        );
 
         gone.escalated = true;
-        let loud = escalations(&[gone.clone()], &[], "s-arango");
+        let loud: Vec<_> = escalations(&[gone.clone()], &[], "s-arango")
+            .into_iter()
+            .filter(|c| c.2)
+            .collect();
         assert_eq!(
             loud,
             vec![(7, escalation_question(&gone, "s-arango"), true)]

@@ -121,6 +121,9 @@ pub(crate) struct SeatRow {
     /// What it works on: the row, `repo@branch`, the last files.
     #[serde(default)]
     pub doing: String,
+    /// Its live ownership claims, worded: `crates/room/** 52m left`.
+    #[serde(default)]
+    pub owns: Vec<String>,
 }
 
 impl SeatRow {

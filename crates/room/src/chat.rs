@@ -651,6 +651,10 @@ pub struct AskView {
     /// `gone_since_ms`, never stored.
     #[serde(default)]
     pub escalated: bool,
+    /// Why the target cannot act on it now, which escalates at once: `rate-limited`, `has a
+    /// provider error`, or `was stopped when asked`. Derived, never stored.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cannot: String,
     pub state: AskState,
 }
 
@@ -961,6 +965,7 @@ impl Chat {
                 ask: AskView {
                     gone_since_ms: None,
                     escalated: false,
+                    cannot: String::new(),
                     ..ask.clone()
                 },
             });
@@ -1148,6 +1153,7 @@ impl Chat {
             asked_ms: now,
             gone_since_ms: None,
             escalated: false,
+            cannot: String::new(),
             state: AskState::Open,
         };
         self.asks.insert(seq, ask.clone());

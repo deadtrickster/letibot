@@ -22,8 +22,18 @@ pub const RING: usize = 500;
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Record {
-    Item { project: String, item: Item },
-    Question { project: String, question: Question },
+    Item {
+        project: String,
+        item: Item,
+    },
+    Question {
+        project: String,
+        question: Question,
+    },
+    Claim {
+        project: String,
+        claim: crate::own::Claim,
+    },
 }
 
 /// One store per host, shared by every project's room so all append to one file and a compaction
@@ -34,6 +44,7 @@ pub struct Store {
     bytes: u64,
     items: BTreeMap<String, BTreeMap<u64, Item>>,
     questions: BTreeMap<String, BTreeMap<u64, Question>>,
+    claims: BTreeMap<String, BTreeMap<u64, crate::own::Claim>>,
 }
 
 impl std::fmt::Debug for Store {
@@ -64,6 +75,7 @@ impl Store {
             bytes: text.len() as u64,
             items: BTreeMap::new(),
             questions: BTreeMap::new(),
+            claims: BTreeMap::new(),
         };
         for (n, line) in text.lines().enumerate() {
             match serde_json::from_str::<Record>(line) {
@@ -73,6 +85,13 @@ impl Store {
                         .entry(project)
                         .or_default()
                         .insert(item.id, item);
+                }
+                Ok(Record::Claim { project, claim }) => {
+                    store
+                        .claims
+                        .entry(project)
+                        .or_default()
+                        .insert(claim.id, claim);
                 }
                 Ok(Record::Question { project, question }) => {
                     store
@@ -143,6 +162,37 @@ impl Store {
         }]);
     }
 
+    /// Every project's ownership claims as the file last had them, ended ones included.
+    pub fn claims(&self) -> BTreeMap<String, Vec<crate::own::Claim>> {
+        self.claims
+            .iter()
+            .map(|(p, rows)| (p.clone(), rows.values().cloned().collect()))
+            .collect()
+    }
+
+    /// Put an ownership claim as it now stands.
+    pub fn put_claim(&mut self, project: &str, claim: crate::own::Claim) {
+        {
+            let rows = self.claims.entry(project.to_string()).or_default();
+            rows.insert(claim.id, claim.clone());
+            let ended: Vec<u64> = rows
+                .values()
+                .filter(|c| c.ended.is_some())
+                .map(|c| c.id)
+                .collect();
+            for id in ended
+                .iter()
+                .take(ended.len().saturating_sub(crate::own::ENDED_KEEP))
+            {
+                rows.remove(id);
+            }
+        }
+        self.write(&[Record::Claim {
+            project: project.to_string(),
+            claim,
+        }]);
+    }
+
     /// Put the question as it now stands - asked, or answered.
     pub fn put_question(&mut self, project: &str, question: Question) {
         {
@@ -184,7 +234,8 @@ impl Store {
     /// a measure: it only keeps a small room from compacting on every beat.
     fn compact(&mut self) {
         let rows = self.items.values().map(BTreeMap::len).sum::<usize>()
-            + self.questions.values().map(BTreeMap::len).sum::<usize>();
+            + self.questions.values().map(BTreeMap::len).sum::<usize>()
+            + self.claims.values().map(BTreeMap::len).sum::<usize>();
         if self.bytes <= (rows as u64 * 512).max(64 * 1024) {
             return;
         }
@@ -205,6 +256,17 @@ impl Store {
                 if let Ok(line) = serde_json::to_string(&Record::Question {
                     project: project.clone(),
                     question: question.clone(),
+                }) {
+                    buf.push_str(&line);
+                    buf.push('\n');
+                }
+            }
+        }
+        for (project, rows) in &self.claims {
+            for claim in rows.values() {
+                if let Ok(line) = serde_json::to_string(&Record::Claim {
+                    project: project.clone(),
+                    claim: claim.clone(),
                 }) {
                     buf.push_str(&line);
                     buf.push('\n');

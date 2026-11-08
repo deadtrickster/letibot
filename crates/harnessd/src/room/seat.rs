@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use letibot_room::seat::{Call, Declared, RECENT_FILES, SeatFacts, WorkingOn, status_ttl};
+use letibot_room::seat::{Call, Declared, Edit, RECENT_FILES, SeatFacts, WorkingOn, status_ttl};
 use letibot_sessionlog::Hub;
 use letibot_sessionlog::event::{TodoEntry, TodoStatus, todo_title};
 
@@ -16,6 +16,8 @@ pub struct SeatCell {
     facts: Mutex<SeatFacts>,
     /// The rows not yet closed, by title: a declared status set on a row clears when it closes.
     open_rows: Mutex<Vec<String>>,
+    /// This seat's live claims as the room last answered: what a passing line is judged against.
+    owns: Mutex<Vec<String>>,
 }
 
 impl SeatCell {
@@ -25,6 +27,7 @@ impl SeatCell {
             hub,
             facts: Mutex::new(SeatFacts::default()),
             open_rows: Mutex::new(Vec::new()),
+            owns: Mutex::new(Vec::new()),
         })
     }
 
@@ -70,6 +73,10 @@ impl SeatCell {
 
     /// A file this session changed, relative to its root as the edit tools label it.
     pub fn edited(&self, path: &str) {
+        self.edited_at(path, letibot_room::server::now_ms());
+    }
+
+    pub fn edited_at(&self, path: &str, at_ms: u64) {
         let path = path.trim().to_string();
         if path.is_empty() {
             return;
@@ -77,9 +84,20 @@ impl SeatCell {
         self.with(|f| {
             let files = &mut f.working.files;
             files.retain(|p| *p != path);
-            files.insert(0, path);
+            files.insert(0, path.clone());
             files.truncate(RECENT_FILES);
+            f.edits.retain(|e| e.path != path);
+            f.edits.insert(0, Edit { path, at_ms });
+            f.edits.truncate(RECENT_FILES);
         });
+    }
+
+    pub fn set_owns(&self, owns: Vec<String>) {
+        *self.owns.lock().unwrap_or_else(|e| e.into_inner()) = owns;
+    }
+
+    pub fn owns(&self) -> Vec<String> {
+        self.owns.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// The board changed: the in-progress row is what it works on, and a status set on a row that
@@ -162,6 +180,60 @@ impl SeatCell {
             f.cards = cards;
             f.clone()
         })
+    }
+
+    /// Does a passing line touch this seat's work: a scope it owns, a file it edited, its branch
+    /// or worktree? `None` when the seat has nothing to judge by, and the caller wakes as before.
+    pub fn overlaps(&self, text: &str) -> Option<bool> {
+        let owns = self.owns();
+        let w = self.with(|f| f.working.clone());
+        let (repo_branch, worktree) = {
+            let (_, b, t) = git_place(&self.workspace);
+            (b, t)
+        };
+        let branch = Some(repo_branch).filter(|b| !matches!(b.as_str(), "" | "main" | "master"));
+        let worktree = Some(worktree).filter(|t| !t.is_empty());
+        if owns.is_empty() && w.files.is_empty() && branch.is_none() && worktree.is_none() {
+            return None;
+        }
+        let lower = text.to_lowercase();
+        let words: Vec<&str> = text
+            .split(|c: char| {
+                c.is_whitespace() || matches!(c, '`' | '"' | '\'' | ',' | ';' | '(' | ')')
+            })
+            .map(|t| t.trim_end_matches(['.', ':', '!', '?']))
+            .filter(|t| !t.is_empty())
+            .collect();
+        let named_path = |scope: &str| {
+            words.iter().any(|t| {
+                letibot_room::own::is_path(t)
+                    && (letibot_room::own::covers(scope, t)
+                        || letibot_room::own::overlap(scope, &letibot_room::own::normalise(t)))
+            })
+        };
+        let owned = owns.iter().any(|scope| {
+            if letibot_room::own::is_path(scope) {
+                named_path(scope)
+            } else {
+                lower
+                    .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
+                    .any(|t| t == scope)
+            }
+        });
+        let edited = w.files.iter().any(|f| {
+            let base = f.rsplit('/').next().unwrap_or(f);
+            words.iter().any(|t| {
+                *t == f
+                    || t.ends_with(&format!("/{f}"))
+                    || f.ends_with(&format!("/{t}"))
+                    || (*t == base && base.contains('.'))
+            })
+        });
+        let place = [branch, worktree]
+            .into_iter()
+            .flatten()
+            .any(|p| words.iter().any(|t| *t == p));
+        Some(owned || edited || place)
     }
 
     /// What the seat works on now, for the ownership renewal and the wake's overlap.
@@ -329,6 +401,93 @@ mod tests {
         assert!(seat.says.starts_with("in turn"), "{}", seat.says);
         assert!(seat.doing.starts_with("\"bisecting\""), "{}", seat.doing);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `own` through the link reaches the room, the tick brings the scope back, and a passing
+    /// line rings the owner only when it names the scope; otherwise it waits as a note.
+    #[test]
+    fn a_passing_line_rings_only_the_seat_whose_scope_it_names() {
+        let dir = std::env::temp_dir().join(format!("letibot-seat-ring-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let _server = letibot_room::Server::serve(&path, letibot_room::Room::new())
+            .expect("a room to talk to");
+        let rung: Arc<Mutex<Vec<String>>> = Arc::default();
+        let bell: Arc<dyn Fn(&str) + Send + Sync> = {
+            let rung = Arc::clone(&rung);
+            Arc::new(move |s: &str| rung.lock().unwrap().push(s.to_string()))
+        };
+        let connect = |id: &str| {
+            crate::room::link::SessionRoom::connect(
+                id,
+                &path,
+                letibot_room::DEFAULT_PROJECT,
+                None,
+                bell.clone(),
+                None,
+            )
+            .expect("connects")
+        };
+        let (me, other) = (connect("s-ring-a"), connect("s-ring-b"));
+        let cell = SeatCell::new(&dir, None);
+        me.set_seat(cell.clone());
+        let said = me
+            .call("own", &serde_json::json!({"scope": "crates/room/**"}))
+            .expect("own");
+        assert!(said.starts_with("you own `crates/room/**`"), "{said}");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while cell.owns().is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(cell.owns(), ["crates/room/**"]);
+
+        let say = |text: &str| {
+            other
+                .call("say", &serde_json::json!({"room": "host", "text": text}))
+                .expect("say");
+        };
+        let rang_for_me = || {
+            rung.lock()
+                .unwrap()
+                .iter()
+                .filter(|s| *s == "s-ring-a")
+                .count()
+        };
+        say("lunch anyone?");
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        assert_eq!(rang_for_me(), 0, "no overlap: no bell");
+        say("crates/room/src/own.rs panics on an empty scope");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while rang_for_me() == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(rang_for_me(), 1, "the owner is rung");
+        let notes = crate::room::wake::take("s-ring-a");
+        assert!(
+            notes.iter().any(|n| n.contains("lunch anyone?")),
+            "the other line waits as a note: {notes:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_passing_line_overlaps_an_owned_scope_an_edited_file_or_the_branch() {
+        let c = SeatCell::new("/nowhere", None);
+        assert_eq!(c.overlaps("the gate is red"), None, "nothing to judge by");
+        c.set_owns(vec!["crates/room/**".into(), "flaky-gate".into()]);
+        c.edited("crates/tui/src/app/rooms.rs");
+        assert_eq!(
+            c.overlaps("why does `crates/room/src/own.rs` panic?"),
+            Some(true)
+        );
+        assert_eq!(c.overlaps("the flaky-gate is back"), Some(true));
+        assert_eq!(
+            c.overlaps("rooms.rs has a typo"),
+            Some(true),
+            "an edited file by name"
+        );
+        assert_eq!(c.overlaps("lunch?"), Some(false));
+        assert_eq!(c.overlaps("crates/http/src/lib.rs is slow"), Some(false));
     }
 
     #[test]

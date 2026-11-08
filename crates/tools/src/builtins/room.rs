@@ -147,7 +147,7 @@ impl Tool for RoomTool {
                     },
                     "thread": {
                         "type": "integer",
-                        "description": "`say`: the seq you answer; it names its author, no `to`. `read`: that thread."
+                        "description": "`say`, `own`: the seq you answer; it names its author. `read`: that thread."
                     },
                     "todo": {
                         "type": "string",
@@ -348,6 +348,8 @@ fn dispatch(
             }
         }
         "say" if !nonempty(args, "text") => Some("text"),
+        "own" | "accept" | "release" | "hand" if !nonempty(args, "scope") => Some("scope"),
+        "hand" if !nonempty(args, "to") => Some("to"),
         "answer" | "decline" => {
             if args.get("ask").and_then(|v| v.as_u64()).is_none() {
                 Some("ask")
@@ -543,6 +545,31 @@ mod tests {
         assert!(s.description.len() <= 800, "{} bytes", s.description.len());
         assert!(params <= 2450, "{params} bytes of parameters");
         assert!(!s.description.contains('\u{2014}'), "no em dash");
+    }
+
+    /// The ownership verbs need their scope, and a hand its receiver, before the room is asked.
+    #[test]
+    fn ownership_verbs_need_a_scope_and_a_hand_its_receiver() {
+        let link = Recorder::new(Ok("you own `docs/**`"));
+        for verb in ["own", "accept", "release", "hand"] {
+            let (ok, text) = invoke(link.clone(), json!({"verb": verb}));
+            assert!(!ok && text.contains("`scope`"), "{verb}: {text}");
+        }
+        let (ok, text) = invoke(link.clone(), json!({"verb": "hand", "scope": "docs/**"}));
+        assert!(!ok && text.contains("`to`"), "{text}");
+        let (ok, _) = invoke(
+            link.clone(),
+            json!({"verb": "own", "scope": "docs/**", "ttl": 30}),
+        );
+        assert!(ok);
+        let seen = link.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "only the complete call reached the room");
+        assert_eq!(seen[0].0, "own");
+        let s = RoomTool::new(Arc::new(NoRoom)).schema();
+        let verbs = s.parameters["properties"]["verb"]["enum"].to_string();
+        for v in ["own", "hand", "accept", "release", "status"] {
+            assert!(verbs.contains(&format!("\"{v}\"")), "{v} is in the schema");
+        }
     }
 
     /// The standing rule is said once per context, here, and nowhere else in the schema.

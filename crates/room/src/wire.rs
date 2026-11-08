@@ -235,6 +235,28 @@ pub enum Request {
     /// This session's facts, from its daemon, every tick: what its roster presence is derived
     /// from. A replacement with no id, like [`Request::Members`].
     Seat { facts: crate::seat::SeatFacts },
+    /// Own `scope` (a path glob or a topic) for `ttl_ms`, or renew this session's own claim on it.
+    /// `thread` is the message the claim answers, for the signal ledger.
+    Own {
+        id: String,
+        scope: String,
+        #[serde(default)]
+        ttl_ms: Option<u64>,
+        #[serde(default)]
+        thread: Option<u64>,
+    },
+    /// Offer an owned scope to `to`; the owner holds it until `to` accepts.
+    Hand {
+        id: String,
+        scope: String,
+        to: String,
+        #[serde(default)]
+        note: String,
+    },
+    /// Take a scope handed to this session.
+    Accept { id: String, scope: String },
+    /// End a claim: its owner, the operator's seat, or the receiver declining a handover.
+    Release { id: String, scope: String },
     /// A tag's queue, in order - the read that makes polling unnecessary after a reconnect.
     Queue { tag: String },
     /// What a session holds and what it is waiting on. `session: None` means *me*.
@@ -308,6 +330,10 @@ impl Request {
             | Request::Decline { id, .. }
             | Request::Withdraw { id, .. }
             | Request::Retire { id, .. }
+            | Request::Own { id, .. }
+            | Request::Hand { id, .. }
+            | Request::Accept { id, .. }
+            | Request::Release { id, .. }
             | Request::Post { id, .. }
             | Request::Claim { id, .. }
             | Request::ClaimItem { id, .. }
@@ -443,7 +469,17 @@ pub enum Response {
         count: u64,
     },
     /// The answer to [`Request::Seat`].
-    Seated,
+    Seated {
+        /// This session's live claims, by scope: what its daemon judges a passing line against.
+        #[serde(default)]
+        owns: Vec<String>,
+    },
+    /// The claim an ownership verb made, moved or ended, and the sentence for the caller.
+    Owned {
+        id: String,
+        claim: crate::own::Claim,
+        said: String,
+    },
     Rooms {
         rows: Vec<crate::chat::RoomInfo>,
     },
@@ -726,6 +762,10 @@ impl Room {
             | Request::Retire { .. }
             | Request::Asks
             | Request::Seat { .. }
+            | Request::Own { .. }
+            | Request::Hand { .. }
+            | Request::Accept { .. }
+            | Request::Release { .. }
             | Request::Leave { .. } => Answer::quiet(Response::Refused {
                 id: request.request_id().map(str::to_string),
                 why: Refused::ChatIsTheServers,

@@ -180,6 +180,11 @@ struct Inner {
     /// Each session's last facts from its daemon and when they arrived: what the roster's
     /// presence is derived from. Never stored, a daemon says them again within a second.
     seats: Mutex<BTreeMap<String, (crate::seat::SeatFacts, u64)>>,
+    /// Each project's ownership claims, kept in the items store beside the queues' leases.
+    claims: Mutex<BTreeMap<String, crate::own::Claims>>,
+    /// Open asks whose target had no connection when it was asked: escalated at once while it
+    /// is still away. Memory only, a restart gives them the grace again.
+    asked_absent: Mutex<BTreeSet<u64>>,
     /// How long a session may be gone before the operator is asked to restart it -
     /// [`ASK_GRACE_MS`], or what a test set. A liveness fact never settles an ask; it escalates.
     ask_grace_ms: AtomicU64,
@@ -277,6 +282,8 @@ impl Server {
                 operator_token,
                 gone_since: Mutex::new(BTreeMap::new()),
                 seats: Mutex::new(BTreeMap::new()),
+                claims: Mutex::new(BTreeMap::new()),
+                asked_absent: Mutex::new(BTreeSet::new()),
                 ask_grace_ms: AtomicU64::new(ASK_GRACE_MS),
                 blobs: Mutex::new(crate::blob::Blobs::open(&path.with_extension("blobs"))),
                 blob_rewrites: AtomicU64::new(0),
@@ -423,6 +430,11 @@ impl Server {
         if !projects.iter().any(|p| p == crate::DEFAULT_PROJECT) {
             projects.push(crate::DEFAULT_PROJECT.to_string());
         }
+        let claims = store.lock().unwrap_or_else(|e| e.into_inner()).claims();
+        *self.inner.claims.lock().expect("the claims lock") = claims
+            .into_iter()
+            .map(|(p, rows)| (p, crate::own::Claims::from_rows(rows)))
+            .collect();
         for project in projects {
             let mut rooms = self.inner.rooms.lock().expect("the rooms lock");
             let room = rooms
@@ -693,15 +705,23 @@ impl Server {
         }
         // A session's facts, kept under the connection's own name: a daemon reports only its own.
         if let Request::Seat { facts } = frame {
+            let mut owns = Vec::new();
             if seat == Seat::Session {
                 self.inner
                     .seats
                     .lock()
                     .expect("the seats lock")
                     .insert(who.session.clone(), (facts.clone(), now));
+                owns = self.renew_claims(project, &who.session, facts, now);
             }
             return Answer {
-                response: Response::Seated,
+                response: Response::Seated { owns },
+                events: Vec::new(),
+            };
+        }
+        if let Some(response) = self.ownership_frame(project, seat, &who.session, frame, now) {
+            return Answer {
+                response,
                 events: Vec::new(),
             };
         }
@@ -850,6 +870,7 @@ impl Server {
         // the `Ask` that asked it, so a room restarted under an open ask counts from its start,
         // and a settle that has been kept long enough goes.
         self.sweep_asks(now);
+        self.sweep_claims(now);
         all
     }
 
@@ -1754,7 +1775,330 @@ impl Server {
             heard_ms: heard,
             waits,
         };
-        crate::seat::derive(facts.as_ref(), &side, now)
+        let mut view = crate::seat::derive(facts.as_ref(), &side, now);
+        view.owns = self
+            .inner
+            .claims
+            .lock()
+            .expect("the claims lock")
+            .values()
+            .flat_map(|c| c.live_of(session, now))
+            .map(|c| c.line(now))
+            .collect();
+        view
+    }
+
+    // ===== Ownership =====
+
+    /// Run `f` on one project's claims, then keep what it changed in the items store.
+    fn with_claims<R>(
+        &self,
+        project: &str,
+        f: impl FnOnce(&mut crate::own::Claims) -> (R, Vec<crate::own::Claim>),
+    ) -> R {
+        let (out, changed) = {
+            let mut all = self.inner.claims.lock().expect("the claims lock");
+            f(all.entry(project.to_string()).or_default())
+        };
+        if !changed.is_empty()
+            && let Some(store) = self
+                .inner
+                .items
+                .lock()
+                .expect("the items store lock")
+                .clone()
+        {
+            let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
+            for c in changed {
+                store.put_claim(project, c);
+            }
+        }
+        out
+    }
+
+    /// A seat's own work renews its claims, and its being back clears a stopped-owner flag.
+    /// Returns its live scopes.
+    fn renew_claims(
+        &self,
+        project: &str,
+        session: &str,
+        facts: &crate::seat::SeatFacts,
+        now: u64,
+    ) -> Vec<String> {
+        let edits: Vec<(String, u64)> = facts
+            .edits
+            .iter()
+            .map(|e| (e.path.clone(), e.at_ms))
+            .collect();
+        self.with_claims(project, |claims| {
+            let mut changed = claims.renew(session, &edits, &facts.working.row, now);
+            let flagged: Vec<u64> = claims
+                .live_of(session, now)
+                .iter()
+                .filter(|c| c.flagged)
+                .map(|c| c.id)
+                .collect();
+            changed.extend(flagged.into_iter().filter_map(|id| claims.flag(id, false)));
+            let owns = claims
+                .live_of(session, now)
+                .iter()
+                .map(|c| c.scope.clone())
+                .collect();
+            (owns, changed)
+        })
+    }
+
+    /// `own`, `hand`, `accept`, `release`; `None` for any other frame.
+    fn ownership_frame(
+        &self,
+        project: &str,
+        seat: Seat,
+        name: &str,
+        frame: &Request,
+        now: u64,
+    ) -> Option<Response> {
+        let refuse = |id: &str, why: String| Response::Refused {
+            id: Some(id.to_string()),
+            why: crate::Refused::Ownership { why },
+        };
+        let session_only = |id: &str| {
+            (seat != Seat::Session).then(|| {
+                refuse(
+                    id,
+                    "only a session owns a scope: a claim is renewed by the owner's own edits"
+                        .into(),
+                )
+            })
+        };
+        let owned = |id: &str, claim: crate::own::Claim, said: String| Response::Owned {
+            id: id.to_string(),
+            claim,
+            said,
+        };
+        Some(match frame {
+            Request::Own {
+                id,
+                scope,
+                ttl_ms,
+                thread,
+            } => {
+                if let Some(r) = session_only(id) {
+                    return Some(r);
+                }
+                let got = self.with_claims(project, |c| match c.own(name, scope, *ttl_ms, now) {
+                    Ok(claim) => (Ok(claim.clone()), vec![claim]),
+                    Err(why) => (Err(why), Vec::new()),
+                });
+                match got {
+                    Ok(claim) => {
+                        if let Some(seq) = thread {
+                            self.note_act(*seq, crate::signal::Act::Claim, name);
+                        }
+                        let said = format!(
+                            "you own `{}` for {}, renewed by your edits in it",
+                            claim.scope,
+                            crate::item::duration(claim.ttl_ms)
+                        );
+                        owned(id, claim, said)
+                    }
+                    Err(why) => refuse(id, why),
+                }
+            }
+            Request::Hand {
+                id,
+                scope,
+                to,
+                note,
+            } => {
+                if let Some(r) = session_only(id) {
+                    return Some(r);
+                }
+                let asked = to.trim().trim_start_matches('@');
+                let target = match self.resolve_name(project, asked) {
+                    Ok(t) => t,
+                    Err(candidates) => {
+                        return Some(Response::Refused {
+                            id: Some(id.clone()),
+                            why: crate::Refused::Ambiguous {
+                                name: asked.to_string(),
+                                candidates,
+                            },
+                        });
+                    }
+                };
+                let got =
+                    self.with_claims(project, |c| match c.hand(name, scope, &target, note, now) {
+                        Ok(claim) => (Ok(claim.clone()), vec![claim]),
+                        Err(why) => (Err(why), Vec::new()),
+                    });
+                let claim = match got {
+                    Ok(claim) => claim,
+                    Err(why) => return Some(refuse(id, why)),
+                };
+                let mut text = format!(
+                    "`{name}` hands you `{}`; `room accept` it to own it, `release` to decline",
+                    claim.scope
+                );
+                if !note.trim().is_empty() {
+                    text.push_str(&format!(": {}", note.trim()));
+                }
+                let told = self.append_and_push(
+                    &format!("own:{}:hand:{now}", claim.id),
+                    &Self::default_chat_room(Seat::Session, project),
+                    "room",
+                    Seat::System,
+                    Some(target.clone()),
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                    &text,
+                    now,
+                );
+                let claim = match told {
+                    Response::Said { message, .. } => {
+                        self.with_claims(project, |c| match c.hand_told(claim.id, message.seq) {
+                            Some(k) => (k.clone(), vec![k]),
+                            None => (claim, Vec::new()),
+                        })
+                    }
+                    _ => claim,
+                };
+                let said = format!(
+                    "`{}` is offered to `{target}`; it stays yours until they accept",
+                    claim.scope
+                );
+                owned(id, claim, said)
+            }
+            Request::Accept { id, scope } => {
+                if let Some(r) = session_only(id) {
+                    return Some(r);
+                }
+                let got = self.with_claims(project, |c| match c.accept(name, scope, now) {
+                    Ok((claim, was, seq)) => (Ok((claim.clone(), was, seq)), vec![claim]),
+                    Err(why) => (Err(why), Vec::new()),
+                });
+                match got {
+                    Ok((claim, was, seq)) => {
+                        if let Some(seq) = seq {
+                            self.note_act(seq, crate::signal::Act::Claim, name);
+                        }
+                        let said = format!("you own `{}`, handed over by `{was}`", claim.scope);
+                        owned(id, claim, said)
+                    }
+                    Err(why) => refuse(id, why),
+                }
+            }
+            Request::Release { id, scope } => {
+                // The operator's seat is in no project: it releases wherever the scope is held.
+                let project = if seat.is_wide() {
+                    let want = crate::own::normalise(scope);
+                    self.inner
+                        .claims
+                        .lock()
+                        .expect("the claims lock")
+                        .iter()
+                        .find(|(_, c)| c.live(now).iter().any(|k| k.scope == want))
+                        .map(|(p, _)| p.clone())
+                        .unwrap_or_else(|| project.to_string())
+                } else {
+                    project.to_string()
+                };
+                let project = project.as_str();
+                let got = self.with_claims(project, |c| {
+                    match c.release(name, scope, seat.is_wide(), now) {
+                        Ok(claim) => (Ok(claim.clone()), vec![claim]),
+                        Err(why) => (Err(why), Vec::new()),
+                    }
+                });
+                match got {
+                    Ok(claim) if claim.ended.is_none() => {
+                        let said = format!("you declined `{}`", claim.scope);
+                        owned(id, claim, said)
+                    }
+                    Ok(claim) => {
+                        let said = format!("`{}` is nobody's now", claim.scope);
+                        owned(id, claim, said)
+                    }
+                    Err(why) => refuse(id, why),
+                }
+            }
+            _ => return None,
+        })
+    }
+
+    /// The claims' clock: end the ones past their TTL, and tell the operator once about a live
+    /// claim whose owner has been gone past the ask grace, so a stopped owner's scope is not orphaned.
+    fn sweep_claims(&self, now: u64) {
+        let here: BTreeSet<String> = self
+            .conn_list()
+            .iter()
+            .map(|c| c.who.session.clone())
+            .collect();
+        let projects: Vec<String> = self
+            .inner
+            .claims
+            .lock()
+            .expect("the claims lock")
+            .keys()
+            .cloned()
+            .collect();
+        let grace = self.ask_grace_ms();
+        for project in projects {
+            let owners: Vec<String> = self.with_claims(&project, |c| {
+                let owners = c
+                    .live(now)
+                    .iter()
+                    .map(|k| k.owner.clone())
+                    .filter(|o| !here.contains(o))
+                    .collect();
+                (owners, c.sweep(now))
+            });
+            if !owners.is_empty() {
+                let mut gone = self.inner.gone_since.lock().expect("the gone-since lock");
+                for o in &owners {
+                    gone.entry(o.clone()).or_insert(now);
+                }
+            }
+            let due: Vec<String> = owners
+                .into_iter()
+                .filter(|o| {
+                    self.gone_since(o)
+                        .is_some_and(|g| now.saturating_sub(g) >= grace)
+                })
+                .collect();
+            let flagged = self.with_claims(&project, |c| {
+                let ids: Vec<u64> = c
+                    .live(now)
+                    .iter()
+                    .filter(|k| !k.flagged && due.contains(&k.owner))
+                    .map(|k| k.id)
+                    .collect();
+                let moved: Vec<crate::own::Claim> =
+                    ids.into_iter().filter_map(|id| c.flag(id, true)).collect();
+                (moved.clone(), moved)
+            });
+            for claim in flagged {
+                let text = format!(
+                    "`{}` stopped and still owns `{}` ({} left): restart it, or `release` the \
+                     scope from the operator's seat",
+                    claim.owner,
+                    claim.scope,
+                    crate::item::duration(claim.left_ms(now))
+                );
+                let _ = self.append_and_push(
+                    &format!("own:{}:stopped:{now}", claim.id),
+                    &Self::default_chat_room(Seat::Session, &project),
+                    "room",
+                    Seat::System,
+                    Some(chat::OPERATOR.to_string()),
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                    &text,
+                    now,
+                );
+            }
+        }
     }
 
     /// The chat messages in the log, for a test.
@@ -2545,11 +2889,41 @@ impl Server {
     fn ask_view(&self, ask: &chat::AskView, me: &str, now: u64) -> chat::AskView {
         let peer = ask.peer_of(me);
         let gone = self.gone_since(&peer);
+        // A target that cannot act escalates at once; one that stops after the ask keeps the grace.
+        let cannot = if ask.open() && peer == ask.target {
+            self.cannot_act(&peer, gone, ask.seq, now)
+        } else {
+            String::new()
+        };
         chat::AskView {
             gone_since_ms: gone,
             escalated: ask.open()
-                && gone.is_some_and(|g| now.saturating_sub(g) >= self.ask_grace_ms()),
+                && (!cannot.is_empty()
+                    || gone.is_some_and(|g| now.saturating_sub(g) >= self.ask_grace_ms())),
+            cannot,
             ..ask.clone()
+        }
+    }
+
+    /// Why `target` cannot act on an ask now, empty when it can or its state is unknown.
+    fn cannot_act(&self, target: &str, gone: Option<u64>, ask: u64, now: u64) -> String {
+        if gone.is_some() {
+            let absent = self
+                .inner
+                .asked_absent
+                .lock()
+                .expect("the asked-absent lock")
+                .contains(&ask);
+            return if absent {
+                "was stopped when asked".into()
+            } else {
+                String::new()
+            };
+        }
+        match self.seat_view(target, true, now).state {
+            crate::seat::SeatState::RateLimited { .. } => "is rate-limited".into(),
+            crate::seat::SeatState::ProviderError { .. } => "has a provider error".into(),
+            _ => String::new(),
         }
     }
 
@@ -2696,6 +3070,11 @@ impl Server {
         // The grace starts at the ask when the target is not connected now, so the operator is
         // told at the same distance from the asking either way.
         if !self.conn_list().iter().any(|c| c.who.session == target) {
+            self.inner
+                .asked_absent
+                .lock()
+                .expect("the asked-absent lock")
+                .insert(ask.seq);
             self.inner
                 .gone_since
                 .lock()

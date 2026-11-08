@@ -122,6 +122,16 @@ pub struct SeatFacts {
     pub cards: u32,
     #[serde(default)]
     pub working: WorkingOn,
+    /// The recent edits with their instants, newest first: what renews a path claim.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edits: Vec<Edit>,
+}
+
+/// One file edit and when it landed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Edit {
+    pub path: String,
+    pub at_ms: u64,
 }
 
 /// The derived state, in the order it is judged: a seat that cannot act says why first.
@@ -229,6 +239,9 @@ pub struct SeatView {
     /// `working` in words.
     #[serde(default)]
     pub doing: String,
+    /// Its live ownership claims, worded: `crates/room/** 52m left`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owns: Vec<String>,
 }
 
 /// What the coordinator knows beside the facts: the connection and what the seat waits on in the room.
@@ -254,6 +267,7 @@ pub fn derive(facts: Option<&SeatFacts>, room: &RoomSide, now: u64) -> SeatView 
         connected: room.connected,
         last_call,
         working,
+        owns: Vec::new(),
     }
 }
 

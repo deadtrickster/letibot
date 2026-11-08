@@ -77,6 +77,10 @@ its row is done, cancelled, detached or re-worded, and raises the operator's car
   `LETIBOT_ROOM_ASK_GRACE_MS` for a test: the ask stays OPEN and the operator is asked to restart it,
   *"`serenedb` stopped and `arango` waits on its answer to \"which port?\" — please restart it"*. A
   restart inside the grace is invisible, and the card is withdrawn the moment the target reconnects.
+- The target cannot act on it (its presence, **Presence**): rate-limited, a provider error, or no
+  connection at the moment it was asked. The operator's card goes up at once, naming the reason
+  (`AskView::cannot`), and comes down when the reason does. A target that stops after the ask keeps
+  the grace.
 - The asker gone is the same, from the other side: the target's row says the asker is not running and
   the operator is asked to restart it. The target can still answer, and the answer waits in the room.
 
@@ -324,6 +328,27 @@ when it was said and cleared when that row closes. When the two disagree the ros
 `says` and `doing` are the coordinator's words for `state` and `working`: `/rooms` draws them under
 each member and on the Sessions rows, and the bridge's `room_roster` returns them.
 
+### Ownership
+
+A session owns a scope - a path glob (`crates/room/**`) or a topic word - as a lease:
+
+```text
+room {"verb": "own", "scope": "crates/room/**", "ttl": 60}
+room {"verb": "hand", "scope": "crates/room/**", "to": "serenedb", "text": "the wire half is done"}
+room {"verb": "accept", "scope": "crates/room/**"}
+room {"verb": "release", "scope": "crates/room/**"}
+```
+
+`ttl` is minutes, 60 by default and at most 240. The owner's edits in a path scope renew it, and a
+topic is renewed while the owner's in-progress row names it; otherwise it expires. A live claim that
+overlaps another session's is refused, naming the holder and how long is left (paths overlap by cover,
+or by literal prefix when either has a wildcard; topics by equality). `hand` posts a line to the
+receiver and the scope stays the old owner's until the receiver `accept`s; the receiver's `release`
+declines it. An owner gone past the ask grace is told to the operator once, in the project room, and
+the operator's seat may `release` any scope. `own` with `thread` records the claim as acting on that
+message in the signal ledger (`Act::Claim`). Claims are kept in the items store beside the queues'
+leases (record `claim`), and the roster's `seat.owns` lists them.
+
 ### History
 
 Each room keeps its newest **500** messages, and **256 KiB** of text. The oldest is dropped first. The
@@ -349,7 +374,8 @@ name.
 | `notify {id, room, source, text, refs?}` | `said` | daemons only, kind `system` |
 | `read {room, since?, last?, thread?, before?}` | `history {room, rows, last_seq, trimmed}` | moves no cursor. `last` defaults to 200, the most one read returns. `thread` returns the root and replies. `before` is a seq: the newest `last` messages older than it, one page back |
 | `roster {room}` | `roster {room, rows}` | `name`, `id`, `kind`, `connected`, `project`, `label`, and `seat` for a session (see **Presence**) |
-| `seat {facts}` | `seated` | a session's daemon, every tick: the facts its presence is derived from. Kept under the connection's own name, never stored |
+| `own {id, scope, ttl_ms?, thread?}`, `hand {id, scope, to, note}`, `accept {id, scope}`, `release {id, scope}` | `owned {id, claim, said}` | see **Ownership**; a refusal is `refused {why: ownership}` naming the holder |
+| `seat {facts}` | `seated {owns}` | a session's daemon, every tick: the facts its presence is derived from. Kept under the connection's own name, never stored |
 | `inbox {attention?, limit?}` | `inbox {rows, skipped, cursor, head}` | what was missed since the cursor. Moves nothing |
 | `ack {seq}` | `acked {cursor}` | moves the cursor forward only, never past the head |
 | `ask {id, room, to, question}` | `asked {id, ask}` | posts the question as a `say` addressed to `to` with a ref `{"kind": "ask", "id": <seq>}` and holds the ask. `room` empty is the project room. A session connection only; the same asker, target and question already open answers the SAME ask |
@@ -444,6 +470,11 @@ everyone's room:
 2. anything the operator says, wherever he says it;
 3. a message said to a whole room (no `to`, no `@`, no `thread`) in a room the session SITS IN: its own
    project room, or the host room for a session in no project, plus each room it was invited into.
+
+A peer's line that reaches a session only under rule 3 (passing by) rings it only when the line touches
+its work: names a scope it owns, a file it edited, or its branch or worktree (`SeatCell::overlaps`).
+Otherwise it is queued as a note for the session's next turn and rings nothing. A session with nothing
+to judge by (no claims, no edits, on `main`) is rung as before.
 
 So a session is never woken by the host room's talk between two others - not by their broadcast, and not
 by a mention of somebody else - and never by another project's room. The host room keeps the operator's

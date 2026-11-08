@@ -131,7 +131,7 @@ fn the_roster_derives_each_seats_state_from_its_facts_and_the_room() {
             facts: facts.clone()
         })
         .unwrap(),
-        Response::Seated
+        Response::Seated { .. }
     ));
     let s = row(&op, "s-a").seat.unwrap();
     assert!(s.says.starts_with("in turn 5s"), "{}", s.says);
@@ -189,4 +189,48 @@ fn a_seat_reports_only_its_own_facts() {
     let s = row(&op, "s-a").seat.unwrap();
     assert!(matches!(s.state, SeatState::Unknown { .. }), "{s:?}");
     drop(a);
+}
+
+#[test]
+fn an_ask_to_a_rate_limited_seat_escalates_at_once_and_clears_when_it_lifts() {
+    let dir = Scratch::new();
+    let server = Server::serve(&dir.0.join("room.sock"), Room::new()).expect("a coordinator");
+    let a = seat(&server, "s-a", Seat::Session);
+    let b = seat(&server, "s-b", Seat::Session);
+    let now = letibot_metrics::now_ms();
+    let limited = |until: Option<u64>| SeatFacts {
+        limited_until_ms: until,
+        ..SeatFacts::default()
+    };
+    b.request(&Request::Seat {
+        facts: limited(Some(now + 600_000)),
+    })
+    .unwrap();
+    let Response::Asked { ask, .. } = a
+        .request(&Request::Ask {
+            id: "q1".into(),
+            room: String::new(),
+            to: "s-b".into(),
+            question: "which port?".into(),
+        })
+        .unwrap()
+    else {
+        panic!("asked")
+    };
+    assert!(
+        ask.escalated,
+        "no grace for a seat that cannot act: {ask:?}"
+    );
+    assert_eq!(ask.cannot, "is rate-limited");
+    b.request(&Request::Seat {
+        facts: limited(None),
+    })
+    .unwrap();
+    let Response::Asks { by_me, .. } = a.request(&Request::Asks).unwrap() else {
+        panic!("asks")
+    };
+    assert!(
+        !by_me[0].escalated && by_me[0].cannot.is_empty(),
+        "{by_me:?}"
+    );
 }
