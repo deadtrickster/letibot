@@ -63,6 +63,7 @@ pub mod schema;
 pub mod secrets;
 pub mod similarity;
 pub mod spill;
+pub mod view;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -105,6 +106,7 @@ pub use spill::{
     FixedBudget, InlineBudget, MemoryStore, NoBudget, PerToolBudget, PredictedBudget, SpillContext,
     SpillEntry, SpillRef, SpillStore, Spiller,
 };
+pub use view::{ViewAccess, ViewAsk, ViewGrants};
 
 /// The read-only tool set, in the order the prompt lists them. Order is part of the stable prefix, so
 /// reordering these re-prefills the whole conversation: it is written down once rather than assembled

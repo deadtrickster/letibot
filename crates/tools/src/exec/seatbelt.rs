@@ -978,6 +978,10 @@ impl Confinement for Seatbelt {
         self.boundary.outside_paths(output)
     }
 
+    fn refused_write_paths(&self, output: &str) -> Vec<PathBuf> {
+        self.boundary.refused_write_paths(output)
+    }
+
     /// `sandbox-exec`'s own diagnostics are prefixed `sandbox-exec: `, the same heuristic
     /// [`super::confine::Bwrap`] uses for `bwrap: ` and with the same caveat: a command that
     /// printed such a line is misattributed, which beats calling a failed launch the answer.

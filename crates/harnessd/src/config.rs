@@ -456,6 +456,10 @@ pub struct Config {
     /// the spawn). `None` before open, and then the level's default table is the answer. Shared, so
     /// a spawn clones a handle and not a list.
     pub perimeter: Option<std::sync::Arc<letibot_tools::exec::perimeter::Perimeter>>,
+    /// The paths the operator granted into this session's view mid-session, made at open and
+    /// SHARED with every child: a grant on a directory covers what is under it, and one grant
+    /// answering for a whole tree is one card instead of one per subagent.
+    pub view_grants: Option<std::sync::Arc<letibot_tools::view::ViewGrants>>,
     /// Which search provider is behind `web_search`, by name (`brave`), or `None` for the tool
     /// that refuses. The key is deliberately not here: it is resolved at attach, so a secret
     /// never rides in a struct that derives `Debug`.
@@ -1622,6 +1626,7 @@ impl Config {
             flowy: None,
             downgrade: letibot_tools::schema::Downgrade::none(),
             perimeter: None,
+            view_grants: None,
             web_search: default_web_search(),
             web_fetch: false,
             context_window: None,

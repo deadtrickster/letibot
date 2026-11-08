@@ -791,6 +791,12 @@ impl Harness {
             let p = crate::perimeter::of(cfg).map_err(HarnessError::Setup)?;
             cfg.perimeter = Some(Arc::new(p));
         }
+        // And the record of what the operator granted into the view mid-session. Made HERE rather
+        // than at the gate, because a child is built from this config: a registry the gate alone
+        // held would be one record per session, and five siblings ask one question five times.
+        if cfg.view_grants.is_none() {
+            cfg.view_grants = Some(Arc::new(letibot_tools::view::ViewGrants::new()));
+        }
         let may_exec = !cfg.downgrade.denies(Cls::Exec);
         let may_write = !cfg.downgrade.denies(Cls::Write);
         // Set by the arms that hand the session the whole host, so the prompt and the head both
@@ -2604,7 +2610,20 @@ impl Harness {
                     .with_floor_hook(std::sync::Arc::new(crate::plugins::FloorHooks::new(
                         plugin_slot.clone(),
                         hub.clone(),
-                    )));
+                    )))
+                    // What this tree was already granted into its view, so a second ask for a
+                    // path a grant covers is not a question at all.
+                    .with_view_grants(match &cfg.view_grants {
+                        Some(g) => Arc::clone(g),
+                        None => Arc::new(letibot_tools::view::ViewGrants::new()),
+                    })
+                    // And whose call an ask is, when it is not this session's own: a subagent's
+                    // card is drawn at the tree's root, where nobody sees which child asked.
+                    .with_asker(
+                        cfg.parent_session_id
+                            .is_some()
+                            .then(|| cfg.session_id.clone()),
+                    );
                 let g = match advisor {
                     // A point whose decider is the MODEL starts supervised: `Decider::Model` is the
                     // whole content of the point, and a session that opened at automode with the
@@ -4733,6 +4752,54 @@ mod no_boundary_tests {
         // And the view a confined session would state is still absent, so the two cannot read
         // alike: `whole_host_brief` is chosen by the flag and not by a missing boundary.
         assert_eq!(view_brief(None), None);
+    }
+
+    /// A grant made in a session covers its subagents: the record is made once, at the session's
+    /// open, and a child's config is the parent's (`children.rs` spreads `..self.base.clone()`),
+    /// so five siblings ask one question once rather than five times.
+    #[test]
+    fn a_child_is_built_with_its_parents_view_grants() {
+        use letibot_tools::view::ViewAccess;
+        let dir = std::env::temp_dir().join(format!("letibot-viewgrants-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a fixture workspace");
+        let mut cfg = Config::for_this_box(&dir);
+        cfg.seat = Seat::Leticode;
+        cfg.unconfined = true;
+        cfg.allow_bash = false;
+        cfg.session_id = "s-view-parent".into();
+        let hub = Hub::new(&cfg.session_id);
+        let registry = letibot_sessionlog::registry::Registry::new();
+        Harness::place_the_tools(&mut cfg, &hub, &registry).expect("the parent's tools are placed");
+        let parent = cfg.view_grants.clone().expect("a record at open");
+
+        // The child's config as `children.rs` assembles it: the parent's, with its own id and
+        // parent, and no field of its own for the record.
+        let mut child = Config {
+            session_id: "sub-1794122961532460811".into(),
+            parent_session_id: Some("s-view-parent".into()),
+            ..cfg.clone()
+        };
+        Harness::place_the_tools(&mut child, &hub, &registry)
+            .expect("the child's tools are placed");
+        let theirs = child
+            .view_grants
+            .clone()
+            .expect("a record at the child's open");
+        assert!(
+            std::sync::Arc::ptr_eq(&parent, &theirs),
+            "a child was opened with a record of its own, so it asks again what its parent answered"
+        );
+        // The same record, either way round: the grant one of them gets is the other's.
+        theirs.record(std::path::Path::new("/build"), false);
+        assert_eq!(
+            parent.covers(
+                std::path::Path::new("/build/letibot-r114/review"),
+                ViewAccess::Read
+            ),
+            Some(false)
+        );
+        hub.close();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

@@ -435,6 +435,12 @@ pub trait ProcessHost: Send + Sync {
         Vec::new()
     }
 
+    /// The paths a command could not write although they are inside the view: a path bound in
+    /// read-only is absent from nowhere, so its refusal is the only sign of the boundary.
+    fn refused_write_paths(&self, _output: &str) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
+
     fn launcher_failure(&self, _output: &str) -> Option<String> {
         None
     }
@@ -2810,6 +2816,13 @@ impl ProcessHost for HostProcesses {
             .read()
             .expect("confinement")
             .outside_paths(output)
+    }
+
+    fn refused_write_paths(&self, output: &str) -> Vec<std::path::PathBuf> {
+        self.confine
+            .read()
+            .expect("confinement")
+            .refused_write_paths(output)
     }
 
     fn launcher_failure(&self, output: &str) -> Option<String> {

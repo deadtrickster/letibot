@@ -53,7 +53,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R166 | Rooms for orchestration (4/6): kinds, budgets and a stopping rule for agent-only threads | Code work | all of it |
 | R167 | Rooms for orchestration (5/6): peer text is a claim with a source, never an instruction | Code work | all of it |
 | R168 | Rooms for orchestration (6/6): the room refuses acks and echoes, and long posts become filed records | Code work | all of it |
-| R162 | A granted directory does not cover what is under it, and every subagent asks for the same path again | Code work | all of it |
+| R162 | A granted directory does not cover what is under it, and every subagent asks for the same path again | Code work | a grant covers what is under it at that access, a tree's grants are shared with its subagents, one path is one card, and the card names the asker — built; left: an end-to-end run against a real `bwrap` view, which this box cannot open |
 | R161 | A `bash` call that writes a file is not shown as an edit | Code work | a diff for each file when a command changes more than one (one result carries one `edit` excerpt), and a sweep for a command run in the background — the sweep of the tree the command actually ran in, the single-file diff, the ledger and the nudge are built |
 | R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement) |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | leticl's `:turn-finished` arm (`src/session/seq-gap.lisp:254`) does not read `ends_turn`, so every round's end is drawn as the turn's end |
@@ -244,7 +244,7 @@ Wanted: a child whose placement is a firecode VM may not end its turn with a run
 
 ## R162 - A granted directory does not cover what is under it, and every subagent asks again
 
-**Status:** not started. left: all of it.
+**Status:** built. left: an end-to-end run against a real `bwrap` view — this box cannot open a user namespace (`ENOSPC`), so every confined test here reds instead of measuring, and what is proven is the ask, not the mount.
 
 Seen 2026-11-08 on the R114 package (`s-1794122590449014652`), local placement, whose brief names `/build/letibot-r114/` as its scratch directory. In about 30 s the bridge got 14 filesystem-view asks for that one tree:
 
@@ -253,6 +253,16 @@ Seen 2026-11-08 on the R114 package (`s-1794122590449014652`), local placement, 
 - Five subagents asked for `/build/letibot-r114/review/` one after another. A grant to one subagent is not seen by its siblings or its parent session.
 
 Wanted: a grant on a directory covers every path under it at that access, a grant made in a session covers its subagents, and a second ask for a path a grant already covers is never raised. The ask cards should also say which subagent asked.
+
+Built. `crates/tools/src/view.rs` is the record: `ViewGrants`, a list of `(path, writable)` keyed on a path's canonical components, so every spelling of one path is one entry and `/build-other` is not under `/build`. A read-write grant covers reads and writes below it, a read-only one covers reads below it and not writes. `Gate::grant_view` carries the access now (`ViewAccess`) and asks the record before it asks anybody: a covered path raises no card, and a path with a card already up is WAITED on instead of asked again, so two subagents asking at once are one card whose answer releases both (`SHARED_ASK_WAIT` bounds that wait at a card's own order, and a timeout is `NotAsked` — nobody decided — never a refusal).
+
+The record is made once per TREE, at the session's open (`Config::view_grants`, `harness::place_the_tools`), and a child is built from its parent's config (`children.rs` spreads `..self.base.clone()`), so a grant one subagent receives is its siblings' and its parent's. A session whose backend cannot bind the path still gets no second card: the answer is the record's, and the `.grant_into_view` that follows is that session's own business. A deny stays per call — it is not written down, and the next ask is a card again.
+
+The card names the asker beside the path — `` `bash`, asked by subagent `sub-…`, named `…` `` — from `AdjudicatedGate::with_asker`, set by the daemon for a child session only.
+
+A write below a read-only grant is its own ask, and nothing was asking it: a path bound in read-only is absent from nowhere, so `bash` saw `Read-only file system` and only the read half of the boundary was reported. `Boundary::refused_write_paths` now reads that refusal back for a path this view holds read-only, and `bash` reports it as a `ViewAccess::Write` ask.
+
+Tests: `crates/tools/src/view.rs` (6), `adjudicate::tests::view` (8), `runtime::tests` (2, through a real `ToolRuntime` and gate) and `harnessd`'s `a_child_is_built_with_its_parents_view_grants`.
 
 ---
 

@@ -13,13 +13,32 @@ use crate::schema::{Access, ToolSchema, lint_description};
 use crate::spill::{SpillContext, Spiller};
 
 /// What came back from asking whether a path may enter the session's view.
-/// Three outcomes and not two: a refusal is somebody saying no, and `NotAsked` is
-/// nobody having been asked, which is the same distinction `not_run` draws.
+/// The outcomes are not two: a refusal is somebody saying no, `Covered` is a grant already in
+/// hand (so no question was asked), and `NotAsked` is nobody having been asked at all, which is
+/// the same distinction `not_run` draws.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ViewGrant {
-    Granted { writable: bool },
+    Granted {
+        writable: bool,
+    },
+    /// A grant this session (or its tree) already holds covers the path. No card was raised, and
+    /// the path still has to be bound into THIS session's view: the grant may have been made in
+    /// a sibling's.
+    Covered {
+        writable: bool,
+    },
     Refused(String),
     NotAsked,
+}
+
+impl ViewGrant {
+    /// The access this answer gives the path, if it gives one.
+    pub fn writable(&self) -> Option<bool> {
+        match self {
+            ViewGrant::Granted { writable } | ViewGrant::Covered { writable } => Some(*writable),
+            _ => None,
+        }
+    }
 }
 
 /// What a tool hands back. The outcome is the tool's decision and the runtime
@@ -36,9 +55,10 @@ pub struct Invocation {
     /// one; a `bash` call that swept several pushes each (R161).
     pub edits: Vec<crate::edit::FileEdit>,
     /// Paths this call could not see because they are outside the session's
-    /// filesystem view. Read off the boundary, not guessed from the output; empty for
-    /// every call that saw everything it named. Non-empty raises a grant decision.
-    pub needs_in_view: Vec<std::path::PathBuf>,
+    /// filesystem view, and what the call wanted to do with each. Read off the boundary, not
+    /// guessed from the output; empty for every call that saw everything it named. Non-empty
+    /// raises a grant decision.
+    pub needs_in_view: Vec<crate::view::ViewAsk>,
     /// Bytes this call read that are not text, an image today. A field and not an event
     /// because the row is the durable artifact; unlike `edit`, which is display-only,
     /// this one exists to be sent. `None` for every call but one.
@@ -768,10 +788,16 @@ pub trait Gate: Send + Sync {
         Standing::default()
     }
 
-    /// May this session see `path`? Asked when a call named something the boundary hid, so the
-    /// operator gets the question instead of the model getting a dead end. The default is
-    /// `NotAsked`: not a refusal, because nobody decided, and not silence.
-    fn grant_view(&mut self, _path: &std::path::Path, _tool: &str) -> ViewGrant {
+    /// May this session see `path` at `access`? Asked when a call named something the boundary
+    /// hid, so the operator gets the question instead of the model getting a dead end. The
+    /// access is part of the question: a read-only grant answers a read and not a write. The
+    /// default is `NotAsked`: not a refusal, because nobody decided, and not silence.
+    fn grant_view(
+        &mut self,
+        _path: &std::path::Path,
+        _tool: &str,
+        _access: crate::view::ViewAccess,
+    ) -> ViewGrant {
         ViewGrant::NotAsked
     }
 
@@ -2173,8 +2199,9 @@ impl ToolRuntime {
             }
         }
         if !invocation.needs_in_view.is_empty() {
-            let asked: Vec<std::path::PathBuf> = std::mem::take(&mut invocation.needs_in_view);
-            for path in asked {
+            let asked: Vec<crate::view::ViewAsk> = std::mem::take(&mut invocation.needs_in_view);
+            for ask in asked {
+                let path = ask.path;
                 // An operator's own call does not raise a view-grant card: its whole ruling is
                 // nobody left to ask. Nothing is lost, because `bash` has already put the same
                 // finding in its notes, so the row still names what the boundary hid.
@@ -2185,7 +2212,7 @@ impl ToolRuntime {
                     .gate
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .grant_view(&path, &schema.name)
+                    .grant_view(&path, &schema.name, ask.access)
                 {
                     ViewGrant::Refused(why) => {
                         invocation.notes.push(format!(
@@ -2194,29 +2221,38 @@ impl ToolRuntime {
                         ));
                     }
                     ViewGrant::NotAsked => {}
-                    ViewGrant::Granted { writable } => {
-                        match self.backend.grant_into_view(
+                    // Both answers bind the path into THIS session's view, and only the note
+                    // differs: `Covered` is a grant the tree already holds, so no card was raised.
+                    granted @ (ViewGrant::Granted { .. } | ViewGrant::Covered { .. }) => {
+                        let writable = granted.writable().unwrap_or(false);
+                        let how = if matches!(granted, ViewGrant::Covered { .. }) {
+                            "by a grant this session's tree already holds"
+                        } else {
+                            "by your answer"
+                        };
+                        let note = match self.backend.grant_into_view(
                             &path,
                             writable,
                             &format!("granted mid-session for `{}`", schema.name),
                         ) {
-                            Ok(view) => invocation.notes.push(format!(
-                                "`{}` is now in this session's view{}, by your answer. \
-                                 The command above already ran without it — run it again \
-                                 and it will see the path. The view is now: {view}",
+                            Ok(view) => format!(
+                                "`{}` is now in this session's view{} {how}. The command above \
+                                 already ran without it — run it again and it will see the path. \
+                                 The view is now: {view}",
                                 path.display(),
                                 if writable {
                                     ", writable"
                                 } else {
                                     ", read-only"
                                 },
-                            )),
-                            Err(e) => invocation.notes.push(format!(
+                            ),
+                            Err(e) => format!(
                                 "`{}` was approved but could not be bound into the view, \
                                  so nothing changed: {e}",
                                 path.display()
-                            )),
-                        }
+                            ),
+                        };
+                        invocation.notes.push(note);
                     }
                 }
             }
@@ -2545,6 +2581,140 @@ mod tests {
         // rather than complicate every caller.
         std::mem::forget(d);
         ToolRuntime::new(reg, Box::new(backend)).with_gate(Box::new(ExplodingGate))
+    }
+
+    // -----------------------------------------------------------------------
+    // The view ask: a path the boundary hid, and the one card a tree gets for it
+    // -----------------------------------------------------------------------
+
+    /// A tool that could not see the path it was asked for, as `bash` reports one it read off
+    /// its own output. What the runtime does with that finding is the whole of these tests.
+    struct Hidden {
+        access: crate::view::ViewAccess,
+    }
+
+    impl Tool for Hidden {
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new(
+                "hidden",
+                "Read something the boundary hid.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                }),
+                Access::Read,
+            )
+        }
+        fn invoke(&self, _ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
+            let mut inv = Invocation::ok("the boundary hid it");
+            inv.needs_in_view = vec![crate::view::ViewAsk {
+                path: std::path::PathBuf::from(args["path"].as_str().unwrap_or_default()),
+                access: self.access,
+            }];
+            inv
+        }
+    }
+
+    /// Answers every view card by granting read and write, and counts the cards: "no card" is
+    /// the claim most of these make, and it cannot be read off an answer.
+    struct GrantsReadWrite {
+        cards: std::sync::Arc<std::sync::Mutex<Vec<crate::view::ViewAccess>>>,
+    }
+
+    impl crate::adjudicate::Adjudicator for GrantsReadWrite {
+        fn decide(
+            &self,
+            req: &crate::adjudicate::AdjudicationRequest,
+        ) -> crate::adjudicate::AdjudicationDecision {
+            let access = if req.class.access == Access::Write {
+                crate::view::ViewAccess::Write
+            } else {
+                crate::view::ViewAccess::Read
+            };
+            self.cards
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(access);
+            crate::adjudicate::AdjudicationDecision::selected(
+                req,
+                "grant_rw",
+                "human:test",
+                "because",
+            )
+        }
+        fn describe(&self) -> String {
+            "asked at the head: a test".into()
+        }
+    }
+
+    /// A runtime over a backend with no view of its own, and a gate over one tree's record.
+    /// The backend cannot bind what it grants here - it starts no processes - so these tests
+    /// read the ASK, which is the question R162 is about, and not the mount.
+    fn view_runtime(
+        access: crate::view::ViewAccess,
+    ) -> (
+        ToolRuntime,
+        std::sync::Arc<std::sync::Mutex<Vec<crate::view::ViewAccess>>>,
+    ) {
+        let cards = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let view = std::sync::Arc::new(crate::view::ViewGrants::new());
+        let gate = crate::adjudicate::AdjudicatedGate::new(Box::new(GrantsReadWrite {
+            cards: std::sync::Arc::clone(&cards),
+        }))
+        .with_identity("s-test", "agent")
+        .with_view_grants(view);
+        let mut reg = Registry::new();
+        reg.register(Box::new(Hidden { access })).unwrap();
+        let d = crate::backend::tempdir::TempDir::new();
+        let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+        std::mem::forget(d);
+        (
+            ToolRuntime::new(reg, Box::new(backend)).with_gate(Box::new(gate)),
+            cards,
+        )
+    }
+
+    /// R162: a grant on a directory covers every path under it, and a name that only starts the
+    /// same way is a different directory. This is the whole path from a tool's finding to the
+    /// one card a tree gets for it.
+    #[test]
+    fn a_path_a_grant_covers_raises_no_card_and_a_lookalike_name_still_does() {
+        let (rt, cards) = view_runtime(crate::view::ViewAccess::Read);
+        let mut sink = RecordingToolSink::default();
+        let asked = |path: &str, sink: &mut RecordingToolSink| {
+            let _ = rt.invoke(
+                "t1",
+                &call("hidden", &format!(r#"{{"path":"{path}"}}"#)),
+                sink,
+            );
+            cards.lock().unwrap().len()
+        };
+        assert_eq!(asked("/build/letibot-r114/review/", &mut sink), 1);
+        assert_eq!(
+            asked("/build/letibot-r114/review/chunk02.jsonl", &mut sink),
+            1,
+            "a grant on the directory covers the file under it: no second card"
+        );
+        assert_eq!(
+            asked("/build-other/y", &mut sink),
+            2,
+            "`/build-other` is not under `/build/...`, however its name starts"
+        );
+    }
+
+    /// The access a tool reports reaches the gate: a write the view refused is a WRITE ask, and
+    /// a read-only grant is not an answer to it.
+    #[test]
+    fn the_access_a_tool_reported_is_the_access_the_gate_is_asked_about() {
+        let (rt, cards) = view_runtime(crate::view::ViewAccess::Write);
+        let mut sink = RecordingToolSink::default();
+        let _ = rt.invoke("t1", &call("hidden", r#"{"path":"/build/x"}"#), &mut sink);
+        assert_eq!(
+            *cards.lock().unwrap(),
+            vec![crate::view::ViewAccess::Write],
+            "a write ask must not reach the gate as a read"
+        );
     }
 
     /// An envelope repair is said to the model once per session, and still counted.

@@ -1268,6 +1268,51 @@ impl Boundary {
         outside
     }
 
+    /// The paths a command could not WRITE although they are inside the view: a path bound in
+    /// read-only is absent from nowhere, so the only sign of it is the refusal, and the operator
+    /// is still owed the question (`/build` granted read-only, then a write under it).
+    pub fn refused_write_paths(&self, output: &str) -> Vec<PathBuf> {
+        let mut refused: Vec<PathBuf> = Vec::new();
+        let read_only_grant = |p: &Path| {
+            self.view.grants.iter().any(|g| match g {
+                Grant::ReadOnly { path, .. } => p.starts_with(path),
+                _ => false,
+            })
+        };
+        let wide_open = |p: &Path| {
+            p.starts_with(&self.view.project)
+                || self.view.grants.iter().any(|g| match g {
+                    Grant::ReadWrite { path, .. } => p.starts_with(path),
+                    _ => false,
+                })
+        };
+        for line in output.lines() {
+            // `EROFS` under a namespace boundary, `EPERM` under a policy one: a path bound
+            // read-only refuses a write differently on each platform.
+            if !line.contains("Read-only file system")
+                && !line.contains("EROFS")
+                && !line.contains("Operation not permitted")
+            {
+                continue;
+            }
+            for tok in absolute_paths(line) {
+                if read_only_grant(&tok)
+                    && !wide_open(&tok)
+                    && !has_glob(&tok)
+                    && std::fs::symlink_metadata(&tok).is_ok()
+                    && !refused.contains(&tok)
+                {
+                    refused.push(tok);
+                }
+            }
+            if refused.len() >= MAX_ABSENCE_PATHS {
+                break;
+            }
+        }
+        refused.truncate(MAX_ABSENCE_PATHS);
+        refused
+    }
+
     /// The host path a missing-program line is about, when this host has that program and the
     /// view does not. A name that resolves nowhere is a typo, and a typo must not become a
     /// claim about the boundary.
@@ -1650,6 +1695,12 @@ pub trait Confinement: Send + Sync {
     /// the runtime raises a grant decision from these. Empty where there is no view, because
     /// outside is meaningless then.
     fn outside_paths(&self, _output: &str) -> Vec<PathBuf> {
+        Vec::new()
+    }
+
+    /// The paths a command could not WRITE although they are inside the view: a read-only grant,
+    /// whose refusal is the only sign there is one. Empty where there is no view.
+    fn refused_write_paths(&self, _output: &str) -> Vec<PathBuf> {
         Vec::new()
     }
 
@@ -2267,6 +2318,10 @@ impl Confinement for Bwrap {
 
     fn outside_paths(&self, output: &str) -> Vec<PathBuf> {
         self.boundary.outside_paths(output)
+    }
+
+    fn refused_write_paths(&self, output: &str) -> Vec<PathBuf> {
+        self.boundary.refused_write_paths(output)
     }
 
     /// bubblewrap prefixes its own diagnostics `bwrap: `, which is the only signal it gives.

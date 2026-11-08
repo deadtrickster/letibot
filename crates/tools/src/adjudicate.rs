@@ -1465,6 +1465,14 @@ pub struct AdjudicatedGate {
     /// opposite channel to `denials`, and not for symmetry: a mode change that stops asking has
     /// to be visible while the work happens, or the only evidence is that the cards stopped.
     admissions: Option<Box<dyn AdmissionSink>>,
+    /// The paths the operator granted into this session's view, shared with its whole tree: a
+    /// grant on a directory covers what is under it, and a grant made for one subagent is not
+    /// asked about again by its siblings or its parent. `None` in a gate nobody wired one to,
+    /// which asks as it did before the record existed.
+    view: Option<std::sync::Arc<crate::view::ViewGrants>>,
+    /// Whose call a view ask is, when this session is a subagent's: a card that named only the
+    /// path would leave the operator deciding for a child they cannot see.
+    asker: Option<String>,
 }
 
 /// A call the gate admitted without asking anybody, and why. Deliberately not a denial with a
@@ -1553,7 +1561,23 @@ impl AdjudicatedGate {
             corpus_sink: None,
             unasked: false,
             admissions: None,
+            view: None,
+            asker: None,
         }
+    }
+
+    /// The paths the operator granted into this session's view, shared with the whole tree: the
+    /// record a later ask is answered from without a card.
+    pub fn with_view_grants(mut self, grants: std::sync::Arc<crate::view::ViewGrants>) -> Self {
+        self.view = Some(grants);
+        self
+    }
+
+    /// Whose call this is, when the session is a subagent's: the card names it beside the path.
+    /// `None` for a session the operator opened themselves, whose card needs no attribution.
+    pub fn with_asker(mut self, who: Option<String>) -> Self {
+        self.asker = who;
+        self
     }
 
     /// Install the `adjudicate_` floor. The gate keeps the hook rather than the stack because the
@@ -2441,6 +2465,134 @@ impl AdjudicatedGate {
     pub fn corpus(&self) -> Vec<crate::authorise::CorpusRow> {
         self.log.iter().map(AdjudicationRow::corpus).collect()
     }
+
+    /// The card itself, written once: a view ask is one question whether or not the tree's
+    /// record had to be consulted first.
+    fn ask_to_see(
+        &mut self,
+        path: &std::path::Path,
+        tool: &str,
+        access: crate::view::ViewAccess,
+    ) -> crate::runtime::ViewGrant {
+        use crate::runtime::ViewGrant;
+        use crate::view::ViewAccess;
+        if self.adjudicator.describe().starts_with("none") {
+            return ViewGrant::NotAsked;
+        }
+        // Whose call it is, beside the path: a subagent's card is drawn at the tree's root, where
+        // nobody sees the child that asked.
+        let (summary, baseline, first_fact) = match (&self.asker, access) {
+            (Some(who), ViewAccess::Read) => (
+                format!(
+                    "`{tool}`, asked by subagent `{who}`, named `{}`, which is outside this \
+                     session's filesystem view",
+                    path.display()
+                ),
+                format!("a path outside the view: {}", path.display()),
+                format!(
+                    "the command saw `{}` as absent — that was the boundary, not an answer about whether anything is there",
+                    path.display()
+                ),
+            ),
+            (Some(who), ViewAccess::Write) => (
+                format!(
+                    "`{tool}`, asked by subagent `{who}`, could not write `{}`, which this \
+                     session's view holds read-only",
+                    path.display()
+                ),
+                format!("a write below a read-only grant: {}", path.display()),
+                format!(
+                    "`{}` is inside this session's view and bound READ-ONLY there, so the write was refused by the boundary",
+                    path.display()
+                ),
+            ),
+            (None, ViewAccess::Read) => (
+                format!(
+                    "`{tool}` named `{}`, which is outside this session's filesystem view",
+                    path.display()
+                ),
+                format!("a path outside the view: {}", path.display()),
+                format!(
+                    "the command saw `{}` as absent — that was the boundary, not an answer about whether anything is there",
+                    path.display()
+                ),
+            ),
+            (None, ViewAccess::Write) => (
+                format!(
+                    "`{tool}` could not write `{}`, which this session's view holds read-only",
+                    path.display()
+                ),
+                format!("a write below a read-only grant: {}", path.display()),
+                format!(
+                    "`{}` is inside this session's view and bound READ-ONLY there, so the write was refused by the boundary",
+                    path.display()
+                ),
+            ),
+        };
+        let req = AdjudicationRequest {
+            id: self.next_id(),
+            session_id: self.session_id.clone(),
+            turn_id: String::new(),
+            call_id: String::new(),
+            agent: self.agent.clone(),
+            tool: tool.to_string(),
+            target: path.display().to_string(),
+            class: ActionClass::host(
+                match access {
+                    ViewAccess::Read => Access::Read,
+                    ViewAccess::Write => Access::Write,
+                },
+                false,
+                false,
+            ),
+            prior: Vec::new(),
+            // A path is not a tool call, so this session's record of tool calls is
+            // not evidence about it; an empty list here says exactly that.
+            examples: Vec::new(),
+            brief_variant: crate::authorise::BriefVariant::AskedForIt,
+            agent_claim: None,
+            reading: None,
+            shape: None,
+            advice: None,
+            summary,
+            arguments: serde_json::json!({ "path": path.display().to_string() }),
+            arguments_digest: String::new(),
+            // A view grant is about showing the operator something, not about
+            // running a program: there is no command and so no script.
+            scripts: Vec::new(),
+            boundary_facts: vec![
+                first_fact,
+                "granting it binds the real host path into this session's mount namespace for the rest of the session, and a readable path is readable INTO THE TRANSCRIPT"
+                    .to_string(),
+                "the command that hit this has already run; granting does not re-run it".to_string(),
+            ],
+            kind: RequestKind::Permission,
+            options: view_grant_options(),
+            // A view grant is offered as it always was: it is a fact about the session's
+            // filesystem view rather than about a command's class, and nothing here is
+            // left off the ladder.
+            options_note: None,
+            on_timeout: OnTimeout::Deny,
+            tier: Tier::MayApprove,
+            resolved: true,
+            baseline,
+            trail: crate::authorise::AuthorisationTrail::default(),
+        };
+        let d = self.adjudicator.decide(&req);
+        match &d.outcome {
+            DecisionOutcome::Selected { option_id } if option_id == "grant_ro" => {
+                ViewGrant::Granted { writable: false }
+            }
+            DecisionOutcome::Selected { option_id } if option_id == "grant_rw" => {
+                ViewGrant::Granted { writable: true }
+            }
+            DecisionOutcome::Selected { .. } => ViewGrant::Refused(d.basis.clone()),
+            // A deadline is not an answer, and neither is an adjudicator that could
+            // not be reached. Both are "nobody decided", which is what the caller
+            // has to be told so it does not report a refusal.
+            _ => ViewGrant::NotAsked,
+        }
+    }
 }
 
 impl Gate for AdjudicatedGate {
@@ -2468,72 +2620,45 @@ impl Gate for AdjudicatedGate {
     /// The question the boundary could not ask. A real adjudication, so it lands in the corpus
     /// beside every other decision, but not a tool call: nothing runs, the subject is a path and
     /// the answer widens a view. `NotAsked` when there is nobody to ask, never a refusal.
-    fn grant_view(&mut self, path: &std::path::Path, tool: &str) -> crate::runtime::ViewGrant {
+    ///
+    /// Under that: the tree's grant record answers first. A path a grant already covers raises no
+    /// card at all, and a path with a card already up waits for that card's answer instead of
+    /// putting the same question to somebody twice.
+    fn grant_view(
+        &mut self,
+        path: &std::path::Path,
+        tool: &str,
+        access: crate::view::ViewAccess,
+    ) -> crate::runtime::ViewGrant {
         use crate::runtime::ViewGrant;
-        if self.adjudicator.describe().starts_with("none") {
-            return ViewGrant::NotAsked;
-        }
-        let req = AdjudicationRequest {
-            id: self.next_id(),
-            session_id: self.session_id.clone(),
-            turn_id: String::new(),
-            call_id: String::new(),
-            agent: self.agent.clone(),
-            tool: tool.to_string(),
-            target: path.display().to_string(),
-            class: ActionClass::host(Access::Read, false, false),
-            prior: Vec::new(),
-            // A path is not a tool call, so this session's record of tool calls is
-            // not evidence about it; an empty list here says exactly that.
-            examples: Vec::new(),
-            brief_variant: crate::authorise::BriefVariant::AskedForIt,
-            agent_claim: None,
-            reading: None,
-            shape: None,
-            advice: None,
-            summary: format!(
-                "`{tool}` named `{}`, which is outside this session's filesystem view",
-                path.display()
-            ),
-            arguments: serde_json::json!({ "path": path.display().to_string() }),
-            arguments_digest: String::new(),
-            // A view grant is about showing the operator something, not about
-            // running a program: there is no command and so no script.
-            scripts: Vec::new(),
-            boundary_facts: vec![
-                format!(
-                    "the command saw `{}` as absent — that was the boundary, not an answer about whether anything is there",
-                    path.display()
-                ),
-                "granting it binds the real host path into this session's mount namespace for the rest of the session, and a readable path is readable INTO THE TRANSCRIPT"
-                    .to_string(),
-                "the command that hit this has already run; granting does not re-run it".to_string(),
-            ],
-            kind: RequestKind::Permission,
-            options: view_grant_options(),
-            // A view grant is offered as it always was: it is a fact about the session's
-            // filesystem view rather than about a command's class, and nothing here is
-            // left off the ladder.
-            options_note: None,
-            on_timeout: OnTimeout::Deny,
-            tier: Tier::MayApprove,
-            resolved: true,
-            baseline: format!("a path outside the view: {}", path.display()),
-            trail: crate::authorise::AuthorisationTrail::default(),
+        use crate::view::{Answer, Claim};
+        let Some(view) = self.view.clone() else {
+            return self.ask_to_see(path, tool, access);
         };
-        let d = self.adjudicator.decide(&req);
-        match &d.outcome {
-            DecisionOutcome::Selected { option_id } if option_id == "grant_ro" => {
-                ViewGrant::Granted { writable: false }
+        match view.claim(path, access) {
+            Claim::Covered { writable } => ViewGrant::Covered { writable },
+            // A sibling is asking about this same path: one card, and its answer releases both.
+            Claim::Shares(open) => match open.wait(crate::view::SHARED_ASK_WAIT) {
+                Some(Answer::Granted { writable }) => ViewGrant::Covered { writable },
+                Some(Answer::Refused(why)) => ViewGrant::Refused(why),
+                // Nobody answered within the wait, which is not a denial: the caller has to be
+                // told that nobody decided rather than that this was refused.
+                Some(Answer::Nobody) | None => ViewGrant::NotAsked,
+            },
+            Claim::Raises(raised) => {
+                let answer = self.ask_to_see(path, tool, access);
+                view.settle(
+                    raised,
+                    match &answer {
+                        ViewGrant::Granted { writable } => Answer::Granted {
+                            writable: *writable,
+                        },
+                        ViewGrant::Refused(why) => Answer::Refused(why.clone()),
+                        _ => Answer::Nobody,
+                    },
+                );
+                answer
             }
-            DecisionOutcome::Selected { option_id } if option_id == "grant_rw" => {
-                ViewGrant::Granted { writable: true }
-            }
-            DecisionOutcome::Selected { .. } => ViewGrant::Refused(d.basis.clone()),
-            // A deadline is not an answer, and neither is an adjudicator that could
-            // not be reached. Both are "nobody decided", which is what the caller
-            // has to be told so it does not report a refusal.
-            _ => ViewGrant::NotAsked,
         }
     }
 

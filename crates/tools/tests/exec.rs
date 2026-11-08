@@ -907,6 +907,7 @@ impl letibot_tools::runtime::Gate for Counting {
         &mut self,
         _path: &std::path::Path,
         _tool: &str,
+        _access: letibot_tools::view::ViewAccess,
     ) -> letibot_tools::runtime::ViewGrant {
         self.grants
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);

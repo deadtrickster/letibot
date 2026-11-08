@@ -943,6 +943,9 @@ impl Tool for Bash {
             notes.push(n);
         }
         let outside = host.outside_paths(&full);
+        // The other half of the same finding: a path bound in READ-ONLY is absent from nowhere,
+        // and a write to it is refused instead. Both are questions for the operator.
+        let refused_writes = host.refused_write_paths(&full);
         let launcher_failed = host.launcher_failure(&full);
 
         // A person moved it mid-flight (Ctrl+B). The outcome is `Backgrounded` with the operator
@@ -1190,7 +1193,11 @@ impl Tool for Bash {
         // Carried to the runtime, which is the layer that holds the gate and can
         // therefore ASK about widening the view. The tool only reports what the
         // boundary told it.
-        inv.needs_in_view = outside;
+        inv.needs_in_view = outside
+            .into_iter()
+            .map(crate::view::ViewAsk::read)
+            .chain(refused_writes.into_iter().map(crate::view::ViewAsk::write))
+            .collect();
         inv
     }
 }
