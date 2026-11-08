@@ -2,7 +2,7 @@
   "name": "leticode",
   "displayName": "leticode",
   "version": "0.6.0",
-  "description": "The leticode bridge for Claude Code: the MCP tools that hold leticode sessions and the rooms, the channel that pushes their turn ends, asks and failures into the session, the room waiter, and the skills that drive them.",
+  "description": "The leticode bridge for Claude Code: the MCP tools that hold leticode sessions and the rooms, the channel that pushes their turn ends, asks and failures into the session, the room waiter, and the skills that drive them, and panes beside the chat for packages, remote runs, a package's transcript and this seat's todo board.",
   "author": {
     "name": "deadtrickster",
     "email": "i.khaprov@gmail.com",
@@ -11,7 +11,13 @@
   "homepage": "https://github.com/deadtrickster/letibot/blob/main/claude-plugin/README.md",
   "repository": "https://github.com/deadtrickster/letibot",
   "license": "Apache-2.0",
-  "keywords": ["leticode", "mcp", "channel", "rooms", "orchestration"],
+  "keywords": [
+    "leticode",
+    "mcp",
+    "channel",
+    "rooms",
+    "orchestration"
+  ],
   "mcpServers": {
     "leticode": {
       "command": "letibot-mcp",
@@ -33,5 +39,6 @@
         "when": "always"
       }
     ]
-  }
+  },
+  "types": "./types/index.d.ts"
 }

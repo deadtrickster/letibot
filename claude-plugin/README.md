@@ -4,7 +4,7 @@ One installable plugin around the leticode bridge (`crates/bridge`, `docs/claude
 It replaces two things a seat used to need: `claude mcp add` for every project, and a shell alias
 around `claude` that registered the server by hand.
 
-It carries five pieces:
+It carries six pieces:
 
 | piece | what it is |
 |---|---|
@@ -13,6 +13,7 @@ It carries five pieces:
 | the room waiter | a plugin monitor: `letibot-mcp room-wait --attention to_me` in a loop, so a message for this seat reaches the session without the channel flag |
 | the `leticode` skill | brief a child, wait for it, read it, answer its asks, stop or collect it |
 | the `room-waiter` skill | what arrives, what to answer, and what an ask is that chat is not |
+| the panes | `hooks/register.tsx`, beside the chat: the packages this bridge holds (`/packages`; click a name to follow its transcript), remote runs from `rrun` (`/runs`), and this seat's todo board (`/leticode-todos`) |
 
 ## Install
 
