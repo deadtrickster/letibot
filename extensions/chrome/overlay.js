@@ -21,16 +21,18 @@
     return "<p>" + s + "</p>";
   }
 
+  // Fixed to the viewport, not the page: a conversation must not scroll away with the article.
+  // It opens under the selection when there is one, clamped so the whole card stays on screen.
   function place() {
     const sel = window.getSelection();
-    let top = window.scrollY + 80, left = window.scrollX + 40;
+    let top = 80, left = 40;
     if (sel && sel.rangeCount) {
       const r = sel.getRangeAt(0).getBoundingClientRect();
-      if (r.width || r.height) { top = window.scrollY + r.bottom + 8; left = window.scrollX + r.left; }
+      if (r.width || r.height) { top = r.bottom + 8; left = r.left; }
     }
-    const maxLeft = window.scrollX + document.documentElement.clientWidth - 440;
-    host.style.top = top + "px";
-    host.style.left = Math.max(window.scrollX + 8, Math.min(left, maxLeft)) + "px";
+    const w = document.documentElement.clientWidth, h = window.innerHeight;
+    host.style.top = Math.max(8, Math.min(top, h * 0.3 - 8)) + "px";
+    host.style.left = Math.max(8, Math.min(left, w - 440)) + "px";
   }
 
   function makeDraggable(handle) {
@@ -89,7 +91,7 @@
     if (!host || !document.documentElement.contains(host)) {
       host = document.createElement("div");
       host.setAttribute("data-letibot-ui", "card");
-      host.style.cssText = "all:initial;position:absolute;z-index:2147483647;";
+      host.style.cssText = "all:initial;position:fixed;z-index:2147483647;";
       root = host.attachShadow({ mode: "open" });
       document.documentElement.appendChild(host);
     }
