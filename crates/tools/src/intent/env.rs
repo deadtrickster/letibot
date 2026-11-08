@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::exec::boundary;
 use crate::exec::shell::{ENV_BYTES, ENV_PAIRS};
 
 /// The longest single value this will carry, so one name cannot use the whole budget.
@@ -140,9 +141,10 @@ impl SessionEnv {
                 return Err(format!("`{name}` is not one plain word"));
             }
             reported += 1;
-            // Denied: reported and believable, never carried. Counting it keeps a report
-            // of nothing but denied names from reading as an empty one.
-            if denied(name) {
+            // Refused: reported and believable, never carried - counting it keeps a report of
+            // nothing but refused names from reading as an empty one. A credential is held anyway so
+            // the card can mask it, and `shell_pairs` is where it stops, by the same list.
+            if denied(name) && !is_secret(name, value) {
                 continue;
             }
             // Too big, or the budget is spent: not held.
@@ -192,27 +194,29 @@ impl SessionEnv {
         self.get(name).is_some_and(|e| is_secret(name, &e.value))
     }
 
-    /// The pairs a shell reported and nothing else, in name order: what the next call's
-    /// spawn is given on top of the pairs the harness always gives. The harness's own
-    /// names are absent on purpose, so the two sources cannot disagree on a value.
+    /// The pairs a shell reported and nothing else, in name order: what the next call's spawn is
+    /// given on top of the pairs the harness always gives. The harness's own names are absent on
+    /// purpose - and so is every name [`denied`] refuses, which is what keeps a secret out of a
+    /// command's spawn even where the card may show it masked.
     pub fn shell_pairs(&self) -> Vec<(String, String)> {
         self.values
             .iter()
-            .filter(|(_, e)| e.from == From::Shell)
+            .filter(|(name, e)| e.from == From::Shell && !denied(name))
             .map(|(k, e)| (k.clone(), e.value.clone()))
             .collect()
     }
 }
 
 /// The names a shell's report is never carried for: a value here changes what a later command does
-/// with no text saying so - the loaders' namespace, the files and options a shell reads unasked, the
-/// `PATH`, and the shell's machinery about itself. One list serves the resolver and the spawn alike.
+/// with no text saying so. The boundary's own list is the first half ([`boundary::env_refusal`], so
+/// the two cannot disagree and one sentence covers both); the shell's machinery about itself, which
+/// no boundary sees, is the rest.
 pub fn denied(name: &str) -> bool {
-    matches!(
-        name,
-        "PATH" | "BASH_ENV" | "ENV" | "SHELLOPTS" | "BASHOPTS" | "PWD" | "OLDPWD" | "SHLVL" | "_"
-    ) || name.starts_with("LD_")
-        || name.starts_with("DYLD_")
+    boundary::env_refusal(name).is_some()
+        || matches!(
+            name,
+            "SHELLOPTS" | "BASHOPTS" | "PWD" | "OLDPWD" | "SHLVL" | "_"
+        )
 }
 
 /// Whether a name is a shell variable name: `[A-Za-z_][A-Za-z0-9_]*`, the trailer's
@@ -316,7 +320,8 @@ mod tests {
         let mut e = seeded();
         e.observe(
             "PATH=/tmp/x:/bin;LD_PRELOAD=/tmp/evil.so;LD_LIBRARY_PATH=/tmp;DYLD_INSERT_LIBRARIES=/l;\
-             BASH_ENV=/tmp/rc;ENV=/tmp/rc;SHELLOPTS=xtrace;BASHOPTS=x;PWD=/elsewhere;OLDPWD=/gone;SHLVL=9;_=x;",
+             BASH_ENV=/tmp/rc;ENV=/tmp/rc;SHELLOPTS=xtrace;BASHOPTS=x;PWD=/elsewhere;OLDPWD=/gone;SHLVL=9;_=x;\
+             SSH_AUTH_SOCK=/run/user/1000/agent;TMPDIR=/tmp/elsewhere;",
         )
         .expect("a clean report");
         for name in [
@@ -331,11 +336,57 @@ mod tests {
             "OLDPWD",
             "SHLVL",
             "_",
+            "SSH_AUTH_SOCK",
+            "TMPDIR",
         ] {
             assert!(e.get(name).is_none(), "{name} must not be held");
         }
         // `PATH` the harness did not seed here: dropped, not remembered as the shell's own.
         assert!(e.get("PATH").is_none(), "a denied name is never held");
+    }
+
+    /// R95's carry-over reads the BOUNDARY's own list, so a name a `[boundary] env` line may not
+    /// write is a name a shell's report does not add to every later command either - and it is the
+    /// same sentence, not a second wording. The shell's machinery is the module's own, because no
+    /// boundary has an opinion about `SHLVL`.
+    #[test]
+    fn the_carry_over_refuses_through_the_boundarys_own_list() {
+        use crate::exec::boundary::env_refusal;
+        for name in [
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "BASH_ENV",
+            "ENV",
+            "SSH_AUTH_SOCK",
+            "LD_PRELOAD",
+            "DYLD_INSERT_LIBRARIES",
+            "GH_TOKEN",
+            "GIT_CONFIG_COUNT",
+        ] {
+            assert!(denied(name), "{name}");
+            assert!(
+                env_refusal(name).is_some(),
+                "{name} is refused by the boundary's list, which is the one this reads"
+            );
+        }
+        // The sentence is the one a `[boundary] env` line is refused with.
+        assert_eq!(
+            env_refusal("BASH_ENV"),
+            Some("it changes what every command runs or where it lives"),
+            "the carry-over and a config line give one sentence"
+        );
+        assert_eq!(
+            env_refusal("GH_TOKEN"),
+            Some("a secret or a credential helper travels by the seat's own injection")
+        );
+        // And the rest is the shell's own bookkeeping, which the boundary does not list.
+        for name in ["SHELLOPTS", "BASHOPTS", "PWD", "OLDPWD", "SHLVL", "_"] {
+            assert!(denied(name), "{name}");
+            assert!(env_refusal(name).is_none(), "{name}");
+        }
+        // A plain name is carried: this is a deny-list, not a keep-list.
+        assert!(!denied("LT_CHAIN") && !denied("CARGO_TARGET_DIR"));
     }
 
     #[test]
@@ -419,14 +470,22 @@ mod tests {
     #[test]
     fn a_credential_is_held_and_masked() {
         let mut e = SessionEnv::default();
-        e.observe("GITHUB_TOKEN=ghp_0123456789abcdef4c;")
+        e.observe("GITHUB_TOKEN=ghp_0123456789abcdef4c;p=/w;")
             .expect("a clean report");
         assert!(e.is_secret("GITHUB_TOKEN"));
         assert_eq!(e.masked("GITHUB_TOKEN").as_deref(), Some("ghp_…4c"));
-        // And the value itself is still there for resolution: kept, not dropped.
+        // And the value itself is still there for the card: kept, not dropped.
         assert_eq!(
             e.get("GITHUB_TOKEN").map(|x| x.value.as_str()),
             Some("ghp_0123456789abcdef4c")
+        );
+        // It is not CARRIED, though: a secret travels by the seat's own injection, which is the
+        // sentence the boundary refuses the same name with.
+        assert_eq!(
+            e.shell_pairs(),
+            vec![("p".to_string(), "/w".to_string())],
+            "a credential reached the next spawn: {:?}",
+            e.shell_pairs()
         );
     }
 
