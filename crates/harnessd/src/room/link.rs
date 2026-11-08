@@ -258,7 +258,12 @@ impl SessionRoom {
                 // wake only the session they are addressed to; a session woke on its own rows.
                 let wakes = m.kind != letibot_room::Seat::System || names;
                 if plain && wakes && m.wakes(&me, names, &sits_in) {
-                    wake::push_chat(&me, m.seq, wake::chat_sentence(m, names));
+                    wake::push_chat(
+                        &me,
+                        m.seq,
+                        wake::reach(m, names),
+                        wake::chat_sentence(m, names),
+                    );
                     bell(&me);
                 } else if !wake::seen_meanwhile(&me, m.seq) {
                     // Nothing here will take it as a note, so it is seen on arrival.
@@ -1361,25 +1366,22 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
         // A `to` is a private message, and the answer has to say so: a model that believed it had
         // spoken in the room would wait for an audience that never read a word of it.
         Response::Said { message, .. } if message.room == letibot_room::chat::DM_ROOM => format!(
-            "said in dm: {} — a private message to `{}`: only the two of you read it, and nothing \
-             was said in a room. To ask the same thing where everyone can see it, `say` it to the \
-             room and `@name` them in the text.",
-            message.line(),
+            "said #{} in dm to `{}`: only the two of you read it.",
+            message.seq,
             message.to.as_deref().unwrap_or("its addressee"),
         ),
-        // Every member is woken, but only an addressed message asks for a reply, so a model that
-        // wrote "arango session: ..." is told it asked nobody.
+        // A model that wrote "arango session: ..." is told it asked nobody.
         Response::Said { message, .. }
             if message.to.is_none() && letibot_room::chat::mentions(&message.text).is_empty() =>
         {
             format!(
-                "said: {}\nit names no session: everyone in the room reads it and nobody is \
-                 asked to reply. To ask one session, `say` again with an `@<session id>` in the \
-                 text for a public ask, or its id in `to` for a private one.",
-                message.line()
+                "said #{} in [{}] to all: nobody is asked to reply. `@name` asks one.",
+                message.seq, message.room
             )
         }
-        Response::Said { message, .. } => format!("said: {}", message.line()),
+        Response::Said { message, .. } => {
+            format!("said #{} in [{}]", message.seq, message.room)
+        }
         Response::History(h) => {
             if h.rows.is_empty() {
                 format!(
@@ -1820,7 +1822,7 @@ mod tests {
             .iter()
             .find(|s| s.contains("two questions"))
             .unwrap_or_else(|| panic!("the chat never reached `{me_id}`: {said:?}"));
-        assert!(line.contains("to everyone - no reply asked"), "{line}");
+        assert!(line.contains("to all, passing by"), "{line}");
         assert!(
             rung.lock().unwrap().iter().any(|s| s == me_id),
             "the bell did not ring for `{me_id}`: {:?}",
@@ -1875,7 +1877,7 @@ mod tests {
         )
         .expect("a say");
         let line = until_note(me_id, "the build is red");
-        assert!(line.contains("to everyone - no reply asked"), "{line}");
+        assert!(line.contains("to all, passing by"), "{line}");
 
         // The host room's chatter between two others: a broadcast, and a mention of the third
         // session. Neither is mine, and neither is a room I sit in.
@@ -1893,7 +1895,7 @@ mod tests {
             .expect("a say");
         // The one it names is woken where it was named; the bystander of another project is not.
         let named = until_note(same_id, "did you see that?");
-        assert!(named.contains("for you"), "{named}");
+        assert!(named.contains("to @you"), "{named}");
         std::thread::sleep(std::time::Duration::from_millis(500));
         assert_eq!(
             wake::waiting(me_id),
@@ -1909,11 +1911,11 @@ mod tests {
                 &serde_json::json!({"to": me_id, "text": "just between us"}),
             )
             .expect("a say");
-        assert!(answer.contains("said in dm"), "{answer}");
+        assert!(answer.contains("in dm"), "{answer}");
         assert!(answer.contains("only the two of you read it"), "{answer}");
         let line = until_note(me_id, "just between us");
         assert!(
-            line.contains("a private message for you"),
+            line.contains(") to dm\n"),
             "a dm does not read as private: {line}"
         );
 
@@ -1934,7 +1936,7 @@ mod tests {
             "{said:?}"
         );
         let line = until_note(me_id, "restarts at six");
-        assert!(line.contains("to everyone"), "{line}");
+        assert!(line.contains("(operator) to all\n"), "{line}");
 
         drop((me, same, other));
         server.stop();
@@ -2152,7 +2154,7 @@ mod tests {
             "the claim reaches it as a note: {notes:?}"
         );
         assert!(
-            notes.iter().any(|n| n.contains("lost its claimant")),
+            notes.iter().any(|n| n.contains("lost `s-b`")),
             "and so does the stale beat: {notes:?}"
         );
         assert!(
@@ -2648,7 +2650,7 @@ mod tests {
                     "attachments": [shot.to_string_lossy()]}),
             )
             .expect("the say");
-        assert!(said.starts_with("said:"), "{said}");
+        assert!(said.starts_with("said #"), "{said}");
         let read = link
             .client
             .request(&Request::Read {

@@ -58,8 +58,8 @@ pub fn owed_content(a: &AskView) -> String {
         question.push('…');
     }
     format!(
-        "`{}` asked you #{} and waits on your answer: {} — answer with `room` `{{\"verb\": \
-         \"answer\", \"ask\": {}, \"text\": …}}` or decline with `decline`",
+        "`{}` asked you #{}: {} - answer with `room` verb `answer`, ask {}, or decline with \
+         `decline`",
         a.asker, a.seq, question, a.seq
     )
 }

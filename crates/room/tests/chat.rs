@@ -586,7 +586,7 @@ fn a_member_joining_a_busy_room_gets_a_digest_and_its_mention_verbatim() {
     let text = &digests[0].text;
     assert!(text.contains("s-talker 31"), "{text}");
     assert!(text.contains("unanswered: #31"), "{text}");
-    assert!(text.contains("more, `room read"), "{text}");
+    assert!(text.contains("more: `room read"), "{text}");
     assert!(text.matches("\n  #").count() <= 3, "{text}");
     match fresh.call(Request::Read {
         room: String::new(),
@@ -624,7 +624,7 @@ fn a_member_reconnecting_after_a_restart_gets_a_digest_of_what_it_missed() {
     let got = drained(&back);
     assert_eq!(got.len(), 1, "one digest, not the messages: {got:?}");
     assert_eq!(got[0].kind, Seat::System);
-    assert!(got[0].text.contains("said since"), "{}", got[0].text);
+    assert!(got[0].text.starts_with("10 since "), "{}", got[0].text);
     assert!(got[0].text.contains("s-talker 10"), "{}", got[0].text);
     second.stop();
 }
@@ -1018,8 +1018,8 @@ fn a_session_invited_into_another_projects_room_hears_it_until_it_leaves() {
     assert!(b1.rooms().contains(&room_a), "{:?}", b1.rooms());
     let m = said(a1.say("m1", "", "welcome"));
     assert_eq!(b1.next_seq(m.seq).0.text, "welcome");
-    let back = said(b1.say("m2", &room_a, "thanks"));
-    assert_eq!(a1.next_seq(back.seq).0.text, "thanks");
+    let back = said(b1.say("m2", &room_a, "glad to be here"));
+    assert_eq!(a1.next_seq(back.seq).0.text, "glad to be here");
 
     // A guest invites nobody into a room it is only a guest of.
     let c1 = seat(&first, "s-c1", B, Seat::Session);

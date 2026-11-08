@@ -15,12 +15,12 @@ use serde_json::{Value, json};
 /// The environment variable that names this bridge in the rooms.
 pub const NAME_ENV: &str = "LETIBOT_ROOM_NAME";
 
-/// How `me` behaves in the rooms: it sees every message, whoever it is for.
+/// How `me` behaves in the rooms, said once in the server's instructions: it sees every message,
+/// and the standing rule is the one a letibot session reads in its `room` tool.
 pub fn etiquette(me: &str) -> String {
     format!(
-        "As `{me}` you see every message in the rooms. Answer what is addressed to you or to \
-         everyone. A message for someone else is context: answer it only if you hold something \
-         they lack (an answer or a fact), once and briefly. Never ack, echo or restate."
+        "As `{me}` you see every room. {}",
+        letibot_tools::builtins::room::STANDING_RULE
     )
 }
 
@@ -374,10 +374,18 @@ pub fn channel_notification(m: &Value) -> Value {
     if let Some(t) = m["thread"].as_u64() {
         meta.insert("thread".into(), json!(t.to_string()));
     }
-    let mut content = line(m);
-    if let Some(group) = group_mention(m["text"].as_str().unwrap_or(""), &handle()) {
-        content.push_str(&format!(" [to {group} (you)]"));
-    }
+    let me = handle();
+    let content = match serde_json::from_value::<letibot_room::Message>(m.clone()) {
+        Ok(msg) => {
+            let names_you = msg.to.as_deref().is_some_and(|t| is_me(t, &me))
+                || letibot_room::chat::mentions(&msg.text)
+                    .iter()
+                    .any(|n| is_me(n, &me))
+                || group_mention(&msg.text, &me).is_some();
+            msg.delivered(names_you, letibot_room::chat::MAX_TEXT)
+        }
+        Err(_) => line(m),
+    };
     json!({
         "jsonrpc": "2.0",
         "method": "notifications/claude/channel",
@@ -867,20 +875,15 @@ pub fn tool_list() -> Vec<Value> {
         tool(
             "rooms",
             &format!(
-                "The chat rooms on this host as `{me}` sees them (`host` and one \
-             `project/<key>` per project, with `label` the project's folder name), with members, \
-             the newest `last_seq` and `unread` (messages after your inbox cursor)."
+                "The rooms `{me}` sees: `host` and one `project/<key>` per project (`label` is its \
+                 folder), with members, newest `last_seq` and `unread`."
             ),
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
             "room_read",
-            &format!(
-                "Read a room's messages. Moves no cursor. `room` is `host`, `project/<key>` or `dm` \
-             (your direct messages). `since` is a seq, `last` the newest N (default and most \
-             200), `thread` a root seq: the root and its replies. {}",
-                etiquette(&me)
-            ),
+            "Read a room. Moves no cursor. `since` a seq, `last` the newest N (at most 200), \
+             `thread` a root seq and its replies.",
             json!({
                 "type": "object",
                 "properties": {
@@ -895,26 +898,19 @@ pub fn tool_list() -> Vec<Value> {
         tool(
             "room_say",
             &format!(
-                "Say something as `{me}`. The author and kind come from this connection, never \
-             from arguments. `to` makes it a PRIVATE message to one session, `operator` or a handle: \
-             it goes to the dm between you and is written in no room, so only the two of you read \
-             it, and the one named wakes. `@session-id` in the text is a MENTION: it stays in the \
-             room you named and wakes them there; anyone named who cannot see that room is invited \
-             into it, so the mention reaches them with its thread. `cc` or `claude-code` names the \
-             one connected Claude Code bridge and is refused, listing the full `cc@<folder>:<name>` \
-             names, when several are connected. `cc@<name>` names the one bridge with that name, and \
-             `cc@<folder>` every bridge of that folder. `thread` answers a message by its seq, and \
-             the reply stays in that message's room, so it takes no `to`. `refs` points at a todo \
-             (`<session>/<title>`) or a queue row. Text is at most 4000 bytes and is refused, never \
-             cut. {}",
-                etiquette(&me)
+                "Say something as `{me}`. `to` is PRIVATE: the dm between you, no room, and it wakes \
+                 them. `@name` in the text is a public mention that wakes them in this room, \
+                 inviting them if they cannot see it. `cc@<name>` is one bridge, `cc@<folder>` every \
+                 bridge of a folder; a bare `cc` is refused when several are connected. `thread` \
+                 answers a seq and stays in its room. `refs` points at a todo \
+                 (`<session>/<title>`) or a queue row. Text over 4000 bytes is refused, never cut."
             ),
             json!({
                 "type": "object",
                 "properties": {
-                    "room": { "type": "string", "description": "`host` (default) or `project/<key>`. No room is written when `to` is given, and a reply stays in its root's room." },
+                    "room": { "type": "string", "description": "`host` (default) or `project/<key>`." },
                     "text": { "type": "string" },
-                    "to": { "type": "string", "description": "The one principal this is for, PRIVATELY: a dm between the two of you, written in no room." },
+                    "to": { "type": "string", "description": "One principal, PRIVATE: the dm, no room." },
                     "thread": { "type": "integer", "description": "The seq this answers." },
                     "refs": {
                         "type": "array",
@@ -931,7 +927,7 @@ pub fn tool_list() -> Vec<Value> {
                     "attachments": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Files to send with the words, as paths inside this seat's working folder — a path outside it is refused. At most 4, each at most 8 MiB: a picture (`png`, `jpeg`, `gif`, `webp`) or a text file. Each is uploaded and referenced in the text as `![name](blob:ID)` unless the text already names it."
+                        "description": "Up to 4 paths in this working folder, 8 MiB each: png, jpeg, gif, webp or text."
                     }
                 },
                 "required": ["text"]
@@ -939,8 +935,7 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_dm",
-            "A direct message to one session, `operator` or a handle. The same as `room_say` with \
-             `to`: only you and `to` can read it, and no room holds it.",
+            "A private message to one session, `operator` or a handle: `room_say` with `to`.",
             json!({
                 "type": "object",
                 "properties": {
@@ -962,9 +957,8 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_invite",
-            "Invite a session (id or name) into a project room that is not its own, so it hears \
-             and speaks there until it leaves. `room` is `project/<key>` or the room's label. \
-             Answers with the room's roster.",
+            "Invite a session (id or name) into a project room (`project/<key>` or label) until it \
+             leaves. Answers with the roster.",
             json!({
                 "type": "object",
                 "properties": { "room": { "type": "string" }, "session": { "type": "string" } },
@@ -983,11 +977,9 @@ pub fn tool_list() -> Vec<Value> {
         tool(
             "room_inbox",
             &format!(
-                "What `{me}` missed since its inbox cursor, through an attention filter: \
-             `to_me` (default: what names you, the operator's unaddressed messages, DMs), \
-             `mentions` or `all`. Delivery is at least once: with `ack: true` the cursor moves \
-             past what this call returned, so the next call does not repeat it. {}",
-                etiquette(&me)
+                "What `{me}` missed since its cursor: `to_me` (default: names you, the operator's \
+                 unaddressed lines, dms), `mentions` or `all`. `ack: true` moves the cursor past \
+                 what this returned."
             ),
             json!({
                 "type": "object",
@@ -1000,9 +992,8 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_nick",
-            "Set the name part of your room handle (`cc@<folder>:<name>`), kept for this working \
-             folder. Use it when the folder holds several repos and the default is not the \
-             project you work on. Refused when a live member holds the handle.",
+            "Set the name part of your handle (`cc@<folder>:<name>`) for this folder, when it \
+             holds several repos. Refused while a live member holds it.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1014,24 +1005,17 @@ pub fn tool_list() -> Vec<Value> {
         tool(
             "room_asks",
             &format!(
-                "The questions between this seat and the other sessions: `of_me` is what somebody \
-             asked `{me}` and is waiting on, `by_me` what this seat asked. An ask is settled by \
-             `room_answer` or `room_decline` and by nothing else - a chat reply reaches its author \
-             without unblocking the asker's plan. `state` is `open`, `answered`, `declined`, `down` \
-             (the target's session was deleted) or `withdrawn`, and `escalated` says the other end \
-             has been gone long enough that the operator is being asked to restart it."
+                "Asks between `{me}` and sessions: `of_me` wait on you, `by_me` you asked. Only \
+                 `room_answer` or `room_decline` settles one; a chat reply does not. `state` is \
+                 `open`, `answered`, `declined`, `down` or `withdrawn`; `escalated` means the \
+                 operator is asked to restart the other end."
             ),
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
             "room_answer",
-            &format!(
-                "Answer ask `ask` - the number `room_asks` or a board row gave - with `text`. The \
-             answer is a thread reply in the ask's room, addressed to the session that asked, and it \
-             releases the row on that session's board. Only the session that was asked may answer, \
-             and only while the ask is open. {}",
-                etiquette(&me)
-            ),
+            "Answer open ask `ask` with `text`: a thread reply to the asker that releases its \
+             board row. Only the one asked may answer.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1043,9 +1027,7 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_decline",
-            "Decline ask `ask` with `text` saying why, when the question is not yours to answer: the \
-             asker's row is released and reads that it was declined, which is a different outcome \
-             from an answer.",
+            "Decline ask `ask` with `text` saying why: the asker's row is released as declined.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1439,6 +1421,35 @@ fn replay(link: &RoomLink, attention: Attention) -> Result<Option<String>, Strin
 
 #[cfg(test)]
 mod tests {
+    /// A pushed message reaches Claude Code as the same header a letibot session reads: why it
+    /// came, then the text quoted.
+    #[test]
+    fn a_channel_message_is_a_header_and_the_quoted_text() {
+        let me = super::handle();
+        let m = serde_json::json!({
+            "seq": 42, "ts": 0, "room": "host", "author": "s-a", "kind": "session",
+            "text": format!("@{me} the gate is red\nsee #41"),
+        });
+        let note = super::channel_notification(&m);
+        let content = note["params"]["content"].as_str().unwrap_or("");
+        assert_eq!(
+            content,
+            format!("#42 [host] from s-a (session) to @you\n> @{me} the gate is red\n> see #41")
+        );
+        let op = serde_json::json!({
+            "seq": 43, "ts": 0, "room": "host", "author": "operator", "kind": "operator",
+            "text": "stop at six",
+        });
+        let content = super::channel_notification(&op)["params"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        assert_eq!(
+            content,
+            "#43 [host] from operator (operator) to all\n> stop at six"
+        );
+    }
+
     use super::*;
 
     /// The room's handle rule: at most 32 of `a-z`, `0-9`, `-` and one inner `@`.

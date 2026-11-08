@@ -126,11 +126,11 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
             // `claude/channel` lets Claude Code start a turn on a room message; a client that
             // was not started with the channel flag ignores it and the tools still work.
             "capabilities": { "tools": {}, "experimental": { "claude/channel": {} } },
-            "instructions": format!("Room messages for `{}`, and the turn ends, asks and \
-                failures of the leticode sessions this bridge holds, arrive as <channel> events \
-                (meta `source: leticode` for a session's). Read them, answer with `room_say` or `room_dm`, and `room_inbox` with ack true marks \
-                what you handled. {} `room_nick` renames you (the name part of `cc@<folder>:<name>`) when \
-                this folder holds several repos.", crate::rooms::handle(), crate::rooms::etiquette(&crate::rooms::handle())),
+            "instructions": format!("Room messages for `{}` and your leticode sessions' turn \
+                ends, asks and failures arrive as <channel> events. Each message is a header \
+                (`#seq [room] from <author> (<seat>) to <you|@you|dm|all>`) and its text quoted. \
+                Reply with `room_say` or `room_dm`; `room_inbox` with ack marks what you handled. {}",
+                crate::rooms::handle(), crate::rooms::etiquette(&crate::rooms::handle())),
             "serverInfo": {
                 "name": "letibot-mcp",
                 "version": env!("CARGO_PKG_VERSION"),
@@ -241,29 +241,31 @@ mod tests {
         let said = r["result"]["instructions"].as_str().unwrap_or("");
         let me = crate::rooms::handle();
         assert!(
-            said.contains(&format!("As `{me}` you see every message")),
+            said.contains(&format!("As `{me}` you see every room")),
             "{said}"
         );
-        assert!(
-            said.contains("only if you hold something they lack"),
-            "{said}"
-        );
-        assert!(said.contains("Never ack, echo or restate"), "{said}");
+        assert!(said.len() <= 640, "{} bytes: {said}", said.len());
+        assert!(!said.contains('\u{2014}'), "no em dash: {said}");
     }
 
-    /// The room tools carry the same etiquette to whoever reads their descriptions.
+    /// The standing rule is said once per context: in the instructions, and in no tool's
+    /// description, which every context also carries.
     #[test]
-    fn the_room_tool_descriptions_carry_the_etiquette() {
+    fn the_standing_rule_is_said_once_and_the_room_tools_fit_their_budget() {
+        let rule = letibot_tools::builtins::room::STANDING_RULE;
+        let answers = run(&[r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#]);
+        let said = answers[0]["result"]["instructions"].as_str().unwrap_or("");
+        let mut count = said.matches(rule).count();
+        let mut bytes = 0;
         for t in crate::rooms::tool_list() {
-            let name = t["name"].as_str().unwrap_or("");
-            if ["room_say", "room_read", "room_inbox"].contains(&name) {
-                let d = t["description"].as_str().unwrap_or("");
-                assert!(
-                    d.contains("only if you hold something they lack"),
-                    "{name}: {d}"
-                );
-            }
+            let d = t.to_string();
+            count += d.matches(rule).count();
+            assert!(!d.contains("hold something"), "{d}");
+            assert!(!d.contains('\u{2014}'), "no em dash: {d}");
+            bytes += t["description"].as_str().unwrap_or("").len();
         }
+        assert_eq!(count, 1, "the rule is said once");
+        assert!(bytes <= 2200, "{bytes} bytes of room tool descriptions");
     }
 
     /// Every tool this build serves, each with a schema - the design's table, and the shape MCP

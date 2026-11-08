@@ -23,6 +23,8 @@ struct Queue {
     dropped: u64,
     /// The newest chat `seq` behind a queued note, acked to the room when a turn takes it.
     chat_seq: u64,
+    /// A note other than a passing-by chat line is queued, so the wake is a full turn.
+    full: bool,
 }
 
 /// The process-wide queues and the counter that orders them.
@@ -39,19 +41,21 @@ fn queues() -> &'static Mutex<Queues> {
 
 /// Put a sentence in front of a session's next turn.
 pub fn push(session: &str, line: String) {
-    enqueue(
-        &mut queues().lock().unwrap_or_else(|e| e.into_inner()),
-        session,
-        line,
-    );
+    let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
+    enqueue(&mut q, session, line);
+    if let Some(entry) = q.map.get_mut(session) {
+        entry.full = true;
+    }
 }
 
 /// A chat message's note, remembered by its `seq` so the turn that takes it can tell the room.
-pub fn push_chat(session: &str, seq: u64, line: String) {
+/// Only a `Passing` note leaves the wake cheap.
+pub fn push_chat(session: &str, seq: u64, reach: letibot_room::chat::Reach, line: String) {
     let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
     enqueue(&mut q, session, line);
     if let Some(entry) = q.map.get_mut(session) {
         entry.chat_seq = entry.chat_seq.max(seq);
+        entry.full |= reach != letibot_room::chat::Reach::Passing;
     }
 }
 
@@ -112,8 +116,30 @@ pub fn take(session: &str) -> Vec<String> {
     lines
 }
 
+/// What a between-turns wake takes: the notes, and whether every one was passing by.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Taken {
+    pub lines: Vec<String>,
+    /// Nothing here directs the session, so the turn runs cheap and silence is its expected end.
+    pub cheap: bool,
+}
+
+/// [`take`] for `Harness::wake`, which also needs to know if the turn may run cheap.
+pub fn take_wake(session: &str) -> Taken {
+    let (taken, seq) = take_full(session);
+    if seq > 0 {
+        super::link::ack_taken(session, seq);
+    }
+    taken
+}
+
 /// [`take`] without the ack: the notes, and the newest chat `seq` among them (0 for none).
 pub fn take_with_seq(session: &str) -> (Vec<String>, u64) {
+    let (taken, seq) = take_full(session);
+    (taken.lines, seq)
+}
+
+fn take_full(session: &str) -> (Taken, u64) {
     let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
     match q.map.remove(session) {
         Some(queue) => {
@@ -123,9 +149,11 @@ pub fn take_with_seq(session: &str) -> (Vec<String>, u64) {
                     queue.dropped
                 );
             }
-            (queue.lines.into_iter().collect(), queue.chat_seq)
+            let cheap = !queue.full && !queue.lines.is_empty();
+            let lines = queue.lines.into_iter().collect();
+            (Taken { lines, cheap }, queue.chat_seq)
         }
-        None => (Vec::new(), 0),
+        None => (Taken::default(), 0),
     }
 }
 
@@ -145,68 +173,40 @@ pub fn waiting(session: &str) -> usize {
     q.map.get(session).map(|v| v.lines.len()).unwrap_or(0)
 }
 
-/// The sentence a chat message becomes for a session it wakes. Bounded: a long message is cut for
-/// the turn's notice, and `room read` has the whole.
-///
-/// `names_you` is the room's answer, not a reading of the text: the room shows names, so a
-/// message for this session can name it by a handle its id does not match.
-pub fn chat_sentence(m: &letibot_room::Message, names_you: bool) -> String {
-    // A digest is already bounded by the room, and says what it left out.
+/// Why a message woke this session. A digest summarises peers' talk, so it is passing by.
+pub fn reach(m: &letibot_room::Message, names_you: bool) -> letibot_room::chat::Reach {
     if m.kind == letibot_room::Seat::System && m.author == letibot_room::chat::DIGEST_AUTHOR {
-        return format!("[room] {}", m.text);
+        return letibot_room::chat::Reach::Passing;
     }
-    let mut line = m.line();
-    if line.len() > 600 {
-        let mut end = 600;
-        while !line.is_char_boundary(end) {
-            end -= 1;
-        }
-        line.truncate(end);
-        line.push_str(" ...");
-    }
-    let mut named: Vec<String> = m.to.iter().cloned().collect();
-    for n in letibot_room::chat::mentions(&m.text) {
-        if !named.contains(&n) {
-            named.push(n);
-        }
-    }
-    let tail = if m.room == letibot_room::chat::DM_ROOM && names_you {
-        // A dm is private, and the reply to it is a `dm` too: `to` on a `say` is the same thing.
-        format!(
-            "a private message for you - only the two of you read it; reply with `room say`, \
-             `to` `{}`, and nobody else sees that either.",
-            m.author
-        )
-    } else if names_you {
-        format!("for you - reply with `room say`, `to` `{}`.", m.author)
-    } else if named.is_empty() {
-        "to everyone - no reply asked; act on it if it bears on your work.".to_string()
-    } else {
-        format!(
-            "for {} - context for you; reply only with something they lack.",
-            named.join(", ")
-        )
-    };
-    format!("[chat] {line} - {tail}")
+    m.reach(names_you)
 }
 
-/// The sentence one room event becomes, in the words a model reads. `None` for an event a
-/// session does not need to be woken by. A beat is not worth a ring - a bell that rings five
-/// times a minute is a bell nobody listens to, and the room sends no beat event anyway.
+/// How many bytes of a message's text a wake carries. `room read` has the whole.
+pub const CHAT_TEXT_MAX: usize = 600;
+
+/// The note a chat message becomes for a session it wakes: a header saying why it reached you,
+/// then the text quoted. `names_you` is the room's answer, not a reading of the text: the room
+/// shows names, so a message for this session can name it by a handle its id does not match.
+pub fn chat_sentence(m: &letibot_room::Message, names_you: bool) -> String {
+    // A digest is the room's own summary, already bounded, so it is not quoted as a peer's text.
+    if m.kind == letibot_room::Seat::System && m.author == letibot_room::chat::DIGEST_AUTHOR {
+        return format!("#{} [{}] digest\n{}", m.seq, m.room, m.text);
+    }
+    m.delivered(names_you, CHAT_TEXT_MAX)
+}
+
+/// The note one room event becomes. `None` for an event a session is not woken by.
 pub fn sentence(event: &letibot_room::Event) -> Option<String> {
     use letibot_room::Event;
     Some(match event {
         Event::Posted { item, tag, by } => format!(
-            "[room] `{by}` posted #{item} under `{tag}` — the queue is `room queue {tag}`, and \
-             `room claim {tag}` takes its head if it is free."
+            "[room] `{by}` posted #{item} under `{tag}`. `room claim {tag}` takes the head if free."
         ),
-        Event::Claimed { item, tag, by } => format!(
-            "[room] `{by}` claimed #{item} under `{tag}` — while that claim lives, `{tag}` is \
-             locked and your own claim under it would be refused. Post under another tag if your \
-             work does not need the same resource."
-        ),
+        Event::Claimed { item, tag, by } => {
+            format!("[room] `{by}` claimed #{item}. `{tag}` is locked while the claim lives.")
+        }
         Event::Done { item, tag, by } => {
-            format!("[room] `{by}` finished #{item} under `{tag}` — the tag is free again.")
+            format!("[room] `{by}` finished #{item}. `{tag}` is free.")
         }
         Event::Abandoned {
             item,
@@ -216,12 +216,11 @@ pub fn sentence(event: &letibot_room::Event) -> Option<String> {
             count,
             back_in_the_queue,
         } => format!(
-            "[room] #{item} under `{tag}` lost its claimant `{by}`: {why} (that is {count} \
-             claimant(s) lost). {}",
+            "[room] #{item} under `{tag}` lost `{by}`: {why} ({count} lost). {}",
             if *back_in_the_queue {
-                format!("It is back at the head of `{tag}` — `room claim {tag}` takes it.")
+                format!("Back at the head: `room claim {tag}`.")
             } else {
-                "It has reached the threshold and is frozen until the arbiter rules.".to_string()
+                "Frozen until the arbiter rules.".to_string()
             }
         ),
         Event::Raised {
@@ -230,17 +229,17 @@ pub fn sentence(event: &letibot_room::Event) -> Option<String> {
             question,
             count,
         } => format!(
-            "[room] #{item} under `{tag}` has now lost {count} claimants and is frozen: question \
-             #{question} is yours to rule on — `room questions` has the words and the facts, and \
-             `room rule question {question} decision retry|hand|drop` answers it."
+            "[room] #{item} under `{tag}` lost {count} claimants and is frozen. Question \
+             #{question} is yours: `room questions`, then `room rule question {question} decision \
+             retry|hand|drop`."
         ),
         Event::Asked {
             item,
             tag,
             question,
         } => format!(
-            "[room] a dispute about #{item} under `{tag}` is question #{question}, and it is yours \
-             to rule on: `room questions`, then `room rule`."
+            "[room] a dispute on #{item} under `{tag}` is question #{question}, yours to rule: \
+             `room questions`, then `room rule`."
         ),
         Event::Ruled {
             item,
@@ -248,28 +247,26 @@ pub fn sentence(event: &letibot_room::Event) -> Option<String> {
             decision,
             by,
         } => {
-            format!("[room] question #{question} about #{item} was answered by `{by}`: {decision}.")
+            format!("[room] question #{question} on #{item} ruled by `{by}`: {decision}.")
         }
     })
 }
 
-/// The sentence a gap in the bell becomes - the room keeps no log, so it can only say how many
-/// events it rang for. The sentence names the count and the READS that cannot be wrong: a client
-/// told *you missed four* and left to guess which four would believe it had the picture.
+/// The note a gap in the bell becomes. The room keeps no log, so it names the count and the
+/// reads that answer as things stand.
 pub fn missed_line(count: u64, since_ms: u64, now: u64) -> String {
     let gap = if since_ms == 0 || since_ms > now {
         String::new()
     } else {
         format!(
-            "the first of them was {} ago; ",
+            ", first {} ago",
             letibot_room::duration(now.saturating_sub(since_ms))
         )
     };
     format!(
-        "[room] this session's connection to the room was down, and {count} event(s) were addressed \
-         to it while it was — {gap}they are not replayed, because the room keeps no log. Read the \
-         state instead of the bells: `room queue <tag>`, `room holding` and `room questions` answer \
-         as things stand, and a claim this session held was given back when its socket closed."
+        "[room] the room connection was down: {count} event(s) for this session are lost{gap}. \
+         Read the state: `room queue <tag>`, `room holding`, `room questions`. A claim held then \
+         was given back."
     )
 }
 
@@ -286,7 +283,7 @@ mod tests {
             !seen_meanwhile(me, 5),
             "nothing queued: the caller acks at once"
         );
-        push_chat(me, 7, "a note".into());
+        push_chat(me, 7, letibot_room::chat::Reach::Addressed, "a note".into());
         assert!(seen_meanwhile(me, 9), "a note waits: the seq rides on it");
         let (lines, seq) = take_with_seq(me);
         assert_eq!(lines.len(), 1);
@@ -308,22 +305,53 @@ mod tests {
         }
     }
 
-    /// The room's `names_you` decides "for you", not the text: it shows a session its own handle,
+    /// The room's `names_you` decides "you", not the text: it shows a session its own handle,
     /// and matching the id against it read a message for arango as someone else's.
     #[test]
-    fn a_chat_line_says_who_it_is_for_from_the_rooms_answer() {
+    fn a_chat_note_says_who_it_is_for_from_the_rooms_answer() {
         let mine = chat_sentence(&said(Some("arango"), "two questions"), true);
-        assert!(mine.contains("for you - reply"), "{mine}");
-        assert!(mine.contains("`to` `operator`"), "{mine}");
-        let other = chat_sentence(&said(Some("s-b"), "status?"), false);
-        assert!(other.contains("for s-b - context for you"), "{other}");
-        let mention = chat_sentence(&said(None, "@cc@letibot see this"), false);
-        assert!(mention.contains("for cc@letibot - context"), "{mention}");
-        let all = chat_sentence(&said(None, "status?"), false);
-        assert!(all.contains("to everyone - no reply asked"), "{all}");
-        for line in [&mine, &other, &all] {
+        assert_eq!(
+            mine,
+            "#15 [host] from operator (operator) to you\n> two questions"
+        );
+        let mut peer = said(Some("s-b"), "status?");
+        peer.kind = letibot_room::Seat::Session;
+        peer.author = "s-c".into();
+        let other = chat_sentence(&peer, false);
+        assert!(other.ends_with("to @s-b, passing by\n> status?"), "{other}");
+        let mut mention = said(None, "@cc@letibot see this");
+        mention.kind = letibot_room::Seat::Session;
+        let mention = chat_sentence(&mention, false);
+        assert!(mention.contains("to @cc@letibot, passing by"), "{mention}");
+        for line in [&mine, &other, &mention] {
             assert!(!line.contains("not you"), "{line}");
+            assert!(
+                !line.contains("end the turn"),
+                "the rule is said once, not per note"
+            );
         }
+    }
+
+    /// A wake is cheap only when every note it takes was passing by: one addressed note, one
+    /// operator line or one queue event makes it a full turn.
+    #[test]
+    fn a_wake_is_cheap_only_when_every_note_was_passing_by() {
+        use letibot_room::chat::Reach;
+        let s = "s-cheap-wake";
+        push_chat(s, 3, Reach::Passing, "a".into());
+        push_chat(s, 4, Reach::Passing, "b".into());
+        let (taken, seq) = take_full(s);
+        assert!(taken.cheap, "{taken:?}");
+        assert_eq!((taken.lines.len(), seq), (2, 4));
+        for reach in [Reach::Operator, Reach::Dm, Reach::Addressed] {
+            push_chat(s, 5, Reach::Passing, "a".into());
+            push_chat(s, 6, reach, "b".into());
+            assert!(!take_full(s).0.cheap, "{reach:?} is a full turn");
+        }
+        push_chat(s, 7, Reach::Passing, "a".into());
+        push(s, "[room] an event".into());
+        assert!(!take_full(s).0.cheap, "a queue event is a full turn");
+        assert!(!take_full(s).0.cheap, "nothing queued is no turn at all");
     }
 
     #[test]

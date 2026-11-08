@@ -64,16 +64,13 @@ fn sessions_the_operator_and_the_daemons_facts_share_the_rooms() {
             &json!({"room": "host", "text": "who has the disk?", "to": "s-chat-b1"}),
         )
         .expect("a say");
-    assert!(
-        said.contains("s-chat-a1") && said.contains("-> s-chat-b1"),
-        "{said}"
-    );
+    assert!(said.contains("in dm to `s-chat-b1`"), "{said}");
     let woken = wait_for("b1 woken", || {
         let got = wake::take("s-chat-b1");
         (!got.is_empty()).then_some(got)
     });
     assert!(
-        woken[0].starts_with("[chat]") && woken[0].contains("who has the disk?"),
+        woken[0].contains("from s-chat-a1 (session) to dm\n> who has the disk?"),
         "{woken:?}"
     );
     assert!(rung.lock().unwrap().iter().any(|s| s == "s-chat-b1"));

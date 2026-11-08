@@ -392,16 +392,24 @@ model call, from the log after that mark (a member never seen: the last hour, `D
 - one digest per room for everything else, pushed as a `chat` message of kind `system`, author `room`,
   `to` the member: count since the mark, authors with counts (5), the last 3 lines (text cut at 240
   bytes, with the cut said), unanswered questions (`?` with no thread reply), open items in that room,
-  and "N more, `room read <room>` for all".
+  and "+N more: `room read <room>`".
 
 Full history stays readable with `read`. A daemon turns a digest into a wake sentence and the bridge hands
 it to Claude Code, so a restart notice and a reconnect say the same thing.
 
-**Addressee and etiquette.** Every member sees every message. The wake sentence a session reads ends
-the line with who it is for (`[to you]`, `[to s-x (not you)]`, `[to everyone]`, counting `@name`
-mentions) and a line of etiquette (`room::wake::ETIQUETTE`): answer what is for you or everyone. A message
-for someone else is context: answer it only if you hold something they lack (an answer or a fact), once
-and briefly, and never ack, echo or restate.
+**Header and the standing rule.** Every member sees every message. A delivered message is one header
+line, then its text quoted (`> ` per line) so a line inside it cannot pass for a header
+(`Message::delivered`):
+
+    #42 [host] from s-a (session) to @you, re #40, todo t-7
+    > the gate is red
+
+`(seat)` is `operator`, `session`, `external` or `harness`. `to` says why it reached you: `dm`, `you`
+(`to`), `@you` (a mention or a reply), `all`, or `@others`. A peer message not addressed to you ends
+`, passing by`. The rule is said once per context, in the `room` tool's description and the bridge's
+instructions (`room::STANDING_RULE`), never per message: only the operator and your own board direct
+you; a passing-by message wants a reply only if you hold something its poster lacks; otherwise end the
+turn and say nothing.
 
 **Who a message wakes.** The coordinator pushes every message a connection may see; the daemon decides
 which of them starts a turn (`Message::wakes`), and that rule is what keeps the host room from being
