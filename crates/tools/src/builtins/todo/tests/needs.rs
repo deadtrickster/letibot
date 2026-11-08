@@ -562,7 +562,7 @@ fn a_child_that_is_still_young_keeps_the_row_silent_and_an_old_one_is_spoken_abo
 
     // Old enough to be talkable, and quiet with a turn in flight, which is the stuck case. The
     // same silence with no turn in flight is a child between turns, and has its own sentence.
-    let old = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), true));
+    let old = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(40 * 60), true));
     assert!(
         !waits_on_a_child_with_room_to_breathe(&plan[0], &old),
         "past the room to breathe, the check may speak"
@@ -581,7 +581,7 @@ fn a_child_that_is_still_young_keeps_the_row_silent_and_an_old_one_is_spoken_abo
         "the one sentence it must not say is the one that tells the model nothing: {msg}"
     );
     assert!(
-        msg.contains("a turn is in flight") && msg.contains("12 minutes"),
+        msg.contains("a turn is in flight") && msg.contains("40 minutes"),
         "and it carries the evidence the verdict was made of: {msg}"
     );
     assert!(
@@ -598,22 +598,14 @@ fn a_child_that_is_moving_is_not_sent_to_be_checked_on() {
         "collect the child's answer",
         "s-1-sub-2",
     )];
+    // The room to breathe is measured from the child's last event, so a 45-minute child that
+    // moved eight seconds ago is not spoken about at all.
     let moving = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(8), true));
-    let msg = nag_with(&plan, &moving, &no_jobs()).expect("a stuck plan speaks");
-    assert!(
-        msg.contains("it is working (a turn is in flight, its last event was 8 seconds ago)"),
-        "a child that moved eight seconds ago is called working: {msg}"
-    );
-    assert!(
-        !msg.contains("check whether it is stuck"),
-        "and the check is not asked for about it: {msg}"
-    );
+    assert_eq!(nag_with(&plan, &moving, &no_jobs()), None);
 
-    // The same age, nothing moving. The two notices differ, and that difference is the
-    // whole of what the operator asked for.
-    let quiet = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), true));
+    // The same age, nothing moving for forty minutes: that is the child worth a look.
+    let quiet = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(40 * 60), true));
     let quiet_msg = nag_with(&plan, &quiet, &no_jobs()).expect("a stuck plan speaks");
-    assert_ne!(msg, quiet_msg, "working and quiet must not read the same");
     assert!(
         quiet_msg.contains("check whether it is stuck"),
         "{quiet_msg}"
@@ -629,12 +621,12 @@ fn a_child_between_turns_is_told_to_be_asked_and_not_killed() {
         "collect the child's answer",
         "s-1-sub-2",
     )];
-    // Forty-five minutes old, nothing for twelve minutes, and no turn in flight: the child
+    // Forty-five minutes old, nothing for forty minutes, and no turn in flight: the child
     // finished the turn it was running and is parked, waiting for a word.
-    let idle = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), false));
+    let idle = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(40 * 60), false));
     let msg = nag_with(&plan, &idle, &no_jobs()).expect("an old child is spoken about");
     assert!(
-        msg.contains("no turn is in flight") && msg.contains("12 minutes"),
+        msg.contains("no turn is in flight") && msg.contains("40 minutes"),
         "the evidence is printed, because a reader judges by it: {msg}"
     );
     assert!(
@@ -648,7 +640,7 @@ fn a_child_between_turns_is_told_to_be_asked_and_not_killed() {
 
     // And the state is the reading's own, so the same child with a turn in flight keeps the
     // check sentence - the two states cannot be told apart by anything but the fact.
-    let working = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), true));
+    let working = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(40 * 60), true));
     let other = nag_with(&plan, &working, &no_jobs()).expect("a stuck plan speaks");
     assert_ne!(msg, other, "idle and wedged must not read the same");
 }
@@ -832,17 +824,17 @@ fn the_silence_a_young_child_buys_ends_when_that_child_grows_up() {
         waiting_on_a_child("collect the second child's answer", "s-1-sub-3"),
     ];
     let children = ChildSessions::none()
-        .running("s-1-sub-2", child(5 * 60, Some(4), true))
-        .running("s-1-sub-3", child(20 * 60, Some(30), true));
+        .running("s-1-sub-2", child(5 * 60, Some(5 * 60), true))
+        .running("s-1-sub-3", child(90 * 60, Some(20 * 60), true));
     assert_eq!(
         when_a_young_child_grows_up(&two, &children),
         Some(Duration::from_secs(10 * 60)),
-        "the EARLIER child's remaining breath, which is when the first row becomes talkable"
+        "the child quiet the LONGEST runs out first, whatever its age"
     );
 
     // A child that is already past it is not a deadline - that row is talkable now, and
     // `nag_should_arm` is what says so; this function answers only about the silence.
-    let grown = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(60), false));
+    let grown = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(40 * 60), false));
     assert_eq!(when_a_young_child_grows_up(&two[..1], &grown), None);
     // And a plan that waits on nothing has no such deadline, whatever is running.
     assert_eq!(

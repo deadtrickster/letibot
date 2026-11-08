@@ -964,10 +964,21 @@ pub fn open_priority(todos: &[TodoItem]) -> Vec<&TodoItem> {
     open
 }
 
-/// How long a row that waits on a live child stays silent, so the child has room to breathe
-/// before the check starts steering its parent at it. Crude on purpose: a rule that watched the
-/// child's progress rather than its age is the next thing to think about.
+/// How long a row that waits on a live child stays silent after the child last visibly worked,
+/// before the check starts steering its parent at it. Measured from its last event, not its
+/// start: an hour-long child that is still moving is not a plan to fix.
 pub const CHILD_ROOM_TO_BREATHE: Duration = Duration::from_secs(30 * 60);
+
+/// How long since the child last visibly worked; a child that has shown nothing yet counts from
+/// its start.
+fn since_it_worked(child: &RunningChild) -> Duration {
+    child.quiet_for.unwrap_or(child.age)
+}
+
+/// A child the check stays silent about: it worked within its room to breathe.
+pub fn has_room_to_breathe(child: &RunningChild) -> bool {
+    since_it_worked(child) < CHILD_ROOM_TO_BREATHE
+}
 
 /// How long a child may show nothing before the notice stops calling it working. It decides
 /// only which sentence is said, never whether the check speaks. A child inside one long tool call
@@ -1238,9 +1249,7 @@ pub fn said_short(about: &str) -> String {
 /// out of the plan's hands. Any need of that shape makes the row quiet.
 pub fn waits_on_a_child_with_room_to_breathe(row: &TodoItem, children: &ChildSessions) -> bool {
     row.needs.iter().any(|need| match need {
-        TodoNeed::Child { id } => children
-            .child(id)
-            .is_some_and(|child| child.age < CHILD_ROOM_TO_BREATHE),
+        TodoNeed::Child { id } => children.child(id).is_some_and(has_room_to_breathe),
         _ => false,
     })
 }
@@ -1413,7 +1422,7 @@ pub fn when_a_young_child_grows_up(
         .filter_map(|need| match need {
             TodoNeed::Child { id } => children.child(id).and_then(|child| {
                 CHILD_ROOM_TO_BREATHE
-                    .checked_sub(child.age)
+                    .checked_sub(since_it_worked(child))
                     .filter(|left| !left.is_zero())
             }),
             _ => None,
@@ -1650,7 +1659,7 @@ fn all_on_the_operator(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> bool
                 // And something outside the machine: only the row moving ends it, so no pass of
                 // this check can.
                 NeedFate::External => true,
-                NeedFate::ChildRunning(child) => child.age < CHILD_ROOM_TO_BREATHE,
+                NeedFate::ChildRunning(child) => has_room_to_breathe(child),
                 NeedFate::NotDone => on.contains(name.trim()),
                 _ => false,
             });

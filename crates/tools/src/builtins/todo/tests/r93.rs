@@ -4,15 +4,17 @@
 
 use super::*;
 
-/// A plan blocked only on a young child is silent, as `todo_write` promises. An OLD child
-/// is the one the check has to steer at, so it still speaks.
+/// A plan blocked only on a child that is still working is silent, as `todo_write` promises,
+/// however long the child has run. A child QUIET past its room is the one the check steers at.
 #[test]
 fn a_plan_blocked_only_on_a_young_child_says_nothing() {
     let plan = vec![waiting_on_a_child("merge the review", "s-child")];
     let young = ChildSessions::none().running("s-child", child(60, Some(10), true));
     assert_eq!(nag_with(&plan, &young, &no_jobs()), None);
-    let old = ChildSessions::none().running("s-child", child(2 * 3600, Some(10), true));
-    let said = nag_with(&plan, &old, &no_jobs()).expect("an old child is steered at");
+    let old_and_moving = ChildSessions::none().running("s-child", child(2 * 3600, Some(10), true));
+    assert_eq!(nag_with(&plan, &old_and_moving, &no_jobs()), None);
+    let old = ChildSessions::none().running("s-child", child(2 * 3600, Some(40 * 60), true));
+    let said = nag_with(&plan, &old, &no_jobs()).expect("a quiet child is steered at");
     assert!(said.contains("NOTHING can start"), "{said}");
 }
 

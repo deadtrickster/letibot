@@ -90,9 +90,9 @@ fn a_young_child_keeps_the_check_silent_and_an_old_one_is_spoken_about() {
         "s-1-sub-2",
     )];
 
-    // Five minutes old: the check may not speak about the row at all - not asked about, and
+    // Quiet for five minutes: the check may not speak about the row at all - not asked about, and
     // not listed as blocked either, because `the_plan_as_checked` removes it before the sentence.
-    let young = ChildSessions::none().running("s-1-sub-2", child(5 * 60, Some(4), true));
+    let young = ChildSessions::none().running("s-1-sub-2", child(5 * 60, Some(5 * 60), true));
     assert!(
         super::the_plan_as_checked(&plan, &young, &no_jobs()).is_empty(),
         "a row waiting on a five-minute-old child is not work this check may speak about"
@@ -103,7 +103,7 @@ fn a_young_child_keeps_the_check_silent_and_an_old_one_is_spoken_about() {
              happens to be empty"
     );
     // AND THE SILENCE HAS AN END. Nothing else would arm this clock: it is armed by a turn
-    // a board write or a prompt, and a child's AGE is none of those - so the deadline is the
+    // a board write or a prompt, and a child's silence is none of those - so the deadline is the
     // moment the child leaves its room to breathe, and the steering arrives when it can.
     let t0 = std::time::Instant::now();
     let mut clock = super::TodoNagClock::with_window(std::time::Duration::from_secs(60));
@@ -111,13 +111,13 @@ fn a_young_child_keeps_the_check_silent_and_an_old_one_is_spoken_about() {
     assert_eq!(
         clock.due_at(),
         Some(t0 + std::time::Duration::from_secs(25 * 60)),
-        "a five-minute-old child's row is due the moment the child turns thirty"
+        "the row is due the moment the child has been quiet for thirty minutes"
     );
 
     // Forty-five minutes old, and gone quiet WITH A TURN IN FLIGHT: talkable, and what it says
     // is *check the child*. A turn in flight is what makes it the *stuck* case - the same silence
     // with no turn in flight sends its reader to `task_message` instead.
-    let old = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), true));
+    let old = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(40 * 60), true));
     assert!(
         nag_should_arm(&plan, None, &old, &no_jobs()),
         "past the room to breathe, the check speaks"

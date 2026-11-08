@@ -103,11 +103,12 @@ is what makes its parent's `Child` need met. The seat's snapshot is the held hea
 `Child` need is met by the same rule, from the same function
 (`waits_on_a_child_with_room_to_breathe`, `crates/tools/src/builtins/todo.rs:991`).
 
-`age` is how long the current turn has run - the watcher's own clock, since a head does not record
-when a turn started - and `quiet_for` is since that head last changed. So a package thirty minutes
-into one turn is the *stuck* case and the notice steers to it, exactly as a subagent is; a package
-inside its room to breathe keeps the row quiet and arms the deadline at which it grows up
-(`when_a_young_child_grows_up`, `crates/tools/src/builtins/todo.rs:1125`).
+`age` is how long the package has been a child, and `quiet_for` is since it last visibly worked:
+its head changed, or it had a job of its own running. A package stays a child between turns while
+it has an open job or an ask. The room to breathe (`CHILD_ROOM_TO_BREATHE`, thirty minutes) is
+measured from `quiet_for`, not `age`, so an hour-long package that is still moving keeps the row
+quiet, and one quiet for thirty minutes is the *stuck* case the notice steers to, exactly as a
+subagent is (`when_a_young_child_grows_up` arms that deadline).
 
 ## How a met wait is detected
 
