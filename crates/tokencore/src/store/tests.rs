@@ -521,7 +521,11 @@ fn a_stored_row_with_one_edit_excerpt_reads_back_as_a_one_item_list() {
         )
         .unwrap();
     let back = s.load_transcript(&tr).unwrap();
-    assert_eq!(back.items.len(), 2, "the old row and the one this daemon wrote");
+    assert_eq!(
+        back.items.len(),
+        2,
+        "the old row and the one this daemon wrote"
+    );
     match &back.items[1].0 {
         TranscriptItem::ToolResult { edits, .. } => {
             assert_eq!(edits.len(), 1, "one object, one item: {edits:?}");
