@@ -1,8 +1,8 @@
 # Installing letibot
 
-letibot installs as four binaries and the four llama.cpp libraries they link. It is a harness, a
-daemon and a head. Nothing in the archive is a model, and no turn is answered until one is
-reachable.
+letibot installs as two launchers, four binaries and the four llama.cpp libraries `harnessd` links.
+It is a harness, a daemon and a head. Nothing in the archive is a model, and no turn is answered
+until one is reachable.
 
 ## From the published archive
 
@@ -10,9 +10,11 @@ reachable.
 curl -fsSL https://raw.githubusercontent.com/deadtrickster/letibot/main/install.sh | sh
 ```
 
-That puts eight files in `~/.local/bin`; `LETIBOT_INSTALL_DIR` changes it. They are the launcher
-`letibot`, the daemon `harnessd`, the head `letibot-tui`, `letibot-askpass`, and the llama.cpp
-libraries `libllama.so.0`, `libggml.so.0`, `libggml-cpu.so.0` and `libggml-base.so.0`.
+That puts ten files in `~/.local/bin`; `LETIBOT_INSTALL_DIR` changes it. They are the launchers
+`letibot` and `leticode`, the daemon `harnessd`, the head `letibot-tui`, `letibot-askpass`, the
+Claude Code bridge `letibot-mcp` (the MCP server the `leticode` plugin runs,
+[claude-plugin/](../claude-plugin/README.md)), and the llama.cpp libraries `libllama.so.0`,
+`libggml.so.0`, `libggml-cpu.so.0` and `libggml-base.so.0`.
 
 The libraries sit beside the binaries because that is what `$ORIGIN` resolves, so an install needs
 no `LD_LIBRARY_PATH` and no llama.cpp checkout of its own. On macOS the same four are `.0.dylib`
