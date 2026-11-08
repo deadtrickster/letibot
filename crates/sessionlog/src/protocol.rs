@@ -1008,6 +1008,10 @@ pub enum ServerFrame {
         /// Defaulted, so an older daemon saying nothing reads as none.
         #[serde(default)]
         monitors: Vec<MonitorEntry>,
+        /// The session's head seq when the list was built. A head that has seen a job event
+        /// past it discards the list and asks again. 0 is a daemon that does not stamp.
+        #[serde(default)]
+        seq: u64,
     },
     /// The answer to [`ClientFrame::ListNotes`]: the standing notes, one row each, in the order the
     /// section carries them, because that order is what the prompt shows.
@@ -1845,6 +1849,7 @@ mod tests {
     #[test]
     fn a_jobs_frame_carries_the_name_and_a_row_without_one_still_reads() {
         let f = ServerFrame::Jobs {
+            seq: 0,
             monitors: Vec::new(),
             session_id: "s-1".into(),
             jobs: vec![JobEntry {

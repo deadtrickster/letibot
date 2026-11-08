@@ -15,6 +15,7 @@ fn attached() -> App {
 
 fn table(monitors: Vec<MonitorEntry>) -> ServerFrame {
     ServerFrame::Jobs {
+        seq: 0,
         session_id: "s".into(),
         jobs: Vec::new(),
         monitors,

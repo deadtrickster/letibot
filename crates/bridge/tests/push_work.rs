@@ -75,6 +75,21 @@ fn turn_with_a_job(hub: &Hub, id: &str, text: &str, job: &str) {
     });
 }
 
+fn running(id: &str) -> letibot_sessionlog::protocol::JobEntry {
+    letibot_sessionlog::protocol::JobEntry {
+        id: id.into(),
+        command: "sleep 300".into(),
+        slug: String::new(),
+        how: "asked".into(),
+        state: "running".into(),
+        running: true,
+        never_ran: false,
+        redirect: None,
+        produced: 0,
+        elapsed_ms: 0,
+    }
+}
+
 /// The events pushed, waiting for `want` of them: fewer is a failure that says what came.
 fn events(rx: &Receiver<Value>, want: usize) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
@@ -136,9 +151,8 @@ fn an_idle_session_with_an_open_job_is_one_event_and_the_jobs_exit_is_another() 
     );
     let (tx, rx) = mpsc::channel();
     letibot_bridge::push::watch(&head).attach(tx);
-    // The head asks for the daemon's job list on attach, and an empty reply landing after the job
-    // starts would replace it. The registry has no job table, so let the reply land first.
-    std::thread::sleep(Duration::from_secs(3));
+    // The head asks the daemon for its job table, which is what lists a job: the registry holds it.
+    registry.set_jobs(SESSION, vec![running("j82015")]);
 
     turn_with_a_job(&hub, "t1", "the long one is running", "j82015");
 
@@ -158,6 +172,7 @@ fn an_idle_session_with_an_open_job_is_one_event_and_the_jobs_exit_is_another() 
         "the same open job was said twice"
     );
 
+    registry.set_jobs(SESSION, Vec::new());
     hub.publish(SessionEvent::JobSettled {
         job: "j82015".into(),
         state: "exited 0".into(),

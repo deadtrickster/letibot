@@ -1193,6 +1193,7 @@ fn daemon_job(id: &str, command: &str, running: bool) -> letibot_sessionlog::pro
 
 fn jobs_frame(session_id: &str, jobs: Vec<letibot_sessionlog::protocol::JobEntry>) -> ServerFrame {
     ServerFrame::Jobs {
+        seq: 0,
         monitors: Vec::new(),
         session_id: session_id.into(),
         jobs,

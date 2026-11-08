@@ -153,8 +153,20 @@ impl App {
                 session_id,
                 jobs,
                 monitors,
+                seq,
             } => {
                 if session_id == self.session_id {
+                    self.jobs_in_flight = false;
+                    // Built before a job event this head already saw (0 is a daemon that does not
+                    // stamp): drop it and ask again rather than show a list the event outdates.
+                    if seq != 0 && seq < self.jobs_event_seq {
+                        self.jobs_again = false;
+                        self.queued.push(Action::ListJobs);
+                        return Disposition::Control;
+                    }
+                    if std::mem::take(&mut self.jobs_again) {
+                        self.queued.push(Action::ListJobs);
+                    }
                     self.jobs = jobs;
                     self.jobs_sel = self.jobs_sel.min(self.job_stops().len().saturating_sub(1));
                     // And the monitors, from the same answer - what this session is watching.
@@ -541,6 +553,15 @@ impl App {
                     }
                 }
                 self.seq = env.seq;
+                if matches!(
+                    env.event,
+                    SessionEvent::ToolFinished {
+                        outcome: letibot_transcript::ToolOutcome::Backgrounded { .. },
+                        ..
+                    } | SessionEvent::JobSettled { .. }
+                ) {
+                    self.jobs_event_seq = env.seq;
+                }
                 self.last_event_at = self.now_ms;
                 let ts = env.ts;
                 let d = self.event(env.event, ts);

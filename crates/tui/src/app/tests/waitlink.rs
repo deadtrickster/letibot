@@ -38,6 +38,7 @@ fn board() -> App {
     let mut a = app();
     a.session_id = "s1".into();
     a.apply(ServerFrame::Jobs {
+        seq: 0,
         monitors: Vec::new(),
         session_id: "s1".into(),
         jobs: vec![job("j97", "pg-timing"), job("j96", "bench"), job("j95", "")],
@@ -340,6 +341,7 @@ fn a_wait_link_on_a_done_row_lands_on_the_row_it_is_drawn_on() {
     let mut a = app();
     a.session_id = "s1".into();
     a.apply(ServerFrame::Jobs {
+        seq: 0,
         monitors: Vec::new(),
         session_id: "s1".into(),
         jobs: vec![job("j97", "pg-timing"), job("j96", "bench")],

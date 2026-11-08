@@ -68,24 +68,8 @@ impl App {
                 }
                 Disposition::Filtered
             }
-            SessionEvent::JobSettled {
-                job,
-                state,
-                produced,
-                elapsed_ms,
-            } => {
-                // Folded, never invented: the daemon owns the table, so a settlement for a job
-                // this head was not told about arrives with the next `ListJobs` rather than
-                // becoming a row with no command.
-                if let Some(row) = self.jobs.iter_mut().find(|j| j.id == job) {
-                    row.state = state;
-                    row.running = false;
-                    row.produced = produced;
-                    row.elapsed_ms = elapsed_ms;
-                    // `never_ran` is deliberately NOT taken from this event: a settlement carries
-                    // no such fact, and a job that never ran was never listed as running, so the
-                    // row's own came from the daemon's listing.
-                }
+            SessionEvent::JobSettled { .. } => {
+                // The daemon owns the table: the settlement only says to ask again.
                 // And the count drops by one, so the row above the composer re-asks: a job
                 // settled in a turn this head never watched has no row to fold into, which is
                 // the case a count taken from the pane's rows would get wrong.

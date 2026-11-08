@@ -286,6 +286,7 @@ fn the_top_edge_counts_running_jobs_and_says_which_cannot_be_watched() {
         Hub::new("s").snapshot(),
     ));
     let jobs = |cs: Vec<letibot_sessionlog::protocol::JobEntry>| ServerFrame::Jobs {
+        seq: 0,
         monitors: Vec::new(),
         session_id: "s".into(),
         jobs: cs,
@@ -363,6 +364,7 @@ fn a_job_starting_ending_or_a_turn_ending_re_reads_the_count() {
         "the attach re-read the count"
     );
     assert!(a.take_actions().is_empty(), "nothing else is owed");
+    a.apply(jobs_frame("s", Vec::new()));
     // 1. A backgrounded call is the job STARTING.
     a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
     a.apply(ServerFrame::Event(env(
@@ -388,6 +390,7 @@ fn a_job_starting_ending_or_a_turn_ending_re_reads_the_count() {
         a.take_actions().contains(&Action::ListJobs),
         "a job started and the count was not re-read"
     );
+    a.apply(jobs_frame("s", Vec::new()));
     // An ordinary `ok` finish starts nothing, so it asks for nothing.
     a.apply(ServerFrame::Event(env(
         3,
@@ -407,6 +410,7 @@ fn a_job_starting_ending_or_a_turn_ending_re_reads_the_count() {
         !a.take_actions().contains(&Action::ListJobs),
         "a call that started nothing re-read the count"
     );
+    a.apply(jobs_frame("s", Vec::new()));
     // 2. A settlement ends one.
     a.apply(ServerFrame::Event(env(
         4,
@@ -421,6 +425,7 @@ fn a_job_starting_ending_or_a_turn_ending_re_reads_the_count() {
         a.take_actions().contains(&Action::ListJobs),
         "a job ended and the count was not re-read"
     );
+    a.apply(jobs_frame("s", Vec::new()));
     // 3. The turn's end, which is the only chance a job running at attach ever gets.
     a.apply(ServerFrame::Event(env(5, testing::turn_finished("t1"))));
     assert!(
@@ -455,7 +460,12 @@ fn a_settlement_folds_onto_a_known_job_and_never_invents_one() {
     )));
     assert_eq!(a.jobs.len(), 1, "a settlement invented a row");
 
-    // And one it did: folded, so the pane is live between answers.
+    // And one it did: not patched. The settlement asks, and the daemon's answer is the row.
+    a.take_actions();
+    a.apply(jobs_frame(
+        "s1",
+        vec![daemon_job("j1", "cargo build", true)],
+    ));
     a.apply(ServerFrame::Event(env(
         2,
         SessionEvent::JobSettled {
@@ -465,11 +475,13 @@ fn a_settlement_folds_onto_a_known_job_and_never_invents_one() {
             elapsed_ms: 2_500,
         },
     )));
+    assert!(a.jobs[0].running, "the head patched its own list");
+    assert!(a.take_actions().contains(&Action::ListJobs));
+    a.apply(jobs_frame(
+        "s1",
+        vec![daemon_job("j1", "cargo build", false)],
+    ));
     assert!(!a.jobs[0].running);
-    assert_eq!(a.jobs[0].state, "killed by job_kill");
-    assert_eq!(a.jobs[0].produced, 4096);
-    // The command still reads, because it is the daemon's and was never
-    // rebuilt from a turn this head happens to be showing.
     assert_eq!(a.jobs[0].command, "cargo build");
 }
 
@@ -975,4 +987,63 @@ fn a_running_jobs_window_follows_its_output() {
     a.job_out = None;
     a.clock(60_000);
     assert!(a.take_actions().is_empty());
+}
+
+/// The attach-time `ListJobs` answer can land after a job started. A list stamped before the
+/// job's event is discarded and asked for again, so the head ends with the job listed.
+#[test]
+fn a_job_list_older_than_a_job_event_is_discarded_and_asked_again() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    assert!(a.take_actions().contains(&Action::ListJobs), "attach asks");
+    a.apply(ServerFrame::Event(env(
+        7,
+        SessionEvent::ToolFinished {
+            turn_id: "t1".into(),
+            call_id: "c1".into(),
+            outcome: letibot_transcript::ToolOutcome::Backgrounded {
+                handle: "j1".into(),
+                ran_for_ms: 100,
+                how: letibot_transcript::Backgrounding::Asked,
+                next: "read it".into(),
+            },
+            payload_digest: "d".into(),
+            inline_bytes: 1,
+            full_bytes: 1,
+            spill: None,
+            repairs: 0,
+            edit: None,
+        },
+    )));
+    assert!(
+        !a.take_actions().contains(&Action::ListJobs),
+        "an ask is already in flight"
+    );
+    let stamped = |seq, jobs| match jobs_frame("s", jobs) {
+        ServerFrame::Jobs {
+            session_id,
+            jobs,
+            monitors,
+            ..
+        } => ServerFrame::Jobs {
+            session_id,
+            jobs,
+            monitors,
+            seq,
+        },
+        f => f,
+    };
+    a.apply(stamped(5, Vec::new()));
+    assert!(a.jobs.is_empty());
+    assert!(
+        a.take_actions().contains(&Action::ListJobs),
+        "the stale list was not asked for again"
+    );
+    a.apply(stamped(8, vec![daemon_job("j1", "sleep 300", true)]));
+    assert_eq!(a.jobs.len(), 1, "the job is listed");
+    assert!(!a.take_actions().contains(&Action::ListJobs));
 }

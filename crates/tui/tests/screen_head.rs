@@ -33,8 +33,7 @@ fn a_head_in_a_screen_shows_its_status_line() {
             &mut h,
             serde_json::json!({"action": "read", "id": id, "idle_ms": 1500, "max_ms": 10000}),
         );
-        if wanted.iter().all(|w| read.payload.contains(w)) || std::time::Instant::now() > deadline
-        {
+        if wanted.iter().all(|w| read.payload.contains(w)) || std::time::Instant::now() > deadline {
             break read;
         }
     };

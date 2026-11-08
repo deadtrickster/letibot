@@ -155,6 +155,11 @@ pub struct App {
     /// joined the command out of the turn it was drawing lost the name of a job that outlived
     /// its turn. A `JobSettled` still folds onto a row for liveness.
     pub(crate) jobs: Vec<letibot_sessionlog::protocol::JobEntry>,
+    /// Seq of the newest job event seen: a job list stamped older than it is discarded and asked
+    /// for again. One `ListJobs` is in flight at most, and one more is owed when a second is wanted.
+    pub(crate) jobs_event_seq: u64,
+    pub(crate) jobs_in_flight: bool,
+    pub(crate) jobs_again: bool,
     /// The daemon's monitor table as it last answered `ListJobs`: the monitors pane's rows and
     /// the composer edge's `N monitors watching`. Live ones first, then the ended ones.
     pub(crate) monitors: Vec<letibot_sessionlog::protocol::MonitorEntry>,
@@ -1219,6 +1224,9 @@ impl App {
             sessions: Vec::new(),
             subagents: Vec::new(),
             jobs: Vec::new(),
+            jobs_event_seq: 0,
+            jobs_in_flight: false,
+            jobs_again: false,
             monitors: Vec::new(),
             monitors_sel: 0,
             monitors_stop_rows: Vec::new(),
@@ -1596,7 +1604,18 @@ impl App {
 
     /// Actions a *frame* produced, for the driver to send. Empty almost always.
     pub fn take_actions(&mut self) -> Vec<Action> {
-        std::mem::take(&mut self.queued)
+        let mut out = std::mem::take(&mut self.queued);
+        // However many asks piled up, one goes out, and none while one is unanswered.
+        if out.contains(&Action::ListJobs) {
+            out.retain(|a| *a != Action::ListJobs);
+            if self.jobs_in_flight {
+                self.jobs_again = true;
+            } else {
+                self.jobs_in_flight = true;
+                out.push(Action::ListJobs);
+            }
+        }
+        out
     }
 
     /// Screen requests to answer with the frame just drawn. Drains.

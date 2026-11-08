@@ -1127,6 +1127,9 @@ impl App {
     /// copy is not an ask, so every answer is re-folded.
     pub(crate) fn refetch_session_facts(&mut self) {
         self.queued.push(Action::Settings);
+        // A new connection owes no answer to an ask the old one carried.
+        self.jobs_in_flight = false;
+        self.jobs_again = false;
         self.queued.push(Action::ListJobs);
         self.queued.push(Action::ListSessions);
         // And the board: the read the head draws *who waits on the person* from. Without it the read happened only

@@ -492,6 +492,12 @@ pub struct State {
     /// `JobSettled` that names it - `leticode_status`' own list, and nothing else: whether a job
     /// holds the work open is the daemon's [`Activity`] (`waiting_on`), not this set.
     pub jobs_open: std::collections::BTreeSet<String>,
+    /// Seq of the newest job event folded: a job list stamped older than it is discarded.
+    jobs_event_seq: u64,
+    /// One `ListJobs` in flight at most, one more owed when an event lands meanwhile.
+    jobs_in_flight: bool,
+    jobs_again: bool,
+    jobs_wanted: bool,
     /// What the DAEMON says this session is waiting on - `PROTOCOL_VERSION` 52. It
     /// replaced four guesses this head made from outside, each a model of the daemon's
     /// state built from events that do not carry it. Folded from `ActivityChanged`.
@@ -734,6 +740,19 @@ impl State {
         }
     }
 
+    /// Whether a `ListJobs` should go out now. Folding only marks it wanted.
+    fn take_jobs_ask(&mut self) -> bool {
+        if !std::mem::take(&mut self.jobs_wanted) {
+            return false;
+        }
+        if self.jobs_in_flight {
+            self.jobs_again = true;
+            return false;
+        }
+        self.jobs_in_flight = true;
+        true
+    }
+
     /// Fold one server frame in. Returns the `seq` to acknowledge, when the frame was an
     /// event with one.
     fn fold(&mut self, frame: ServerFrame) {
@@ -758,6 +777,18 @@ impl State {
             }
             ServerFrame::Event(env) => {
                 self.seq = self.seq.max(env.seq);
+                // The daemon owns the job table: a job event only says it changed, so the list
+                // is asked for again and never patched here.
+                if matches!(
+                    env.event,
+                    SessionEvent::ToolFinished {
+                        outcome: ToolOutcome::Backgrounded { .. },
+                        ..
+                    } | SessionEvent::JobSettled { .. }
+                ) {
+                    self.jobs_event_seq = self.jobs_event_seq.max(env.seq);
+                    self.jobs_wanted = true;
+                }
                 self.event(env);
             }
             ServerFrame::Resync { snapshot, .. } => {
@@ -767,7 +798,18 @@ impl State {
                 self.seed(&snapshot);
             }
             ServerFrame::Todos { todos, .. } => self.todos = todos,
-            ServerFrame::Jobs { jobs, .. } => {
+            ServerFrame::Jobs { jobs, seq, .. } => {
+                self.jobs_in_flight = false;
+                // Built before a job event this head already saw (0 is a daemon that does not
+                // stamp): drop it and ask again rather than show a list the event outdates.
+                if seq != 0 && seq < self.jobs_event_seq {
+                    self.jobs_again = false;
+                    self.jobs_wanted = true;
+                    return;
+                }
+                if std::mem::take(&mut self.jobs_again) {
+                    self.jobs_wanted = true;
+                }
                 self.jobs_open = jobs
                     .into_iter()
                     .filter(|j| j.running)
@@ -1110,7 +1152,6 @@ impl State {
                     handle, ran_for_ms, ..
                 } = &outcome
                 {
-                    self.jobs_open.insert(handle.clone());
                     self.events.push(
                         Entry::of("job", "started")
                             .named(handle.clone())
@@ -1142,7 +1183,6 @@ impl State {
                 // Whether this settlement holds the work open is the daemon's - it publishes
                 // `Delivery` the moment the result is queued, and `Job(j)` only while the job is
                 // one the plan waits on. This head keeps the list a reader sees and nothing else.
-                self.jobs_open.remove(&job);
                 self.events.push(
                     Entry::of("job", "ended")
                         .named(job)
@@ -1525,6 +1565,7 @@ impl Head {
         {
             let mut g = shared.state.lock().unwrap_or_else(|e| e.into_inner());
             g.fold(hello);
+            g.jobs_in_flight = true;
         }
         collect(reader, shared.clone(), client.clone());
         // The todo board is not in the snapshot (`ClientFrame::ListTodos` says why: a head
@@ -1633,6 +1674,10 @@ impl Head {
             calls: g.calls.clone(),
             children: g.children.clone(),
             jobs_open: g.jobs_open.clone(),
+            jobs_event_seq: g.jobs_event_seq,
+            jobs_in_flight: g.jobs_in_flight,
+            jobs_again: g.jobs_again,
+            jobs_wanted: g.jobs_wanted,
             activity: g.activity.clone(),
             turned: g.turned,
             events: g.events.clone(),
@@ -2236,9 +2281,14 @@ fn collect(
                         } else {
                             None
                         };
-                        {
+                        let ask = {
                             let mut g = shared.state.lock().unwrap_or_else(|e| e.into_inner());
                             g.fold(frame);
+                            g.take_jobs_ask()
+                        };
+                        if ask {
+                            let mut c = client.lock().unwrap_or_else(|e| e.into_inner());
+                            let _ = c.list_jobs();
                         }
                         shared.bell.notify_all();
                         seq
@@ -2588,6 +2638,62 @@ mod tests {
         }
     }
 
+    fn jobs_reply(seq: u64, running: &[&str]) -> ServerFrame {
+        ServerFrame::Jobs {
+            session_id: "s".into(),
+            seq,
+            monitors: Vec::new(),
+            jobs: running
+                .iter()
+                .map(|id| letibot_sessionlog::protocol::JobEntry {
+                    id: (*id).into(),
+                    command: String::new(),
+                    slug: String::new(),
+                    how: "asked".into(),
+                    state: "running".into(),
+                    running: true,
+                    never_ran: false,
+                    redirect: None,
+                    produced: 0,
+                    elapsed_ms: 0,
+                })
+                .collect(),
+        }
+    }
+
+    /// The attach-time `ListJobs` answer can land after a job started. The head discards it,
+    /// asks again, and ends with the job listed from the daemon's newer answer.
+    #[test]
+    fn a_job_list_older_than_a_job_event_is_discarded_and_asked_again() {
+        let mut state = State::default();
+        state.jobs_in_flight = true;
+        state.fold(ServerFrame::Event(env(
+            7,
+            finished(
+                "c1",
+                ToolOutcome::Backgrounded {
+                    handle: "j1".into(),
+                    ran_for_ms: 1,
+                    how: Backgrounding::Asked,
+                    next: String::new(),
+                },
+            ),
+        )));
+        assert!(state.take_jobs_ask() == false, "one ask is already out");
+        // The reply built at seq 5, before the job existed.
+        state.fold(jobs_reply(5, &[]));
+        assert!(state.jobs_open.is_empty());
+        assert!(state.take_jobs_ask(), "a stale list asks again");
+        assert!(!state.take_jobs_ask(), "and only once");
+        // The answer to the second ask is built after the event.
+        state.fold(jobs_reply(8, &["j1"]));
+        assert!(state.jobs_open.contains("j1"), "the job is listed");
+        assert!(!state.take_jobs_ask());
+        // A daemon that does not stamp is taken as it answers.
+        state.fold(jobs_reply(0, &[]));
+        assert!(state.jobs_open.is_empty());
+    }
+
     fn assistant(text: &str) -> SessionEvent {
         SessionEvent::TranscriptContent {
             item_id: "tr.9".into(),
@@ -2691,6 +2797,7 @@ mod tests {
                 },
             ),
         );
+        state.fold(jobs_reply(0, &["j9"]));
         feed(&mut state, testing::turn_finished("t1"));
         // An open job the model PARKED (`bash {background: true, wake: "later"}`), which is
         // what a dev server left running is: the daemon says the session is quiet, and this head
@@ -2711,6 +2818,7 @@ mod tests {
         // It settled, and the turn its settlement wakes has not started: the daemon says
         // `delivery`, which is the window QC's `wait` exited in.
         feed(&mut state, settled("j9", "exited 0", 60_000));
+        state.fold(jobs_reply(0, &[]));
         assert!(state.jobs_open.is_empty(), "its settlement closes it");
         feed(&mut state, activity(vec![Waiting::Delivery]));
         assert!(!state.activity.is_quiet(), "the wake is owed");

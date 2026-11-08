@@ -830,7 +830,10 @@ pub fn serve_conn_rooted(
                 // Answered here and now, off the registry, rather than queued as a command: a
                 // pane that opens must answer while it is open, and a queued answer arrives
                 // after the turn it was asked during.
+                // Read before the table, so the stamp can only be older than the list.
+                let seq = seat.hub.head_seq();
                 let f = ServerFrame::Jobs {
+                    seq,
                     session_id: seat.hub.session_id().to_string(),
                     jobs: registry.jobs(&seat.hub.session_id()),
                     monitors: registry.monitors(&seat.hub.session_id()),
