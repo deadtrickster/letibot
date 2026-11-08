@@ -47,7 +47,6 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | id | title | group | left |
 |---|---|---|---|
 | R161 | A `bash` call that writes a file is not shown as an edit | Code work | a diff for each file when a command changes more than one (one result carries one `edit` excerpt), and a sweep for a command run in the background — the sweep of the tree the command actually ran in, the single-file diff, the ledger and the nudge are built |
-| R160 | A background job's default deadline silently kills real work | Landed | built in `b824e304`: no default wall-clock deadline for a background job, a dead check that says its output is partial, one warning before it, `job_extend`; the residue is apparatus (this box delegates no cgroup subtree) |
 | R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement) |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | leticl's `:turn-finished` arm (`src/session/seq-gap.lisp:254`) does not read `ends_turn`, so every round's end is drawn as the turn's end |
 | R121 | What a command boundary holds is hardcoded and invisible | Code work | items 1-8 are built: the two seat levels and every role are `[perimeter.<name>]` tables, a child composes its parent's and may only narrow it, and a widening is an operator card. left: `grants_rw` and `secrets` are the user file's alone (operator ruling 2026-11-05), a `leticode` seat with no shell still has no boundary to put a perimeter in front of, and R95's carry-over should call `boundary::env_refusal` |
@@ -65,11 +64,6 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R138 | Stable session identities across hosts, through migrations | Code work | the build of `docs/cross-host-identity.md` (Q1-Q7) and its five open questions; until then asks are same-host only |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
 | R153 | Placing a session on a busy host times out at 20 s | Needs the operator | the live proof on a loaded lab2x1: a placement there while the host is building, and a session's `job_wait` against it; the minute-long arranging budget, the one connection per host and the round a timed-out status query is not are landed |
-| R155 | A remote placement's memory cap is checked against the daemon's box, not the host the command runs on | Landed | built: the backend's `machine_memory`, a placement's `/proc/meminfo` over its own ssh link cached 30 s, an unknown host asks and every card and refusal names it; local sessions unchanged |
-| R156 | A Claude Code seat's nag repeats on every package job and offers the packages' jobs as its own waits | Done | the seat's clock is keyed by its plan, a package's job is named as the package's and offered as that package's turn, and an outside wait is the kind `external` (both `TodoNeed` copies, `needs` and `wait_on`) |
-| R157 | Built-in panes `b-sessions`/`pane_sessions` and `b-irc`/`pane_nicks` trap with symbol-less backtraces | Code work | nothing: fixed (fuel exhaustion), with the measured limit in the section |
-| R159 | `←`/`→` in the `/sessions` tree collapse the wrong row, and `←` throws the cursor to another project | Code work | all of it |
-| R158 | Resuming a session reads gigabytes of the store: the startup corpus counts scan `adjudication` row by row | Landed | nothing — the counts read 4.98 MB where they read 1.80 GB; a live 10 GB store takes the index at its daemon's next start (one build, 8.6 s, 2.2 GB) |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
 | R150 | Plugin extension points: the harness and head open to plugins | Needs the operator | the operator's answers to the 13 questions in `docs/plugin-extension-points-wide.md` §8 (each has a default and is built on it meanwhile); K2-K6 and K11 to build; H0, P5, P6, K7, K8, K9, K10 are landed and K1 is in flight |
 | R113 | Skills are offered like notes; a live check proves the whole path | Needs the operator | item 4's live check on lab2x1 (`/skills` hands a test skill over, `task {skills}` preloads it in a child, an unknown name is refused) |
@@ -108,49 +102,6 @@ Build (as filed): for a foreground `bash` call in a git work tree, take a cheap 
 Built: the sweep is now taken of the git work tree the command runs in, found by walking up from the run directory and from a leading `cd <dir> &&` (cached per directory, so a call still costs two git calls); the status reader is `--porcelain=v2 -z`, so an untracked path with a space is one path, a rename is its destination and a deleted file is not a change; the pre-read content is the hash, so a rewrite that left the same bytes reports nothing; a single changed file is attached as the `edit` record the row draws a diff from, several are named with "and N more files" past twelve; the file ledger and the provenance sink learn the bytes, so a later `write` on a file this session's own command wrote is not a second writer; and the nudge names only the writing tools the seat has. Tests: `builtins/bash.rs` (the sweep driven by a real `sed -i`, `python3 -c` and a `>`; a dirty file; nothing changed; a non-git tree; the spelling; the count) and `crates/tools/tests/detected_diff.rs` (the same through `bash` itself, which skips on a box with no cgroup).
 
 Still open: one result carries one `edit` excerpt (`crates/transcript`'s row, the `ToolFinished` event and the store all hold `Option`), so a change to several files is named and not drawn — drawing each needs that shape to become a list, a protocol bump and a head that pages them. And a background job is still not swept: the row follows the brief's "background out of scope", and the next session may want to take the snapshot at the spawn and attach at the completion instead.
-
-## R160 - A background job's default deadline silently kills real work
-
-**Status:** fixed in `b824e304`. left: nothing a session can do. The one residue is apparatus: this
-box delegates no cgroup v2 subtree and bwrap cannot make a user namespace in the seat, so the four
-`crates/tools/tests/liveness.rs` cases that spawn real runs report absent apparatus instead of
-measuring; the mechanism itself is measured in `crates/tools/src/exec/host.rs` against a directory
-tree, which is what the check actually reads (`cpu.stat` and the job's own capture).
-
-Reported by `cc@serenedb` (room #1043) with evidence: in session `s-1794087652770480320` jobs
-j83627 (an exec/s measurement), j83663 and j83667 (retests), j83669 (minimising an oom artifact)
-and j83684 (triage) were all killed by a deadline at ~600 s with incomplete results, and the child
-read them as done; the jobs that set a longer `deadline` ran 22-48 minutes fine. The only 600-second
-default in this tree that reaches a JOB is `fanout`'s `DEFAULT_DEADLINE`
-(`crates/tools/src/builtins/fanout.rs:23`), so that is where the number came from - a `bash` job has
-had no deadline at all since `deadline_for` learned `auto_background` - and either way the kill was
-rendered as a state word with nothing saying the output stopped halfway.
-
-What is wanted, in the operator's words: **a background job has no default wall-clock deadline at
-all** — ten minutes is nothing here (fuzz campaigns run hours, a cold sanitizer build over an hour,
-a convergence slice over a day).
-
-1. The descriptions name the rule: a background job has no deadline of its own; `job_extend` gives
-   or moves one; a job is ended only when it is DEAD (no output and no CPU for
-   `[exec] job_dead_after_seconds`, 1800 s by default) or when someone kills it.
-2. The liveness check ends a dead job: no output **and** no CPU progress (the job's cgroup
-   `cpu.stat` `usage_usec` not advancing) for the configured stretch, and only then. An explicit
-   `deadline` stays a hard limit exactly as today.
-3. A kill is said as partial: the job's result and the `job_ended` notice read *ended as dead, its
-   output is partial* (or *its deadline passed — its output is partial; pass `deadline` for
-   longer*), so a model cannot read a kill as a finish.
-4. One warning per job before a kill that is the harness's doing, naming what is about to happen
-   and the way out; and `job_extend {job, deadline}` moves a running job's deadline.
-
-`still open?`: `grep -n "DEFAULT_DEADLINE" crates/tools/src/builtins/fanout.rs` and
-`grep -rn "job_dead_after_seconds" crates/`.
-
-`done when`: tests say each of these — the description names the rule; a default-deadline kill's
-result and notice say partial; one warning per job; `job_extend` moves a running job's deadline; a
-long job printing nothing but burning CPU is never killed; a job stuck in `sleep` with no output is
-ended after the stretch; an explicit deadline still kills on time.
-
----
 
 ## R93 - What the model is told: tics, leaked numbers, contradictions, schema mismatches
 
@@ -1061,189 +1012,6 @@ A second budget did the same to running sessions (`cc@serenedb`, room #861, two 
   against a host that DID answer is still a stalled round and still stops a turn. Measured both ways
   by `a_wait_whose_status_queries_all_timed_out_is_neither_progress_nor_a_stall`, and the production
   half by `a_wait_no_status_query_answered_does_not_claim_the_job_is_stuck`.
-
-## R155 - A remote placement's memory cap is checked against the daemon's box
-
-**Status:** fixed. left: nothing.
-
-On 2026-11-07 R144's package, placed on lubuntu3 (123 GiB), asked for 12 GiB for a clippy run and the card said "15.1 GiB of 185.8 GiB is free now": lab2x1's numbers, the box the daemon runs on. A command's memory cap is decided by the free memory of the host it runs on, so a placement must read that host's `/proc/meminfo` (one call, cached for the poll interval) and the card must name the host.
-
-Fixed in `letibot-tools`. The seam is `ExecBackend::machine_memory`, whose default is `Machine::Here(Meminfo::read())` - the read every local session has always made - and `SshBackend` overrides it to `Machine::There { host, mem }`, the memory read by `Ssh::meminfo` from `cat /proc/meminfo` over the session's own link and cached for 30 s (a failed read is cached too, so a dead link does not put a round trip in front of every call). `memory::decide` takes the `Machine` instead of a `Meminfo`: the ceiling and every fraction are the host's, and a host that did not answer has no ceiling at all - a size is then the operator's question, a fraction of an unread memory is refused with a sentence naming the host and asking for a size, and a bare default of a size still runs. `MemoryAsk` carries the `Machine`, so the card reads "15 GiB of 123 GiB is free on lubuntu3" and its facts, the refusal and `bash`'s kill suggestion all name the machine; a local card is the same string word for word. A session grant no longer covers an ask on a machine whose memory was not read. `bash`'s decision moved into `decide_memory`, which takes the machine and the card's door, so the rule is tested without an ssh and without a person.
-
-## R156 - A Claude Code seat's nag repeats on every package job and offers the packages' jobs as its own
-
-**Status:** done. left: nothing.
-
-Seen the first evening the seat board ran (R144): with one row in progress and two packages building, the seat got about twenty `[todo check]` pushes in fifteen minutes. The check's sentence carries "Also running: `jNNNN`", so every job a held package starts or ends is a new sentence and the once-per-change rule fires again. And it suggests `wait_on` a package's job (`j83509`) as if it were the seat's: a seat's own waits are its packages' turns and the operator; a package's jobs are that package's. The seat's own background work (a local gate) has no `wait_on` kind at all. Wanted: the change key is the plan, not the job list; package jobs are named as the package's; and a seat can say a row waits on something outside letibot (a free-text `external` wait that the nag stays quiet on until the row moves).
-
-Three pieces, all in `crates/tools/src/builtins/todo` and `crates/bridge/src/seat.rs`:
-
-- **The key is the plan.** `the_plan_as_a_key` is every row's words, status and waits, and
-  `TodoNagClock::keyed_by_plan` + `said_plan` make a seat's delivery remembered by that key.
-  `Seat::new` and `Seat::with_window` both set it, and the watcher's per-pass decision moved into
-  `a_pass`. Sessions keep the sentence as their key, which is right for them: their jobs are their
-  own work, and a notice that gains one is a notice they have not read.
-- **A package's job is the package's.** `RunningJobs::of_package`/`owner` carry the fact, the seat's
-  snapshot fills it, and `the_wait_to_offer` says `` `K1` is running `j83509` `` and offers
-  `{"child": "K1"}` - never `{"job": "j83509"}`, and no door at all for a package that is not
-  turning. A job the board runs itself gets exactly the sentence it got before.
-- **`external`.** A fifth wait kind on both `TodoNeed` copies (serde `#[serde(default)] what`), as a
-  `needs` entry or `wait_on`'s `"external": "…"`, taken off by `detach`. `the_check_may_ask_about`
-  keeps the row quiet until it moves, and the head draws `waits on <what>`.
-
-And, added afterwards by the operator (*"no wait_on for you is sad"*), two waits a seat can actually
-SETTLE, because a seat's only waits were a package's turn and a person:
-
-- **`seat_job_start {argv, cwd?, name?}` / `seat_jobs` / `seat_job_kill`** - a job of the SEAT's
-  own (`crates/bridge/src/seat_jobs.rs`): argv verbatim, no shell, output to a file under the
-  bridge's rundir, the row in a new `seat_job` table (store schema 43, `Additive`) under the seat's
-  handle. The handle is `wait_on`'s `job` - the seat's open jobs joined its job table - and its end
-  settles the row and pushes one `job_ended` frame with `meta.source: seat`, as a package's does.
-  A reaper thread settles them, and a `running` row left by a dead bridge is settled by the process
-  table (`lost`), not by a guess.
-- **`wait_on {"pid": N}`** - a process this host is already running, by pid AND
-  `/proc/<pid>/stat`'s start time, read when the row is written. The seat's watcher reads the
-  process table each pass, so the row stops being quiet when the process goes, and a pid the number
-  was reused for is a different process (`procs::alive`).
-
-Tests: `a_seat_is_asked_again_for_its_plan_moving_and_not_for_the_jobs_running_beside_it` and
-`an_external_wait_keeps_its_row_quiet_until_it_moves` (`crates/tools/.../tests/nag.rs`),
-`a_packages_job_is_named_as_the_packages_and_never_offered_as_a_wait_here` (`tests/wait_on.rs`),
-`twenty_package_jobs_starting_and_ending_say_one_unchanged_plan_once` (`crates/bridge/src/seat.rs`),
-`a_row_waiting_on_something_outside_is_quiet_until_the_seat_takes_the_wait_off`,
-`a_seat_jobs_end_settles_its_row_and_pushes_one_job_ended` and
-`a_pid_wait_settles_when_the_process_exits_and_not_when_a_pid_is_reused`
-(`crates/bridge/tests/seat_todo.rs`), `a_seats_jobs_are_written_and_their_settlement_is_the_same_row`
-and `a_v41_store_gains_the_seat_job_table` (`crates/tokencore/src/store/seat.rs`), and
-`docs/seat-todo.md` says how a seat is keyed and what it may wait on now.
-
-## R157 - Built-in panes trap with symbol-less backtraces
-
-**Status:** fixed. left: nothing in this row; the limit that remains is written below, and it is a
-bound for the operator to decide rather than a defect.
-
-gatekeeper@arangodb (room #1029, 2026-11-07) saw `b-sessions`/`pane_sessions` and `b-irc`/`pane_nicks` both trap, with backtraces of 17 and 18 frames and no symbols. Likely new since R151 installed the built-in panes at a head's door, so these are now compiled and asked in sessions that never asked them.
-
-**The trap is fuel exhaustion, and the frames are where it ran out.** `rano` answers a trap as
-`format!("trapped: {e}")` (`rano`'s `src/plugin.rs`, `call_bytes`), and wasmtime's `Display` for
-a trap is the wasm backtrace alone — the kind (`all fuel consumed by WebAssembly`) is a cause
-further down the error chain, so the sentence cannot name it. What names it is the number:
-`Stack::fuel(layer)` after a FAILED call reads exactly `rano::plugin::HOOK_FUEL` (50,000,000), and
-one under it for the last call that answered. Exactly two built-in panes declare
-`feeds = ["sessions"]` — the daemon's whole session list — so exactly those two trapped, and
-`pane_room`/`pane_github`/`pane_queue` did not.
-
-**Reproduced** through the real engine by `crates/harnessd/tests/builtin_panes.rs`, with 600 sessions
-of nothing special (one project, no parents): both panes trap at HEAD, and the fuel says where the
-line is — `pane_sessions` 300 rows 45.6M, 400 rows trap; `pane_nicks` 150 rows 41.7M, 200 rows trap.
-
-**The cause was the price of a call, in three parts.** (1) Both read the feed out of
-`letibot_plugin::pane::Input`, whose `feeds` is a `BTreeMap<String, Value>`: the whole list parsed
-into a tree and then parsed AGAIN into the layer's structs — P6's lesson, in a second place. (2)
-Both walks were O(n²): `pane_sessions` scanned the feed per row for its children, its fold glyph and
-its project's members; `pane_nicks` sorted its roster with `sort_by_key` over a key that scanned the
-feed and allocated a `String` per comparison, and `State::roster` asked `contains` per id. (3) Both
-built the answer as a `Value` tree row by row and then serialized it — about twenty allocations per
-row more than the row needs.
-
-**The fix:** each pane reads its own envelope with the feed TYPED on the way in (`Ask`/`Feeds`),
-every walk is a lookup (id index, children map, project map, one sort key per row, no `Vec<String>`
-joined per row), and the rows and the view are `Serialize` structs written straight out. Measured on
-the 600-row frame of `crates/harnessd/tests/builtin_panes.rs` (`--nocapture` prints the number):
-`pane_sessions` 34.2M and `pane_nicks` 41.3M of the 50M cap, where HEAD trapped both. On shorter
-titles and paths — the shape the first measurements used — the same 600 rows is 27.0M and 30M. The
-test asserts the fuel beside the answer, because the answer IS the budget.
-
-Also found by the same door, and fixed: `pane_sessions` and `pane_queue` answered `unchanged` on a
-frame with no feed, so the pane a daemon announces VANISHED instead of saying why; both now answer
-their own "this host hands no `X` feed" view, as `pane_nicks` already did. And
-`plugins/builtin/sessions/src/tests.rs` had not compiled since `bucket` arrived in the feed and not in
-its fixture — its 14 tests run again (`cargo test` in that directory; the guests are outside the
-workspace, so nothing ran them, which is what `crates/harnessd/tests/builtin_panes.rs` now does from
-the normal run for every built-in pane).
-
-**The limit that remains, and it is not a defect:** a pane's work is linear in the list and a call's
-fuel is fixed, so the wall is a row count rather than a bug — `pane_nicks` at the 600 rows above is
-at 41.3M of 50M, which puts it near seven hundred. Going past that means drawing fewer rows than
-the feed holds: the first N and a row saying how many were left. That changes what the session
-picker shows, which is why it is the operator's decision rather than a fix here, and the numbers to
-decide against are above.
-
-## R159 - `←`/`→` in the `/sessions` tree collapse the wrong row
-
-**Status:** fixed. left: nothing.
-
-Built, in `App::picker_fold` (`crates/tui/src/app/keys/panes.rs`) and the row it reads (`Listed`, `crates/tui/src/app/sessions_pane.rs`): a drawn row now carries the column it is DRAWN at, from the same rule the drawing uses (`drawn_depth`, shared by `tree_of` and `listed`). `→` expands a closed row and stays on it; on a row already expanded it walks to the first row drawn under it, and a leaf is where the gesture ends. `←` collapses the row the cursor is on and stays with it; on a closed row, a `fixed` one or a leaf it steps out to the row it is drawn under - `tree_step` answers with the nearest row above that is drawn shallower, and with the session's own `parent_session_id` where the indent cannot answer, because the indent stops at `MAX_INDENT` and a grandchild's parent can be drawn at the child's own column. Nothing is closed but the row under the cursor, which is what ends the jump to the next project. The bar's and the help's words for the two keys are `→ expands it, or steps in` and `← collapses it, or steps out` (`keys/bindings.rs`, `PICKER`).
-
-Tests, in `crates/tui/src/app/tests/tree.rs`: `left_on_an_expanded_session_closes_only_it_and_keeps_the_cursor`, `left_on_a_leaf_steps_out_to_its_parent_and_closes_nothing` (which also walks the next two presses: collapse the expanded row it landed on, then step out of it), `left_on_a_closed_project_moves_nothing_to_another_project`, `right_expands_and_right_again_enters_the_first_child`. `a_sub_session_is_listed_under_its_parent_and_switches_like_any_other` (`tests/session.rs`) asserted the old leaf rule - left folded the child back into its parent - and now asserts the new one: the cursor moves up and the drawn rows do not change. `cargo test -p letibot-tui`: 1522 passed, 0 failed. `sh scripts/clippy-gate.sh --all-targets -- -D warnings -A clippy::result_large_err -A clippy::type_complexity -A clippy::large_enum_variant -A clippy::too_many_arguments` and `sh scripts/check-fmt.sh da2e1d1c` are clean.
-
-Reported by the operator on 2026-11-08, in the head's `/sessions` tree: to project arangodb, into the session arango, expanded it, then pressed `←` - everything collapsed and the cursor jumped to the next project. Every tree UI's rule is: `←` on an EXPANDED row collapses that row alone and the cursor stays on it; `←` on a closed row or a leaf moves the cursor to its PARENT and collapses nothing else; `→` expands the row under the cursor, and `→` on an already open row moves the cursor to its first child.
-
-What the head does now (`App::picker_fold`, `crates/tui/src/app/keys/panes.rs:372`): `←` on a session row closes its PARENT (or, with the parent in another group, the whole group), so the row the person was on disappears and `picker_sel` stays where it was - which is now the next project's line. `→` on a session only ever opens it, so a key that should walk into the tree does nothing on a row that is already open. The bar's words for the two keys say `→ opens its subagents` and `← closes them`, which is not what a tree does either.
-
-Done when: `←` on an expanded session collapses only it with the cursor kept; `←` on a leaf moves the cursor to its parent and collapses nothing; `←` on a closed project moves nothing to another project; `→` expands, and `→` again lands on the first child; every existing tree test still passes.
-
-## R158 - Resuming a session reads gigabytes of the store
-
-**Status:** fixed. left: nothing — a live store takes the index at its daemon's next start.
-
-Reported 2026-11-07: lab2x1 rebooted with a cold page cache, the arangodb daemon logged
-`starting: resuming the session (1707 rows)` and then sat in `D` state (`folio_wait_bit_common`)
-for minutes — `/proc/<pid>/io` showed 2 GB read after two minutes, out of a 10 GB `sessions.db`
-whose `transcript_item` is 8.2 GB. 1707 rows should cost megabytes.
-
-**The resume's own reads were innocent.** Measured on a copy of the live store (10 GB, 1904
-sessions, 777 086 transcript rows, `adjudication` 189 205 rows / 946 MB), statement by statement,
-cold, read off `/proc/self/io` after dropping the file's pages with `posix_fadvise(DONTNEED)`:
-`Store::session(id)` 160 KB (all `SEARCH`); `load_transcript` of the session's 1710 rows 8.1 MB
-(`SEARCH transcript_item USING PK` — `PRIMARY KEY (transcript_id, seq)` is exactly the index that
-read wants); the stable prefix's tokens 0.5 MB; `max_adjudication_seq` 24 KB; `list_sessions` over
-all 1904 sessions 215 MB. None is a whole-table read of `transcript_item`, and no fork's transcript
-is read.
-
-**The culprit is the startup disclosure's five `COUNT(*)`s over `adjudication`** —
-`Store::corpus_counts` (`crates/tokencore/src/store.rs`), run at every open from `Harness::open`
-(`crates/harnessd/src/harness/open.rs:456` → `corpus.rs`). `asked = 1`, `consulted = 1` and
-`verdict_by LIKE 'model%'` are columns no index carries, so each of the three read all 946 MB row
-by row:
-
-    SELECT COUNT(*) FROM adjudication                       11.7 MB  SCAN ... USING COVERING INDEX (pk)
-    SELECT COUNT(*) FROM adjudication WHERE asked = 1        975 MB  SCAN adjudication
-    SELECT COUNT(*) FROM adjudication WHERE consulted = 1    975 MB  SCAN adjudication
-    ... WHERE operator_kind IN ('granted','revoked')        0.37 MB  adjudication_disagreements (partial)
-    ... WHERE verdict_by LIKE 'model%'                      2239 MB  SCAN adjudication
-
-Cold, statement by statement, that is 4.20 GB; in one process with one cold cache it is
-**1 800 486 912 B** — the 2 GB the operator watched, and it was still going.
-
-**Fix, both halves, because either alone is not enough.** v42 (additive: a new index is nothing an
-older reader names, so its `READER_ARMS` row is `Additive`) creates
-`adjudication_corpus_counts ON adjudication (asked, consulted, verdict_by, operator_kind)` with
-`CREATE INDEX IF NOT EXISTS`, run beside `SCHEMA_SQL` on a fresh store and by the v42 arm at open,
-so an existing 10 GB store is indexed the first time this build opens it — **8.6 s and 2.2 GB read,
-once**, which the arm says on stderr if it takes over 300 ms (`CREATE INDEX` alone on the copy:
-10.4 s, 4.98 MB of index). And the five counts are one pass —
-`COUNT(*), COALESCE(SUM(asked = 1), 0), …` — because they are one question, with the four
-predicates still spelled once by `ASKED_SQL` and its siblings.
-
-| | before | after |
-|---|---|---|
-| plan for the counts | three `SCAN adjudication` | one `SCAN adjudication USING COVERING INDEX adjudication_corpus_counts` |
-| the counts, cold | 1 800 486 912 B, 7.3 s | 4 980 736 B, 88 ms |
-| the counts, v42 index but the old five queries | — | 22 MB (one `SEARCH`, two index scans, one partial index) |
-| the whole open: store, counts, session row, the 1710-row transcript | 1.81 GB | **13 561 856 B, 183 ms** |
-
-Both answer the same five numbers: 189 205 total, 590 asked, 36 987 measured, 19 871 disagreements,
-1618 model-decided. Tests: `the_reads_an_open_makes_reach_a_row_by_an_index` — `EXPLAIN QUERY
-PLAN` over the counts, the transcript read and the keyed session row, asserting no `SCAN` of a
-table that is not a covering index and that the counts name the v42 index — and
-`a_store_from_before_the_corpus_index_is_migrated_onto_it` — drop the index, stamp 41, reopen: it
-is built, and the rows written before it still count.
-
-Still a scan, measured and left alone: `list_sessions` costs 215 MB (one last-item row per session,
-out of the 8.2 GB table) and runs when a head attaches and when the queue starts. The index that
-would serve it is over all 777 086 rows — minutes to build on this store — so it is a row of its own
-and not this one: a resume reads pages proportional to its own rows now.
 
 ## R134 - Scrolling stops at a line above the tail
 
