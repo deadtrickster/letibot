@@ -418,7 +418,7 @@ mod tests {
         }
         // And the spellings it decoded to nothing - whole, so nothing is typed after them.
         for bytes in [
-            &b"\x1bj"[..],
+            &b"\x1bq"[..],
             b"\x1bB",
             b"\x1b\t",
             b"\x1b\x03",
