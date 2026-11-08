@@ -609,6 +609,30 @@ fn the_second_run_of_one_repository_is_warm() {
     assert_eq!(third.steps[0].output.lines().next(), Some("another"));
 }
 
+/// A repository recreated at the same path: the host still holds the old commits, which this
+/// repository has never seen, so they cannot be the bundle's bases.
+#[test]
+fn a_repository_recreated_at_the_same_path_is_sent_whole() {
+    let _only = only_rig();
+    let rig = Rig::new("recreated", FAKE_SSH);
+    let first = rig.gate(&["echo first"], 120);
+    assert_eq!(first.verdict, GateVerdict::Passed, "{first:#?}");
+    std::fs::remove_dir_all(&rig.repo).expect("the old repository");
+    std::fs::create_dir_all(&rig.repo).expect("repo");
+    git(&rig.repo, &["init", "-q", "-b", "main"]);
+    letibot_tools::testing::repo_config(&rig.repo);
+    std::fs::write(rig.repo.join("README"), b"another first commit\n").expect("a file");
+    git(&rig.repo, &["add", "README"]);
+    git(&rig.repo, &["commit", "-q", "-m", "another first commit"]);
+    git(&rig.repo, &["checkout", "-q", "-b", "agent/thing"]);
+    let second = rig.gate(&["cat README"], 120);
+    assert_eq!(second.verdict, GateVerdict::Passed, "{second:#?}");
+    assert_eq!(
+        second.steps[0].output.lines().next(),
+        Some("another first commit")
+    );
+}
+
 // -------------------------------------------------------------------------------------------
 // The demand a step makes of the MACHINE `LETIBOT_REQUIRE_APPARATUS=1` is the project's
 // and it is right: a test that skips must not read as a pass.

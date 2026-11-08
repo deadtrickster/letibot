@@ -556,6 +556,18 @@ impl Remote {
         Ok(())
     }
 
+    fn has_commit(&self, sha: &str) -> bool {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.local)
+            .args(["cat-file", "-e", &format!("{sha}^{{commit}}")])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
     /// The tip and the target branch as one (usually thin) bundle, sent on the connection's stdin.
     fn send_bundle(
         &self,
@@ -578,6 +590,13 @@ impl Remote {
             "HEAD".into(),
         ];
         args.extend(branches.iter().cloned());
+        // A base this repository lacks is fatal to `git bundle`: the host keeps the commits of a
+        // repository that was since recreated or rewritten at the same path.
+        let have: Vec<&str> = have
+            .iter()
+            .copied()
+            .filter(|sha| self.has_commit(sha))
+            .collect();
         if !have.is_empty() {
             args.push("--not".into());
             args.extend(have.iter().map(|s| s.to_string()));
