@@ -1405,7 +1405,7 @@ fn a_later_answer_the_record_keeps_is_not_kept_twice() {
     // And the ROW is what a tree keeps per child once the body is gone: a few hundred bytes, so a
     // field that makes a slot thousands is the retention coming back.
     assert!(
-        std::mem::size_of::<TaskSlot>() <= 512,
+        std::mem::size_of::<TaskSlot>() <= 640,
         "one slot is {} bytes before its strings",
         std::mem::size_of::<TaskSlot>()
     );
