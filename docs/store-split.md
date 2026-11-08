@@ -1,6 +1,7 @@
 # Store split: one file per project, one shared file
 
-Status: proposal, design settled, nothing built. The corpus question is decided: decisions live
+Status: proposal, design settled, P0 and P1 built (their own paragraphs in § Build plan say what
+landed), P2-P4 to build. The corpus question is decided: decisions live
 in project files and there is no shared copy (§ The corpus). The stalls the split is meant to
 remove were measured on lab2x1 on 2026-11-07 (§ What the daemons logged), and the build is in
 five packages with their done-tests at the end.
@@ -264,15 +265,29 @@ list) routed through the ladder so a read can be seen at all; and `database is l
 `a_call_under_the_slow_threshold_writes_nothing`; and the failure count, which has no test in
 the brief and got one anyway in `a_refused_write_is_counted_by_kind_and_call_site`.
 
-**P1 — two files, one schema each, one writer each.** `crates/tokencore/src/store/split.rs`
-(new), `crates/tokencore/src/store/split_tests.rs` (new), `crates/tokencore/src/store.rs` (the
-open and DDL region only). `split.rs` holds this doc's table assignment as data: a table's name
-decides its file. `StoreSet::open(dir, key)` opens `shared.db` and `projects/<key>.db`, and a
-`Store` is one file driven by its own writer thread — callers hand it work and hold no lock
-across a write (`exec` and `write_tx` keep their signatures, so no call site changes). Done-test:
-every table in the two lists above is found in exactly one file and in neither the other; a
-project file with a newer `schema_version` refuses to open by name; opening the set twice in one
-process is a no-op, not a second connection.
+**P1 — two files, one schema each, one writer each.** Built. `crates/tokencore/src/store/split.rs`
+(new), `crates/tokencore/src/store/split_tests.rs` (new), and `crates/tokencore/src/store.rs` (the
+open and DDL region: `pub mod split`, the `pragmas` a file's second connection shares, and the test
+module). What the doc asked for and what landed: the table assignment as data — `place_of` answers a
+table's file, and a table the schema creates with no assignment fails the done-test by name, so the
+two lists above are the only place the assignment is written; `StoreSet::open(dir, key)` creates and
+opens `shared.db` and `projects/<key>.db` from the tree's own DDL filtered by that assignment, so a
+table's name decides its file and neither file can drift from `migrate`'s schema; a `Store` is one
+file and a `Writer` is its one writer thread, which owns the file's write connection and whose first
+job is that file's creation, a caller handing it work and waiting holding nothing. `exec` and
+`write_tx` are unchanged, so no call site moves and the daemon still opens `sessions.db`; P3 is what
+points the daemon at the set and the queue at the writer. Three things the doc left open, decided
+here: the four tables added after § Table assignment was written (`claude_review`, `queue_mute`,
+`seat_todo`, `seat_job`) are in the shared file by the assignment's own rule, and
+`merge_queue_v23`/`merge_review_v23` are routed to it although a fresh store creates neither; a
+project file's keys to `session` are dropped, because the index is the shared file's and a
+`REFERENCES` to a table this file does not hold refuses the first append with `foreign_keys` on; and
+a file this build cannot know refuses to open even where its reader floor would let a newer build
+read it, because this daemon is the one that writes it. Done-tests, all on temp directories:
+`every_table_the_schema_creates_is_assigned`, `every_table_is_in_exactly_one_file`,
+`a_newer_project_file_is_refused_by_name`, `opening_the_set_twice_is_not_a_second_connection`,
+`a_project_file_takes_its_own_rows_and_keeps_its_own_keys`,
+`every_statement_the_schema_is_built_from_names_its_table` and `a_key_that_is_not_a_name_is_refused`.
 
 **P2 — the offline migration** (before P3 runs on a box, after P1's schema exists).
 `crates/tokencore/src/migrate_split.rs` (new), `crates/tokencore/src/lib.rs` (one `pub mod`

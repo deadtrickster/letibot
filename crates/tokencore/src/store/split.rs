@@ -1,0 +1,504 @@
+//! The store split (`docs/store-split.md`): two files, one schema each, one writer each.
+//!
+//! The table assignment is DATA and lives here alone: [`place_of`] answers which file a table's
+//! rows are in, so a table's NAME decides its file and nothing has to remember the list. Each file
+//! is created from the tree's own DDL filtered by that assignment, so neither file can drift from
+//! what `Store::migrate` builds on a single-file store.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, Weak, mpsc};
+
+use rusqlite::{Connection, OptionalExtension, params};
+
+use super::{
+    CORPUS_INDEXES_SQL, READER_FLOOR_SQL, Result, SCHEMA_SQL, SCHEMA_VERSION, SESSION_INDEXES_SQL,
+    Store, StoreError, citations, leases, marks, modes, pragmas, procs, prompts, queues, seat,
+    subagents, told, writers,
+};
+
+/// The shared file, beside the directory project files are in (§ The shape).
+pub const SHARED_FILE: &str = "shared.db";
+
+/// One file per folder's daemon, under the data directory: `projects/<key>.db`.
+pub const PROJECTS_DIR: &str = "projects";
+
+/// Which file a table lives in, as § Table assignment lists it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    /// `shared.db`: what is read across folders or arbitrated between daemons.
+    Shared,
+    /// `projects/<key>.db`: everything one folder's sessions own.
+    Project,
+    /// One row per file, in both files: the two tables that say what schema a file is.
+    Both,
+}
+
+/// The two files of a set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreFile {
+    Shared,
+    Project,
+}
+
+/// Project file - everything one folder's sessions own (§ Table assignment).
+pub const PROJECT_TABLES: &[&str] = &[
+    // the history and the token blobs
+    "transcript",
+    "transcript_item",
+    // written once per prefix, duplicated per project so a fork reads no other file
+    "stable_prefix",
+    // per-session state
+    "todo",
+    "citation",
+    "session_marks",
+    "session_mode",
+    "session_monitor",
+    // a session's background work
+    "job",
+    "job_context",
+    "process",
+    // the prompt journal
+    "queued_prompt",
+    // parent and child are always in the same daemon, so a spawn stays one transaction
+    "subagent_run",
+    // written by the session that asked and read back out of this file (§ The corpus)
+    "adjudication",
+];
+
+/// Shared file - what is read across folders or arbitrated between daemons. The doc's list plus the
+/// four tables added after it was written (`claude_review`, `queue_mute`, `seat_todo`, `seat_job`),
+/// each by the doc's own rule: box-wide, or read by whichever daemon serves the queue.
+pub const SHARED_TABLES: &[&str] = &[
+    // the index: the session list, the picker and `--continue NAME` read this and nothing else
+    "session",
+    // which daemon holds a session, which arbitrates across daemons by definition
+    "session_writer",
+    // keyed by repository, and a repository's queue is served by whichever daemon holds its lease
+    "review_queue",
+    "merge_queue",
+    "queue_lease",
+    "queue_transition",
+    "queue_told",
+    "target_health",
+    "claude_review",
+    "queue_mute",
+    // ports and hosts are box-wide, and so is the heartbeat
+    "host_lease",
+    "daemon_life",
+    // keyed by folder, read before a daemon has a session
+    "project_mode",
+    "mode_import",
+    // a seat is not a session, and its board and jobs are read by every head
+    "seat_todo",
+    "seat_job",
+];
+
+/// Named by § Table assignment and created by no fresh store: the v24 arm's archive of the single
+/// pre-v24 pair. Routed to `shared.db` so a migrated file's rows land where the doc says.
+pub const LEGACY_SHARED_TABLES: &[&str] = &["merge_queue_v23", "merge_review_v23"];
+
+/// One per file, in both files (§ Table assignment, the last line of the shared list).
+pub const BOTH_TABLES: &[&str] = &["schema_version", "schema_reader_floor"];
+
+/// Which file a table's rows are in, or `None` for a table this module has never been told about -
+/// which is the test's failure by name, not a default.
+pub fn place_of(table: &str) -> Option<Place> {
+    if PROJECT_TABLES.contains(&table) {
+        Some(Place::Project)
+    } else if SHARED_TABLES.contains(&table) || LEGACY_SHARED_TABLES.contains(&table) {
+        Some(Place::Shared)
+    } else if BOTH_TABLES.contains(&table) {
+        Some(Place::Both)
+    } else {
+        None
+    }
+}
+
+/// Does `file` hold `table`? The one question a routed statement and a test both ask.
+pub fn holds(file: StoreFile, table: &str) -> bool {
+    match place_of(table) {
+        Some(Place::Both) => true,
+        Some(Place::Shared) => file == StoreFile::Shared,
+        Some(Place::Project) => file == StoreFile::Project,
+        None => false,
+    }
+}
+
+/// Every table `file` is assigned, the two it shares with the other file included.
+pub fn tables_in(file: StoreFile) -> impl Iterator<Item = &'static str> {
+    let own: &'static [&'static str] = match file {
+        StoreFile::Shared => SHARED_TABLES,
+        StoreFile::Project => PROJECT_TABLES,
+    };
+    BOTH_TABLES.iter().chain(own.iter()).copied()
+}
+
+/// The batches `Store::migrate` builds a fresh file from, in its own order, plus the reader-floor
+/// table its `ensure_reader_floor` runs. One list, so a batch added there is routed or refused here.
+pub(super) fn batches() -> [&'static str; 16] {
+    [
+        SCHEMA_SQL,
+        SESSION_INDEXES_SQL,
+        CORPUS_INDEXES_SQL,
+        queues::QUEUES_SQL,
+        subagents::SUBAGENTS_SQL,
+        modes::MODES_SQL,
+        told::TOLD_SQL,
+        marks::MARKS_SQL,
+        seat::SEAT_TODO_SQL,
+        seat::SEAT_JOB_SQL,
+        citations::CITATIONS_SQL,
+        writers::WRITERS_SQL,
+        procs::PROCS_SQL,
+        leases::LEASES_SQL,
+        prompts::PROMPTS_SQL,
+        READER_FLOOR_SQL,
+    ]
+}
+
+/// One batch split at its statements. Every statement in the tree's schema starts at the left
+/// margin, so a line beginning with `CREATE` begins one and a trigger's body stays inside its own.
+pub(super) fn statements(batch: &str) -> Vec<&str> {
+    let mut starts = Vec::new();
+    let mut at = 0;
+    for line in batch.split_inclusive('\n') {
+        if line.trim_start().starts_with("CREATE ") {
+            starts.push(at);
+        }
+        at += line.len();
+    }
+    let mut out = Vec::with_capacity(starts.len());
+    for (i, start) in starts.iter().enumerate() {
+        let end = starts.get(i + 1).copied().unwrap_or(batch.len());
+        out.push(&batch[*start..end]);
+    }
+    out
+}
+
+/// The table one statement is about: the name after `CREATE TABLE`, and for an index or a trigger
+/// the name its `ON` clause names.
+pub(super) fn table_of(statement: &str) -> Option<String> {
+    let words: Vec<&str> = statement
+        .split_whitespace()
+        .map(clean_word)
+        .filter(|word| !word.is_empty())
+        .collect();
+    let mut at = 1;
+    if words.get(at)?.eq_ignore_ascii_case("UNIQUE") {
+        at += 1;
+    }
+    let kind = *words.get(at)?;
+    at += 1;
+    if words.get(at)?.eq_ignore_ascii_case("IF") {
+        at += 3; // IF NOT EXISTS
+    }
+    match kind.to_ascii_lowercase().as_str() {
+        "table" => Some(words.get(at)?.to_string()),
+        "index" | "trigger" => {
+            let on = words
+                .iter()
+                .skip(at)
+                .position(|w| w.eq_ignore_ascii_case("ON"))?;
+            Some(words.get(at + on + 1)?.to_string())
+        }
+        _ => None,
+    }
+}
+
+fn clean_word(word: &str) -> &str {
+    word.trim_matches(|c: char| matches!(c, '(' | ')' | ';' | ','))
+}
+
+/// The DDL one file is built from: the statements whose table it holds, in `migrate`'s own order.
+pub fn schema_sql(file: StoreFile) -> String {
+    let mut text = String::new();
+    for batch in batches() {
+        for statement in statements(batch) {
+            let Some(table) = table_of(statement) else {
+                continue;
+            };
+            if holds(file, &table) {
+                text.push_str(statement.trim_end());
+                text.push('\n');
+            }
+        }
+    }
+    match file {
+        StoreFile::Shared => text,
+        StoreFile::Project => without_cross_file_keys(text),
+    }
+}
+
+/// A project file holds no `session` row - the index is `shared.db`'s (§ Table assignment) - so a
+/// key to it could never be checked here, and with `foreign_keys` on it would refuse the first
+/// append for a table this file does not have. The keys between project tables are kept.
+fn without_cross_file_keys(sql: String) -> String {
+    sql.replace(" REFERENCES session(id) ON DELETE CASCADE", "")
+        .replace(" REFERENCES session(id)", "")
+}
+
+/// One file's writer: the thread that owns its one write connection, and the queue a caller hands
+/// work to. `run` sends and waits, so a caller holds no lock across a write; `exec`/`write_tx` keep
+/// their own connection until P3 re-points the daemon at this queue.
+pub struct Writer {
+    path: PathBuf,
+    jobs: Option<mpsc::Sender<Job>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+type Job = Box<dyn FnOnce(&mut Connection) + Send>;
+
+impl Writer {
+    /// Start the thread and its connection, so a refused open is the caller's error rather than a
+    /// file that quietly never got its schema.
+    fn spawn(path: PathBuf) -> Result<Self> {
+        let (jobs, queued) = mpsc::channel::<Job>();
+        let (ready, opened) = mpsc::channel::<Result<()>>();
+        let mine = path.clone();
+        let thread = std::thread::Builder::new()
+            .name(format!("store-writer-{}", file_name(&path)))
+            .spawn(move || {
+                let conn = Connection::open(&mine)
+                    .map_err(StoreError::from)
+                    .and_then(|conn| pragmas(&conn).map(|()| conn));
+                let mut conn = match conn {
+                    Ok(conn) => {
+                        let _ = ready.send(Ok(()));
+                        conn
+                    }
+                    Err(e) => {
+                        let _ = ready.send(Err(e));
+                        return;
+                    }
+                };
+                while let Ok(job) = queued.recv() {
+                    job(&mut conn);
+                }
+            })
+            .map_err(|e| {
+                StoreError::Refused(format!(
+                    "could not start the writer for {}: {e}",
+                    path.display()
+                ))
+            })?;
+        match opened.recv() {
+            Ok(Ok(())) => Ok(Writer {
+                path,
+                jobs: Some(jobs),
+                thread: Some(thread),
+            }),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(StoreError::Refused(format!(
+                "the writer for {} stopped before it opened the file",
+                path.display()
+            ))),
+        }
+    }
+
+    /// Hand `job` to this file's writer and answer what it returned. The caller blocks on the
+    /// answer and holds nothing else, which is the whole point of the queue.
+    pub fn run<T: Send + 'static>(
+        &self,
+        job: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let (answer, arrival) = mpsc::channel();
+        let queued = move |conn: &mut Connection| {
+            let _ = answer.send(job(conn));
+        };
+        self.jobs
+            .as_ref()
+            .ok_or_else(|| self.stopped())?
+            .send(Box::new(queued))
+            .map_err(|_| self.stopped())?;
+        arrival.recv().map_err(|_| self.stopped())?
+    }
+
+    /// The file this writer writes.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn stopped(&self) -> StoreError {
+        StoreError::Refused(format!(
+            "the writer for {} has stopped",
+            self.path.display()
+        ))
+    }
+}
+
+impl Drop for Writer {
+    /// Closing the queue ends the thread's `recv`, and the join waits for a job already in flight so
+    /// its connection is never closed under it.
+    fn drop(&mut self) {
+        let _ = self.jobs.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// A project key's two files, opened once per process: `shared.db` and `projects/<key>.db`.
+pub struct StoreSet {
+    dir: PathBuf,
+    key: String,
+    shared: Store,
+    project: Store,
+    shared_writer: Writer,
+    project_writer: Writer,
+}
+
+impl StoreSet {
+    /// Open - and on a fresh data directory create - this key's two files. A second call in one
+    /// process answers the same set: one connection and one writer per file, not a second of either.
+    pub fn open(dir: &Path, key: &str) -> Result<Arc<StoreSet>> {
+        check_key(key)?;
+        let projects = dir.join(PROJECTS_DIR);
+        std::fs::create_dir_all(&projects).map_err(|e| {
+            StoreError::Refused(format!("could not make {}: {e}", projects.display()))
+        })?;
+        // Held across the creation so two threads cannot each build a set; nothing inside opens one.
+        let mut open = sets().lock().unwrap_or_else(|e| e.into_inner());
+        let id = (canonical(dir), key.to_string());
+        if let Some(set) = open.get(&id).and_then(Weak::upgrade) {
+            return Ok(set);
+        }
+        let set = Arc::new(Self::create(dir, key)?);
+        open.insert(id, Arc::downgrade(&set));
+        Ok(set)
+    }
+
+    fn create(dir: &Path, key: &str) -> Result<Self> {
+        let shared_path = dir.join(SHARED_FILE);
+        let project_path = dir.join(PROJECTS_DIR).join(format!("{key}.db"));
+        let shared_writer = Writer::spawn(shared_path.clone())?;
+        let writer = shared_writer.path().to_path_buf();
+        shared_writer.run(move |conn| prepare(conn, &writer, StoreFile::Shared))?;
+        let project_writer = Writer::spawn(project_path.clone())?;
+        let writer = project_writer.path().to_path_buf();
+        project_writer.run(move |conn| prepare(conn, &writer, StoreFile::Project))?;
+        Ok(StoreSet {
+            dir: dir.to_path_buf(),
+            key: key.to_string(),
+            shared: Store::open(&shared_path)?,
+            project: Store::open(&project_path)?,
+            shared_writer,
+            project_writer,
+        })
+    }
+
+    /// The data directory this set is under.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// The project key these files are named by.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// The file every listing reads, and the file this folder's sessions own.
+    pub fn store(&self, file: StoreFile) -> &Store {
+        match file {
+            StoreFile::Shared => &self.shared,
+            StoreFile::Project => &self.project,
+        }
+    }
+
+    pub fn shared(&self) -> &Store {
+        &self.shared
+    }
+
+    pub fn project(&self) -> &Store {
+        &self.project
+    }
+
+    /// This file's one writer: the queue every write to it is meant to go through.
+    pub fn writer(&self, file: StoreFile) -> &Writer {
+        match file {
+            StoreFile::Shared => &self.shared_writer,
+            StoreFile::Project => &self.project_writer,
+        }
+    }
+
+    /// Where a file of this set is.
+    pub fn path(&self, file: StoreFile) -> PathBuf {
+        match file {
+            StoreFile::Shared => self.dir.join(SHARED_FILE),
+            StoreFile::Project => self.dir.join(PROJECTS_DIR).join(format!("{}.db", self.key)),
+        }
+    }
+}
+
+/// Every set this process has open, by data directory and project key. A `Weak`, like [`Store`]'s
+/// own registry: the set lives exactly as long as something holds it.
+type OpenSets = Mutex<HashMap<(PathBuf, String), Weak<StoreSet>>>;
+
+fn sets() -> &'static OpenSets {
+    static OPEN: std::sync::OnceLock<OpenSets> = std::sync::OnceLock::new();
+    OPEN.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// A directory with its symlinks resolved, so two spellings of one data directory meet. A directory
+/// that does not exist yet keeps its own spelling, and `StoreSet::open` has just made it.
+fn canonical(dir: &Path) -> PathBuf {
+    std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf())
+}
+
+/// A key names a file under `projects/`, so it must be one: the hex of the folder's path hash.
+fn check_key(key: &str) -> Result<()> {
+    if key.is_empty() || key.len() > 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(StoreError::Refused(format!(
+            "'{key}' is not a project key: the hex characters of the folder's path hash"
+        )));
+    }
+    Ok(())
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "a store".into())
+}
+
+/// Create `path`'s schema for `file`, or leave a file that already has one: the version stamped
+/// here is what `Store::open` reads to see there is nothing to migrate.
+fn prepare(conn: &Connection, path: &Path, file: StoreFile) -> Result<()> {
+    let Some(found) = stored_version(conn)? else {
+        conn.execute_batch(&schema_sql(file))?;
+        conn.execute("DELETE FROM schema_version", [])?;
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            params![SCHEMA_VERSION],
+        )?;
+        return Ok(());
+    };
+    if found > SCHEMA_VERSION {
+        return Err(too_new(path, found));
+    }
+    // Older: `Store::open`'s own migration carries it forward, the rule every store file has.
+    Ok(())
+}
+
+/// What `schema_version` says, or `None` for a file that has no schema yet. Only a missing table is
+/// a fresh file: reading every failure as one would stamp a version over a file it could not read.
+fn stored_version(conn: &Connection) -> Result<Option<i64>> {
+    match conn
+        .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+        .optional()
+    {
+        Ok(found) => Ok(found),
+        Err(e) if e.to_string().contains("no such table") => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// A file written by a build newer than this one, refused BY NAME: a daemon that will not start owes
+/// the person reading the line the file and both numbers.
+fn too_new(path: &Path, found: i64) -> StoreError {
+    StoreError::Refused(format!(
+        "{}: store schema is version {found}; this build knows {SCHEMA_VERSION} — restart from a \
+         build at least that new",
+        path.display()
+    ))
+}

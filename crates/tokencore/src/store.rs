@@ -38,6 +38,7 @@ mod marks;
 mod procs;
 mod prompts;
 mod seat;
+pub mod split;
 mod told;
 pub use leases::{Ask, FIRST_PORT, LEASES_SQL, Lease};
 pub use procs::{Check, PROCS_SQL, ProcState, ProcessRecord};
@@ -1384,6 +1385,17 @@ pub(crate) fn sessions_sql(filter: &str) -> String {
     )
 }
 
+/// The pragmas and the busy handler every connection to a store file takes: WAL so readers and the
+/// writer run at once, the handler that sleeps and counts the lock wait, and `FULL` because this
+/// file is the only copy of the tokens - a lost commit is a lost turn.
+pub(crate) fn pragmas(conn: &Connection) -> Result<()> {
+    conn.busy_handler(Some(busy::on_busy))?;
+    busy::retry_sql(|| conn.pragma_update(None, "journal_mode", "WAL"))?;
+    conn.pragma_update(None, "synchronous", "FULL")?;
+    conn.pragma_update(None, "foreign_keys", true)?;
+    Ok(())
+}
+
 impl Store {
     /// The process's one connection to this store file: SQLite caches a descriptor per inode inside
     /// the process and releases it only when the last connection closes, so a connection per caller
@@ -1453,16 +1465,7 @@ impl Store {
     /// The one place a `Shared` is built, and therefore the one place [`LIVE`] is counted:
     /// every `Store` is a handle onto a `Shared`, so this is the count of connections.
     fn from_connection(conn: Connection, path: Option<std::path::PathBuf>) -> Result<Self> {
-        // WAL lets readers and the writer run at once, but two WRITERS still serialise - this
-        // process's behind the store's lock, another daemon's inside SQLite - and rusqlite's
-        // default is to fail at once rather than wait. The handler sleeps the same schedule
-        // `busy_timeout` does and stops at the same 30 s; it counts the sleep on the way.
-        conn.busy_handler(Some(busy::on_busy))?;
-        busy::retry_sql(|| conn.pragma_update(None, "journal_mode", "WAL"))?;
-        // The region is volatile by design, so this file is the only copy of the
-        // tokens. A lost commit is a lost turn.
-        conn.pragma_update(None, "synchronous", "FULL")?;
-        conn.pragma_update(None, "foreign_keys", true)?;
+        pragmas(&conn)?;
         let store = Store {
             shared: std::sync::Arc::new(Shared {
                 conn: std::sync::Mutex::new(std::mem::ManuallyDrop::new(conn)),
@@ -3578,6 +3581,9 @@ impl Store {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod split_tests;
 
 #[cfg(test)]
 mod corpus_tests {
