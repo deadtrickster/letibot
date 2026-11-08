@@ -371,6 +371,9 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
             }
         }
         s.push_str(")\n");
+        // The share itself goes over as a GENERIC extension ("Fuse sandbox extension"), which
+        // names no path and opens no file, so it cannot be scoped like the file one above.
+        s.push_str("(allow generic-issue-extension)\n");
     }
 
     s.push_str("\n; --- egress: a decision, not a default ---\n");
@@ -1280,6 +1283,14 @@ mod tests {
         assert!(
             wide.contains("com.apple.SecurityServer"),
             "the top-level seat asks the keychain for the token it pushes with:\n{wide}"
+        );
+        assert!(
+            wide.contains("(allow generic-issue-extension)"),
+            "the top-level seat hands a VM its directory share:\n{wide}"
+        );
+        assert!(
+            !tight.contains("generic-issue-extension"),
+            "a tight seat issues no extension at all:\n{tight}"
         );
     }
 
