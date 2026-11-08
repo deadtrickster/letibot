@@ -32,6 +32,7 @@ fn user(text: &str) -> TranscriptItem {
 }
 
 mod card_fixtures;
+mod cheap_wake;
 mod children;
 mod citations;
 mod clear;

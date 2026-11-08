@@ -3163,6 +3163,7 @@ impl Harness {
             gatekeepers: Default::default(),
             restart_notices: Vec::new(),
             workspace_gone_said: false,
+            cheap_turn: false,
             monitors_seen_live: Vec::new(),
             gate_told: Default::default(),
             outage: None,

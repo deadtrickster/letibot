@@ -84,6 +84,9 @@ pub struct TurnRequest<'a> {
     /// `items`. Never a `System` item - the provider refuses a trailing one.
     pub tail: &'a [TranscriptItem],
     pub max_output_tokens: Option<u32>,
+    /// `None` keeps the backend's own setting. `Some(false)` asks this one request not to think:
+    /// a cheap turn whose expected end is silence.
+    pub thinking: Option<bool>,
 }
 
 pub trait Backend {

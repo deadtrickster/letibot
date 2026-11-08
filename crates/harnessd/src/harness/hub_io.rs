@@ -137,6 +137,9 @@ pub struct HubSteering {
     /// Whether the next poll is a step boundary, which is the only poll that may read the
     /// session's results: see [`SteeringSource::at_a_step_boundary`].
     pub(crate) at_boundary: bool,
+    /// The turn is cheap: only a stop, a row's answer and passing-by room talk are taken, and
+    /// the rest waits for a full turn after it.
+    pub(crate) cheap: bool,
 }
 
 impl HubSteering {
@@ -154,6 +157,7 @@ impl HubSteering {
             todos: None,
             parent: None,
             at_boundary: false,
+            cheap: false,
         }
     }
 }
@@ -174,7 +178,17 @@ impl SteeringSource for HubSteering {
         // The head first: somebody is waiting on it. Steering-scoped, so a
         // compaction queued behind this turn stays queued for the worker - see
         // [`Hub::try_steering_command`].
-        if let Some(cmd) = self.hub.try_steering_command() {
+        let cmd = if self.cheap {
+            self.hub.try_steering_command_of(|k| {
+                matches!(
+                    k,
+                    CommandKind::Interrupt { .. } | CommandKind::AnswerTodo { .. }
+                )
+            })
+        } else {
+            self.hub.try_steering_command()
+        };
+        if let Some(cmd) = cmd {
             return match cmd.kind {
                 CommandKind::Prompt { text, attachments } => {
                     // The operator, typing into a running turn: the one utterance that can authorise the
@@ -260,13 +274,21 @@ impl SteeringSource for HubSteering {
         // Then the room, at the boundary a running turn actually reaches. A room event becomes a
         // sentence on the connection's thread and `wake` reads it between turns, which is the wrong door
         // for a long turn: the note arrives after the work it would have changed. One queue, so once.
-        let room = crate::room::wake::take(&self.hub.session_id());
+        let room = if self.cheap {
+            crate::room::wake::take_if_cheap(&self.hub.session_id())
+        } else {
+            crate::room::wake::take(&self.hub.session_id())
+        };
         if !room.is_empty() {
             let text = room.join("\n\n");
             if let Some(t) = &self.trail {
                 t.say(Speaker::Agent, &text, Some(Instant::now()));
             }
             return Some(SteeringMessage::normal(text));
+        }
+        // A cheap turn leaves results and firings for the wake after it, which is a full turn.
+        if self.cheap {
+            return None;
         }
         // Then a background job or subagent of THIS session's own that has ended, above the
         // monitors because that block returns early with no registry. Only at a step boundary:

@@ -2009,16 +2009,25 @@ impl Hub {
     /// The next command a running turn can act on, leaving the rest queued. Mid-turn steering may
     /// consume a prompt, an interrupt or a take-back, and nothing else.
     pub fn try_steering_command(&self) -> Option<QueuedCommand> {
-        let mut g = self.lock();
-        let i = (0..g.commands.len()).find(|&i| {
+        self.try_steering_command_of(|k| {
             matches!(
-                g.commands[i].kind,
+                k,
                 CommandKind::Prompt { .. }
                     | CommandKind::Interrupt { .. }
                     | CommandKind::Message { .. }
                     | CommandKind::AnswerTodo { .. }
             )
-        })?;
+        })
+    }
+
+    /// The first queued command `take` accepts, the rest left in order. A cheap turn takes
+    /// only a stop and a row's answer, so a prompt waits for a full turn of its own.
+    pub fn try_steering_command_of(
+        &self,
+        take: impl Fn(&CommandKind) -> bool,
+    ) -> Option<QueuedCommand> {
+        let mut g = self.lock();
+        let i = (0..g.commands.len()).find(|&i| take(&g.commands[i].kind))?;
         g.commands.remove(i)
     }
 

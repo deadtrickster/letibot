@@ -180,18 +180,24 @@ impl OpenAiProvider {
         if carries_tools {
             body["tools"] = Value::Array(tools);
         }
-        if let Some(n) = req.max_output_tokens {
-            body["max_tokens"] = json!(n);
-        }
-        if self.thinking
-            && let Some(field) = self.preset.thinking_field
-        {
-            body[field] = json!({"type": "enabled"});
+        let thinking = req.thinking.unwrap_or(self.thinking);
+        if let Some(field) = self.preset.thinking_field {
+            if thinking {
+                body[field] = json!({"type": "enabled"});
+            } else if req.thinking == Some(false) {
+                body[field] = json!({"type": "disabled"});
+            }
         }
         if let Some(obj) = self.sampling.as_object() {
             for (k, v) in obj {
                 body[k] = v.clone();
             }
+        }
+        // The request's cap is a ceiling the operator's sampling cannot lift: a cheap turn's
+        // whole point is that it cannot run long.
+        if let Some(n) = req.max_output_tokens {
+            let set = body["max_tokens"].as_u64().unwrap_or(u64::MAX);
+            body["max_tokens"] = json!(set.min(u64::from(n)));
         }
         Ok(body)
     }
@@ -1156,6 +1162,7 @@ mod tests {
                 items: &items,
                 tail: &[],
                 max_output_tokens: None,
+                thinking: None,
             })
             .expect("the body builds");
         assert!(
@@ -1181,6 +1188,7 @@ mod tests {
                 items: &items,
                 tail: &[],
                 max_output_tokens: None,
+                thinking: None,
             })
             .expect("the body builds");
         assert!(without.get("tools").is_none(), "{without:#?}");
@@ -1194,5 +1202,37 @@ mod tests {
             a2.get("reasoning_content").is_none(),
             "without tools the field is not sent: {a2:#?}"
         );
+    }
+
+    /// A cheap request turns thinking off where the preset can say so, and its cap is a ceiling
+    /// the operator's sampling cannot lift. `None` keeps the provider's own setting.
+    #[test]
+    fn a_request_can_turn_thinking_off_and_cap_the_answer() {
+        let creds = Credentials {
+            key: "k".into(),
+            from: "test".into(),
+            prices: Default::default(),
+            url: None,
+        };
+        let mut p = OpenAiProvider::new(&crate::presets::GLM, Some("glm-5.3"), creds);
+        p.thinking = true;
+        p.sampling = json!({"max_tokens": 8000});
+        let req = |thinking, max_output_tokens| TurnRequest {
+            system: "",
+            tools_json: &[],
+            items: &[],
+            tail: &[],
+            max_output_tokens,
+            thinking,
+        };
+        let usual = p.body(&req(None, None)).expect("a body");
+        assert_eq!(usual["thinking"], json!({"type": "enabled"}));
+        assert_eq!(usual["max_tokens"], 8000);
+        let cheap = p.body(&req(Some(false), Some(256))).expect("a body");
+        assert_eq!(cheap["thinking"], json!({"type": "disabled"}));
+        assert_eq!(cheap["max_tokens"], 256, "the cap wins over sampling");
+        p.thinking = false;
+        let plain = p.body(&req(None, None)).expect("a body");
+        assert!(plain.get("thinking").is_none(), "{plain}");
     }
 }

@@ -105,6 +105,7 @@ fn steering(hub: &Arc<Hub>, d: Deliveries) -> HubSteering {
         // words a message `message from session `<id>`` - see `message_from_a_session`.
         parent: None,
         at_boundary: false,
+        cheap: false,
     }
 }
 

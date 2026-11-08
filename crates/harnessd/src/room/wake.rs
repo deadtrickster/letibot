@@ -133,6 +133,25 @@ pub fn take_wake(session: &str) -> Taken {
     taken
 }
 
+/// [`take`] only when every queued note is passing by, for a cheap turn already running: an
+/// addressed note stays queued, and the wake it rang runs a full turn after this one.
+pub fn take_if_cheap(session: &str) -> Vec<String> {
+    let taken = {
+        let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
+        if q.map.get(session).is_none_or(|e| e.full) {
+            return Vec::new();
+        }
+        q.map.remove(session)
+    };
+    let Some(queue) = taken else {
+        return Vec::new();
+    };
+    if queue.chat_seq > 0 {
+        super::link::ack_taken(session, queue.chat_seq);
+    }
+    queue.lines.into_iter().collect()
+}
+
 /// [`take`] without the ack: the notes, and the newest chat `seq` among them (0 for none).
 pub fn take_with_seq(session: &str) -> (Vec<String>, u64) {
     let (taken, seq) = take_full(session);
@@ -352,6 +371,13 @@ mod tests {
         push(s, "[room] an event".into());
         assert!(!take_full(s).0.cheap, "a queue event is a full turn");
         assert!(!take_full(s).0.cheap, "nothing queued is no turn at all");
+        // A cheap turn already running takes passing-by notes and leaves an addressed one.
+        push_chat(s, 0, Reach::Passing, "a".into());
+        assert_eq!(take_if_cheap(s), vec!["a".to_string()]);
+        push_chat(s, 0, Reach::Addressed, "b".into());
+        assert!(take_if_cheap(s).is_empty());
+        assert_eq!(waiting(s), 1, "it waits for the full turn after");
+        forget(s);
     }
 
     #[test]

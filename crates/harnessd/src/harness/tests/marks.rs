@@ -93,6 +93,7 @@ fn a_picture_mark_learned_in_a_session_is_there_when_the_session_reopens() {
         items: &[],
         tail: &[],
         max_output_tokens: None,
+        thinking: None,
     };
     assert!(
         provider

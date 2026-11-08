@@ -233,6 +233,9 @@ pub struct TurnEngine {
     ///
     /// A property of ONE turn, set by the compaction and cleared however it ends.
     suppress_reasoning: bool,
+    /// `Some(false)` runs the next rounds without thinking, on both paths; `None` is the
+    /// backend's own setting. Set per turn by whoever runs the rounds.
+    pub thinking: Option<bool>,
 }
 
 impl TurnEngine {
@@ -303,6 +306,7 @@ impl TurnEngine {
             frame_capture: FrameCapture::default(),
             // Every turn reasons unless one asks not to; see `without_reasoning`.
             suppress_reasoning: false,
+            thinking: None,
             turn_began_ms: None,
         })
     }
@@ -595,11 +599,13 @@ impl TurnEngine {
         // Which lead this turn gets; only the summary gets the other one. A summary runs
         // when the window is nearly full, and a lead that opens `<think>` spends what is
         // left before it writes a word.
-        let lead = self.tokenize(&if self.suppress_reasoning {
-            self.renderer.generation_prompt_closing_reasoning()
-        } else {
-            self.renderer.generation_prompt()
-        })?;
+        let lead = self.tokenize(
+            &if self.suppress_reasoning || self.thinking == Some(false) {
+                self.renderer.generation_prompt_closing_reasoning()
+            } else {
+                self.renderer.generation_prompt()
+            },
+        )?;
         let mut prompt = session.ledger.tokens().to_vec();
         // The round's tail, rendered by the transcript's renderer and appended after everything the
         // ledger holds. The token is COPIED, not moved: nothing of the tail is written, so the state
@@ -1170,6 +1176,7 @@ impl TurnEngine {
             items: &session.items,
             tail,
             max_output_tokens,
+            thinking: self.thinking,
         };
         let mut urgent: Option<String> = None;
         // The first-token clock: the first delta of any kind, against the turn's start.

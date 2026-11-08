@@ -150,7 +150,12 @@ pub(crate) fn reconcile_rows(
 enum RoundEnd {
     Go(Box<TurnOk>),
     Again,
+    /// A cheap turn that ran out of room or reasoning with nothing kept ends here, unnudged.
+    Silent(Box<letibot_turn::TurnMetrics>),
 }
+
+/// The output cap of a turn woken only by passing-by room talk: room for one short reply.
+pub(crate) const CHEAP_WAKE_TOKENS: u32 = 512;
 
 impl Harness {
     /// The loop: one user message in, one answer out, however many tool rounds that takes. This is
@@ -335,8 +340,15 @@ impl Harness {
         // The room's bells: a room event about this session became a sentence on the connection's own thread,
         // because the thread that hears a bell is not the thread that runs a turn. One notice per event, through
         // the same hook, so a layer may reword it and may not delete it: the model is owed that fact.
-        let room = crate::room::wake::take(&self.cfg.session_id);
-        notices.extend(self.noticed_all(letibot_plugin::notice::ROOM, room, serde_json::json!({})));
+        let room = crate::room::wake::take_wake(&self.cfg.session_id);
+        let room_cheap = room.cheap;
+        let before_room = notices.len();
+        notices.extend(self.noticed_all(
+            letibot_plugin::notice::ROOM,
+            room.lines,
+            serde_json::json!({}),
+        ));
+        let room_n = notices.len() - before_room;
         // And the children a restart brought back, one line each, saying which came back and which could not.
         // Counted with the queue's notices, since both are facts the daemon found in the store rather than
         // settlements that arrived.
@@ -471,6 +483,8 @@ impl Harness {
                 notices.insert(0, line);
             }
         }
+        // Cheap only when passing-by room talk is ALL this wake carries: anything else directs it.
+        let cheap = room_cheap && room_n > 0 && notices.len() == room_n && firing_row.is_none();
         // Two rows sometimes, and one turn: the settlements in the session's own voice as it
         // has always said them, and a firing as a delivery with a kind of its own - never a `User`
         // row, whose `speaker` default is what would read as the operator's words.
@@ -502,7 +516,7 @@ impl Harness {
             );
         }
         let mut opened = false;
-        let out = self.submit_items_then(items, |_| opened = true);
+        let out = self.cheaply(cheap, |h| h.submit_items_then(items, |_| opened = true));
         // Told only once the turn has opened: opened means the notice is in the transcript and in the store, so
         // the model reads it whatever its rounds come to. A turn that never opened put nothing in front of
         // anybody, so the results, the restart notices and the monitor cursor all go back and the next wake says it.
@@ -531,6 +545,20 @@ impl Harness {
                     self.flush_todos_or_say("a fired condition");
                 }
             })
+    }
+
+    /// Run `f` as a cheap turn when `cheap`: thinking off and [`CHEAP_WAKE_TOKENS`] for every
+    /// round, restored however the turn ends.
+    pub(crate) fn cheaply<T>(&mut self, cheap: bool, f: impl FnOnce(&mut Self) -> T) -> T {
+        if !cheap {
+            return f(self);
+        }
+        let was = (self.cheap_turn, self.engine.thinking);
+        self.cheap_turn = true;
+        self.engine.thinking = Some(false);
+        let out = f(self);
+        (self.cheap_turn, self.engine.thinking) = was;
+        out
     }
 
     /// A subagent brought back after a daemon restart carries on: its session was reopened from the store
@@ -1737,10 +1765,9 @@ impl Harness {
             // This sink holds the round's ending, because the round's end and the turn's end are two
             // facts and this loop is the only place that decides the second (see `CapturingSink`).
             let mut sink = CapturingSink::holding_the_rounds_end(self.hub.clone());
-            // Compose this round's offer before anything is sent, scored against the person's prompt and the
-            // turn's results and handed to the engine as a trailing item `session.items` never sees. Not on a
-            // compaction turn, where an offer would be settled against calls the summary never made.
-            if !self.compacting {
+            // This round's offer, a trailing item `session.items` never sees. Not on a compaction turn,
+            // where it would settle against calls the summary never made, nor on a cheap turn.
+            if !self.compacting && !self.cheap_turn {
                 // The instruction files through the session's own backend, the project's notes from
                 // the notes checkout.
                 let notes =
@@ -1805,6 +1832,18 @@ impl Harness {
             let ok: TurnOk = match self.judge_the_round(outcome, &ladder, round)? {
                 RoundEnd::Go(ok) => *ok,
                 RoundEnd::Again => continue,
+                RoundEnd::Silent(m) => {
+                    sink.finish(false);
+                    metrics.push(*m);
+                    self.publish_jobs();
+                    return Ok(Reply {
+                        text: String::new(),
+                        metrics,
+                        rounds: round + 1,
+                        tool_calls,
+                        truncated,
+                    });
+                }
             };
 
             // Pair against everything the ledger took, not just the model's rows: a steering message goes through
@@ -1938,6 +1977,7 @@ impl Harness {
                 // exactly the case of a model that says it will start something and forgets. The diff runs before the
                 // reply leaves, reading the assistant's text out of the rows just appended.
                 if !goes_on
+                    && !self.cheap_turn
                     && nudges_left > 0
                     && let Some(steer) = self.close_the_turn(&ok.turn_id, &appended)
                 {
@@ -1950,6 +1990,7 @@ impl Harness {
                 // ENDED, and a nudge that continued it would be the harness overruling the stop.
                 if !goes_on
                     && !ok.truncated
+                    && !self.cheap_turn
                     && let Some(steer) = end_of_work.at_turn_end(self.deliverable.as_ref())
                 {
                     notices.push(steer);
@@ -2207,6 +2248,13 @@ impl Harness {
     ) -> Result<RoundEnd, HarnessError> {
         let ok: TurnOk = match outcome {
             Ok(ok) => ok,
+            // A cheap turn's silence is its expected end: a cap or a reasoning stop is not
+            // argued with, and nothing was kept, so nothing is lost.
+            Err(
+                TurnFailure::EmptyLength { metrics, .. }
+                | TurnFailure::UnfinishedReasoning { metrics, .. }
+                | TurnFailure::BatchTruncated { metrics, .. },
+            ) if self.cheap_turn => return Ok(RoundEnd::Silent(metrics)),
             // Nothing was committed, so there is no tool-call row to answer and the notice is a user item. Bounded
             // by the engine's own salvage budget: the round after this one either succeeds or comes back as
             // `SalvageExhausted`.
@@ -2398,7 +2446,7 @@ impl Harness {
                     &self.prefix.system,
                     &self.prefix.tools_json,
                     tail,
-                    None,
+                    self.cheap_turn.then_some(CHEAP_WAKE_TOKENS),
                 ),
             };
             // The round has produced something or failed, either way the silence
@@ -2991,6 +3039,7 @@ impl Harness {
             // identically.
             parent: self.cfg.parent_session_id.clone(),
             at_boundary: false,
+            cheap: self.cheap_turn,
         }
     }
 

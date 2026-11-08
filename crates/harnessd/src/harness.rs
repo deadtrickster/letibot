@@ -376,6 +376,9 @@ pub struct Harness {
     /// Whether this harness has said its workspace is gone - once, at the first wake
     /// that found it so.
     workspace_gone_said: bool,
+    /// The turn running now was woken only by passing-by room talk: thinking off, a small cap,
+    /// and silence is its expected end, never nudged.
+    pub(crate) cheap_turn: bool,
     /// The monitor names live at the last [`Harness::sync_monitor_records`], sorted.
     monitors_seen_live: Vec<String>,
     /// The queue entries this session's model has been told about, so each is said once per daemon. One
@@ -1676,7 +1679,9 @@ pub(crate) use trail::{ASK_USER_QUESTION, asked_rows, operator_answer_text, ques
 pub use turns::abandoned_calls;
 #[cfg(test)]
 pub(crate) use turns::reconcile_rows;
-pub(crate) use turns::{CapturingSink, MAX_HTTP_RETRIES, Outage, one_line, provider_refusal};
+pub(crate) use turns::{
+    CHEAP_WAKE_TOKENS, CapturingSink, MAX_HTTP_RETRIES, Outage, one_line, provider_refusal,
+};
 pub use wall::{CompactReport, ForkReport, ForkTail, ReseatReport, reseated_for_the_model};
 #[cfg(test)]
 pub(crate) use wall::{
