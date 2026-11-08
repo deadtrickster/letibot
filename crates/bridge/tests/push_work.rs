@@ -173,6 +173,11 @@ fn an_idle_session_with_an_open_job_is_one_event_and_the_jobs_exit_is_another() 
     );
 
     registry.set_jobs(SESSION, Vec::new());
+    // The daemon's own answer for a session between turns with a job open: parked on it. That is
+    // the one case a package's job end is pushed for.
+    hub.publish(SessionEvent::ActivityChanged {
+        activity: Activity::of(vec![Waiting::Job("j82015".into())]),
+    });
     hub.publish(SessionEvent::JobSettled {
         job: "j82015".into(),
         state: "exited 0".into(),

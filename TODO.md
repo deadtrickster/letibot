@@ -49,7 +49,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Code work | the R164 before/after numbers; the output cap on the local llama path |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Code work | all of it |
 | R171 | A session's DM to a Claude Code seat is addressed to a different session | Code work | the room no longer re-addresses a dm (built and held by `crates/room/tests/dm.rs`); left: a live dm from a session to a `cc@<folder>` bridge on the box |
-| R172 | A Claude Code seat's todo check says false things about running packages | Code work | items 1-4 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, the offer names the row's own child or none, and a chain of rows bottoms out in the working child; left: a live seat against a daemon on another protocol number, and item 5 |
+| R172 | A Claude Code seat's todo check says false things about running packages | Code work | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
 | R165 | Rooms for orchestration (3/6): a question goes to the owner, not the room | Code work | all of it |
 | R166 | Rooms for orchestration (4/6): kinds, budgets and a stopping rule for agent-only threads | Code work | all of it |
 | R167 | Rooms for orchestration (5/6): peer text is a claim with a source, never an instruction | Code work | all of it |
@@ -237,7 +237,7 @@ The chat control comes from flowy (`letiflow/flowy`, `web/src/components/Message
 
 ## R172 - A Claude Code seat's todo check says false things about running packages
 
-**Status:** items 1-4 built. left: a live seat against a daemon on another protocol number (no test on this box can skew a real daemon), and item 5.
+**Status:** items 1-5 built. left: a live seat against a daemon on another protocol number (no test on this box can skew a real daemon).
 
 Seen 2026-11-08 in the seat `cc@letibot` (the board is `crates/bridge/src/seat.rs`, the check's text `crates/tools/src/builtins/todo.rs`):
 
@@ -255,6 +255,8 @@ Tests: `crates/bridge/src/seat.rs` - `a_package_whose_head_could_not_be_read_is_
 Also built, seen live with NO skew: a package between turns whose snapshot read `jobs_open: []` with `waiting_on: ["job j85996", "child s-…-sub-…"]` and `activity: busy`. `still_a_child` (`crates/bridge/src/seat.rs`) asked only `turn`, `jobs_open` and `asks`, so it read that package as finished. It now also takes the daemon's own `waiting_on` (`State::activity`), which is the last word.
 
 Is that empty `jobs_open` itself a daemon bug? **Not in that shape.** The two facts come from different tables: `waiting_on` is the JOB WATCHER's (`JobWatchers::activity_facts().at_work`, `crates/harnessd/src/activity.rs:145`), which holds a handle while the daemon still owes somebody its completion, while `jobs_open` is the PROCESS HOST's job table (`harness/jobs.rs::job_entries`, `running = JobState::is_running()`), filtered by the head. A job that has exited and whose completion is queued or held for a turn that has not begun is therefore *at work* for the watcher and *not running* for the host - `waiting_on: ["job …"]` with `jobs_open: []` is that window, and it is the design rather than a stale table. The shape that WOULD be a daemon defect is `waiting_on` naming a handle the host has never held - a `job_wait` on a job from before a daemon restart - because no completion can be delivered for it; a live pair off the seat would say which of the two the report was. Either way the check now reads the daemon's answer, so neither shape reads as finished.
+
+Item 5, its own commit. The channel pushed a `job_ended` for EVERY job of every held package, which is noise: a package reads its own job results. It now pushes one only when the daemon says the session is PARKED on that job - idle (`Head::word`), and the handle in `Head::parked_on_jobs` (`State::activity`'s `Waiting::Job`s) - which is R154's case, a package whose turn ended waiting on a job that then stuck (`crates/bridge/src/push.rs`). Its turn ends, asks, failures and provider trouble push exactly as before, and the seat's OWN jobs are another door (`SeatJobs::settle` → `push::seat_job_event`, `meta.source: seat`) that always pushes its end. Tests: `crates/bridge/tests/push_job_ends.rs` - `a_package_job_ending_under_a_running_turn_is_not_pushed`; `crates/bridge/tests/push_work.rs` - `an_idle_session_with_an_open_job_is_one_event_and_the_jobs_exit_is_another`, which now parks the session on the job before it settles; and `crates/bridge/tests/seat_todo.rs` - `a_seat_jobs_end_settles_its_row_and_pushes_one_job_ended` holds the seat's own job.
 
 ---
 

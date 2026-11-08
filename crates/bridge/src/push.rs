@@ -208,6 +208,9 @@ fn run(weak: Weak<Head>, outbox: Arc<Outbox>) {
             .map(|n| limit_event(&head, &n));
         last_limit = limits;
         let event = event(&head, &attention);
+        // What this session is PARKED on, read before the head is dropped: a job's end is news to
+        // a package sitting on it, and to nobody else (see the ring loop below).
+        let parked = head.parked_on_jobs();
         let who = format!("leticode `{}` ({})", head.session, head.worktree.display());
         let session = head.session.clone();
         drop(head);
@@ -226,6 +229,12 @@ fn run(weak: Weak<Head>, outbox: Arc<Outbox>) {
             .iter()
             .filter(|e| e.kind == "job" && e.state == "ended")
         {
+            // A package reads its own job results, so one `job_ended` per job of every held
+            // package is the seat's noise: it is pushed only to a package parked on that job -
+            // R154's case, a session whose turn ended waiting on a job that then stuck.
+            if word != "idle" || !parked.iter().any(|handle| handle == &e.name) {
+                continue;
+            }
             let (key, note) = job_event(&who, &session, e);
             outbox.record(key, note);
         }

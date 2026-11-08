@@ -116,8 +116,11 @@ A held session's events arrive as `notifications/claude/channel` with `meta.sour
 not, and were the ones an orchestrator had no news of at all: **`idle_with_work`** - the session is
 between turns with `meta.jobs` running or `meta.rows` todo rows pending, said once per change to
 that work and not once per poll - and **`job_ended`** - `meta.job` and `meta.state` as the daemon
-settled it. A session the bridge itself stopped with `leticode_stop` pushes no `failed`: the `Bye`
-behind that close is the bridge's own act, not a failure of the session's.
+settled it, pushed only for a job the session is PARKED on (the daemon's `waiting_on`, no turn
+running), because a session that is working reads its own job results and one `job_ended` per job
+of every held package was R172's noise. A session the bridge itself stopped with `leticode_stop`
+pushed no `failed`: the `Bye` behind that close is the bridge's own act, not a failure of the
+session's.
 
 Each session's events are kept in `<rundir>/<folder key>.push-<session>`: the key of every fact
 already said, the frames a client has not taken, and the `cursor` it has been told up to. An event
