@@ -635,6 +635,7 @@ pub fn spawn_for(
     stop: Arc<AtomicBool>,
     registry: Arc<letibot_sessionlog::registry::Registry>,
     desk: Arc<letibot_tools::builtins::verdict::ReviewDesk>,
+    claude: Arc<review::claude::Runs>,
 ) -> Option<JoinHandle<()>> {
     let store_path = cfg.store.clone()?;
     let env = serve::QueueEnv::production(
@@ -650,6 +651,7 @@ pub fn spawn_for(
         cfg.review_hosts.clone(),
         cfg.reviewers_at_once,
         cfg.reviewer_hosts.clone(),
+        claude,
     );
     // Every daemon hears every repository's moves: the worker below announces only what THIS
     // daemon moves, so a head attached here would never re-read a queue another daemon serves.

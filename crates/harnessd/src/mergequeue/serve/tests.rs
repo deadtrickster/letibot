@@ -266,6 +266,7 @@ fn env_with_desk_and_hosts(
         hosts,
         reviewer_hosts,
         idle: Duration::from_millis(50),
+        claude: None,
     })
 }
 
@@ -2211,6 +2212,7 @@ fn served(store: &Store, desk: &ReviewDesk, me: &str) -> crate::mergequeue::revi
         live: &|_: &str| true,
         clones: std::env::temp_dir(),
         slots: &Vec::new,
+        claude: None,
     };
     crate::mergequeue::review::serve(&pool).expect("a pass of the reviewers' host")
 }
@@ -2662,6 +2664,7 @@ fn a_reviewer_that_is_still_opening_is_not_re_seated_and_one_that_ends_is() {
         reviewers_at_once: None,
         hosts: crate::mergequeue::review::hosts::ReviewHosts::new(),
         reviewer_hosts: Some(vec!["local".to_string()]),
+        claude: None,
         idle: Duration::from_millis(50),
     });
     let q = RepoQueue::new(
@@ -3565,6 +3568,7 @@ fn a_daemon_started_with_no_queue_on_a_worktree_never_takes_the_lease() {
         stop.clone(),
         Registry::new(),
         Arc::new(letibot_tools::builtins::verdict::ReviewDesk::new()),
+        Arc::new(crate::mergequeue::review::claude::Runs::new()),
     );
     assert!(
         spawned.is_none(),
@@ -3595,6 +3599,7 @@ fn a_daemon_started_with_no_queue_on_a_worktree_never_takes_the_lease() {
         stop.clone(),
         Registry::new(),
         Arc::new(letibot_tools::builtins::verdict::ReviewDesk::new()),
+        Arc::new(crate::mergequeue::review::claude::Runs::new()),
     )
     .expect("the queue's thread starts without --no-queue");
     let until = std::time::Instant::now() + Duration::from_secs(20);
@@ -4836,6 +4841,7 @@ fn a_one_shot_takes_no_lease() {
         stop.clone(),
         letibot_sessionlog::registry::Registry::new(),
         Arc::new(letibot_tools::builtins::verdict::ReviewDesk::new()),
+        Arc::new(crate::mergequeue::review::claude::Runs::new()),
     );
     assert!(
         handle.is_none(),

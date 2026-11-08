@@ -33,6 +33,14 @@
 //!                                 #   Default: "host" - the steps run on the gate machine
 //! reviewer_hosts = ["lab2x1"]     # opt in: the declared hosts a `host` reviewer may be placed
 //!                                 #   on (`["*"]` is all of them). Default: this machine only
+//! [queue.claude]                  # the reviewers are headless `claude -p` runs instead of
+//!                                 #   letibot children (R116). The table ABSENT is the letibot
+//!                                 #   reviewer, which is what every project had before.
+//! binary = "/usr/local/bin/claude" # the executable; an absolute path
+//! allowed_tools = ["Read", "Grep"] # `--allowedTools`, default Read, Grep, Glob and the three
+//!                                 #   read-only git commands a diff needs
+//! permission_mode = "default"     # `--permission-mode`, default "default"
+//! timeout_seconds = 3600          # the row's own deadline, default the queue's hour
 //! ```
 //!
 //! The first three are the operator's own rulings, and each per PROJECT because
@@ -165,6 +173,11 @@ pub struct QueueSettings {
     /// `[queue] reviewer_hosts`, the opt-in to fan reviewers out. Absent is this machine alone
     /// (`["local"]`, D18). `None` is every declared host (`["*"]`). A list is exactly those names.
     pub reviewer_hosts: Option<Vec<String>>,
+    /// `[queue.claude]`, when this project's reviewers are Claude Code runs (`claude -p`, R116)
+    /// instead of letibot children. `None` - the table absent - is the letibot reviewer every
+    /// project had before there was a choice, so a Claude reviewer exists only where somebody
+    /// asked for one.
+    pub claude: Option<super::review::claude::Settings>,
     /// The file they were read from, for the pane; `None` when there was none.
     pub path: Option<PathBuf>,
 }
@@ -183,6 +196,7 @@ impl Default for QueueSettings {
             reviewer_skills: Vec::new(),
             reviewers_at_once: None,
             reviewer_hosts: Some(vec!["local".to_string()]),
+            claude: None,
             path: None,
         }
     }
@@ -217,6 +231,9 @@ struct QueueTable {
     reviewers_at_once: Option<i64>,
     #[serde(default)]
     reviewer_hosts: Option<Vec<String>>,
+    /// `[queue.claude]`: present is *this project's reviewers are Claude Code runs*.
+    #[serde(default)]
+    claude: Option<ClaudeTable>,
     /// The census's two numbers. Read by `leticode-config`'s `[queue]` parser, from the user's
     /// file and the project's over it - `Config::leticode`, not this reader - and accepted here
     /// only so that a project writing them does not make this reader refuse the table. Two
@@ -231,6 +248,21 @@ struct QueueTable {
     #[serde(default)]
     #[allow(dead_code)]
     mute: Vec<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClaudeTable {
+    #[serde(default)]
+    binary: Option<String>,
+    #[serde(default)]
+    allowed_tools: Vec<String>,
+    #[serde(default)]
+    permission_mode: Option<String>,
+    /// `i64`, not `usize`, so that `0` and a negative number are refused with a sentence naming the
+    /// key rather than with a deserialiser's complaint about a type.
+    #[serde(default)]
+    timeout_seconds: Option<i64>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -358,6 +390,10 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
             .filter(|h| !h.is_empty()),
         reviewers_at_once,
         reviewer_hosts,
+        claude: match q.claude {
+            None => None,
+            Some(c) => Some(claude_settings(&c, path)?),
+        },
         target: q
             .target
             .map(|t| t.trim().to_string())
@@ -373,6 +409,74 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
             .collect(),
         path: Some(path.to_path_buf()),
     })
+}
+
+/// `[queue.claude]` as the reviewer's settings. A missing or relative binary, an empty tool and a
+/// timeout of nothing are refused BY NAME - the table is the one switch a project has for running
+/// a reviewer that is not a session, and a typo in it must not be read as *off*.
+fn claude_settings(
+    c: &ClaudeTable,
+    path: &Path,
+) -> Result<super::review::claude::Settings, String> {
+    let binary = c.binary.as_deref().map(str::trim).unwrap_or_default();
+    if binary.is_empty() {
+        return Err(format!(
+            "{}: [queue.claude] names no `binary` - this table is how a project says its reviewers \
+             are headless `claude -p` runs, so it is the path of that executable, or the table is \
+             left out and the letibot reviewer runs as before",
+            path.display()
+        ));
+    }
+    if !Path::new(binary).is_absolute() {
+        return Err(format!(
+            "{}: [queue.claude] binary = \"{binary}\" - it is an absolute path to the `claude` \
+             executable, because a run's working directory is the reviewer's clone of the branch \
+             and a relative path would name a file inside it",
+            path.display()
+        ));
+    }
+    let mut settings = super::review::claude::Settings::new(PathBuf::from(binary));
+    if !c.allowed_tools.is_empty() {
+        let mut tools: Vec<String> = Vec::new();
+        for entry in &c.allowed_tools {
+            let name = entry.trim();
+            if name.is_empty() {
+                return Err(format!(
+                    "{}: [queue.claude] allowed_tools has an empty entry - every entry is a tool \
+                     name the run may use, and a reviewer allowed nothing can read nothing",
+                    path.display()
+                ));
+            }
+            if !tools.iter().any(|t| t == name) {
+                tools.push(name.to_string());
+            }
+        }
+        settings.allowed_tools = tools;
+    }
+    if let Some(mode) = c.permission_mode.as_deref().map(str::trim) {
+        if mode.is_empty() {
+            return Err(format!(
+                "{}: [queue.claude] permission_mode is empty - leave the key out for the run's \
+                 own mode (`{}`), or name the one Claude Code should start in",
+                path.display(),
+                super::review::claude::DEFAULT_PERMISSION_MODE
+            ));
+        }
+        settings.permission_mode = mode.to_string();
+    }
+    match c.timeout_seconds {
+        None => {}
+        Some(n) if n >= 1 => settings.timeout = std::time::Duration::from_secs(n as u64),
+        Some(n) => {
+            return Err(format!(
+                "{}: [queue.claude] timeout_seconds = {n} - it is how long a review run may take \
+                 before the queue ends it with SIGINT, so the smallest number that means anything \
+                 here is 1 (and leaving the key out is the queue's own hour)",
+                path.display()
+            ));
+        }
+    }
+    Ok(settings)
 }
 
 /// The target for `repo` - the project's, else the repository's default.
@@ -598,6 +702,116 @@ mod tests {
             assert!(e.contains(&format!("\"{bad}\"")), "{bad}: {e}");
             assert!(e.contains("gate_carry"), "{bad}: {e}");
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `[queue.claude]` is what makes a project's reviewers headless `claude -p` runs (R116), and the
+    /// table absent is the letibot reviewer - so OFF is the default every project already had. The
+    /// binary, the tools and the timeout are the project's; the rest is the module's own default.
+    #[test]
+    fn the_claude_table_is_off_until_a_project_names_a_binary() {
+        let (dir, repo) = file("[queue]\ntarget = \"main\"\n");
+        assert_eq!(
+            for_repository(&repo).unwrap().claude,
+            None,
+            "a queue nobody configured runs letibot reviewers, exactly as before"
+        );
+
+        std::fs::write(
+            dir.join("leticode.toml"),
+            "[queue.claude]\nbinary = \"/usr/local/bin/claude\"\n",
+        )
+        .unwrap();
+        let claude = for_repository(&repo).unwrap().claude.expect("the run");
+        assert_eq!(claude.binary, PathBuf::from("/usr/local/bin/claude"));
+        assert_eq!(
+            claude.allowed_tools,
+            super::super::review::claude::DEFAULT_TOOLS
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>(),
+            "a reader, a searcher and a lister: nothing that can write"
+        );
+        assert_eq!(
+            claude.permission_mode,
+            super::super::review::claude::DEFAULT_PERMISSION_MODE
+        );
+        assert_eq!(
+            claude.timeout,
+            super::super::review::claude::DEFAULT_TIMEOUT,
+            "the queue's own hour, until a project says otherwise"
+        );
+
+        std::fs::write(
+            dir.join("leticode.toml"),
+            "[queue.claude]\nbinary = \"/opt/claude\"\nallowed_tools = [\"Read\", \"Bash(git diff:*)\", \
+             \"Read\"]\npermission_mode = \"bypassPermissions\"\ntimeout_seconds = 90\n",
+        )
+        .unwrap();
+        let claude = for_repository(&repo).unwrap().claude.expect("the run");
+        assert_eq!(claude.binary, PathBuf::from("/opt/claude"));
+        assert_eq!(
+            claude.allowed_tools,
+            vec!["Read".to_string(), "Bash(git diff:*)".to_string()],
+            "trimmed, and a tool named twice is one tool"
+        );
+        assert_eq!(claude.permission_mode, "bypassPermissions");
+        assert_eq!(claude.timeout, std::time::Duration::from_secs(90));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A `[queue.claude]` this build cannot obey is refused BY NAME - the whole table with it. A
+    /// binary nobody can run, an empty tool and a timeout of nothing are a project that meant to
+    /// have Claude reviewers and would otherwise be read as *off*.
+    #[test]
+    fn a_claude_table_that_cannot_be_obeyed_is_refused_by_name() {
+        let (dir, repo) = file("[queue.claude]\nbinary = \"/usr/local/bin/claude\"\n");
+        for (text, want) in [
+            ("[queue.claude]\nallowed_tools = [\"Read\"]\n", "binary"),
+            ("[queue.claude]\nbinary = \"\"\n", "binary"),
+            ("[queue.claude]\nbinary = \"claude\"\n", "absolute"),
+            (
+                "[queue.claude]\nbinary = \"/opt/claude\"\nallowed_tools = [\"Read\", \"\"]\n",
+                "allowed_tools",
+            ),
+            (
+                "[queue.claude]\nbinary = \"/opt/claude\"\npermission_mode = \"  \"\n",
+                "permission_mode",
+            ),
+            (
+                "[queue.claude]\nbinary = \"/opt/claude\"\ntimeout_seconds = 0\n",
+                "timeout_seconds",
+            ),
+            (
+                "[queue.claude]\nbinary = \"/opt/claude\"\ntimeout_seconds = -5\n",
+                "timeout_seconds",
+            ),
+            (
+                "[queue.claude]\nbinary = \"/opt/claude\"\nbinaryy = \"/x\"\n",
+                "binaryy",
+            ),
+        ] {
+            std::fs::write(dir.join("leticode.toml"), text).unwrap();
+            let e = for_repository(&repo).unwrap_err();
+            assert!(e.contains(want), "{text}: {e}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `[queue.claude]` is the QUEUE's table, and the model reader must still read the file: a
+    /// session of that project losing its models because a reviewer was configured would be a
+    /// second, silent cost of one key.
+    #[test]
+    fn the_model_reader_still_reads_a_file_with_a_claude_table() {
+        let (dir, _repo) = file(
+            "main_model = \"local\"\n[queue.claude]\nbinary = \"/usr/local/bin/claude\"\n\
+             timeout_seconds = 600\n",
+        );
+        assert!(
+            LeticodeConfig::load(&dir.join("leticode.toml")).is_ok(),
+            "the `[queue]` table is the queue's own reader's, and this one ignores what it does \
+             not know"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

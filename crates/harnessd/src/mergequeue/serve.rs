@@ -136,6 +136,11 @@ pub struct QueueEnv {
     /// **Which machines that pool is** - [`crate::config::Config::reviewer_hosts`], where `None` is
     /// *every host the operator declared, plus this machine*.
     pub reviewer_hosts: Option<Vec<String>>,
+    /// **The daemon's Claude Code reviewers** (`[queue.claude]`, R116) - the processes behind every
+    /// row whose reviewer is a `claude -p` run. `None` is a daemon that starts none of them, and
+    /// this is what tells a process reviewer from a session one when a row is checked for a
+    /// reviewer that is gone: a process has no entry in the session registry to be alive in.
+    pub claude: Option<Arc<crate::mergequeue::review::claude::Runs>>,
 }
 
 impl QueueEnv {
@@ -156,6 +161,7 @@ impl QueueEnv {
         hosts: Arc<crate::mergequeue::review::hosts::ReviewHosts>,
         reviewers_at_once: Option<usize>,
         reviewer_hosts: Option<Vec<String>>,
+        claude: Arc<crate::mergequeue::review::claude::Runs>,
     ) -> Self {
         QueueEnv {
             me: super::lease::this_daemon().clone(),
@@ -177,6 +183,7 @@ impl QueueEnv {
             reviewers_at_once,
             hosts,
             reviewer_hosts,
+            claude: Some(claude),
         }
     }
 }
@@ -916,8 +923,15 @@ impl RepoQueue {
                     let never_started = r.reviewer.is_none()
                         && now.saturating_sub(r.state_ms) > self.env.reviewer_start_grace_ms;
                     // A reviewer child that is not alive in this daemon - the operator's *"after a restart two
-                    // rows stayed reviewing with reviewer children that no longer existed"*.
+                    // rows stayed reviewing with reviewer children that no longer existed"*. A Claude
+                    // reviewer is a PROCESS and has no session to be alive in: the run in the table is
+                    // the whole of its liveness, so this question is not asked about one.
+                    let is_process = r
+                        .reviewer
+                        .as_deref()
+                        .is_some_and(|c| self.env.claude.as_ref().is_some_and(|runs| runs.owns(c)));
                     let gone = self.env.door.sees_sessions()
+                        && !is_process
                         && r.reviewer
                             .as_deref()
                             .is_some_and(|c| !self.env.door.session_live(c));
@@ -1097,6 +1111,14 @@ impl RepoQueue {
                 r.id.clone(),
             )
         });
+        // The row's deadline IS the reviewer's time limit. A project reviewing with headless
+        // `claude -p` runs sets it with `[queue.claude] timeout_seconds`; everyone else gets the
+        // queue's own hour, which is what a letibot reviewer has always had.
+        let review_limit_ms = settings
+            .claude
+            .as_ref()
+            .map(|c| (c.timeout.as_millis() as u64).max(1))
+            .unwrap_or(self.env.review_deadline_ms);
         let mut claimed = 0;
         for r in waiting.into_iter().take(limit.saturating_sub(busy)) {
             let head = match r.kind {
@@ -1125,7 +1147,7 @@ impl RepoQueue {
                     .set("head_sha", head)
                     .set("target", target)
                     .clear("reviewer")
-                    .set("deadline_ms", now + self.env.review_deadline_ms)
+                    .set("deadline_ms", now + review_limit_ms)
                     .set("failure", ""),
             )? {
                 claimed += 1;

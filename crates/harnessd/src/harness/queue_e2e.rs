@@ -266,6 +266,7 @@ fn worker(fx: &Fixture, repo: &Path) -> RepoQueue {
             reviewers_at_once: None,
             hosts: crate::mergequeue::review::hosts::ReviewHosts::new(),
             reviewer_hosts: Some(vec!["local".to_string()]),
+            claude: None,
         }),
     )
 }
@@ -1228,6 +1229,7 @@ fn refuse(fx: &Fixture, id: &str, reasons: &[&str]) {
         machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
         reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
+        claude: None,
     };
     for _ in 0..3 {
         crate::mergequeue::review::serve(&pool).expect("a pass");
@@ -1418,6 +1420,7 @@ fn a_blocked_childs_review_is_rung_and_told_to_its_root_once() {
             reviewers_at_once: None,
             hosts: crate::mergequeue::review::hosts::ReviewHosts::new(),
             reviewer_hosts: Some(vec!["local".to_string()]),
+            claude: None,
         }),
     );
     passes(&q, 1);

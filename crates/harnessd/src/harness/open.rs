@@ -1825,6 +1825,7 @@ impl Harness {
                 // registers `review_verdict` bound to its own session id, and the desk it submits to
                 // has to be the one this session opened the review on.
                 reviews: parts.reviews.clone(),
+                claude: parts.claude.clone(),
                 slots: tree_slots.clone(),
                 trees: parts.trees.clone(),
                 // Filled below, once this harness has built its own `job_watch`.
@@ -3160,6 +3161,7 @@ impl Harness {
             // field: an interrupt has to be able to stop this session's children.
             subagents: subagent_runner,
             reviews: parts.reviews.clone(),
+            claude: parts.claude.clone(),
             gatekeepers: Default::default(),
             restart_notices: Vec::new(),
             workspace_gone_said: false,

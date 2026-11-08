@@ -114,6 +114,18 @@ CREATE TABLE IF NOT EXISTS queue_lease (
     acquired_ms  INTEGER NOT NULL
 );
 
+-- **A Claude Code reviewer's row** (R116, schema 44): the conversation `session_id` a re-review
+-- resumes, and the run in flight while one is (`handle`). A `review_queue` row whose `reviewer` is
+-- this `handle` is a PROCESS and not a session of this daemon.
+CREATE TABLE IF NOT EXISTS claude_review (
+    entry_id   TEXT PRIMARY KEY,
+    repository TEXT NOT NULL,
+    branch     TEXT NOT NULL,
+    session_id TEXT,
+    handle     TEXT,
+    at_ms      INTEGER NOT NULL
+);
+
 -- **The target branch's own health** (decisions 10, 11): the last tip gated, and what came of it.
 CREATE TABLE IF NOT EXISTS target_health (
     repository      TEXT NOT NULL,
@@ -374,6 +386,23 @@ pub struct ReviewRow {
     /// When the row entered its current state - what the pane's age is measured from.
     pub state_ms: u64,
     pub updated_ms: u64,
+}
+
+/// A Claude Code reviewer's row - see the `claude_review` table in [`QUEUES_SQL`]. One review has
+/// one conversation, so a re-review of a new head continues it rather than starting a reviewer that
+/// must read the branch from nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaudeReview {
+    /// The `review_queue` row this is the reviewer of.
+    pub entry_id: String,
+    pub repository: String,
+    pub branch: String,
+    /// What `claude --resume` takes to continue the conversation.
+    pub session_id: Option<String>,
+    /// The run in flight, while one is: `review_queue.reviewer` equal to this is a process, which
+    /// is the one thing this table says that the row cannot.
+    pub handle: Option<String>,
+    pub at_ms: u64,
 }
 
 /// One merge row - see the `merge_queue` table in [`QUEUES_SQL`].
@@ -870,6 +899,60 @@ impl Store {
             .query_row(&sql, params![id], review_from_row)
             .optional()?;
         row.transpose()
+    }
+
+    /// The Claude reviewer's row for one review, if it ever had one.
+    pub fn claude_review(&self, entry_id: &str) -> Result<Option<ClaudeReview>> {
+        let row = self
+            .conn()
+            .query_row(
+                "SELECT entry_id, repository, branch, session_id, handle, at_ms \
+                   FROM claude_review WHERE entry_id = ?1",
+                params![entry_id],
+                |r| {
+                    Ok(ClaudeReview {
+                        entry_id: r.get(0)?,
+                        repository: r.get(1)?,
+                        branch: r.get(2)?,
+                        session_id: r.get(3)?,
+                        handle: r.get(4)?,
+                        at_ms: r.get::<_, i64>(5)? as u64,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Write what a run left behind. A NULL `session_id` keeps the conversation already stored (the
+    /// next head resumes it) and a NULL `handle` ends the run, so one call serves both ends of a
+    /// review and neither can erase the other's fact.
+    pub fn put_claude_review(
+        &self,
+        entry_id: &str,
+        repository: &str,
+        branch: &str,
+        session_id: Option<&str>,
+        handle: Option<&str>,
+        now_ms: u64,
+    ) -> Result<()> {
+        self.exec(
+            "INSERT INTO claude_review (entry_id, repository, branch, session_id, handle, at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(entry_id) DO UPDATE SET
+                 session_id = COALESCE(excluded.session_id, claude_review.session_id),
+                 handle     = excluded.handle,
+                 at_ms      = excluded.at_ms",
+            params![
+                entry_id,
+                repository,
+                branch,
+                session_id,
+                handle,
+                now_ms as i64
+            ],
+        )?;
+        Ok(())
     }
 
     /// Move a review row from `from` to `to`, only if it is still in `from` (and owned by

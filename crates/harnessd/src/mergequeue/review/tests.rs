@@ -256,6 +256,7 @@ fn judge(
         settings: &settings,
         clones,
         slots: &Vec::new,
+        claude: None,
     };
     for _ in 0..passes {
         serve(&pool).expect("a pass");
@@ -296,6 +297,7 @@ fn a_pass(
         settings: &settings,
         clones: clones_dir.0.join(CLONES_DIR),
         slots: &Vec::new,
+        claude: None,
     };
     serve(&pool).expect("a pass")
 }
@@ -1186,6 +1188,7 @@ fn a_reject_against_a_tip_the_target_has_moved_past_opens_no_fix_branch() {
         settings: &settings,
         clones,
         slots: &Vec::new,
+        claude: None,
     };
     serve(&pool).expect("a pass");
 
@@ -1333,6 +1336,7 @@ fn a_reviewer_on_this_machine_works_in_a_checkout_of_the_head_it_judges() {
         machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
         reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
+        claude: None,
     };
     assert_eq!(
         serve(&pool).expect("a pass").started,
@@ -1474,6 +1478,7 @@ fn a_project_that_asks_for_vms_gets_its_reviewer_placed_in_one() {
         settings: &settings,
         clones: clones.clone(),
         slots: &Vec::new,
+        claude: None,
         reviewer_skills: &[],
         machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
         reviewer_hosts: Some(vec!["local".to_string()]),
@@ -1618,6 +1623,7 @@ fn a_clone_no_row_is_on_is_removed_and_a_live_rows_is_kept() {
         machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
         reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
+        claude: None,
     };
     // One sweep, with the grace named as zero: the row rule is this test's subject, and the grace is
     // the next one's.
@@ -1755,6 +1761,7 @@ fn a_live_rows_trees_are_never_swept_and_a_dead_rows_go_once_they_are_old() {
         machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
         reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
+        claude: None,
     };
     // The REAL grace, and every tree YOUNG. Nothing of the dead row's goes yet - a clone may still be
     // being written - and nothing of the live row's goes ever.
@@ -1901,6 +1908,7 @@ fn the_sweep_does_not_disturb_a_clone_it_meets() {
         machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
         reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
+        claude: None,
     };
     let stem = clones.join("review-cloning");
     let clone = {
@@ -2038,6 +2046,7 @@ fn a_clone_that_fails_is_a_wait_and_the_next_pass_tries_again() {
         machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
         reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
+        claude: None,
     };
     assert_eq!(serve(&pool).expect("a pass").started, 0, "no reviewer");
 
@@ -2171,6 +2180,7 @@ fn a_verdict_about_a_tree_that_went_away_is_a_wait_and_says_so() {
         machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
         reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
+        claude: None,
     };
     assert_eq!(
         serve(&pool).expect("a pass").started,

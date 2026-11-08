@@ -550,6 +550,8 @@ impl Harness {
                 std::env::temp_dir().join(crate::mergequeue::review::CLONES_DIR)
             }),
             slots: &|| crate::vm_reap::slot_holders(store, self.session_registry.instance()),
+            // The daemon's Claude Code reviewers, when a project's `[queue.claude]` names one.
+            claude: Some(&self.claude),
         };
         let served = match crate::mergequeue::review::serve(&pool) {
             Ok(s) => s,

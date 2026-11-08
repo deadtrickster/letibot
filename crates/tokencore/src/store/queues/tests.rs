@@ -638,3 +638,37 @@ fn a_v23_store_is_archived_whole_and_its_waiting_rows_go_to_review() {
     let s = Store::open(&d.db()).unwrap();
     assert_eq!(s.review_rows(None).unwrap().len(), 3);
 }
+
+/// A Claude reviewer's row holds two facts with two lifetimes: the conversation a re-review
+/// resumes, which outlives a run, and the run in flight, which must not survive one. A write that
+/// NULLs the handle keeps the conversation, which is the whole reason they share a row.
+#[test]
+fn a_claude_reviews_conversation_outlives_its_run_and_a_second_head_resumes_it() {
+    let d = TempDir::new("claude");
+    let s = Store::open(&d.db()).unwrap();
+    assert_eq!(s.claude_review("r1").unwrap(), None, "no row before a run");
+    // Started: no session id yet, the run is in flight.
+    s.put_claude_review("r1", "/repo", "agent/r1", None, Some("claude-r1-1"), 10)
+        .unwrap();
+    let run = s.claude_review("r1").unwrap().expect("the run's row");
+    assert_eq!(run.handle.as_deref(), Some("claude-r1-1"));
+    assert_eq!(run.session_id, None);
+    assert_eq!(run.branch, "agent/r1");
+    // Finished: the conversation is kept, the handle is gone.
+    s.put_claude_review("r1", "/repo", "agent/r1", Some("cc-7"), None, 20)
+        .unwrap();
+    let done = s.claude_review("r1").unwrap().expect("the conversation");
+    assert_eq!(done.session_id.as_deref(), Some("cc-7"));
+    assert_eq!(done.handle, None, "no run is using it any more");
+    // The next head starts a run with no session id of its own: the conversation stays.
+    s.put_claude_review("r1", "/repo", "agent/r1", None, Some("claude-r1-2"), 30)
+        .unwrap();
+    let again = s.claude_review("r1").unwrap().expect("still one row");
+    assert_eq!(
+        again.session_id.as_deref(),
+        Some("cc-7"),
+        "a start cannot erase the conversation it is about to resume"
+    );
+    assert_eq!(again.handle.as_deref(), Some("claude-r1-2"));
+    assert_eq!(s.stored_schema_version().unwrap(), SCHEMA_VERSION);
+}

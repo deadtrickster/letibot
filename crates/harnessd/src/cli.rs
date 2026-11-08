@@ -1347,6 +1347,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // thread. Their own threads - a supervisor that claims each repository's lease and a
     // worker per lease held - never a session's worker, and the process's one connection to
     let reviews = std::sync::Arc::new(letibot_tools::builtins::verdict::ReviewDesk::new());
+    // And the daemon's Claude Code reviewers (`[queue.claude]`, R116): the table of processes the
+    // queue's thread starts and the review pool polls. One `Arc` and both hold it, for the desk's
+    // reason - a run one pass started is collected by the next.
+    let claude = std::sync::Arc::new(crate::mergequeue::review::claude::Runs::new());
     let merge_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     // A coordinator serves no repository, so it claims no lease and runs no gate: `--room`
     // sets `serve_queues` off, and `spawn_for` is not called at all rather than called and made to
@@ -1354,7 +1358,13 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     let merge_queue = if cfg.room {
         None
     } else {
-        crate::mergequeue::spawn_for(&cfg, merge_stop.clone(), registry.clone(), reviews.clone())
+        crate::mergequeue::spawn_for(
+            &cfg,
+            merge_stop.clone(),
+            registry.clone(),
+            reviews.clone(),
+            claude.clone(),
+        )
     };
 
     let socket = daemon.socket().display().to_string();
@@ -1707,6 +1717,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // session's harness registers its own `review_verdict` against `parts.reviews`, and a
     // reviewer's verdict has to reach the queue that asked for it, so this is not a second desk.
     parts.reviews = reviews;
+    parts.claude = claude;
 
     // The room, before the first session opens. The coordinator's socket has to exist when
     // `Harness::open` builds the session's room link, and its session id has to be the

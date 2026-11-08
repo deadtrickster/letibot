@@ -194,7 +194,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 43;
+pub const SCHEMA_VERSION: i64 = 44;
 
 /// What this row's columns mean. Stamped on every corpus row, because a column can keep its
 /// name and its type while changing what it records, and a trainer that pools two meanings
@@ -2164,6 +2164,11 @@ impl Store {
             // v43: a seat's own background jobs - `job` keyed by the seat's handle, for v41's
             // reason one table over, with the pid's start time beside it.
             self.conn().execute_batch(seat::SEAT_JOB_SQL)?;
+        }
+        if from < 44 {
+            // v44: a Claude Code reviewer's conversation and its run. `QUEUES_SQL` is idempotent
+            // throughout, so the one new table arrives with every other left as it was.
+            self.conn().execute_batch(queues::QUEUES_SQL)?;
         }
         Ok(())
     }

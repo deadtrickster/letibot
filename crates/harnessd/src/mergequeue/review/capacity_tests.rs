@@ -214,6 +214,7 @@ impl World {
             machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
             reviewer_hosts: Some(vec!["local".to_string()]),
             slots: &|| self.holders.clone(),
+            claude: None,
         };
         serve(&pool).unwrap();
     }

@@ -365,6 +365,9 @@ pub struct Harness {
     /// The child's verdict arrives HERE and not in its prose, since a child that answers without calling
     /// `review_verdict` has judged nothing and leaves the row for the queue to ask again.
     reviews: Arc<letibot_tools::builtins::verdict::ReviewDesk>,
+    /// The daemon's Claude Code reviewers (`claude -p`, R116) - what the review pool polls instead
+    /// of a session runner when a project's `[queue.claude]` says its reviewers are those runs.
+    claude: Arc<crate::mergequeue::review::claude::Runs>,
     /// Every gatekeeper child this session has started: a settlement naming one is the review's, not
     /// news for this session's model, and is dropped from the notices. `wake` serves the reviews first,
     /// so by the time the notices are built the verdict is already written onto the row.

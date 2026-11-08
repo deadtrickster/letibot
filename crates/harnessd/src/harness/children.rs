@@ -1386,6 +1386,9 @@ pub(crate) struct HarnessTaskRunner {
     /// desk this session opens its reviews on: that is what makes a reviewer's `review_verdict` reach the
     /// queue that asked it.
     pub(crate) reviews: Arc<letibot_tools::builtins::verdict::ReviewDesk>,
+    /// The daemon's Claude Code reviewers (`claude -p`, R116), carried into a child's `Parts` for the
+    /// desk's reason: a session that serves the queue polls the runs another session started.
+    pub(crate) claude: Arc<crate::mergequeue::review::claude::Runs>,
     /// The subagents this session has started, in the order it started them.
     /// Shared with every clone of this runner - the thread that runs a child
     /// holds one, and so does the tool that collects it.
@@ -3026,6 +3029,7 @@ impl HarnessTaskRunner {
             lsp: parts.lsp.clone(),
             child_boards: parts.child_boards.clone(),
             reviews: parts.reviews.clone(),
+            claude: parts.claude.clone(),
             slots: parts.tree_slots.clone().unwrap_or_default(),
             trees: parts.trees.clone(),
             // The three cells a SPAWN reads and an enqueue never does: a tree's watcher set,
@@ -3689,6 +3693,7 @@ impl HarnessTaskRunner {
             // make a grandchild unaddressable by everybody above it.
             child_boards: self.child_boards.clone(),
             reviews: self.reviews.clone(),
+            claude: self.claude.clone(),
             // The child joins this tree's watcher set: the parent's own, which carries the tree's ROOT for a
             // permission card and the level above for what this session cannot drain. At depth 1 the parent's set
             // already carries the same root, so the card reaches the head with no chain walk.

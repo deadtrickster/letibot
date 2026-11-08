@@ -12,7 +12,7 @@ use letibot_tools::builtins::task::{
     TaskRunner, TaskSpec, TaskStatus, WorktreePlacement, WorktreeSpec,
 };
 use letibot_tools::builtins::verdict::ReviewDesk;
-use letibot_tools::gatekeeper::{Decision, ReviewRequest};
+use letibot_tools::gatekeeper::{Decision, Door, ReviewRequest};
 
 use super::capacity;
 use super::gate::now_ms;
@@ -22,6 +22,7 @@ use super::serve::MAX_REVIEW_ATTEMPTS;
 use super::settings::{QueueSettings, RedTarget};
 use crate::sessions::gatekeeper::ReviewerPlacement;
 
+pub mod claude;
 pub mod hosts;
 
 use hosts::ReviewHosts;
@@ -62,6 +63,10 @@ pub struct Pool<'a> {
     /// capacity wait is raised as long, so the notice says what to free instead of only that all are
     /// busy.
     pub slots: &'a dyn Fn() -> Vec<String>,
+    /// This daemon's Claude Code reviewers (`claude -p`), when a project may run any: `None` is a
+    /// daemon (or a test) that starts only letibot children, and a project that asked for a Claude
+    /// reviewer on one is refused by name rather than quietly given the other kind.
+    pub claude: Option<&'a claude::Runs>,
 }
 
 /// What one pass of [`serve`] did.
@@ -96,6 +101,28 @@ impl Pool<'_> {
             self.announce("review", &r.id, to.as_str(), &why);
         }
         Ok(ok)
+    }
+
+    /// End a reviewer the row no longer wants: a session's child is killed by its runner, a Claude
+    /// run is ended with `SIGINT` - the two acts each kind of reviewer understands.
+    fn stop(&self, child: &str, now_ms: u64) {
+        match self.claude.filter(|runs| runs.owns(child)) {
+            Some(runs) => runs.stop(child, now_ms),
+            None => {
+                let _ = self.runner.kill(child);
+            }
+        }
+    }
+
+    /// Write onto the review's own row what its Claude run left behind: the conversation a re-review
+    /// resumes (`None` keeps the one already stored) and no run in flight.
+    fn keep_the_conversation(
+        &self,
+        r: &ReviewRow,
+        session: Option<&str>,
+    ) -> Result<(), StoreError> {
+        self.store
+            .put_claude_review(&r.id, &r.repository, &r.branch, session, None, now_ms())
     }
 
     /// An attempt that reached no verdict: back to `waiting`, counted; the third is a raise.
@@ -463,10 +490,14 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
 
     // ---- Collect: verdicts, deaths, and reviewers whose row moved on without them.
     let mut still: Vec<String> = Vec::new();
+    let now = now_ms();
     for open in p.desk.open(p.host) {
         let child = open.child.clone();
+        // A Claude reviewer is a PROCESS the pool holds, not a child of this daemon's session
+        // runner: the two are asked different questions, and only one of them has a desk verdict.
+        let runs = p.claude.filter(|runs| runs.owns(&child));
         let Some(r) = p.store.review_row(&open.entry_id)? else {
-            let _ = p.runner.kill(&child);
+            p.stop(&child, now);
             out.moved = true;
             continue;
         };
@@ -475,13 +506,33 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
             && r.reviewer.as_deref() == Some(child.as_str());
         if !ours {
             // A deadline, a person, or a recovery moved the row: the reviewer judges nothing now.
-            let _ = p.runner.kill(&child);
+            p.stop(&child, now);
             out.moved = true;
             continue;
         }
         if let Some(said) = p.desk.take_verdict(&child) {
             out.moved = true;
             verdict(p, &r, &child, &open.req.cwd, said)?;
+            continue;
+        }
+        if let Some(runs) = runs {
+            match runs.poll(&child, r.deadline_ms, now) {
+                claude::Polled::Running => still.push(child),
+                claude::Polled::Verdict(answer) => {
+                    out.moved = true;
+                    // The conversation is kept for the next head - and the run's handle ends with
+                    // it, whatever the store says about the row itself.
+                    p.keep_the_conversation(&r, answer.session_id.as_deref())?;
+                    verdict(p, &r, &child, &open.req.cwd, answer.verdict)?;
+                }
+                // A run that ended without `structured_output`, and a run the queue ended at its
+                // time limit: neither judged anything, and both are one attempt spent.
+                claude::Polled::Failed(why) | claude::Polled::TimedOut(why) => {
+                    out.moved = true;
+                    p.keep_the_conversation(&r, None)?;
+                    p.attempt_failed(&r, why)?;
+                }
+            }
             continue;
         }
         match p.runner.collect(&child, std::time::Duration::ZERO) {
@@ -541,6 +592,11 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
     p.desk.keep(p.host, &still);
     // Every reviewer no longer on the desk has freed its place. See [`ReviewHosts::keep`].
     p.machines.keep(&still);
+    // And a Claude run nobody is waiting for any more is ended with SIGINT, once, and dropped when
+    // its process is gone - the same rule as a child, with a process's own way of ending.
+    if let Some(runs) = p.claude {
+        runs.keep(&still, now);
+    }
     // **A host that failed this pass is asked again next one** - a reboot is minutes, and a queue
     // that never retried would run on this machine for ever.
     p.machines.end_pass();
@@ -637,11 +693,129 @@ fn age_of(path: &Path) -> Option<std::time::Duration> {
     std::time::SystemTime::now().duration_since(at).ok()
 }
 
-/// Start one reviewer: where it runs, on what tree, with which prompt. Both placements get
-/// a tree of their own, made here once - a detached clone of the entry's repository at the
-/// head the row names. What differs is what is done with it
+/// Start one reviewer: which KIND of reviewer this project reviews with, then where it runs, on
+/// what tree, with which prompt.
 fn start_reviewer(p: &Pool, r: &ReviewRow, local_only: bool) -> Result<Started, CouldNotStart> {
     let repo = PathBuf::from(&r.repository);
+    // The kind is the project's: a `[queue.claude]` table makes its reviewers headless `claude -p`
+    // runs (R116), and a project without one keeps the letibot child this queue has always started.
+    let settings = (p.settings)(&repo).map_err(|why| {
+        CouldNotStart::Runner(format!(
+            "the project's `[queue]` settings could not be read, so the queue cannot say which kind \
+             of reviewer to start: {why}"
+        ))
+    })?;
+    match (settings.claude, p.claude) {
+        (Some(claude), Some(runs)) => start_a_claude_run(p, r, &claude, runs, &repo),
+        (Some(_), None) => Err(CouldNotStart::Runner(
+            "this project's reviewers are headless `claude -p` runs (`[queue.claude]`), and this \
+             daemon holds no runner for one"
+                .to_string(),
+        )),
+        (None, _) => start_a_session(p, r, &repo, local_only),
+    }
+}
+
+/// The tree a reviewer works in: a detached clone of the entry's repository at the head the row
+/// names, proved to be at that head before anything is given it.
+fn clone_at(p: &Pool, r: &ReviewRow, repo: &Path, what: &str) -> Result<PathBuf, CouldNotStart> {
+    let stem = p.clones.join(format!("review-{}", r.id));
+    let dir = git::clone_branch(repo, what, &r.head_sha, &stem).map_err(CouldNotStart::Tree)?;
+    match git::rev_parse(&dir, "HEAD") {
+        Some(sha) if sha == r.head_sha => Ok(dir),
+        other => Err(CouldNotStart::Tree(format!(
+            "the tree `{}` is {}, and the row is about {}",
+            dir.display(),
+            match other {
+                Some(sha) => format!("at {sha}"),
+                None => "not a checkout git can name".to_string(),
+            },
+            r.head_sha
+        ))),
+    }
+}
+
+/// The branch the row is about - the target itself for a red tip, the child's branch for a review.
+fn what_a_row_is_about(r: &ReviewRow) -> String {
+    if r.kind == ReviewKind::Target {
+        r.target.clone()
+    } else {
+        r.branch.clone()
+    }
+}
+
+/// A Claude Code reviewer: a process on THIS machine, in the queue's own clone - it judges the same
+/// tree a letibot reviewer would, and answers the same verdict through the same row.
+fn start_a_claude_run(
+    p: &Pool,
+    r: &ReviewRow,
+    settings: &claude::Settings,
+    runs: &claude::Runs,
+    repo: &Path,
+) -> Result<Started, CouldNotStart> {
+    let what = what_a_row_is_about(r);
+    let dir = clone_at(p, r, repo, &what)?;
+    let req = ReviewRequest {
+        brief: r.brief.clone(),
+        branch: r.branch.clone(),
+        base_sha: r.base_sha.clone(),
+        head_sha: r.head_sha.clone(),
+        cwd: dir.display().to_string(),
+    };
+    let prompt = match r.kind {
+        ReviewKind::Branch => claude::prompt(&req),
+        ReviewKind::Target => red_target_prompt_with(
+            &req,
+            &r.target,
+            letibot_tools::gatekeeper::Door::StructuredOutput,
+        ),
+    };
+    // The conversation this review already has, if any: a re-review of a new head continues it
+    // (`--resume <id>`) instead of making the reviewer read the branch from nothing.
+    let resume = p
+        .store
+        .claude_review(&r.id)
+        .map_err(|e| {
+            CouldNotStart::Runner(format!(
+                "the review's Claude conversation could not be read: {e}"
+            ))
+        })?
+        .and_then(|c| c.session_id);
+    let handle = runs
+        .start(&r.id, settings, &prompt, &dir, resume.as_deref())
+        .map_err(CouldNotStart::Runner)?;
+    // The run is in the store before its row says so, because the row's handle is what tells the
+    // queue's liveness check that this reviewer is a process and not a session.
+    p.store
+        .put_claude_review(
+            &r.id,
+            &r.repository,
+            &r.branch,
+            None,
+            Some(&handle),
+            now_ms(),
+        )
+        .map_err(|e| {
+            runs.stop(&handle, now_ms());
+            CouldNotStart::Runner(format!(
+                "the review's Claude run could not be recorded: {e}"
+            ))
+        })?;
+    Ok(Started {
+        handle,
+        req,
+        machine: None,
+    })
+}
+
+/// A letibot reviewer: a `gatekeeper`-seated child of the queue's session, on this machine or a
+/// declared host, in a checkout of the head it judges.
+fn start_a_session(
+    p: &Pool,
+    r: &ReviewRow,
+    repo: &Path,
+    local_only: bool,
+) -> Result<Started, CouldNotStart> {
     let pool = p.reviewer_hosts.as_deref();
     let chosen = if local_only {
         p.machines.choose_local()
@@ -659,11 +833,7 @@ fn start_reviewer(p: &Pool, r: &ReviewRow, local_only: bool) -> Result<Started, 
     let mut machine: Option<hosts::Machine> = None;
     // The branch the row is about - the target itself for a red tip, the child's branch for a review
     // - and the head as the queue read it when it claimed the row.
-    let what = if r.kind == ReviewKind::Target {
-        r.target.clone()
-    } else {
-        r.branch.clone()
-    };
+    let what = what_a_row_is_about(r);
     // A full pool is a wait, asked before the clone so a row that waits leaves no tree behind.
     // A VM placement clones inside the boot and asks nothing here.
     let chosen = if matches!(p.placement, ReviewerPlacement::Vm) {
@@ -674,24 +844,8 @@ fn start_reviewer(p: &Pool, r: &ReviewRow, local_only: bool) -> Result<Started, 
             None => return Err(CouldNotStart::Full(pool_full_sentence(p, pool))),
         }
     };
-    let stem = p.clones.join(format!("review-{}", r.id));
-    let dir = git::clone_branch(&repo, &what, &r.head_sha, &stem).map_err(CouldNotStart::Tree)?;
     // The tree is proved before a child is given it.
-    let at = match git::rev_parse(&dir, "HEAD") {
-        Some(sha) if sha == r.head_sha => sha,
-        other => {
-            return Err(CouldNotStart::Tree(format!(
-                "the tree `{}` is {}, and the row is about {}",
-                dir.display(),
-                match other {
-                    Some(sha) => format!("at {sha}"),
-                    None => "not a checkout git can name".to_string(),
-                },
-                r.head_sha
-            )));
-        }
-    };
-    debug_assert_eq!(at, r.head_sha);
+    let dir = clone_at(p, r, repo, &what)?;
     let cwd = match p.placement {
         ReviewerPlacement::Vm => {
             // A VM is booted on the clone; inside it there is no absolute path to name.
@@ -795,18 +949,28 @@ enum CouldNotStart {
 /// `reject` is *the code is broken*, which opens a fix branch through the queue when the
 /// project's policy is `fix` `accept` is *the red is not in the code* (a flake, the
 pub fn red_target_prompt(req: &ReviewRequest, target: &str) -> String {
+    red_target_prompt_with(req, target, Door::Tool)
+}
+
+/// [`red_target_prompt`] for a reviewer whose verdict goes through `door`: the same review, with the
+/// one sentence that names where the verdict is handed in said the way that reviewer can obey it.
+pub fn red_target_prompt_with(req: &ReviewRequest, target: &str, door: Door) -> String {
+    let hand_in = match door {
+        Door::Tool => "hand your verdict in with `review_verdict`",
+        Door::StructuredOutput => "hand your verdict in as this run's structured output",
+    };
     format!(
         "{}\n\nTHIS REVIEW IS DIFFERENT: it is not a branch asking to land. `{target}` itself is RED \
          at {head}: its own merge gate fails there, and the merge queue lands nothing until it is \
          green again. What failed, and how, is the ask above. Find what in `{target}`'s recent \
          history broke it — `git log --oneline -20 {head}` and `git show SHA` are your tools — \
-         and hand your verdict in with `review_verdict`, where the words mean:\n\
+         and {hand_in}, where the words mean:\n\
          - `reject`: the code at {head} is broken. Say which commit and why in `reasons`; a fix \
          branch is opened from your reasons and goes through the queue like any other.\n\
          - `accept`: the code is sound and the red is not in it (a flaky test, the machine). The \
          tip is gated again.\n\
          - `needs_human`: you cannot tell; the operator is asked.",
-        letibot_tools::gatekeeper::review_prompt(req),
+        letibot_tools::gatekeeper::review_prompt_with(req, door),
         head = req.head_sha,
     )
 }
@@ -1326,6 +1490,9 @@ mod tests;
 
 #[cfg(test)]
 mod capacity_tests;
+
+#[cfg(test)]
+mod claude_tests;
 
 #[cfg(test)]
 mod placement_tests;

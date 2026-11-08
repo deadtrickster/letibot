@@ -43,6 +43,10 @@ pub struct Parts {
     /// [`Parts`] because a review has two sides in two sessions, and one `Arc` is what makes them one
     /// act. Not a store: the durable row is the queue's own.
     pub reviews: std::sync::Arc<letibot_tools::builtins::verdict::ReviewDesk>,
+    /// The daemon's Claude Code reviewers (`claude -p`, R116), when a project's `[queue.claude]`
+    /// makes one. Here for [`Parts::reviews`]'s reason: the queue's thread starts a run and the
+    /// review pool polls it in a later pass, so both have to hold the same table of processes.
+    pub claude: std::sync::Arc<crate::mergequeue::review::claude::Runs>,
     /// Every open session's own watcher set and slots, by id - see [`trees::Trees`]. Here
     /// because the daemon's worker runs a PARKED child's later turn while the slot it must settle
     /// is its parent's, on a thread the worker cannot reach.
@@ -110,6 +114,9 @@ impl Parts {
             // The daemon's review desk, empty: the queue's session opens a review on it when it
             // starts a gatekeeper, and the child hands its verdict back through the same one.
             reviews: std::sync::Arc::new(letibot_tools::builtins::verdict::ReviewDesk::new()),
+            // Empty too, and swapped for the queue's own by the daemon that starts one (see where
+            // `parts.reviews` is set): no Claude reviewer runs until a project asks for one.
+            claude: std::sync::Arc::new(crate::mergequeue::review::claude::Runs::new()),
             // Empty: every harness puts its own entry in as it opens.
             trees: super::trees::Trees::default(),
         })

@@ -157,10 +157,123 @@ pub struct Submission {
     pub looked_at: LookedAt,
 }
 
+/// Which door a review's verdict goes through: the `review_verdict` tool a letibot reviewer holds,
+/// or the structured output of a headless Claude Code run (`claude -p --json-schema`). The verdict
+/// behind either is the same one - [`Decision`], the reasons, what it looked at - and that is what
+/// makes a Claude reviewer and a letibot reviewer interchangeable in a panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Door {
+    /// A session reviewer: it hands its verdict in by calling the tool.
+    Tool,
+    /// A process reviewer: its answer is the run's `structured_output`, so no tool exists to call.
+    StructuredOutput,
+}
+
+impl Door {
+    /// Rule 4 in this door's words: the one act that hands a verdict in, and what a review that
+    /// never makes it means. The two are the same demand, and a prompt that named the wrong door
+    /// would send a reviewer looking for a tool it does not hold.
+    fn fourth(self) -> &'static str {
+        match self {
+            Door::Tool => {
+                "4. **Hand the verdict in with `review_verdict`.** Your verdict is not prose and \
+                 it is not a block at the end of your reply: call `review_verdict` ONCE, when you \
+                 have judged, with `verdict` one of `accept`, `reject` or `needs_human`, and with \
+                 `reasons`, `files` and `commands` — the reasons in your own words, and the files \
+                 you read and the commands you ran against the branch and base above, because a \
+                 verdict against a SHA nobody can name is not evidence. **That call is the whole \
+                 of your answer to the queue**: the row comes off its board because the verdict \
+                 reached it, and a reply that ends in prose without that call has judged nothing — \
+                 the entry waits and this attempt is counted against it. Explain what you found \
+                 in your reply too — the session that started you reads it there — and keep to \
+                 the evidence."
+            }
+            Door::StructuredOutput => {
+                "4. **Hand the verdict in as this run's structured output.** Your verdict is not \
+                 prose and it is not a block at the end of your reply: answer with the object the \
+                 schema you were given describes — `decision` one of `accept`, `reject` or \
+                 `needs_human`, and `reasons`, `files` and `commands`, the reasons in your own \
+                 words and the files you read and the commands you ran against the branch and base \
+                 above, because a verdict against a SHA nobody can name is not evidence. **That \
+                 object is the whole of your answer to the queue**: the row comes off its board \
+                 because the verdict reached it, and a run that ends in prose without it has \
+                 judged nothing — the entry waits and this attempt is counted against it. Say in \
+                 `reasons` what you found, since there is no other field for it, and keep to the \
+                 evidence."
+            }
+        }
+    }
+
+    /// Rule 5's opening, before the example commands: one simple command per call, and what a
+    /// compound one costs in THIS run - a permission card for a session reviewer, a refusal for a
+    /// headless one, which has nobody to grant it.
+    fn fifth(self) -> &'static str {
+        match self {
+            Door::Tool => {
+                "5. **One command per call.** Every `bash` call runs exactly one simple \
+                 command: no `&&`, no `;`, no `|`, no `>` or `<` to a file, no `$(…)` or \
+                 backticks, and no `cd`-then-command. The permission rules are tested one \
+                 simple command at a time — a substitution, a redirection to a file and a group \
+                 are never matched — so a compound command is a card for a person, and a review \
+                 that uses them cannot run unattended: with nobody at the keyboard the call is \
+                 not run at all, the attempt fails, and the queue spends one of the three attempts \
+                 it has."
+            }
+            Door::StructuredOutput => {
+                "5. **One command per call.** Every `Bash` call runs exactly one simple \
+                 command: no `&&`, no `;`, no `|`, no `>` or `<` to a file, no `$(…)` or \
+                 backticks, and no `cd`-then-command. The tools this run was started with are \
+                 preapproved one whole command at a time, and there is nobody to ask about one \
+                 that is not: a compound command is refused, so the review cannot run unattended \
+                 with one, the attempt fails, and the queue spends one of the three attempts it \
+                 has."
+            }
+        }
+    }
+
+    /// What follows the example commands: the two substitutions a reviewer reaches for a compound
+    /// command to get, and the `commands` field named as a list - which is the one `;` a reader
+    /// might otherwise expect.
+    fn after_the_shapes(self) -> &'static str {
+        let (dir, narrow, field) = match self {
+            Door::Tool => (
+                "When you need another directory, pass it to the tool — `bash` takes a `cwd`, and \
+                 `read`, `grep` and `glob` take a path — rather than `cd`-ing to it first.",
+                "When you want a shorter output, ask for a narrower command (`git diff --stat`, \
+                 `git log --oneline -5`) rather than piping it into `head`.",
+                "`review_verdict`",
+            ),
+            Door::StructuredOutput => (
+                "When you need another directory, name it in the command itself — `git -C PATH \
+                 diff`, or a path given to `Read`, `Grep` or `Glob` — rather than `cd`-ing to it \
+                 first.",
+                "When you want a shorter output, ask for a narrower command (`git diff --stat`, \
+                 `git log --oneline -5`) rather than piping it into `head`.",
+                "your answer",
+            ),
+        };
+        Box::leak(
+            format!(
+                "Two things that are not exceptions. {dir} {narrow} And the `commands` field of \
+                 {field} is a LIST and not a shell line: each item in it is ONE simple command, \
+                 written the way you ran it, and the list itself is the separator — nothing in it \
+                 needs a `;`."
+            )
+            .into_boxed_str(),
+        )
+    }
+}
+
 /// The exact text the gatekeeper is asked with: the brief, the placement, and the rules. The
 /// brief is the only framing and it is there verbatim; the verdict is the `review_verdict`
 /// call, and one simple command per call is the prompt's half of a rule the seat cannot refuse.
 pub fn review_prompt(req: &ReviewRequest) -> String {
+    review_prompt_with(req, Door::Tool)
+}
+
+/// [`review_prompt`] for a reviewer that answers through `door` instead - the same prompt with
+/// rule 4, rule 5 and the `commands` field named the way that reviewer can obey them.
+pub fn review_prompt_with(req: &ReviewRequest, door: Door) -> String {
     // The revision the diffs name: the head under review when the queue bound one, else the
     // branch (see `ReviewRequest::head_sha`).
     let head = if req.head_sha.trim().is_empty() {
@@ -199,25 +312,8 @@ pub fn review_prompt(req: &ReviewRequest) -> String {
          code\" and not \"did the subagent do what it said it would do\"; it is \
          \"does this change do what the brief asked for, without breaking what was \
          already there\".\n\
-         4. **Hand the verdict in with `review_verdict`.** Your verdict is not prose and \
-         it is not a block at the end of your reply: call `review_verdict` ONCE, when you \
-         have judged, with `verdict` one of `accept`, `reject` or `needs_human`, and with \
-         `reasons`, `files` and `commands` — the reasons in your own words, and the files \
-         you read and the commands you ran against the branch and base above, because a \
-         verdict against a SHA nobody can name is not evidence. **That call is the whole \
-         of your answer to the queue**: the row comes off its board because the verdict \
-         reached it, and a reply that ends in prose without that call has judged nothing — \
-         the entry waits and this attempt is counted against it. Explain what you found \
-         in your reply too — the session that started you reads it there — and keep to \
-         the evidence.\n\
-         5. **One command per call.** Every `bash` call runs exactly one simple \
-         command: no `&&`, no `;`, no `|`, no `>` or `<` to a file, no `$(…)` or \
-         backticks, and no `cd`-then-command. The permission rules are tested one \
-         simple command at a time — a substitution, a redirection to a file and a group \
-         are never matched — so a compound command is a card for a person, and a review \
-         that uses them cannot run unattended: with nobody at the keyboard the call is \
-         not run at all, the attempt fails, and the queue spends one of the three attempts \
-         it has.\n\n\
+         {fourth}\n\
+         {fifth}\n\n\
          {shapes_head}\n\
          git diff {base}...{head}\n\
          git diff --stat {base}...{head}\n\
@@ -225,13 +321,7 @@ pub fn review_prompt(req: &ReviewRequest) -> String {
          git show SHA\n\
          rg PATTERN PATH\n\
          cargo test -p CRATE\n\n\
-         Two things that are not exceptions. When you need another directory, pass it to \
-         the tool — `bash` takes a `cwd`, and `read`, `grep` and `glob` take a path — \
-         rather than `cd`-ing to it first. When you want a shorter output, ask for a \
-         narrower command (`git diff --stat`, `git log --oneline -5`) rather than piping \
-         it into `head`. And the `commands` field of `review_verdict` is a LIST and not a \
-         shell line: each item in it is ONE simple command, written the way you ran it, \
-         and the list itself is the separator — nothing in it needs a `;`.\n\n\
+         {after}\n\n\
          6. **Read the references, and say which.** When the change leans on an API, a \
          command's flags, a protocol, a file format or a spec, check the claim against the \
          source rather than against the code or your memory of it: `man CMD` and `CMD --help` \
@@ -246,6 +336,9 @@ pub fn review_prompt(req: &ReviewRequest) -> String {
         head = head,
         cwd = cwd,
         shapes_head = ONE_COMMAND_SHAPES_HEAD,
+        fourth = door.fourth(),
+        fifth = door.fifth(),
+        after = door.after_the_shapes(),
     )
 }
 
