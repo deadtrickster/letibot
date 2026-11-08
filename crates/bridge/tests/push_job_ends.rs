@@ -67,7 +67,7 @@ fn a_turn_with_a_job_running(hub: &Hub, id: &str, job: &str) {
         full_bytes: 0,
         spill: None,
         repairs: 0,
-        edit: None,
+        edits: Vec::new(),
     });
 }
 
@@ -127,6 +127,7 @@ fn a_package_job_ending_under_a_running_turn_is_not_pushed() {
         state: "exited 0".into(),
         produced: 4096,
         elapsed_ms: 41_000,
+        edits: Vec::new(),
     });
 
     // Then the turn ends, and the turn end is the FIRST thing the channel says - a `job_ended`
