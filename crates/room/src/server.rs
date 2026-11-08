@@ -1927,15 +1927,13 @@ impl Server {
                     return Some(r);
                 }
                 let asked = to.trim().trim_start_matches('@');
-                let target = match self.resolve_name(project, asked) {
+                // A claim is handed within the project, like a dm's `to`.
+                let target = match self.resolve_name(project, asked, Reach::OwnProject) {
                     Ok(t) => t,
-                    Err(candidates) => {
+                    Err(miss) => {
                         return Some(Response::Refused {
                             id: Some(id.clone()),
-                            why: crate::Refused::Ambiguous {
-                                name: asked.to_string(),
-                                candidates,
-                            },
+                            why: miss.refused(asked),
                         });
                     }
                 };
