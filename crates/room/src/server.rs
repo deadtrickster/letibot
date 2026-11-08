@@ -1722,6 +1722,9 @@ impl Server {
                 thread,
                 attachments,
             } => {
+                if seat != Seat::Operator && attachments.is_empty() && chat::is_null_post(text) {
+                    return refuse(Some(id), crate::Refused::NullPost);
+                }
                 let to = to.trim().trim_start_matches('@').to_string();
                 let to = match self.resolve_name(project, &to) {
                     Ok(t) => t,
@@ -2078,6 +2081,9 @@ impl Server {
             id: Some(id.to_string()),
             why,
         };
+        if seat != Seat::Operator && attachments.is_empty() && chat::is_null_post(text) {
+            return refuse(crate::Refused::NullPost);
+        }
         let text = match self.resolve_mentions(project, text) {
             Ok(t) => t,
             Err(why) => return refuse(why),

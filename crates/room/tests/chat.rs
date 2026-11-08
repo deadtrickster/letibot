@@ -1501,3 +1501,37 @@ fn a_join_digest_skips_queue_transition_lines() {
     }
     second.stop();
 }
+
+/// A post that only says "not for me" or acks is refused with the line that says to end the turn,
+/// in a room and in a dm; the operator is exempt, and a longer post that says more goes through.
+#[test]
+fn a_null_post_is_refused_and_the_operator_is_exempt() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let peer = seat(&server, "s-peer", A, Seat::Session);
+    let _other = seat(&server, "s-other", A, Seat::Session);
+    let op = seat(&server, OPERATOR, "", Seat::Operator);
+    for (i, text) in [
+        "Not for me.",
+        "noted, thanks!",
+        "+1",
+        "@s-other no action needed",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let why = refused(peer.say(&format!("n{i}"), "", text));
+        assert_eq!(why, Refused::NullPost, "{text}");
+        assert!(why.to_string().contains("end the turn"), "{why}");
+    }
+    let dm = refused(peer.call(Request::Dm {
+        id: "dm".into(),
+        to: "s-other".into(),
+        text: "not mine".into(),
+        thread: None,
+        attachments: Vec::new(),
+    }));
+    assert_eq!(dm, Refused::NullPost);
+    said(peer.say("long", "", "not for me, but the port is 5433 on lab2x1"));
+    said(op.say("op", HOST_ROOM, "noted"));
+}

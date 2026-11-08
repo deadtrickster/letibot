@@ -409,6 +409,74 @@ impl Message {
     }
 }
 
+/// Posts that only say a message was not for the poster, or ack it. Silence says the same thing
+/// for free, so the room refuses them. A phrase sits before any phrase that is its prefix.
+const NULL_PHRASES: &[&str] = &[
+    "this is not for me",
+    "that is not for me",
+    "nothing for me here",
+    "not relevant to me",
+    "no action required",
+    "no action needed",
+    "nothing for me",
+    "nothing to add",
+    "nothing to do",
+    "not my area",
+    "not for me",
+    "acknowledged",
+    "no action",
+    "thank you",
+    "not mine",
+    "not me",
+    "noted",
+    "thanks",
+    "got it",
+    "ignoring",
+    "roger",
+    "okay",
+    "acked",
+    "ack",
+    "thx",
+    "ok",
+    "ty",
+    "+1",
+];
+
+/// The longest post [`is_null_post`] judges, in normalised bytes. Anything longer says more.
+pub const NULL_POST_MAX: usize = 48;
+
+/// Is this post nothing but "not for me" / "noted" / "+1" and the like? Case, punctuation and
+/// leading `@mentions` are ignored; a short post made only of such phrases is null.
+pub fn is_null_post(text: &str) -> bool {
+    let words: Vec<String> = text
+        .split_whitespace()
+        .filter(|w| !w.starts_with('@'))
+        .map(|w| {
+            w.chars()
+                .filter(|c| c.is_alphanumeric() || *c == '+')
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
+        .filter(|w| !w.is_empty())
+        .collect();
+    let mut rest = words.join(" ");
+    if rest.is_empty() || rest.len() > NULL_POST_MAX {
+        return false;
+    }
+    'strip: while !rest.is_empty() {
+        for p in NULL_PHRASES {
+            if let Some(after) = rest.strip_prefix(p)
+                && (after.is_empty() || after.starts_with(' '))
+            {
+                rest = after.trim_start().to_string();
+                continue 'strip;
+            }
+        }
+        return false;
+    }
+    true
+}
+
 /// The author of a digest message, kind `system`.
 pub const DIGEST_AUTHOR: &str = "room";
 /// Window of history a member with no mark is told about.
@@ -1478,6 +1546,35 @@ mod tests {
         let got = long.delivered(false, 600);
         assert!(got.contains(", re #9, passing by\n"), "{got}");
         assert!(got.ends_with(" [+100 bytes]"), "{got}");
+    }
+
+    #[test]
+    fn a_null_post_is_short_and_says_only_not_mine_or_an_ack() {
+        for t in [
+            "not for me",
+            "Not for me.",
+            "NOT MINE!",
+            "No action needed",
+            "noted",
+            "Noted, thanks.",
+            "+1",
+            "@s-a thanks!",
+            "ok, got it",
+            "This is not for me.",
+        ] {
+            assert!(is_null_post(t), "{t}");
+        }
+        for t in [
+            "not for me, but the port is 5433",
+            "noted: the gate is red on lab2x1",
+            "thanks for the fix in 3fa2",
+            "nothing",
+            "",
+            "okay so the build fails on step 3",
+            &"noted ".repeat(12),
+        ] {
+            assert!(!is_null_post(t), "{t}");
+        }
     }
 
     #[test]

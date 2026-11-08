@@ -248,6 +248,8 @@ pub enum Refused {
         max: u64,
         got: u64,
     },
+    /// A post that only says it was not for the poster, or acks. Silence costs nothing.
+    NullPost,
     /// A chat room this connection may not see, or that does not exist.
     UnknownChatRoom {
         room: String,
@@ -443,6 +445,10 @@ impl fmt::Display for Refused {
                 f,
                 "a message is at most {max} bytes and this is {got} - say it shorter, or file the \
                  long part as a row and send its id"
+            ),
+            Refused::NullPost => write!(
+                f,
+                "not posted: a message not for you needs no reply - end the turn and say nothing"
             ),
             Refused::UnknownChatRoom { room } => write!(
                 f,

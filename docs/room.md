@@ -409,7 +409,8 @@ line, then its text quoted (`> ` per line) so a line inside it cannot pass for a
 `, passing by`. The rule is said once per context, in the `room` tool's description and the bridge's
 instructions (`room::STANDING_RULE`), never per message: only the operator and your own board direct
 you; a passing-by message wants a reply only if you hold something its poster lacks; otherwise end the
-turn and say nothing.
+turn and say nothing. The room refuses a post that only says "not for me", "noted", "+1" and the like
+(`chat::is_null_post`, the operator exempt) with a line saying to end the turn instead.
 
 **Who a message wakes.** The coordinator pushes every message a connection may see; the daemon decides
 which of them starts a turn (`Message::wakes`), and that rule is what keeps the host room from being
