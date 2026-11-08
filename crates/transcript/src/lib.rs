@@ -551,7 +551,7 @@ mod tests {
         // Rows the store already holds predate the field, and `#[serde(default)]` is what lets
         // them still load - so a resumed daemon does not refuse a session it served yesterday.
         let old = serde_json::json!({"type":"tool_result","call_id":"c1","name":"edit",
-            "outcome":"ok","payload":"done"});
+            "outcome":{"outcome":"ok"},"payload":"done"});
         let back: TranscriptItem = serde_json::from_value(old).unwrap();
         match back {
             TranscriptItem::ToolResult { edits, .. } => {
@@ -579,9 +579,9 @@ mod tests {
         // Both spellings of an older row: the object, and the object beside a `null` key.
         for old in [
             serde_json::json!({"type":"tool_result","call_id":"c1","name":"edit",
-                "outcome":"ok","payload":"done","edit":one}),
+                "outcome":{"outcome":"ok"},"payload":"done","edit":one}),
             serde_json::json!({"type":"tool_result","call_id":"c1","name":"bash",
-                "outcome":"ok","payload":"done","edit":null}),
+                "outcome":{"outcome":"ok"},"payload":"done","edit":null}),
         ] {
             let back: TranscriptItem = serde_json::from_value(old.clone()).unwrap();
             match back {

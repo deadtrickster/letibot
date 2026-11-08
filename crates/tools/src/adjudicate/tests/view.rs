@@ -284,21 +284,28 @@ fn two_asks_for_one_path_at_once_are_one_card_and_its_answer_releases_both() {
 
     let sibling_view = Arc::clone(&view);
     let sibling_path = path.clone();
+    let sibling_cards = Cards::new("grant_rw");
+    let theirs_cards = sibling_cards.clone();
     let second = std::thread::spawn(move || {
-        let mut g = gate(Cards::new("grant_rw"), &sibling_view, Some("sub-b"));
+        let mut g = gate(sibling_cards, &sibling_view, Some("sub-b"));
         g.grant_view(&sibling_path, "bash", ViewAccess::Read)
     });
 
     let mine = first.grant_view(&path, "bash", ViewAccess::Read);
     let theirs = second.join().expect("the sibling thread");
-    assert_eq!(mine, ViewGrant::Granted { writable: true });
+    // Which thread raises the card is the scheduler's choice; one is granted, the other released.
+    let mut got = [mine, theirs];
+    got.sort_by_key(|g| matches!(g, ViewGrant::Covered { .. }));
     assert_eq!(
-        theirs,
-        ViewGrant::Covered { writable: true },
-        "the sibling waited on that one card and was released by its answer"
+        got,
+        [
+            ViewGrant::Granted { writable: true },
+            ViewGrant::Covered { writable: true }
+        ],
+        "one asker's card was answered and the other waited on it and was released"
     );
     assert_eq!(
-        cards.count(),
+        cards.count() + theirs_cards.count(),
         1,
         "two concurrent asks for one path are one card"
     );
