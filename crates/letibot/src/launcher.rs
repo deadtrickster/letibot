@@ -2412,51 +2412,40 @@ mod target_tests {
         );
     }
 
-    /// A frozen copy of this box's records, for a test that must not race the box: the
-    /// runtime directory is shared, so a record landing mid-scan shifts every number after it.
-    /// A copy that does not parse is re-read once; a record torn ON DISK stays torn.
-    fn frozen_copy(dir: &Path, records: &[PathBuf]) -> PathBuf {
-        let to = std::env::temp_dir().join(format!(
+    /// Records of every kind the launcher writes, built here: what this test asserts must not
+    /// depend on which daemons the host happens to be running.
+    #[test]
+    fn the_numbering_matches_the_glob_order_on_a_box_with_records() {
+        let dir = std::env::temp_dir().join(format!(
             "letibot-records-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
-        let _ = std::fs::remove_dir_all(&to);
-        std::fs::create_dir_all(&to).unwrap();
-        for p in records {
-            let copy = to.join(p.file_name().unwrap());
-            let mut parsed = false;
-            for _ in 0..2 {
-                std::fs::copy(p, &copy).unwrap();
-                if read_record(&copy).is_some() {
-                    parsed = true;
-                    break;
-                }
-            }
-            assert!(
-                parsed,
-                "a record under {} does not parse, twice over: {}",
-                dir.display(),
-                p.display()
-            );
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..3 {
+            let ws = format!("/workspace/daemon-{i}");
+            std::fs::write(
+                dir.join(format!("{}.json", key(Path::new(&ws)))),
+                format!(
+                    r#"{{"workspace": "{ws}", "socket": "/d{i}.sock", "pid": {}}}"#,
+                    2000 + i
+                ),
+            )
+            .unwrap();
         }
-        to
-    }
-
-    /// Against the box's real records: the number must pick what `--ls` prints there, from
-    /// a FROZEN copy because the directory is shared. The filename-is-the-key claim holds for a
-    /// folder's daemon only; what the number must reach is the daemon the record names.
-    #[test]
-    fn the_numbering_matches_the_glob_order_on_a_box_with_records() {
-        let dir = rundir();
-        let live = records_in(&dir);
-        if live.is_empty() {
-            eprintln!("SKIPPED: no daemon records under {}", dir.display());
-            return;
-        }
-        let dir = frozen_copy(&dir, &live);
+        std::fs::write(
+            dir.join("roomkey00000.json"),
+            r#"{"workspace": "/workspace/room", "socket": "/room.sock", "role": "room"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("s-forward.json"),
+            r#"{"workspace": "/workspace/fwd", "socket": "/fwd.sock", "session": "s-1"}"#,
+        )
+        .unwrap();
         let records = records_in(&dir);
-        assert_eq!(records.len(), live.len(), "the copy holds what was read");
+        assert_eq!(records.len(), 5, "the fixture holds what was written");
 
         let mut names: Vec<String> = records
             .iter()
@@ -2514,15 +2503,12 @@ mod target_tests {
                 others += 1;
             }
         }
-        eprintln!(
-            "{} folder daemon(s), {rooms} room(s) and {others} other record(s) under the box's runtime dir",
-            folders
+        assert_eq!(
+            (folders, rooms, others),
+            (3, 0, 2),
+            "three folder daemons, and a room and a forward that are not one"
         );
-        assert!(
-            folders > 0,
-            "this box's records are all non-daemons ({others}), so the filename contract \
-             was not exercised at all"
-        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
