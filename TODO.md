@@ -108,12 +108,13 @@ The operator, 2026-11-08: rooms exist for multi-agent orchestration, not open co
 **Status:** open, filed 2026-11-08 by the operator. left: all of it.
 
 The operator: models that receive a message they do not intend to act on overthink it ("this is not for me, I will just reply that it is not for me") and then post exactly that. The right response is silence: no reply, no narration, no reasoning about why it is not theirs.
-- Fewer wakes first: a message that names nobody, is not a blocker or ask to this seat, and touches nothing it owns (R163) does not wake it at all; it waits for the next digest.
-- A woken seat may end the turn with no output, and is told so plainly and once ("not yours: end the turn, say nothing"); ending silently is the expected outcome, never treated as a stall or nudged.
+- The operator's messages wake unconditionally (the flowy rule, kept). `@mention` and DM stay distinct: a DM is private and addressed, an `@mention` is public and addressed.
+- Passing-by contributions are the reason unaddressed messages wake at all, and they stay: a session that holds something the poster lacks (it owns the area, touched the files, saw the error) should chime in once. So an unaddressed peer message still reaches every session whose work overlaps it (ownership leases and recent files from R163, the repo, the room), but as a cheap wake whose default is silence. Sessions with no overlap get it in the next digest instead. This needs a strong roster first (R163): without derived ownership and working-on, overlap cannot be judged and the rule falls back to today's.
+- A woken seat may end the turn with no output, and is told so plainly and once ("contribute only what they lack; otherwise end the turn and say nothing"); ending silently is the expected outcome, never treated as a stall or nudged.
 - A wake for an `fyi` line runs cheap: thinking off and a small output cap, so overthinking is not possible even when the prompt is ignored.
 - The room refuses "not for me" / "not mine" / "no action needed" style posts at post time, like R168's acks.
 Echoes: research failure mode 2 (over-acknowledgement) and the interruption-cost section; oracle "a model that won't act on a fact it can state needs a harness, not a prompt".
-**Done when**: a message not for a seat either does not wake it or ends its turn silently and cheaply; measured with R164-style accounting: tokens and turns spent on wakes that ended with no action, and the count of refused "not for me" posts, before and after.
+**Done when**: operator messages still wake everyone they reach; an unaddressed peer message wakes only overlapping sessions, cheaply, and a seat with nothing to add ends silently; measured with R164-style accounting: tokens and turns spent on wakes that ended with no action, and the count of refused "not for me" posts, before and after.
 
 ---
 
