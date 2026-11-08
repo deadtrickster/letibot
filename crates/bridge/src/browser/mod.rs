@@ -375,17 +375,25 @@ pub fn run(port: u16, extension_id: &str, token_path: &Path) -> Result<(), Strin
         "letibot browser: listening on 127.0.0.1:{port} for {}",
         server.origin
     );
-    if created {
-        eprintln!(
-            "letibot browser: a new token, shown this once - paste it into the extension's options:\n\n    {token}\n\n  (kept in {}, mode 0600)",
+    let ext = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions/chrome");
+    let ext = ext.canonicalize().unwrap_or(ext);
+    let status = if created {
+        format!(
+            "a new token, shown this once:\n\n    {token}\n\n  kept in {}, mode 0600",
             token_path.display()
-        );
+        )
     } else {
-        eprintln!(
-            "letibot browser: token in {} (paste its contents into the extension's options)",
-            token_path.display()
-        );
-    }
+        format!("you have a token already, in {}", token_path.display())
+    };
+    eprintln!(
+        "letibot browser: {status}\n\n\
+         Setup, once:\n\
+         \x20 1. chrome://extensions, turn on Developer mode\n\
+         \x20 2. Load unpacked: {}\n\
+         \x20 3. the extension's options: paste the token, Save. The popup picks the session.\n\
+         More: docs/browser.md\n",
+        ext.display()
+    );
     serve(listener, server);
     Ok(())
 }
