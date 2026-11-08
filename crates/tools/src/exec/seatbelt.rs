@@ -357,6 +357,22 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
         }
     }
 
+    if l.wide {
+        // A VM's virtio-fs share is a sandbox extension the seat issues to the Virtualization
+        // service, which runs outside the seat: only for paths the seat may write, and the denies
+        // below take it back from the fenced ones.
+        s.push_str("(allow file-issue-extension\n");
+        for p in [&l.project, &l.home, &l.tmp] {
+            s.push_str(&format!("  (subpath \"{}\")\n", p.display()));
+        }
+        for g in &view.grants {
+            if let Grant::ReadWrite { path, .. } = g {
+                s.push_str(&format!("  (subpath \"{}\")\n", path.display()));
+            }
+        }
+        s.push_str(")\n");
+    }
+
     s.push_str("\n; --- egress: a decision, not a default ---\n");
     match egress {
         Egress::Denied => {
@@ -375,7 +391,7 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
     // secrets are neither, so it is rendered by `store` rather than as a plain subpath.
     let plain: Vec<&PathBuf> = l.deny.iter().filter(|p| **p != store).collect();
     if !plain.is_empty() {
-        s.push_str("(deny file-read* file-write*\n");
+        s.push_str("(deny file-read* file-write* file-issue-extension\n");
         for p in plain {
             s.push_str(&format!("  (subpath \"{}\")\n", p.display()));
         }
@@ -383,9 +399,9 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
     }
     if l.deny.contains(&store) {
         s.push_str(&format!(
-            "(deny file-write* (subpath \"{0}\"))\n\
+            "(deny file-write* file-issue-extension (subpath \"{0}\"))\n\
              (deny file-read* (require-all (subpath \"{0}\")\n  (require-not {1})))\n\
-             (deny file-read* file-write* {2})\n",
+             (deny file-read* file-write* file-issue-extension {2})\n",
             store.display(),
             super::store::sbpl_data(&store),
             super::store::sbpl_secret(&store),
@@ -393,7 +409,7 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
     }
     // Read-only inside a read-write grant, after it.
     if !view.protected.is_empty() {
-        s.push_str("\n; --- read-only inside a read-write grant ---\n(deny file-write*\n");
+        s.push_str("\n; --- read-only inside a read-write grant ---\n(deny file-write* file-issue-extension\n");
         for p in &view.protected {
             for q in both_spellings(&p.path) {
                 s.push_str(&format!("  (subpath \"{}\")\n", q.display()));
@@ -411,7 +427,7 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
                 p.display()
             ));
         }
-        s.push_str("(deny file-read* file-write*\n");
+        s.push_str("(deny file-read* file-write* file-issue-extension\n");
         for p in &l.hidden {
             s.push_str(&format!("  (literal \"{}\")\n", p.display()));
         }
@@ -1204,7 +1220,7 @@ mod tests {
 (deny network*)
 
 ; --- denied AFTER the allows above, so a grant cannot undo them ---
-(deny file-read* file-write*
+(deny file-read* file-write* file-issue-extension
   (subpath \"/Users/x/.ssh\")
   (subpath \"/Users/x/.zshrc\")
 )
@@ -1226,7 +1242,7 @@ mod tests {
             .find("(allow file-read* (subpath \"/Users/x\"))")
             .expect("the grant");
         let deny = p
-            .find("(deny file-read* file-write*")
+            .find("(deny file-read* file-write* file-issue-extension")
             .expect("the deny block");
         assert!(
             deny > allow,
@@ -1306,7 +1322,7 @@ mod tests {
         let l = Layout::of(&view, Path::new("/Users/x"), Path::new("/tmp/lt"));
         let p = render_profile(&view, &Egress::Denied, &l);
         let (_, tail) = p.split_at(
-            p.find("(deny file-read* file-write*")
+            p.find("(deny file-read* file-write* file-issue-extension")
                 .expect("the deny block"),
         );
         for rel in deny_under_home(false) {
@@ -1326,7 +1342,7 @@ mod tests {
         let view = ViewSpec::project_only("/Users/x/proj");
         let p = render_profile(&view, &Egress::Denied, &layout());
         let (_, tail) = p.split_at(
-            p.find("(deny file-read* file-write*")
+            p.find("(deny file-read* file-write* file-issue-extension")
                 .expect("the deny block"),
         );
         assert!(tail.contains("(subpath \"/Users/x/.ssh\")"), "{p}");
