@@ -1,3 +1,4 @@
 [job] a job a session below this one started has ended:
   - `release-build · j7` killed by job_kill after 3.0s: sleep 3; echo done (started by `s-child`)
+    its output is partial — it was ended, not finished. `job_output` reads what it wrote; `job_extend` gives a running job a longer deadline, and `job_kill` ends one you no longer want.
 (Started by `s-child`, which has stopped; its output is gone.)

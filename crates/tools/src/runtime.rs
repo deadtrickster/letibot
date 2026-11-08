@@ -1066,6 +1066,11 @@ pub mod roles {
                 "job_output",
                 "job_wait",
                 "job_kill",
+                // `job_extend`: the way out of the harness's own clocks - a background job has no
+                // deadline of its own, and one whose window is running out can be told to wait
+                // longer. Seated with the job verbs, because the warning that precedes a dead
+                // check names it.
+                "job_extend",
                 "monitor",
                 // `pkill`: find by a string, kill by pid, never itself. Seated with the exec
                 // surface, because signalling a process is one.
@@ -1126,7 +1131,7 @@ pub mod roles {
         // The declared ceiling is this list's own count and not DEFAULT_MAX_TOOLS: the
         // number is written down where somebody deciding can read it, and a ceiling
         // quietly raised for everybody is not a ceiling.
-        r.max_tools = 38;
+        r.max_tools = 39;
         r
     }
 
@@ -2973,8 +2978,9 @@ mod tests {
         );
         // It took its own seat rather than trading for one: nothing left the list when it
         // arrived, which is the property `max_tools` is declared for. The count is pinned so a
-        // tool added without a decision fails here.
-        assert_eq!(seat.tools.len(), 37, "{:?}", seat.tools);
+        // tool added without a decision fails here. 38 since `job_extend` (R160): a background job
+        // has no deadline of its own, and the warning before a dead check names the way out.
+        assert_eq!(seat.tools.len(), 38, "{:?}", seat.tools);
         assert!(
             seat.tools.len() <= seat.max_tools,
             "the seat is over its own ceiling: {} > {}",

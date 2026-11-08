@@ -1658,3 +1658,32 @@ fn a_read_settlement_is_delivered_in_the_store_only_when_its_turn_ends() {
     assert_eq!(untold(), 0, "the turn ended: delivered");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The warning a job is owed before the dead check ends it: it names the job, both numbers, what is
+/// about to happen and the two ways out. Pure, so the sentence is asserted without a daemon and
+/// without waiting out a real window.
+#[test]
+fn the_dead_soon_warning_names_the_job_both_numbers_and_the_way_out() {
+    let w = letibot_tools::exec::DeadWarning {
+        job: letibot_tools::exec::JobId("j83627".into()),
+        silent_for: std::time::Duration::from_secs(24 * 60),
+        window: std::time::Duration::from_secs(1800),
+    };
+    let note = dead_soon_note(&w);
+    assert!(note.contains("`j83627`"), "{note}");
+    assert!(
+        note.contains("24m00s"),
+        "how long it has been silent: {note}"
+    );
+    assert!(
+        note.contains("30m00s"),
+        "the window it is measured against: {note}"
+    );
+    assert!(note.contains("ended as dead"), "{note}");
+    assert!(note.contains("its output is partial"), "{note}");
+    assert!(note.contains("job_extend"), "{note}");
+    assert!(note.contains("job_kill"), "{note}");
+    // The code is the one the `harness` tool's warnings view files it under, so a model reading its
+    // own warnings finds it there rather than in prose it cannot search.
+    assert_eq!(JOB_DEAD_SOON, "job_dead_soon");
+}

@@ -73,6 +73,23 @@ pub fn job_name(raw: &str) -> Option<String> {
 /// would render a timeout as an error.
 pub const DEADLINE_KILL: &str = "its deadline";
 
+/// What `by` says when the harness's own dead check ended the run: no output and no CPU progress
+/// for the whole window. A different fact from a deadline, which somebody asked for.
+pub const DEAD_KILL: &str = "the dead check — no output and no CPU progress";
+
+/// What a kill leaves the work, said to whoever reads it. A kill ends the work and not the output,
+/// and a killed job read as a finished one is a model building on half an answer. One constant for
+/// every reader (a result, a settlement notice, a channel push), so they cannot drift apart.
+pub const PARTIAL: &str = "its output is partial — it was ended, not finished. `job_output` reads \
+                          what it wrote; `job_extend` gives a running job a longer deadline, and \
+                          `job_kill` ends one you no longer want.";
+
+/// The partial sentence for a settlement, whose only surviving fact is the state WORD: the job has
+/// been reaped by the time a notice is built. `None` for anything that was not killed.
+pub fn partial_of(word: &str) -> Option<&'static str> {
+    word.starts_with("killed by ").then_some(PARTIAL)
+}
+
 /// Where a job is. Five states, and the last three are not interchangeable: a non-zero
 /// exit, a kill, and a command that never joined its cgroup are three different facts, and
 /// one "failed" for all three reports an absence as a success.
@@ -132,6 +149,12 @@ impl JobState {
     /// one a line under a state word, the other a duration it may not claim.
     pub fn never_ran(&self) -> bool {
         matches!(self, JobState::NotScoped)
+    }
+
+    /// The partial sentence a killed job owes its reader, or `None` for a state that is a finish.
+    /// See [`PARTIAL`].
+    pub fn partial(&self) -> Option<&'static str> {
+        matches!(self, JobState::Killed { .. }).then_some(PARTIAL)
     }
 }
 
@@ -1039,6 +1062,40 @@ mod tests {
     }
 
     use super::*;
+
+    /// A kill ends the work and not the output, and every reader of one says so: the state word is
+    /// what a settlement keeps after the job is reaped, so `partial_of` reads that and nothing else.
+    #[test]
+    fn a_killed_job_says_its_output_is_partial_and_a_finished_one_does_not() {
+        let killed = JobState::Killed {
+            by: DEADLINE_KILL.to_string(),
+        };
+        assert_eq!(killed.partial(), Some(PARTIAL));
+        assert!(PARTIAL.contains("its output is partial"), "{PARTIAL}");
+        assert!(PARTIAL.contains("job_extend"), "{PARTIAL}");
+        // The word a settlement carries round-trips to the same sentence.
+        assert_eq!(partial_of(&killed.word()), Some(PARTIAL));
+        let dead = JobState::Killed {
+            by: DEAD_KILL.to_string(),
+        };
+        assert_eq!(dead.partial(), Some(PARTIAL));
+        assert!(
+            dead.word().contains("no output and no CPU"),
+            "{} — the reason is the point, not a label",
+            dead.word()
+        );
+        // Every way a job can finish is silent about partiality.
+        for finished in [
+            JobState::Exited { code: 0 },
+            JobState::Exited { code: 1 },
+            JobState::Signalled { signal: 9 },
+            JobState::Dead,
+            JobState::NotScoped,
+        ] {
+            assert_eq!(finished.partial(), None, "{} is a finish", finished.word());
+            assert_eq!(partial_of(&finished.word()), None);
+        }
+    }
 
     /// The spill is the copy that is not bounded: the window drops from the front past its cap,
     /// the file must not. The seed is the retained window, so a job whose window had already

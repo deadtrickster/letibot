@@ -47,6 +47,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | id | title | group | left |
 |---|---|---|---|
 | R161 | A `bash` call that writes a file is not shown as an edit | Code work | a diff for each file when a command changes more than one (one result carries one `edit` excerpt), and a sweep for a command run in the background — the sweep of the tree the command actually ran in, the single-file diff, the ledger and the nudge are built |
+| R160 | A background job's default deadline silently kills real work | Code work | all of it (room #1043: no default wall-clock deadline for a background job, a liveness kill that says its output is partial, one warning before it, `job_extend`) |
 | R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement) |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | leticl's `:turn-finished` arm (`src/session/seq-gap.lisp:254`) does not read `ends_turn`, so every round's end is drawn as the turn's end |
 | R121 | What a command boundary holds is hardcoded and invisible | Code work | items 1-8 are built: the two seat levels and every role are `[perimeter.<name>]` tables, a child composes its parent's and may only narrow it, and a widening is an operator card. left: `grants_rw` and `secrets` are the user file's alone (operator ruling 2026-11-05), a `leticode` seat with no shell still has no boundary to put a perimeter in front of, and R95's carry-over should call `boundary::env_refusal` |
@@ -107,6 +108,43 @@ Build (as filed): for a foreground `bash` call in a git work tree, take a cheap 
 Built: the sweep is now taken of the git work tree the command runs in, found by walking up from the run directory and from a leading `cd <dir> &&` (cached per directory, so a call still costs two git calls); the status reader is `--porcelain=v2 -z`, so an untracked path with a space is one path, a rename is its destination and a deleted file is not a change; the pre-read content is the hash, so a rewrite that left the same bytes reports nothing; a single changed file is attached as the `edit` record the row draws a diff from, several are named with "and N more files" past twelve; the file ledger and the provenance sink learn the bytes, so a later `write` on a file this session's own command wrote is not a second writer; and the nudge names only the writing tools the seat has. Tests: `builtins/bash.rs` (the sweep driven by a real `sed -i`, `python3 -c` and a `>`; a dirty file; nothing changed; a non-git tree; the spelling; the count) and `crates/tools/tests/detected_diff.rs` (the same through `bash` itself, which skips on a box with no cgroup).
 
 Still open: one result carries one `edit` excerpt (`crates/transcript`'s row, the `ToolFinished` event and the store all hold `Option`), so a change to several files is named and not drawn — drawing each needs that shape to become a list, a protocol bump and a head that pages them. And a background job is still not swept: the row follows the brief's "background out of scope", and the next session may want to take the snapshot at the spawn and attach at the completion instead.
+
+## R160 - A background job's default deadline silently kills real work
+
+**Status:** open. left: all of it.
+
+Reported by `cc@serenedb` (room #1043) with evidence: in session `s-1794087652770480320` jobs
+j83627 (an exec/s measurement), j83663 and j83667 (retests), j83669 (minimising an oom artifact)
+and j83684 (triage) were all killed by a deadline at ~600 s with incomplete results, and the child
+read them as done; the jobs that set a longer `deadline` ran 22-48 minutes fine. The only 600-second
+default in this tree that reaches a JOB is `fanout`'s `DEFAULT_DEADLINE`
+(`crates/tools/src/builtins/fanout.rs:23`), so that is where the number came from - a `bash` job has
+had no deadline at all since `deadline_for` learned `auto_background` - and either way the kill was
+rendered as a state word with nothing saying the output stopped halfway.
+
+What is wanted, in the operator's words: **a background job has no default wall-clock deadline at
+all** — ten minutes is nothing here (fuzz campaigns run hours, a cold sanitizer build over an hour,
+a convergence slice over a day).
+
+1. The descriptions name the rule: a background job has no deadline of its own; `job_extend` gives
+   or moves one; a job is ended only when it is DEAD (no output and no CPU for
+   `[exec] job_dead_after_seconds`, 1800 s by default) or when someone kills it.
+2. The liveness check ends a dead job: no output **and** no CPU progress (the job's cgroup
+   `cpu.stat` `usage_usec` not advancing) for the configured stretch, and only then. An explicit
+   `deadline` stays a hard limit exactly as today.
+3. A kill is said as partial: the job's result and the `job_ended` notice read *ended as dead, its
+   output is partial* (or *its deadline passed — its output is partial; pass `deadline` for
+   longer*), so a model cannot read a kill as a finish.
+4. One warning per job before a kill that is the harness's doing, naming what is about to happen
+   and the way out; and `job_extend {job, deadline}` moves a running job's deadline.
+
+`still open?`: `grep -n "DEFAULT_DEADLINE" crates/tools/src/builtins/fanout.rs` and
+`grep -rn "job_dead_after_seconds" crates/`.
+
+`done when`: tests say each of these — the description names the rule; a default-deadline kill's
+result and notice say partial; one warning per job; `job_extend` moves a running job's deadline; a
+long job printing nothing but burning CPU is never killed; a job stuck in `sleep` with no output is
+ended after the stretch; an explicit deadline still kills on time.
 
 ---
 

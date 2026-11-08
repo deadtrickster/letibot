@@ -21,6 +21,23 @@ use letibot_transcript::ToolOutcome;
 /// closing session's watcher lingers, never how late a settlement is.
 const WATCH_CHUNK: Duration = Duration::from_secs(5);
 
+/// The warning code a job whose dead-check window is running out is filed under: the one sentence
+/// that arrives before the harness ends a silent job, and the only chance to say `job_extend`.
+pub const JOB_DEAD_SOON: &str = "job_dead_soon";
+
+/// What that warning says. Pure, so the words are asserted without a daemon: it names the job, both
+/// numbers, what is about to happen, and the two ways out.
+pub fn dead_soon_note(w: &letibot_tools::exec::DeadWarning) -> String {
+    format!(
+        "`{}` has produced no output and used no CPU for {} of its {} dead-after window. When the \
+         whole window is gone it is ended as dead and its output is partial. `job_extend` gives it \
+         a longer deadline, which also stops the dead check; `job_kill` ends it now.",
+        w.job.0,
+        crate::restart::span(w.silent_for),
+        crate::restart::span(w.window),
+    )
+}
+
 /// Which kind of backgrounded thing this is. A subagent *is* a background job (the
 /// operator's ruling), so the two share one queue one bell and one wake; they differ only
 /// in how you wait and what a settlement is called.
@@ -1533,6 +1550,11 @@ fn watch_one(
             Ok(Waited::Deadline { .. } | Waited::NeverStarted { .. }) => {
                 if queue.stopped.load(Ordering::Acquire) {
                     break;
+                }
+                // The one warning a job is owed before the dead check ends it, TAKEN from the host
+                // so a watcher that polls says it once. It is the last moment `job_extend` helps.
+                if let Some(w) = host.take_dead_warning(&JobId(job.clone())) {
+                    hub.warn(JOB_DEAD_SOON, dead_soon_note(&w));
                 }
             }
             // The job is gone from the host: its scope was reaped with the session, or the host

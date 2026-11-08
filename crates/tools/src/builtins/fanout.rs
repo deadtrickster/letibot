@@ -127,8 +127,9 @@ impl Tool for Fanout {
              `hosts.toml` or an object mapping each host to its own command; `command` is the \
              default when the list has none. `local` is this session's own box. The work is \
              concurrent; a host that never answered is a row saying so, never a missing line. \
-             Every branch is a supervised job written to the process table. `deadline_s` (default \
-             600, max 3600) kills a branch that outlives it and its row says stopped. \
+             Every branch is a supervised job written to the process table. `deadline_s` kills a \
+             branch that outlives it, its row saying stopped: 600 s on a blocking call, none with \
+             `background: true`. \
              `background: true` returns ONE handle at once; its settlement is the same per-host \
              table, delivered on its own.",
             serde_json::json!({
@@ -142,7 +143,7 @@ impl Tool for Fanout {
                         ]
                     },
                     "command": {"type": "string", "description": "The command both lists run; required when `hosts` is a list, ignored for hosts that name their own."},
-                    "deadline_s": {"type": "integer", "description": "Seconds each branch may run before it is killed and its row says stopped. Default 600, at most 3600. Seconds rather than milliseconds because a fanout's deadline is minutes."},
+                    "deadline_s": {"type": "integer", "description": "Seconds each branch may run before it is killed and its row says stopped. A blocking call defaults to 600, at most 3600; with `background: true` there is no default at all, because the work a job is for (a fuzz campaign, a cold build) is longer than any wall clock worth guessing. Seconds rather than milliseconds because a fanout's deadline is minutes."},
                     "background": {"type": "boolean", "description": "Start the branches and return one handle at once instead of waiting for the table. Its settlement — the same one-row-per-host table — reaches you on its own when the last branch ends; `job_output` reads the per-host progress meanwhile, and `job_kill` on the handle stops every branch on every host."},
                     "cwd": {"type": "string", "description": "Where the commands run, on each host: absolute, or relative to the work directory this call made there (`<host root>/fanout-<call>`)."},
                     "lease": {"description": "Give each branch a block of ports from this session's lease ON ITS OWN HOST, outside that host's ephemeral range: `true` is one port, a number is that many. The block travels to the command as `LETIBOT_LEASE_PORT_FIRST`, `…_PORT_LAST`, `…_PORTS` and `…_PREFIX` — name the containers and compose projects you start under that prefix, and the teardown removes exactly those. Every block is released when the fanout ends (with `background: true`, when its last branch does).", "type": ["boolean", "integer"]}
@@ -236,14 +237,20 @@ impl Fanout {
     /// The plan: one leg per host, in the order the caller wrote them, with the reasons a
     /// malformed call is refused before anything is started.
     fn plan(&self, args: &Value) -> Result<Vec<Leg>, Refusal> {
-        let deadline = match args.get("deadline_s") {
-            None | Some(Value::Null) => DEFAULT_DEADLINE,
+        // A background fanout is a JOB, and a job has no default wall-clock deadline: ten minutes
+        // is nothing next to what these run (a fuzz campaign is hours, a convergence slice a day).
+        // The blocking form keeps its default, because a turn is waiting on it, and an asked
+        // `deadline_s` is a hard limit either way.
+        let background = args.get("background").and_then(Value::as_bool) == Some(true);
+        let deadline: Option<Duration> = match args.get("deadline_s") {
+            None | Some(Value::Null) => (!background).then_some(DEFAULT_DEADLINE),
             Some(v) => match v.as_u64() {
                 Some(0) => {
                     return Err(refuse(
                         "`deadline_s` is 0",
                         "A deadline of zero would kill every branch the moment it started. Leave \
-                         `deadline_s` out for the default (600 s), or give it seconds.",
+                         `deadline_s` out for the default (600 s on a blocking call, none in the \
+                         background), or give it seconds.",
                     ));
                 }
                 Some(s) if s > MAX_DEADLINE.as_secs() => {
@@ -257,17 +264,17 @@ impl Fanout {
                          reaches the session when it ends.",
                     ));
                 }
-                Some(s) => Duration::from_secs(s),
+                Some(s) => Some(Duration::from_secs(s)),
                 None => {
                     return Err(refuse(
                         format!("`deadline_s` is `{v}`, which is not a number of seconds"),
                         "Give `deadline_s` as a whole number of seconds, or leave it out for the \
-                         default (600).",
+                         default (600 on a blocking call, none in the background).",
                     ));
                 }
             },
         };
-        let until = Instant::now() + deadline;
+        let until = deadline.map(|d| Instant::now() + d);
         let cwd = args
             .get("cwd")
             .and_then(|v| v.as_str())
@@ -357,7 +364,7 @@ impl Fanout {
                 host: name,
                 command,
                 cwd: cwd.clone(),
-                deadline: Some(until),
+                deadline: until,
                 env: Vec::new(),
             });
         }
@@ -568,6 +575,38 @@ mod tests {
     /// The plan, or the refusal's two halves - the shape the tool answers with.
     fn plan(args: Value) -> Result<Vec<Leg>, (String, String)> {
         Fanout::new().plan(&args).map_err(|r| (r.reason, r.body))
+    }
+
+    /// A `background: true` fanout is a JOB, and a job has no default wall-clock deadline: ten
+    /// minutes is nothing next to a fuzz campaign or a cold build, and the report that filed this
+    /// was five jobs ended at 600 s with their work half done. A blocking call keeps its default,
+    /// because a turn is waiting on it, and an asked number is a hard limit either way.
+    #[test]
+    fn a_background_fanout_has_no_default_deadline_and_a_blocking_one_keeps_its() {
+        let bounded = |args: Value| -> Vec<bool> {
+            plan(args)
+                .expect("a plan")
+                .into_iter()
+                .map(|l| l.deadline.is_some())
+                .collect()
+        };
+        assert_eq!(
+            bounded(serde_json::json!({"hosts": ["a"], "command": "true"})),
+            vec![true],
+            "a blocking call has its 600 s default"
+        );
+        assert_eq!(
+            bounded(serde_json::json!({"hosts": ["a"], "command": "true", "background": true})),
+            vec![false],
+            "a job's branches are bounded by nothing but their own ending"
+        );
+        assert_eq!(
+            bounded(
+                serde_json::json!({"hosts": ["a"], "command": "true", "background": true, "deadline_s": 60})
+            ),
+            vec![true],
+            "and an asked deadline is a hard limit in the background too"
+        );
     }
 
     /// A call with nothing to do is refused, in the same call. An empty `hosts` list would

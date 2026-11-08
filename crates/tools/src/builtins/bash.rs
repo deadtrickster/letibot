@@ -338,7 +338,8 @@ fn decide_memory(
 }
 
 /// What a foreground command killed at its deadline says: one sentence, one way out. Raising the
-/// timeout only makes the wait longer, so `background: true` is the only answer offered.
+/// timeout only makes the wait longer, so `background: true` is the only answer offered — and its
+/// output is named as partial, because a cut run is not a finished one.
 fn deadline_killed(body: &str, label: &str, secs: f32) -> String {
     let deadline = if secs < 1.0 {
         format!("{:.0}ms", secs * 1000.0)
@@ -346,7 +347,9 @@ fn deadline_killed(body: &str, label: &str, secs: f32) -> String {
         format!("{secs:.0}s")
     };
     format!(
-        "{body}\n\n[`{label}`] Killed at its {deadline} deadline. Re-run it with `background: true`."
+        "{body}\n\n[`{label}`] Killed at its {deadline} deadline — its output is partial, because \
+         the run was cut and not finished. Re-run it with `background: true`, which has no \
+         deadline of its own."
     )
 }
 
@@ -459,8 +462,8 @@ impl Tool for Bash {
                 "properties": {
                     "command": {"type": "string", "description": "The command line, run by /bin/sh in the workspace."},
                     "cwd": {"type": "string", "description": "Directory to run in, relative to the workspace root. Defaults to the root."},
-                    "timeout_ms": {"type": "integer", "description": "How long this command may run before it is killed and the result says so. Defaults to 120000 (2 minutes). Ignored when background is true. A command you expect to take over a minute belongs in the background — `background: true` runs it with no deadline and its completion is delivered to you — rather than behind a raised timeout_ms."},
-                    "background": {"type": "boolean", "description": "Start the command and return its job id at once instead of waiting."},
+                    "timeout_ms": {"type": "integer", "description": "How long this command may run before it is killed and the result says so. Defaults to 120000 (2 minutes). Ignored when background is true, and a background job has no deadline of its own: `job_extend` gives it one. A command you expect to take over a minute belongs in the background — `background: true` runs it with no deadline and its completion is delivered to you — rather than behind a raised timeout_ms."},
+                    "background": {"type": "boolean", "description": "Start the command and return its job id at once instead of waiting. **It has no deadline of its own**: it runs until it ends, until `job_kill`, or until the dead check ends it — no output and no CPU for `[exec] job_dead_after_seconds` (thirty minutes by default), which is how a wedged run is told from a silent build. `job_extend` gives it a hard deadline, `job_output` reads what it has written, and its completion reaches you on its own."},
                     "wake": {"type": "string", "enum": ["now", "later"], "description": "With background: `later` says you do not need waking for it, so the result is shown at your next turn and a `wait` does not hold on it; use it for a server you leave running. `now`: the moment it ends, even mid-turn. Absent (the default): its end wakes you."},
                     "slug": {"type": "string", "description": "A short name for this job, in your own words — `release-build`, `fold-tests`. It is what the transcript calls this job (and what the jobs pane reads beside the job id), and what `job_output`, `job_kill` and `job_wait` accept in place of the id. It is your stated intent for the work and never a restatement of the command; omit it when you have no name, and no name is derived from the command line."},
                     "scope": {"type": "string", "description": "Which scope owns the process: `turn` (dies at the end of this turn), `session` (dies with the session), or `explicit` (survives the session; requires `scope_name`)."},
@@ -1791,12 +1794,19 @@ mod tests {
     #[test]
     fn a_deadline_kill_names_one_way_out() {
         // The kill says background, and never "a larger timeout_ms", which the slow-run note on
-        // the same tool calls a longer wait.
+        // the same tool calls a longer wait. It also says the output is partial: a run cut at its
+        // deadline did not finish, and a model that reads it as finished builds on half of it.
         let text = deadline_killed("out", "j3", 120.0);
         assert!(
+            text.contains("[`j3`] Killed at its 120s deadline — its output is partial"),
+            "{text}"
+        );
+        assert!(
             text.ends_with(
-                "[`j3`] Killed at its 120s deadline. Re-run it with `background: true`."
-            )
+                "Re-run it with `background: true`, which has no \
+             deadline of its own."
+            ),
+            "{text}"
         );
         assert!(deadline_killed("out", "j3", 0.3).contains("its 300ms deadline"));
         assert!(!text.contains("timeout_ms"), "{text}");
@@ -2109,5 +2119,31 @@ mod tests {
             "{}",
             refused.payload
         );
+    }
+
+    /// A background job has no deadline of its own, and the argument list says so rather than
+    /// leaving a model to infer it from work that ended at a number nobody chose.
+    #[test]
+    fn the_background_arguments_say_a_job_has_no_deadline_of_its_own() {
+        let s = Bash::default().schema();
+        let arg = |name: &str| {
+            s.parameters["properties"][name]["description"]
+                .as_str()
+                .unwrap_or_else(|| panic!("`{name}` has a description"))
+                .to_string()
+        };
+        let background = arg("background");
+        assert!(
+            background.contains("no deadline of its own"),
+            "{background}"
+        );
+        assert!(
+            background.contains("job_dead_after_seconds"),
+            "the window a silent job is measured against is named: {background}"
+        );
+        assert!(background.contains("job_extend"), "{background}");
+        let timeout = arg("timeout_ms");
+        assert!(timeout.contains("no deadline of its own"), "{timeout}");
+        assert!(timeout.contains("job_extend"), "{timeout}");
     }
 }

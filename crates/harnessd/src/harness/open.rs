@@ -1078,6 +1078,13 @@ impl Harness {
             // What this daemon manages, declared before any tool runs: the model server it talks
             // to. `pkill` refuses it by name and a `process` monitor never finds it.
             if let Some(h) = backend.host_processes() {
+                // The only clock a background job has: it is ended when it is DEAD, never at an
+                // age. `[exec] job_dead_after_seconds`, the project's over the user's.
+                h.set_dead_after(crate::leticode_config::job_dead_after(
+                    &cfg.leticode_user,
+                    &cfg.workspace,
+                    cfg.read_project_config,
+                ));
                 h.protect_listener(
                     cfg.endpoint.port,
                     format!(
@@ -2075,6 +2082,7 @@ impl Harness {
             ))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobList)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobOutput)))
+            .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobExtend)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobWait)))
             .and_then(|_| {
                 registry.register(Box::new(

@@ -641,6 +641,59 @@ fn a_settlement_carries_what_a_job_of_jobs_says_for_itself() {
     assert!(text.contains(JOB_CLOSING), "{text}");
 }
 
+/// A killed job's result is what it wrote before the harness ended it. A settlement that said only
+/// `killed by …` reads as a finish, which is the report R160 filed: the notice carries the partial
+/// sentence, and a job that finished carries nothing.
+#[test]
+fn a_killed_jobs_settlement_says_its_output_is_partial() {
+    let settled = |state: &str| JobCompletion {
+        arrived: std::time::SystemTime::UNIX_EPOCH,
+        later: false,
+        kind: BackgroundKind::Job,
+        owner: "s-me".into(),
+        job: "j83627".into(),
+        command: "cargo test".into(),
+        slug: None,
+        state: state.into(),
+        produced: 4_096,
+        elapsed_ms: 600_000,
+        detail: String::new(),
+        memory: None,
+    };
+    for (state, why) in [
+        ("killed by its deadline", "a deadline"),
+        (
+            "killed by the dead check — no output and no CPU progress",
+            "the dead check",
+        ),
+    ] {
+        let text = completion_notice(&[settled(state)], true);
+        assert!(
+            text.contains(&format!("  - `j83627` {state} after 10m00s\n")),
+            "the row still says how it ended: {text}"
+        );
+        assert!(
+            text.contains("its output is partial"),
+            "{why} ended this job, and the model is told the window is not a finish: {text}"
+        );
+        assert!(text.contains("job_extend"), "{text}");
+    }
+    // And the sentence is absent from every settlement that is a finish: a notice that said it
+    // over an `exited 0` would teach a model to distrust a whole class of results.
+    for finish in [
+        "exited 0",
+        "exited 1",
+        "signalled 15",
+        "gone (no exit was recorded)",
+    ] {
+        let text = completion_notice(&[settled(finish)], true);
+        assert!(
+            !text.contains("its output is partial"),
+            "`{finish}` is a finish: {text}"
+        );
+    }
+}
+
 /// The notice, byte for byte, as the TUI's compact card parses it: the notices are written to fixtures its tests parse
 /// and compared here, so a change to the sentence fails HERE, naming the fixture. Re-bless with
 /// `LETIBOT_BLESS_JOB_NOTICE=1`, then teach the TUI's parser the new shape.

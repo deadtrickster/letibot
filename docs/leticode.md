@@ -6,12 +6,14 @@ default.
 
 ## The seat
 
-`Role::leticode` (`crates/tools/src/runtime.rs`) seats 38 tools, and `max_tools` is that list's own
-count rather than the crate's default ceiling. In groups: **files and search** (`read`, `write`,
+`Role::leticode` (`crates/tools/src/runtime.rs`) seats 38 tools, and `max_tools` is 39 - the list's
+own count and nothing like the crate's default ceiling, with the one spare the session's own verbs
+and the optional web tools are added under. In groups: **files and search** (`read`, `write`,
 `edit`, `grep`, `glob`, `notes`); **exec and its follow-ups** (`bash` with
-`job_list`/`job_output`/`job_wait`/`job_kill`, `monitor`, `pkill`, `ps` - a backgrounded `bash`
-without `job_wait` is a handle nobody can follow up on, and `pkill` finds by string and kills by
-(pid, start time) only, never itself); **delegation** (`task`, `task_result`, `task_message`,
+`job_list`/`job_output`/`job_wait`/`job_kill`/`job_extend`, `monitor`, `pkill`, `ps` - a backgrounded
+`bash` without `job_wait` is a handle nobody can follow up on, `job_extend` is the way out of a job
+which has no deadline of its own, and `pkill` finds by string and kills by (pid, start time) only,
+never itself); **delegation** (`task`, `task_result`, `task_message`,
 `task_resume`, `task_start`, `hosts`, `fanout`, `scenario`); **the box and its work** (`room`,
 `queue`, `merge_gate`, `decisions`, `harness`, `host_changelog`, `host_config`, `transcript`,
 `digest`, `plugin`, `plugin_hooks`); and **asking the person** (`ask_user_question`, `todo_write`,

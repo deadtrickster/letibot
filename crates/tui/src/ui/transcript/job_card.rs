@@ -81,6 +81,9 @@ pub(crate) struct EndedJob {
     pub(crate) memory: Option<String>,
     /// The session that started it, when it is not this one (the handed-up notice).
     pub(crate) owner: Option<String>,
+    /// The notice said the output is partial: a kill ends the work, not the output, and a card
+    /// that drew only `killed by …` would read as a finish.
+    pub(crate) partial: bool,
 }
 
 /// A `[job]` notice group, parsed - whether it is this session's own (`mine`) and the jobs
@@ -127,17 +130,34 @@ pub(crate) fn ended_jobs(group: &str) -> Option<(bool, Vec<EndedJob>)> {
     for line in body.split('\n') {
         if let Some(bullet) = line.strip_prefix("  - `") {
             jobs.push(bullet_of(bullet)?);
-        } else if let Some(m) = line.strip_prefix("    memory: ") {
+        } else if let Some(note) = line.strip_prefix("    ") {
             let job = jobs.last_mut()?;
-            if job.memory.is_some() {
+            // The partial sentence is the LAST line of a job's block, written by
+            // `completion_notice` after the memory clause: nothing may follow it for that job.
+            if job.partial {
                 return None;
             }
-            job.memory = Some(m.to_string());
+            if note.starts_with("its output is partial") {
+                job.partial = true;
+            } else if let Some(m) = note.strip_prefix("memory: ") {
+                if job.memory.is_some() {
+                    return None;
+                }
+                job.memory = Some(m.to_string());
+            } else {
+                // A command's own next line - only before the memory clause, which the daemon
+                // writes after the bullet's last line.
+                if job.memory.is_some() {
+                    return None;
+                }
+                job.command.push('\n');
+                job.command.push_str(line);
+            }
         } else {
             // A command's own next line - only before the memory clause, which the daemon
             // writes after the bullet's last line.
             let job = jobs.last_mut()?;
-            if job.memory.is_some() {
+            if job.memory.is_some() || job.partial {
                 return None;
             }
             job.command.push('\n');
@@ -222,6 +242,7 @@ fn bullet_of(bullet: &str) -> Option<EndedJob> {
         command: command.to_string(),
         memory: None,
         owner: None,
+        partial: false,
     })
 }
 
@@ -352,11 +373,13 @@ pub(crate) fn job_lines(j: &EndedJob, mine: bool, tail: Option<&JobTail>) -> [St
     let second = match said {
         Some(l) => l,
         None => {
-            let mut facts = match j.produced {
-                Some(0) => "wrote nothing".to_string(),
-                Some(n) => format!("wrote {n} bytes"),
+            let mut facts = match (j.produced, j.partial) {
+                (Some(0), false) => "wrote nothing".to_string(),
+                (Some(n), false) => format!("wrote {n} bytes"),
+                (Some(n), true) => format!("wrote {n} bytes so far · output is partial"),
+                (None, true) => "ended early · output is partial".to_string(),
                 // The notice no longer counts; the tail, when fetched, replaces this.
-                None => "ended".to_string(),
+                (None, false) => "ended".to_string(),
             };
             if let Some(m) = &j.memory {
                 facts.push_str(&format!(" · memory: {m}"));
