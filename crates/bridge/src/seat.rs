@@ -250,7 +250,7 @@ impl Seat {
                     // package's turn instead (`docs/seat-todo.md`).
                     .of_package(handle.clone(), head.session.clone());
             }
-            if !running {
+            if !still_a_child(running, &state.jobs_open, state.asks.len()) {
                 continue;
             }
             at_work.insert(head.session.clone());
@@ -259,7 +259,8 @@ impl Seat {
                 last_seq: state.seq,
                 last_change: now,
             });
-            if state.seq != entry.last_seq {
+            // A job of its own running is the package's evidence of work, as a new event is.
+            if state.seq != entry.last_seq || !state.jobs_open.is_empty() {
                 entry.last_seq = state.seq;
                 entry.last_change = now;
             }
@@ -268,7 +269,7 @@ impl Seat {
                 RunningChild {
                     age: now.saturating_duration_since(entry.since),
                     quiet_for: Some(now.saturating_duration_since(entry.last_change)),
-                    working: true,
+                    working: running || !state.jobs_open.is_empty(),
                 },
             );
         }
@@ -581,6 +582,16 @@ fn render(rows: &[TodoItem]) -> String {
     out
 }
 
+/// A package is still the seat's child while its turn runs, while it waits on a job of its own
+/// between turns, or while it holds an ask: a child idle between `job_wait`s has not finished.
+fn still_a_child(
+    running: bool,
+    jobs_open: &std::collections::BTreeSet<String>,
+    asks: usize,
+) -> bool {
+    running || !jobs_open.is_empty() || asks > 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -595,6 +606,52 @@ mod tests {
             when: None,
             needs: Vec::new(),
         }
+    }
+
+    /// A row waiting on a package that sits between turns on its own job stays quiet: the package
+    /// has not finished, and the row is not "in progress and waits on nothing".
+    #[test]
+    fn a_package_waiting_on_its_own_job_between_turns_is_still_a_child() {
+        let jobs: std::collections::BTreeSet<String> = ["j84628".to_string()].into();
+        let none = std::collections::BTreeSet::new();
+        assert!(still_a_child(false, &jobs, 0), "idle on a job of its own");
+        assert!(still_a_child(false, &none, 1), "idle on an ask");
+        assert!(still_a_child(true, &none, 0), "mid-turn");
+        assert!(
+            !still_a_child(false, &none, 0),
+            "idle with nothing open has ended"
+        );
+
+        let window = Duration::from_millis(50);
+        let mut clock = TodoNagClock::with_window(window).keyed_by_plan();
+        let mut waiting = row("K2 package", TodoStatus::InProgress);
+        waiting.needs = vec![TodoNeed::Child { id: "K2".into() }];
+        let rows = vec![waiting];
+        let between_turns = ChildSessions::none().running(
+            "K2",
+            RunningChild {
+                age: Duration::from_secs(600),
+                quiet_for: Some(Duration::from_secs(30)),
+                working: false,
+            },
+        );
+        let jobs = RunningJobs::none()
+            .running("j84628".to_string())
+            .of_package("j84628".to_string(), "K2");
+        let t0 = Instant::now();
+        let said = a_pass(
+            &mut clock,
+            &rows,
+            &between_turns,
+            &jobs,
+            true,
+            t0,
+            t0 + window,
+        );
+        assert!(
+            !matches!(&said, Some(Some(text)) if text.contains("waits on nothing")),
+            "{said:?}"
+        );
     }
 
     /// Twenty package jobs starting and ending over one unchanged seat plan are ONE check: the
