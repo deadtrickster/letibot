@@ -46,6 +46,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 
 | id | title | group | left |
 |---|---|---|---|
+| R162 | A granted directory does not cover what is under it, and every subagent asks for the same path again | Code work | all of it |
 | R161 | A `bash` call that writes a file is not shown as an edit | Code work | a diff for each file when a command changes more than one (one result carries one `edit` excerpt), and a sweep for a command run in the background — the sweep of the tree the command actually ran in, the single-file diff, the ledger and the nudge are built |
 | R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement) |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | leticl's `:turn-finished` arm (`src/session/seq-gap.lisp:254`) does not read `ends_turn`, so every round's end is drawn as the turn's end |
@@ -88,6 +89,20 @@ One row per open entry. `left` is what is really left, checked against the tree.
 # Code work
 
 Things an agent can do in this repo, ordered by value: stability and UX first.
+
+---
+
+## R162 - A granted directory does not cover what is under it, and every subagent asks again
+
+**Status:** not started. left: all of it.
+
+Seen 2026-11-08 on the R114 package (`s-1794122590449014652`), local placement, whose brief names `/build/letibot-r114/` as its scratch directory. In about 30 s the bridge got 14 filesystem-view asks for that one tree:
+
+- `/build/letibot-r114/review/` granted read-write to a subagent, then the SAME subagent (`sub-1794122961532460811`, asks `-0002` and `-0003`) asked for `/build/letibot-r114/review/chunk02.jsonl`. A grant on a directory does not cover a file under it.
+- `/build` granted read-only to `sub-1794122966502117730`, then it asked for `/build/letibot-r114/review`. A read grant on a parent does not cover reading a child.
+- Five subagents asked for `/build/letibot-r114/review/` one after another. A grant to one subagent is not seen by its siblings or its parent session.
+
+Wanted: a grant on a directory covers every path under it at that access, a grant made in a session covers its subagents, and a second ask for a path a grant already covers is never raised. The ask cards should also say which subagent asked.
 
 ---
 
