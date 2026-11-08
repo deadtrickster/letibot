@@ -94,10 +94,13 @@ The picker lists your live top-level sessions: name, project and state (`idle`, 
 `asking`). There is no default. The last pick on a site is preselected the next time, and you can
 change it in the card or the popup. A follow-up typed in the card goes to the same session.
 
-Every ask carries the URL, the title, the selection, the page as Markdown (a readability pass in
-the extension: the article or main element, chrome skipped) and the site's `/AGENTS.md` when it
-has one (cached per origin for a day, misses included). A region carries the DOM text inside the
-crop, or the whole viewport's text when the crop has none. An image carries the text around it.
+Every ask carries the URL, the title, the selection and the question, and a picture when you sent
+one. It does not carry the page: the session looks at the tab itself (`screen tab read` for its
+text, `shot` for its pixels) when the question needs it, so a conversation about one page does not
+pay for the page on every message. When the site has a `/AGENTS.md` the ask only says so, and the
+session fetches it if the site's vocabulary matters. A region carries the DOM text inside the crop,
+or the whole viewport's text when the crop has none. An image carries the text around it. An ask
+with no tab to look at (an older extension) still carries the page as Markdown.
 
 Asking a session about a page shares that tab with it for looking: while it answers it may call
 `screen tab` `grants`, `shot` and `read` on that tab, and nothing else (see Drive a tab). The

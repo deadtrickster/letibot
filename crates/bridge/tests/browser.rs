@@ -263,13 +263,13 @@ fn an_ask_lands_fenced_with_its_picture_and_streams_only_its_own_turn() {
     assert!(text.contains("inside the cropped region"), "{text}");
     assert!(text.contains("alt: a latency chart"), "{text}");
     assert!(
-        text.contains("Written by the site you are visiting"),
-        "{text}"
+        text.contains("/AGENTS.md - written by the site") && !text.contains("calls a run a job"),
+        "the site's AGENTS.md is named, not sent: {text}"
     );
     assert_eq!(
         text.matches("<<<UNTRUSTED_TEXT ").count(),
-        3,
-        "page, image, agents: {text}"
+        2,
+        "page and image; the AGENTS.md is only named: {text}"
     );
     assert_eq!(attachments.len(), 1, "{attachments:?}");
     assert_eq!(attachments[0].kind, AttachmentKind::Image);
@@ -484,8 +484,12 @@ fn an_ask_lets_its_session_look_at_its_tab_until_the_turn_ends() {
     let client = std::thread::spawn(move || request(addr, &head, &body));
     let (text, _) = take_prompt(&f.registry);
     assert!(
-        text.contains("you may look at this tab") && text.contains("act `shot` or `read`"),
+        text.contains("look at this tab when the question needs it") && text.contains("act `read`"),
         "{text}"
+    );
+    assert!(
+        !text.contains("the page, as Markdown"),
+        "an ask with a tab sends no page text; the session reads it when it needs it: {text}"
     );
     assert!(
         !text.contains("(ask b-") && !text.contains(" b-"),
