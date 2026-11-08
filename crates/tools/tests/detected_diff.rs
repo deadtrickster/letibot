@@ -3,12 +3,12 @@
 //! Every test drives the real tool and a real shell, because the loss this guards was in the
 //! seam between them and a fixture on either side of it would hide it.
 
-use letibot_tools::testing::{Harness, git, runner_harness};
+use letibot_tools::testing::{Harness, git, runner_harness, writing_runner_harness};
 
 /// The tree every test reasons about: a repository with committed files, and a shell that can
 /// rewrite them. A box with no process-lifetime tree skips loudly rather than passing on nothing.
 fn repo(name: &str) -> Option<(Harness, std::path::PathBuf)> {
-    let h = match runner_harness() {
+    let h = match writing_runner_harness() {
         Ok(h) => h,
         Err(e) => {
             eprintln!("{name}: no cgroup v2 subtree here, skipping: {e}");

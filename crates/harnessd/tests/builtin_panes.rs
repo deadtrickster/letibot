@@ -167,6 +167,12 @@ fn every_builtin_pane_answers_the_frames_a_head_sends() {
             let r = stack.call(&hook, &input(feeds, size, state.clone()));
             let case = format!("{layer}/{hook}, {what}");
             assert!(r.failures.is_empty(), "{case}: {:?}", r.failures);
+            // Chat passes a frame it cannot draw (no feed, no clock) so the head's own chat draws
+            // it: the native renderer is the safety net until this layer replaces it.
+            if layer == "chat" {
+                assert_eq!(r.by, None, "{case}: chat hands the frame to the head");
+                continue;
+            }
             assert_eq!(
                 r.by.as_deref(),
                 Some(format!("b-{layer}").as_str()),
