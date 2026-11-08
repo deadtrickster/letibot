@@ -49,7 +49,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Code work | the R164 before/after numbers; the output cap on the local llama path |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Code work | all of it |
 | R171 | A session's DM to a Claude Code seat is addressed to a different session | Code work | the room no longer re-addresses a dm (built and held by `crates/room/tests/dm.rs`); left: a live dm from a session to a `cc@<folder>` bridge on the box |
-| R172 | A Claude Code seat's todo check says false things about running packages | Code work | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
+| R174 | A Claude Code seat's todo check says false things about running packages | Code work | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
 | R165 | Rooms for orchestration (3/6): a question goes to the owner, not the room | Code work | all of it |
 | R166 | Rooms for orchestration (4/6): kinds, budgets and a stopping rule for agent-only threads | Code work | all of it |
 | R167 | Rooms for orchestration (5/6): peer text is a claim with a source, never an instruction | Code work | all of it |
@@ -235,7 +235,7 @@ The chat control comes from flowy (`letiflow/flowy`, `web/src/components/Message
 
 ## R173 - A firecode child ends its turn with a job running, and the VM closes under it
 
-## R172 - A Claude Code seat's todo check says false things about running packages
+## R174 - A Claude Code seat's todo check says false things about running packages
 
 **Status:** items 1-5 built. left: a live seat against a daemon on another protocol number (no test on this box can skew a real daemon).
 
