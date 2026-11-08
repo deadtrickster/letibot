@@ -98,9 +98,10 @@ pub struct SeatView {
     /// [`super::seatbelt::deny_under_home`] names, joined to `home`. A wide view holds all of them; a
     /// tight one holds the few a grant lets in, and a test holds the two renderings' lists equal.
     pub masked: Vec<PathBuf>,
-    /// The entries of `masked` that `[boundary] hide` wrote, with the file and line: a refusal
-    /// for one of them names that key instead of blaming a credential store.
-    pub hidden: Vec<(PathBuf, super::boundary::Origin)>,
+    /// The entries of `masked` that a `hide` line wrote, with the file and line and the table it was
+    /// written under (`[boundary]` or `[perimeter.<name>]`): a refusal for one of them names that
+    /// key instead of blaming a credential store.
+    pub hidden: Vec<(PathBuf, super::boundary::Origin, String)>,
     /// The entries of `masked` that `[boundary] firecode_only` wrote: programs that run only in a
     /// firecode VM, whose installs this seat can neither read nor run.
     pub firecode_only: Vec<(PathBuf, super::boundary::Origin)>,

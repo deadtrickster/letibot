@@ -414,7 +414,13 @@ pub fn apply(mut seat: SeatView, r: &Resolved) -> SeatView {
     seat.firecode_only = r.firecode_only.clone();
     seat.masked.sort();
     seat.masked.dedup();
-    seat.hidden = r.hide.clone();
+    // Extended, not replaced: a perimeter's own `hide` entries were applied before this call by the
+    // same function, and the table each came from is what a file tool's refusal names.
+    seat.hidden.extend(
+        r.hide
+            .iter()
+            .map(|(p, from)| (p.clone(), from.clone(), r.label.clone())),
+    );
     seat.env
         .extend(r.env.iter().map(|(k, v, _)| (k.clone(), v.clone())));
     seat

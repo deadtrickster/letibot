@@ -706,6 +706,20 @@ impl ViewSpec {
         }
     }
 
+    /// The view a seat's own words describe, with nothing probed: what a function that never asks a
+    /// substrate to build one still needs, so a session with no command is held to the same view its
+    /// commands would have had. A seat carrying the operator's own home is the whole machine.
+    pub fn of_seat(project: impl Into<PathBuf>, seat: &crate::exec::seat::SeatView) -> ViewSpec {
+        let mut view = ViewSpec::project_only(project).masking(seat.masked.iter().cloned());
+        for g in &seat.grants {
+            view = view.granting(g.clone());
+        }
+        match &seat.home {
+            Some(h) => view.with_home(HomeView::Dir(h.clone())).wide(),
+            None => view,
+        }
+    }
+
     /// The whole machine at its own paths, read-write, with the operator's home as `$HOME`. The
     /// caller sets `home` too: a wide view whose home is a throwaway would be the tight one.
     pub fn wide(mut self) -> ViewSpec {

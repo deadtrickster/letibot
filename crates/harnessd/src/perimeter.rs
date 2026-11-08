@@ -118,6 +118,26 @@ pub fn child_of(
     parent.child_of(Some(&table), granted, because)
 }
 
+/// The seat this session's FILE TOOLS are held to, where no substrate measured a view for its
+/// commands: the perimeter's own words are the whole view. No secret is asked of the box, because
+/// nothing spawns and only a command ever reads one.
+pub fn seat_for_fence(
+    p: &Perimeter,
+    mode: &Mode,
+    workspace: &Path,
+    home: &Path,
+) -> Result<SeatView, String> {
+    let r = resolved(workspace, home)?;
+    let view = p.render(
+        mode,
+        "this machine",
+        &seat::present_under(home),
+        home,
+        &Default::default(),
+    )?;
+    Ok(boundary::apply(view, &r))
+}
+
 /// The seat for `level` as the config describes it, and the `[boundary]` that was applied. A
 /// token is never in here: the secrets a perimeter carries are asked of the box at open, and a
 /// report prints their names only.

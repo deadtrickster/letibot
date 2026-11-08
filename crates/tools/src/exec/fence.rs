@@ -20,8 +20,9 @@ pub struct FileFence {
     store: Option<PathBuf>,
     /// This session's own directory in the store.
     own: Option<PathBuf>,
-    /// The `[boundary] hide` entries by origin, so a denial names the key that would lift it.
-    hidden: Vec<(PathBuf, Origin)>,
+    /// The `hide` entries by origin and by the table that wrote each, so a denial names the key
+    /// that would lift it.
+    hidden: Vec<(PathBuf, Origin, String)>,
     firecode_only: Vec<(PathBuf, Origin)>,
     /// A tight view's roots, and whether a write may land in each. `None` for a wide view, which
     /// holds the machine: nothing is outside it and only the masks are denied.
@@ -29,8 +30,9 @@ pub struct FileFence {
 }
 
 impl FileFence {
-    /// The fence a seat already draws for a shell. A seat with nothing masked and no view of its
-    /// own fences nothing, so a session with no boundary keeps the whole host its tools had.
+    /// The fence a seat draws. `view` is the one a substrate MEASURED, or [`ViewSpec::of_seat`]'s
+    /// rendering of the seat where nothing was measured: a `leticode` seat seats no shell, so no
+    /// substrate measured a view for it and the perimeter's own words are the view instead.
     pub fn of(seat: &SeatView, view: &ViewSpec) -> FileFence {
         let inside = (!view.wide).then(|| {
             let mut roots: Vec<(PathBuf, bool)> = vec![(view.project.clone(), true)];
@@ -171,14 +173,14 @@ impl FileFence {
                 path.display()
             );
         }
-        if let Some((_, from)) = self
+        if let Some((_, from, key)) = self
             .hidden
             .iter()
-            .find(|(p, _)| path.starts_with(p) || p.starts_with(path))
+            .find(|(p, _, _)| path.starts_with(p) || p.starts_with(path))
         {
             return format!(
-                "`{}` is not in this session's filesystem view: `[boundary] hide` at {from} denies \
-                 it after every grant, so a command and a file tool lose it in the same place. \
+                "`{}` is not in this session's filesystem view: `{key} hide` at {from} denies it \
+                 after every grant, so a command and a file tool lose it in the same place. \
                  Removing that line is what puts it back.",
                 path.display()
             );
@@ -291,6 +293,7 @@ mod tests {
                 line: 4,
                 user: true,
             },
+            "[boundary]".to_string(),
         ));
         let fence = FileFence::of(&s, &wide_view(Path::new("/p"), home));
 

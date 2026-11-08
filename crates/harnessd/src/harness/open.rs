@@ -667,12 +667,14 @@ impl Harness {
     /// the daemon's log. It is the session with no command in it: one that seats a shell gets a
     /// boundary, and a boundary that was asked for and could not be built says that instead.
     fn say_no_boundary(hub: &Arc<Hub>) {
-        let said = "this session runs UNCONFINED: its file tools reach this whole host, and \
-                    nothing hides a file from them. It seats no shell, so there is no command for \
-                    a boundary to go in front of — a `leticode` seat asks for none, and the wide \
-                    seat wraps commands: the Seatbelt one on a Mac, bubblewrap on Linux. What a \
-                    file tool reads it can copy into the transcript. \
-                    `docs/boundary-and-adjudication.md` §4k has the long form."
+        let said = "this session runs UNCONFINED: it seats no shell, so there is no command for a \
+                    boundary to go in front of — a `leticode` seat asks for none, and the wide seat \
+                    wraps commands: the Seatbelt one on a Mac, bubblewrap on Linux. Its FILE TOOLS \
+                    are held to the session's perimeter instead, at the level its \
+                    `[perimeter.<name>]` table names: a credential store, letibot's own store and \
+                    every `[boundary]` or `[perimeter]` hide are refused to them, and what else \
+                    they reach is the level's. What a file tool reads it can copy into the \
+                    transcript. `docs/boundary-and-adjudication.md` §4k has the long form."
             .to_string();
         eprintln!("letibot: {said}");
         hub.warn(UNCONFINED_SESSION, said);
@@ -693,6 +695,24 @@ impl Harness {
         eprintln!("letibot: {said}");
         hub.warn(BOUNDARY_ABSENT, said.clone());
         said
+    }
+
+    /// The seat a session's FILE TOOLS are held to where no substrate measured a view for its
+    /// commands: a `leticode` seat asks for no boundary and seats no shell, so before R121 its file
+    /// tools had the whole host and no table could reach them. The perimeter is the view instead.
+    fn fence_seat(cfg: &Config) -> Result<letibot_tools::exec::seat::SeatView, HarnessError> {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        let p = cfg.perimeter.as_deref().ok_or_else(|| {
+            HarnessError::Setup(
+                "this session has no perimeter, so there is nothing to hold its file tools to; \
+                 it is resolved before any backend is chosen"
+                    .to_string(),
+            )
+        })?;
+        crate::perimeter::seat_for_fence(p, &cfg.mode, &cfg.workspace, &home)
+            .map_err(HarnessError::Setup)
     }
 
     /// The view this machine's confined commands are threaded with: the session's own perimeter
@@ -861,6 +881,10 @@ impl Harness {
             if cfg.parent_session_id.is_none() && !(cfg.allow_bash && may_exec) {
                 Self::say_no_boundary(hub);
             }
+            // R121: the file tools are still this session's, so they are held to its perimeter -
+            // what `read`, `write`, `edit`, `grep` and `glob` reach is the view its commands would
+            // have had, taken from the table rather than from a substrate nothing asked to build.
+            seat = Some(Self::fence_seat(cfg)?);
             if cfg.allow_bash && may_exec {
                 HostBackend::executable("/")
             } else if may_write {
@@ -958,10 +982,25 @@ impl Harness {
             .map_err(|e| HarnessError::Setup(format!("this session's /tmp: {e}")))?;
         // R121 item 8: the file tools obey the perimeter the shell's view draws, so a path a
         // command cannot reach is refused to `read` and `write` in the same words. The letibot
-        // store is reachable only where this session's own `sessions/<id>/` is.
+        // store is reachable only where this session's own `sessions/<id>/` is. A seat whose view
+        // nobody measured - no shell to put a boundary in front of - gets the same fence rendered
+        // from its own perimeter, so the two arms cannot say different things about one table.
         let backend = match (&seat, backend.boundary()) {
-            (Some(seat_of), Some(measured)) => {
-                let mut fence = letibot_tools::exec::fence::FileFence::of(seat_of, &measured.view)
+            (Some(seat_of), measured) => {
+                let view = match measured {
+                    Some(m) => m.view.clone(),
+                    None => {
+                        let mut v = letibot_tools::exec::confine::ViewSpec::of_seat(
+                            &cfg.workspace,
+                            seat_of,
+                        );
+                        for g in confined_grants(cfg, cfg.landing_root.as_deref()) {
+                            v = v.granting(g);
+                        }
+                        v
+                    }
+                };
+                let mut fence = letibot_tools::exec::fence::FileFence::of(seat_of, &view)
                     .allowing(&scratch)
                     .allowing(&session_tmp);
                 if let Some(store) = crate::mergequeue::git::letibot_data_dir() {
@@ -4305,10 +4344,13 @@ pub(crate) fn view_brief(boundary: Option<&letibot_tools::exec::Boundary>) -> Op
 pub(crate) fn whole_host_brief() -> String {
     "There is NO boundary on this session: it is not confined to the workspace. A command here \
      runs as this user over this whole host, so every file they can read (their home, their keys, \
-     other projects) is readable and their processes are reachable; a file tool reaches the same \
-     files. Nothing refuses a path outside the workspace and nothing hides one, so a path outside \
-     it is somebody's property and not absent. The gate decides each call on what it does, and \
-     that is not a boundary."
+     other projects) is readable and their processes are reachable. The FILE TOOLS are held to \
+     this session's perimeter instead: a credential store, letibot's own store and every path a \
+     `[boundary] hide` or a `[perimeter.<name>] hide` names are refused to them, naming the key, \
+     and beyond that they reach what the perimeter's level allows - the machine for a top-level \
+     session, its project and the toolchain for a child. Nothing refuses a path outside the \
+     workspace, so one is somebody's property and not absent. The gate decides each call on what \
+     it does, and that is not a boundary."
         .to_string()
 }
 
@@ -4752,6 +4794,79 @@ mod no_boundary_tests {
         // And the view a confined session would state is still absent, so the two cannot read
         // alike: `whole_host_brief` is chosen by the flag and not by a missing boundary.
         assert_eq!(view_brief(None), None);
+    }
+
+    /// R121: this session seats no shell, so no substrate measured a view for its commands - but its
+    /// FILE TOOLS are still this session's, and they are held to its `[perimeter.<name>]` table.
+    /// The credential stores and letibot's own store are refused with a command's own sentence, a
+    /// `[perimeter] hide` names the key that wrote it, and the workspace is untouched.
+    #[test]
+    fn a_session_with_no_shell_has_its_file_tools_held_to_its_perimeter() {
+        use letibot_tools::exec::boundary::{Entry, Origin};
+        use letibot_tools::exec::perimeter::Perimeter;
+        use letibot_tools::exec::seat::Level;
+        let dir = std::env::temp_dir().join(format!("letibot-noshell-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture workspace");
+        std::fs::write(dir.join("main.rs"), "fn main() {}\n").expect("a source file");
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        let hidden = home.join("dataset-of-the-operator");
+        let mut p = Perimeter::default_for(Level::Wide);
+        p.hide.push(Entry {
+            value: hidden.display().to_string(),
+            from: Origin {
+                file: home.join(".config/letibot/leticode.toml"),
+                line: 7,
+                user: true,
+            },
+        });
+
+        let mut cfg = Config::for_this_box(&dir);
+        cfg.seat = Seat::Leticode;
+        cfg.unconfined = true;
+        cfg.allow_bash = false;
+        cfg.session_id = "noshell-fence".into();
+        cfg.perimeter = Some(std::sync::Arc::new(p));
+        let hub = Hub::new(&cfg.session_id);
+        let registry = letibot_sessionlog::registry::Registry::new();
+        let placed =
+            Harness::place_the_tools(&mut cfg, &hub, &registry).expect("an unconfined session");
+        hub.close();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let backend = &placed.backend;
+        assert!(
+            backend.boundary().is_none(),
+            "nothing confines a seat that runs no command: {}",
+            placed.described
+        );
+        // A credential store: the never-grant sentence, and no key is offered for it.
+        let why = backend
+            .file_refusal(&home.join(".ssh/id_ed25519").display().to_string())
+            .expect("a credential store is refused to a file tool");
+        assert!(why.contains("`~/.ssh` is never granted"), "{why}");
+        assert!(!why.contains("grants_ro"), "no key reaches it: {why}");
+        // A `[perimeter.top-level] hide`: refused, naming the table that wrote it and the line.
+        let why = backend
+            .file_refusal(&hidden.join("x.parquet").display().to_string())
+            .expect("a perimeter's hide is refused to a file tool");
+        assert!(
+            why.contains("`[perimeter.top-level] hide`") && why.contains("leticode.toml:7"),
+            "{why}"
+        );
+        // The row's own example: the letibot store was reachable to these tools through `/`.
+        let store = crate::mergequeue::git::letibot_data_dir().expect("a data dir");
+        let why = backend
+            .file_refusal(&store.join("sessions.db").display().to_string())
+            .or_else(|| backend.file_refusal(&store.join("keys/k").display().to_string()))
+            .expect("the store is refused to a file tool");
+        assert!(why.contains("the letibot store"), "{why}");
+        // And nothing else is: the whole host is readable, which is what its commands have.
+        assert_eq!(
+            backend.file_refusal(&home.join("notes.txt").display().to_string()),
+            None,
+            "a wide perimeter reaches the rest of the machine"
+        );
     }
 
     /// A grant made in a session covers its subagents: the record is made once, at the session's

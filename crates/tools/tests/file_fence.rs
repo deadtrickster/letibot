@@ -315,3 +315,65 @@ fn a_tight_seat_refuses_outside_its_view_naming_the_key() {
     assert!(why.contains("`[boundary] grants_rw"), "{why}");
     let _ = std::fs::remove_dir_all(f.root());
 }
+
+/// R121: a seat with no shell has no MEASURED view, so its perimeter's own words are the view - and
+/// the five file tools obey it through the same `FileFence::of` the measured arm uses. Nothing here
+/// runs a command, so nothing needs a cgroup: the fence is the whole proof.
+#[test]
+fn a_seat_with_no_measured_view_is_fenced_from_its_own_perimeter() {
+    let f = Fixture::new("noshell");
+    let open = |s: seat::SeatView| {
+        let view = ViewSpec::of_seat(f.project(), &s);
+        let backend = HostBackend::writable("/")
+            .expect("a whole-host backend")
+            .with_cwd(f.project())
+            .expect("the workspace")
+            .with_home(f.home())
+            .with_file_fence(FileFence::of(&s, &view).owning(&f.store(), "s-1"));
+        harness_over(Box::new(backend), f.project(), f.root().join("notes"))
+    };
+    let mut wide = open(f.seat());
+
+    // A credential store and letibot's own store are refused, in a command's own words.
+    let why = refused(&wide.call(
+        "read",
+        &format!(r#"{{"path":"{}"}}"#, f.home().join(".ssh/id_rsa").display()),
+    ));
+    assert!(why.contains("`~/.ssh` is never granted"), "{why}");
+    let why = refused(&wide.call(
+        "grep",
+        &format!(r#"{{"pattern":"plugin","path":"{}"}}"#, f.store().display()),
+    ));
+    assert!(why.contains("the letibot store"), "{why}");
+    assert!(
+        !why.contains("no directory"),
+        "a fenced path is denied, never reported absent: {why}"
+    );
+    // And the machine the wide level does reach is untouched.
+    let r = wide.call("read", r#"{"path":"main.rs"}"#);
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
+    let note = f.project().join("mine.txt");
+    let r = wide.call(
+        "write",
+        &format!(r#"{{"path":"{}","content":"x"}}"#, note.display()),
+    );
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
+
+    // The same seat at the child level: its perimeter is the project and the toolchain, so what the
+    // wide one read is refused here and the workspace is not.
+    let tight = seat::seat_view(
+        &Mode::WRITES_ALLOWED,
+        "this machine",
+        &[] as &[&str],
+        &f.home(),
+    );
+    let mut tight = open(tight);
+    let why = refused(&tight.call(
+        "glob",
+        &format!(r#"{{"pattern":"**/*","path":"{}"}}"#, f.home().display()),
+    ));
+    assert!(why.contains("`[boundary] grants_ro"), "{why}");
+    let r = tight.call("read", r#"{"path":"main.rs"}"#);
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
+    let _ = std::fs::remove_dir_all(f.root());
+}
