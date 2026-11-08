@@ -390,10 +390,7 @@ impl Vm for Hostile {
 fn only_node_modules_and_the_manifests_survive_a_call() {
     let root = repo();
     let cfg_before = std::fs::read(root.join(".git/config")).unwrap();
-    let vm = GuardedVm {
-        inner: Arc::new(Hostile(root.clone())),
-        root: root.clone(),
-    };
+    let vm = GuardedVm::one(root.clone(), Arc::new(Hostile(root.clone())));
     let routed = vm.run("npm i", &root.display().to_string()).unwrap();
     let read = |p: &str| std::fs::read_to_string(root.join(p)).unwrap();
     // Stays.
@@ -440,10 +437,7 @@ fn a_tree_that_is_not_a_git_repository_is_not_routed() {
     let dir = std::env::temp_dir().join(format!("fc-nogit-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let rec = Arc::new(Recorder(Mutex::new(Vec::new())));
-    let vm = GuardedVm {
-        inner: rec.clone(),
-        root: dir.clone(),
-    };
+    let vm = GuardedVm::one(dir.clone(), rec.clone());
     let err = vm.run("npm i", "/w").map(|_| ()).unwrap_err();
     assert!(err.contains("snapshot"), "{err}");
     assert!(rec.0.lock().unwrap().is_empty());
@@ -468,10 +462,7 @@ fn a_big_changed_file_is_a_loud_refusal_that_leads_the_result() {
         }
     }
     let root = repo();
-    let vm = GuardedVm {
-        inner: Arc::new(Touch(root.clone())),
-        root: root.clone(),
-    };
+    let vm = GuardedVm::one(root.clone(), Arc::new(Touch(root.clone())));
     let routed = vm.run("npm i", &root.display().to_string()).unwrap();
     assert!(
         routed.notes[0].starts_with("REFUSED-NOT-RESTORED") && routed.notes[0].contains("big.bin"),
@@ -501,4 +492,47 @@ impl Vm for Fixed {
             notes: self.0.clone(),
         })
     }
+}
+
+/// A workspace of repositories: a call routes to the repository its `cwd` is in, with a VM of
+/// that repository's own, and a call from the workspace itself is refused by name.
+#[test]
+fn a_call_routes_to_the_repository_its_cwd_is_in() {
+    let a = repo();
+    let b = repo();
+    let ws = std::env::temp_dir().join(format!("fc-ws-{}", std::process::id()));
+    std::fs::create_dir_all(&ws).unwrap();
+    let ws = ws.canonicalize().unwrap();
+    std::fs::rename(&a, ws.join("a")).unwrap();
+    std::fs::rename(&b, ws.join("b")).unwrap();
+    let made = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+    let rec = Arc::new(Recorder(Mutex::new(Vec::new())));
+    let vm = {
+        let made = made.clone();
+        let rec = rec.clone();
+        GuardedVm::new(ws.clone(), move |repo| {
+            made.lock().unwrap().push(repo.to_path_buf());
+            rec.clone() as Arc<dyn Vm>
+        })
+    };
+    let inner = ws.join("b/scripts");
+    vm.run("npm i", &inner.display().to_string()).unwrap();
+    vm.run("npm i", &ws.join("b").display().to_string())
+        .unwrap();
+    assert_eq!(
+        *made.lock().unwrap(),
+        vec![ws.join("b")],
+        "one VM, for b, kept"
+    );
+    let err = vm
+        .run("npm i", &ws.display().to_string())
+        .map(|_| ())
+        .unwrap_err();
+    assert!(err.contains("from inside the repository"), "{err}");
+    assert_eq!(
+        rec.0.lock().unwrap().len(),
+        2,
+        "the refused call ran nowhere"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
 }

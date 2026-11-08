@@ -1055,7 +1055,7 @@ It narrows what a session may run, so a project file may set it and the levels u
 - **`bash` routes the call.** The command is read through the shell grammar (nested `sh -c`,
   `env`, `exec`, `timeout`, `sudo`, `xargs`, `find -exec`, absolute and `node_modules/.bin` paths,
   scripts it can open). A call that runs a listed program goes to a firecode VM: on a Mac the
-  project is mounted read-write (`--mount-rw`), one VM per session, stopped when the session
+  project is mounted read-write (`--mount-rw`), one VM per repository per session, stopped when the session
   ends or after ten idle minutes. On Linux it is `firecode run`, and only the package manifests
   are fetched back with `firecode cp`. The result carries one line saying it ran in firecode.
   If firecode is not available the call is refused with the reason. It never runs in the seat.
@@ -1063,8 +1063,10 @@ It narrows what a session may run, so a project file may set it and the levels u
   `node_modules/`, untracked files, `.git/config`, `.git/hooks/*`, `.npmrc`). Afterwards only
   `node_modules/` and `package.json`, `package-lock.json`, `npm-shrinkwrap.json`,
   `pnpm-lock.yaml`, `yarn.lock` may differ. Anything else is put back and named in the result.
-  A write to git hooks, git config or `.npmrc` is reverted and reported as REFUSED. A project that
-  is not a git repository is not routed.
+  A write to git hooks, git config or `.npmrc` is reverted and reported as REFUSED. The project is
+  the nearest git repository holding the call's `cwd` inside the session's folder, so a workspace
+  of many repositories routes each call to its own, and the VM mounts that repository alone. A call
+  no repository holds is not routed.
 - **What the analysis cannot see:** a `make` target or an npm script that calls the runtime, a
   command name built from `$VAR`, a script it cannot read (named in the result), other
   interpreters. Those fail at the seat's deny, not by routing. Background calls are refused.

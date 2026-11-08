@@ -252,19 +252,75 @@ pub trait Vm: Send + Sync {
     fn run(&self, command: &str, cwd: &str) -> Result<Routed, String>;
 }
 
-/// Runs the inner VM's call between a snapshot of the project and a restore of everything but
-/// `node_modules/` and the manifests. A project that cannot be snapshotted is not routed.
+/// Runs a call between a snapshot of its repository and a restore of everything but
+/// `node_modules/` and the manifests. The repository is the nearest one holding the call's `cwd`
+/// inside the session's folder, and its VM mounts that repository alone, so a workspace of many
+/// repositories routes each call to the one it names. A call no repository holds is not routed.
 pub struct GuardedVm {
-    pub inner: Arc<dyn Vm>,
+    vm_for: Box<dyn Fn(&std::path::Path) -> Arc<dyn Vm> + Send + Sync>,
     pub root: std::path::PathBuf,
+    vms: Mutex<std::collections::HashMap<std::path::PathBuf, Arc<dyn Vm>>>,
+}
+
+impl GuardedVm {
+    /// `vm_for` makes a repository's VM on its first routed call; it is kept for the next.
+    pub fn new(
+        root: std::path::PathBuf,
+        vm_for: impl Fn(&std::path::Path) -> Arc<dyn Vm> + Send + Sync + 'static,
+    ) -> GuardedVm {
+        GuardedVm {
+            vm_for: Box::new(vm_for),
+            root,
+            vms: Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// One VM for every repository: a test's.
+    pub fn one(root: std::path::PathBuf, inner: Arc<dyn Vm>) -> GuardedVm {
+        GuardedVm::new(root, move |_| inner.clone())
+    }
+}
+
+/// The nearest directory with a `.git` from `cwd` up to `root`, both included; `None` when the
+/// walk leaves `root` first. A relative `cwd` is under `root`.
+pub fn repo_of(root: &std::path::Path, cwd: &str) -> Option<std::path::PathBuf> {
+    let mut at = root.join(cwd);
+    loop {
+        if !at.starts_with(root) {
+            return None;
+        }
+        if at.join(".git").exists() {
+            return Some(at);
+        }
+        if at == root || !at.pop() {
+            return None;
+        }
+    }
 }
 
 impl Vm for GuardedVm {
     fn run(&self, command: &str, cwd: &str) -> Result<Routed, String> {
-        let snap = guard::snapshot(&self.root).map_err(|e| {
-            format!("the project cannot be snapshotted before the call ({e}), and a call is not routed unguarded")
+        let repo = repo_of(&self.root, cwd).ok_or_else(|| {
+            format!(
+                "no git repository holds `{cwd}` inside {}, so there is nothing to snapshot and \
+                 restore around the call, and a call is not routed unguarded. Run it from inside \
+                 the repository it is for (`cwd`).",
+                self.root.display()
+            )
         })?;
-        let ran = self.inner.run(command, cwd);
+        let snap = guard::snapshot(&repo).map_err(|e| {
+            format!(
+                "{} cannot be snapshotted before the call ({e}), and a call is not routed unguarded",
+                repo.display()
+            )
+        })?;
+        let vm = {
+            let mut vms = self.vms.lock().unwrap_or_else(|e| e.into_inner());
+            vms.entry(repo.clone())
+                .or_insert_with(|| (self.vm_for)(&repo))
+                .clone()
+        };
+        let ran = vm.run(command, cwd);
         let report = guard::restore(&snap);
         let mut routed = ran?;
         routed.notes.extend(report.sentences());
@@ -437,30 +493,30 @@ pub fn production(
     workspace: std::path::PathBuf,
     session_id: String,
 ) -> FirecodeRoute {
-    let root = workspace.clone();
-    let inner: Arc<dyn Vm> = if cfg!(target_os = "macos") {
-        let start: Start = Box::new(move || {
-            let mut spec = crate::firecode::FirecodeSpec::new(
-                workspace.clone(),
-                format!("{session_id}-fconly"),
+    let vm_for = move |repo: &std::path::Path| -> Arc<dyn Vm> {
+        let repo = repo.to_path_buf();
+        if cfg!(target_os = "macos") {
+            let name = format!(
+                "{session_id}-fconly-{}",
+                repo.file_name().and_then(|n| n.to_str()).unwrap_or("repo")
             );
-            spec.mount_rw = true;
-            let b = crate::firecode::FirecodeBackend::up(&spec).map_err(|e| e.to_string())?;
-            Ok(Arc::new(b) as Arc<dyn ExecBackend>)
-        });
-        Arc::new(SessionVm::new(start, IDLE))
-    } else {
-        match crate::firecode::firecode_available() {
-            Ok(bin) => Arc::new(RunVm {
-                bin,
-                project: workspace,
-            }),
-            Err(why) => Arc::new(Unavailable(why)),
+            let start: Start = Box::new(move || {
+                let mut spec = crate::firecode::FirecodeSpec::new(repo.clone(), name.clone());
+                spec.mount_rw = true;
+                let b = crate::firecode::FirecodeBackend::up(&spec).map_err(|e| e.to_string())?;
+                Ok(Arc::new(b) as Arc<dyn ExecBackend>)
+            });
+            Arc::new(SessionVm::new(start, IDLE))
+        } else {
+            match crate::firecode::firecode_available() {
+                Ok(bin) => Arc::new(RunVm { bin, project: repo }),
+                Err(why) => Arc::new(Unavailable(why)),
+            }
         }
     };
     FirecodeRoute {
         only,
-        vm: Arc::new(GuardedVm { inner, root }),
+        vm: Arc::new(GuardedVm::new(workspace, vm_for)),
     }
 }
 
