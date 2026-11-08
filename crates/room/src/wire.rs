@@ -167,6 +167,19 @@ pub enum Request {
     },
     /// Move this principal's inbox cursor to `seq`.
     Ack { seq: u64 },
+    /// The signal scorecard: what followed each sender's and each kind's messages.
+    Signals,
+    /// Something followed message `seq` (a todo row naming it, an ownership claim). The caller is
+    /// the actor. Also the hook R163 calls when a claim comes of a message.
+    Acted { seq: u64, act: crate::signal::Act },
+    /// A wake caused by these messages ended: whether it said or did anything, and the tokens the
+    /// turn spent. Reported by the session's daemon, which is the only one that knows.
+    WakeEnded {
+        seqs: Vec<u64>,
+        cheap: bool,
+        silent: bool,
+        tokens: u64,
+    },
     /// Invite `session` (an id or a handle) into a project room that is not its own: it reads
     /// and is told that room's chat until it leaves. `room` is `project/<key>` or the room's label.
     Invite { room: String, session: String },
@@ -269,6 +282,9 @@ impl Request {
             | Request::Roster { .. }
             | Request::Inbox { .. }
             | Request::Ack { .. }
+            | Request::Signals
+            | Request::Acted { .. }
+            | Request::WakeEnded { .. }
             | Request::Invite { .. }
             | Request::Leave { .. }
             | Request::Queue { .. }
@@ -455,6 +471,12 @@ pub enum Response {
     Acked {
         cursor: u64,
     },
+    /// The answer to [`Request::Signals`].
+    Signals {
+        card: crate::signal::Scorecard,
+    },
+    /// The answer to [`Request::Acted`] and [`Request::WakeEnded`].
+    Noted,
     /// A chat message pushed to a connection that may see it. Never sent to its author.
     /// `names_you` says the message names this reader (addressed or `@`-mentioned).
     Chat {
@@ -685,6 +707,9 @@ impl Room {
             | Request::Roster { .. }
             | Request::Inbox { .. }
             | Request::Ack { .. }
+            | Request::Signals
+            | Request::Acted { .. }
+            | Request::WakeEnded { .. }
             | Request::Invite { .. }
             | Request::PutBlob { .. }
             | Request::GetBlob { .. }

@@ -372,6 +372,7 @@ impl Harness {
         // the same hook, so a layer may reword it and may not delete it: the model is owed that fact.
         let room = crate::room::wake::take_wake(&self.cfg.session_id);
         let room_cheap = room.cheap;
+        let room_seqs = room.seqs.clone();
         let before_room = notices.len();
         let room_items = room.lines.len();
         notices.extend(self.say_all(&Facts::Room { items: room_items }, room.lines));
@@ -543,6 +544,20 @@ impl Harness {
         }
         let mut opened = false;
         let out = self.cheaply(cheap, |h| h.submit_items_then(items, |_| opened = true));
+        if opened && !room_seqs.is_empty() {
+            // Silent: nothing said and nothing called. The tokens are the whole turn's.
+            let (silent, tokens) = match &out {
+                Ok(r) => (
+                    r.text.trim().is_empty() && r.tool_calls == 0,
+                    r.metrics
+                        .iter()
+                        .map(|m| m.prompt_tokens + m.predicted_tokens)
+                        .sum(),
+                ),
+                Err(_) => (false, 0),
+            };
+            crate::room::link::wake_ended(&self.cfg.session_id, room_seqs, cheap, silent, tokens);
+        }
         // Told only once the turn has opened: opened means the notice is in the transcript and in the store, so
         // the model reads it whatever its rounds come to. A turn that never opened put nothing in front of
         // anybody, so the results, the restart notices and the monitor cursor all go back and the next wake says it.

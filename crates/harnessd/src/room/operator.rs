@@ -123,6 +123,7 @@ impl OperatorSeat {
                 | Request::Roster { .. }
                 | Request::Inbox { .. }
                 | Request::Ack { .. }
+                | Request::Signals
                 | Request::PutBlob { .. }
                 | Request::GetBlob { .. }
         ) {
@@ -284,6 +285,51 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         drop(other);
+        server.stop();
+    }
+
+    /// A session's daemon reports how a wake ended and the room's scorecard shows it: the tokens
+    /// of a silent wake are charged to the message that rang it.
+    #[test]
+    fn a_silent_wake_reported_by_the_daemon_reaches_the_scorecard() {
+        let (server, sock) = serve("silent-wake");
+        let bell: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|_: &str| {});
+        let me = crate::room::link::SessionRoom::connect(
+            "s-quiet",
+            &sock,
+            "aaaaaaaaaaaa",
+            None,
+            bell,
+            None,
+        )
+        .expect("a session link");
+        let said = me
+            .call(
+                "say",
+                &json!({"room": "host", "text": "passing by: build is red"}),
+            )
+            .expect("the word lands");
+        let seq: u64 = said
+            .split('#')
+            .nth(1)
+            .and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|n| n.parse().ok())
+            .expect("the answer names the seq");
+        crate::room::link::wake_ended("s-quiet", vec![seq], true, true, 250);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let card = server.scorecard();
+            if let Some(r) = card.senders.iter().find(|r| r.silent_tokens == 250) {
+                assert_eq!((r.wakes, r.silent), (1, 1));
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never recorded: {card:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        drop(me);
         server.stop();
     }
 

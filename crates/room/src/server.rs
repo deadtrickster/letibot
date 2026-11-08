@@ -149,6 +149,9 @@ struct Inner {
     missed: Mutex<BTreeMap<String, Missed>>,
     /// The chat log, its rings and every principal's inbox cursor. Kept in a store when [`Server::with_chat_store`] was called, memory only otherwise.
     chat: Mutex<Chat>,
+    /// What followed each message. Its own lock and file so recording never waits on the chat.
+    signals: Mutex<crate::signal::Ledger>,
+    signal_window_ms: AtomicU64,
     /// The rooms' items and leases, kept in one store when [`Server::with_item_store`] was called
     /// and memory only otherwise. Shared by every project's room, so all append to one file.
     items: Mutex<Option<Arc<Mutex<crate::store::Store>>>>,
@@ -260,6 +263,8 @@ impl Server {
                 lease: Mutex::new(None),
                 missed: Mutex::new(BTreeMap::new()),
                 chat: Mutex::new(Chat::new()),
+                signals: Mutex::new(crate::signal::Ledger::default()),
+                signal_window_ms: AtomicU64::new(crate::signal::SIGNAL_WINDOW_MS),
                 items: Mutex::new(None),
                 externals: Mutex::new(BTreeSet::new()),
                 guests: Mutex::new(BTreeMap::new()),
@@ -342,7 +347,49 @@ impl Server {
         let chat = Chat::open(path);
         *self.inner.guests.lock().expect("the guests lock") = chat.guests();
         *self.inner.chat.lock().expect("the chat lock") = chat;
+        let mut ledger = path.as_os_str().to_owned();
+        ledger.push(".signals");
+        *self.inner.signals.lock().expect("the signals lock") = crate::signal::Ledger::open(
+            Path::new(&ledger),
+            self.inner.signal_window_ms.load(Ordering::SeqCst),
+        );
         self
+    }
+
+    /// How long after a message an action still counts as its result. Call before
+    /// [`Server::with_chat_store`], which opens the ledger with it.
+    pub fn with_signal_window(&self, ms: u64) -> &Self {
+        self.inner.signal_window_ms.store(ms, Ordering::SeqCst);
+        self.inner
+            .signals
+            .lock()
+            .expect("the signals lock")
+            .set_window(ms);
+        self
+    }
+
+    /// The signal scorecard now.
+    pub fn scorecard(&self) -> crate::signal::Scorecard {
+        self.inner
+            .signals
+            .lock()
+            .expect("the signals lock")
+            .scorecard(now_ms())
+    }
+
+    /// Something followed message `seq`: the hook for parts that learn of an action the room does
+    /// not see itself (R163's ownership claim).
+    pub fn note_act(&self, seq: u64, act: crate::signal::Act, by: &str) {
+        self.inner
+            .signals
+            .lock()
+            .expect("the signals lock")
+            .act(seq, act, by, now_ms());
+    }
+
+    /// Wait until the signal ledger's file holds everything recorded. For tests.
+    pub fn flush_signals(&self) {
+        self.inner.signals.lock().expect("the signals lock").flush();
     }
 
     /// Keep the blobs messages carry in `dir`, instead of the `room-<host key>.blobs` beside the
@@ -1723,6 +1770,7 @@ impl Server {
                 attachments,
             } => {
                 if seat != Seat::Operator && attachments.is_empty() && chat::is_null_post(text) {
+                    self.note_null_post(name, seat);
                     return refuse(Some(id), crate::Refused::NullPost);
                 }
                 let to = to.trim().trim_start_matches('@').to_string();
@@ -1860,6 +1908,14 @@ impl Server {
                 };
                 if room != chat::DM_ROOM && !self.may_see(name, seat, project, &room) {
                     return refuse(None, crate::Refused::UnknownChatRoom { room });
+                }
+                if let Some(t) = thread {
+                    self.inner.signals.lock().expect("the signals lock").act(
+                        *t,
+                        crate::signal::Act::Read,
+                        name,
+                        now,
+                    );
                 }
                 let handles = self.handles();
                 let chat = self.inner.chat.lock().expect("the chat lock");
@@ -2011,6 +2067,30 @@ impl Server {
                     cursor: chat.ack(name, *seq),
                 }
             }
+            Request::Signals => Response::Signals {
+                card: self.scorecard(),
+            },
+            Request::Acted { seq, act } => {
+                self.inner
+                    .signals
+                    .lock()
+                    .expect("the signals lock")
+                    .act(*seq, *act, name, now);
+                Response::Noted
+            }
+            Request::WakeEnded {
+                seqs,
+                cheap,
+                silent,
+                tokens,
+            } => {
+                self.inner
+                    .signals
+                    .lock()
+                    .expect("the signals lock")
+                    .wake(seqs, *cheap, *silent, *tokens);
+                Response::Noted
+            }
             _ => refuse(None, crate::Refused::ChatIsTheServers),
         }
     }
@@ -2082,6 +2162,7 @@ impl Server {
             why,
         };
         if seat != Seat::Operator && attachments.is_empty() && chat::is_null_post(text) {
+            self.note_null_post(name, seat);
             return refuse(crate::Refused::NullPost);
         }
         let text = match self.resolve_mentions(project, text) {
@@ -2302,9 +2383,41 @@ impl Server {
         }
     }
 
+    fn note_null_post(&self, name: &str, seat: Seat) {
+        self.inner
+            .signals
+            .lock()
+            .expect("the signals lock")
+            .refused(name, seat.word());
+    }
+
+    /// Enter a message in the signal ledger, and credit the thread it answers.
+    fn note_message(&self, message: &chat::Message, now: u64) {
+        if message.kind == Seat::System {
+            return;
+        }
+        let is_ask = self
+            .inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .ask(message.seq)
+            .is_some();
+        let kind = if is_ask { "ask" } else { message.kind.word() };
+        let mut ledger = self.inner.signals.lock().expect("the signals lock");
+        ledger.message(message.seq, message.ts, &message.author, kind);
+        if let Some(t) = message.thread {
+            ledger.act(t, crate::signal::Act::Reply, &message.author, now);
+            if message.refs.iter().any(|r| r.kind == "todo") {
+                ledger.act(t, crate::signal::Act::Todo, &message.author, now);
+            }
+        }
+    }
+
     /// Everything a message does once it is in the log: pushed to whoever may see it, kept for
     /// whoever may not and will be here later, and the blobs nothing names any more collected.
     fn deliver(&self, message: &chat::Message, now: u64) {
+        self.note_message(message, now);
         let answered = message.thread.and_then(|t| {
             self.inner
                 .chat
@@ -2592,6 +2705,12 @@ impl Server {
             .expect("the chat lock")
             .settle_ask(ask, state);
         self.deliver(&message, now);
+        self.inner.signals.lock().expect("the signals lock").act(
+            ask,
+            crate::signal::Act::AskSettled,
+            name,
+            now,
+        );
         let settled = self
             .inner
             .chat
@@ -3219,6 +3338,9 @@ fn is_chat_frame(frame: &Request) -> bool {
             | Request::Roster { .. }
             | Request::Inbox { .. }
             | Request::Ack { .. }
+            | Request::Signals
+            | Request::Acted { .. }
+            | Request::WakeEnded { .. }
             | Request::Invite { .. }
             | Request::PutBlob { .. }
             | Request::GetBlob { .. }

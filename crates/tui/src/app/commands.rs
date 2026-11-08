@@ -665,6 +665,11 @@ impl App {
                 None
             }
             "rooms" => self.toggle_surface(Surface::Rooms),
+            // The coordinator's scorecard in full, as of the last poll of an open `/rooms`.
+            "signals" => {
+                self.say(&self.rooms.signals_report());
+                None
+            }
             // `/search TEXT` over the channel the room view has selected: the loaded messages, since
             // the ring is the history. `/search` with no text closes it again.
             _ if verb_arg(cmd, "search").is_some() => {
@@ -1395,6 +1400,11 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
         "rooms",
         "open or close the chat rooms: the host room, one room per project and your DMs; what you \
          type posts as operator; `/rooms sidebar on|off` keeps the list beside the transcript",
+    ),
+    (
+        "signals",
+        "what followed each sender's room messages: acted on, replies, silent wakes with their \
+         tokens, null posts refused. Needs `/rooms` to have been open",
     ),
     (
         "dm",

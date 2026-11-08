@@ -23,6 +23,8 @@ struct Queue {
     dropped: u64,
     /// The newest chat `seq` behind a queued note, acked to the room when a turn takes it.
     chat_seq: u64,
+    /// Every chat `seq` behind a queued note, reported to the room when the turn they woke ends.
+    seqs: Vec<u64>,
     /// A note other than a passing-by chat line is queued, so the wake is a full turn.
     full: bool,
 }
@@ -55,6 +57,9 @@ pub fn push_chat(session: &str, seq: u64, reach: letibot_room::chat::Reach, line
     enqueue(&mut q, session, line);
     if let Some(entry) = q.map.get_mut(session) {
         entry.chat_seq = entry.chat_seq.max(seq);
+        if seq > 0 && !entry.seqs.contains(&seq) && entry.seqs.len() < MAX_NOTES {
+            entry.seqs.push(seq);
+        }
         entry.full |= reach != letibot_room::chat::Reach::Passing;
     }
 }
@@ -122,6 +127,8 @@ pub struct Taken {
     pub lines: Vec<String>,
     /// Nothing here directs the session, so the turn runs cheap and silence is its expected end.
     pub cheap: bool,
+    /// The chat messages these notes carry.
+    pub seqs: Vec<u64>,
 }
 
 /// [`take`] for `Harness::wake`, which also needs to know if the turn may run cheap.
@@ -170,7 +177,8 @@ fn take_full(session: &str) -> (Taken, u64) {
             }
             let cheap = !queue.full && !queue.lines.is_empty();
             let lines = queue.lines.into_iter().collect();
-            (Taken { lines, cheap }, queue.chat_seq)
+            let seqs = queue.seqs;
+            (Taken { lines, cheap, seqs }, queue.chat_seq)
         }
         None => (Taken::default(), 0),
     }
@@ -362,6 +370,11 @@ mod tests {
         let (taken, seq) = take_full(s);
         assert!(taken.cheap, "{taken:?}");
         assert_eq!((taken.lines.len(), seq), (2, 4));
+        assert_eq!(
+            taken.seqs,
+            vec![3, 4],
+            "the turn reports every message it answers"
+        );
         for reach in [Reach::Operator, Reach::Dm, Reach::Addressed] {
             push_chat(s, 5, Reach::Passing, "a".into());
             push_chat(s, 6, reach, "b".into());

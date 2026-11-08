@@ -35,6 +35,13 @@ impl App {
                 needed = needed.max(2 + visible_width(&session_facts(s)));
             }
         }
+        // The scorecard's lines set the column's width too, up to the cap: a line cut to the floor
+        // would hide the numbers it is there for.
+        if let Some(card) = &self.rooms.signals {
+            for r in &card.senders {
+                needed = needed.max(2 + visible_width(&r.line()));
+            }
+        }
         let cap = (w / 2).saturating_sub(visible_width(SEP) + 1);
         needed.min(cap.max(12))
     }
@@ -407,6 +414,38 @@ impl App {
         }
     }
 
+    /// One line per sender of the coordinator's scorecard. Every sender is listed: the list
+    /// scrolls with the rest, and `/signals` says the same rows in full.
+    fn signal_section(&self, lines: &mut Vec<Line>, lw: usize) {
+        let Some(card) = self
+            .rooms
+            .signals
+            .as_ref()
+            .filter(|c| !c.senders.is_empty())
+        else {
+            return;
+        };
+        lines.push(padded(
+            pane::faint(trim_to(&format!("Signal {}m", card.window_ms / 60_000), lw)),
+            lw,
+        ));
+        for r in &card.senders {
+            lines.push(padded(
+                pane::faint(trim_to(&format!("  {}", r.line()), lw)),
+                lw,
+            ));
+        }
+        if card.forgotten > 0 {
+            lines.push(padded(
+                pane::faint(trim_to(
+                    &format!("  {} older not counted", card.forgotten),
+                    lw,
+                )),
+                lw,
+            ));
+        }
+    }
+
     fn rooms_left(&mut self, lw: usize, room: usize) -> Vec<Line> {
         let channels = self.rooms.channels();
         let picked = self.rooms.selected();
@@ -445,6 +484,7 @@ impl App {
             }
         }
         self.queue_section(&mut lines, &mut at, lw);
+        self.signal_section(&mut lines, lw);
         let skip = (sel_row + 1).saturating_sub(room);
         self.rooms.chan_rows = at
             .into_iter()

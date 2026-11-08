@@ -113,6 +113,32 @@ pub(crate) fn ack_taken(session: &str, seq: u64) {
         });
 }
 
+/// Tell the room how the wake `seqs` rang ended, for its signal ledger. Off the turn's thread, and
+/// dropped when the session has no room: accounting must never delay or fail a turn.
+pub(crate) fn wake_ended(session: &str, seqs: Vec<u64>, cheap: bool, silent: bool, tokens: u64) {
+    if seqs.is_empty() {
+        return;
+    }
+    let Some(room) = links()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(session)
+        .and_then(Weak::upgrade)
+    else {
+        return;
+    };
+    let _ = std::thread::Builder::new()
+        .name("room-wake-ended".into())
+        .spawn(move || {
+            let _ = room.client.request(&Request::WakeEnded {
+                seqs,
+                cheap,
+                silent,
+                tokens,
+            });
+        });
+}
+
 fn links() -> &'static Mutex<std::collections::BTreeMap<String, Weak<SessionRoom>>> {
     static LINKS: std::sync::OnceLock<
         Mutex<std::collections::BTreeMap<String, Weak<SessionRoom>>>,
@@ -1190,6 +1216,7 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
             text: s("text"),
         },
         "asks" => Request::Asks,
+        "signals" => Request::Signals,
         "holding" => Request::Holding {
             session: Some(s("session")).filter(|x| !x.is_empty()),
         },
@@ -1207,7 +1234,7 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
             return Err(format!(
                 "`{other}` is not a room verb — the verbs are post, claim, claim_item, beat, \
                  waiting, done, abandon, dispute, rule, queue, holding, reminders, questions, say, read, \
-                 invite, leave, answer, decline and asks"
+                 invite, leave, answer, decline, asks and signals"
             ));
         }
     })
@@ -1429,6 +1456,20 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
             format!("{} message(s), {skipped} left out", rows.len())
         }
         Response::Acked { cursor } => format!("read up to #{cursor}"),
+        Response::Signals { card } => {
+            let mut out = format!("signals, {}m window", card.window_ms / 60_000);
+            for (title, rows) in [("senders", &card.senders), ("kinds", &card.kinds)] {
+                out.push_str(&format!("\n{title}"));
+                for r in rows {
+                    out.push_str(&format!("\n  {}", r.line()));
+                }
+            }
+            if card.forgotten > 0 {
+                out.push_str(&format!("\n{} older messages not counted", card.forgotten));
+            }
+            out
+        }
+        Response::Noted => "noted".into(),
         // An ask, as the room holds it: who was asked of what, and whether it is still open - with
         // the two facts a model can act on, a peer that is not connected now and one gone past the
         // grace.

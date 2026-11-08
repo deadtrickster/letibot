@@ -1588,3 +1588,45 @@ fn the_hint_names_d_for_a_session() {
     let all = screen(&mut a, 160).join("\n");
     assert!(all.contains("opens its DM"), "{all}");
 }
+
+fn signals_reply() -> Value {
+    json!({"type": "signals", "card": {
+        "window_ms": 1_800_000,
+        "senders": [
+            {"key": "s-alpha", "msgs": 5, "acted": 3, "pending": 0, "replies": 4,
+             "wakes": 4, "silent": 2, "silent_tokens": 410, "refused": 1},
+            {"key": "operator", "msgs": 2, "acted": 2, "pending": 1, "replies": 3},
+        ],
+        "kinds": [{"key": "session", "msgs": 5, "acted": 3}],
+        "forgotten": 7,
+    }})
+}
+
+/// An open view asks for the scorecard on its own, slower cadence, and not in the first burst.
+#[test]
+fn an_open_view_asks_for_the_scorecard_every_so_often() {
+    let mut a = opened(1_000);
+    a.clock(3_200);
+    assert!(!types(&ops(&mut a)).contains(&"signals"));
+    a.clock(5_400);
+    ops(&mut a);
+    a.clock(19_000);
+    assert!(types(&ops(&mut a)).contains(&"signals"));
+}
+
+/// The scorecard is one compact line per sender in the room list, with nothing cut silently, and
+/// `/signals` says it in full.
+#[test]
+fn the_scorecard_renders_a_line_per_sender() {
+    let mut a = opened(1_000);
+    reply(&mut a, rooms_reply(&[("host", 2, 1, 0)]));
+    reply(&mut a, signals_reply());
+    let screen = a.screen(100, 30).join("\n");
+    assert!(screen.contains("Signal 30m"), "{screen}");
+    assert!(screen.contains("s-alpha 3/5 60% r0.8"), "{screen}");
+    assert!(screen.contains("z2/4 410t n1"), "{screen}");
+    assert!(screen.contains("operator 2/2 100%"), "{screen}");
+    assert!(screen.contains("7 older not counted"), "{screen}");
+    let report = a.rooms.signals_report();
+    assert!(report.contains("kinds\n  session 3/5"), "{report}");
+}

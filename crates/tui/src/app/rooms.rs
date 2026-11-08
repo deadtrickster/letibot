@@ -103,6 +103,70 @@ pub(crate) struct Member {
     pub project: String,
 }
 
+/// One line of the coordinator's signal scorecard: a sender, and what followed its messages.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+pub(crate) struct SignalRow {
+    pub key: String,
+    #[serde(default)]
+    pub msgs: u64,
+    #[serde(default)]
+    pub acted: u64,
+    #[serde(default)]
+    pub pending: u64,
+    #[serde(default)]
+    pub replies: u64,
+    #[serde(default)]
+    pub wakes: u64,
+    #[serde(default)]
+    pub silent: u64,
+    #[serde(default)]
+    pub silent_tokens: u64,
+    #[serde(default)]
+    pub refused: u64,
+}
+
+impl SignalRow {
+    /// `name 3/5 60% r0.8 z2/4 410t n1`: acted of closed, replies per message, silent of wakes
+    /// with their tokens, null posts refused. Parts with nothing to say are left out.
+    pub(crate) fn line(&self) -> String {
+        let pct = (self.acted * 100).checked_div(self.msgs).unwrap_or(0);
+        let all = self.msgs + self.pending;
+        let rep = if all == 0 {
+            0.0
+        } else {
+            self.replies as f64 / all as f64
+        };
+        let mut s = format!("{} {}/{} {pct}% r{rep:.1}", self.key, self.acted, self.msgs);
+        if self.wakes > 0 {
+            s.push_str(&format!(
+                " z{}/{} {}t",
+                self.silent, self.wakes, self.silent_tokens
+            ));
+        }
+        if self.refused > 0 {
+            s.push_str(&format!(" n{}", self.refused));
+        }
+        s
+    }
+}
+
+/// The scorecard as the coordinator answered it.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+pub(crate) struct Signals {
+    #[serde(default)]
+    pub window_ms: u64,
+    #[serde(default)]
+    pub senders: Vec<SignalRow>,
+    #[serde(default)]
+    pub kinds: Vec<SignalRow>,
+    #[serde(default)]
+    pub forgotten: u64,
+}
+
+/// How often an open `/rooms` asks for the scorecard. It moves with a 30 minute window, so the
+/// message poll's pace would be waste.
+pub(crate) const SIGNALS_POLL_MS: u64 = 15_000;
+
 /// One entry of the channel list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Chan {
@@ -198,6 +262,10 @@ pub(crate) struct RoomsView {
     /// older messages lands above it.
     pub prev_first: Option<(String, u64, usize)>,
     pub next_poll_ms: u64,
+    /// The signal scorecard, once the coordinator has answered, and when to ask again (0 = at
+    /// the next poll after the first).
+    pub signals: Option<Signals>,
+    pub next_signals_ms: u64,
     pub error: Option<String>,
     /// The inbox cursor this head last set.
     pub acked: u64,
@@ -218,6 +286,27 @@ pub(crate) struct RoomsView {
 }
 
 impl RoomsView {
+    /// The scorecard as text, every sender and every kind.
+    pub(crate) fn signals_report(&self) -> String {
+        let Some(c) = &self.signals else {
+            return "no scorecard yet: open /rooms and wait for a poll".into();
+        };
+        let mut out = format!(
+            "signals, {}m window (acted/closed pct, replies per msg, silent/wakes tokens, null refused)",
+            c.window_ms / 60_000
+        );
+        for (title, rows) in [("senders", &c.senders), ("kinds", &c.kinds)] {
+            out.push_str(&format!("\n{title}"));
+            for r in rows {
+                out.push_str(&format!("\n  {}", r.line()));
+            }
+        }
+        if c.forgotten > 0 {
+            out.push_str(&format!("\n{} older messages not counted", c.forgotten));
+        }
+        out
+    }
+
     /// The principal on the other end of a direct message, from the operator's side.
     fn peer_of(m: &Msg) -> Option<String> {
         if m.author == OPERATOR {
@@ -547,7 +636,15 @@ impl App {
             return;
         }
         self.rooms.next_poll_ms = self.now_ms.saturating_add(POLL_MS);
-        let ops = self.rooms.poll_ops();
+        let mut ops = self.rooms.poll_ops();
+        // The first poll after an open only arms the timer, so the scorecard is not asked for in
+        // the burst of a fresh view.
+        if self.rooms.next_signals_ms == 0 {
+            self.rooms.next_signals_ms = self.now_ms.saturating_add(SIGNALS_POLL_MS);
+        } else if self.now_ms >= self.rooms.next_signals_ms {
+            self.rooms.next_signals_ms = self.now_ms.saturating_add(SIGNALS_POLL_MS);
+            ops.push(json!({"type": "signals"}));
+        }
         self.queued
             .extend(ops.into_iter().map(|op| Action::RoomChat { op, id: None }));
     }
@@ -656,6 +753,13 @@ impl App {
                 let room = reply.get("room").and_then(Value::as_str).unwrap_or("");
                 if let Ok(r) = serde_json::from_value(rows(&reply)) {
                     self.rooms.roster.insert(room.to_string(), r);
+                }
+            }
+            "signals" => {
+                if let Some(card) = reply.get("card")
+                    && let Ok(c) = serde_json::from_value::<Signals>(card.clone())
+                {
+                    self.rooms.signals = Some(c);
                 }
             }
             "marks" => {
