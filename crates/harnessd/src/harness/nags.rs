@@ -2,6 +2,15 @@
 //! and the nudge it delivers as a turn of its own.
 use super::*;
 use letibot_plugin::notice::Facts;
+use std::time::Duration;
+
+/// One plan-check as it stands: the sentence, the rows it names, and the interval a `nag_` layer
+/// asked the clock for. The interval is unclamped here - the bounds are the clock's.
+struct TheNag {
+    text: String,
+    names: Vec<String>,
+    next: Option<Duration>,
+}
 
 impl Harness {
     /// The operator's half of the board: replaces their rows and leaves the model's alone, so anything reading the
@@ -12,6 +21,16 @@ impl Harness {
         items: Vec<letibot_tokencore::store::TodoItem>,
         moved: &[(String, letibot_tokencore::store::TodoStatus)],
     ) {
+        // Whether this write ADDED a row - the operator's own act, which earns them a check sooner
+        // than the idle window. Read before the board moves, and by the words, since a row is its
+        // words on this board.
+        let before: Vec<String> = self
+            .todos
+            .snapshot()
+            .into_iter()
+            .filter(|r| r.by == letibot_tokencore::store::TodoBy::Operator)
+            .map(|r| r.content)
+            .collect();
         self.todos.set_operator(items);
         // And the state moves that are not the head's to make: the board resolves the words against the model's half
         // and sets the status. A refusal is the daemon's log rather than the operator's silence, since a model that
@@ -33,7 +52,13 @@ impl Harness {
         // Persist it and tell every head: `flush_todos` is version-gated and runs at a turn
         // boundary, so on a session where no turn ever runs again the operator's rows would sit
         // unpublished. The row does not reach the model's tool reply, so this is not a turn.
+        let added = self.todos.snapshot().iter().any(|r| {
+            r.by == letibot_tokencore::store::TodoBy::Operator && !before.contains(&r.content)
+        });
         self.flush_todos_or_say("the operator's row");
+        if added {
+            self.operator_added_at = Some(Instant::now());
+        }
     }
 
     /// The children this daemon is running, as the plan-check reads them: the journal says which are running, the
@@ -118,8 +143,40 @@ impl Harness {
     /// The `[todo check]` text, or nothing, and a row the operator postponed is not part of it. The rows are read
     /// through `the_plan_as_checked`, the same reading the arming decision takes, so clock and sentence cannot disagree.
     /// Reading it does not remember what it named: `nag_turn` commits it, where a check is delivered.
+    ///
+    /// **Ask-free**, and that is what the daemon's due clock needs: it reads this to know whether a
+    /// check is worth a turn, and the layer is asked once, inside the turn.
     pub fn nag_notice(&self) -> Option<String> {
-        self.nag_notice_naming().map(|(text, _)| text)
+        let plan = self.the_plans_nag_written().map(|(text, _)| text);
+        self.with_the_stale(plan)
+    }
+
+    /// The plan's sentence with the stale-prompt one folded in, whichever of the two there is: the
+    /// stale sentence is a fact of its own, so a plan a layer held back still reaches the model.
+    fn with_the_stale(&self, plan: Option<String>) -> Option<String> {
+        // The prompt this session speaks when it is not this daemon's: the sentence is composed once
+        // at open for the attach path and the model cannot see it, so a session can run long on a
+        // prompt its daemon would not compose. Told once, as information; the person has the choice
+        // on screen.
+        let stale = self.stale_untold();
+        match (plan, stale) {
+            (None, None) => None,
+            (Some(plan), None) => Some(plan),
+            (None, Some(stale)) => Some(stale),
+            (Some(plan), Some(stale)) => Some(format!("{plan}\n\n{stale}")),
+        }
+    }
+
+    /// The plan-check's clock as the daemon holding it last read it, written before the turn a check
+    /// runs in, so a `nag_` layer is handed the numbers the clock itself decides on.
+    pub fn nag_readings(&mut self, clock: letibot_plugin::nag::Clock) {
+        self.nag_clock = clock;
+    }
+
+    /// The interval a `nag_` layer asked the clock for - unclamped, because the bounds are the
+    /// clock's and `Sessions` is where it lives.
+    pub fn nag_next(&self) -> Option<Duration> {
+        self.nag_next
     }
 
     /// What the idle clock counts a delivered check AS: the plan's sentence read the way the clock's arming reads it,
@@ -134,8 +191,10 @@ impl Harness {
     }
 
     /// [`Harness::nag_notice`] and the row it named - `None` for the second half when the notice is
-    /// only the stale-prompt sentence, which names no row.
-    fn nag_notice_naming(&self) -> Option<(String, Option<String>)> {
+    /// only the stale-prompt sentence, which names no row. The plan's words are the `nag_` layer's
+    /// to choose: it is asked here, and no layer means the harness's own sentence, which is what a
+    /// session without layers has always read.
+    fn nag_notice_naming(&self) -> Option<TheNag> {
         // The board, the narrowed rows the check may speak about (the ONE predicate), the children
         // and the jobs. All four are taken here rather than remembered, because a need is met by a
         // DONE row that the narrowing takes out, and a child or job can go quiet between checks.
@@ -143,30 +202,91 @@ impl Harness {
         let children = self.child_sessions();
         let jobs = self.running_jobs(&board);
         let askable = crate::sessions::the_plan_as_checked(&board, &children, &jobs);
-        // The plan's text as a value rather than an early return, because this notice has a second
-        // thing it may have to say. `nag_should_arm` compares the TEXT, so a notice that gains a
-        // sentence is a new thing to say at the base window and the ladder needs no change.
-        let plan = unfinished_plan_for(
+        let written = unfinished_plan_for(
             &askable,
             &board,
             self.nag_choice.as_deref(),
             &children,
             &jobs,
         );
-        let (plan, named) = match plan {
-            Some((text, named)) => (Some(text), Some(named)),
-            None => (None, None),
+        // The plan's text as a value rather than an early return, because this notice has a second
+        // thing it may have to say. `nag_should_arm` compares the TEXT, so a notice that gains a
+        // sentence is a new thing to say at the base window and the ladder needs no change.
+        let (plan, names, next) = match written {
+            Some((text, named)) => {
+                self.the_layers_check(&board, &askable, &children, &jobs, &text, &named)
+            }
+            None => (None, Vec::new(), None),
         };
-        // And the prompt this session speaks when it is not this daemon's: the sentence is composed once at open for the attach path and the model cannot see it, so a session can run long on a prompt its daemon would not compose.
-        // Told once, as information; the person has the choice on screen.
-        let stale = self.stale_untold();
-        let text = match (plan, stale) {
-            (None, None) => None,
-            (Some(plan), None) => Some(plan),
-            (None, Some(stale)) => Some(stale),
-            (Some(plan), Some(stale)) => Some(format!("{plan}\n\n{stale}")),
+        let text = self.with_the_stale(plan)?;
+        Some(TheNag { text, names, next })
+    }
+
+    /// The harness's own check, composed and remembered by nobody: the sentence and the row it
+    /// named, asked of no layer. [`Self::nag_notice`] reads this, so the daemon's due clock never
+    /// spends a layer's answer on a question it throws away.
+    fn the_plans_nag_written(&self) -> Option<(String, Option<String>)> {
+        let board = self.todos.snapshot();
+        let children = self.child_sessions();
+        let jobs = self.running_jobs(&board);
+        let askable = crate::sessions::the_plan_as_checked(&board, &children, &jobs);
+        let written = unfinished_plan_for(
+            &askable,
+            &board,
+            self.nag_choice.as_deref(),
+            &children,
+            &jobs,
+        )?;
+        Some((written.0, Some(written.1)))
+    }
+
+    /// The plan as a `nag_` layer decides it: the sentence, the rows it names, and the interval it
+    /// asked for. No layer, a layer that traps, and an answer the host refuses all answer the
+    /// harness's own sentence - the check is never lost to a layer.
+    fn the_layers_check(
+        &self,
+        board: &[TodoItem],
+        askable: &[TodoItem],
+        children: &letibot_tools::builtins::todo::ChildSessions,
+        jobs: &letibot_tools::builtins::todo::RunningJobs,
+        text: &str,
+        named: &str,
+    ) -> (Option<String>, Vec<String>, Option<Duration>) {
+        let (native, native_names) = (
+            Some(text.to_string()),
+            if named.is_empty() {
+                Vec::new()
+            } else {
+                vec![named.to_string()]
+            },
+        );
+        let Some(host) = self.plugin_host() else {
+            return (native, native_names, None);
         };
-        text.map(|text| (text, named))
+        let clock = letibot_plugin::nag::Clock {
+            operator_added_ms: self
+                .operator_added_at
+                .map(|at| at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64),
+            ..self.nag_clock
+        };
+        let input = letibot_tools::builtins::todo::the_nag_input(
+            board,
+            askable,
+            text,
+            (!named.is_empty()).then_some(named),
+            clock,
+            children,
+            jobs,
+            letibot_sessionlog::registry::now_ms(),
+        );
+        let Some(decision) = host.nag(&self.hub, &input) else {
+            return (native, native_names, None);
+        };
+        (
+            decision.says.then_some(decision.text),
+            decision.name,
+            decision.next_ms.map(Duration::from_millis),
+        )
     }
 
     /// The stale-prompt sentence, when the model has not been told it yet: `None` when the prompt
@@ -182,15 +302,18 @@ impl Harness {
     /// unfinished plan is nudged again. The text goes in as `Speaker::Agent`, exactly as `wake` does: the harness talking
     /// to itself, never readable as the operator's. `Ok(None)` is nothing to say, which is a real outcome.
     pub fn nag_turn(&mut self) -> Result<Option<Reply>, HarnessError> {
-        let Some((text, named)) = self.nag_notice_naming() else {
+        let Some(TheNag { text, names, next }) = self.nag_notice_naming() else {
             return Ok(None);
         };
-        self.meter_nag(named.as_deref());
+        // The interval the layer asked for, for the clock's owner to clamp and arm - recorded even
+        // when the notice below is dropped, since the layer asked for it either way.
+        self.nag_next = next;
+        self.meter_nag(names.first().map(String::as_str));
         // The plan-check goes through the one notice door like every other model-facing sentence:
         // a layer may reword it, and may drop it, since it is the harness's own reminder and not a
         // fact somebody is owed. Dropped, no turn is opened.
         let facts = Facts::Nag {
-            rows: named.iter().cloned().collect(),
+            rows: names.clone(),
         };
         let Some(mut text) = self.say(&facts, &text) else {
             return Ok(None);
@@ -203,10 +326,12 @@ impl Harness {
             text.push_str(&meanwhile);
         }
         // The choice is remembered HERE, where the check is delivered: see `nag_notice` for why
-        // reading the notice must not.
-        if let Some(named) = named {
-            self.nag_choice = Some(named);
+        // reading the notice must not. And the check the operator's own row earned has now been
+        // said, so their add no longer earns them an earlier one.
+        if let Some(named) = names.first() {
+            self.nag_choice = Some(named.clone());
         }
+        self.operator_added_at = None;
         // And the stale prompt counts as told, once, so the next check does not repeat it.
         if let Some(said) = self.stale_untold() {
             self.stale_told = Some(said);

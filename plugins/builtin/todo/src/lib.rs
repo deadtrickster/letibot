@@ -13,6 +13,12 @@
 //!    "session":    {"id": "s-1793…", "workspace": "/home/dead/Projects/x"},
 //!    "repo_todos": [{"text": "T1 git init", "mark": "[x]", "indent": 4, "item": true}]}}
 //! ```
+//!
+//! `nag_todo` is the other export: the plan-check's decision (`docs/plugin-extension-points-wide.md`
+//! X13). This layer says exactly what the harness's own nag says - one row, the harness's words -
+//! so the bottom of the stack is today's daemon, and an operator's layer above it is where R127's
+//! every-free-head answer is written. It names the input's row back, which is the whole of what an
+//! identity layer may do: the clock and the eligibility filter are not its to move.
 
 /// The act name the host performs, and the one its `plugin.toml` declares.
 const ACT: &str = "add_todo";
@@ -22,6 +28,23 @@ use letibot_guest_abi as abi;
 #[unsafe(no_mangle)]
 pub extern "C" fn command_todo(ptr: i32, len: i32) -> i32 {
     abi::hook(ptr, len, answer)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn nag_todo(ptr: i32, len: i32) -> i32 {
+    abi::hook(ptr, len, the_nag)
+}
+
+/// The plan-check answered as the harness asked it: the row it named and the sentence it wrote.
+/// `None` - unchanged - when the input is not a nag, which is the fail-down rule.
+fn the_nag(bytes: &[u8]) -> Option<String> {
+    let input: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let text = input.get("text")?.as_str()?;
+    let named = input.get("name").and_then(|n| n.as_str());
+    Some(match named {
+        Some(row) => serde_json::json!({"name": [row], "text": text}).to_string(),
+        None => serde_json::json!({"text": text}).to_string(),
+    })
 }
 
 fn answer(bytes: &[u8]) -> Option<String> {
@@ -177,5 +200,34 @@ mod tests {
         let out = answer(input.to_string().as_bytes()).expect("an act");
         let v: serde_json::Value = serde_json::from_str(&out).expect("json");
         assert_eq!(v["act"]["args"]["content"], "a — b");
+    }
+
+    /// **`nag_todo` says the harness's own sentence about the harness's own row.** The layer is
+    /// the identity of today's daemon, so the answer is the input's text and name, and nothing
+    /// else - a row it was not handed is a row it cannot name.
+    #[test]
+    fn the_nag_answers_the_sentence_it_was_handed() {
+        let input = serde_json::json!({
+            "v": 1,
+            "board": [{"id": "r3", "content": "r3", "status": "pending", "by": "operator"}],
+            "eligible": ["r3"],
+            "clock": {"repeats": 0, "idle_ms": 0, "floor_ms": 60000, "cap_ms": 1800000},
+            "now_ms": 60000,
+            "text": "[todo check] Not done:\n  - r3 — the operator's\n",
+            "name": "r3",
+        });
+        let out = the_nag(input.to_string().as_bytes()).expect("an answer");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(v["text"], input["text"]);
+        assert_eq!(v["name"], serde_json::json!(["r3"]));
+        // The degenerate case - a plan whose ready set is empty names no row - answers the
+        // sentence and no name, rather than an empty one.
+        let mut blocked = input.clone();
+        blocked["name"] = serde_json::Value::Null;
+        let out = the_nag(blocked.to_string().as_bytes()).expect("an answer");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+        assert!(v.get("name").is_none(), "{v}");
+        // And a document that is not a nag passes, so the layer below speaks.
+        assert_eq!(the_nag(br#"{"line":"x"}"#), None);
     }
 }

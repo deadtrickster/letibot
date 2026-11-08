@@ -21,8 +21,8 @@ use crate::schema::{Access, ToolSchema};
 pub mod nag;
 pub use nag::{
     NAG_REPEAT_CAP, NagHold, NagTimings, OPERATOR_ADD_NAG_AFTER, QueueNews, STUCK_REPEAT,
-    TODO_NAG_AFTER, TodoNagClock, nag_should_arm, the_check_may_ask_about, the_plan_as_a_key,
-    the_plan_as_checked,
+    TODO_NAG_AFTER, TodoNagClock, nag_should_arm, the_check_may_ask_about, the_nag_input,
+    the_plan_as_a_key, the_plan_as_checked,
 };
 
 /// The session's todo list, shared between the tool that writes it and the

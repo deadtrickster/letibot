@@ -115,8 +115,8 @@ A sentence for a RUNNING turn goes through the door at its PUSH (`queue_mid_turn
 | area | decision | where | reach | policy |
 |---|---|---|---|---|
 | nag | when | `TodoNagClock` `sessions.rs:252`, `nag_should_arm` :214, `deliver_due_nags` :3337 | none | `TODO_NAG_AFTER` 60 s :55, `OPERATOR_ADD_NAG_AFTER` 10 s :60, `NAG_REPEAT_CAP` 30 min :93, doubling |
-| nag | which rows | `the_check_may_ask_about` :102, `the_plan_as_checked` :200, `the_row_to_name` `todo.rs:1333` | none | one ready row (R127) |
-| nag | text | `nag_notice_naming` `nags.rs:137`, :174 | none | |
+| nag | which rows | `the_check_may_ask_about` :102, `the_plan_as_checked` :200, `the_row_to_name` `todo.rs:1333` | `nag_todo` since K3: choose among `eligible` | one ready row (R127) |
+| nag | text | `nag_notice_naming` `nags.rs:137`, :174 | `nag_todo` since K3: reword | |
 | board | writes | `todo_write` | partial: `on_tool_call` can refuse or shrink | |
 | compaction | when | `headroom_of` `config.rs:1210`, `should_compact` :1393, `pre_emptive_compact` :1400 | none | w/16, min 2048, max w/4 |
 | compaction | which fold | `Fold::next` `harnessd/src/wall.rs:75`, `fold_for` :180 | none | `RELEASE_HEADROOMS` 2 |
@@ -598,7 +598,7 @@ What landed:
   kind list has no kind for it - it is §1.5's park, and giving it a kind is a decision for the
   package that owns the park's clock rather than one to invent here.
 
-### K3 - `nag_` and the todo layer (M, after K2)
+### K3 - `nag_` and the todo layer (M, after K2) - **landed 2026-11**
 
 Owns `harnessd/src/sessions.rs` (clamp `next_ms`, nag clock only), `tools/src/builtins/todo.rs`
 (`the_row_to_name` and wording become the fallback), `plugin-sdk/src/nag.rs` (new),
@@ -607,6 +607,49 @@ Owns `harnessd/src/sessions.rs` (clamp `next_ms`, nag clock only), `tools/src/bu
 `next_ms_is_clamped_to_the_config_bounds`, `the_builtin_nag_says_what_the_native_nag_said` (on the
 store's recorded nags), `a_layer_naming_every_free_head_is_r127` (R127 closes as a layer),
 `a_trapping_nag_layer_falls_to_the_native_nag`.
+
+What landed:
+
+- **The contract** is `plugin-sdk/src/nag.rs`: `nag_<name>`, one subject today (`nag_todo`). The input
+  is the board, the rows the check may speak about (`eligible`), the clock, the live jobs and
+  children, and the harness's OWN sentence and row (`text`, `name`) - so a layer may keep today's
+  answer, reword it, choose another eligible row, or stay quiet. The answer is
+  `{"name": […], "text": …, "next_ms": …}` or `{"quiet": true, …}`, and `Out::decide` is the one
+  place the rules are applied.
+- **The three rules.** A name outside `eligible` refuses the WHOLE answer (half a sentence is a
+  sentence nobody wrote) and the harness's own check is said; quiet is overridden at `cap_ms` and
+  while an eligible row is the merge queue's; `next_ms` is clamped to
+  `[nag] after_seconds`..`repeat_cap_seconds` by `sessions::the_next_check`. No layer, a trap and an
+  unparseable answer are the native nag: a check is never lost to a layer.
+- **What stayed native**, as X13 says: the clock and the eligibility filter. `the_check_may_ask_about`
+  and `the_plan_as_checked` are untouched, `unfinished_plan_for` is the fallback, and `nag_notice`
+  still reads it ask-free - the due clock asks *is there anything to say* and must not spend a
+  layer's answer on a question it throws away. The layer is asked once per delivery, inside
+  `nag_turn`; the ladder's identity is still `nag_said_as` (the plan), never the wording.
+- **The clock's numbers reach the layer.** `Harness::nag_readings` carries `since_last_ms`, `repeats`
+  and the two bounds from the session's `TodoNagClock` (`Sessions` writes them before the turn, a
+  child's own loop does the same), `idle_ms` from the registry's last activity, and
+  `operator_added_ms` from the harness's own read of the operator's push (`set_operator_todos` now
+  notices an ADDED row). A quiet check still owes the clock an arming: `Sessions::arm_a_quiet_nag`,
+  at the interval the layer asked for.
+- **A third built-in door.** `PluginHost::production` installs the binary's layers that answer `nag_`
+  at open (`install_builtin_nags`), beside the declared-tool and pane doors: without it the hook had
+  nothing to ask on a session with no layers.
+- **The built-in says today's answer.** `plugins/builtin/todo` declares `nag_todo` next to
+  `command_todo` and re-emits the input's sentence and row, so the bottom of the stack is today's
+  daemon and arriving at this hook moves no sentence.
+  `the_builtin_nag_says_what_the_native_nag_said` (`harnessd/tests/builtin_nag.rs`) loads that module
+  through the real engine and asks it on boards whose expected line is `unfinished_plan_for`'s own
+  answer - nothing in it is a copied fixture - and the row the sentence names is the one the native
+  nag named, including the degenerate plan that names none.
+- **R127 closes as a layer, and R127 stays postponed.** A `nag_` answer may name every eligible row
+  (`a_layer_naming_every_free_head_is_r127`); with nothing answering, the check names the one row it
+  always named, so the default does not move.
+- **The page follows the code**: `plugin_hooks`' `synthetic_for` and `accepted` know the kind, so
+  `plugin test` and `plugin load` work on a nag layer; `SERVED_KINDS` carries `nag_` and the
+  `plugin-hooks` skill teaches the contract.
+- Not in this package: the bridge's Claude Code seat has no plugin host (K11), so a seat's own check
+  is still the native one; and no head card reads a nag's decision yet (K6).
 
 ### K4 - `steer_` and `compact_` (M, after K2)
 

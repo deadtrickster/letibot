@@ -14,6 +14,7 @@ pub mod condition;
 pub mod digest;
 pub mod lifecycle;
 pub mod link;
+pub mod nag;
 pub mod notice;
 pub mod pane;
 pub mod tool_call;
@@ -53,6 +54,7 @@ mod tests {
         "notice_",
         "digest_",
         "link_",
+        "nag_",
         "command_",
         "tool_",
         "complete_",
@@ -79,6 +81,7 @@ mod tests {
         }
         assert!(admitted(&digest::hook("compilers")));
         assert!(admitted(&link::hook("gh")));
+        assert!(admitted(nag::HOOK), "{}", nag::HOOK);
         assert!(admitted(&pane::hook("chat")));
         for kind in notice::KINDS {
             let hook = notice::hook(kind);

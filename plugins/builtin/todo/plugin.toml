@@ -3,7 +3,12 @@ purpose = "the operator's `/todo`: a row added from the composer, with a title a
 # **`command_<verb>`** is the prefix the host reserves for a slash command a layer owns: the head
 # asks this hook for `/todo …` before it answers the line itself, and `pass` leaves the line to the
 # head's own verbs (`done`, `rm`, `postpone`, `resume`, `when`).
-hooks = ["command_todo"]
+hooks = ["command_todo", "nag_todo"]
+#
+# `nag_` is the plan-check's decision (X13): which eligible row the idle check names, in what words,
+# and when it may come due again. This layer says today's answer - the harness's own sentence about
+# the one row it named - so the default does not move when the hook arrives, and an operator's layer
+# above it is where a different policy (every free head, R127) is written.
 #
 # **`capabilities = []` is the half the layer cannot cross**: it reads no file, runs no program and
 # fetches nothing, so the words it answers with are all it can produce.

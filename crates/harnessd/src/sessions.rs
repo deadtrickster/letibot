@@ -49,6 +49,16 @@ pub(crate) const WALL_CONTINUES: usize = 3;
 // The three types stay `pub` under their old names: an integration test drives a clock by hand.
 pub use letibot_tools::builtins::todo::{NagHold, NagTimings, QueueNews, TodoNagClock};
 pub(crate) use letibot_tools::builtins::todo::{the_check_may_ask_about, the_plan_as_checked};
+
+/// The interval between this check and the next, when a `nag_` layer chose it: clamped to
+/// [`NagTimings`]'s own two bounds - never shorter than the idle window, never longer than the repeat
+/// cap. The layer names a number and cannot shout louder or go quieter than `leticode.toml` says.
+pub fn the_next_check(next: Duration, timings: NagTimings) -> Duration {
+    // `clamp` panics on a crossed pair, and a file may set a cap under its window.
+    let lo = timings.window.min(timings.cap);
+    let hi = timings.cap.max(lo);
+    next.clamp(lo, hi)
+}
 // What only the idle-nag suite below reads: it composes the sentence and drives the ladder
 // itself, so it takes these under the names they had before the schedule moved.
 #[cfg(test)]
@@ -3073,6 +3083,12 @@ impl<'a> Sessions<'a> {
                 Some(h) => h.nag_notice().map(|_| h.nag_said_as()),
                 None => continue,
             };
+            // The clock's own numbers, written before the turn: a `nag_` layer decides on the same
+            // facts the clock does, rather than on a copy the harness invented.
+            let readings = self.the_nag_readings(&session_id);
+            if let Some(h) = self.open.get_mut(&session_id) {
+                h.nag_readings(readings);
+            }
             // Nothing to say after all - the plan moved between the arming and the clock - is no
             // turn, and a door that runs no turn owes no sweep.
             let Some(notice) = notice else {
@@ -3081,12 +3097,44 @@ impl<'a> Sessions<'a> {
             // The shared tail arms the sweep and the wake, records the notice as said and
             // re-arms the clock.
             match self.turn(&session_id, Door::Nag(notice), |h| h.nag_turn()) {
-                None => {}
                 Some(Ok(_)) => ran += 1,
                 Some(Err(e)) => eprintln!("  {session_id} · todo check -> {e}"),
+                // The layer held the check back, or said nothing after all. The deadline was spent
+                // by `due_now`, so this door owes the clock an arming - at the interval the layer
+                // asked for, clamped, or at the clock's own from the plan as it stands.
+                None => self.arm_a_quiet_nag(&session_id),
             }
         }
         ran
+    }
+
+    /// The plan-check's clock as the daemon reads it for SESSION: the numbers the clock decides on,
+    /// plus the one idle reading it cannot know - how long the session has been quiet.
+    fn the_nag_readings(&self, session_id: &str) -> letibot_plugin::nag::Clock {
+        let now = Instant::now();
+        let mut clock = match self.nags.get(session_id) {
+            Some(clock) => clock.readings(now),
+            None => letibot_plugin::nag::Clock {
+                floor_ms: self.nag.window.as_millis() as u64,
+                cap_ms: self.nag.cap.as_millis() as u64,
+                ..letibot_plugin::nag::Clock::default()
+            },
+        };
+        clock.idle_ms = self.registry.get(session_id).map_or(0, |h| {
+            let now_ms = letibot_sessionlog::registry::now_ms();
+            now_ms.saturating_sub(h.status().last_ms)
+        });
+        clock
+    }
+
+    /// Re-arm SESSION's check after a delivery that ran no turn, honouring the interval a `nag_`
+    /// layer asked for - clamped here, where the bounds live.
+    fn arm_a_quiet_nag(&mut self, session_id: &str) {
+        let next = self.open.get(session_id).and_then(|h| h.nag_next());
+        self.rearm_todo_nag(session_id);
+        if let (Some(next), Some(clock)) = (next, self.nags.get_mut(session_id)) {
+            clock.arm_in(the_next_check(next, self.nag), Instant::now());
+        }
     }
 
     /// Read-only access to a session's harness, for a caller that wants the ledger
@@ -4445,6 +4493,11 @@ impl TurnOwner for DaemonTurn<'_, '_, '_> {
     /// spent nag recorded as said first: the metronome rule), the queue's census (recorded the
     /// same way, against its own anchor) and, for a subagent the worker holds, its park window.
     fn turn_ended(&mut self, h: &mut Harness, door: &Door) {
+        // The interval a `nag_` layer asked for, taken whatever the door is so a stale one cannot
+        // arrive with the next turn. Clamped HERE, where the bounds live.
+        let next = h
+            .nag_next()
+            .map(|next| the_next_check(next, self.sessions.nag));
         if let Some(clock) = self.sessions.nags.get_mut(self.session_id) {
             match door {
                 Door::Nag(notice) => clock.said(notice.clone(), Instant::now()),
@@ -4456,6 +4509,13 @@ impl TurnOwner for DaemonTurn<'_, '_, '_> {
             }
         }
         self.sessions.rearm_todo_nag_on(self.session_id, h);
+        // AFTER the re-arm, which arms the ladder's own deadline: a layer's interval is the one
+        // that stands for a delivered check.
+        if matches!(door, Door::Nag(_))
+            && let (Some(next), Some(clock)) = (next, self.sessions.nags.get_mut(self.session_id))
+        {
+            clock.arm_in(next, Instant::now());
+        }
         if self.sessions.registry.parent_of(self.session_id).is_some() {
             self.sessions.arm_park();
         }
@@ -5092,6 +5152,61 @@ mod stored_end_rule {
 
 #[cfg(test)]
 mod idle_nag;
+
+/// What a `nag_` layer may ask for and what the clock does with it: the interval is clamped to
+/// `[nag] after_seconds`..`[nag] repeat_cap_seconds`, because a layer names a number and the file
+/// the operator wrote is what bounds it.
+#[cfg(test)]
+mod next_check {
+    use super::{NagTimings, TodoNagClock, the_next_check};
+    use letibot_tools::builtins::todo::{NAG_REPEAT_CAP, TODO_NAG_AFTER};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn next_ms_is_clamped_to_the_config_bounds() {
+        let timings = NagTimings::default();
+        // Inside the bounds: the layer's own number, untouched.
+        assert_eq!(
+            the_next_check(Duration::from_secs(240), timings),
+            Duration::from_secs(240)
+        );
+        // Under the idle window: the window, not a check every second.
+        assert_eq!(
+            the_next_check(Duration::from_secs(1), timings),
+            TODO_NAG_AFTER
+        );
+        assert_eq!(the_next_check(Duration::ZERO, timings), TODO_NAG_AFTER);
+        // Over the repeat cap: the cap, not silence for a day.
+        assert_eq!(
+            the_next_check(Duration::from_secs(86_400), timings),
+            NAG_REPEAT_CAP
+        );
+        // A file may set a cap under its window, and `Duration::clamp` would panic on the crossed
+        // pair; the shorter of the two is then both bounds.
+        let crossed = NagTimings {
+            window: Duration::from_secs(600),
+            cap: Duration::from_secs(60),
+            ..NagTimings::default()
+        };
+        assert_eq!(
+            the_next_check(Duration::from_secs(300), crossed),
+            Duration::from_secs(60)
+        );
+    }
+
+    /// And the clock arms the deadline the clamped interval names: the one thing a nag layer's
+    /// `next_ms` reaches.
+    #[test]
+    fn a_clamped_interval_is_where_the_clock_arms() {
+        let timings = NagTimings::default();
+        let mut clock = TodoNagClock::with_timings(timings);
+        assert_eq!(clock.due_at(), None, "nothing is armed before a check");
+        let now = Instant::now();
+        clock.arm_in(the_next_check(Duration::from_secs(3_600), timings), now);
+        let armed = clock.due_at().expect("a deadline");
+        assert_eq!(armed, now + NAG_REPEAT_CAP, "a day's quiet is the cap's");
+    }
+}
 
 #[cfg(test)]
 mod the_wake_route {

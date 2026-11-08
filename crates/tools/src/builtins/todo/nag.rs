@@ -135,6 +135,105 @@ pub fn nag_should_arm(
     }
 }
 
+/// The `nag_` input for one ask: the board, the rows the check may speak about, the clock's
+/// numbers and the harness's own sentence. One place builds this document, so the daemon and the
+/// built-in layer's own test are handed the same shape.
+#[allow(clippy::too_many_arguments)] // one argument per thing the input carries, and none of them optional
+pub fn the_nag_input(
+    board: &[TodoItem],
+    askable: &[TodoItem],
+    text: &str,
+    named: Option<&str>,
+    clock: letibot_plugin::nag::Clock,
+    children: &ChildSessions,
+    jobs: &RunningJobs,
+    now_ms: u64,
+) -> letibot_plugin::nag::Input {
+    let mut input = letibot_plugin::nag::Input::new(
+        board
+            .iter()
+            .map(|row| a_row_in_the_input(row, children))
+            .collect(),
+        askable.iter().map(|row| row.content.clone()).collect(),
+        clock,
+        now_ms,
+        text,
+    );
+    input.name = named.filter(|n| !n.is_empty()).map(str::to_string);
+    // Only what a row actually waits on and that is still live: a handle this session is not
+    // running says nothing a layer could pace itself by.
+    for row in board {
+        for need in &row.needs {
+            match need {
+                letibot_tokencore::store::TodoNeed::Job { handle } if jobs.is_running(handle) => {
+                    input.jobs.push(handle.clone());
+                }
+                letibot_tokencore::store::TodoNeed::Child { id }
+                    if children.child(id).is_some() =>
+                {
+                    input.children.push(id.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+    input.jobs.sort_unstable();
+    input.jobs.dedup();
+    input.children.sort_unstable();
+    input.children.dedup();
+    input
+}
+
+/// One board row, in the nag hook's vocabulary.
+fn a_row_in_the_input(row: &TodoItem, children: &ChildSessions) -> letibot_plugin::nag::Row {
+    let by = match &row.by {
+        letibot_tokencore::store::TodoBy::Model => "model".to_string(),
+        letibot_tokencore::store::TodoBy::Operator => "operator".to_string(),
+        letibot_tokencore::store::TodoBy::Queue => "queue".to_string(),
+        // A parent's author string verbatim, as every other sentence about a row spells it.
+        letibot_tokencore::store::TodoBy::Parent(author) => author.clone(),
+    };
+    let waits = row.needs.iter().map(a_wait_in_words).collect();
+    the_row(row, by, waits, queue_review_in_flight(row, children))
+}
+
+/// The row itself, so the shape above reads as one sentence.
+fn the_row(
+    row: &TodoItem,
+    by: String,
+    waits: Vec<String>,
+    under_review: bool,
+) -> letibot_plugin::nag::Row {
+    letibot_plugin::nag::Row {
+        id: row.content.clone(),
+        content: row.content.clone(),
+        status: format!("{:?}", row.status).to_lowercase(),
+        by,
+        waits,
+        under_review,
+    }
+}
+
+/// One need as `kind:target` - what a row waits on, flat enough to read and not a second
+/// contract: the eligibility filter has already decided what the check may say.
+fn a_wait_in_words(need: &letibot_tokencore::store::TodoNeed) -> String {
+    use letibot_tokencore::store::TodoNeed as N;
+    match need {
+        N::Row { content } => format!("row:{content}"),
+        N::Child { id } => format!("child:{id}"),
+        N::Job { handle } => format!("job:{handle}"),
+        N::Pid { pid, start } => format!("pid:{pid}:{start}"),
+        N::Monitor { name } => format!("monitor:{name}"),
+        N::Room { item, .. } => format!("room:{item}"),
+        N::Operator { question, .. } => format!("operator:{question}"),
+        N::External { what } => format!("external:{what}"),
+        N::Answered { question, .. } => format!("answered:{question}"),
+        N::Ask { ask, of, .. } => format!("ask:{ask}:{of}"),
+        N::Owed { ask } => format!("owed:{ask}"),
+        N::Unknown => "unknown".to_string(),
+    }
+}
+
 /// What the queue has to say to the idle check, as of one arming - the second subject this
 /// clock speaks about besides the plan, from the operator's report of eight merge-queue
 /// rows stuck for hours with no sentence anywhere giving the TOTAL or the AGE.
@@ -296,6 +395,29 @@ impl TodoNagClock {
     /// re-arm reads it and decides `census_due`.
     pub fn queue(&mut self, news: QueueNews) {
         self.queue = news;
+    }
+
+    /// The clock's own numbers, as the `nag_` input carries them: how long since the check was last
+    /// delivered, how many repeats, and the two bounds a layer's `next_ms` is held to. The idle
+    /// readings the daemon owns (`idle_ms`, `operator_added_ms`) are left at zero here.
+    pub fn readings(&self, now: Instant) -> letibot_plugin::nag::Clock {
+        let ms = |d: Duration| d.as_millis().min(u128::from(u64::MAX)) as u64;
+        letibot_plugin::nag::Clock {
+            since_last_ms: self
+                .nagged_at
+                .map(|at| ms(now.saturating_duration_since(at))),
+            repeats: self.repeats,
+            idle_ms: 0,
+            operator_added_ms: None,
+            floor_ms: ms(self.window),
+            cap_ms: ms(self.cap),
+        }
+    }
+
+    /// Arm the next check at an interval somebody else chose - the door a nag layer's `next_ms`
+    /// goes through, with the CLAMP already applied by the clock's owner.
+    pub fn arm_in(&mut self, after: Duration, now: Instant) {
+        self.due = Some(now + after);
     }
 
     /// Start (or stand down) the check, as of `now` - the one body the daemon's idle arm and a

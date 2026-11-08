@@ -4560,3 +4560,194 @@ fn a_tool_read_look_outside_the_sessions_root_is_refused() {
         "the file is on the daemon's disk"
     );
 }
+
+/// The board the plan-check tests are asked about: two rows it may speak about and one it may not,
+/// read through the harness's own functions - so `eligible` and the harness's sentence are what the
+/// daemon would compose, not a fixture's copy of them.
+fn a_plan() -> (
+    Vec<letibot_tokencore::store::TodoItem>,
+    letibot_plugin::nag::Input,
+) {
+    use letibot_tokencore::store::{TodoBy, TodoItem, TodoStatus};
+    let row = |content: &str, status, by| TodoItem {
+        content: content.into(),
+        status,
+        by,
+        when: None,
+        needs: Vec::new(),
+    };
+    let board = vec![
+        row("land the release", TodoStatus::Pending, TodoBy::Operator),
+        row("write the tests", TodoStatus::InProgress, TodoBy::Model),
+        // Done: the check may not speak about it, which is what `eligible` is for.
+        row("open the branch", TodoStatus::Completed, TodoBy::Model),
+    ];
+    let children = letibot_tools::builtins::todo::ChildSessions::none();
+    let jobs = letibot_tools::builtins::todo::RunningJobs::none();
+    let askable = letibot_tools::builtins::todo::the_plan_as_checked(&board, &children, &jobs);
+    let (text, named) = letibot_tools::builtins::todo::unfinished_plan_for(
+        &askable, &board, None, &children, &jobs,
+    )
+    .expect("an unfinished plan");
+    let clock = letibot_plugin::nag::Clock {
+        since_last_ms: Some(60_000),
+        repeats: 1,
+        idle_ms: 60_000,
+        operator_added_ms: None,
+        floor_ms: 60_000,
+        cap_ms: 30 * 60_000,
+    };
+    let input = letibot_tools::builtins::todo::the_nag_input(
+        &board,
+        &askable,
+        &text,
+        Some(&named),
+        clock,
+        &children,
+        &jobs,
+        60_000,
+    );
+    (board, input)
+}
+
+/// A nag layer chooses among the rows the check may speak about and no others: a name outside
+/// `eligible` refuses the whole answer, and the harness's own check stands.
+#[test]
+fn a_nag_layer_cannot_name_a_row_outside_eligible() {
+    let root = tempdir("nag-eligible");
+    let (_board, input) = a_plan();
+    assert!(
+        input.eligible.contains(&"write the tests".to_string()),
+        "the fixture must have a row it MAY name: {:?}",
+        input.eligible
+    );
+    let table = Table::new();
+    table.layer(
+        &root,
+        "too-greedy",
+        &[(
+            "nag_todo",
+            says(json!({"name": ["open the branch"], "text": "open the branch"})),
+        )],
+    );
+    let hub = Hub::new("s-plugins");
+    let host = table_host(&root, &table);
+    assert!(
+        host.nag(&hub, &input).is_none(),
+        "a row the check may not speak about is no answer at all"
+    );
+    let why = hub
+        .retained()
+        .iter()
+        .find_map(|e| match &e.event {
+            SessionEvent::Warning { code, detail, .. } if code == "plugin_layer" => {
+                Some(detail.clone())
+            }
+            _ => None,
+        })
+        .expect("the layer is told what it did");
+    assert!(why.contains("open the branch"), "{why}");
+
+    // And a row it MAY name is honoured, so the refusal above is the rule and not a blanket no.
+    let ok = tempdir("nag-eligible-ok");
+    let table = Table::new();
+    table.layer(
+        &ok,
+        "picky",
+        &[(
+            "nag_todo",
+            says(json!({"name": ["write the tests"], "text": "write the tests"})),
+        )],
+    );
+    let host = table_host(&ok, &table);
+    let decision = host
+        .nag(&hub, &input)
+        .expect("a choice among eligible rows");
+    assert_eq!(decision.name, vec!["write the tests".to_string()]);
+    assert_eq!(decision.text, "write the tests");
+}
+
+/// A nag layer may hold a check back - up to the repeat cap. At the cap the plan has gone
+/// unmentioned long enough and the harness says it in its own words.
+#[test]
+fn quiet_is_overridden_at_the_repeat_cap() {
+    let root = tempdir("nag-quiet");
+    let (_board, input) = a_plan();
+    let table = Table::new();
+    table.layer(
+        &root,
+        "patient",
+        &[("nag_todo", says(json!({"quiet": true})))],
+    );
+    let host = table_host(&root, &table);
+    let hub = Hub::new("s-plugins");
+
+    let quiet = host.nag(&hub, &input).expect("a decision");
+    assert!(!quiet.says, "inside the cap a layer's quiet stands");
+
+    let mut at_the_cap = input.clone();
+    at_the_cap.clock.since_last_ms = Some(at_the_cap.clock.cap_ms);
+    let overridden = host.nag(&hub, &at_the_cap).expect("a decision");
+    assert!(overridden.says, "the cap is not the layer's to pass");
+    assert_eq!(
+        overridden.text, input.text,
+        "and the sentence is the harness's own"
+    );
+}
+
+/// R127 - one nag per free head instead of one row - closes as a LAYER: an answer naming every
+/// eligible row is honoured, and the default (nothing answering) is still the harness's one row.
+#[test]
+fn a_layer_naming_every_free_head_is_r127() {
+    let root = tempdir("nag-r127");
+    let (_board, input) = a_plan();
+    let mut every = input.eligible.clone();
+    every.sort();
+    assert_eq!(every.len(), 2, "the fixture has two free heads: {every:?}");
+    let text = format!("[todo check] Not done:\n  - {}", every.join("\n  - "));
+    let table = Table::new();
+    table.layer(
+        &root,
+        "every-head",
+        &[(
+            "nag_todo",
+            says(json!({"name": every, "text": text, "next_ms": 60_000})),
+        )],
+    );
+    let hub = Hub::new("s-plugins");
+    let host = table_host(&root, &table);
+    let decision = host.nag(&hub, &input).expect("a decision");
+    let mut named = decision.name.clone();
+    named.sort();
+    assert_eq!(named, every, "every free head, which is R127's answer");
+    assert_eq!(decision.text, text, "and the layer's own words for them");
+    assert_eq!(decision.next_ms, Some(60_000));
+
+    // R127 itself stays postponed: with nothing answering, the harness names the one row it always
+    // named, and a layer is how an operator asks for the other answer.
+    let bare = tempdir("nag-r127-bare");
+    let bare = table_host(&bare, &Table::new());
+    assert!(bare.nag(&hub, &input).is_none());
+    assert_eq!(input.name.as_deref(), Some("land the release"));
+}
+
+/// A nag layer that traps is the native nag, not a stalled plan: the check is the one thing a
+/// broken layer must never be able to lose.
+#[test]
+fn a_trapping_nag_layer_falls_to_the_native_nag() {
+    let root = tempdir("nag-trap");
+    let (_board, input) = a_plan();
+    let table = Table::new();
+    table.layer(&root, "broken", &[("nag_todo", vec![None])]);
+    let host = table_host(&root, &table);
+    let hub = Hub::new("s-plugins");
+    assert!(
+        host.nag(&hub, &input).is_none(),
+        "a trapped layer answers nothing, so the harness's own check stands"
+    );
+    let warned = hub
+        .retained()
+        .iter()
+        .any(|e| matches!(&e.event, SessionEvent::Warning { code, .. } if code == "plugin_layer"));
+    assert!(warned, "and the trap is said on the session's log");
+}

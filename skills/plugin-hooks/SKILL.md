@@ -21,11 +21,12 @@ right one is most of the work; after that it is a small wasm module and no relea
 | a session's own boundary needs words or a row — it opened, was re-seated, came back after a restart, was closed | **`lifecycle_<event>`** | at that boundary, with the facts of what changed |
 | a command printed four thousand lines the model has to hold | **`digest_<name>`**, as in `digest_compilers` | on every output, before the spill policy budgets it |
 | a word on the screen names a ticket, a build or a wiki page, and nothing links it | **`link_<name>`**, as in `link_gh` | once per frame, for the words the head's own references did not know |
+| the idle plan-check names the wrong row, or nags at the wrong pace | **`nag_todo`** | on every plan-check the harness is about to deliver |
 
 The contract for some of these and for a pane is the `plugin_hooks` tool, **read from the host's
 own types**: read it before writing anything, and read it again after a refusal.
 `plugin_hooks {"hook":"condition"}` is one kind; no argument is all of them. `adjudicate_floor`,
-`digest_`, `link_`, `tool_` and `command_` are written out below: the host has no page for them yet.
+`digest_`, `link_`, `nag_`, `tool_` and `command_` are written out below: the host has no page for them yet.
 
 ### `adjudicate_floor` — the gate's floor
 
@@ -61,8 +62,8 @@ in the layer of the session it governs.
 | a `/` verb the head asks before it answers the line itself | **`command_`** | `command_<verb>`, as in `command_todo` | the verb, as in `/todo …` |
 | a tool in the model's own tool list | **`tool_`** | `tool_<name>`, as in `tool_claude_transcript` | the `tool` list the model is sent |
 
-`plugin_hooks` has no page for `tool_`, `command_`, `complete_`, `digest_` or `link_`: their shapes
-are below, and they are the whole contract.
+`plugin_hooks` has no page for `tool_`, `command_`, `complete_`, `digest_`, `link_` or `nag_`: their
+shapes are below, and they are the whole contract.
 
 ### `pane_<name>` — a screen
 
@@ -194,6 +195,31 @@ Only `http` and `https` targets are drawn: a head cannot ask a terminal whether 
 should open, so anything else is refused whole - an answer of the wrong length links nothing. A trap
 leaves the words the text they were.
 
+### `nag_todo` — which row the plan-check names, in what words, when next
+
+```toml
+name = "every-free-head"
+hooks = ["nag_todo"]
+actions = []
+```
+
+The input is the board, the rows the check may speak about, the clock, and what the harness's own
+check says:
+`{"v": 1, "board": [{"id", "content", "status", "by", "waits", "under_review"}…], "eligible": ["…"], "clock": {"since_last_ms", "repeats", "idle_ms", "operator_added_ms", "floor_ms", "cap_ms"}, "jobs": […], "children": […], "now_ms": …, "text": "…", "name": "…"}`.
+A row's `id` is its own words. The answer is
+`{"name": ["<row>"], "text": "…", "next_ms": 240000}` or `{"quiet": true, "next_ms": …}`, and `{}`
+leaves the harness's own check standing - which is what the built-in `b-todo` layer answers.
+
+Three rules the host applies to whatever you answer: **a name outside `eligible` refuses the whole
+answer** (half a sentence is a sentence nobody wrote) and the harness's own check is said; **quiet is
+overridden** at `cap_ms` and while a queue row is open - a plan may not go unmentioned for the whole
+repeat cap; and **`next_ms` is clamped** to `floor_ms`..`cap_ms`, so a layer may not shout louder or go
+quieter than the operator's `[nag]` table. Quiet past the cap, and a trap, fall to the native nag: a
+broken layer never loses a check.
+
+This is the layer R127 is written as: naming every free head is an answer here (`name` may hold them
+all), and the default stays the one row today's daemon names.
+
 ## The loop
 
 ```sh
@@ -223,7 +249,7 @@ A `tool_` layer is the one kind that also needs `plugin {"action":"load"}`, beca
 seated when the layer applies: a tool a session has not loaded is not in the model's tool list.
 
 `scaffold` has a template for `pane`, `notice`, `on_tool_call`, `on_tool_result` and `condition`. For
-`digest_`, `link_`, `command_` or `tool_`, scaffold the nearest one and rename the export in
+`digest_`, `link_`, `nag_`, `command_` or `tool_`, scaffold the nearest one and rename the export in
 `plugin.toml` and in `src/lib.rs` - the shape above is the whole of what you are writing.
 
 ## The rules that catch people
@@ -252,6 +278,9 @@ seated when the layer applies: a tool a session has not loaded is not in the mod
   refused, and then the tool's own bytes stand.
 - **A link answer is one entry per word, in order, and `http`/`https` only.** A shorter or longer
   list would link the wrong word, so it is refused whole rather than zipped.
+- **A nag layer chooses, words and paces - it does not widen.** The rows it may name are the
+  `eligible` ones the host worked out, its quiet ends at the repeat cap, and its `next_ms` is held
+  inside `[nag]`'s bounds. It cannot make the check touch a queue row's nag, which is the queue's.
 - **No clock, no I/O.** `SystemTime::now()` traps on wasm32; a trap falls to the layer below and is
   reported. Take time from what the look read.
 

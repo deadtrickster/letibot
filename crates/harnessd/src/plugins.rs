@@ -344,6 +344,7 @@ impl PluginHost {
         );
         host.install_builtin_panes = true;
         host.install_builtin_tools(&crate::plugins::declared_tools(session, workspace));
+        host.install_builtin_nags();
         host
     }
 
@@ -397,6 +398,35 @@ impl PluginHost {
                 })
                 .unwrap_or(false);
             if !declares {
+                continue;
+            }
+            if let Err(why) =
+                inner
+                    .stack
+                    .register_builtin_bytes(builtin.name, builtin.manifest, builtin.wasm)
+            {
+                // The stack has recorded the failure; this is the line the daemon's log shows.
+                eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
+            }
+        }
+    }
+
+    /// Put the binary's built-in layers that answer `nag_` at the bottom of this stack, so the
+    /// plan-check's default is a LAYER rather than a branch: today's answer is `b-todo`'s, and an
+    /// operator's layer above it is R127's every-free-head answer (`docs/plugin-extension-points-wide.md`
+    /// X13). Without this the hook would have nothing to ask and the whole door would be the
+    /// harness's own code wearing a hook's name.
+    fn install_builtin_nags(&self) {
+        let mut inner = self.lock();
+        for builtin in letibot_builtins::table() {
+            let answers = Manifest::parse(builtin.manifest)
+                .map(|m| {
+                    m.hooks
+                        .iter()
+                        .any(|h| h.strip_prefix("nag_").is_some_and(|n| !n.is_empty()))
+                })
+                .unwrap_or(false);
+            if !answers {
                 continue;
             }
             if let Err(why) =
@@ -605,6 +635,52 @@ impl PluginHost {
                     ),
                 );
                 Some(text.to_string())
+            }
+        }
+    }
+
+    /// One nag decision through the `nag_` hook: which eligible row the plan-check names, in what
+    /// words, and when it may come due again. `None` when nothing here answers the hook, the layer
+    /// trapped, or its answer was one the host refuses - and the harness's own check stands, because
+    /// a plan that stalled behind a broken layer is the failure this door must not have.
+    ///
+    /// The rules the answer is held to live in `letibot_plugin::nag::Out::decide`: a name outside
+    /// `eligible` refuses the whole answer, quiet is overridden at the repeat cap and while a queue
+    /// row is open, and `next_ms`'s bounds are the clock's to apply.
+    pub fn nag(
+        &self,
+        hub: &Arc<Hub>,
+        input: &letibot_plugin::nag::Input,
+    ) -> Option<letibot_plugin::nag::Decision> {
+        let asked = serde_json::to_value(input).ok()?;
+        let resolved = self.ask(hub, letibot_plugin::nag::HOOK, &asked)?;
+        let answer = resolved.answer?;
+        let by = resolved.by.clone().unwrap_or_default();
+        let out = match letibot_plugin::nag::read(&answer) {
+            Ok(out) => out,
+            Err(why) => {
+                self.complain(
+                    hub,
+                    &by,
+                    &format!(
+                        "the layer `{by}` answered something that is not a nag decision, which is \
+                         `{{\"name\": [\"<a row the check may speak about>\"], \"text\": \"…\", \
+                         \"next_ms\": …}}` or `{{\"quiet\": true}}` and nothing else: {why}. \
+                         The harness's own check stands"
+                    ),
+                );
+                return None;
+            }
+        };
+        match out.decide(input) {
+            Ok(decision) => Some(decision),
+            Err(why) => {
+                self.complain(
+                    hub,
+                    &by,
+                    &format!("the layer `{by}` cannot decide this check: {why}"),
+                );
+                None
             }
         }
     }
@@ -1761,7 +1837,7 @@ fn synthetic_pane_input(feeds: &BTreeMap<String, Value>) -> Value {
 /// asked yet: the SDK's own synthetic example of that kind. A layer that cannot answer it traps on
 /// its own first frame, which is the cheapest defect to find.
 fn synthetic_for(hook: &str, feeds: &BTreeMap<String, Value>) -> Value {
-    use letibot_plugin::{condition, digest, link, notice, tool_call, tool_result};
+    use letibot_plugin::{condition, digest, link, nag, notice, tool_call, tool_result};
     let value = if hook.starts_with("pane_") {
         return synthetic_pane_input(feeds);
     } else if hook == tool_call::HOOK {
@@ -1774,6 +1850,8 @@ fn synthetic_for(hook: &str, feeds: &BTreeMap<String, Value>) -> Value {
         serde_json::to_value(digest::Input::synthetic())
     } else if hook.starts_with(link::PREFIX) {
         serde_json::to_value(link::Input::synthetic())
+    } else if hook.starts_with(nag::PREFIX) {
+        serde_json::to_value(nag::Input::synthetic())
     } else {
         serde_json::to_value(notice::Notice::synthetic())
     };
@@ -1789,7 +1867,7 @@ fn accepted(
     declared: &[String],
     input: &Value,
 ) -> Result<String, String> {
-    use letibot_plugin::{condition, digest, link, notice, tool_call, tool_result};
+    use letibot_plugin::{condition, digest, link, nag, notice, tool_call, tool_result};
     if hook.starts_with("pane_") {
         let view = validated(answer, hook, hook, declared)?;
         return Ok(format!("a view the host can drive — \"{}\"", view.title));
@@ -1887,6 +1965,12 @@ fn accepted(
         } else {
             said.join(", ")
         });
+    }
+    if hook.starts_with(nag::PREFIX) {
+        let out = nag::read(answer)?;
+        let input: nag::Input =
+            serde_json::from_value(input.clone()).map_err(|e| format!("not a nag input ({e})"))?;
+        return Ok(out.said(&input));
     }
     let out: notice::NoticeOut =
         serde_json::from_value(answer.clone()).map_err(|e| format!("not a notice ({e})"))?;

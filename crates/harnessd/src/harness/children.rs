@@ -961,6 +961,16 @@ impl crate::turn_tail::TurnOwner for ChildTurns {
             _ => {}
         }
         self.rearm(h, true);
+        // After the re-arm, which arms the ladder's own deadline: an interval a `nag_` layer asked
+        // for is the one that stands for a delivered check. Clamped here, where the bounds live.
+        if matches!(door, crate::turn_tail::Door::Nag(_))
+            && let Some(next) = h.nag_next()
+        {
+            self.nag.arm_in(
+                crate::sessions::the_next_check(next, self.nag.timings()),
+                std::time::Instant::now(),
+            );
+        }
     }
 }
 
@@ -1055,8 +1065,19 @@ pub(crate) fn serve_child_with(
                 }
                 // Recorded as the clock reads the plan, not as the wording sent (`nag_said_as`).
                 let notice = sub.nag_said_as();
+                // The clock's own numbers, written before the turn, so a `nag_` layer decides on
+                // the same facts this child's clock does.
+                sub.nag_readings(turns.nag.readings(std::time::Instant::now()));
                 if later_turn(sub, turns, Door::Nag(notice), |h| h.nag_turn()).is_none() {
                     turns.rearm(sub, false);
+                    // A check the layer held back still owes the clock an arming - at the interval
+                    // it asked for, clamped to the config's bounds.
+                    if let Some(next) = sub.nag_next() {
+                        turns.nag.arm_in(
+                            crate::sessions::the_next_check(next, turns.nag.timings()),
+                            std::time::Instant::now(),
+                        );
+                    }
                 }
                 continue;
             }

@@ -18,7 +18,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use letibot_dialect::StablePrefix;
 use letibot_sessionlog::event::{TodoEntry, TodoStatus as WireTodoStatus};
@@ -311,6 +311,15 @@ pub struct Harness {
     /// whatever happens to head the queue now. See `unfinished_plan_for`: the choice is sticky, and
     /// this is the one field that remembers it.
     nag_choice: Option<String>,
+    /// The plan-check's clock as the daemon holding it last read it: the numbers a `nag_` layer is
+    /// handed. Written by `Sessions` before the turn a check runs in, because the clock is its own.
+    nag_clock: letibot_plugin::nag::Clock,
+    /// When the operator last ADDED a row, so a layer may tell the check their row earned from the
+    /// repeat it does not want. Cleared by the delivery that answers it.
+    operator_added_at: Option<Instant>,
+    /// The interval a `nag_` layer asked for. `Sessions` clamps it to the config's bounds and arms
+    /// the clock with it - the bounds are the clock's, and the clock lives there.
+    nag_next: Option<Duration>,
     /// The stale-prompt sentence the model has already been told, so it is told ONCE. The decision is
     /// the person's and it stares at them from their own head. Compared by text, so a different
     /// sentence is told again, and cleared by the fork that re-seats.
