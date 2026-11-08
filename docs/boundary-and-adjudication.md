@@ -635,12 +635,20 @@ the lie that refuses. An empty report keeps the last one, as `ShellSession::take
 gate observes a settled call's report (`bash`, after its wait) and the wait that ends a backgrounded
 run (`job_wait`); a promoted run reports when the wait that ends it does.
 
-What a report may never carry is the deny-list (`intent::env::denied`, §4j.5's ruling): the loaders'
-namespace (`LD_*`, `DYLD_*`), the files and options a shell reads unasked (`BASH_ENV`, `ENV`,
-`SHELLOPTS`, `BASHOPTS`), the `PATH` (which file a bare name runs), and the shell's own machinery
-(`PWD`, `OLDPWD`, `SHLVL`, `_`). A denied name is dropped, never held and never carried: the
-resolver reads it as unread and the next spawn does not receive it. One list serves both sides, so
-what resolves and what runs cannot disagree.
+What a report may never carry is the deny-list (`intent::env::denied`, §4j.5's ruling). Its first
+half is the BOUNDARY's own list, `boundary::env_refusal` — the one a `[boundary] env` line is
+refused with, so the two cannot come to disagree — which is the loaders' namespace (`LD_*`,
+`DYLD_*`), the files and options a shell reads unasked (`BASH_ENV`, `ENV`), the few that place a
+command or its credential agent (`PATH`, `HOME`, `TMPDIR`, `SSH_AUTH_SOCK`), and every secret-shaped
+name. The rest is the shell's machinery about itself, which no boundary has an opinion about
+(`SHELLOPTS`, `BASHOPTS`, `PWD`, `OLDPWD`, `SHLVL`, `_`). A denied name is dropped, never held and
+never carried: the resolver reads it as unread and the next spawn does not receive it. One list
+serves both sides, so what resolves and what runs cannot disagree.
+
+The one exception is a credential: the shell really holds it, so it is HELD — the card has to be
+able to say the value came from this shell and mask it (§4j.4) — and `SessionEnv::shell_pairs` is
+where it stops, by the same list. A secret reaches a command through the seat's own injection, not
+because a shell exported it.
 
 ### 4j.4 What the card shows, and what it refuses to show
 
@@ -710,11 +718,11 @@ into every later command, and `PATH` is not a value one call picks the next call
 Both halves are one list (`intent::env::denied`): a denied name is never resolved and never
 spawned, so a grant given for one command cannot settle another that runs differently because of
 a variable nobody's text names - the same refusal `sets_state_for_later` makes of a durable rule
-over `export*`. The list as built is the narrowest safe default - the loaders' namespace, the
-files and options a shell reads unasked, the `PATH`, and the shell's own machinery - and widening
-it is the operator's open ruling: whether `PATH` may be carried with the file-naming above as the
-honesty mechanism, and which further names (`GIT_CONFIG_GLOBAL`, `CDPATH`, …) belong on either
-side. And nothing reads an environment off disk - no `~/.bashrc`, no `environ` of a dying process,
+over `export*`. That list IS the boundary's (`boundary::env_refusal`, §4j.3) plus the shell's own
+machinery, so a config line's refusal and a carry-over's cannot come to disagree; what is still the
+operator's open ruling is whether `PATH` may be carried with the file-naming above as the honesty
+mechanism, and which further names (`GIT_CONFIG_GLOBAL`, `CDPATH`, …) belong on either side. And
+nothing reads an environment off disk - no `~/.bashrc`, no `environ` of a dying process,
 no store column: observed means the shell said so.
 
 ### The room coordinator is outside the view
@@ -833,8 +841,9 @@ dependency cannot fetch it into the registry from inside the boundary and fails 
 `HostBackend::confined` / `confined_granting` ask `confine::probe`, so on macOS a `coder` or `runner`
 session gets the policy boundary and `backend_confined` is true - which is what makes `allow-all`
 available on a Mac at all (`Prereq::Confinement`). The default local seat (`leticode`) with `bash` on
-runs its commands in the same boundary, over the checkout, while its file tools stay rooted at `/`
-(`HostBackend::confined_over`, chosen in `Harness::place_the_tools`); a refused probe leaves no
+runs its commands in the same boundary, over the checkout, while its file tools reach from `/` and are
+fenced by that same view's masks (§4m; `HostBackend::confined_over`, chosen in
+`Harness::place_the_tools`); a refused probe leaves no
 session at all on either platform, with `boundary_absent` and the refusal's words. Every widening re-probes through the same dispatch (`with_session_tmp`,
 `grant_into_view_impl`), so what is described is what runs. `bash`, background jobs and the persistent
 shell all go through `Confinement::wrap`, which for this mechanism is `sandbox-exec -f <profile>
@@ -891,9 +900,9 @@ that needs a built daemon, see R98 in TODO.md for the step.
 If `sandbox-exec` is missing or the probe refuses, the session is **refused**, with `boundary_absent`
 and the refusal's own words, as on Linux (no `bwrap`, no delegated cgroup). Nothing falls back to the
 whole host. A `leticode` session that seats no shell has no command for a boundary to go in front of,
-and that one is the whole-host
-session `unconfined_session` is about. Two things are deliberately left: the profile is written per
-probe and never removed
+and that one is the whole-host session `unconfined_session` is about - its file tools are held to
+its perimeter (§4m), which is the only fence such a session has. Two things are deliberately left:
+the profile is written per probe and never removed
 (`$TMPDIR/letibot-seatbelt-<pid>/profile-<n>.sb`, outside every checkout on purpose, since a policy the
 command can edit is not a policy), and `sandbox-exec` is deprecated - the day it goes, `probe` refuses
 by name and every session is refused with the `boundary_absent` sentence.
@@ -919,7 +928,9 @@ firecode_only = ["npm", "npx", "pnpm", "yarn", "node"]  # run only inside fireco
   `boundary::resolve` refuses the file with `file:line` and the key. A tight view reaches the home
   only through a grant, so a grant of an ancestor would carry the stores in.
 - `env` refuses secrets and loader variables by name (`boundary::env_refusal`). Secrets travel by
-  the seat's own injection (`GH_TOKEN` stays top-level only).
+  the seat's own injection (`GH_TOKEN` stays top-level only). One list: R95's carry-over reads the
+  same function (§4j.3), so a name a config line may not write is not one a shell's report adds to
+  every later command either, and it is refused with the same sentence.
 - A config that does not parse, or breaks a rule, refuses the session. It never opens the
   unconfigured view.
 - `/boundary` in a head and `letibot boundary` draw what a command gets: paths with the key that
@@ -1078,8 +1089,16 @@ MEASURED at open, so it cannot be a second list that drifts from the shell's, an
   path outside a tight view, or the fact that no key reaches a credential store or the store itself.
   A refusal the model cannot act on is a refusal it retries.
 
-Where a session has no boundary at all — a `leticode` seat with no shell — there is no seat to
-build a fence from, and the file tools keep the whole host the disclosure says they have.
+Where a session has no boundary at all — a `leticode` seat with no shell — nothing MEASURED a view,
+so there is no measured view to build the fence from, and the perimeter's own words are the view
+instead: `ViewSpec::of_seat` renders the seat the table describes, and `FileFence::of` fences it
+exactly as it fences a shell's. So the same `[boundary]` and `[perimeter.<name>]` composition holds
+the five file tools a shell-less seat does have: the credential stores, the letibot store and every
+`[boundary]`/`[perimeter] hide` are refused in a command's own sentence, a top-level seat reaches
+the rest of the machine, and a child of it is the tight level — the narrowing, and the card a
+widening raises, are the perimeter's and not a second list. What is still true of such a seat is
+that no process is bounded: it runs no command for a boundary to go in front of, and the prompt and
+the hub both say so.
 
 ## 4l. The order the gate decides in
 

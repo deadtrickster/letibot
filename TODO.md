@@ -57,7 +57,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R161 | A `bash` call that writes a file is not shown as an edit | Code work | a diff for each file when a command changes more than one (one result carries one `edit` excerpt), and a sweep for a command run in the background — the sweep of the tree the command actually ran in, the single-file diff, the ledger and the nudge are built |
 | R74 | What the 2026-10-11 landings left open | Code work | item 39 (a live gate on lubuntu1/2: the seam and the rows' naming are held by tests, and the fleet credential is not in this placement) |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | leticl's `:turn-finished` arm (`src/session/seq-gap.lisp:254`) does not read `ends_turn`, so every round's end is drawn as the turn's end |
-| R121 | What a command boundary holds is hardcoded and invisible | Code work | items 1-8 are built: the two seat levels and every role are `[perimeter.<name>]` tables, a child composes its parent's and may only narrow it, and a widening is an operator card. left: `grants_rw` and `secrets` are the user file's alone (operator ruling 2026-11-05), a `leticode` seat with no shell still has no boundary to put a perimeter in front of, and R95's carry-over should call `boundary::env_refusal` |
+| R121 | What a command boundary holds is hardcoded and invisible | Code work | built: items 1-8, a `leticode` seat with no shell has its file tools held to its own perimeter, and R95's carry-over calls `boundary::env_refusal`. left only what is ruled, not pending: `grants_rw` and `secrets` are the user file's alone (operator ruling 2026-11-05), a perimeter's `env` reaches no remote or VM command, and a background job's output file keeps `GH_TOKEN` unmasked |
 | R126 | Reviewers fan out to the declared hosts, opt-in | Needs the operator | setting `[queue] reviewer_hosts` in the operator's `leticode.toml` and one live review on lab2x1 (the fan-out is landed and tested against fakes, never against a real host) |
 | R125 | Script plugin layers: where a JavaScript engine comes from, and the JS-side contract | Needs the operator | the two decisions, then `docs/plugins-plan.md` step 11: no JavaScript engine is available offline here, and a vendored one compiled in would run freely as a built-in |
 | R114 | Embeddings as the second similarity tier, for every similarity caller | Code work | item 3's measurement from the take-up logs (are the misses synonyms?), the paraphrase case scored against the worst measured negative, the per-round cost on lab2x1 |
@@ -803,7 +803,7 @@ Heads: this one reads it in `turn_busy` and the bridge gates `Turn::Idle` on it.
 
 ## R121 - What a command boundary holds is hardcoded and invisible
 
-Status: BUILT. Items 1-8 are done: 1-4 (except 4's tool half) on branch z-r121, their remainders and 8 after it, and 5-7 on R121's perimeter branch. The macOS seatbelt suite passed on the Mac (22 tests, including the new hide test).
+Status: BUILT. Items 1-8 are done: 1-4 (except 4's tool half) on branch z-r121, their remainders and 8 after it, and 5-7 on R121's perimeter branch - and the row's last two are in: a `leticode` seat that seats no shell has its file tools held to its own perimeter, and R95's carry-over refuses through `boundary::env_refusal`. The macOS seatbelt suite passed on the Mac (22 tests, including the new hide test).
 
 The paths a confined command sees are two constant lists: `GRANT_CANDIDATES` in
 `crates/tools/src/exec/confine.rs` (`~/.cargo`, `~/.rustup`, `~/.local/bin`, mise's data and
@@ -905,8 +905,6 @@ Open:
 
 - `grants_rw` and `secrets` are the user file's alone, at both `[boundary]` and `[perimeter.<name>]`:
   a project file is editable by a session, and both are a widening. Operator ruling 2026-11-05.
-- A `leticode` seat that seats no shell has no boundary at all, so its file tools keep the whole
-  host and no perimeter can be put in front of a command it never runs. Unchanged.
 - Item 8's fence is this process's, not a sandbox: a session that runs its own code goes round it by
   construction - that is the shell's view's job, which is why the fence is built from the same view.
   `read_many` over a remote or VM backend is not fenced: those substrates have their own view.
@@ -914,7 +912,6 @@ Open:
   their own view and their own environment.
 - `load_user` in `leticode-config` reads the user file as `Level::Project`; `perimeter::load` uses
   `load_as(.., Level::User)` instead. Left alone.
-- The R95 seam: `boundary::env_refusal` is the env deny-list. R95's carry-over should call it.
 - Today's injection gap stands: the masking of `GH_TOKEN` happens when a call's output is read, so a
   background job's output file on disk keeps the token unmasked.
 
@@ -950,6 +947,35 @@ Closed on R121's perimeter branch (items 5-7):
   `coder` (commit only), and a `cleanup` child whose host access is the widening card - and no code
   names a role. The flow the row describes is unchanged and now stated there: children in the tight
   perimeter commit and cannot push, so their work reaches main through the review queue only.
+
+Closed after the perimeters (R121's last two, `docs/boundary-and-adjudication.md` §4j.3 and §4m):
+
+- The shell-less seat: a `leticode` seat seats no shell, so no substrate MEASURED a view for its
+  commands and its file tools were rooted at `/` with no fence at all. The perimeter's own words are
+  the view now: `ViewSpec::of_seat` (`crates/tools/src/exec/confine.rs`) renders the seat the table
+  describes with nothing probed, `FileFence::of` fences it exactly as it fences a shell's, and
+  `place_the_tools` takes that arm where the backend measured no boundary (`open.rs::fence_seat`,
+  `perimeter::seat_for_fence`, which asks the box for no secret because nothing spawns). So the
+  credential stores, the letibot store and every `[boundary]`/`[perimeter.<name>]` hide are refused
+  to `read`, `write`, `edit`, `grep` and `glob` in a command's own sentence and naming the key; a
+  top-level seat reaches the rest of the machine; and a child of it is the tight level, with the same
+  `widening` card for anything beyond it. A `[perimeter.<name>] hide` names its own table, not
+  `[boundary]`: `SeatView::hidden` carries the label each entry was written under and
+  `boundary::apply` extends that list instead of replacing it, which the second application (a
+  perimeter's, then the `[boundary]` table's) used to lose. The disclosure followed: `say_no_boundary`
+  and `whole_host_brief` no longer say the file tools reach everything. Tests:
+  `a_seat_with_no_measured_view_is_fenced_from_its_own_perimeter` (the five tools, both levels),
+  `a_session_with_no_shell_has_its_file_tools_held_to_its_perimeter`,
+  `a_child_of_a_session_with_no_shell_is_fenced_tighter` (the wiring, and the widening's arithmetic).
+- The R95 seam: `intent::env::denied` - the deny-list a shell's report is carried under - reads
+  `boundary::env_refusal` instead of its own `matches!`, so a name a `[boundary] env` line may not
+  write is not one a report adds to every later command either, refused with that line's sentence.
+  The shell's own machinery (`SHELLOPTS`, `BASHOPTS`, `PWD`, `OLDPWD`, `SHLVL`, `_`) stays the
+  module's, because no boundary has an opinion about it. A credential is the one exception: it is
+  HELD so the card can say the value came from this shell and mask it, and `SessionEnv::shell_pairs`
+  no longer carries it - a secret travels by the seat's own injection. Tests:
+  `the_carry_over_refuses_through_the_boundarys_own_list`, `a_credential_is_held_and_masked`,
+  `a_report_drops_the_names_the_deny_list_refuses`.
 
 ---
 
