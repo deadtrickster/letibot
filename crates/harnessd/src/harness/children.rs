@@ -4,6 +4,8 @@
 use super::*;
 // `Placement` names where a child's tools run, and both the spawn and the config it builds read it.
 use letibot_tools::builtins::task::Placement;
+// What a `brief_worktree` layer may drop from a child's seat: a union of denials, and nothing else.
+use letibot_tools::schema::Downgrade;
 
 impl Harness {
     /// Stop this session's children, and say so on its own log: the downward edge, for a caller that
@@ -3602,6 +3604,15 @@ impl HarnessTaskRunner {
         // a command off its queue. See `letibot_sessionlog::hub::Owner`.
         sub_hub.owned_by_its_own_thread();
 
+        // X19: this session's `brief_worktree` layer says what a worktree child is told and may drop
+        // a class of its tools. Asked before the config is built, because a seat narrowed after the
+        // seat is seated is a child that has already answered with what it should not have.
+        let shaped = self.child_brief(&sub_hub, spec, the_deliverable.as_ref());
+        let downgrade = match &shaped {
+            Some(shape) => downgrade.and(&shape.downgrade),
+            None => downgrade,
+        };
+
         let point = self.point();
         let mut sub_cfg = Config {
             session_id: sub_id.clone(),
@@ -3835,7 +3846,11 @@ impl HarnessTaskRunner {
         let brief = match &the_deliverable {
             Some(d) => format!(
                 "{prompt}\n\n{}",
-                letibot_tools::builtins::task::worktree_brief(&d.path, &d.branch)
+                letibot_tools::builtins::task::worktree_brief_with(
+                    &d.path,
+                    &d.branch,
+                    shaped.as_ref().and_then(|s| s.brief_add.as_deref()),
+                )
             ),
             None => prompt.to_string(),
         };
@@ -4009,6 +4024,57 @@ fn open_the_childs_plugins(parent: &HarnessTaskRunner, sub: &Harness, sub_id: &s
     };
     let host = crate::plugins::PluginHost::for_child(sub_id, sub.workspace(), inherited);
     *sub.plugin_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(host));
+}
+
+/// What a `brief_worktree` layer said about one child (`docs/plugin-extension-points-wide.md` X19):
+/// words appended to its brief, and the classes dropped from its seat. The drop is a [`Downgrade`],
+/// which only ever unions denials - so a layer can take a tool from a child and never give it one.
+pub(crate) struct BriefShape {
+    pub(crate) brief_add: Option<String>,
+    pub(crate) downgrade: Downgrade,
+}
+
+impl HarnessTaskRunner {
+    /// This session's `brief_worktree` answer for a child it is about to open, or `None` when
+    /// nobody here answers or the child is in no worktree (there is no worktree brief to shape).
+    /// The facts are the host's: the placement the runner made, the seat the caller asked for, and
+    /// the native brief the layer may add to.
+    fn child_brief(
+        &self,
+        hub: &Arc<Hub>,
+        spec: &letibot_tools::builtins::task::TaskSpec,
+        deliverable: Option<&deliverable::Deliverable>,
+    ) -> Option<BriefShape> {
+        let d = deliverable?;
+        let host = self
+            .plugin_slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        let input = letibot_plugin::brief::Input::new(
+            letibot_plugin::brief::Place::new(
+                &d.path,
+                &d.branch,
+                spec.worktree
+                    .as_ref()
+                    .map(|w| w.base_sha.clone())
+                    .unwrap_or_default(),
+            ),
+            &spec.role,
+            letibot_tools::builtins::task::worktree_brief(&d.path, &d.branch),
+        );
+        let answer = host.child_brief(hub, input)?;
+        // The words the SDK admitted are the ones `Downgrade::parse` knows, so a refusal here is
+        // impossible - and a refusal is *no narrowing* rather than a panic in a spawn.
+        let downgrade = match Downgrade::parse(&answer.seat_drop.join(",")) {
+            Ok(d) => d,
+            Err(_) => Downgrade::none(),
+        };
+        Some(BriefShape {
+            brief_add: answer.brief_add,
+            downgrade,
+        })
+    }
 }
 
 #[cfg(test)]

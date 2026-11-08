@@ -67,6 +67,46 @@ pub struct Pool<'a> {
     /// daemon (or a test) that starts only letibot children, and a project that asked for a Claude
     /// reviewer on one is refused by name rather than quietly given the other kind.
     pub claude: Option<&'a claude::Runs>,
+    /// The queue session's `review_` layers, when the daemon has opened them: the words a reviewer
+    /// is started with and the rung its verdict must reach (`docs/plugin-extension-points-wide.md`
+    /// X18). `None` is a queue served with nothing in force, which composes and judges exactly as
+    /// it did before the hooks existed.
+    pub layers: Option<&'a dyn ReviewLayers>,
+}
+
+/// The queue's `review_` hooks, as the queue's own stack answers them. A trait because the pool is
+/// built by the session's thread and asked from its passes, and a test's queue is neither.
+pub trait ReviewLayers: Send + Sync {
+    /// The layer's words for one reviewer's brief, or `None` when nothing answers.
+    fn brief(&self, req: &ReviewRequest) -> Option<letibot_plugin::review::Brief>;
+
+    /// The rung a layer requires of a verdict - never a way to reach one.
+    fn floor(&self, decision: Decision) -> Option<letibot_plugin::review::Floor>;
+}
+
+/// [`ReviewLayers`] over the review queue session's live plugin host: the daemon's one impl.
+pub struct Layers {
+    host: Arc<crate::plugins::PluginHost>,
+    hub: Arc<letibot_sessionlog::hub::Hub>,
+}
+
+impl Layers {
+    pub fn new(
+        host: Arc<crate::plugins::PluginHost>,
+        hub: Arc<letibot_sessionlog::hub::Hub>,
+    ) -> Layers {
+        Layers { host, hub }
+    }
+}
+
+impl ReviewLayers for Layers {
+    fn brief(&self, req: &ReviewRequest) -> Option<letibot_plugin::review::Brief> {
+        self.host.review_brief(&self.hub, req)
+    }
+
+    fn floor(&self, decision: Decision) -> Option<letibot_plugin::review::Floor> {
+        self.host.review_floor(&self.hub, decision)
+    }
 }
 
 /// What one pass of [`serve`] did.
@@ -762,13 +802,17 @@ fn start_a_claude_run(
         head_sha: r.head_sha.clone(),
         cwd: dir.display().to_string(),
     };
-    let prompt = match r.kind {
-        ReviewKind::Branch => claude::prompt(&req),
-        ReviewKind::Target => red_target_prompt_with(
-            &req,
-            &r.target,
-            letibot_tools::gatekeeper::Door::StructuredOutput,
-        ),
+    let prompt = {
+        let shaped = p.layers.and_then(|l| l.brief(&req));
+        match r.kind {
+            ReviewKind::Branch => claude::prompt(&req, shaped.as_ref()),
+            ReviewKind::Target => red_target_prompt_with(
+                &req,
+                &r.target,
+                letibot_tools::gatekeeper::Door::StructuredOutput,
+                shaped.as_ref(),
+            ),
+        }
     };
     // The conversation this review already has, if any: a re-review of a new head continues it
     // (`--resume <id>`) instead of making the reviewer read the branch from nothing.
@@ -886,9 +930,16 @@ fn start_a_session(
         head_sha: r.head_sha.clone(),
         cwd,
     };
-    let prompt = match r.kind {
-        ReviewKind::Branch => letibot_tools::gatekeeper::review_prompt(&req),
-        ReviewKind::Target => red_target_prompt(&req, &r.target),
+    let prompt = {
+        let shaped = p.layers.and_then(|l| l.brief(&req));
+        match r.kind {
+            ReviewKind::Branch => {
+                letibot_tools::gatekeeper::review_prompt_with(&req, Door::Tool, shaped.as_ref())
+            }
+            ReviewKind::Target => {
+                red_target_prompt_with(&req, &r.target, Door::Tool, shaped.as_ref())
+            }
+        }
     };
     let handle = p
         .runner
@@ -949,12 +1000,18 @@ enum CouldNotStart {
 /// `reject` is *the code is broken*, which opens a fix branch through the queue when the
 /// project's policy is `fix` `accept` is *the red is not in the code* (a flake, the
 pub fn red_target_prompt(req: &ReviewRequest, target: &str) -> String {
-    red_target_prompt_with(req, target, Door::Tool)
+    red_target_prompt_with(req, target, Door::Tool, None)
 }
 
-/// [`red_target_prompt`] for a reviewer whose verdict goes through `door`: the same review, with the
-/// one sentence that names where the verdict is handed in said the way that reviewer can obey it.
-pub fn red_target_prompt_with(req: &ReviewRequest, target: &str, door: Door) -> String {
+/// [`red_target_prompt`] for a reviewer whose verdict goes through `door` and whose brief a
+/// `review_brief` layer shaped: the same review, with the one sentence that names where the verdict
+/// is handed in said the way that reviewer can obey it.
+pub fn red_target_prompt_with(
+    req: &ReviewRequest,
+    target: &str,
+    door: Door,
+    shaped: Option<&letibot_plugin::review::Brief>,
+) -> String {
     let hand_in = match door {
         Door::Tool => "hand your verdict in with `review_verdict`",
         Door::StructuredOutput => "hand your verdict in as this run's structured output",
@@ -970,7 +1027,7 @@ pub fn red_target_prompt_with(req: &ReviewRequest, target: &str, door: Door) -> 
          - `accept`: the code is sound and the red is not in it (a flaky test, the machine). The \
          tip is gated again.\n\
          - `needs_human`: you cannot tell; the operator is asked.",
-        letibot_tools::gatekeeper::review_prompt_with(req, door),
+        letibot_tools::gatekeeper::review_prompt_with(req, door, shaped),
         head = req.head_sha,
     )
 }
@@ -985,6 +1042,24 @@ fn verdict(
     req_cwd: &str,
     said: letibot_tools::gatekeeper::Submission,
 ) -> Result<(), StoreError> {
+    // The queue's `review_verdict` floor, applied before anything reads the decision: merged
+    // through the strictest rung, so a layer can park a branch the reviewer would have landed and
+    // can never land one it refused. The reason is written on the row, because a verdict that
+    // moved without a sentence is one nobody can act on.
+    let mut said = said;
+    if let Some(layers) = p.layers {
+        let floored =
+            letibot_tools::gatekeeper::floored(said.decision, layers.floor(said.decision));
+        if floored != said.decision {
+            said.reasons.push(format!(
+                "the queue's `review_verdict` layer requires at least `{}`, so this review does \
+                 not land: the reviewer's verdict was `{}`",
+                floored.as_str(),
+                said.decision.as_str()
+            ));
+            said.decision = floored;
+        }
+    }
     // A verdict about a tree that is not there is not a verdict about the branch: a reviewer whose
     // clone was removed under it answers `cannot_decide`. An empty cwd is a reviewer on another
     // machine, so there is no tree here to have gone away.

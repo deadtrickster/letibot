@@ -654,7 +654,9 @@ fn stream_of(view: &letibot_sessionlog::pane::View) -> Option<letibot_sessionlog
 
 /// One scene of the room, applied to a head: the fixtures `rooms.rs` draws its own tests from, in
 /// the shapes the adapter has a decision for.
-fn scenes() -> Vec<(&'static str, fn(&mut App))> {
+type Scene = (&'static str, fn(&mut App));
+
+fn scenes() -> Vec<Scene> {
     fn one(kind: &str, seq: u64, author: &str, text: &str) -> Value {
         json!({"seq": seq, "ts": 1_793_735_794_000u64 + seq * 60_000, "room": "host",
                "author": author, "kind": kind, "text": text})

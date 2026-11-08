@@ -1230,6 +1230,7 @@ fn refuse(fx: &Fixture, id: &str, reasons: &[&str]) {
         reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
         claude: None,
+        layers: None,
     };
     for _ in 0..3 {
         crate::mergequeue::review::serve(&pool).expect("a pass");

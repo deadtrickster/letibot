@@ -160,6 +160,7 @@ fn a_reviewer_on_a_declared_host_is_a_remote_child_at_the_head_it_judges() {
         reviewer_hosts: Some(vec!["lab2x1".to_string()]),
         slots: &Vec::new,
         claude: None,
+        layers: None,
     };
     assert_eq!(
         serve(&pool).expect("a pass").started,
@@ -290,6 +291,7 @@ fn the_per_host_cap_puts_the_second_reviewer_in_line_instead_of_on_the_same_box(
         reviewer_hosts: Some(vec!["lab2x1".to_string(), "local".to_string()]),
         slots: &Vec::new,
         claude: None,
+        layers: None,
     };
     let served = serve(&pool).expect("a pass");
     assert_eq!(served.started, 1, "one reviewer, on the one box with room");
@@ -351,6 +353,7 @@ fn a_verdict_frees_the_place_the_reviewer_held() {
         reviewer_hosts: Some(vec!["lab2x1".to_string()]),
         slots: &Vec::new,
         claude: None,
+        layers: None,
     };
     assert_eq!(serve(&pool).expect("a pass").started, 1);
     let child = "s-gatekeeper-sub-0";
@@ -442,6 +445,7 @@ fn a_host_that_refused_the_placement_is_left_out_and_the_review_runs_here() {
         reviewer_hosts: Some(vec!["lab2x1".to_string(), "local".to_string()]),
         slots: &Vec::new,
         claude: None,
+        layers: None,
     };
     // One pass does it: the host's reviewer fails at its open and the review starts again here
     // before the pass ends, so a down machine costs one pass and no attempt.
@@ -581,6 +585,7 @@ fn by_default_a_reviewer_stays_on_this_machine_whatever_hosts_are_declared() {
         reviewer_hosts: QueueSettings::default().reviewer_hosts,
         slots: &Vec::new,
         claude: None,
+        layers: None,
     };
     assert_eq!(serve(&pool).expect("a pass").started, 1);
 

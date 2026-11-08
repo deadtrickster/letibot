@@ -2044,11 +2044,22 @@ impl<'a> Sessions<'a> {
         // this - a hub and a pane driver exist only here - so it holds a cell and this is the only
         // place that fills one.
         if let Some(h) = self.open.get_mut(session_id) {
-            *h.plugin_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(host.clone());
+            let slot = h.plugin_slot();
+            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(host.clone());
             // X21: `lifecycle_open`, or `lifecycle_reseat` for a resume - asked HERE, where the
             // session's layers are in force for the first time. `Harness::open` ran before this
             // session had a stack, so nothing at open could have answered.
             h.announce_lifecycle();
+            // And the GitHub panel's `review_verdict` floor (K5): the panel is the daemon's and the
+            // stack is a session's, so the first one to open hands it over - a review hook is not a
+            // session's, so every session of this daemon answers the project's policy alike.
+            if self.registry.review_floor().is_none() {
+                self.registry
+                    .set_review_floor(Arc::new(crate::plugins::ReviewFloorHooks::new(
+                        slot,
+                        hub.clone(),
+                    )));
+            }
         }
         self.plugins.insert(session_id.to_string(), host);
     }
@@ -2637,12 +2648,21 @@ impl<'a> Sessions<'a> {
             return Ok(false);
         }
         // Where its reviewers will run, decided HERE because the session has to be TOLD.
-        let prompt = gatekeeper::prompt_as(
+        //
+        // And a `review_brief` layer's paragraph for the queue itself (X18), asked of the daemon's
+        // own session: review hooks are no session-scope layer's, so what comes back is the project's.
+        let shaped = self
+            .open
+            .get(&self.base.session_id)
+            .and_then(|h| h.plugin_host().map(|host| (host, h.hub().clone())))
+            .and_then(|(host, hub)| host.review_queue_brief(&hub));
+        let prompt = gatekeeper::prompt_with(
             &gatekeeper::reviewer_placement(
                 self.base.reviewers == crate::config::Reviewers::Vm,
                 letibot_tools::firecode::firecode_available(),
             ),
             &gatekeeper::room_handle(&self.base.workspace),
+            shaped.as_ref(),
         );
         if self.registry.get(&queue).is_none() {
             // Resumed, or made, and the store is what decides which. The stored row carries the

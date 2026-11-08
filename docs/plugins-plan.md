@@ -837,7 +837,7 @@ of FEEDS rather than one sessions-shaped input, with the acts declared beside th
 |---|---|
 | the table, the build script | `crates/builtins` (`build.rs`, `table()`, `Stack::register_builtin_bytes`) |
 | the guest's ABI half | `plugins/builtin/abi` |
-| the built-in layers | `plugins/builtin/*` (sessions, queue, room, todo, irc, claude-transcript, github) |
+| the built-in layers | `plugins/builtin/*` (sessions, queue, room, chat, todo, irc, claude-transcript, github, review) |
 | the bytes path | `Loader::load_bytes` / `load_builtin`, `Layer::trusted` / `Layer::pin` |
 | the head's host | `crates/tui/src/app/sessions_pane.rs`: its own stack, the feed, the acts, the fold state, the way out |
 | the C3 additions | `crates/plugin-sdk/src/pane.rs`, `crates/sessionlog/src/pane.rs` (`Row`'s `facts`/`under`/`number`/`depth`/`open`/`enter`, `View::validate_for`) |

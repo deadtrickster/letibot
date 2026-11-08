@@ -257,6 +257,7 @@ fn judge(
         clones,
         slots: &Vec::new,
         claude: None,
+        layers: None,
     };
     for _ in 0..passes {
         serve(&pool).expect("a pass");
@@ -298,6 +299,7 @@ fn a_pass(
         clones: clones_dir.0.join(CLONES_DIR),
         slots: &Vec::new,
         claude: None,
+        layers: None,
     };
     serve(&pool).expect("a pass")
 }
@@ -1077,6 +1079,211 @@ fn needs_human_raises_for_the_operator_once_and_tells_no_session() {
     assert_eq!(r.verdict.as_deref(), Some("needs_human"));
 }
 
+// ===== The verdict's floor (`review_verdict`, X18) =====
+
+/// The queue's `review_` layers, as a test holds them: one floor and no brief. The daemon's own impl
+/// is `Layers`, over the queue session's live plugin host.
+struct AFloor(letibot_plugin::review::Floor);
+
+impl ReviewLayers for AFloor {
+    fn brief(&self, _req: &ReviewRequest) -> Option<letibot_plugin::review::Brief> {
+        None
+    }
+    fn floor(&self, _decision: Decision) -> Option<letibot_plugin::review::Floor> {
+        Some(self.0)
+    }
+}
+
+/// One reviewer's verdict handed in under one layer's floor, and the state the row ended in. The row
+/// is claimed from `waiting` each time, so the same row can be judged twice in one test.
+fn judged_under(
+    store: &Store,
+    reviewer: &str,
+    decision: Decision,
+    floor: Option<letibot_plugin::review::Floor>,
+    said: Vec<String>,
+    heard: Arc<Heard>,
+) -> ReviewState {
+    assert!(
+        store
+            .move_review(
+                ID,
+                store.review_row(ID).unwrap().expect("the row").state,
+                ReviewState::Reviewing,
+                &Move::new(ME, "claimed")
+                    .set("owner", ME)
+                    .set("reviewer", reviewer)
+                    .clear("verdict")
+                    .clear("verdict_by"),
+                2,
+            )
+            .unwrap(),
+        "the fixture must really have claimed the row"
+    );
+    let desk = ReviewDesk::new();
+    let tree = a_tree("floor-tree");
+    desk.opened(
+        HOST,
+        reviewer,
+        ID,
+        ReviewRequest {
+            brief: "do the work".into(),
+            branch: BRANCH.into(),
+            base_sha: "base".into(),
+            head_sha: HEAD.into(),
+            cwd: tree.0.display().to_string(),
+        },
+    );
+    desk.submit(
+        reviewer,
+        Submission {
+            decision,
+            reasons: said,
+            looked_at: LookedAt {
+                files: vec!["crates/x.rs".into()],
+                commands: vec!["git diff base...head-1".into()],
+            },
+        },
+    )
+    .expect("the reviewer's verdict is taken at the desk");
+    let events = {
+        let heard = heard.clone();
+        move |e: SessionEvent| {
+            if let SessionEvent::Warning { code, detail, .. } = e {
+                heard.raised.lock().unwrap().push((code, detail));
+            }
+        }
+    };
+    let deliver = a_daemon(&[CHILD, ROOT], heard.clone());
+    let settings = |_: &Path| Ok(QueueSettings::default());
+    let live = |_: &str| true;
+    let layers = floor.map(AFloor);
+    let clones_dir = TempDir::new("review-floor-clones");
+    let pool = Pool {
+        reviewer_skills: &[],
+        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
+        store,
+        runner: &Reviewers,
+        desk: &desk,
+        host: HOST,
+        me: ME,
+        placement: ReviewerPlacement::Host,
+        events: &events,
+        warn: &|_: &str, e| events(e),
+        deliver: &deliver,
+        live: &live,
+        settings: &settings,
+        clones: clones_dir.0.join(CLONES_DIR),
+        slots: &Vec::new,
+        claude: None,
+        layers: layers
+            .as_ref()
+            .map(|l| l as &dyn crate::mergequeue::review::ReviewLayers),
+    };
+    serve(&pool).expect("a pass");
+    store.review_row(ID).unwrap().expect("the row").state
+}
+
+/// A `review_verdict` layer may only tighten a verdict: `accept` over a reviewer's `reject` changes
+/// nothing, and `reject` over an `accept` parks the branch with the layer's own reason on the row.
+/// The two halves are one test because they are one rule - the merge through the strictest rung.
+#[test]
+fn a_verdict_floor_cannot_raise_reject_to_accept() {
+    use letibot_plugin::review::Floor;
+    let (_dir, store) = the_queue("floor");
+    let heard = Arc::new(Heard::default());
+    // The reviewer REJECTS, and the layer asks for `accept` at least - the weakest rung there is, so
+    // the row must stay refused. This is the half a floor cannot do.
+    assert_eq!(
+        judged_under(
+            &store,
+            "s-gatekeeper-sub-1",
+            Decision::Reject,
+            Some(Floor::Accept),
+            reasons(),
+            heard.clone(),
+        ),
+        ReviewState::Rejected,
+        "a layer's `accept` over a reviewer's `reject` is not an accept"
+    );
+    let r = store.review_row(ID).unwrap().unwrap();
+    assert_eq!(r.verdict.as_deref(), Some("reject"), "{r:?}");
+    assert_eq!(r.reasons, reasons(), "and nothing was added to its reasons");
+
+    // And the half it can: the branch goes back to review, the second reviewer accepts, and the
+    // layer requires `reject` - so the row is refused, in the layer's words as well as the
+    // reviewer's.
+    assert!(
+        store
+            .move_review(
+                ID,
+                ReviewState::Rejected,
+                ReviewState::Waiting,
+                &Move::new(ME, "the branch moved")
+                    .set("head_sha", "head-2")
+                    .clear("verdict")
+                    .clear("verdict_by"),
+                3,
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        judged_under(
+            &store,
+            "s-gatekeeper-sub-2",
+            Decision::Accept,
+            Some(Floor::Reject),
+            vec!["the change does what the brief asked".into()],
+            heard.clone(),
+        ),
+        ReviewState::Rejected,
+        "a layer CAN refuse what the reviewer would have landed"
+    );
+    let r = store.review_row(ID).unwrap().unwrap();
+    assert_eq!(r.verdict.as_deref(), Some("reject"), "{r:?}");
+    assert!(
+        r.reasons
+            .iter()
+            .any(|w| w.contains("requires at least `reject`")),
+        "the row carries the layer's sentence, and the reviewer's own: {:?}",
+        r.reasons
+    );
+    assert!(
+        r.reasons
+            .iter()
+            .any(|w| w.contains("the change does what the brief asked")),
+        "the reviewer's reasons are kept: {:?}",
+        r.reasons
+    );
+
+    // With no layer in force the same accept lands, so what refused it above was the floor and not
+    // the queue: the control the other two assertions rest on.
+    assert!(
+        store
+            .move_review(
+                ID,
+                ReviewState::Rejected,
+                ReviewState::Waiting,
+                &Move::new(ME, "a person put it back in line").set("head_sha", "head-3"),
+                4,
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        judged_under(
+            &store,
+            "s-gatekeeper-sub-3",
+            Decision::Accept,
+            None,
+            vec!["the change does what the brief asked".into()],
+            heard.clone(),
+        ),
+        ReviewState::Approved,
+        "no layer, no floor: an accept lands"
+    );
+}
+
 // ===== A fix is for the tip that is red NOW =====
 
 /// A red tip's reject opens no fix branch once the target has moved past that tip: the
@@ -1189,6 +1396,7 @@ fn a_reject_against_a_tip_the_target_has_moved_past_opens_no_fix_branch() {
         clones,
         slots: &Vec::new,
         claude: None,
+        layers: None,
     };
     serve(&pool).expect("a pass");
 
@@ -1337,6 +1545,7 @@ fn a_reviewer_on_this_machine_works_in_a_checkout_of_the_head_it_judges() {
         reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
         claude: None,
+        layers: None,
     };
     assert_eq!(
         serve(&pool).expect("a pass").started,
@@ -1482,6 +1691,7 @@ fn a_project_that_asks_for_vms_gets_its_reviewer_placed_in_one() {
         reviewer_skills: &[],
         machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
         reviewer_hosts: Some(vec!["local".to_string()]),
+        layers: None,
     };
     assert_eq!(
         serve(&pool).expect("a pass").started,
@@ -1624,6 +1834,7 @@ fn a_clone_no_row_is_on_is_removed_and_a_live_rows_is_kept() {
         reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
         claude: None,
+        layers: None,
     };
     // One sweep, with the grace named as zero: the row rule is this test's subject, and the grace is
     // the next one's.
@@ -1762,6 +1973,7 @@ fn a_live_rows_trees_are_never_swept_and_a_dead_rows_go_once_they_are_old() {
         reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
         claude: None,
+        layers: None,
     };
     // The REAL grace, and every tree YOUNG. Nothing of the dead row's goes yet - a clone may still be
     // being written - and nothing of the live row's goes ever.
@@ -1909,6 +2121,7 @@ fn the_sweep_does_not_disturb_a_clone_it_meets() {
         reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
         claude: None,
+        layers: None,
     };
     let stem = clones.join("review-cloning");
     let clone = {
@@ -2047,6 +2260,7 @@ fn a_clone_that_fails_is_a_wait_and_the_next_pass_tries_again() {
         reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
         claude: None,
+        layers: None,
     };
     assert_eq!(serve(&pool).expect("a pass").started, 0, "no reviewer");
 
@@ -2181,6 +2395,7 @@ fn a_verdict_about_a_tree_that_went_away_is_a_wait_and_says_so() {
         reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
         claude: None,
+        layers: None,
     };
     assert_eq!(
         serve(&pool).expect("a pass").started,

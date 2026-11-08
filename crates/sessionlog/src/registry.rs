@@ -596,6 +596,15 @@ pub trait GithubSeat: Send + Sync {
     }
 }
 
+/// The daemon's `review_verdict` floor (K5), as the GitHub panel asks it: a pull request is judged
+/// by the same policy a branch is, and a floor that parks a branch parks a pull request. Words in
+/// and a word out, because this crate holds the door and knows neither the tools nor the plugin SDK.
+pub trait ReviewFloor: Send + Sync {
+    /// The rung a layer requires of `decision` (one of `accept`, `reject`, `needs_human`), or `None`
+    /// when no layer answers - which is the verdict unchanged.
+    fn floor(&self, decision: &str) -> Option<String>;
+}
+
 /// Who answers a plugin pane's questions and lists the panes a head needs before it can open
 /// one. A trait for [`SessionSource`]'s reason: the stack belongs to the harness, not here.
 pub trait PaneDriver: Send + Sync {
@@ -805,6 +814,10 @@ pub struct Registry {
     /// The GitHub reviewer seat (R118), set once at startup by the daemon. See [`GithubSeat`].
     /// `None` means a `Github` frame is refused by name and the pane is handed no `github` feed.
     github: Mutex<Option<Arc<dyn GithubSeat>>>,
+    /// The daemon's `review_verdict` floor (K5), filled when the review queue's session opens: the
+    /// seat is the daemon's and the stack is a session's, so the panel is handed one by a slot.
+    /// `None` is a daemon whose panel judges exactly as it did before the hook existed.
+    review_floor: Mutex<Option<Arc<dyn ReviewFloor>>>,
     /// One per session, installed by the session's own harness at open and removed with the
     /// session ([`Registry::remove`]). See [`PromptDriver`] for why it is keyed by session.
     prompts: Mutex<std::collections::HashMap<String, Arc<dyn PromptDriver>>>,
@@ -949,6 +962,7 @@ impl Registry {
             suggester: Mutex::new(None),
             terminal: Mutex::new(None),
             github: Mutex::new(None),
+            review_floor: Mutex::new(None),
             prompts: Mutex::new(std::collections::HashMap::new()),
             pane_drivers: Mutex::new(std::collections::HashMap::new()),
             instance: mint_instance(),
@@ -1266,6 +1280,20 @@ impl Registry {
     /// The GitHub reviewer seat, or `None` on a daemon that was given none.
     pub fn github(&self) -> Option<Arc<dyn GithubSeat>> {
         self.github
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Install the `review_verdict` floor the daemon's layers require, which the GitHub panel asks
+    /// before it writes a review. Called where the review queue's stack comes into force.
+    pub fn set_review_floor(&self, floor: Arc<dyn ReviewFloor>) {
+        *self.review_floor.lock().unwrap_or_else(|e| e.into_inner()) = Some(floor);
+    }
+
+    /// The floor this daemon was given, or `None` when no layer answers `review_verdict`.
+    pub fn review_floor(&self) -> Option<Arc<dyn ReviewFloor>> {
+        self.review_floor
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()

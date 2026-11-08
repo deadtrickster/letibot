@@ -1,0 +1,7 @@
+name = "review"
+purpose = "the reviewer's brief: the rules a gatekeeper child judges a branch by, and the words a project replaces them with"
+hooks = ["review_brief"]
+# **Nothing.** The brief is composed from the entry the host hands in — the branch, the base and the
+# head — so this layer reads no file, runs no program and asks nobody.
+capabilities = []
+contract = 1

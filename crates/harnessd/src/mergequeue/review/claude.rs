@@ -465,9 +465,10 @@ fn signal_name(s: i32) -> &'static str {
 }
 
 /// The prompt a headless run is asked with: the queue's own review prompt, with the door named the
-/// way this reviewer can obey it (it holds no `review_verdict`).
-pub fn prompt(req: &ReviewRequest) -> String {
-    letibot_tools::gatekeeper::review_prompt_with(req, Door::StructuredOutput)
+/// way this reviewer can obey it (it holds no `review_verdict`) and a `review_brief` layer's words
+/// where the host's policy stood.
+pub fn prompt(req: &ReviewRequest, shaped: Option<&letibot_plugin::review::Brief>) -> String {
+    letibot_tools::gatekeeper::review_prompt_with(req, Door::StructuredOutput, shaped)
 }
 
 #[cfg(test)]

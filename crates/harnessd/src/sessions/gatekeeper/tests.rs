@@ -938,3 +938,35 @@ fn the_gatekeepers_room_context_never_claims_claude_codes_name() {
     }
     assert!(!said.contains("claude-code here"), "{said}");
 }
+
+/// A `review_brief` layer's paragraph reaches the queue's own prompt, and nothing else does: the
+/// host's protocol stays whole, because the row mechanics and the operator's verbs are not a
+/// project's words to replace (`docs/plugin-extension-points-wide.md` X18).
+#[test]
+fn the_queue_prompt_takes_a_layers_added_words_and_keeps_the_hosts_own() {
+    let placement = ReviewerPlacement::Host;
+    let native = prompt(&placement);
+    // A layer adding a rule: appended, with the host's text untouched up to it.
+    let adding = letibot_plugin::review::Brief {
+        brief_add: Some("Every review of this project names the flaky test it saw.".into()),
+        ..Default::default()
+    };
+    let shaped = prompt_with(&placement, "gatekeeper", Some(&adding));
+    assert!(
+        shaped.starts_with(&native),
+        "the host's prompt is whole, and the layer's words come after it: {shaped}"
+    );
+    assert!(
+        shaped.ends_with("Every review of this project names the flaky test it saw."),
+        "{shaped}"
+    );
+    // A layer REPLACING the body is ignored here: the queue's prompt is the protocol, and a project
+    // that replaced it would be telling the queue to run reviews it has no verbs for.
+    let replacing = letibot_plugin::review::Brief::saying("Anything the reviewer says is fine.");
+    assert_eq!(
+        prompt_with(&placement, "gatekeeper", Some(&replacing)),
+        native
+    );
+    // And no layer at all is the native prompt, byte for byte.
+    assert_eq!(prompt_with(&placement, "gatekeeper", None), native);
+}

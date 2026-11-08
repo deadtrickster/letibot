@@ -215,6 +215,7 @@ impl World {
             reviewer_hosts: Some(vec!["local".to_string()]),
             slots: &|| self.holders.clone(),
             claude: None,
+            layers: None,
         };
         serve(&pool).unwrap();
     }

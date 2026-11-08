@@ -717,6 +717,7 @@ What landed:
   compaction, and its template is the harness's); a head card still reads none of it (K6).
 
 ### K5 - `review_` and `brief_` (M, after K1)
+### K5 - `review_` and `brief_` (M, after K1) - **landed 2026-11**
 
 Owns `tools/src/gatekeeper.rs` (`review_prompt` composes from the answer),
 `harnessd/src/sessions/gatekeeper.rs` (prose moves to the layer), `harnessd/src/mergequeue/review.rs`
@@ -724,6 +725,39 @@ Owns `tools/src/gatekeeper.rs` (`review_prompt` composes from the answer),
 `plugins/builtin/review/**`. Done when:
 `a_verdict_floor_cannot_raise_reject_to_accept`, `a_session_layer_of_the_reviewed_branch_does_not_reach_its_reviewer`,
 `a_brief_layer_cannot_add_a_tool_to_the_seat`, `the_builtin_review_layer_briefs_as_the_native_prompt_did`.
+
+As built: two families, `review_` (`plugin-sdk/src/review.rs`: `review_brief`, `review_verdict`,
+and the three-rung `Floor`) and `brief_` (`plugin-sdk/src/brief.rs`: `brief_worktree`). Both review
+hooks are asked of the QUEUE session's stack, never a reviewer's or the reviewed branch's:
+`review_brief` in `mergequeue/review.rs::start_reviewer` for one entry and again - the entry absent -
+for the queue session's own prompt (`sessions/gatekeeper.rs::prompt_with`), `review_verdict` at
+`verdict()` before anything reads the decision. An answer's `brief` REPLACES the host's policy body
+(`brief_add` is appended after it and `require` becomes its rules), composed by
+`tools/src/gatekeeper.rs::review_prompt_with`; `native_policy` - the old text, byte for byte - is
+the fallback, `review_prompt` is `review_prompt_with(&req, Door::Tool, None)`, and
+`red_target_prompt` takes the same shape. A layer's `brief` stands at the `Tool` door only: rules 4
+and 5 are the DOOR's, and a headless run told to call `review_verdict` judges nothing. The floor
+merges through `Floor::strictest`, so a layer can park a branch the reviewer would have landed and
+can never raise a `reject`; the sentence it added is written on the row, and a layer that traps is
+`needs_human` rather than a silent accept. Both are in `NOT_A_SESSIONS`: the
+stack skips a Session-scope layer and `Manifest::admit_for` refuses its manifest, pinned or not,
+because the branch under review does not grade itself. `brief_worktree` is asked by
+`HarnessTaskRunner::child_brief` BEFORE the child's config is built - a seat narrowed afterwards is
+a child that has already answered with it - and `worktree_brief_with` appends its words to the
+native brief. `seat_drop` names an ACCESS CLASS (`read-only`, `no-write`, `no-exec`, `no-network`)
+turned into a `Downgrade`, a union of denials: an answer carrying `seat_add` is refused by the
+contract's `deny_unknown_fields`, said once, and the seat stands.
+
+The built-in `plugins/builtin/review` says the native policy exactly (`review_brief`, no
+capabilities), which needed a THIRD door for built-ins in `PluginHost`: `install_builtin_for`, on the
+first ask of a hook the daemon itself asks, because a built-in that declares no tool and no pane was
+never installed by either existing door. `SERVED_KINDS` gains `review_` and `brief_` and
+`plugin-hooks` teaches both.
+
+What it does not do: `brief_`'s `model` (X19) is not built - placement, model and depth stay the
+host's, and a name here would be a second model-resolution door; and the queue's own prompt takes
+only `brief_add`, not a replacement `brief`, because that prompt is the protocol (the rows, the
+child, the operator's verbs) and not a project's to rewrite.
 
 ### K6 - cards from facts (M, after K2 and P2)
 

@@ -537,6 +537,11 @@ impl Harness {
             letibot_tools::builtins::task::TaskRunner::send(&*runner, to, text)
         };
         let host = self.hub.session_id();
+        // The queue's own `review_` layers, if the daemon opened them (X18): the reviewer's brief
+        // and the verdict's floor are the queue session's answers, never the branch's.
+        let layers = self
+            .plugin_host()
+            .map(|h| crate::mergequeue::review::Layers::new(h, self.hub.clone()));
         let pool = crate::mergequeue::review::Pool {
             store,
             runner: &*self.subagents,
@@ -573,6 +578,9 @@ impl Harness {
             slots: &|| crate::vm_reap::slot_holders(store, self.session_registry.instance()),
             // The daemon's Claude Code reviewers, when a project's `[queue.claude]` names one.
             claude: Some(&self.claude),
+            layers: layers
+                .as_ref()
+                .map(|l| l as &dyn crate::mergequeue::review::ReviewLayers),
         };
         let served = match crate::mergequeue::review::serve(&pool) {
             Ok(s) => s,

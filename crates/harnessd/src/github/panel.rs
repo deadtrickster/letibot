@@ -13,6 +13,7 @@ use std::time::Duration;
 use letibot_github::mirror::{Mirrors, github_url};
 use letibot_github::seat::{Job, Reviewer, Session};
 use letibot_github::source::{Comment, Event, Pull, Review, Standing};
+use letibot_sessionlog::registry::ReviewFloor;
 use letibot_tools::gatekeeper::{Decision, Door, LookedAt, ReviewRequest, Verdict};
 
 use crate::mergequeue::review::claude;
@@ -110,6 +111,9 @@ pub struct Panel {
     /// Where a repository is cloned from. GitHub's own URL unless a caller says otherwise, which is
     /// what a test's local repository needs.
     url: Arc<dyn Fn(&str) -> String + Send + Sync>,
+    /// The queue's `review_verdict` floor (K5), when the daemon has one: a pull request is judged
+    /// by the same policy a branch is, so a floor that parks a branch parks a pull request.
+    floor: Option<Arc<dyn ReviewFloor>>,
 }
 
 impl Panel {
@@ -118,7 +122,14 @@ impl Panel {
             mirrors,
             members,
             url: Arc::new(github_url),
+            floor: None,
         }
+    }
+
+    /// Judge by the daemon's `review_verdict` layers too - `None` is the same panel with none.
+    pub fn with_floor(mut self, floor: Option<Arc<dyn ReviewFloor>>) -> Panel {
+        self.floor = floor;
+        self
     }
 
     /// Clone from somewhere other than GitHub - the URL of a fixture's repository.
@@ -152,7 +163,17 @@ impl Panel {
             }
         }
         let decisions: Vec<Decision> = verdicts.iter().map(|(_, v)| v.decision).collect();
-        let decision = decide(&decisions)?;
+        let decided = decide(&decisions)?;
+        // The same floor a branch's verdict goes through (K5): the stricter of the two rungs, so it
+        // can park what the panel would have accepted and can never raise a member's reject.
+        let decision = letibot_tools::gatekeeper::floored(
+            decided,
+            self.floor
+                .as_ref()
+                .and_then(|floor| floor.floor(decided.as_str()))
+                .as_deref()
+                .and_then(letibot_plugin::review::Floor::parse),
+        );
         let mut reasons = Vec::new();
         let mut looked_at = LookedAt::default();
         for (name, verdict) in &verdicts {
@@ -170,6 +191,14 @@ impl Panel {
         looked_at.files.dedup();
         looked_at.commands.sort();
         looked_at.commands.dedup();
+        if decision != decided {
+            reasons.push(format!(
+                "the queue's `review_verdict` layer requires at least `{}`, so this review does not \
+                 land: the panel's verdict was `{}`",
+                decision.as_str(),
+                decided.as_str()
+            ));
+        }
         Ok(Verdict::for_request(
             case.request,
             decision,
@@ -288,8 +317,13 @@ impl Member for Claude {
     }
 
     fn judge(&mut self, case: &Case<'_>) -> Result<Verdict, String> {
-        let prompt =
-            letibot_tools::gatekeeper::review_prompt_with(case.request, Door::StructuredOutput);
+        // No `review_brief` layer here: a pull request's ask is the pull request, and the panel is
+        // the daemon's - the queue's stack is asked for a branch's brief, not for this one.
+        let prompt = letibot_tools::gatekeeper::review_prompt_with(
+            case.request,
+            Door::StructuredOutput,
+            None,
+        );
         let handle = self.runs.start(
             &case.pull.key(),
             &self.settings,

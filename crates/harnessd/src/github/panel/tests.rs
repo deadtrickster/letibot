@@ -152,6 +152,83 @@ fn a_panels_verdicts_become_one_review() {
     assert_eq!(review.comments[0].body, "this leaks the handle");
 }
 
+/// A `review_verdict` layer parks a pull request the panel would have accepted (K5): the floor is
+/// applied to the panel's own decision, so a project's review policy governs a PR as it governs a
+/// branch - and it can never raise a member's `reject` to an accept.
+#[test]
+fn a_panels_accept_goes_through_the_floor() {
+    use letibot_plugin::review::Floor;
+    struct Requires(Floor);
+    impl letibot_sessionlog::registry::ReviewFloor for Requires {
+        fn floor(&self, _decision: &str) -> Option<String> {
+            Some(self.0.as_str().to_string())
+        }
+    }
+    let pull = a_pull("stroppy-io/letibot");
+    let session = a_session(Path::new("/trees/stroppy-io-letibot-12"));
+    let judged = |members: Vec<Box<dyn Member>>, floor: Option<Floor>| -> Review {
+        let mut panel = Panel::new(Mirrors::new("/nowhere"), members)
+            .with_floor(floor.map(|f| Arc::new(Requires(f)) as Arc<dyn ReviewFloor>));
+        panel
+            .review(&a_job(&pull, &session, "-twice\n+once"))
+            .expect("a review")
+    };
+    // The panel accepts; the layer requires `reject`, so the review that comes out is a refusal and
+    // says whose rule it was.
+    let review = judged(
+        vec![Box::new(Stub::says(
+            "reads the diff",
+            Decision::Accept,
+            &["the change is the ask"],
+        ))],
+        Some(Floor::Reject),
+    );
+    assert!(
+        review.body.starts_with("verdict: reject"),
+        "the floor parks what the panel would have landed: {}",
+        review.body
+    );
+    assert!(
+        review.body.contains("the change is the ask")
+            && review.body.contains("requires at least `reject`"),
+        "the member's words and the layer's are both there: {}",
+        review.body
+    );
+    // And the half a floor cannot do: a member's `reject` stays one under a layer asking for less.
+    let review = judged(
+        vec![Box::new(Stub::says(
+            "runs the tests",
+            Decision::Reject,
+            &["the retry is unbounded"],
+        ))],
+        Some(Floor::Accept),
+    );
+    assert!(
+        review.body.starts_with("verdict: reject"),
+        "a floor cannot raise a reject: {}",
+        review.body
+    );
+    assert!(
+        !review.body.contains("requires at least"),
+        "and nothing was written as if it had moved: {}",
+        review.body
+    );
+    // With no floor the same panel lands, so what refused it above was the layer.
+    let review = judged(
+        vec![Box::new(Stub::says(
+            "reads the diff",
+            Decision::Accept,
+            &["the change is the ask"],
+        ))],
+        None,
+    );
+    assert!(
+        review.body.starts_with("verdict: accept"),
+        "{}",
+        review.body
+    );
+}
+
 /// The gatekeeper's rule, one arm at a time: a refusal wins, an undecided member asks a person, and
 /// only a panel that all accepted accepts.
 #[test]

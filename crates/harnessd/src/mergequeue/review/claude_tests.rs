@@ -167,7 +167,22 @@ struct Fixture<'a> {
     runner: &'a dyn TaskRunner,
     /// Whether this pool holds a Claude runner at all - `false` is a daemon without the plumbing.
     holds_runs: bool,
+    /// The `review_verdict` floor in force, when the test's daemon has a layer answering it.
+    floor: Option<letibot_plugin::review::Floor>,
     events: Mutex<Vec<String>>,
+}
+
+/// The queue's `review_` layers as a test holds them: one floor, no brief. The daemon's own impl is
+/// `Layers`, over the queue session's live plugin host.
+struct AFloor(letibot_plugin::review::Floor);
+
+impl crate::mergequeue::review::ReviewLayers for AFloor {
+    fn brief(&self, _req: &ReviewRequest) -> Option<letibot_plugin::review::Brief> {
+        None
+    }
+    fn floor(&self, _decision: Decision) -> Option<letibot_plugin::review::Floor> {
+        Some(self.0)
+    }
 }
 
 impl<'a> Fixture<'a> {
@@ -180,8 +195,15 @@ impl<'a> Fixture<'a> {
             settings,
             runner,
             holds_runs: true,
+            floor: None,
             events: Mutex::new(Vec::new()),
         }
+    }
+
+    /// The same fixture with a `review_verdict` layer's floor in force.
+    fn with_floor(mut self, floor: letibot_plugin::review::Floor) -> Self {
+        self.floor = Some(floor);
+        self
     }
 
     /// The clones directory, named as the queue's is - `sweep_clones` refuses any other name.
@@ -201,6 +223,7 @@ impl<'a> Fixture<'a> {
         let settings = self.settings.clone();
         let settings = move |_: &Path| Ok(settings.clone());
         let none = |_: &str, _: &str| Ok(String::new());
+        let layers = self.floor.map(AFloor);
         let pool = Pool {
             store: self.store,
             runner: self.runner,
@@ -227,6 +250,9 @@ impl<'a> Fixture<'a> {
             clones: self.clones(),
             slots: &Vec::new,
             claude: self.holds_runs.then_some(&self.runs),
+            layers: layers
+                .as_ref()
+                .map(|l| l as &dyn crate::mergequeue::review::ReviewLayers),
         };
         serve(&pool).expect("a pass")
     }
@@ -516,6 +542,65 @@ fn a_verdict_in_structured_output_becomes_the_queues_verdict() {
     let kept = store.claude_review(ID).unwrap().expect("the conversation");
     assert_eq!(kept.session_id.as_deref(), Some("cc-1"));
     assert_eq!(kept.handle, None, "no run is using it any more");
+}
+
+/// The floor is applied where the verdict is READ, so it reaches a Claude run exactly as it reaches a
+/// session reviewer's: the run's `accept` is parked, and the row carries the layer's sentence beside
+/// the run's own reasons. Which kind answered never decides what a floor may do.
+#[test]
+fn a_claude_reviewers_accept_is_floored_the_same_way() {
+    use letibot_plugin::review::Floor;
+    let dir = TempDir::new("claude-floor");
+    let (store, _repo, _head) = claimed(&dir);
+    let binary = stub(
+        &dir,
+        "claude",
+        &result(
+            "cc-3",
+            Some(
+                r#"{"decision":"accept","reasons":["the change is the ask"],"files":["b.txt"],"commands":["git diff base...head"]}"#,
+            ),
+        ),
+    );
+    // The same run as the test above, with a project whose policy requires `reject` - the half a
+    // floor CAN do, on the reviewer kind that has no session of its own.
+    let mut f =
+        Fixture::new(&store, settings_with(&binary, 60), &NoChild).with_floor(Floor::Reject);
+    f.until("the row is judged", |s| {
+        s.review_row(ID).unwrap().unwrap().state != ReviewState::Reviewing
+    });
+    let row = f.row();
+    assert_eq!(row.state, ReviewState::Rejected, "{row:?}");
+    assert_eq!(row.verdict.as_deref(), Some("reject"), "{row:?}");
+    assert!(
+        row.verdict_by
+            .as_deref()
+            .is_some_and(|b| b.starts_with("reviewer:claude-")),
+        "the verdict still names the run that made it: {:?}",
+        row.verdict_by
+    );
+    assert!(
+        row.reasons
+            .iter()
+            .any(|w| w.contains("requires at least `reject`")),
+        "the row carries the layer's sentence: {:?}",
+        row.reasons
+    );
+    assert!(
+        row.reasons
+            .iter()
+            .any(|w| w.contains("the change is the ask")),
+        "and the run's own reasons are kept: {:?}",
+        row.reasons
+    );
+    assert!(
+        !store
+            .merge_rows(None)
+            .unwrap()
+            .iter()
+            .any(|m| m.branch == "agent/the-work"),
+        "nothing was queued to land: a floored accept is not an accept"
+    );
 }
 
 /// A run that answers in prose, without `structured_output`, has judged nothing: the row goes back in

@@ -24,6 +24,8 @@ right one is most of the work; after that it is a small wasm module and no relea
 | a turn ended when the work was unfinished, or ended when it should have gone on | **`steer_`** — `steer_turn` | at every turn's end, with the harness's own detectors as the facts |
 | a compaction dropped what this project must not lose | **`compact_`** — `compact_summary` | once per compaction, before the record is written |
 | the idle plan-check names the wrong row, or nags at the wrong pace | **`nag_todo`** | on every plan-check the harness is about to deliver |
+| a project's review policy (what a reviewer is told, what a verdict must reach) lives in a release | **`review_brief`** and **`review_verdict`** | when a reviewer is started, and when a verdict comes in — both from the queue's stack |
+| a child's brief needs a rule of this project's, or its seat a class of tools taken away | **`brief_worktree`** | on a `task_start` child, before it is opened |
 
 The contract for some of these and for a pane is the `plugin_hooks` tool, **read from the host's
 own types**: read it before writing anything, and read it again after a refusal.
@@ -266,6 +268,57 @@ broken layer never loses a check.
 
 This is the layer R127 is written as: naming every free head is an answer here (`name` may hold them
 all), and the default stays the one row today's daemon names.
+
+### `review_brief` and `review_verdict` — the reviewer's brief and the verdict's floor
+
+```toml
+name = "house-rules"
+hooks = ["review_brief", "review_verdict"]
+capabilities = []
+```
+
+A review is somebody else's judgement of a branch, and a project's review policy is a file rather
+than a release. Two exports, one subject:
+
+- **`review_brief`** is asked when a reviewer child is about to be started, and again for the review
+  queue's OWN prompt. In: `{"v": 1, "entry": {"ask", "branch", "base", "head", "cwd"}, "brief": …}` —
+  `entry` is absent for the queue's own prompt. Out: `{"brief": "…", "brief_add": "…",
+  "require": ["tests touched for crates/tools", …]}`. `brief` REPLACES the host's policy body (which
+  it keeps as the fallback a silent or trapping layer falls to), `brief_add` is appended after it, and
+  `require` becomes rules of its own. The facts — the branch, the head, the base, the tree — are the
+  host's and a layer cannot move them.
+- **`review_verdict`** is asked on every verdict a reviewer hands in, from the same stack. In:
+  `{"v": 1, "verdict": "accept"|"reject"|"needs_human", "reasons": […]}`. Out:
+  `{"floor": "…", "why": "…"}`. The floor is merged with the verdict through the **stricter** of the
+  two rungs, so `accept` over a reviewer's `reject` changes nothing and `reject` over an `accept`
+  parks the branch with your `why` on the row. **It can never raise a reject to an accept**: there is
+  no field that admits one, and a layer that traps or answers outside the contract has its verdict
+  go to a person (`needs_human`) rather than to `accept`.
+
+**Only a built-in, user or project layer answers either hook.** A session's own layer is refused at
+`admit_for` and skipped by the stack, pinned or not: the branch under review grading itself is not a
+review. That is also why the queue's stack is where these are asked — not the reviewer's, and never
+the reviewed session's.
+
+### `brief_worktree` — what a child is told, and how narrowly it is seated
+
+```toml
+name = "no-shell-child"
+hooks = ["brief_worktree"]
+capabilities = []
+```
+
+Asked when this session starts a `task_start` child in a worktree. In: `{"v": 1, "worktree":
+{"path", "branch", "base"}, "role", "model", "brief"}` — `brief` is the brief the host would send.
+Out: `{"brief_add": "…", "seat_drop": ["no-exec"]}`.
+
+`brief_add` is appended after the host's brief, which is not replaced: *the branch is the deliverable*
+is a rule a layer that took it away would land nothing under. `seat_drop` names an ACCESS CLASS, one
+of `read-only`, `no-write`, `no-exec`, `no-network` — not a tool, because a name this build has no
+tool for is a silent no-op and the class is what the gate reads anyway. **It can only narrow**: there
+is no field that seats a tool, an answer carrying one (`{"seat_add": ["bash"]}`) is refused by name
+and said once, and the drop is applied as a `Downgrade` — a union of denials, which nothing in this
+tree can turn into a grant.
 
 ## The loop
 

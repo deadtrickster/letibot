@@ -267,13 +267,22 @@ impl Door {
 /// The exact text the gatekeeper is asked with: the brief, the placement, and the rules. The
 /// brief is the only framing and it is there verbatim; the verdict is the `review_verdict`
 /// call, and one simple command per call is the prompt's half of a rule the seat cannot refuse.
+/// With no `review_` layer answering this is the whole prompt; [`review_prompt_with`] is the same
+/// text with a layer's words where the policy stood.
 pub fn review_prompt(req: &ReviewRequest) -> String {
-    review_prompt_with(req, Door::Tool)
+    review_prompt_with(req, Door::Tool, None)
 }
 
-/// [`review_prompt`] for a reviewer that answers through `door` instead - the same prompt with
-/// rule 4, rule 5 and the `commands` field named the way that reviewer can obey them.
-pub fn review_prompt_with(req: &ReviewRequest, door: Door) -> String {
+/// [`review_prompt`] for a reviewer that answers through `door` and with a `review_brief` layer's
+/// answer (X18). The facts - the ask, the branch, the head, the base, the tree - are the host's: a
+/// layer says what the reviewer is told, never what it is told about. `shape.brief` replaces the
+/// policy body (the host's own being the fallback a silent or trapping layer falls to),
+/// `brief_add` is appended, and `require` becomes its rules.
+pub fn review_prompt_with(
+    req: &ReviewRequest,
+    door: Door,
+    shape: Option<&letibot_plugin::review::Brief>,
+) -> String {
     // The revision the diffs name: the head under review when the queue bound one, else the
     // branch (see `ReviewRequest::head_sha`).
     let head = if req.head_sha.trim().is_empty() {
@@ -290,7 +299,7 @@ pub fn review_prompt_with(req: &ReviewRequest, door: Door) -> String {
             req.cwd
         )
     };
-    format!(
+    let head_block = format!(
         "You are the gatekeeper. A subagent has finished work on a branch, and you \
          judge whether it may land. You were not given the subagent's report, and \
          you will not get one: you review the artifact against the ask, not the \
@@ -302,8 +311,49 @@ pub fn review_prompt_with(req: &ReviewRequest, door: Door) -> String {
          - branch: {branch}\n\
          - head:   {head} — the commit you judge; the queue lands only this one\n\
          - base:   {base}\n\
-         {cwd}\n\
-         The rules:\n\
+         {cwd}\n",
+        brief = req.brief,
+        branch = req.branch,
+        base = req.base_sha,
+    );
+    let body = match shape.and_then(|s| s.brief.as_deref()) {
+        // A layer's words stand only where the reviewer can obey them: rules 4 and 5 are the
+        // DOOR's, and a headless run has no `review_verdict` tool to be told to call.
+        Some(body) if door == Door::Tool => body.to_string(),
+        _ => native_policy(req, door),
+    };
+    let mut out = format!("{head_block}{body}");
+    if let Some(add) = shape.and_then(|s| s.brief_add.as_deref())
+        && !add.trim().is_empty()
+    {
+        out.push_str("\n\n");
+        out.push_str(add.trim());
+    }
+    if let Some(shape) = shape
+        && !shape.require.is_empty()
+    {
+        out.push_str(
+            "\n\nThe queue requires this of a review, and a verdict that ignores it is not one it \
+             accepts:\n",
+        );
+        for item in &shape.require {
+            out.push_str(&format!("\n- {}", item.trim()));
+        }
+    }
+    out
+}
+
+/// The policy body the host itself says: what a reviewer is for, the one-command rule, and the
+/// references rule. The text a `plugins/builtin/review` layer says today, kept here as the fallback
+/// a layer that traps or stays silent falls to.
+pub fn native_policy(req: &ReviewRequest, door: Door) -> String {
+    let head = if req.head_sha.trim().is_empty() {
+        req.branch.clone()
+    } else {
+        req.head_sha.clone()
+    };
+    format!(
+        "The rules:\n\
          1. Read the code. `git diff {base}...{head}` is the change; the files it \
          touches are the artifact. Read them, and whatever they call.\n\
          2. Do not fix it. You have no write tool and you will not ask for one. A \
@@ -330,16 +380,40 @@ pub fn review_prompt_with(req: &ReviewRequest, door: Door) -> String {
          notes and the issue a change cites. You are encouraged to: a verdict that checked a \
          flag in its man page is worth more than one that trusted the diff. Name what you read \
          in `files` (a URL counts) and what it told you in `reasons`.",
-        brief = req.brief,
-        branch = req.branch,
         base = req.base_sha,
         head = head,
-        cwd = cwd,
         shapes_head = ONE_COMMAND_SHAPES_HEAD,
         fourth = door.fourth(),
         fifth = door.fifth(),
         after = door.after_the_shapes(),
     )
+}
+
+/// `review_brief`'s seam: the layer that says what a reviewer is told of one entry, as the queue's
+/// session holds it (X18). A slot like [`crate::adjudicate::FloorHook`]'s, because the queue is built
+/// before the daemon opens its layers - and a queue nobody served composes exactly as it did.
+pub trait BriefHook: Send + Sync {
+    /// The layer's answer, or `None` when no layer here answers `review_brief`.
+    fn brief(&self, req: &ReviewRequest) -> Option<letibot_plugin::review::Brief>;
+}
+
+/// `review_verdict`'s seam: the floor a layer requires of a verdict - and never a way to reach one.
+/// Asked once per verdict, from the queue's own stack.
+pub trait VerdictHook: Send + Sync {
+    /// The strictest rung a layer requires, or `None` when none answers.
+    fn floor(&self, decision: Decision) -> Option<letibot_plugin::review::Floor>;
+}
+
+/// A verdict after the floor: the stricter of what the reviewer handed in and what a layer requires,
+/// merged the one way two rungs combine. `reject` over an `accept` parks the branch; `accept` over a
+/// `reject` changes nothing, which is the whole of *a floor can never raise a reject*.
+pub fn floored(decision: Decision, floor: Option<letibot_plugin::review::Floor>) -> Decision {
+    use letibot_plugin::review::Floor;
+    let Some(floor) = floor else {
+        return decision;
+    };
+    let was = Floor::parse(decision.as_str()).unwrap_or(Floor::Accept);
+    Decision::parse(floor.strictest(was).as_str()).unwrap_or(decision)
 }
 
 /// The line that opens the block of example commands in [`review_prompt`]: the anchor the

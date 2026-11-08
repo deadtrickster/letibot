@@ -123,8 +123,13 @@ const FAIL_CLOSED: &[&str] = &["on_tool_call", letibot_plugin::adjudicate::HOOK]
 
 /// Hooks a session's own layer may not answer at all, whatever the manifest declared: reviewed
 /// policy about what may run is a project's, the operator's or a built-in's, never that of the agent
-/// it governs. `Manifest::admit_for` refuses such a layer at its door; this catches one already on.
-const NOT_A_SESSIONS: &[&str] = &[letibot_plugin::adjudicate::HOOK];
+/// it governs - and a review of that agent's own branch is the same kind of fact. A manifest is
+/// refused at its door by `Manifest::admit_for`; this catches one already on.
+const NOT_A_SESSIONS: &[&str] = &[
+    letibot_plugin::adjudicate::HOOK,
+    letibot_plugin::review::BRIEF,
+    letibot_plugin::review::VERDICT,
+];
 
 /// A layer's module changed on disk and is waiting for the gate.
 /// The gate fills in the module it loaded and `Stack::apply` swaps in exactly that one: a second

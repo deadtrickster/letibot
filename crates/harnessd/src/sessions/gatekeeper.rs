@@ -185,12 +185,12 @@ come first on the board, and the idle check asks about them before it asks about
 /// have. [`PROMPT`] is the constant half and the placement is this box's answer, appended
 /// last. One function, two callers
 pub fn prompt(placement: &ReviewerPlacement) -> String {
-    prompt_as(placement, "gatekeeper")
+    prompt_with(placement, "gatekeeper", None)
 }
 
 /// [`prompt`] with the seat's room handle (`gatekeeper@<project label>`) written in.
 pub fn prompt_as(placement: &ReviewerPlacement, handle: &str) -> String {
-    format!("{}{}", PROMPT.replace("@HANDLE@", handle), placement.said())
+    prompt_with(placement, handle, None)
 }
 
 /// The handle the room shows this workspace's review queue under: `gatekeeper@<label>`.
@@ -201,6 +201,27 @@ pub fn room_handle(workspace: &std::path::Path) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     let labels = letibot_room::project_labels(&[(key.clone(), root)], &home);
     format!("gatekeeper@{}", labels.get(&key).cloned().unwrap_or(key))
+}
+
+/// [`prompt_as`] with a `review_brief` layer's answer for the queue's OWN prompt - the entry absent,
+/// because this is the session that runs the reviews (X18). Only `brief_add` is used: this prompt is
+/// the protocol (the rows, the child, the operator's verbs) and is not a project's to replace.
+pub fn prompt_with(
+    placement: &ReviewerPlacement,
+    handle: &str,
+    shaped: Option<&letibot_plugin::review::Brief>,
+) -> String {
+    let mut out = format!("{}{}", PROMPT.replace("@HANDLE@", handle), placement.said());
+    if let Some(add) = shaped
+        .filter(|s| s.brief.is_none())
+        .and_then(|s| s.brief_add.as_deref())
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+    {
+        out.push_str("\n\n");
+        out.push_str(add);
+    }
+    out
 }
 
 /// The rows on the review queue's board - one per review this daemon's queues serve that is

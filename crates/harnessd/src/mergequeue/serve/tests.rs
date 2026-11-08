@@ -2213,6 +2213,7 @@ fn served(store: &Store, desk: &ReviewDesk, me: &str) -> crate::mergequeue::revi
         clones: std::env::temp_dir(),
         slots: &Vec::new,
         claude: None,
+        layers: None,
     };
     crate::mergequeue::review::serve(&pool).expect("a pass of the reviewers' host")
 }

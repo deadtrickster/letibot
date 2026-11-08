@@ -111,6 +111,9 @@ impl Github {
             .unwrap_or_default();
         let token = config.token.clone();
         let mirrors = root.clone();
+        // The panel's `review_verdict` floor (K5) is read per pass and not captured: it is installed
+        // when the session whose stack answers the hook opens, which is after this seat is built.
+        let floors = registry.clone();
         let pass: Maker = Box::new(move || {
             let members: Vec<Box<dyn panel::Member>> = match &settings {
                 Some(settings) => {
@@ -120,7 +123,10 @@ impl Github {
             };
             Ok(Parts {
                 source: Box::new(letibot_github::gh::Gh::new(token.clone())),
-                reviewer: Box::new(panel::Panel::new(Mirrors::new(mirrors.clone()), members)),
+                reviewer: Box::new(
+                    panel::Panel::new(Mirrors::new(mirrors.clone()), members)
+                        .with_floor(floors.review_floor()),
+                ),
             })
         });
         let mut github = self.with_pass(pass, Box::new(Around::of(registry)), Box::new(Lexical));

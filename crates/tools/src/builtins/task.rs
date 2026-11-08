@@ -579,6 +579,13 @@ pub fn worktree_branch(slug: &str) -> String {
 /// the finished tree is clean. The daemon checks the same at turn end. An inherited cargo config
 /// rides along: see [`cargo_patch_note`].
 pub fn worktree_brief(path: &str, branch: &str) -> String {
+    worktree_brief_with(path, branch, None)
+}
+
+/// [`worktree_brief`] with a `brief_` layer's added words (`docs/plugin-extension-points-wide.md`
+/// X19). The placement and the deliverable rule are the host's and cannot be moved by a layer: a
+/// brief that lost *the branch is the deliverable* is a child whose work nobody can land.
+pub fn worktree_brief_with(path: &str, branch: &str, brief_add: Option<&str>) -> String {
     let mut said = format!(
         "[the deliverable] You work in the worktree `{path}` on branch `{branch}`, and the \
          branch is the deliverable: commit your work to it as you go and before you finish. \
@@ -588,6 +595,10 @@ pub fn worktree_brief(path: &str, branch: &str) -> String {
     if let Some(note) = cargo_patch_note(std::path::Path::new(path)) {
         said.push_str("\n\n");
         said.push_str(&note);
+    }
+    if let Some(add) = brief_add.map(str::trim).filter(|a| !a.is_empty()) {
+        said.push_str("\n\n");
+        said.push_str(add);
     }
     said
 }

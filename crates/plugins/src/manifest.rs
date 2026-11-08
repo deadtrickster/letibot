@@ -522,26 +522,15 @@ impl Manifest {
         ))
     }
 
-    /// [`Manifest::admit`], and the two rules about the LAYER rather than about its answers: only a
+    /// [`Manifest::admit`], and the rules about the LAYER rather than about its answers: only a
     /// built-in or a PINNED layer may read the `chat` feed, and a session's own layer may not answer
-    /// the gate's floor at all (the review's questions 9 and 4, on their defaults).
+    /// the gate's floor or a review hook at all (the review's questions 9 and 4, on their defaults).
     pub fn admit_for(&self, exports: &[String], scope: Scope, pinned: bool) -> Result<(), String> {
         self.admit(exports)?;
         if scope == Scope::Session
-            && let Some(hook) = self
-                .hooks
-                .iter()
-                .find(|h| h.starts_with(letibot_plugin::adjudicate::PREFIX))
+            && let Some(why) = self.answered_by_a_session()
         {
-            return Err(format!(
-                "the layer `{}` is a session's own and answers `{hook}`. The floor at the gate \
-                 is reviewed policy — a project's production hosts and its own secret stores — \
-                 and the layer of the session it governs may not raise or lower it, so this hook \
-                 is a built-in's, a project's or the operator's. Move it to \
-                 `~/.config/letibot/plugins` (a user layer) or to the project's \
-                 `.letibot/plugins`",
-                self.name
-            ));
+            return Err(why);
         }
         if self.feeds.contains(&letibot_plugin::pane::Feed::Chat)
             && scope != Scope::BuiltIn
@@ -556,6 +545,39 @@ impl Manifest {
             ));
         }
         Ok(())
+    }
+
+    /// The sentence a session's own layer reads when it answers a hook only a project, the operator
+    /// or a built-in may: `None` when it answers none of them. Reviewed policy is not the governed
+    /// agent's to write — the gate's floor and the review of the agent's own branch are the two.
+    fn answered_by_a_session(&self) -> Option<String> {
+        let floor = self
+            .hooks
+            .iter()
+            .find(|h| h.starts_with(letibot_plugin::adjudicate::PREFIX));
+        if let Some(hook) = floor {
+            return Some(format!(
+                "the layer `{}` is a session's own and answers `{hook}`. The floor at the gate \
+                 is reviewed policy — a project's production hosts and its own secret stores — \
+                 and the layer of the session it governs may not raise or lower it, so this hook \
+                 is a built-in's, a project's or the operator's. Move it to \
+                 `~/.config/letibot/plugins` (a user layer) or to the project's \
+                 `.letibot/plugins`",
+                self.name
+            ));
+        }
+        let review = self
+            .hooks
+            .iter()
+            .find(|h| letibot_plugin::review::is_review_hook(h))?;
+        Some(format!(
+            "the layer `{}` is a session's own and answers `{review}`. A review is somebody \
+             else's judgement of this session's work — its brief and its verdict's floor — so the \
+             layer of the session under review may not write either: that would be the branch \
+             grading itself. This hook is a built-in's, a project's or the operator's. Move it to \
+             `~/.config/letibot/plugins` (a user layer) or to the project's `.letibot/plugins`",
+            self.name
+        ))
     }
 }
 

@@ -142,6 +142,11 @@ struct Inner {
     poll_at: Instant,
     /// Pins whose bytes moved before this host existed, held for the first tick that can say them.
     broken_pins: Vec<letibot_plugins::BrokenPin>,
+    /// The hooks the binary's own layers have already been offered for. A built-in that answers a
+    /// hook the DAEMON asks - a review's brief, a verdict's floor, a child's brief - is installed on
+    /// the first ask rather than at open: a module costs seconds to compile, and a session that is
+    /// never reviewed must not pay for one.
+    builtin_asked: BTreeSet<String>,
 }
 
 /// What the host knows about one open pane.
@@ -236,6 +241,7 @@ impl PluginHost {
                 notices: Vec::new(),
                 poll_at: Instant::now() + POLL_EVERY,
                 broken_pins: Vec::new(),
+                builtin_asked: BTreeSet::new(),
             }),
             builder,
             sessions: None,
@@ -389,6 +395,48 @@ impl PluginHost {
             }
         }
         self
+    }
+
+    /// Put the binary's built-in layer for `hook` at the bottom of this stack, once.
+    ///
+    /// The third door, after a declared tool's and a head's pane's: a hook the DAEMON asks on a
+    /// session's behalf is answered by a built-in where nobody above it has words, installed on the
+    /// first ask because a module costs seconds to compile. A built-in with a tool or a pane is left
+    /// to that door - seated for a session that asked, not for a hook nobody called.
+    fn install_builtin_for(&self, hook: &str) {
+        if !self.install_builtin_panes {
+            return;
+        }
+        {
+            let mut inner = self.lock();
+            if inner.builtin_asked.contains(hook) {
+                return;
+            }
+            inner.builtin_asked.insert(hook.to_string());
+        }
+        for builtin in letibot_builtins::table() {
+            let Ok(manifest) = Manifest::parse(builtin.manifest) else {
+                continue;
+            };
+            // A built-in that declares a tool or a pane belongs to that door: this one is for the
+            // hooks the daemon asks itself, and a layer seated for a hook nobody called is cost
+            // with no reader.
+            let has_a_door = manifest
+                .tools
+                .iter()
+                .any(|t| manifest.hooks.contains(&format!("tool_{}", t.name)))
+                || manifest.hooks.iter().any(|h| h.starts_with("pane_"));
+            if has_a_door || !manifest.hooks.contains(&hook.to_string()) {
+                continue;
+            }
+            if let Err(why) = self.lock().stack.register_builtin_bytes(
+                builtin.name,
+                builtin.manifest,
+                builtin.wasm,
+            ) {
+                eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
+            }
+        }
     }
 
     /// Put the built-in layers a session declared a tool from at the bottom of this stack, matched
@@ -570,6 +618,11 @@ impl PluginHost {
         hook: &str,
         input: &Value,
     ) -> Option<letibot_plugins::Resolved> {
+        // The binary's own layer for a hook the daemon asks, before the stack is read: a session
+        // whose project says nothing about reviews still gets the words this build carries.
+        if daemon_asks(hook) {
+            self.install_builtin_for(hook);
+        }
         let mut inner = self.lock();
         let answering = inner.stack.layers().iter().any(|l| {
             !l.disabled
@@ -2843,6 +2896,33 @@ impl letibot_tools::adjudicate::FloorHook for FloorHooks {
     }
 }
 
+/// The GitHub panel's `review_verdict` floor (K5), over one session's plugin host: a pull request
+/// is judged by the same policy a branch is. A word in and a word out because the registry holds the
+/// door and knows neither the tools nor the SDK - and this is the one impl the daemon installs.
+pub struct ReviewFloorHooks {
+    slot: Arc<Mutex<Option<Arc<PluginHost>>>>,
+    hub: Arc<Hub>,
+}
+
+impl ReviewFloorHooks {
+    pub fn new(slot: Arc<Mutex<Option<Arc<PluginHost>>>>, hub: Arc<Hub>) -> ReviewFloorHooks {
+        ReviewFloorHooks { slot, hub }
+    }
+}
+
+impl letibot_sessionlog::registry::ReviewFloor for ReviewFloorHooks {
+    fn floor(&self, decision: &str) -> Option<String> {
+        let host = self
+            .slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        let decision = letibot_tools::gatekeeper::Decision::parse(decision)?;
+        host.review_floor(&self.hub, decision)
+            .map(|floor| floor.as_str().to_string())
+    }
+}
+
 /// The runtime's `digest_` hook, backed by one session's plugin host - the same slot as
 /// [`CallHooks`], because a session has one stack and two would be two answers to what is in force.
 pub struct DigestHooks {
@@ -2953,6 +3033,155 @@ impl PluginHost {
         }
         None
     }
+
+    /// One reviewer's brief through this stack's `review_brief` layer (X18), or `None` when no layer
+    /// here answers it - and then the host's own text stands, which is the whole of the fallback.
+    ///
+    /// A trap or an answer outside the contract is said once and falls to the native text: a review
+    /// whose brief could not be composed would be a review that never starts.
+    pub fn review_brief(
+        &self,
+        hub: &Arc<Hub>,
+        req: &letibot_tools::gatekeeper::ReviewRequest,
+    ) -> Option<letibot_plugin::review::Brief> {
+        let input = letibot_plugin::review::BriefIn::of(letibot_plugin::review::Entry::of(
+            req.brief.clone(),
+            req.branch.clone(),
+            req.base_sha.clone(),
+            if req.head_sha.trim().is_empty() {
+                req.branch.clone()
+            } else {
+                req.head_sha.clone()
+            },
+            req.cwd.clone(),
+        ));
+        match self.review_answer(hub, &input) {
+            Some(Some(brief)) => Some(brief),
+            _ => None,
+        }
+    }
+
+    /// The review queue's OWN prompt through the same hook (the entry is absent): what a project
+    /// wants the session that runs its reviews to be told, in its words.
+    pub fn review_queue_brief(&self, hub: &Arc<Hub>) -> Option<letibot_plugin::review::Brief> {
+        let input = letibot_plugin::review::BriefIn::queue();
+        match self.review_answer(hub, &input) {
+            Some(Some(brief)) => Some(brief),
+            _ => None,
+        }
+    }
+
+    /// [`PluginHost::review_brief`]'s body, shared with the queue's own prompt. The outer `Option`
+    /// is *a layer answered at all*, the inner *what it said*.
+    fn review_answer(
+        &self,
+        hub: &Arc<Hub>,
+        input: &letibot_plugin::review::BriefIn,
+    ) -> Option<Option<letibot_plugin::review::Brief>> {
+        let input = serde_json::to_value(input).ok()?;
+        let resolved = self.ask(hub, letibot_plugin::review::BRIEF, &input)?;
+        let Some(answer) = resolved.answer else {
+            return Some(None);
+        };
+        let by = resolved.by.unwrap_or_default();
+        match serde_json::from_value::<letibot_plugin::review::Brief>(answer.clone()) {
+            Ok(brief) if brief.says_nothing() => Some(None),
+            Ok(brief) => Some(Some(brief)),
+            Err(why) => {
+                self.complain(
+                    hub,
+                    &by,
+                    &format!(
+                        "the layer `{by}` answered something that is not a reviewer's brief — \
+                         `{{\"brief\": \"…\", \"brief_add\": \"…\", \"require\": [ … ]}}` is the \
+                         whole of it: {why}. Its answer was {answer}, so the host's own words stand"
+                    ),
+                );
+                None
+            }
+        }
+    }
+
+    /// The rung a `review_verdict` layer requires of a verdict (X18), or `None` when nothing here
+    /// answers. A trap or an answer the contract refuses is `NeedsHuman`: a policy that cannot
+    /// answer has not said the branch may land, and a person is exactly who a broken floor means.
+    pub fn review_floor(
+        &self,
+        hub: &Arc<Hub>,
+        decision: letibot_tools::gatekeeper::Decision,
+    ) -> Option<letibot_plugin::review::Floor> {
+        use letibot_plugin::review::{Floor, Verdict, VerdictIn};
+        let input = serde_json::to_value(VerdictIn::new(
+            Floor::parse(decision.as_str()).unwrap_or(Floor::Accept),
+            Vec::new(),
+        ))
+        .ok()?;
+        let resolved = self.ask(hub, letibot_plugin::review::VERDICT, &input)?;
+        let by = resolved.by.clone().unwrap_or_default();
+        let Some(answer) = resolved.answer else {
+            // Nothing answered. A layer that TRAPPED has not said the branch may land, so the row
+            // goes to a person; a hook nobody exports is silence and the verdict stands.
+            return (!resolved.failures.is_empty()).then_some(Floor::NeedsHuman);
+        };
+        match serde_json::from_value::<Verdict>(answer.clone()) {
+            Ok(out) => out.required(),
+            Err(why) => {
+                self.complain(
+                    hub,
+                    &by,
+                    &format!(
+                        "the layer `{by}` answered something that is not a verdict's floor — \
+                         `{{\"floor\": \"…\", \"why\": \"…\"}}` is the whole of it: {why}. Its \
+                         answer was {answer}, so the verdict is a person's to make"
+                    ),
+                );
+                Some(Floor::NeedsHuman)
+            }
+        }
+    }
+
+    /// A worktree child's brief through this stack's `brief_worktree` layer (X19). The answer is
+    /// checked against the seat words the host can narrow: a class it cannot place is said once and
+    /// the seat stands as it was asked, because a dropped word nobody noticed is a seat nobody can
+    /// say the shape of.
+    pub fn child_brief(
+        &self,
+        hub: &Arc<Hub>,
+        input: letibot_plugin::brief::Input,
+    ) -> Option<letibot_plugin::brief::Answer> {
+        let input = serde_json::to_value(input).ok()?;
+        let resolved = self.ask(hub, letibot_plugin::brief::WORKTREE, &input)?;
+        let answer = resolved.answer?;
+        let by = resolved.by.unwrap_or_default();
+        match serde_json::from_value::<letibot_plugin::brief::Answer>(answer.clone()) {
+            Ok(out) if out.says_nothing() => None,
+            Ok(out) => match out.checked() {
+                Ok(()) => Some(out),
+                Err(why) => {
+                    self.complain(hub, &by, &why);
+                    None
+                }
+            },
+            Err(why) => {
+                self.complain(
+                    hub,
+                    &by,
+                    &format!(
+                        "the layer `{by}` answered something that is not a child's brief — \
+                         `{{\"brief_add\": \"…\", \"seat_drop\": [ … ]}}` is the whole of it: {why}. \
+                         Its answer was {answer}, so the native brief and the seat stand"
+                    ),
+                );
+                None
+            }
+        }
+    }
+}
+
+/// Whether `hook` is one the DAEMON asks a session's stack for, which is what makes a built-in
+/// layer its fallback. The hooks themselves say it, so this cannot drift from the plugins' work.
+fn daemon_asks(hook: &str) -> bool {
+    letibot_plugin::review::is_review_hook(hook) || hook == letibot_plugin::brief::WORKTREE
 }
 
 impl PluginHost {
