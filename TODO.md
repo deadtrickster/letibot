@@ -71,6 +71,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R137 | Todo graphs that span projects | Code work | the build of `docs/cross-project-todo.md` (P1-P6) and its four open questions |
 | R138 | Stable session identities across hosts, through migrations | Code work | the build of `docs/cross-host-identity.md` (Q1-Q7) and its five open questions; until then asks are same-host only |
 | R170 | A session drives a Chrome tab the operator allows, through the extension | Code work | all of it |
+| R172 | The extension is a head: a chat panel on the session's stream | Code work | all of it, after R170 |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
 | R153 | Placing a session on a busy host times out at 20 s | Needs the operator | the live proof on a loaded lab2x1: a placement there while the host is building, and a session's `job_wait` against it; the minute-long arranging budget, the one connection per host and the round a timed-out status query is not are landed |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
@@ -213,6 +214,16 @@ Two ways the room changed a name a session wrote, both in `crates/room/src/serve
 - **A `say` with a `to` rode somebody else's dm thread.** Given a `thread` whose root is a dm between the sender and a third session, `route_say` computed the addressee from the root and threw the resolved `to` away, so a message written to `cc@serenedb` was stored — and pushed — against that third session.
 
 Built: `cc@<name>` resolves only to that connected external seat; a bridge-shaped name never falls through to a member handle. A name only another project's session answers to is refused (`HandleInAnotherProject`) with the ids that do go by it, so naming the id still reaches it; a wide seat (the operator, a bridge, an ask, an invite) may still reach across, where it is `Ambiguous` as before. `UnknownAddressee` now carries the names that would have reached somebody, as `AskUnknown` already did. A `say` naming a third party is refused (`ThreadIsAnotherDm`) rather than answered to the thread's other party. Held by `crates/room/tests/dm.rs`: the handle is what the log stores and the bridge is pushed; an away bridge is refused with the names that answer; the arango shape writes no row and the sender is told the id; the thread disagreement is refused and its own party is allowed.
+
+## R172 - The extension is a head: a chat panel on the session's stream
+
+**Status:** not started. left: all of it, after R170.
+
+The card shows one ask and its reply, then is gone. Oracle's extension (`~/Projects/oracle/chrome-capture/chat.js`) had a persistent panel, one conversation per host, kept on its receiver and showing what the model did on the page each turn. Operator, 2026-11-08: that made it a head.
+
+Wanted: a panel that attaches to the chosen session's event stream through `letibot browser`, like the TUI. It shows the conversation, the session's asks and approvals, and R170's tab actions as they happen. Follow-ups go to the same session. The transcript is the session's own, so it survives the tab and the browser. The panel is hidden from R170's screenshots.
+
+---
 
 ## R162 - A granted directory does not cover what is under it, and every subagent asks again
 
