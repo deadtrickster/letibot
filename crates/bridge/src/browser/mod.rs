@@ -196,8 +196,10 @@ fn handle(
             &format!("Host `{host}` is not this bridge (127.0.0.1:{port})"),
         );
     }
+    // Chrome sends no Origin on an extension's GET to a host it has permission for. A page
+    // cannot set the bearer header without a CORS request, which always names its Origin.
     let origin = req.header("origin").unwrap_or_default();
-    if origin != server.origin {
+    if !origin.is_empty() && origin != server.origin {
         return http::error(
             &mut stream,
             403,

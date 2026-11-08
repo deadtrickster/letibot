@@ -133,8 +133,11 @@ block out, says so in the card, and the prompt says `[the page's Markdown was no
 
 - **Loopback only.** The bridge binds 127.0.0.1 and refuses any other address. The `Host` header
   must be `127.0.0.1:<port>` or `localhost:<port>`, so a DNS name rebound to loopback is refused.
-- **One origin.** The `Origin` must be `chrome-extension://<id>`. A request with another origin or
-  none is refused, and a refusal carries no allow-origin header, so a web page cannot read it.
+- **One origin.** An `Origin` must be `chrome-extension://<id>`. A request with another origin is
+  refused, and a refusal carries no allow-origin header, so a web page cannot read it. A request
+  with none passes this door, because Chrome sends none on the extension's own GET, and still
+  needs the token: a page cannot add the bearer header without a CORS request, which names its
+  origin.
 - **A token.** `Authorization: Bearer <token>`, compared in constant time. The file is 0600 and
   the bridge refuses one readable by others. The token lives in the extension's
   `chrome.storage.local`, and only the background worker talks to the bridge: page script never

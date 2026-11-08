@@ -135,7 +135,7 @@ fn status(answer: &str) -> &str {
 }
 
 #[test]
-fn the_doors_refuse_a_missing_token_a_wrong_token_a_wrong_origin_and_a_foreign_host() {
+fn the_doors_refuse_a_missing_token_a_wrong_token_a_foreign_origin_and_a_foreign_host() {
     let f = fixture("doors");
     let host = format!("127.0.0.1:{}", f.addr.port());
     let a = get(f.addr, &host, Some(ORIGIN), None);
@@ -150,8 +150,15 @@ fn the_doors_refuse_a_missing_token_a_wrong_token_a_wrong_origin_and_a_foreign_h
         !a.contains("Access-Control-Allow-Origin"),
         "a refused origin is not told it may read: {a}"
     );
+    // Chrome's own extension GET carries no Origin; the token is what lets it in.
+    let a = get(f.addr, &host, None, None);
+    assert_eq!(status(&a), "401", "no origin still needs the token: {a}");
     let a = get(f.addr, &host, None, Some(TOKEN));
-    assert_eq!(status(&a), "403", "no origin is not the extension: {a}");
+    assert_eq!(
+        status(&a),
+        "200",
+        "no origin with the token is the extension: {a}"
+    );
     let a = get(f.addr, "rebound.example:8790", Some(ORIGIN), Some(TOKEN));
     assert_eq!(status(&a), "403", "{a}");
     assert!(a.contains("Host"), "{a}");
