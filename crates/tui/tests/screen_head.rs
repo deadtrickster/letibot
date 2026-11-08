@@ -25,15 +25,22 @@ fn a_head_in_a_screen_shows_its_status_line() {
         .nth(1)
         .and_then(|n| n.parse().ok())
         .expect("an id");
-    // The demo replays paced, so settle on a long quiet.
-    let read = call(
-        &mut h,
-        serde_json::json!({"action": "read", "id": id, "idle_ms": 1500, "max_ms": 10000}),
-    );
-    assert!(read.payload.contains("prefill"), "{}", read.payload);
-    assert!(read.payload.contains("ctrl-s sessions"), "{}", read.payload);
-    assert!(read.payload.contains("read-edits"), "{}", read.payload);
-    assert!(read.payload.contains("faint"), "{}", read.payload);
+    // The demo replays paced on a host of any load: read until every marker shows or a deadline.
+    let wanted = ["prefill", "ctrl-s sessions", "read-edits", "faint"];
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let read = loop {
+        let read = call(
+            &mut h,
+            serde_json::json!({"action": "read", "id": id, "idle_ms": 1500, "max_ms": 10000}),
+        );
+        if wanted.iter().all(|w| read.payload.contains(w)) || std::time::Instant::now() > deadline
+        {
+            break read;
+        }
+    };
+    for w in wanted {
+        assert!(read.payload.contains(w), "{w}: {}", read.payload);
+    }
     let shot = call(&mut h, serde_json::json!({"action": "shot", "id": id}));
     assert!(shot.media.is_some(), "{}", shot.payload);
     call(&mut h, serde_json::json!({"action": "stop", "id": id}));
