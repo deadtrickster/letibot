@@ -1456,3 +1456,48 @@ fn an_old_chat_store_replays() {
         b1.rooms()
     );
 }
+
+/// Old `queue` transition lines in a room's history are not counted or shown in a join digest,
+/// and stay readable in the log.
+#[test]
+fn a_join_digest_skips_queue_transition_lines() {
+    let dir = Scratch::new();
+    let first = stored(&dir);
+    let away = seat(&first, "s-away", A, Seat::Session);
+    let talker = seat(&first, "s-talker", A, Seat::Session);
+    let heard = said(talker.say("a", "", "while connected"));
+    let _ = away.call(Request::Ack { seq: heard.seq });
+    drop(away);
+    until("the connection to close", || first.connections() == 1);
+    for i in 0..3 {
+        said(talker.call(Request::Notify {
+            id: format!("q{i}"),
+            room: HOST_ROOM.into(),
+            source: "queue".into(),
+            text: format!("lease queue: /repo{i} -> h/1/2 (took the free lease)"),
+            refs: Vec::new(),
+        }));
+    }
+    first.stop();
+    drop(talker);
+    std::thread::sleep(Duration::from_millis(50));
+
+    let second = stored(&dir);
+    let back = seat(&second, "s-away", A, Seat::Session);
+    let got = drained(&back);
+    assert!(got.is_empty(), "only queue lines since the mark: {got:?}");
+    let op = seat(&second, OPERATOR, "", Seat::Operator);
+    match op.call(Request::Read {
+        room: HOST_ROOM.into(),
+        since: 0,
+        last: None,
+        thread: None,
+        before: None,
+    }) {
+        Response::History(h) => {
+            assert_eq!(h.rows.iter().filter(|m| m.author == "queue").count(), 3)
+        }
+        other => panic!("{other:?}"),
+    }
+    second.stop();
+}

@@ -308,6 +308,14 @@ impl Message {
     }
 }
 
+impl Message {
+    /// A queue transition line from before the queue stopped posting to rooms. Queue state is
+    /// read from the queue, so a digest and the head skip these and the log keeps them.
+    pub fn is_queue_line(&self) -> bool {
+        self.kind == Seat::System && self.author == "queue"
+    }
+}
+
 /// The author of a digest message, kind `system`.
 pub const DIGEST_AUTHOR: &str = "room";
 /// Window of history a member with no mark is told about.

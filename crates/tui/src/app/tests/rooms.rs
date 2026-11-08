@@ -977,7 +977,7 @@ fn a_reply_carries_a_marker_with_the_number_it_answers() {
 }
 
 #[test]
-fn a_todo_or_queue_line_is_one_quiet_row_with_its_ref() {
+fn a_todo_line_is_one_quiet_row_with_its_ref_and_an_old_queue_line_is_hidden() {
     for cols in WIDTHS {
         let mut a = opened(1_000);
         reply(&mut a, rooms_reply(&[("host", 2, 2, 0)]));
@@ -998,11 +998,10 @@ fn a_todo_or_queue_line_is_one_quiet_row_with_its_ref() {
             !todo.contains("<todo>"),
             "a system line has no speaker brackets: {todo}"
         );
-        let q = row_with(&rows, "merged to main");
-        assert!(q.contains("[queue m-41]") || cols == 80, "{q}");
-        assert_eq!(
-            rows.iter().filter(|r| r.contains("merged to main")).count(),
-            1
+        assert!(
+            !rows.iter().any(|r| r.contains("merged to main")),
+            "an old queue transition line is hidden:\n{}",
+            rows.join("\n")
         );
     }
 }

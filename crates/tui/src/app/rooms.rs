@@ -362,7 +362,12 @@ impl RoomsView {
         let list = self.msgs.entry(room.to_string()).or_default();
         for m in rows {
             *cursor = (*cursor).max(m.seq);
-            if self.queue_authors.contains(&m.author) || m.author.starts_with("s-gatekeeper-") {
+            // Old `queue` transition lines stay in the log; the Queues section reads the queue.
+            let old_queue_line = m.author == "queue" && m.kind == "system";
+            if old_queue_line
+                || self.queue_authors.contains(&m.author)
+                || m.author.starts_with("s-gatekeeper-")
+            {
                 let at = self.hidden.entry(room.to_string()).or_insert(0);
                 *at = (*at).max(m.seq);
                 continue;

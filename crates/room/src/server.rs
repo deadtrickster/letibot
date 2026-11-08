@@ -1307,6 +1307,7 @@ impl Server {
         // Visibility reads the rooms, so it runs after the chat lock is released.
         let rows: Vec<chat::Message> = rows
             .into_iter()
+            .filter(|m| !m.is_queue_line())
             .filter(|m| self.visible(session, conn.seat, &conn.project, m))
             .collect();
         let (addressed, rest): (Vec<_>, Vec<_>) = rows

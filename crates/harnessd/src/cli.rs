@@ -1263,34 +1263,6 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     if let Some(socket) = crate::room::socket_path() {
         registry.set_room_chat(crate::room::operator::OperatorSeat::new(socket).seat());
     }
-    // A queue row that moved is a line in the project's room.
-    let queue_store = cfg.store.clone();
-    registry.set_broadcast_observer(std::sync::Arc::new(move |event| {
-        if let letibot_sessionlog::SessionEvent::QueueMoved { queue, id, to, why } = event {
-            // Off the broadcast's thread: the lookup opens the store.
-            let (queue_store, queue, id, to, why) = (
-                queue_store.clone(),
-                queue.clone(),
-                id.clone(),
-                to.clone(),
-                why.clone(),
-            );
-            let _ = std::thread::Builder::new()
-                .name("room-queue-move".into())
-                .spawn(move || {
-                    let repository = queue_store
-                        .as_deref()
-                        .and_then(|p| crate::mergequeue::repository_of_row(p, &id));
-                    crate::room::link::report_queue_move(
-                        &queue,
-                        &id,
-                        &to,
-                        &why,
-                        repository.as_deref(),
-                    );
-                });
-        }
-    }));
     // The smart `!`'s model half, attached whenever there is a local model to ask. The
     // endpoint is `cfg.oracle` - the `[gatekeeper]` endpoint read at startup, the LOCAL model
     // - and the suggester is installed on exactly that condition, the same one the guard is

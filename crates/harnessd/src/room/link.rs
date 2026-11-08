@@ -141,55 +141,6 @@ pub fn retire(session: &str) -> Result<String, String> {
     answer_sentence(&response, session)
 }
 
-/// A merge-queue or review-queue row moved: say so in the room of the row's repository, or the host
-/// room when no session of that project is here. Every session hears a move, so one live link
-/// reports it and the coordinator drops a repeat of the same request id.
-pub fn report_queue_move(queue: &str, id: &str, to: &str, why: &str, repository: Option<&str>) {
-    let key = repository
-        .filter(|r| !r.trim().is_empty())
-        .map(letibot_room::project_key);
-    report_queue_move_in(queue, id, to, why, key);
-}
-
-/// [`report_queue_move`] for a project already named by its key.
-pub fn report_queue_move_in(queue: &str, id: &str, to: &str, why: &str, key: Option<String>) {
-    let plain: Vec<Arc<SessionRoom>> = links()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .values()
-        .filter_map(Weak::upgrade)
-        .filter(|l| l.plain)
-        .collect();
-    let (link, room) = match key
-        .as_ref()
-        .and_then(|k| plain.iter().find(|l| &l.project == k))
-    {
-        Some(l) => (l.clone(), ""),
-        None => match plain.first() {
-            Some(l) => (l.clone(), "host"),
-            None => return,
-        },
-    };
-    let text = if why.trim().is_empty() {
-        format!("{queue} queue: {id} -> {to}")
-    } else {
-        format!("{queue} queue: {id} -> {to} ({})", why.trim())
-    };
-    link.notify_in(
-        room,
-        "queue",
-        format!(
-            "queue:{}:{queue}:{id}:{to}:{why}",
-            key.as_deref().unwrap_or("host")
-        ),
-        text,
-        vec![letibot_room::Ref {
-            kind: "queue".into(),
-            id: id.to_string(),
-        }],
-    );
-}
-
 /// Chat lines the daemon keeps per session for its feed.
 pub const RECENT_CHAT: usize = 100;
 
