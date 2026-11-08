@@ -257,6 +257,8 @@ impl SessionRoom {
                 // The room's own facts (a todo row done, a queue move) are kind `system` and
                 // wake only the session they are addressed to; a session woke on its own rows.
                 let wakes = m.kind != letibot_room::Seat::System || names;
+                // TODO(R169): a passing-by line should wake only sessions whose work overlaps it
+                // (R163's leases and recent files); until then every member of the room, cheaply.
                 if plain && wakes && m.wakes(&me, names, &sits_in) {
                     wake::push_chat(
                         &me,

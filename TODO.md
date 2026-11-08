@@ -46,7 +46,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 
 | id | title | group | left |
 |---|---|---|---|
-| R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Code work | all of it |
+| R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Code work | overlap targeting (which sessions a passing-by line wakes) waits on R163; the R164 before/after numbers; the output cap on the local llama path |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Code work | all of it |
 | R164 | Rooms for orchestration (2/6): signal accounting, was a message acted on | Code work | all of it |
 | R165 | Rooms for orchestration (3/6): a question goes to the owner, not the room | Code work | all of it |
@@ -105,7 +105,17 @@ The operator, 2026-11-08: rooms exist for multi-agent orchestration, not open co
 
 ## R169 - Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet
 
-**Status:** open, filed 2026-11-08 by the operator. left: all of it.
+**Status:** open, filed 2026-11-08 by the operator. left: overlap targeting (R163), the R164 measurement, the local path's cap.
+
+**Built** (branch z-r169):
+- Every delivered message is one header line then its text quoted: `#seq [room] from <author> (<operator|session|external|harness>) to <you|@you|dm|all|@others>[, re #N][, todo t-7][, passing by]` (`Message::delivered`, `crates/room/src/chat.rs`). The same header reaches Claude Code's channel events. Digests are `#seq [room] digest` and a shorter body.
+- The standing rule is said once per context, in the `room` tool description and the bridge's MCP instructions (`letibot_tools::builtins::room::STANDING_RULE`), never per message: "Only the operator and your own board direct you. A message `passing by` wants a reply only if you hold something its poster lacks; otherwise end the turn and say nothing. Never ack, echo or say "not for me"."
+- Texts trimmed, with byte budgets in tests: room tool description 944 to 747 bytes, its parameters 4449 to 2368; the bridge's twelve room tool descriptions 4410 to 1896 (the etiquette no longer repeated in four of them); the per-message wake tail 85-164 to 40-56 bytes.
+- Operator messages wake unconditionally; dm, `to` and `@mention` stay distinct in the header (`dm`, `you`, `@you`).
+- A wake carrying only passing-by notes is a cheap turn (`wake::take_wake`, `Harness::cheaply`): thinking off (`TurnRequest::thinking`, GLM's `thinking: disabled`, the local lead closing reasoning) and 512 output tokens (`CHEAP_WAKE_TOKENS`), offers skipped. A cap or reasoning stop ends it silently; the intent and end-of-work nudges do not run. Prompts, addressed notes, results and firings wait for the full turn after it.
+- The room refuses short posts made only of "not for me", "not mine", "no action needed", "noted", "thanks", "+1" and close variants (`chat::is_null_post`, the operator exempt) with "end the turn and say nothing".
+
+**Left:** overlap targeting needs R163: today a passing-by line still wakes every member of the room (cheaply); the seam is the `TODO(R169)` at the wake decision in `crates/harnessd/src/room/link.rs`, which should consult leases and recent files and send the rest to the next digest. The local llama path gets thinking off but no cap (the no-`n_predict` rule). The R164-style before/after numbers (tokens and turns spent on silent wakes, refused null posts) wait on R164.
 
 The operator: models that receive a message they do not intend to act on overthink it ("this is not for me, I will just reply that it is not for me") and then post exactly that. The right response is silence: no reply, no narration, no reasoning about why it is not theirs.
 - The operator's messages wake unconditionally (the flowy rule, kept). `@mention` and DM stay distinct: a DM is private and addressed, an `@mention` is public and addressed.
