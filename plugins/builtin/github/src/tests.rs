@@ -373,6 +373,43 @@ fn an_older_daemon_s_count_is_still_read() {
     assert!(detail.contains("2 kept as drafts"), "{detail}");
 }
 
+/// An offer is drawn where the decision is: a line under the row, and the score behind it in the
+/// detail - a `watch this` a person cannot see the reason for is a line they learn to skip.
+#[test]
+fn an_offer_is_one_line_under_its_row_and_its_score_is_in_the_detail() {
+    let mut feed = a_feed();
+    feed["scopes"][0]["pulls"][0]["offers"] = json!([
+        {"what": "watch this", "label": "the notes pane loses its scroll position",
+         "score": 0.41},
+        {"what": "similar to an earlier review", "label": "review of stroppy-io/letibot#9",
+         "score": 0.33},
+    ]);
+    let view = view_of(Some(&feed));
+    let row = pull_row(&view, "pr:stroppy-io/letibot#12");
+    let text = row_text(&row);
+    assert!(
+        text.contains("watch this: the notes pane loses its scroll position"),
+        "{text}"
+    );
+    assert!(text.contains("review of stroppy-io/letibot#9"), "{text}");
+    let detail = row["detail"].as_str().unwrap_or_default();
+    assert!(detail.contains("2 offers"), "{detail}");
+    assert!(detail.contains("0.41"), "{detail}");
+    // The score is in the detail and never on the line a person scans.
+    assert!(!row_line(&row).contains("0.41"), "{}", row_line(&row));
+}
+
+/// A pull request nobody has anything like draws no offer line at all: an empty offer is an
+/// absence, and a pane that said `0 offers` on every row would be noise over the rows that matter.
+#[test]
+fn a_row_with_no_offers_draws_no_offer_line() {
+    let view = view_of(Some(&a_feed()));
+    let row = pull_row(&view, "pr:stroppy-io/letibot#12");
+    let text = row_text(&row);
+    assert!(!text.contains("watch this"), "{text}");
+    assert!(!text.contains("offers"), "{text}");
+}
+
 #[test]
 fn every_state_word_the_pane_draws_is_in_the_legend() {
     let view = view_of(Some(&a_feed()));
@@ -392,6 +429,8 @@ fn every_state_word_the_pane_draws_is_in_the_legend() {
         "fork",
         "read-only",
         "draft",
+        "watch this",
+        "similar to an earlier review",
     ] {
         let sentence = legend
             .get(word)

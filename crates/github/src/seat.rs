@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use std::path::{Path, PathBuf};
 
+use crate::offers::{self, Candidate, Candidates, Kind, Offer, Scorer};
 use crate::source::{Comment, Pull, Review, Scope, Source, Standing};
 
 /// What the seat may send, and to whom. `post = false` is the shipped state: reviews are kept as
@@ -211,6 +212,9 @@ pub struct PullRow {
     pub since_ms: u64,
     /// Why the last review could not be made, in words - empty when it could.
     pub failure: String,
+    /// What this pull request's words are like, best first: an open todo row to watch, a running
+    /// session's brief, or a review this seat made before.
+    pub offers: Vec<Offer>,
 }
 
 impl PullRow {
@@ -233,6 +237,11 @@ pub struct Seat {
     config: Config,
     /// When each review was started, for the per-repository cap: `repo`, the clock.
     started: Vec<(String, u64)>,
+    /// What a pull request's words may be like - the open todos and the running sessions' briefs,
+    /// from whoever holds them ([`Seat::with_offers`]). `None` is a seat that makes no offers.
+    candidates: Option<Box<dyn Candidates>>,
+    /// How alike two texts are. `None` disables the offers with `candidates`.
+    scorer: Option<Box<dyn Scorer>>,
     at_ms: u64,
 }
 
@@ -253,8 +262,20 @@ impl Seat {
             rows: Vec::new(),
             config,
             started: Vec::new(),
+            candidates: None,
+            scorer: None,
             at_ms: 0,
         }
+    }
+
+    /// Make R114's offers: a pull request whose words are like an open todo row or a running
+    /// session's brief is offered as one to watch ([`offers`]), and one like a review this seat
+    /// made before is offered as context. The candidates are recomputed per poll, so a todo closed
+    /// and a session ended stop being offered.
+    pub fn with_offers(mut self, candidates: Box<dyn Candidates>, scorer: Box<dyn Scorer>) -> Seat {
+        self.candidates = Some(candidates);
+        self.scorer = Some(scorer);
+        self
     }
 
     /// What the seat is configured to do, for a caller that must not re-derive it.
@@ -336,12 +357,14 @@ impl Seat {
     /// The listed pull requests as rows: a new one queued, a moved head owed a re-review, and a row
     /// whose pull request is no longer open dropped.
     fn reconcile(&mut self, listed: &[Pull], now_ms: u64, said: &mut Vec<String>) {
+        // Worked out before the rows are borrowed: the offers read this seat's own drafts.
+        let offered: Vec<Vec<Offer>> = listed.iter().map(|pull| self.offers_for(pull)).collect();
         self.rows.retain(|row| {
             listed
                 .iter()
                 .any(|p| p.repo == row.pull.repo && p.number == row.pull.number)
         });
-        for pull in listed {
+        for (i, pull) in listed.iter().enumerate() {
             match self
                 .rows
                 .iter_mut()
@@ -350,6 +373,7 @@ impl Seat {
                 Some(row) => {
                     let moved = row.reviewed_sha.as_deref() != Some(pull.head_sha.as_str());
                     row.pull = pull.clone();
+                    row.offers = offered[i].clone();
                     if moved && !matches!(row.state, ReviewState::Queued | ReviewState::Reviewing) {
                         row.state = ReviewState::ReReviewPending;
                         row.last_action =
@@ -371,6 +395,7 @@ impl Seat {
                         seen_comment: 0,
                         since_ms: now_ms,
                         failure: String::new(),
+                        offers: offered[i].clone(),
                     });
                     said.push(format!("{} is new", pull.key()));
                 }
@@ -378,6 +403,32 @@ impl Seat {
         }
         self.rows
             .sort_by(|a, b| (&a.pull.repo, a.pull.number).cmp(&(&b.pull.repo, b.pull.number)));
+    }
+
+    /// What a pull request's words are like, best first - [`offers::offers_of`] over the candidates
+    /// a holder supplied plus the reviews this seat has already drafted. A row's own draft is not
+    /// offered back to it, which would be the seat agreeing with itself.
+    fn offers_for(&self, pull: &Pull) -> Vec<Offer> {
+        let (Some(candidates), Some(scorer)) = (&self.candidates, &self.scorer) else {
+            return Vec::new();
+        };
+        let mut all: Vec<Candidate> = candidates.candidates();
+        for row in &self.rows {
+            if row.pull.repo == pull.repo && row.pull.number == pull.number {
+                continue;
+            }
+            for draft in &row.drafts {
+                if let Draft::Review { review, .. } = draft {
+                    all.push(Candidate {
+                        kind: Kind::Context,
+                        label: format!("review of {}", row.pull.key()),
+                        text: review.body.clone(),
+                    });
+                }
+            }
+        }
+        let subject = format!("{}\n{}", pull.title, pull.description);
+        offers::offers_of(&subject, &all, &**scorer)
     }
 
     /// What one row is owed: a review, then an answer.
@@ -650,6 +701,7 @@ impl Seat {
                                 .map(|s| s.id.clone())
                                 .unwrap_or_default(),
                             drafts: row.drafts.iter().map(DraftView::of).collect(),
+                            offers: row.offers.iter().map(OfferView::of).collect(),
                         })
                         .collect(),
                 })
@@ -740,6 +792,31 @@ pub struct PullView {
     /// that only counted them would be asking for a decision it does not show.
     #[serde(default)]
     pub drafts: Vec<DraftView>,
+    /// What this pull request's words are like, best first - a todo row to watch, a running
+    /// session, a review made before. Empty when nothing was close enough to be worth a line.
+    #[serde(default)]
+    pub offers: Vec<OfferView>,
+}
+
+/// One offer as the pane draws it: what it is, what it points at, and the score that earned it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct OfferView {
+    /// `watch this` or `similar to an earlier review`.
+    pub what: String,
+    pub label: String,
+    /// The score, in `0..=1`: the one number behind the line, for a detail and never for a title.
+    pub score: f64,
+}
+
+impl OfferView {
+    /// The wire's spelling of one offer.
+    fn of(offer: &Offer) -> OfferView {
+        OfferView {
+            what: offer.kind.word().to_string(),
+            label: offer.label.clone(),
+            score: offer.score,
+        }
+    }
 }
 
 /// One draft as the pane draws it: what it is, and the words that would go out.

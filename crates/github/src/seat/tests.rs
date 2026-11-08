@@ -678,3 +678,111 @@ fn the_hourly_cap_holds_at_six_and_frees_the_seventh_an_hour_later() {
     assert_eq!(seat.drafts().len(), 7);
     assert_eq!(seat.rows()[6].state, ReviewState::Drafted);
 }
+
+/// A scorer for the offer tests: the share of the shorter text's words the longer one also has.
+/// The lexical score has that shape, and a test's floor can be reasoned about without a corpus.
+struct Shared;
+
+impl crate::offers::Scorer for Shared {
+    fn score(&self, a: &str, b: &str) -> f64 {
+        let words = |t: &str| -> Vec<String> {
+            t.split(|c: char| !c.is_alphanumeric())
+                .filter(|w| w.len() > 2)
+                .map(|w| w.to_lowercase())
+                .collect()
+        };
+        let (a, b) = (words(a), words(b));
+        if a.is_empty() || b.is_empty() {
+            return 0.0;
+        }
+        let shared = a.iter().filter(|w| b.contains(w)).count();
+        shared as f64 / a.len().min(b.len()) as f64
+    }
+}
+
+/// What a holder of the open todos and the running sessions hands the seat: a list, in this test.
+struct Todos(Vec<crate::offers::Candidate>);
+
+impl crate::offers::Candidates for Todos {
+    fn candidates(&self) -> Vec<crate::offers::Candidate> {
+        self.0.clone()
+    }
+}
+
+/// A pull request that is the same work as an open todo row is offered as one to watch, and the
+/// offer travels to the pane: a ROW the operator has to find by reading a diff is the defect.
+#[test]
+fn a_pull_request_like_an_open_todo_is_offered_as_one_to_watch() {
+    let source = FakeSource::new();
+    let mut pull = a_pull(12, "c1");
+    pull.title = "the notes pane loses its scroll position".into();
+    pull.description = "editing a note scrolls the pane back to the top".into();
+    source.open(&pull, vec![Commit::new("c1", "-a\n+b")]);
+
+    let todos = Todos(vec![crate::offers::Candidate {
+        kind: crate::offers::Kind::Watch,
+        label: "the notes pane loses its scroll position".into(),
+        text: "editing a note scrolls the notes pane back to the top".into(),
+    }]);
+    let mut seat = a_seat().with_offers(Box::new(todos), Box::new(Shared));
+    let mut reviewer = FakeReviewer::default();
+    seat.poll(&source, &mut reviewer, 1_000);
+
+    let offers = &seat.rows()[0].offers;
+    assert_eq!(offers.len(), 1, "{offers:#?}");
+    assert_eq!(offers[0].kind, crate::offers::Kind::Watch);
+    let view = &seat.snapshot().scopes[0].pulls[0];
+    assert_eq!(view.offers.len(), 1, "{view:#?}");
+    assert_eq!(view.offers[0].what, "watch this");
+    assert!(view.offers[0].label.contains("notes pane"), "{view:#?}");
+}
+
+/// An earlier review of a change like this one is offered as context on the next pull request -
+/// and the earlier row never offers its own review back to itself.
+#[test]
+fn a_review_made_before_is_offered_as_context_on_the_next() {
+    let source = FakeSource::new();
+    let mut first = a_pull(12, "c1");
+    first.title = "load the widget once".into();
+    first.description = "the widget was loaded twice and the second load won".into();
+    source.open(&first, vec![Commit::new("c1", "-twice\n+once")]);
+    let mut second = a_pull(13, "d1");
+    second.title = "the handle is released after the load".into();
+    source.open(&second, vec![Commit::new("d1", "-leak\n+release")]);
+
+    // Nothing from a holder: every offer here is the seat's own past review.
+    let mut seat = a_seat().with_offers(Box::new(Todos(Vec::new())), Box::new(Shared));
+    let sessions = FakeSessions::answering("the widget is loaded once and the handle is released");
+    let mut worker = Worker::new(sessions);
+    seat.poll(&source, &mut worker, 1_000);
+    // The first pass makes both reviews, so what is compared to the next one is only there on the
+    // pass after it - the offers are recomputed at every reconcile.
+    seat.poll(&source, &mut worker, 2_000);
+
+    let context = seat
+        .rows()
+        .iter()
+        .find(|r| r.pull.number == 13)
+        .expect("the second pull request")
+        .offers
+        .clone();
+    assert_eq!(context.len(), 1, "{context:#?}");
+    assert_eq!(context[0].kind, crate::offers::Kind::Context);
+    assert!(context[0].label.contains("#12"), "{context:#?}");
+}
+
+/// A pull request nobody has anything like carries no offer at all: an offer is a claim, and a weak
+/// one costs the reader the offers that were worth reading.
+#[test]
+fn a_pull_request_like_nothing_carries_no_offer() {
+    let source = a_source();
+    let todos = Todos(vec![crate::offers::Candidate {
+        kind: crate::offers::Kind::Watch,
+        label: "the deploy script waits for a port".into(),
+        text: "the deploy script waits for a port that never opens".into(),
+    }]);
+    let mut seat = a_seat().with_offers(Box::new(todos), Box::new(Shared));
+    let mut reviewer = FakeReviewer::default();
+    seat.poll(&source, &mut reviewer, 1_000);
+    assert!(seat.rows()[0].offers.is_empty(), "{:#?}", seat.rows()[0]);
+}

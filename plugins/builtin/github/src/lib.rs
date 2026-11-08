@@ -85,6 +85,22 @@ struct Pull {
     /// **What would be sent.** Drawn in full, because the operator's decision is about these words.
     #[serde(default, deserialize_with = "drafts_of")]
     drafts: Vec<Draft>,
+    /// **What this pull request's words are like**: an open todo to watch, a review made before.
+    /// Drawn as its own faint line each, and empty when nothing was close enough to offer.
+    #[serde(default)]
+    offers: Vec<Offer>,
+}
+
+/// One offer as the seat makes it: what it is, what it points at, and the score behind it.
+#[derive(Debug, Default, Deserialize)]
+struct Offer {
+    /// `watch this` or `similar to an earlier review`.
+    #[serde(default)]
+    what: String,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    score: f64,
 }
 
 /// One draft as the seat sends it: a review of a head, or an answer to a comment.
@@ -211,17 +227,31 @@ fn pull_row(p: &Pull, width: usize) -> Out {
     for draft in &p.drafts {
         under.push(draft_line(draft, width));
     }
+    // And the offers, for the seat's reason: `watch this` is an act somebody decides about too.
+    for offer in &p.offers {
+        under.push(offer_line(offer, width));
+    }
     let mut detail: Vec<String> = vec![
         field("repo", &p.repo),
         field("head", &p.head_sha),
         field("review", &p.review),
         field("drafts", &drafts_words(p.drafts.len())),
+        field("offers", &offers_words(p.offers.len())),
         field("session", &p.session),
         field("fork", if p.fork { FORK_WHY } else { "" }),
     ];
     // The whole draft, never a cut one: this is what would be sent.
     for draft in &p.drafts {
         detail.push(format!("{:<10} {}", draft_what(draft), draft.body.trim()));
+    }
+    // The score behind each offer, so a line that looks wrong can be argued with.
+    for offer in &p.offers {
+        detail.push(format!(
+            "{:<10} {} ({:.2})",
+            offer.what,
+            offer.label.trim(),
+            offer.score
+        ));
     }
     detail.retain(|l| !l.is_empty());
 
@@ -305,6 +335,11 @@ fn legend() -> Value {
         "fork": "the branch is somebody else's, so its diff is reviewed and nothing of it runs",
         "read-only": "no code from this pull request is executed anywhere on this box",
         "draft": "a review or an answer that is written and not sent; `[github] post` sends it",
+        "watch this": "a pull request whose words are like an open todo row or a running session's \
+                       brief: the two may be the same work, and the row is that todo's or that \
+                       session's",
+        "similar to an earlier review": "the change is like one this seat reviewed before, and that \
+                                        review is the place to start reading it",
     })
 }
 
@@ -391,6 +426,33 @@ fn draft_line(draft: &Draft, width: usize) -> String {
         format!("{what}: {said}")
     };
     fit(&line, width)
+}
+
+/// One offer's faint line under its row: what it is, and what it points at - never the score, which
+/// is in the detail because a number on this line would be read as the reason rather than as it.
+fn offer_line(offer: &Offer, width: usize) -> String {
+    let what = if offer.what.is_empty() {
+        "offered"
+    } else {
+        offer.what.trim()
+    };
+    let label = one_line(&offer.label);
+    let line = if label.is_empty() {
+        what.to_string()
+    } else {
+        format!("{what}: {label}")
+    };
+    fit(&line, width)
+}
+
+/// The offers one pull request carries, in words - nothing when there are none, because an offer is
+/// never made unless it was earned.
+fn offers_words(n: usize) -> String {
+    match n {
+        0 => String::new(),
+        1 => "1 offer".to_string(),
+        n => format!("{n} offers"),
+    }
 }
 
 /// The first line of a text, with control characters flattened - a title is somebody's prose and an
