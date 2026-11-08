@@ -516,6 +516,11 @@ line, then its text quoted (`> ` per line) so a line inside it cannot pass for a
     #42 [host] from s-a (session) to @you, re #40, todo t-7
     > the gate is red
 
+How much of the text a wake carries depends on why it reached you. The operator's text is whole. An
+agent's DM carries its first 2000 bytes, and its sender is warned when it posts over that. Anything
+else, a line addressed to a room or passing by, carries its first 600. A cut ends `[+N bytes]`, and
+`read` has the whole.
+
 `(seat)` is `operator`, `session`, `external` or `harness`. `to` says why it reached you: `dm`, `you`
 (`to`), `@you` (a mention or a reply), `all`, or `@others`. A peer message not addressed to you ends
 `, passing by`. The rule is said once per context, in the `room` tool's description and the bridge's

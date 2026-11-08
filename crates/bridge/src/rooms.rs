@@ -434,8 +434,34 @@ fn delivered(m: &Value, me: &str) -> String {
     if kind != "operator" && !names_you {
         head.push_str(", passing by");
     }
+    // An agent's DM is meant whole for this seat, and still stops at a cap: one agent cannot
+    // fill another's context. The operator's text is never cut.
+    let mut text = text.to_string();
+    if kind != "operator" && room == "dm" && text.len() > DM_TEXT_MAX {
+        let mut end = DM_TEXT_MAX;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let cut = text.len() - end;
+        text.truncate(end);
+        text.push_str(&format!(" [+{cut} bytes]"));
+    }
     let quoted: Vec<String> = text.lines().map(|l| format!("> {l}")).collect();
     format!("{head}\n{}", quoted.join("\n"))
+}
+
+/// What a DM from an agent carries when it wakes its reader; the daemon's seats use the same cap.
+pub const DM_TEXT_MAX: usize = 2_000;
+
+/// A sender's DM over [`DM_TEXT_MAX`] comes back with a warning: its reader is woken with the head.
+fn warn_long_dm(mut said: Value, len: usize) -> Value {
+    if len > DM_TEXT_MAX {
+        said["warning"] = json!(format!(
+            "it is {len} bytes and the reader is woken with the first {DM_TEXT_MAX}; the rest only by \
+             `room_read`. Say the measurement and the decision; put the reasoning in a filed row."
+        ));
+    }
+    said
 }
 
 /// The `@name`s in a text, lowercase and without the `@`.
@@ -1358,7 +1384,10 @@ pub fn call_in(
             if let Some(n) = arg_opt_u64(args, "thread")? {
                 f["thread"] = json!(n);
             }
+            let dm = f.get("to").is_some();
+            let len = f["text"].as_str().map_or(0, str::len);
             link.request(&f)
+                .map(|v| if dm { warn_long_dm(v, len) } else { v })
         }
         "room_dm" => {
             let mut f = json!({
@@ -1370,7 +1399,8 @@ pub fn call_in(
             if let Some(n) = arg_opt_u64(args, "thread")? {
                 f["thread"] = json!(n);
             }
-            link.request(&f)
+            let len = f["text"].as_str().map_or(0, str::len);
+            link.request(&f).map(|v| warn_long_dm(v, len))
         }
         "room_nick" => link.nick(&arg_str(args, "nick")?),
         "room_roster" => link.request(&json!({ "type": "roster", "room": arg_str(args, "room")? })),
@@ -1488,6 +1518,18 @@ fn replay(link: &RoomLink, attention: Attention) -> Result<Option<String>, Strin
 
 #[cfg(test)]
 mod tests {
+
+    /// An agent's DM wakes this seat with its first [`DM_TEXT_MAX`] bytes; the operator's whole.
+    #[test]
+    fn an_agents_dm_is_capped_and_the_operators_is_not() {
+        let long = "y".repeat(2_500);
+        let agent = json!({"seq": 1, "room": "dm", "kind": "session", "author": "s-a", "to": "cc@x", "text": long});
+        assert!(delivered(&agent, "cc@x").ends_with(" [+500 bytes]"));
+        let op = json!({"seq": 2, "room": "dm", "kind": "operator", "author": "operator", "to": "cc@x", "text": long});
+        assert!(!delivered(&op, "cc@x").contains("bytes]"));
+        assert!(warn_long_dm(json!({}), 2_500)["warning"].as_str().is_some());
+        assert!(warn_long_dm(json!({}), 100).get("warning").is_none());
+    }
     /// A pushed message reaches Claude Code as the same header a letibot session reads: why it
     /// came, then the text quoted.
     #[test]

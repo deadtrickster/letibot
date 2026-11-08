@@ -1463,11 +1463,15 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
         Response::Event { event } => format!("the room said: {event:?}"),
         // A `to` is a private message, and the answer has to say so: a model that believed it had
         // spoken in the room would wait for an audience that never read a word of it.
-        Response::Said { message, .. } if message.room == letibot_room::chat::DM_ROOM => format!(
-            "said #{} in dm to `{}`: only the two of you read it.",
-            message.seq,
-            message.to.as_deref().unwrap_or("its addressee"),
-        ),
+        Response::Said { message, .. } if message.room == letibot_room::chat::DM_ROOM => {
+            let mut said = format!(
+                "said #{} in dm to `{}`: only the two of you read it.",
+                message.seq,
+                message.to.as_deref().unwrap_or("its addressee"),
+            );
+            said.push_str(&over_dm_cap(message.text.len()));
+            said
+        }
         // A model that wrote "arango session: ..." is told it asked nobody.
         Response::Said { message, .. }
             if message.to.is_none() && letibot_room::chat::mentions(&message.text).is_empty() =>
@@ -1615,6 +1619,30 @@ fn describe(item: &letibot_room::Item) -> String {
         letibot_room::State::Done { by, .. } => format!("done by `{by}`"),
         letibot_room::State::Abandoned { last } => format!("abandoned — {}", last.why),
         letibot_room::State::Dropped { by, why, .. } => format!("dropped by `{by}`: {why}"),
+    }
+}
+
+/// The warning a DM over [`super::wake::DM_TEXT_MAX`] earns its sender: the reader is woken with
+/// the head of it, and reasoning that long belongs in a filed record.
+fn over_dm_cap(len: usize) -> String {
+    let cap = super::wake::DM_TEXT_MAX;
+    if len <= cap {
+        return String::new();
+    }
+    format!(
+        " WARNING: it is {len} bytes and the reader is woken with the first {cap}; the rest only \
+         by `room read`. Say the measurement and the decision; put the reasoning in a filed row."
+    )
+}
+
+#[cfg(test)]
+mod dm_cap_tests {
+    /// A DM over the cap tells its sender so, and one under it says nothing more.
+    #[test]
+    fn a_long_dm_warns_its_sender() {
+        assert_eq!(super::over_dm_cap(200), "");
+        let w = super::over_dm_cap(2_500);
+        assert!(w.contains("WARNING") && w.contains("first 2000"), "{w}");
     }
 }
 

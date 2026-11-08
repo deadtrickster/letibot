@@ -208,8 +208,23 @@ pub fn reach(m: &letibot_room::Message, names_you: bool) -> letibot_room::chat::
     m.reach(names_you)
 }
 
-/// How many bytes of a message's text a wake carries. `room read` has the whole.
+/// How many bytes of a passing or room-wide message's text a wake carries. `room read` has the
+/// whole.
 pub const CHAT_TEXT_MAX: usize = 600;
+
+/// A DM between agents is meant whole for its reader, so it carries more, and still stops: one
+/// agent cannot fill another's context. Its sender is warned when it posts over this.
+pub const DM_TEXT_MAX: usize = 2_000;
+
+/// What a wake carries of a message, by why it reached the reader: the operator's whole (the room
+/// already caps it), a DM up to [`DM_TEXT_MAX`], anything else up to [`CHAT_TEXT_MAX`].
+pub fn text_max(m: &letibot_room::Message, names_you: bool) -> usize {
+    match m.reach(names_you) {
+        letibot_room::chat::Reach::Operator => letibot_room::chat::MAX_TEXT,
+        letibot_room::chat::Reach::Dm => DM_TEXT_MAX,
+        _ => CHAT_TEXT_MAX,
+    }
+}
 
 /// The note a chat message becomes for a session it wakes: a header saying why it reached you,
 /// then the text quoted. `names_you` is the room's answer, not a reading of the text: the room
@@ -219,7 +234,7 @@ pub fn chat_sentence(m: &letibot_room::Message, names_you: bool) -> String {
     if m.kind == letibot_room::Seat::System && m.author == letibot_room::chat::DIGEST_AUTHOR {
         return format!("#{} [{}] digest\n{}", m.seq, m.room, m.text);
     }
-    m.delivered(names_you, CHAT_TEXT_MAX)
+    m.delivered(names_you, text_max(m, names_you))
 }
 
 /// The note one room event becomes. `None` for an event a session is not woken by.
@@ -330,6 +345,34 @@ mod tests {
             attachments: Vec::new(),
             text: text.into(),
         }
+    }
+
+    /// The operator's text is never cut, an agent's DM stops at [`DM_TEXT_MAX`], and a line that
+    /// only passes by stops at [`CHAT_TEXT_MAX`].
+    #[test]
+    fn what_a_wake_carries_depends_on_why_it_reached_you() {
+        let long = "x".repeat(3_000);
+        let op = chat_sentence(&said(Some("arango"), &long), true);
+        assert!(!op.contains("bytes]"), "the operator is never cut");
+        let mut dm = said(Some("arango"), &long);
+        dm.kind = letibot_room::Seat::Session;
+        dm.author = "s-peer".into();
+        dm.room = letibot_room::chat::DM_ROOM.into();
+        let got = chat_sentence(&dm, true);
+        assert!(
+            got.ends_with(" [+1000 bytes]"),
+            "an agent's dm stops at 2000: {}",
+            &got[got.len() - 40..]
+        );
+        let mut passing = said(None, &long);
+        passing.kind = letibot_room::Seat::Session;
+        passing.author = "s-peer".into();
+        let got = chat_sentence(&passing, false);
+        assert!(
+            got.ends_with(" [+2400 bytes]"),
+            "passing by stops at 600: {}",
+            &got[got.len() - 40..]
+        );
     }
 
     /// The room's `names_you` decides "you", not the text: it shows a session its own handle,
