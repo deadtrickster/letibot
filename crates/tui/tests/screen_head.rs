@@ -26,7 +26,7 @@ fn a_head_in_a_screen_shows_its_status_line() {
         .and_then(|n| n.parse().ok())
         .expect("an id");
     // The demo replays paced on a host of any load: read until every marker shows or a deadline.
-    let wanted = ["prefill", "ctrl-s sessions", "read-edits", "faint"];
+    let wanted = ["ctrl-s sessions", "Why the cache missed", "faint"];
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let read = loop {
         let read = call(
