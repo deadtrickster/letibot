@@ -57,6 +57,8 @@ pub const TABLE: &[(&str, Class)] = &[
     // Housekeeping the session does by design: nothing here is the reader's line answered.
     ("auto_compact", Class::Routine),
     ("compacted", Class::Routine),
+    // A compact layer's pin past the budget was cut, and the cut said: the budget doing its job.
+    ("compaction_pin_cut", Class::Routine),
     // A fold about to run, and why: the wall, a refusal for length, which fold was chosen. A
     // head keeps it as the state behind the progress line, so one compaction leaves one row;
     // a head that does not know the code draws the sentence, as it did before.
@@ -792,13 +794,13 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_80_routine_15_refused_and_96_failures() {
+    fn the_table_is_81_routine_15_refused_and_96_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 191, "the table's size");
-        assert_eq!(count(Class::Routine), 80, "the four limits are routine");
+        assert_eq!(TABLE.len(), 192, "the table's size");
+        assert_eq!(count(Class::Routine), 81, "the four limits are routine");
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
         assert_eq!(count(Class::Failure), 96);
         // A code with an id is read by its family.
