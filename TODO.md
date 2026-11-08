@@ -355,7 +355,7 @@ own right**, addressed as R93.<id>; the list below groups them by what to fix fi
 
 ## R74 - What the 2026-10-11 landings left open
 
-**Status:** audited 2026-11 (nine fixed, seven already done, six not a session's to settle, 37 since settled), then worked (4, 11, 12, 16, 20, 23, 25, 33 and 40 closed). left: item 39 (a live gate on lubuntu1/2 - the seam and the rows' naming are held by tests, and the operator's fleet key is not in this placement).
+**Status:** audited 2026-11 (nine fixed, seven already done, six not a session's to settle, 37 since settled), then worked (4, 11, 12, 16, 20, 23, 25, 33 and 40 closed — 40 in two passes, the second moving the last eighteen inline `mod tests` blocks over 800 lines, one commit each, `d009e1ee`..`ea2d720f`, and nothing over 800 lines is left). left: item 39 (a live gate on lubuntu1/2 - the seam and the rows' naming are held by tests, and the operator's fleet key is not in this placement).
 
 Everything merged on 2026-10-11 (main `cf47e65`: R61, R64, R65, R66 instrumentation, R67, R68, R69,
 R71, R72 + follow-up, R73, the no-llama build), and the gaps each landing reported or a check
@@ -498,13 +498,29 @@ nothing to design.
   the project's `leticode.toml`, a daemon over that project, and a branch through `/queue` — the
   merge row must say `lubuntu1 gate`, as must the target's `gating` and green evidence. The fleet's
   `~/.actrc` is item 27's, and `act` is in no gate here.
-- 40 **DONE** — the largest inline block moved: `harnessd/src/plugins.rs`'s 3 404-line `mod tests`
-  is `crates/harnessd/src/plugins/tests.rs`, declared `#[cfg(test)] mod tests;` as harnessd's other
-  moved blocks are, and `--lib -- --list` names the same 1 201 tests before and after. Nothing was
-  edited, renamed or dropped; the move cost the block its four columns of indent, which let rustfmt
-  rejoin nine wrapped calls. What R70 still has: fifteen inline `mod tests` blocks over 800 lines,
-  largest `tools/src/exec/host.rs` (1 466) then `harnessd/src/mergequeue/gate.rs` (1 458), counted
-  by walking `mod tests {` to the closing brace at the same indent.
+- 40 **DONE**, in two passes — the largest inline block moved: `harnessd/src/plugins.rs`'s 3 404-line
+  `mod tests` is `crates/harnessd/src/plugins/tests.rs`, declared `#[cfg(test)] mod tests;` as
+  harnessd's other moved blocks are, and `--lib -- --list` names the same 1 201 tests before and
+  after. Nothing was edited, renamed or dropped; the move cost the block its four columns of indent,
+  which let rustfmt rejoin nine wrapped calls.
+  **Then the rest, counted properly (2026-11).** Walking every `.rs` under `crates/` for a `mod tests`
+  block over 800 lines found eighteen, not fifteen, and `tools/src/exec/host.rs` is 2 001 lines rather
+  than the 1 466 an indentation-only walk reports: that walk stops at a `}` at column 0 inside a
+  raw-string shell fixture, so the count needs a lexer and the line it lands on has to be checked to
+  be `}` at the `mod`'s own indent. Largest first, in lines: `tools/src/exec/host.rs` 2 001;
+  `leticode-config/src/lib.rs` 1 631; `harnessd/src/mergequeue/gate.rs` 1 459;
+  `tools/src/exec/confine.rs` 1 417; `tools/src/runtime.rs` 1 333; `plugins/src/stack.rs` 1 296;
+  `harnessd/src/room/link.rs` 1 186; `tools/src/remote.rs` 1 119; `sessionlog/src/registry.rs` 1 079;
+  `harnessd/src/cli.rs` 1 065; `tools/src/firecode.rs` 1 011; `bridge/src/head.rs` 969;
+  `sessionlog/src/hub.rs` 922; `sessionlog/src/protocol.rs` 912; `code/src/shell.rs` 900;
+  `harnessd/src/subagent_record.rs` 852; `tools/src/builtins/bash.rs` 830;
+  `provider/src/messages.rs` 825. Each is its own commit (`d009e1ee`..`ea2d720f`) and each crate's
+  `--lib` names the same tests before and after: 78 provider, 84 plugins, 59 code, 64 leticode-config,
+  229 sessionlog (three files), 1 613 tools (six), 1 380 harnessd (four), 95 bridge. Every block is
+  the same code — its non-space characters at `f1751e17` against the new file's, the one body line a
+  move had to change being `protocol/tests.rs`'s `include_str!` path. **Nothing over 800 lines is
+  left**: the largest inline block is `room/src/server.rs` (784), then `tools/src/exec/shell.rs` (768)
+  and `vt/src/screen.rs` (747).
 - 41 **DONE** — R60's three: scrollback (`vt::Screen::HISTORY_ROWS`/`view`), panes numbered on the
   wire, and a confined pane (`wrap_terminal`, no `--new-session`), each with a test.
 
@@ -633,7 +649,8 @@ nothing to design.
     live landing itself is still open — see the audit's item 39 above.
 40. R70 — move the largest inline test blocks into sibling files (unblocked now the big edits have
     landed).
-    — OPEN: only part done — `crates/harnessd/src/plugins.rs:2226` still carries a 2,469-line inline test block (the settled archive, `hands-off/letibot/TODO-settled.md`).
+    — ✓ closed: item 40 above — every inline `mod tests` over 800 lines is a sibling file now
+    (eighteen of them, one commit each) and the largest one left is 784 lines.
 41. R60 — the three things `!term` did not do: **built on `r60-term`**, see R60.
     — ✓ fixed in 26913ddd, test a_second_pane_runs_beside_the_first_and_each_is_named_by_its_number
 
