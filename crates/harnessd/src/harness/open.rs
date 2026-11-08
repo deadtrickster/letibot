@@ -1918,6 +1918,7 @@ impl Harness {
         // unreachable is a session that works, and its `room` tool refuses by name.
         let mut room_connector: Option<crate::room::link::Connector> = None;
         let room_late = std::sync::Arc::new(crate::room::link::LateRoom::default());
+        let seat = crate::room::seat::SeatCell::new(cfg.workspace.clone(), Some(hub.clone()));
         let room = match (cfg.room_link, top_level, crate::room::socket_path()) {
             (true, true, Some(socket)) => {
                 let bell: std::sync::Arc<dyn Fn(&str) + Send + Sync> = {
@@ -1950,15 +1951,18 @@ impl Harness {
                     crate::room::roster::Roster::new(session_registry.clone());
                 let session = cfg.session_id.clone();
                 let path = socket.clone();
+                let seat = seat.clone();
                 let connect: crate::room::link::Connector = Box::new(move || {
-                    crate::room::link::SessionRoom::connect(
+                    let room = crate::room::link::SessionRoom::connect(
                         &session,
                         &path,
                         &project,
                         Some(roster.clone()),
                         bell.clone(),
                         supervisor.clone(),
-                    )
+                    )?;
+                    room.set_seat(seat.clone());
+                    Ok(room)
                 });
                 // No socket yet is not an error: the coordinator may start after this session, and
                 // the room pass tries again.
@@ -2724,7 +2728,8 @@ impl Harness {
         let tool_sink = JobWatchSink::new(
             IntentSink::new(intent.clone(), ToolLogSink::new(hub.clone())),
             job_watch.clone(),
-        );
+        )
+        .noting_edits(seat.clone());
 
         // Read, never asserted: the backend's own answers and the schemas that were actually seated, not which role
         // was requested. Four instances of one defect were paid for to learn that distinction.
@@ -3155,6 +3160,7 @@ impl Harness {
             room,
             room_late,
             room_connector,
+            seat,
             tool_sink,
             job_watch,
             // The same `Arc` the tool registry has, cloned before it was moved in - see the

@@ -138,6 +138,7 @@ impl Harness {
             said: said.clone(),
         });
         self.write_limit_row(Some(words.clone()));
+        self.seat.limited(Some((until_ms, words.clone())));
         self.hub.warn(
             "limit_park",
             format!(
@@ -159,6 +160,7 @@ impl Harness {
             return None;
         }
         self.limit_park = None;
+        self.seat.limited(None);
         self.set_limit_row(None);
         let now = self.limit_now_ms();
         self.limited.retain(|_, at| *at > now);

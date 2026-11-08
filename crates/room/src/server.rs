@@ -177,6 +177,9 @@ struct Inner {
     /// connection is the daemon's liveness and a session that closed its own is not a session that
     /// crashed.
     gone_since: Mutex<BTreeMap<String, u64>>,
+    /// Each session's last facts from its daemon and when they arrived: what the roster's
+    /// presence is derived from. Never stored, a daemon says them again within a second.
+    seats: Mutex<BTreeMap<String, (crate::seat::SeatFacts, u64)>>,
     /// How long a session may be gone before the operator is asked to restart it -
     /// [`ASK_GRACE_MS`], or what a test set. A liveness fact never settles an ask; it escalates.
     ask_grace_ms: AtomicU64,
@@ -273,6 +276,7 @@ impl Server {
                 principals: AtomicUsize::new(MAX_PRINCIPALS),
                 operator_token,
                 gone_since: Mutex::new(BTreeMap::new()),
+                seats: Mutex::new(BTreeMap::new()),
                 ask_grace_ms: AtomicU64::new(ASK_GRACE_MS),
                 blobs: Mutex::new(crate::blob::Blobs::open(&path.with_extension("blobs"))),
                 blob_rewrites: AtomicU64::new(0),
@@ -686,6 +690,20 @@ impl Server {
                     events: Vec::new(),
                 };
             }
+        }
+        // A session's facts, kept under the connection's own name: a daemon reports only its own.
+        if let Request::Seat { facts } = frame {
+            if seat == Seat::Session {
+                self.inner
+                    .seats
+                    .lock()
+                    .expect("the seats lock")
+                    .insert(who.session.clone(), (facts.clone(), now));
+            }
+            return Answer {
+                response: Response::Seated,
+                events: Vec::new(),
+            };
         }
         if is_chat_frame(frame) {
             return Answer {
@@ -1257,7 +1275,7 @@ impl Server {
             .unwrap_or("")
             .to_string();
         let mut audience: BTreeMap<String, (Seat, String)> = BTreeMap::new();
-        for p in self.roster_of(&message.room) {
+        for p in self.roster_rows(&message.room) {
             audience.insert(p.id, (p.kind, p.project));
         }
         let named: Vec<String> = message
@@ -1599,7 +1617,7 @@ impl Server {
     /// Who is in a chat room: the tree's top-level sessions of its project, whoever is connected
     /// to it, and the wide seats, which are in every room. The host room's project is the empty
     /// one, so a gatekeeper of serenedb is in serenedb's roster and not in host's.
-    pub fn roster_of(&self, room: &str) -> Vec<chat::Presence> {
+    pub fn roster_rows(&self, room: &str) -> Vec<chat::Presence> {
         let key = chat::project_of_room(room);
         let mut rows: BTreeMap<String, chat::Presence> = BTreeMap::new();
         {
@@ -1622,6 +1640,7 @@ impl Server {
                             connected: false,
                             project: project.clone(),
                             label: m.label.clone(),
+                            seat: None,
                         },
                     );
                 }
@@ -1643,6 +1662,7 @@ impl Server {
                 connected: false,
                 project: key.unwrap_or("").to_string(),
                 label: "guest".to_string(),
+                seat: None,
             });
         }
         for c in self.conn_list() {
@@ -1665,6 +1685,7 @@ impl Server {
                 connected: false,
                 project: c.project.clone(),
                 label: String::new(),
+                seat: None,
             });
             row.connected = true;
             row.kind = c.seat;
@@ -1683,6 +1704,57 @@ impl Server {
             }
         }
         rows.into_values().collect()
+    }
+
+    /// The roster with each session's derived presence. Takes the chat and rooms locks, so a caller
+    /// holding either reads [`Server::roster_rows`] instead.
+    pub fn roster_of(&self, room: &str) -> Vec<chat::Presence> {
+        let now = now_ms();
+        let mut rows = self.roster_rows(room);
+        for row in rows.iter_mut().filter(|r| r.kind == Seat::Session) {
+            row.seat = Some(self.seat_view(&row.id, row.connected, now));
+        }
+        rows
+    }
+
+    /// One session's derived presence: its daemon's facts joined with what only the room sees, the
+    /// connection and the waits it holds here (open asks it made, queue waits it declared).
+    pub fn seat_view(&self, session: &str, connected: bool, now: u64) -> crate::seat::SeatView {
+        let (facts, heard) = match self
+            .inner
+            .seats
+            .lock()
+            .expect("the seats lock")
+            .get(session)
+        {
+            Some((f, at)) => (Some(f.clone()), Some(*at)),
+            None => (None, None),
+        };
+        let mut waits: Vec<String> = self
+            .inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .asks_by(session)
+            .into_iter()
+            .filter(|a| a.open())
+            .map(|a| format!("ask #{} of {}", a.seq, a.target))
+            .collect();
+        for project in self.projects() {
+            let held = self.with_room(&project, |r| r.holding(session, now));
+            for h in held {
+                if let Some(w) = h.waits_on {
+                    waits.push(format!("item #{} ({}): {}", h.item, h.tag, w.text));
+                }
+            }
+        }
+        let side = crate::seat::RoomSide {
+            connected,
+            gone_since_ms: self.gone_since(session),
+            heard_ms: heard,
+            waits,
+        };
+        crate::seat::derive(facts.as_ref(), &side, now)
     }
 
     /// The chat messages in the log, for a test.
@@ -1731,7 +1803,7 @@ impl Server {
                         chat::RoomInfo {
                             label: labels.get(&key).cloned().unwrap_or_default(),
                             kind: if key.is_empty() { "host" } else { "project" }.into(),
-                            members: self.roster_of(&id).len() as u64,
+                            members: self.roster_rows(&id).len() as u64,
                             last_seq: chat.last_in(&id),
                             unread: chat.unread(name, &id, |_| true),
                             project: key,

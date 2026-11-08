@@ -32,7 +32,7 @@ impl App {
             if let Chan::Session(id) = &c
                 && let Some(s) = self.rooms.sessions.iter().find(|s| &s.id == id)
             {
-                needed = needed.max(2 + visible_width(&session_facts(s)));
+                needed = needed.max(2 + visible_width(&session_facts(&self.rooms, s)));
             }
         }
         // The scorecard's lines set the column's width too, up to the cap: a line cut to the floor
@@ -112,12 +112,17 @@ fn padded(mut l: Line, w: usize) -> Line {
     l
 }
 
-/// The second line of a session row: its project and what it is doing.
-fn session_facts(s: &SessInfo) -> String {
+/// The second line of a session row: its project and its state, the coordinator's derived
+/// presence when a roster holds it, else the head's own running/idle/asking.
+fn session_facts(v: &RoomsView, s: &SessInfo) -> String {
+    let state = v
+        .seat_of(&s.id)
+        .filter(|seat| !seat.says.is_empty())
+        .map_or_else(|| s.state.to_string(), |seat| clean_line(&seat.says));
     if s.project.is_empty() {
-        s.state.to_string()
+        state
     } else {
-        format!("{} · {}", clean_line(&s.project), s.state)
+        format!("{} · {}", clean_line(&s.project), state)
     }
 }
 
@@ -231,6 +236,26 @@ fn member_column(
             Role::Faint
         };
         rows.push((text, role, Some(m.name.clone())));
+        // The derived presence under its member, the same click: the coordinator's words.
+        if let Some(seat) = m.seat.as_ref().filter(|x| !x.says.is_empty()) {
+            let role = if seat.cannot_act() {
+                Role::Attention
+            } else {
+                Role::Faint
+            };
+            rows.push((
+                format!("  {}", clean_line(&seat.says)),
+                role,
+                Some(m.name.clone()),
+            ));
+            if !seat.doing.is_empty() {
+                rows.push((
+                    format!("  {}", clean_line(&seat.doing)),
+                    Role::Faint,
+                    Some(m.name.clone()),
+                ));
+            }
+        }
     }
     if hidden > 0 {
         rows.push((format!("+{hidden} offline (r lists)"), Role::Faint, None));
@@ -477,10 +502,13 @@ impl App {
             {
                 // The facts are the same row's: a click on either line is the session's.
                 at.push((lines.len(), ListRow::Chan(c.clone())));
-                lines.push(padded(
-                    pane::faint(trim_to(&format!("  {}", session_facts(s)), lw)),
-                    lw,
-                ));
+                let facts = trim_to(&format!("  {}", session_facts(&self.rooms, s)), lw);
+                let line = if self.rooms.seat_of(id).is_some_and(|x| x.cannot_act()) {
+                    Line::new(vec![Span::role(facts, Role::Attention)])
+                } else {
+                    pane::faint(facts)
+                };
+                lines.push(padded(line, lw));
             }
         }
         self.queue_section(&mut lines, &mut at, lw);
@@ -502,10 +530,21 @@ impl App {
         let mut out = vec![
             pane::faint(format!(
                 "  {}",
-                trim_to(&session_facts(s), rw.saturating_sub(2))
+                trim_to(&session_facts(&self.rooms, s), rw.saturating_sub(2))
             )),
             pane::faint(format!("  id {id}")),
         ];
+        if let Some(doing) = self
+            .rooms
+            .seat_of(id)
+            .map(|x| x.doing.as_str())
+            .filter(|d| !d.is_empty())
+        {
+            out.push(pane::faint(format!(
+                "  {}",
+                trim_to(&clean_line(doing), rw.saturating_sub(2))
+            )));
+        }
         if dm > 0 {
             out.push(Line::new(vec![Span::role(
                 format!("  {dm} unread in the DM"),

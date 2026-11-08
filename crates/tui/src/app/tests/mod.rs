@@ -1373,6 +1373,7 @@ mod reviewcard;
 mod rooms;
 mod rooms_compose;
 mod rooms_nav;
+mod rooms_presence;
 mod rooms_push;
 mod rooms_render;
 mod screen;

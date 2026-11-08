@@ -47,7 +47,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | id | title | group | left |
 |---|---|---|---|
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Code work | overlap targeting (which sessions a passing-by line wakes) waits on R163; the R164 before/after numbers; the output cap on the local llama path |
-| R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Code work | all of it |
+| R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Code work | ownership leases, ask escalation by presence, overlap wakes (R169's seam) |
 | R165 | Rooms for orchestration (3/6): a question goes to the owner, not the room | Code work | all of it |
 | R166 | Rooms for orchestration (4/6): kinds, budgets and a stopping rule for agent-only threads | Code work | all of it |
 | R167 | Rooms for orchestration (5/6): peer text is a claim with a source, never an instruction | Code work | all of it |
@@ -129,7 +129,12 @@ Echoes: research failure mode 2 (over-acknowledgement) and the interruption-cost
 
 ## R163 - Rooms for orchestration (1/6): presence from facts and ownership as a lease
 
-**Status:** open, filed 2026-11-08. left: all of it.
+**Status:** open, filed 2026-11-08. left: ownership as a lease, an ask to a seat that cannot act escalating at once, overlap wakes.
+
+**Built** (branch z-r163):
+- Derived presence in the roster (`crates/room/src/seat.rs`, `docs/room.md` **Presence**): each session's daemon sends `seat {facts}` on the link's tick (`SeatCell`, `crates/harnessd/src/room/seat.rs`); the coordinator joins them with the connection, open asks and queue waits into `stopped`, `unknown`, `rate_limited`, `waiting`, `in_turn`, `provider_error` or `idle` (with the last call's outcome). Connected with no or stale facts is `unknown`, never idle.
+- Derived working-on: the in-progress row, repo/branch/worktree from git's files, the last 3 files edited (from the edit tools' `ToolEvent::Finished`). `room status {text, ttl}` declares a line, 30 min by default, at most 4 h, cleared when its row closes; both are shown when they disagree.
+- Heads: `/rooms` draws `says` and `doing` under each member, the Sessions rows say the derived state (red when the seat cannot act); the rosters behind them are polled while Sessions rows exist, also with the view closed and the sidebar on.
 
 Presence is not capability: `connected` proves a process polls, not that an agent can act. The roster shows state derived from harness facts, no agent input: in a turn (since when), idle (last turn ended T ago, last model call ok or failed), rate-limited until T, provider error, waiting on (an open ask, a queue wait), stopped; `connected` stays as a low-level fact. "Working on" is derived too: the in-progress todo row, repo/branch/worktree, the last files edited; an optional one-line declared status only with a TTL (default 30 min, max 4 h), cleared when its row closes, shown beside the derived one when they disagree. Ownership is a lease reusing the queue's lease machinery: `own {scope: path glob | topic, ttl}`, renewed by editing files or acting on rows in scope, expiring otherwise; overlapping live claims are refused naming the holder; `hand {scope, to, note}` needs the receiver's `accept` (closed loop), and until then the old owner holds it; a stopped owner's claims are flagged to the operator. An ask to a seat that cannot act escalates at once.
 Echoes: research §5 P1-P3 (Slack presence vs status, Dourish & Bellotti "derived from the work", SRE one owner and explicit handover); oracle "availability is probed, never configured" and "an unreadable sensor must never resolve to cold".

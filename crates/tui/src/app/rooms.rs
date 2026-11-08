@@ -101,6 +101,36 @@ pub(crate) struct Member {
     /// The project the member works in, empty when it has none.
     #[serde(default)]
     pub project: String,
+    /// The session's id, whatever `name` shows.
+    #[serde(default)]
+    pub id: String,
+    /// A session's derived presence, already worded by the coordinator.
+    #[serde(default)]
+    pub seat: Option<SeatRow>,
+}
+
+/// The coordinator's derived presence for one seat: the head draws its words and never derives.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+pub(crate) struct SeatRow {
+    /// `in_turn`, `idle`, `rate_limited`, `provider_error`, `waiting`, `stopped` or `unknown`.
+    #[serde(default)]
+    pub state: String,
+    /// The state in words: `in turn 3m`, `rate-limited, paused until 21:02:27 UTC (4m left)`.
+    #[serde(default)]
+    pub says: String,
+    /// What it works on: the row, `repo@branch`, the last files.
+    #[serde(default)]
+    pub doing: String,
+}
+
+impl SeatRow {
+    /// The seat cannot act on a message now: drawn as a warning, not as presence.
+    pub fn cannot_act(&self) -> bool {
+        matches!(
+            self.state.as_str(),
+            "rate_limited" | "provider_error" | "stopped"
+        )
+    }
 }
 
 /// One line of the coordinator's signal scorecard: a sender, and what followed its messages.
@@ -512,7 +542,34 @@ impl RoomsView {
             Some(Chan::Dm(_) | Chan::Session(_)) => ops.push(self.read_op("dm")),
             None => {}
         }
+        let selected = match self.selected() {
+            Some(Chan::Room(id)) => Some(id),
+            _ => None,
+        };
+        ops.extend(self.presence_ops(selected.as_deref()));
         ops
+    }
+
+    /// The rosters the Sessions rows take their presence from, the selected room's excepted:
+    /// asked only while there are Sessions rows to draw.
+    pub(crate) fn presence_ops(&self, except: Option<&str>) -> Vec<Value> {
+        if self.sessions.is_empty() {
+            return Vec::new();
+        }
+        self.rows
+            .iter()
+            .filter(|r| Some(r.id.as_str()) != except)
+            .map(|r| json!({"type": "roster", "room": r.id}))
+            .collect()
+    }
+
+    /// The derived presence of session `id`, from whichever room's roster holds it.
+    pub(crate) fn seat_of(&self, id: &str) -> Option<&SeatRow> {
+        self.roster
+            .values()
+            .flatten()
+            .find(|m| m.id == id || (m.id.is_empty() && m.name == id))
+            .and_then(|m| m.seat.as_ref())
     }
 
     /// Mark the selected channel shown, and say how far the inbox cursor may move. `seq`
@@ -633,6 +690,12 @@ impl App {
                 op: json!({"type": "rooms"}),
                 id: None,
             });
+            // The sidebar's Sessions rows draw presence with the view closed.
+            if self.sidebar.on {
+                let ops = self.rooms.presence_ops(None);
+                self.queued
+                    .extend(ops.into_iter().map(|op| Action::RoomChat { op, id: None }));
+            }
             return;
         }
         self.rooms.next_poll_ms = self.now_ms.saturating_add(POLL_MS);

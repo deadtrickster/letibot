@@ -73,12 +73,11 @@ impl Tool for RoomTool {
             TOOL,
             format!(
                 "The host room. A TAG is a lock on a scarce thing (RAM, a port): one live claim, \
-                 others refused. Queue verbs: `post`, `claim`, `claim_item`, `beat`, `waiting`, \
-                 `done`, `abandon`, `dispute`, `queue`, `holding`, `reminders`, `questions`; \
-                 `rule` is the arbiter's. Chat: `say`, `read`. `to` is a private dm, `@name` in the \
-                 text a public mention; both wake them. `asks` lists questions between you and a \
-                 session; only `answer` and `decline` settle one. `claude-code` and `cc@...` are \
-                 other seats. {beat} {STANDING_RULE}"
+                 others refused; `rule` is the arbiter's. `say`: `to` is a private dm, `@name` in \
+                 the text a public mention; both wake them. Only `answer` and `decline` settle an \
+                 ask. `own` a scope (path glob or topic) so others see who has it; edits in it \
+                 renew it; `hand` waits for the receiver's `accept`. `status` is your one line, it \
+                 expires. `claude-code` and `cc@...` are other seats. {beat} {STANDING_RULE}"
             ),
             json!({
                 "type": "object",
@@ -88,17 +87,18 @@ impl Tool for RoomTool {
                         "enum": [
                             "post", "claim", "claim_item", "beat", "waiting", "done", "abandon",
                             "dispute", "rule", "queue", "holding", "reminders", "questions",
-                            "say", "read", "invite", "leave", "asks", "answer", "decline"
+                            "say", "read", "invite", "leave", "asks", "answer", "decline",
+                            "own", "hand", "accept", "release", "status"
                         ],
-                        "description": "Needs: `post` tag+body; `claim`, `queue` tag; `claim_item`, `beat`, `done` item; `waiting` item+text; `abandon` item+why; `dispute` item+says; `rule` question+decision; `say` text; `invite` room+session; `answer`, `decline` ask+text. `holding`, `leave` take an optional session."
+                        "description": "Needs: `post` tag+body; `claim`, `queue` tag; `claim_item`, `beat`, `done` item; `waiting` item+text; `abandon` item+why; `dispute` item+says; `rule` question+decision; `say` text; `invite` room+session; `answer`, `decline` ask+text; `own`, `hand`, `accept`, `release` scope."
                     },
                     "tag": {
                         "type": "string",
-                        "description": "The scarce thing's name, lowercased: `RAM` and `ram` are one lock."
+                        "description": "Lowercased: `RAM` is `ram`."
                     },
                     "body": {
                         "type": "string",
-                        "description": "The need in your words: `8 GB, ~10 min`."
+                        "description": "The need: `8 GB, ~10 min`."
                     },
                     "item": {
                         "type": "integer",
@@ -106,19 +106,19 @@ impl Tool for RoomTool {
                     },
                     "ask": {
                         "type": "integer",
-                        "description": "The ask's number, from `asks` or your board."
+                        "description": "From `asks` or your board."
                     },
                     "text": {
                         "type": "string",
-                        "description": "`say`: the message. `waiting`: what you wait on, empty clears. `answer`, `decline`: the reply."
+                        "description": "`say`: the message. `waiting`, `status`: your line, empty clears. `answer`, `decline`: the reply. `hand`: a note."
                     },
                     "why": {
                         "type": "string",
-                        "description": "`abandon`: why, for the arbiter."
+                        "description": "`abandon`: why."
                     },
                     "says": {
                         "type": "string",
-                        "description": "`dispute`: why you still hold it."
+                        "description": "`dispute`: why it is yours."
                     },
                     "question": {
                         "type": "integer",
@@ -127,15 +127,15 @@ impl Tool for RoomTool {
                     "decision": {
                         "type": "string",
                         "enum": ["retry", "hand", "drop"],
-                        "description": "`retry` offers it again, `hand` gives the claim to `to`, `drop` removes it."
+                        "description": "`retry` offers it again, `hand` gives it to `to`, `drop` removes it."
                     },
                     "to": {
                         "type": "string",
-                        "description": "`say`: one principal, PRIVATE, in the dm and no room. `rule` hand: the new holder."
+                        "description": "`say`: one principal, PRIVATE, in the dm and no room. `rule` and `hand`: the new holder."
                     },
                     "room": {
                         "type": "string",
-                        "description": "`project` (default), `host`, `dm` (read only) or `project/<key>` you were invited to. A reply stays in its root's room."
+                        "description": "`project` (default), `host`, `dm` (read only) or an invited `project/<key>`. A reply stays in its root's room."
                     },
                     "since": {
                         "type": "integer",
@@ -151,15 +151,23 @@ impl Tool for RoomTool {
                     },
                     "todo": {
                         "type": "string",
-                        "description": "`say`: a todo row id it is about."
+                        "description": "`say`: a todo row id."
                     },
                     "queue": {
                         "type": "string",
-                        "description": "`say`: a merge-queue row id it is about."
+                        "description": "`say`: a merge-queue row id."
                     },
                     "session": {
                         "type": "string",
-                        "description": "Id or name. `holding`: whose claims, default yours."
+                        "description": "Id or name; default you."
+                    },
+                    "scope": {
+                        "type": "string",
+                        "description": "A path glob (`crates/x/**`) or a topic."
+                    },
+                    "ttl": {
+                        "type": "integer",
+                        "description": "Minutes; `own` 60, `status` 30 default, max 240."
                     },
                     "attachments": {
                         "type": "array",

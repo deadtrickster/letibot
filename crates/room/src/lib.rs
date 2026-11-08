@@ -9,6 +9,7 @@ pub mod item;
 pub mod lease;
 pub mod restart;
 pub mod room;
+pub mod seat;
 pub mod server;
 pub mod signal;
 pub mod store;
@@ -34,6 +35,7 @@ pub use room::{
     Holding, Outcome, Question, REPLAY_WINDOW, Refused, Reminder, Room, Ruling, Waiting,
     normalise_tag,
 };
+pub use seat::{SeatFacts, SeatState, SeatView};
 pub use server::Server;
 pub use signal::{Act, Ledger, SIGNAL_WINDOW_MS, Scorecard, SignalRow};
 pub use store::Store;

@@ -11,6 +11,7 @@ pub mod link;
 pub mod operator;
 pub mod remind;
 pub mod roster;
+pub mod seat;
 pub mod supervise;
 pub mod wake;
 

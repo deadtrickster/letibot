@@ -346,6 +346,8 @@ pub struct Harness {
     /// How to connect, kept while there is no link so the room pass can retry once the coordinator is
     /// up. `None` for a session that may not speak in the room.
     room_connector: Option<crate::room::link::Connector>,
+    /// This session's presence facts, written at the harness's own moments and sent by the link.
+    seat: Arc<crate::room::seat::SeatCell>,
     /// Shared with [`HubSteering`] so a firing reaches the model exactly once,
     /// whether it is picked up mid-turn or between turns by [`Harness::wake`].
     monitor_cursor: Arc<AtomicUsize>,

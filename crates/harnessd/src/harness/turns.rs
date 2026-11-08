@@ -310,6 +310,7 @@ impl Harness {
         if let Some(room) = &self.room {
             room.turn_started();
         }
+        self.seat.turn_began(began_ms);
         self.publish_activity();
     }
 
@@ -337,6 +338,7 @@ impl Harness {
         if let Some(room) = &self.room {
             room.turn_ended();
         }
+        self.seat.turn_ended(letibot_sessionlog::event::now_ms());
         self.apply_pending_switch();
         self.publish_activity();
     }
@@ -2497,6 +2499,13 @@ impl Harness {
                 self.trouble_kind = "stall".into();
                 self.trouble_count = stalls + 1;
             }
+            self.seat.called(
+                letibot_sessionlog::event::now_ms(),
+                match &attempted {
+                    Err(TurnFailure::Http(e)) => Some(one_line(&e.to_string(), 160)),
+                    _ => None,
+                },
+            );
             let Err(TurnFailure::Http(e)) = attempted else {
                 // The new model answered, which is the whole of what a switch had
                 // to prove - there is nothing to go back to any more. A round that came back
@@ -3461,6 +3470,7 @@ impl Harness {
             self.publish_settings();
         }
         let todos: Vec<TodoEntry> = items.into_iter().map(Self::todo_entry).collect();
+        self.seat.todos(&todos);
         if let Some(room) = self.room_link() {
             room.todos_changed(&todos);
         }

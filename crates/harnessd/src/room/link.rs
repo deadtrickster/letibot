@@ -88,6 +88,8 @@ pub struct SessionRoom {
     /// Each todo row's last seen status, by content. `None` until the first update, which is
     /// the board as it was and not news.
     todo_seen: Mutex<Option<std::collections::BTreeMap<String, String>>>,
+    /// The harness's presence facts, sent on every tick. `None` on a fixture's link.
+    seat: Mutex<Option<Arc<super::seat::SeatCell>>>,
 }
 
 /// Tell the room `session` has taken chat up to `seq`, which is its seen mark: the room retells
@@ -304,6 +306,7 @@ impl SessionRoom {
             invited,
             mine,
             todo_seen: Mutex::new(None),
+            seat: Mutex::new(None),
             client,
             session: session.to_string(),
             socket: socket.to_path_buf(),
@@ -345,6 +348,7 @@ impl SessionRoom {
                     // restarted coordinator knows nobody until a daemon says - and sending it every
                     // poll rather than on a change is what makes that self-healing.
                     me.say_who_is_here();
+                    me.say_how_i_am();
                     // And a gap in the bell, said once. A connection that was down and is back
                     // was handed a count with its `Welcome`; the events are gone, so the session is
                     // woken to re-read the state rather than left believing it heard everything.
@@ -369,6 +373,25 @@ impl SessionRoom {
         let rows = roster.members(&self.project);
         let root = roster.root(&self.project);
         let _ = self.client.request(&Request::Members { rows, root });
+    }
+
+    /// The cell this link reads the session's presence from.
+    pub fn set_seat(&self, seat: Arc<super::seat::SeatCell>) {
+        *self.seat.lock().unwrap_or_else(|e| e.into_inner()) = Some(seat);
+    }
+
+    pub fn seat(&self) -> Option<Arc<super::seat::SeatCell>> {
+        self.seat.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Tell the room this session's facts, on the same tick as the tree: a restarted coordinator
+    /// knows them again within a second, and a daemon that stops sending reads as unknown.
+    fn say_how_i_am(&self) {
+        let Some(seat) = self.seat() else {
+            return;
+        };
+        let facts = seat.facts(letibot_room::server::now_ms());
+        let _ = self.client.request(&Request::Seat { facts });
     }
 
     /// Report a fact into this session's project room (or the host's when it has none), off the
@@ -663,6 +686,19 @@ impl SessionRoom {
     /// `claim` acknowledges itself - silence reads as absence, and a model at work will not think
     /// about the queue's bookkeeping. It is `said` and not `waits_on`, which silences the reminder.
     pub fn call(&self, verb: &str, args: &serde_json::Value) -> Result<String, String> {
+        if verb == "status" {
+            let seat = self
+                .seat()
+                .ok_or("this session reports no presence, so it has no status to set")?;
+            let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            let ttl = args
+                .get("ttl")
+                .and_then(|v| v.as_u64())
+                .map(|m| m.saturating_mul(60_000));
+            let said = seat.declare(text, ttl, letibot_room::server::now_ms());
+            self.say_how_i_am();
+            return Ok(said);
+        }
         let files = self.upload(verb, args)?;
         let mut request = request_of(verb, args)?;
         if !files.is_empty() {
@@ -1368,6 +1404,7 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
         Response::Members { count } => {
             format!("the room now holds {count} session(s) of this project")
         }
+        Response::Seated => "the room has this session's presence".to_string(),
         Response::Bye { why } => return Err(format!("the room closed the connection: {why}")),
         Response::Welcome { .. } => format!(
             "the room is open to `{me}` (protocol {})",

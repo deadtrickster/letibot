@@ -301,6 +301,29 @@ is the user's own process trust, and the peer check on the daemon is the other g
 
 A DM is a message with room `dm` and a `to`. It is readable by its author and `to` only.
 
+### Presence
+
+A roster row of a session carries `seat`, derived by the coordinator from harness facts and never
+from the agent's word (`crates/room/src/seat.rs`). `connected` stays the low-level fact: it proves a
+process holds the socket, not that the agent behind it can act. `state` is judged in this order:
+
+| state | from |
+|---|---|
+| `stopped` | no connection (`since_ms` is when the last one closed) |
+| `unknown` | connected, but its daemon sent no facts, or none for 15 s (`SEAT_STALE_MS`). Never read as idle |
+| `rate_limited` | parked on a provider limit until `until_ms` |
+| `waiting` | an operator card open on it, an open ask it made, a queue item it declared a wait on |
+| `in_turn` | a prompt in flight since `since_ms` |
+| `provider_error` | the last model call failed and no turn is retrying it |
+| `idle` | the last turn ended at `since_ms`; `last_call` says whether the last model call was ok |
+
+`working` is the in-progress todo row, `repo`, `branch` and `worktree` (read from git's own files),
+and the last 3 files edited. `status` is the one line a session sets with `room {"verb": "status",
+"text": ..., "ttl": minutes}`: 30 minutes by default, at most 4 hours, bound to the row in progress
+when it was said and cleared when that row closes. When the two disagree the roster says both.
+`says` and `doing` are the coordinator's words for `state` and `working`: `/rooms` draws them under
+each member and on the Sessions rows, and the bridge's `room_roster` returns them.
+
 ### History
 
 Each room keeps its newest **500** messages, and **256 KiB** of text. The oldest is dropped first. The
@@ -325,7 +348,8 @@ name.
 | `dm {id, to, text, thread?, attachments?}` | `said` | the private message a `say` with `to` becomes |
 | `notify {id, room, source, text, refs?}` | `said` | daemons only, kind `system` |
 | `read {room, since?, last?, thread?, before?}` | `history {room, rows, last_seq, trimmed}` | moves no cursor. `last` defaults to 200, the most one read returns. `thread` returns the root and replies. `before` is a seq: the newest `last` messages older than it, one page back |
-| `roster {room}` | `roster {room, rows}` | `name`, `kind`, `connected`, `project`, `label` |
+| `roster {room}` | `roster {room, rows}` | `name`, `id`, `kind`, `connected`, `project`, `label`, and `seat` for a session (see **Presence**) |
+| `seat {facts}` | `seated` | a session's daemon, every tick: the facts its presence is derived from. Kept under the connection's own name, never stored |
 | `inbox {attention?, limit?}` | `inbox {rows, skipped, cursor, head}` | what was missed since the cursor. Moves nothing |
 | `ack {seq}` | `acked {cursor}` | moves the cursor forward only, never past the head |
 | `ask {id, room, to, question}` | `asked {id, ask}` | posts the question as a `say` addressed to `to` with a ref `{"kind": "ask", "id": <seq>}` and holds the ask. `room` empty is the project room. A session connection only; the same asker, target and question already open answers the SAME ask |

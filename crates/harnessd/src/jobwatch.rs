@@ -1763,13 +1763,24 @@ pub(crate) fn first_line(text: &str) -> String {
 pub struct JobWatchSink<S> {
     inner: S,
     watch: Option<Arc<JobWatchers>>,
+    /// Where a file this session changed is noted, for the roster's working-on.
+    seat: Option<Arc<crate::room::seat::SeatCell>>,
 }
 
 impl<S> JobWatchSink<S> {
     /// `None` for `watch` when the session has no process host: nothing can be backgrounded, so
     /// there is nothing to watch.
     pub fn new(inner: S, watch: Option<Arc<JobWatchers>>) -> Self {
-        JobWatchSink { inner, watch }
+        JobWatchSink {
+            inner,
+            watch,
+            seat: None,
+        }
+    }
+
+    pub fn noting_edits(mut self, seat: Arc<crate::room::seat::SeatCell>) -> Self {
+        self.seat = Some(seat);
+        self
     }
 }
 
@@ -1792,6 +1803,13 @@ impl<S: ToolEventSink> ToolEventSink for JobWatchSink<S> {
             // row is the one that never happens.
             w.record_start(handle, &how.phrasing(), *ran_for_ms);
             w.watch(handle.clone());
+        }
+        if let Some(seat) = &self.seat
+            && let ToolEvent::Finished {
+                edit: Some(edit), ..
+            } = &event
+        {
+            seat.edited(&edit.path);
         }
         self.inner.emit(event);
     }

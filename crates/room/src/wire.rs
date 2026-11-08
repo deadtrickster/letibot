@@ -232,6 +232,9 @@ pub enum Request {
         #[serde(default)]
         root: String,
     },
+    /// This session's facts, from its daemon, every tick: what its roster presence is derived
+    /// from. A replacement with no id, like [`Request::Members`].
+    Seat { facts: crate::seat::SeatFacts },
     /// A tag's queue, in order - the read that makes polling unnecessary after a reconnect.
     Queue { tag: String },
     /// What a session holds and what it is waiting on. `session: None` means *me*.
@@ -292,6 +295,7 @@ impl Request {
             | Request::Reminders
             | Request::Questions
             | Request::Members { .. }
+            | Request::Seat { .. }
             | Request::PutBlob { .. }
             | Request::GetBlob { .. }
             | Request::Room
@@ -438,6 +442,8 @@ pub enum Response {
     Members {
         count: u64,
     },
+    /// The answer to [`Request::Seat`].
+    Seated,
     Rooms {
         rows: Vec<crate::chat::RoomInfo>,
     },
@@ -719,6 +725,7 @@ impl Room {
             | Request::Withdraw { .. }
             | Request::Retire { .. }
             | Request::Asks
+            | Request::Seat { .. }
             | Request::Leave { .. } => Answer::quiet(Response::Refused {
                 id: request.request_id().map(str::to_string),
                 why: Refused::ChatIsTheServers,

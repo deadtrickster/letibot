@@ -606,6 +606,9 @@ pub struct Presence {
     /// The tree's label for a session, empty otherwise.
     #[serde(default)]
     pub label: String,
+    /// A session's derived presence; `None` for the operator and externals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat: Option<crate::seat::SeatView>,
 }
 
 /// The answer to a read.
