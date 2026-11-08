@@ -226,6 +226,8 @@ The card shows one ask and its reply, then is gone. Oracle's extension (`~/Proje
 
 Wanted: a panel that attaches to the chosen session's event stream through `letibot browser`, like the TUI. It shows the conversation, the session's asks and approvals, and R170's tab actions as they happen. Follow-ups go to the same session. The transcript is the session's own, so it survives the tab and the browser. The panel is hidden from R170's screenshots.
 
+Oracle's `chat.js` (`~/Projects/oracle/chrome-capture/chat.js`, about 1k lines) is the reference the operator already tuned: fixed to the viewport, one conversation per host, a per-turn line of what the model did, and the panel hidden from screenshots. Port its behaviour before inventing any.
+
 The chat control comes from flowy (`letiflow/flowy`, `web/src/components/MessageList.tsx`, `MessageBox.tsx`, `MessageBody.tsx`, `CitedMessage.tsx`): markdown through DOMPurify, citations of a span, @name completion, attachments, reactions. It is React 19 with Vite and Tailwind. The panel is an npm package in the repo (`extensions/chrome/panel`, its `package.json` and lockfile), and every npm command on it runs inside firecode, never on the host: `extensions/chrome/build.sh` runs `npm ci` and the Vite build through firecode into one bundle, which the extension loads into a shadow root. The gate runs the same script.
 
 ---
