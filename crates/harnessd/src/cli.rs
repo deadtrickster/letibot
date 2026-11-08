@@ -18,6 +18,7 @@
 //! harnessd --store PATH --listen WORDS... [--workspace DIR]   (/listen, offline)
 //! harnessd --store PATH --latest-session [--workspace DIR]
 //! harnessd --store PATH --resolve-session NAME [--scope DIR]
+//! harnessd --store PATH --find-session NAME --scope DIR
 //! harnessd --store PATH --rename ID TITLE
 //! harnessd --store PATH --delete ID
 //! ```
@@ -476,6 +477,8 @@ fn usage() -> String {
      \x20                           packages, one-shots) with a count each. `--tsv` is\n\
      \x20                           the plain five-column data form, unchanged\n\
      \x20 --latest-session          the id of the newest one, scoped by --workspace\n\
+     \x20 --find-session NAME      a session by name under --scope, else in any folder;\n\
+     \x20                           prints `here` or `there` rows (see the launcher)\n\
      \x20 --rename ID TITLE         name a session, or clear it with an empty title\n\
      \x20 --delete ID               remove a session that has no rows\n\
      \n\
@@ -741,6 +744,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             }
             "--latest-session" => query = Some(Query::Latest),
             "--resolve-session" => query = Some(Query::Resolve(next()?)),
+            "--find-session" => query = Some(Query::Find(next()?)),
             "--tsv" => tsv = true,
             "--rename" => {
                 let id = next()?;
@@ -2386,6 +2390,7 @@ enum Query {
     List,
     Latest,
     Resolve(String),
+    Find(String),
     Rename(String, String),
     Delete(String),
     Listen(Vec<String>),
@@ -2747,6 +2752,32 @@ fn run_query(
             println!("{id}");
             Ok(0)
         }
+        Query::Find(name) => {
+            let Some(here) = scope else {
+                return Err("--find-session needs --scope: the folder searched first".into());
+            };
+            let all = store.list_sessions().map_err(|e| e.to_string())?;
+            match find_session(&all, &name, here)? {
+                Found::Here(id) => println!("here\t{id}"),
+                Found::Elsewhere(rows) => {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0);
+                    for s in rows {
+                        // Tabs in a title would shift the columns the launcher cuts.
+                        let title = s.title.as_deref().unwrap_or_default().replace('\t', " ");
+                        println!(
+                            "there\t{}\t{title}\t{}\t{}",
+                            s.id,
+                            s.workspace_root,
+                            age(now - s.last_activity_ms)
+                        );
+                    }
+                }
+            }
+            Ok(0)
+        }
         Query::Latest => {
             let latest = newest_conversation(scoped(&store, scope)?, scope);
             // What the pick walked past is said, not silently dropped. The launcher deliberately
@@ -2952,10 +2983,6 @@ fn resolve_session_name(
         .filter(|s| is_conversation(s))
         .filter(|s| s.title.as_deref().is_some_and(|t| !t.is_empty()))
         .collect();
-    let want = name.to_lowercase();
-    let title = |s: &letibot_tokencore::store::StoredSession| {
-        s.title.as_deref().unwrap_or_default().to_lowercase()
-    };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -2973,20 +3000,7 @@ fn resolve_session_name(
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let exact: Vec<_> = named
-        .iter()
-        .copied()
-        .filter(|s| letibot_tokencore::store::same_name(&title(s), &want))
-        .collect();
-    let hits = if exact.is_empty() {
-        named
-            .iter()
-            .copied()
-            .filter(|s| title(s).starts_with(&want))
-            .collect()
-    } else {
-        exact
-    };
+    let hits = name_hits(&named, name);
     match hits.as_slice() {
         [one] => Ok(one.id.clone()),
         [] => {
@@ -3008,6 +3022,73 @@ fn resolve_session_name(
             list(many)
         )),
     }
+}
+
+/// The named rows a name means: the exact title or slug, else every title it prefixes.
+fn name_hits<'a>(
+    named: &[&'a letibot_tokencore::store::StoredSession],
+    name: &str,
+) -> Vec<&'a letibot_tokencore::store::StoredSession> {
+    let want = name.to_lowercase();
+    let title = |s: &letibot_tokencore::store::StoredSession| {
+        s.title.as_deref().unwrap_or_default().to_lowercase()
+    };
+    let exact: Vec<_> = named
+        .iter()
+        .copied()
+        .filter(|s| letibot_tokencore::store::same_name(&title(s), &want))
+        .collect();
+    if !exact.is_empty() {
+        return exact;
+    }
+    named
+        .iter()
+        .copied()
+        .filter(|s| title(s).starts_with(&want))
+        .collect()
+}
+
+/// Where a name was found.
+#[derive(Debug)]
+enum Found {
+    Here(String),
+    Elsewhere(Vec<letibot_tokencore::store::StoredSession>),
+}
+
+/// A name under `here` first, as `--session` always meant. Only when nothing there matches, the
+/// operator's own top-level sessions in every folder: queue, package and subagent rows never
+/// match, so a name cannot open work the operator did not start.
+fn find_session(
+    all: &[letibot_tokencore::store::StoredSession],
+    name: &str,
+    here: &std::path::Path,
+) -> Result<Found, String> {
+    let local: Vec<_> = all
+        .iter()
+        .filter(|s| std::path::Path::new(&s.workspace_root).starts_with(here))
+        .cloned()
+        .collect();
+    let local_named: Vec<_> = local
+        .iter()
+        .filter(|s| is_conversation(s))
+        .filter(|s| s.title.as_deref().is_some_and(|t| !t.is_empty()))
+        .collect();
+    if local.iter().any(|s| s.id == name) || !name_hits(&local_named, name).is_empty() {
+        return resolve_session_name(&local, name, Some(here)).map(Found::Here);
+    }
+    let named: Vec<_> = all
+        .iter()
+        .filter(|s| is_conversation(s) && is_operators(s))
+        .filter(|s| s.title.as_deref().is_some_and(|t| !t.is_empty()))
+        .collect();
+    let hits = name_hits(&named, name);
+    if hits.is_empty() {
+        return match resolve_session_name(&local, name, Some(here)) {
+            Ok(id) => Ok(Found::Here(id)),
+            Err(e) => Err(format!("{e}\n(every folder was searched too)")),
+        };
+    }
+    Ok(Found::Elsewhere(hits.into_iter().cloned().collect()))
 }
 
 /// Is this row a conversation a person can be brought back to? `--continue` promises to
@@ -3346,6 +3427,79 @@ mod tests {
         assert_eq!(r("stroppy").unwrap(), "s-3", "exact beats prefix");
         assert_eq!(r("stroppy-g").unwrap(), "s-2", "unique prefix");
         assert_eq!(r("s-4").unwrap(), "s-4", "an id is an id");
+    }
+
+    /// Rows for the global resolver: (id, title, workspace, origin, parent).
+    fn spread(
+        rows: &[(&str, &str, &str, Option<&str>, Option<&str>)],
+    ) -> Vec<letibot_tokencore::store::StoredSession> {
+        use letibot_tokencore::store::{SessionRecord, Store};
+        let s = Store::open_in_memory().unwrap();
+        for (id, title, ws, origin, parent) in rows {
+            s.put_session(&SessionRecord {
+                id: (*id).into(),
+                title: Some((*title).into()),
+                model_id: "m".into(),
+                dialect_sha: "d".into(),
+                workspace_root: (*ws).into(),
+                owner: "op".into(),
+                role: None,
+                approvers: vec![],
+                parent_session_id: parent.map(Into::into),
+            })
+            .unwrap();
+            if let Some(o) = origin {
+                s.set_session_origin(id, o).unwrap();
+            }
+        }
+        s.list_sessions().unwrap()
+    }
+
+    #[test]
+    fn a_name_in_this_folder_wins_and_another_folders_is_found_only_without_one() {
+        let all = spread(&[
+            ("s-1", "stroppy.io", "/p/here", None, None),
+            ("s-2", "stroppy.io", "/p/far", None, None),
+            ("s-3", "far-only", "/p/far", None, None),
+        ]);
+        let here = std::path::Path::new("/p/here");
+        match find_session(&all, "stroppy.io", here).unwrap() {
+            Found::Here(id) => assert_eq!(id, "s-1"),
+            f => panic!("{f:?}"),
+        }
+        match find_session(&all, "FAR-ONLY", here).unwrap() {
+            Found::Elsewhere(r) => {
+                assert_eq!(r.len(), 1);
+                assert_eq!(
+                    (r[0].id.as_str(), r[0].workspace_root.as_str()),
+                    ("s-3", "/p/far")
+                );
+            }
+            f => panic!("{f:?}"),
+        }
+        assert!(find_session(&all, "nope", here).is_err());
+    }
+
+    #[test]
+    fn a_name_in_several_other_folders_gives_all_of_them() {
+        let all = spread(&[
+            ("s-1", "stroppy.io", "/p/a", None, None),
+            ("s-2", "stroppy.io-old", "/p/b", None, None),
+        ]);
+        match find_session(&all, "stroppy", std::path::Path::new("/p/here")).unwrap() {
+            Found::Elsewhere(r) => assert_eq!(r.len(), 2),
+            f => panic!("{f:?}"),
+        }
+    }
+
+    #[test]
+    fn queue_package_and_subagent_sessions_never_match_a_global_name() {
+        let all = spread(&[
+            ("s-q", "stroppy", "/p/a", Some("queue"), None),
+            ("s-p", "stroppy", "/p/b", Some("package"), None),
+            ("s-c", "stroppy", "/p/c", None, Some("s-x")),
+        ]);
+        assert!(find_session(&all, "stroppy", std::path::Path::new("/p/here")).is_err());
     }
 
     /// A title typed with spaces and its slug are one name.

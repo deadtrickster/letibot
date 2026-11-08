@@ -167,6 +167,13 @@ execs it, inheriting the whole rule. `letibot --sessions` and `--continue` are s
 than socket queries - they return before the vocabulary loads and before the socket is bound - and
 `--continue`'s scope rule is that an exact workspace match beats a descendant.
 
+`--continue NAME` and `--session NAME` look the name up under the current folder first, then among
+the operator's top-level sessions in every folder (`harnessd --find-session`). A match elsewhere is
+offered (`NAME lives in ~/x. Open it there? [Y/n]`, or a numbered list for several). Yes retargets
+the launcher at that folder, so its daemon starts or is joined and the session's tools run in its
+own workspace. The launcher prints the `cd` line, since a child cannot change its parent shell's
+directory. With no terminal it refuses, naming the folder and the command to run there.
+
 ## What is already per session, and therefore cheap
 
 The store already treats a session as the unit that owns things. `Store::transfer` says so in one

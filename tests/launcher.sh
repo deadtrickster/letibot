@@ -653,7 +653,7 @@ STUB
   printf '{"pid": %s, "workspace": "%s", "socket": "%s"}' "$going" "$ws_p" "$sock" \
     > "$T/run/letibot/$key.json"
 
-  ( run "$DEFAULT_ONLY" --session s-x > "$T/going.out" 2>&1 ) &
+  ( run "$DEFAULT_ONLY" --session s-1 > "$T/going.out" 2>&1 ) &
   launched=$!
   # Let it reach the wait, then let the daemon go. The bound is the point of the case: it
   # must not have started a second daemon in that window.
@@ -736,10 +736,19 @@ with open(os.environ["STUB_ARGV"], "a") as log:
 if "--latest-session" in sys.argv:
     print("s-latest")
     sys.exit(0)
-if "--resolve-session" in sys.argv:
-    name = sys.argv[sys.argv.index("--resolve-session") + 1]
+if "--find-session" in sys.argv:
+    name = sys.argv[sys.argv.index("--find-session") + 1]
     if name == "my-work":
-        print("s-named-1")
+        print("here\ts-named-1")
+        sys.exit(0)
+    far = os.path.join(os.path.dirname(os.environ["STUB_ARGV"]), "far-ws")
+    if name == "far-name":
+        print("there\ts-far-1\tfar-name\t" + open(far).read().strip() + "\t3h")
+        sys.exit(0)
+    if name == "twin":
+        ws = open(far).read().strip()
+        print("there\ts-twin-1\ttwin-a\t" + ws + "\t3h")
+        print("there\ts-twin-2\ttwin-b\t" + ws + "\t5d")
         sys.exit(0)
     sys.stderr.write("no session named %r\n" % name)
     sys.exit(1)
@@ -776,7 +785,7 @@ STUB
   chmod +x "$T/bin/harnessd" "$T/bin/letibot-tui"
 
   # A `--resolve-session` call is the launcher's store query, not a daemon start.
-  daemon_argv() { grep '^harnessd ' "$T/argv.log" 2> /dev/null | grep -v -- '--resolve-session' || true; }
+  daemon_argv() { grep '^harnessd ' "$T/argv.log" 2> /dev/null | grep -v -e '--find-session' || true; }
   head_argv() { grep '^tui ' "$T/argv.log" 2> /dev/null || true; }
   # **`printf '%s'`, with no newline**: the launcher hashes the workspace path with nothing
   # appended (`launcher.rs`'s `key`, and the `printf '%s' | sha256sum` the shell has always
@@ -790,6 +799,39 @@ STUB
   fresh() {
             : > "$T/argv.log"
                                rm -f "$T/run/letibot/"*.json
+  }
+  # run_tty ANSWER ARGS... -- the launcher on a pseudo-terminal that types ANSWER at its prompt.
+  run_tty() {
+    local ans="$1"
+    shift
+    printf '%s' "$DEFAULT_ONLY" > "$T/home/.config/letibot/providers.toml"
+    (cd "${RUN_WS:-$T/ws}" && ANS="$ans" T_HOME="$T/home" T_RUN="$T/run" T_BIN="$T/bin" \
+      T_ARGV="$T/argv.log" T_ROOM="$ROOM_SOCK" T_ROOM_ARGV="$T/room-argv.log" \
+      T_BASH="$(command -v bash)" T_LAUNCHER="$LAUNCHER" PATH="$RUN_PATH" python3 - "$@" << 'PYTTY'
+import os, pty, sys, time
+env = {"PATH": os.environ["PATH"], "HOME": os.environ["T_HOME"], "XDG_RUNTIME_DIR": os.environ["T_RUN"],
+       "LETIBOT_BIN": os.environ["T_BIN"], "LETIBOT_ENDPOINT": "", "STUB_ARGV": os.environ["T_ARGV"],
+       "LETIBOT_ROOM_SOCKET": os.environ["T_ROOM"], "ROOM_ARGV": os.environ["T_ROOM_ARGV"]}
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvpe(os.environ["T_BASH"], [os.environ["T_BASH"], os.environ["T_LAUNCHER"]] + sys.argv[1:], env)
+out = b""
+sent = False
+deadline = time.time() + 30
+while time.time() < deadline:
+    try:
+        d = os.read(fd, 4096)
+    except OSError:
+        break
+    if not d:
+        break
+    out += d
+    if not sent and (b"[Y/n]" in out or b"cancels]" in out):
+        os.write(fd, os.environ["ANS"].encode() + b"\n")
+        sent = True
+sys.stdout.write(out.decode(errors="replace").replace("\r", ""))
+PYTTY
+    )
   }
   stop_case() { # stop_case DIR -- this block's own daemon, and nothing else
     local p
@@ -912,6 +954,60 @@ STUB
     daemon_argv | sed 's/^/     /'
     fails=$((fails + 1))
   fi
+
+  # **A NAME FROM ANOTHER FOLDER IS OFFERED, NEVER TAKEN** (`--continue NAME` anywhere). The stub
+  # answers `far-name` with one session in $T/farws, and `twin` with two there.
+  mkdir -p "$T/hereg"
+  for verb in --continue --session; do
+    # A folder per verb: the previous one's daemon may still be exiting.
+    mkdir -p "$T/farws${verb#--}"
+    printf '%s\n' "$T/farws${verb#--}" > "$T/far-ws"
+    fresh
+    out="$(RUN_WS="$T/hereg" run_tty y "$verb" far-name)"
+    expect "$verb NAME from another folder asks, with the folder" "$out" \
+      "far-name lives in .*farws[a-z]*\. Open it there\? \[Y/n\]"
+    expect "  ...yes starts that folder's daemon on the session" "$(daemon_argv)" \
+      "--workspace [^ ]*farws[a-z]* .*--session s-far-1( |\$)"
+    expect "  ...and prints the cd line, saying why" "$out" "cannot change its parent shell.*cd [^ ]*farws[a-z]*"
+    expect "  ...and the head runs" "$out" "THE HEAD RAN"
+    stop_case "$T/farws${verb#--}"
+  done
+  mkdir -p "$T/farws"
+  printf '%s\n' "$T/farws" > "$T/far-ws"
+  fresh
+  out="$(RUN_WS="$T/hereg" run_tty n --continue far-name)"
+  expect "answering n opens nothing" "$out" "nothing opened"
+  if [ -z "$(daemon_argv)" ] && [ -z "$(head_argv)" ]; then echo "ok   ...and starts no daemon or head"; else
+    echo "FAIL ...and starts no daemon or head:"
+    { daemon_argv; head_argv; } | sed 's/^/     /'
+    fails=$((fails + 1))
+  fi
+  fresh
+  out="$(RUN_WS="$T/hereg" run "$DEFAULT_ONLY" --session far-name)"
+  rc=$?
+  expect "with no terminal the folder is named and nothing opened" "$out" \
+    "far-name lives in .*farws.*Nothing was opened"
+  expect "  ...with the command to run there" "$out" \
+    "cd [^ ]*farws && (leticode|letibot) --session s-far-1"
+  if [ "$rc" -ne 0 ] && [ -z "$(daemon_argv)" ]; then echo "ok   ...exit non-zero, nothing started"; else
+    echo "FAIL ...exit non-zero, nothing started: exit $rc"
+    fails=$((fails + 1))
+  fi
+  fresh
+  out="$(RUN_WS="$T/hereg" run "$DEFAULT_ONLY" --continue twin)"
+  expect "several folders with no terminal: refused, with the list" "$out" "names 2 sessions"
+  expect "  ...numbered, with folder and age" "$out" "1\) twin-a  .*farws  3h ago"
+  expect "  ...every row" "$out" "2\) twin-b  .*farws  5d ago"
+  expect "  ...and nothing opened" "$out" "nothing was opened"
+  if [ -z "$(daemon_argv)" ]; then echo "ok   ...and nothing started"; else
+    echo "FAIL ...and nothing started"
+    fails=$((fails + 1))
+  fi
+  fresh
+  out="$(RUN_WS="$T/hereg" run_tty 2 --continue twin)"
+  expect "on a terminal the list asks which" "$out" "Open which\? \[1-2"
+  expect "  ...and the pick opens that session" "$(daemon_argv)" "--session s-twin-2( |\$)"
+  stop_case "$T/farws"
 
   for d in "$T/plain" "$T/cont" "$T/new"; do stop_case "$d"; done
 else
