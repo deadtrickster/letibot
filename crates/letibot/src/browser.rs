@@ -199,7 +199,7 @@ fn listen_line(spec: &Spec) -> String {
         .join(" or ")
 }
 
-fn ago(secs: u64) -> String {
+pub(crate) fn ago(secs: u64) -> String {
     match secs {
         0..60 => "under a minute ago".into(),
         60..3600 => format!("{} min ago", secs / 60),

@@ -577,6 +577,8 @@ letibot --room [--stop [--force]]
 
   --stop    stop it
 
+  With `letibot rooms install` (socket activation) both go to `letibot rooms start|stop`.
+
   example:
     letibot --room
 EOF
@@ -761,6 +763,8 @@ already up, then attaches the TUI head to it.
                               what it is. One per box, not one per folder — every run makes
                               sure one exists before it opens a session. `--room --stop` stops
                               it (`--force` SIGKILLs one still there)
+  letibot rooms [VERB]        the room under socket activation: install, uninstall, start,
+                              stop, restart, off, on, status, logs (docs/room.md)
   letibot --status            is it up, and on what
   letibot --ls                every folder's daemon and the live sessions inside it, numbered: the
                               number is what `--stop N` and `--attach N` take
@@ -2072,6 +2076,22 @@ room_up() {
   p="$(room_pid)" || return 1
   pid_argv "$p" | grep -qx -- '--room'
 }
+# **Socket activation serves the room** (`letibot rooms install`): the manager holds the socket
+# and starts the coordinator on the first dial, so the launcher never leases or spawns one. The
+# file test is the cheap gate; `rooms is-on` asks the manager. Asked once per run.
+ROOM_ACTIVATED=""
+room_activated() {
+  if [ -z "$ROOM_ACTIVATED" ]; then
+    ROOM_ACTIVATED=no
+    if [ -f "$HOME/Library/LaunchAgents/io.letibot.rooms.plist" ] ||
+      [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/letibot-rooms.socket" ]; then
+      if [ -x "$BIN/letibot" ] && "$BIN/letibot" rooms is-on >/dev/null 2>&1; then
+        ROOM_ACTIVATED=yes
+      fi
+    fi
+  fi
+  [ "$ROOM_ACTIVATED" = yes ]
+}
 # **What the coordinator last said about failing**, from its own log — the lease's refusal names
 # the holder, the model's refusal names the key, and neither sentence is one this script could
 # write itself. `starting:` lines are the boot's progress, not its reason.
@@ -2125,6 +2145,7 @@ PY
 room_ensure() {
   local p said
   room_paths
+  room_activated && return 0
   if room_up; then
     room_stale_line >&2
     # **And the record is a note this launcher keeps true.** A room started by hand (`harnessd
@@ -2322,6 +2343,8 @@ daemon_stale_line() {
 # number). Says nothing when either time is unknown.
 room_stale_line() {
   local p dt bt
+  # Under activation the socket's listener is the manager; `letibot rooms status` says STALE.
+  room_activated && return 0
   p="$(room_pid 2>/dev/null || true)"
   [ -n "$p" ] || return 0
   [ -x "$BIN/harnessd" ] || return 0
@@ -2508,6 +2531,15 @@ SESSIONS_EOF
       die "--force only means something with --stop"
     fi
     room_paths
+    # Under activation the manager owns start and stop; the pane's restart (stop, then start)
+    # comes through here too.
+    if room_activated; then
+      if [ "$ROOM_STOP" = 1 ]; then
+        exec "$BIN/letibot" rooms stop
+      fi
+      "$BIN/letibot" rooms start || exit $?
+      exec "$BIN/letibot" rooms status
+    fi
     if [ "$ROOM_STOP" = 1 ]; then
       if ! p="$(room_pid)"; then
         echo "no room on this box ($ROOM_SOCKET)"
@@ -2796,6 +2828,17 @@ SESSIONS_EOF
         [ -x "$BIN/letibot" ] || die "no letibot at $BIN"
         shift
         exec "$BIN/letibot" browser "$@"
+        ;;
+    esac
+    ;;
+  rooms)
+    # The box's room coordinator under socket activation (docs/room.md). Bare or one of its
+    # verbs only, so a prompt that starts with the word stays a prompt.
+    case "${2:-}" in
+      "" | --help | -h | install | uninstall | start | stop | restart | off | on | status | logs)
+        [ -x "$BIN/letibot" ] || die "no letibot at $BIN"
+        shift
+        exec "$BIN/letibot" rooms "$@"
         ;;
     esac
     ;;

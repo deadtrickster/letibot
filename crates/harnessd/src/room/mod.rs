@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 
+pub mod activation;
 pub mod agents;
 pub mod asks;
 pub mod coordinator;

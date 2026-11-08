@@ -68,6 +68,8 @@ letibot-bridge.workspace = true
 leticode-config.workspace = true
 # `letibot browser install|start|stop|...`: the agent or units and the verbs that drive them.
 letibot-activation.workspace = true
+# `letibot rooms install` reads the coordinator's lease, so it does not install over a stray.
+letibot-room.workspace = true
 
 [dev-dependencies]
 # The apparatus machinery, for the one test that needs a machine with listening

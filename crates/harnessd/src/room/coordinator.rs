@@ -36,6 +36,9 @@ pub fn configure(cfg: &mut Config) -> Result<(), String> {
          $XDG_DATA_HOME nor $HOME — set LETIBOT_ROOM_SOCKET to name one"
             .to_string()
     })?;
+    // Before anything is bound or loaded: a start by hand while activation holds the socket is
+    // refused, and an activated start takes the manager's listener now.
+    super::activation::admit(&room_socket)?;
     let named = room_socket
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -157,15 +160,37 @@ impl Coordinator {
         let lease_path = super::lease_path().ok_or_else(|| "no room lease path".to_string())?;
         let lease = CoordinatorLease::new(lease_path);
         // The lease first, so a second coordinator is refused before it binds anything.
-        let now = letibot_room::server::now_ms();
-        match lease.acquire(now) {
-            Ok(Acquired::Fresh) => {}
-            Ok(Acquired::TookOver { from, why }) => {
-                eprintln!("harnessd: took the room's lease from {} — {why}", from)
+        let listener = super::activation::taken();
+        let mut said = false;
+        loop {
+            match lease.acquire(letibot_room::server::now_ms()) {
+                Ok(Acquired::Fresh) => break,
+                Ok(Acquired::TookOver { from, why }) => {
+                    eprintln!("harnessd: took the room's lease from {} — {why}", from);
+                    break;
+                }
+                Err(held) if listener.is_none() => return Err(held.sentence()),
+                // Activated: exiting would have the manager start this again at once. Wait,
+                // and serve when the holder stops or its lease goes stale.
+                Err(held) => {
+                    if !said {
+                        eprintln!("harnessd: {} Waiting for it.", held.sentence());
+                        said = true;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                }
             }
-            Err(held) => return Err(held.sentence()),
         }
-        let server = Server::serve(&socket, Room::new()).map_err(|e| {
+        let served = match listener {
+            Some(l) => Server::with_listener(
+                l,
+                &socket,
+                Room::new(),
+                letibot_room::server::DEFAULT_SWEEP_EVERY_MS,
+            ),
+            None => Server::serve(&socket, Room::new()),
+        };
+        let server = served.map_err(|e| {
             let _ = lease.release();
             format!("binding the room's socket at {}: {e}", socket.display())
         })?;
@@ -186,6 +211,7 @@ impl Coordinator {
 
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let tie_breaker = spawn_tie_breaker(&server, session, &bell, &stop);
+        spawn_state_note(&server, session, &stop);
         Ok(Coordinator {
             server,
             lease,
@@ -216,12 +242,43 @@ impl Drop for Coordinator {
         self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
         self.server.stop();
         let _ = self.lease.release();
+        let note = super::activation::state_path(&self.socket);
+        if letibot_activation::state::State::read(&note)
+            .is_some_and(|s| s.pid == std::process::id())
+        {
+            let _ = std::fs::remove_file(&note);
+        }
         if let Some(h) = self.tie_breaker.take() {
             // Not joined: the thread's next act is to look at the flag and leave, and a daemon's
             // shutdown must not wait on a two-second sleep.
             let _ = h;
         }
     }
+}
+
+/// Keep `room-<host key>.state` true for `letibot rooms status`: pid, binary and the sessions
+/// connected now, the coordinator's own session left out. Removed on an orderly stop.
+fn spawn_state_note(server: &Server, me: &str, stop: &Arc<std::sync::atomic::AtomicBool>) {
+    let path = super::activation::state_path(server.path());
+    let (server, me, stop) = (server.clone(), me.to_string(), Arc::clone(stop));
+    let _ = std::thread::Builder::new()
+        .name("room-state".into())
+        .spawn(move || {
+            let note = letibot_activation::state::State::this_process();
+            let mut last = None;
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                let mut names = server.connected();
+                names.retain(|n| *n != me);
+                if last != Some(names.len()) {
+                    let _ = super::activation::write_state(&path, &note, names.len());
+                    last = Some(names.len());
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            if letibot_activation::state::State::read(&path).is_some_and(|s| s.pid == note.pid) {
+                let _ = std::fs::remove_file(&path);
+            }
+        });
 }
 
 fn spawn_tie_breaker(

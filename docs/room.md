@@ -213,6 +213,58 @@ sure one is serving and says what it is, `letibot --room --stop` stops it, and i
 `PATH`), so its sessions are in the rooms too. A failed start is said on stderr and the daemon starts
 anyway: a session with no room works, and its `room` tool refuses by name.
 
+With socket activation the operator never starts it by hand. Install it once:
+
+```sh
+letibot rooms install
+```
+
+This writes a launchd agent (macOS, `~/Library/LaunchAgents/io.letibot.rooms.plist`) or a systemd user
+socket and service (Linux, `letibot-rooms.socket` and `.service`) and loads it. The manager then holds
+`<data dir>/room-<host key>.sock`, the path daemons dial, resolved at install. The first dial starts
+`harnessd --room`. From then on the launcher neither leases nor spawns a coordinator: `room_ensure`
+returns at once, and `letibot --room` / `letibot --room --stop` become `letibot rooms start|stop`.
+The agent does not inherit the shell's environment, so the tie-breaker's key must be in
+`providers.toml`. `install` refuses while a coordinator that activation did not start holds the lease.
+
+### Controls
+
+All under `letibot rooms`, the same verbs and wording as `letibot browser`:
+
+| verb | does |
+|---|---|
+| `install` | write and load the agent or units |
+| `uninstall` | unload and remove them |
+| `start` | run the coordinator now (`launchctl kickstart`, `systemctl --user start`) |
+| `stop` | stop the running coordinator; activation keeps the socket and the next dial starts it |
+| `restart` | stop and start, running the `harnessd` on disk now: the step after a rebuild |
+| `off`, `on` | disable or enable activation entirely |
+| `status` | installed, activation on, running (pid, binary, STALE when rebuilt since it started), sessions connected, socket |
+| `logs` | follow the log: `~/Library/Logs/letibot/rooms.log` on macOS, the journal on Linux |
+
+The agent runs the `harnessd` beside the `letibot` that ran `install`, resolved, so a rebuild in place
+plus `restart` is the whole update, and "the host room is on the old version" is one `restart`. Live
+sessions survive it: each client redials on its own (250 ms, backing off to 5 s), a dial that arrives
+while no coordinator runs waits in the manager's socket, and chat, items, leases and cursors are in the
+stores beside the socket. The pane's restart control goes through `letibot --room --stop` then
+`letibot --room`, which under activation is `rooms stop` (it waits for the old pid to exit) then
+`rooms start`.
+
+Bare `letibot rooms` runs the coordinator in the foreground. So does `harnessd --room`. Both refuse while
+activation is on, naming `letibot rooms stop` and `off`. Without activation the lease-and-spawn path
+is unchanged.
+
+The lease still makes one coordinator true. An activated coordinator takes `room-<host key>.lease`
+before it serves and beats it. A stray `harnessd --room` is refused by the activation check, or by
+the live lease if it gets past that, before it binds, so it never touches the manager's socket. An
+activated coordinator that finds a live holder does not exit (the manager would start it again at
+once). It logs the holder once and waits until that holder stops or its lease goes stale. On a stop it
+gives the lease back and leaves the socket file to the manager.
+
+An activated coordinator never exits when idle. Its arbiter's session has no store. Missed-event
+counts, the away-externals list, gone-since times and the escalated-asks set are in memory only. And
+the coordinator's own session holds a connection the whole time anyway.
+
 ## The contract
 
 This is what a client of the coordinator may rely on. Chat lives in `crates/room/src/chat.rs` and the

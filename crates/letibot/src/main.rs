@@ -59,6 +59,7 @@ pub mod launcher;
 pub mod migrate;
 mod notes;
 mod roles;
+mod rooms;
 mod stats;
 
 /// What this invocation is being asked to be. No catch-all variant: an unknown name is an
@@ -290,6 +291,8 @@ fn main() -> ExitCode {
                     notes::run(&tail())
                 } else if word == "browser" {
                     browser::run(&tail())
+                } else if word == "rooms" {
+                    rooms::run(&tail())
                 } else if word == "fb" {
                     stats::run_fb(&tail())
                 } else if word == "migrate" || word == "--migrate" {
@@ -351,6 +354,8 @@ VERBS
   notes path|push             the notes checkout, and the one step that pushes it
   browser [VERB]              the Chrome extension's bridge on 127.0.0.1 (docs/browser.md):
                               install, start, stop, restart, off, on, status, logs
+  rooms [VERB]                the box's room coordinator (docs/room.md): bare runs it in the
+                              foreground; the same verbs as browser
   fb --session S [+|-] NOTE   mark a session's last turn from a shell
   migrate SESSION --to HOST   move a session's whole daemon to a host, or back with
                               `--to local` (`letibot --migrate` is the same verb)

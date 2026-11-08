@@ -31,6 +31,9 @@ use crate::wire::{Answer, ROOM_PROTOCOL_VERSION, Request, Response};
 /// beat stopped is taken back promptly and a beat that is one pass late is not mistaken for death.
 pub const DEFAULT_SWEEP_EVERY_MS: u64 = 5_000;
 
+/// How often a manager-held listener's accept loop looks at the stop flag.
+const ACCEPT_TICK_MS: libc::c_int = 200;
+
 /// How long an ask's other end may be gone before the operator is asked to restart it. Five
 /// minutes: a restart inside the grace is invisible, and a longer wait would leave a plan blocked
 /// on a machine nobody was told to fix. It never settles anything - only the explicit verbs and a
@@ -194,6 +197,11 @@ struct Inner {
     /// The chat store's rewrite count when blobs were last collected, so the collection runs on a
     /// rewrite and not on every message.
     blob_rewrites: AtomicU64,
+    /// The listener came from a socket manager, which owns the socket file.
+    inherited: bool,
+    /// The polled accept thread of an inherited listener, joined by `stop` so nothing accepts
+    /// on the manager's socket after it returns.
+    accept: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 /// How long a session was out of earshot, and how much it missed while it was - see
@@ -252,6 +260,28 @@ impl Server {
         // and tightened a moment later was openable for that moment. Mode and peer uid are two
         // gates on one door - the file says who may open it, the kernel says who did.
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        Self::build(listener, path, room, sweep_every_ms, false)
+    }
+
+    /// Serve on a listener a socket manager (launchd, systemd) already bound at `path`. The file
+    /// is the manager's: it is neither removed nor rebound, and a stop leaves connections that
+    /// were not accepted yet in the backlog for the next start.
+    pub fn with_listener(
+        listener: UnixListener,
+        path: &Path,
+        room: Room,
+        sweep_every_ms: u64,
+    ) -> std::io::Result<Server> {
+        Self::build(listener, path, room, sweep_every_ms, true)
+    }
+
+    fn build(
+        listener: UnixListener,
+        path: &Path,
+        room: Room,
+        sweep_every_ms: u64,
+        inherited: bool,
+    ) -> std::io::Result<Server> {
         let operator_token = mint_token()?;
         write_private(&crate::operator_token_path(path), operator_token.as_bytes())?;
         let lease_ms = room.lease_ms();
@@ -289,9 +319,15 @@ impl Server {
                 blob_rewrites: AtomicU64::new(0),
                 stop: AtomicBool::new(false),
                 served: AtomicU64::new(0),
+                inherited,
+                accept: Mutex::new(None),
             }),
         };
-        server.spawn_accept(listener);
+        if inherited {
+            server.spawn_accept_polled(listener)?;
+        } else {
+            server.spawn_accept(listener);
+        }
         server.spawn_clock();
         Ok(server)
     }
@@ -948,7 +984,15 @@ impl Server {
     /// next one that it was killed rather than that it never existed.
     pub fn stop(&self) {
         self.inner.stop.store(true, Ordering::SeqCst);
-        let _ = std::fs::remove_file(&self.inner.path);
+        let accept = self.inner.accept.lock().expect("the accept lock").take();
+        if let Some(h) = accept
+            && h.thread().id() != std::thread::current().id()
+        {
+            let _ = h.join();
+        }
+        if !self.inner.inherited {
+            let _ = std::fs::remove_file(&self.inner.path);
+        }
         // The token dies with the socket it belongs to. A file left behind would be a word a
         // later process could present to the next coordinator, which never minted it.
         let _ = std::fs::remove_file(crate::operator_token_path(&self.inner.path));
@@ -3315,6 +3359,37 @@ impl Server {
                     }
                 }
             });
+    }
+
+    /// The accept loop on a manager's listener: polled, so a stop is seen within a tick and a
+    /// connection that arrives after it stays queued in the kernel for the next coordinator.
+    fn spawn_accept_polled(&self, listener: UnixListener) -> std::io::Result<()> {
+        use std::os::fd::AsRawFd;
+        listener.set_nonblocking(true)?;
+        let me = self.clone();
+        let h = std::thread::Builder::new()
+            .name("room-accept".into())
+            .spawn(move || {
+                let mut p = libc::pollfd {
+                    fd: listener.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                while !me.inner.stop.load(Ordering::SeqCst) {
+                    p.revents = 0;
+                    // SAFETY: one live pollfd.
+                    let n = unsafe { libc::poll(&mut p, 1, ACCEPT_TICK_MS) };
+                    if n <= 0 || me.inner.stop.load(Ordering::SeqCst) {
+                        continue;
+                    }
+                    while let Ok((stream, _)) = listener.accept() {
+                        let _ = stream.set_nonblocking(false);
+                        Server::clone(&me).serve_one(stream);
+                    }
+                }
+            })?;
+        *self.inner.accept.lock().expect("the accept lock") = Some(h);
+        Ok(())
     }
 
     /// One connection, one thread - `Hello` first, then a read loop.
