@@ -577,6 +577,25 @@ pub trait ShellSuggester: Send + Sync {
     fn suggest(&self, hub: &Hub, workspace: &str, prefix: &str) -> Vec<String>;
 }
 
+/// The daemon's GitHub reviewer seat (R118), as the wire and the panes reach it. A trait for
+/// [`SessionSource`]'s reason: the seat is the harness's, and this crate holds only the door.
+pub trait GithubSeat: Send + Sync {
+    /// One request - `{"verb": "attach", "scope": "stroppy-io"}` - answered with the snapshot the
+    /// seat's pane would be drawn from, or `{"error": …}` when the verb or the scope is refused.
+    fn request(&self, op: &serde_json::Value) -> serde_json::Value;
+
+    /// The seat's snapshot as a pane's `github` feed, or `None` when nobody has attached a scope:
+    /// a pane handed no key says so, which is a different fact from an empty scope.
+    fn feed(&self) -> Option<serde_json::Value>;
+
+    /// Run one poll pass if one is due, on a thread of its own: a review can take minutes and the
+    /// daemon's own pass is not where that waits. `false` when nothing was started, which is what a
+    /// test's seat answers.
+    fn poll_due(&self, _now_ms: u64) -> bool {
+        false
+    }
+}
+
 /// Who answers a plugin pane's questions and lists the panes a head needs before it can open
 /// one. A trait for [`SessionSource`]'s reason: the stack belongs to the harness, not here.
 pub trait PaneDriver: Send + Sync {
@@ -783,6 +802,9 @@ pub struct Registry {
     /// Set once at startup by the daemon, beside [`Registry::suggester`]. See [`TerminalDriver`].
     /// `None` means a `TermOpen` answers with a pane that is over and the reason it is.
     terminal: Mutex<Option<Arc<dyn TerminalDriver>>>,
+    /// The GitHub reviewer seat (R118), set once at startup by the daemon. See [`GithubSeat`].
+    /// `None` means a `Github` frame is refused by name and the pane is handed no `github` feed.
+    github: Mutex<Option<Arc<dyn GithubSeat>>>,
     /// One per session, installed by the session's own harness at open and removed with the
     /// session ([`Registry::remove`]). See [`PromptDriver`] for why it is keyed by session.
     prompts: Mutex<std::collections::HashMap<String, Arc<dyn PromptDriver>>>,
@@ -926,6 +948,7 @@ impl Registry {
             diagnostics: Mutex::new(None),
             suggester: Mutex::new(None),
             terminal: Mutex::new(None),
+            github: Mutex::new(None),
             prompts: Mutex::new(std::collections::HashMap::new()),
             pane_drivers: Mutex::new(std::collections::HashMap::new()),
             instance: mint_instance(),
@@ -1230,6 +1253,19 @@ impl Registry {
     /// The pane's driver, or `None` when this registry was given none.
     pub fn terminal(&self) -> Option<Arc<dyn TerminalDriver>> {
         self.terminal
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Who holds the GitHub reviewer seat. See [`GithubSeat`]. Installed once, by the daemon.
+    pub fn set_github(&self, seat: Arc<dyn GithubSeat>) {
+        *self.github.lock().unwrap_or_else(|e| e.into_inner()) = Some(seat);
+    }
+
+    /// The GitHub reviewer seat, or `None` on a daemon that was given none.
+    pub fn github(&self) -> Option<Arc<dyn GithubSeat>> {
+        self.github
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()

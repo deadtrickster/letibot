@@ -338,6 +338,14 @@ impl Daemon {
                             eprintln!("  reviews -> {served} gatekeeper(s)");
                         }
                     }
+                    // And the GitHub reviewer seat (R118): a scope somebody attached is polled for
+                    // on its own minute, on a thread of its own - a review is minutes of a
+                    // member's work, and this pass is not where that waits.
+                    if let Some(github) = self.registry().github()
+                        && github.poll_due(letibot_metrics::now_ms())
+                    {
+                        eprintln!("  github -> a poll pass started");
+                    }
                     // And the daemon itself goes when nothing has needed it for its window
                     // (`Config::idle_exit_after`), last on the pass so a review or a nag the pass just started
                     // holds it.

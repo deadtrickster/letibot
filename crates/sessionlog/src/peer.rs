@@ -87,6 +87,7 @@ pub fn door(frame: &ClientFrame) -> Option<&'static str> {
         ClientFrame::LoadSkill { .. } => "/skills, handing a skill to the session",
         ClientFrame::ListJobs => "the jobs pane",
         ClientFrame::ListMergeQueue => "the merge queue",
+        ClientFrame::Github { .. } => "the GitHub reviewer seat",
         ClientFrame::RoomChat { .. } => "chat in the rooms as the operator",
         ClientFrame::NewSession { .. } => "/new",
         ClientFrame::ResumeSession { .. } => "resuming a session",

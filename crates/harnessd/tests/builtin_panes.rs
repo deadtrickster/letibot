@@ -98,8 +98,11 @@ fn feed_named(name: &str, shape: &str) -> Option<Value> {
         // An empty list is a fact, not an absence: the pane must still answer, and say so.
         ("sessions", "empty") => Some(sessions_feed(Vec::new())),
         ("sessions", "rows") => Some(sessions_feed((0..3).map(row).collect())),
-        // The host builds no feed of this kind (`PluginHost::feeds_for`), so the pane is asked
-        // with none - which is the first-frame case, deliberately.
+        // Every other feed is asked for with none, which is the first-frame case, deliberately:
+        // the daemon builds `room`, `queue` and `github` too, but a pane must answer when nobody
+        // has attached a scope, joined a room or opened the queue cluster. See
+        // `crate::github::tests::the_daemon_answers_the_github_feed_for_an_attached_scope` for the
+        // same pane with the daemon's seat behind it.
         _ => None,
     }
 }

@@ -60,6 +60,11 @@ letibot-builtins.workspace = true
 # levels live there, and so do the two names a leticode's instruction file may have —
 # which is why this crate asks for a list of paths and holds no copy of a name.
 leticode-config.workspace = true
+# **The GitHub reviewer seat** (R118): the poll, the rows, the review's drafts and the pane's
+# snapshot. The daemon holds the seat, so this is where `letibot attach github <scope>` lands and
+# where `/pane github/github` reads its feed from. `crates/harnessd/src/github.rs` is the daemon's
+# half — the mirrors, the review panel and the feed.
+letibot-github.workspace = true
 # **The hook contracts, for the daemon's side of the wire** (`crates/plugin-sdk`): the four kinds'
 # typed inputs and answers, which the listener below builds and parses rather than spelling them
 # as JSON here. The same crate is what a guest plugin links, so a renamed field breaks both.

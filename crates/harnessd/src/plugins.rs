@@ -69,6 +69,10 @@ pub struct PluginHost {
     /// coordinator, set by [`PluginHost::with_room`]. `None` in a test's host and on a box with no
     /// coordinator, and the `room` feed is then no key at all rather than an empty room.
     room: Mutex<Option<Arc<dyn room_feed::RoomFeed>>>,
+    /// Where a pane's `github` feed comes from - the daemon's own reviewer seat, set by
+    /// [`PluginHost::with_github`]. `None` in a test's host, and a layer declaring the feed is then
+    /// handed no key at all rather than an empty seat.
+    github: Option<Arc<dyn feed::GithubFeed>>,
     /// Whether this host installs the binary's own pane layers at the door a head comes through.
     /// The daemon's host does ([`PluginHost::production`]); a host built on a test's loader cannot,
     /// because a fake loader has no engine for a module held in memory.
@@ -236,6 +240,7 @@ impl PluginHost {
             builder,
             sessions: None,
             room: Mutex::new(None),
+            github: None,
             install_builtin_panes: false,
             builtins_wanted: std::sync::atomic::AtomicBool::new(false),
             builtins_started: std::sync::atomic::AtomicBool::new(false),
@@ -253,6 +258,13 @@ impl PluginHost {
     /// `room` feed is given one and its four controls have somewhere to go.
     pub fn with_room(self, source: Arc<dyn room_feed::RoomFeed>) -> PluginHost {
         *self.room.lock().unwrap_or_else(|e| e.into_inner()) = Some(source);
+        self
+    }
+
+    /// Hand this host the daemon's GitHub reviewer seat, so a pane declaring the `github` feed is
+    /// drawn from it: `letibot attach github <scope>` is what puts a scope there.
+    pub fn with_github(mut self, source: Arc<dyn feed::GithubFeed>) -> PluginHost {
+        self.github = Some(source);
         self
     }
 
@@ -969,8 +981,8 @@ impl PluginHost {
 
     /// The feeds a pane is handed, by the answering layer's own declaration - and only those. A
     /// layer declaring a feed the host does not build is handed no key, not an empty list, which
-    /// would say there are none.
-    fn feeds_for(&self, hook: &str) -> BTreeMap<String, Value> {
+    /// would say there are none. Public because a test asks the daemon what it would hand over.
+    pub fn feeds_for(&self, hook: &str) -> BTreeMap<String, Value> {
         let mut out = BTreeMap::new();
         for want in self.declared_feeds(hook) {
             match want {
@@ -988,6 +1000,15 @@ impl PluginHost {
                             want.name().to_string(),
                             room_feed::room(&*source, &self.session, feed::now_ms()),
                         );
+                    }
+                }
+                letibot_plugin::pane::Feed::Github => {
+                    // The daemon's seat, and only when a scope is attached: a pane handed no key
+                    // says *no scope is attached*, which an empty scope list would deny.
+                    if let Some(source) = self.github.as_ref()
+                        && let Some(seat) = source.github()
+                    {
+                        out.insert(want.name().to_string(), seat);
                     }
                 }
                 _ => {}

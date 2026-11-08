@@ -2020,6 +2020,12 @@ impl<'a> Sessions<'a> {
             Some(link) => host.with_room(link),
             None => host,
         };
+        // And the daemon's GitHub reviewer seat (R118), so `/pane github/github` draws the scopes
+        // `letibot attach github <scope>` asked the daemon to hold.
+        let host = match self.registry.github() {
+            Some(seat) => host.with_github(Arc::new(crate::plugins::feed::SeatFeed(seat))),
+            None => host,
+        };
         let host = Arc::new(host);
         host.announce(&hub);
         let driver: Arc<dyn letibot_sessionlog::registry::PaneDriver> = host.clone();

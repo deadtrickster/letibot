@@ -1539,6 +1539,7 @@ dependencies = [
  "letibot-dialect-qwen",
  "letibot-embeddings",
  "letibot-flowy",
+ "letibot-github",
  "letibot-http",
  "letibot-llama",
  "letibot-metrics",

@@ -1478,6 +1478,43 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // off these two files, so it waits for them. One model, loaded once, shared by every caller.
     cfg.read_embeddings();
 
+    // The GitHub reviewer seat (R118), installed on the registry so `letibot attach github <scope>`
+    // reaches it, `/pane github/github` is drawn from it, and the idle pass polls it. `post` off is
+    // the shipped state, and a file that asks to post without a token is said here and then held at
+    // *off*: a daemon that refused to start over a reviewer would take the session down with it.
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let config = match letibot_github::seat::Config::resolved(
+            cfg.leticode.github.post.unwrap_or(false),
+            cfg.leticode.github.token_path.as_deref(),
+            std::path::Path::new(&home),
+        ) {
+            Ok(config) => config,
+            Err(why) => {
+                eprintln!("  github: {why} — this daemon keeps its reviews as drafts");
+                letibot_github::seat::Config::default()
+            }
+        };
+        // The panel's members are the ones this project's `[queue.claude]` names, the same opt-in
+        // the merge queue reads: no table, no member, and a row that says so rather than a review
+        // nobody made.
+        let claude = match crate::mergequeue::settings::for_repository(&cfg.workspace) {
+            Ok(settings) => settings.claude,
+            Err(why) => {
+                eprintln!("  github: {why} — its panel has no Claude member");
+                None
+            }
+        };
+        let root = std::path::Path::new(&home)
+            .join(".local/share/letibot/github")
+            .join(letibot_sessionlog::workspace_key(&cfg.workspace));
+        let seat: std::sync::Arc<dyn letibot_sessionlog::registry::GithubSeat> =
+            crate::github::Github::new(config)
+                .production(root, claude, registry.clone())
+                .install();
+        registry.set_github(seat);
+    }
+
     // `main_model`, through the one function that states the precedence. The command line
     // is the flag level when it chose WHO ANSWERS - `--provider`, and not `--model`, which is
     // the local BINDING the launcher passes on every start

@@ -910,6 +910,24 @@ pub fn serve_conn_rooted(
                 };
                 writer.lock().unwrap().write(&f)?;
             }
+            Ok(ClientFrame::Github {
+                client_request_id,
+                op,
+            }) => {
+                // The seat is the daemon's, so the answer is the registry's: `letibot attach github
+                // <scope>` reaches here, and so does the pane's own read. A daemon given no seat
+                // refuses by name rather than drawing an empty one.
+                let reply = match registry.github() {
+                    Some(github) => github.request(&op),
+                    None => serde_json::json!({
+                        "error": "this daemon holds no GitHub reviewer seat"
+                    }),
+                };
+                writer.lock().unwrap().write(&ServerFrame::Github {
+                    client_request_id,
+                    reply,
+                })?;
+            }
             Ok(ClientFrame::RoomChat {
                 client_request_id,
                 op,

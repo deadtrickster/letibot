@@ -122,6 +122,24 @@ pub fn sessions(source: &dyn SessionFeed, here: &str) -> Value {
     })
 }
 
+/// Where a pane's `github` feed comes from: the daemon's own reviewer seat, which is
+/// `crate::github::Github`. A trait so a test's host is handed a seat without a daemon.
+pub trait GithubFeed: Send + Sync {
+    /// The seat's snapshot as its pane reads it, or `None` when nobody attached a scope: a pane
+    /// handed no key says *no scope is attached*, which is not an empty scope.
+    fn github(&self) -> Option<Value>;
+}
+
+/// The registry's GitHub seat, as a host's feed: the daemon installs one seat on its registry, and
+/// every session's host is handed this adapter rather than a second copy of the seat.
+pub struct SeatFeed(pub Arc<dyn letibot_sessionlog::registry::GithubSeat>);
+
+impl GithubFeed for SeatFeed {
+    fn github(&self) -> Option<Value> {
+        self.0.feed()
+    }
+}
+
 /// The host's home, so a layer can draw `~/…` - the same shortening the head's own list does.
 fn home() -> String {
     std::env::var("HOME").unwrap_or_default()

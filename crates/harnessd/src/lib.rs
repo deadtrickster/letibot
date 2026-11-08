@@ -52,6 +52,7 @@ pub mod etalon_map;
 pub mod etalon_oracle;
 pub mod facts;
 pub mod footprint;
+pub mod github;
 pub mod harness;
 pub mod httphead;
 pub mod instruments;

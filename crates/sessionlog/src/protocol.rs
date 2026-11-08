@@ -12,7 +12,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 67;
+pub const PROTOCOL_VERSION: u32 = 68;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -717,6 +717,14 @@ pub enum ClientFrame {
         client_request_id: String,
         op: serde_json::Value,
     },
+    /// The daemon's GitHub reviewer seat (R118): `op` is one verb - `attach` with a scope, `pause`,
+    /// `resume`, `poll`, or `list` - and the answer is [`ServerFrame::Github`] carrying the snapshot
+    /// the seat's pane would be drawn from. The seat is the DAEMON's, so `letibot attach github
+    /// <scope>` asks here rather than polling in its own process.
+    Github {
+        client_request_id: String,
+        op: serde_json::Value,
+    },
     /// Make a new session in this daemon. It does not switch to it: the head sends
     /// [`ClientFrame::Switch`] once it has seen the id, because a head that wants a session ready
     /// for later should not have to leave the one it is in.
@@ -1041,6 +1049,12 @@ pub enum ServerFrame {
         client_request_id: String,
         reply: serde_json::Value,
     },
+    /// The answer to [`ClientFrame::Github`]: the seat's snapshot as its pane is drawn from it, or
+    /// `{"error": "..."}` when the daemon holds no seat or the verb was not one it knows.
+    Github {
+        client_request_id: String,
+        reply: serde_json::Value,
+    },
     /// A chat message the coordinator pushed to the operator's seat, straight to every head that has
     /// chatted: the room `Message` as JSON and whether it names this reader. Unsolicited, so a head
     /// that merges it must recognise a `seq` its own poll already brought.
@@ -1222,6 +1236,7 @@ mod tests {
                 | ClientFrame::Interrupt { .. }
                 | ClientFrame::ListJobs
                 | ClientFrame::ListMergeQueue
+                | ClientFrame::Github { .. }
                 | ClientFrame::RoomChat { .. }
                 | ClientFrame::ListNotes
                 | ClientFrame::ListSkills
@@ -1329,6 +1344,7 @@ mod tests {
                 | ServerFrame::StandingNotes { .. }
                 | ServerFrame::Skills { .. }
                 | ServerFrame::Queues { .. }
+                | ServerFrame::Github { .. }
                 | ServerFrame::RoomChat { .. }
                 | ServerFrame::RoomChatPushed { .. }
                 | ServerFrame::Peeked { .. }
@@ -1352,8 +1368,13 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 67,
-            "the match above was last reconciled with the frame list at 67. 67 gave \
+            PROTOCOL_VERSION, 68,
+            "the match above was last reconciled with the frame list at 68. 68 added \
+             `ClientFrame::Github` and `ServerFrame::Github`, the daemon's GitHub reviewer seat \
+             (R118): `letibot attach github <scope>` asks the DAEMON to hold a scope and is answered \
+             with the snapshot its pane is drawn from, so a head that does not know the frames \
+             could not attach a scope at all. Two new variants, so a version-67 peer fails to \
+             parse whichever arrives first. 67 gave \
              `ServerFrame::Todos` a `seats` field: the boards the daemon's store keeps for Claude \
              Code seats (`docs/seat-todo.md`), which the head's todo pane draws beside the \
              session's. It is `serde(default)` and no variant is new, so a version-66 head parses \

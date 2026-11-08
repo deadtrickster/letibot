@@ -82,6 +82,10 @@ impl App {
                 self.on_room_pushed(message, names_you);
                 Disposition::Control
             }
+            // The daemon's GitHub reviewer seat (R118). `/pane github/github` is drawn by the
+            // DAEMON and reaches this head as a `PluginPane`, so the answer a `letibot attach
+            // github` asked for is nothing this screen keeps.
+            ServerFrame::Github { .. } => Disposition::Control,
             frame @ ServerFrame::Event { .. } => self.on_event_frame(frame),
             frame @ (ServerFrame::TermAttached { .. }
             | ServerFrame::TermStatus { .. }

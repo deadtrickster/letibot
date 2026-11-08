@@ -337,6 +337,18 @@ impl HeadClient {
         Ok(())
     }
 
+    /// Ask the daemon's GitHub reviewer seat: `letibot attach github <scope>` sends
+    /// `{"verb": "attach", "scope": …}` and the pane's read sends `{"verb": "list"}`. The answer
+    /// arrives as `ServerFrame::Github` carrying the same id.
+    pub fn github(&mut self, op: serde_json::Value) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::Github {
+            client_request_id: client_request_id.clone(),
+            op,
+        })?;
+        Ok(client_request_id)
+    }
+
     /// Send one chat request as the operator. The answer arrives as `ServerFrame::RoomChat`
     /// carrying the same id. A caller that must recognise its own answer passes the id it
     /// minted; `None` mints one here.

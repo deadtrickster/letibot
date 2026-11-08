@@ -36,13 +36,14 @@ provider, for one person's box ([README.md:46-56](../README.md)).
 
 ## Half built
 
-- **The GitHub reviewer seat.** The poll, the row states, the config, the drafts, the worker and the
-  scope pane are in the tree (`crates/github`, `letibot attach github`): a review runs as a brief in
-  that pull request's own session and is kept as a draft. What is left is that the seat is its own
-  process rather than the daemon's, so the daemon feeds the pane no `github` key, a pull request of
-  another repository in an org scope is refused until a mirror per repository exists, and the review is
-  not yet R116's panel ([github-reviewer.md:39](github-reviewer.md), [github-reviewer.md:97](github-reviewer.md),
-  [TODO.md:58](../TODO.md) R118, which depends on R116 at [TODO.md:73](../TODO.md)).
+- **The GitHub reviewer seat.** The seat is the daemon's now (`crates/harnessd/src/github.rs`):
+  `letibot attach github <scope>` asks it to hold a scope, `/pane github/github` is drawn from its
+  feed, an org scope's second repository is reviewed through its own mirror, a review is the merge
+  queue's panel rendered as one GitHub review, and R114's lexical offers ride the row
+  ([github-reviewer.md](github-reviewer.md), [TODO.md](../TODO.md) R118). What is left is a
+  letibot-session member in the panel (this build's only member is `[queue.claude]`'s `claude -p`
+  run), an answer to a mention, and a first real run against GitHub: nothing has ever been posted,
+  and every test drives a stub `gh`.
 - **Placements on a real host.** `Placement::RemoteVm` is in the tree with tests of its shape, and the
   live run owes four facts; six packages placed on one host at once is still unproven; a firecode
   backend that runs on the remote host is not built ([TODO.md:166](../TODO.md),
@@ -95,10 +96,11 @@ provider, for one person's box ([README.md:46-56](../README.md)).
 
 ## The next five pieces of work, by value
 
-1. **R116's verdict as the reviewer's schema** ([TODO.md:73](../TODO.md) R116). The GitHub seat at
-   [TODO.md:58](../TODO.md) now turns a pull request into a review through that pull request's own
-   session ([github-reviewer.md:39](github-reviewer.md)); what is left is the shared verdict schema, so
-   that a Claude reviewer and a letibot reviewer are interchangeable in one panel.
+1. **A letibot-session member in the GitHub seat's panel** ([TODO.md](../TODO.md) R118). R116's
+   verdict schema is shared, and the seat ([github-reviewer.md](github-reviewer.md)) runs the merge
+   queue's panel with a `claude -p` run as its one member - so a project that configures no Claude
+   reviewer has a panel that refuses by name, and a mention has nobody to answer it. A member that is
+   a letibot session is the next piece, and the machinery is the merge queue's own.
 2. **Close the three deferred core-loop findings** ([2026-11-03-harnessd.md:628-636](reviews/2026-11-03-harnessd.md)).
    Each already has a named smallest fix and each fails silently, so no head can show the operator
    that it happened.

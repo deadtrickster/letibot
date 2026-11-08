@@ -36,35 +36,67 @@ another repository (a fork) is read-only, so a reviewer that would run something
 standing exists to make impossible. Nothing in this seat ever posts as the operator: the seat has its
 own identity, `letibot`, and that name is also what a comment must mention to be a question for it.
 
-## The worker: one session per pull request
+## The seat lives in the daemon
 
-A row owed a review is a brief run in that pull request's own letibot session, and what the session
-answers is the review the row keeps as a draft.
+`letibot attach github <scope>` does not poll anything itself: it asks the folder's daemon to hold
+the scope and prints what the daemon holds. The seat - the scopes, the rows, the drafts, the
+snapshot - is the daemon's (`crates/harnessd/src/github.rs`), for the reason the pane exists: a pane
+is drawn from the daemon's own snapshot, so a seat in a terminal would be one the pane could not
+see. A daemon that is not listening is refused by name; start `letibot` in that folder first.
 
-- **The session is opened once and reused**, so the second review of a change is made by the session
-  that made the first: a push's re-review knows what the last one said. Enter on a row in the pane
-  goes to it, and the operator attaches to it like any other session.
-- **Its tree is the pull request's head**, fetched from `origin` as GitHub's `refs/pull/<n>/head` (the
-  same ref for a fork's pull request) and checked out detached under
-  `~/.local/share/letibot/github/<folder key>/<owner>-<name>-<number>`. One tree per pull request, so
-  a re-review lands where the last one was made.
-- **The sessions are the folder's daemon's**, which must be up: a review runs in a session, and a seat
-  that started its own daemon would be choosing the flags of the one the operator runs. Started where
-  no daemon is listening, the seat refuses by name and says to start one there first.
-- **The brief carries what a reviewer needs**: the title and the description its author wrote, the
-  diff (the whole pull request, or only the commits after the head last reviewed), and what has
-  already been said on it. A fork's brief says its tree is somebody else's and that nothing of it runs.
-- **The answer is the review**: the prose is the summary, and each line spelled
-  `path:LINE: what is wrong` is an inline comment on that line. The verdict is always `COMMENT` - an
-  unattended reviewer neither approves nor blocks - and an answer with no words in it is not a review,
-  so the row goes back to owed rather than keeping an empty draft.
-- **A review that could not be made stays owed.** A session that fails, that asks a permission card
-  (a seat answers no cards), or that is still working after twenty minutes leaves the reason on the
-  row and the review owed again on the next pass.
+The daemon polls a held scope every 60 seconds on a clock of its own, and an attach asks for a pass
+straight away. One pass at a time: a pass still running means the next tick is skipped, not queued.
 
-The seat reviews a pull request of **the repository it was started in**. A pull request of another
-repository in the scope is refused by name rather than reviewed from the wrong tree; ten repositories
-of an org are ten seats, one per checkout, until a mirror per repository exists.
+## A mirror per repository, and one tree per pull request
+
+- **Every repository the scope names gets its own bare mirror**, under
+  `~/.local/share/letibot/github/<folder key>/<owner>-<name>.git`, cloned the first time and fetched
+  after. A pull request of an org's second repository is therefore reviewed from THAT repository's
+  tree, which is what makes an org scope useful: ten repositories are one seat, not ten checkouts.
+  A repository this folder is itself a checkout of is cloned from its own `origin` - the remote the
+  operator's credential is set up for; any other is cloned from `https://github.com/<owner>/<name>`.
+- **Each pull request's tree is a detached worktree of its repository's mirror**, at GitHub's
+  `refs/pull/<n>/head` (the same ref for a fork's pull request), under
+  `<owner>-<name>-<number>`. One tree per pull request, so a re-review lands where the last one was
+  made rather than in a second copy of it.
+
+## The review is the queue's review panel
+
+A row owed a review is handed to a panel: every member judges the pull request and answers the merge
+queue's own verdict - `accept`, `reject` or `needs_human`, with its reasons and what it looked at -
+and the gatekeeper's rule turns those verdicts into one decision. One refusal is a refusal, one
+undecided member asks a person, and only a panel that every member accepted accepts. A member that
+cannot judge refuses the whole panel: half a panel is a review nobody configured. A panel with no
+member is a refusal, never a pass.
+
+The verdict becomes **one GitHub review**, and its event is always `COMMENT`: an unattended reviewer
+neither approves nor blocks, so the decision reaches the author as words. The body opens with
+`verdict: reject` (or `accept`, or `needs_human`), carries each member's reasons attributed to it,
+and names what the panel read and ran; a reason spelled `path:LINE: what is wrong` is also an inline
+comment on that line.
+
+**This build's member kind is R116's headless `claude -p` run**, configured the way the merge queue
+configures it - `[queue.claude] binary` in the project's `leticode.toml`, which is the operator's
+opt-in and needs no second word. Its `structured_output` is the queue's verdict, its prompt is the
+queue's own review prompt told which door the verdict goes through, and its conversation is kept so
+a re-review resumes it. A project with no `[queue.claude]` has a panel with no member, so its rows
+say exactly that and stay owed; a letibot-session member is not in this build's panel yet.
+
+**A review that could not be made stays owed.** A member that fails, a run that ends without a
+verdict, or a rejection of the scope itself leaves the reason on the row and the review owed again
+on the next pass.
+
+## What it offers
+
+R114's scorer, over the tree's lexical arithmetic (`letibot_tools::similarity`) and nothing else:
+
+- **a pull request whose words are like an open todo row or a running session's brief** is offered
+  as one to watch - `watch this: the notes pane loses its scroll position`;
+- **a review this seat made before** on a change like this one is offered as context.
+
+The candidates are read at every pass, so a todo closed and a session ended stop being offered; the
+row's own drafts are never offered back to it. The score sits in the row's detail, not on the line a
+person scans. Offers are additive: a row nobody has anything like carries none at all.
 
 ## Configuration
 
@@ -106,16 +138,17 @@ without one carries no act at all.
 the whole text is in the row's detail, because the decision a draft asks for is about those words. A
 row with no draft draws no such line.
 
-The pane draws the daemon's snapshot of the seat, and this build's daemon does not build that feed yet,
-so the pane is handed no `github` key at all and says the honest thing instead of drawing an empty
-scope:
+The pane draws the daemon's snapshot of the seat, built by the daemon from the same document
+`letibot attach github` prints. A daemon nobody has attached a scope on is handed no `github` key at
+all, so the pane says the honest thing instead of drawing an empty scope:
 
 ```text
 no scope is attached - nothing is being watched for review
 ```
 
-Until the seat lives in the daemon, `letibot attach github` in a terminal is what shows the seat
-working: one line per thing it did, printed as the pass does it.
+`PluginHost::with_github` is where the key comes from: the daemon installs one seat on its registry,
+every session's host is handed it, and the pane declares `feeds = ["github"]` as it always did. One
+snapshot, so the terminal and the pane cannot disagree about what is held.
 
 ## The scope's state, in the pane's words
 
@@ -140,15 +173,21 @@ working: one line per thing it did, printed as the pass does it.
 - A key this build does not know inside `[github]` is refused at load, by name.
 - `gh` itself: `LETIBOT_GH` names the binary, and a run that fails reports the command and `gh`'s own
   stderr. Nothing is retried behind the operator's back; the row is owed again on the next pass.
-- No daemon listening for the folder the seat was started in: refused before anything is polled, naming
-  the folder, because a review runs in a session and the seat will not start a daemon of its own.
-- A pull request of a repository this checkout is not: the row says so and stays unread, rather than
-  being reviewed from the wrong tree.
-- A session that answers nothing, fails, or asks a card: the reason is written on the row, and the
-  review is owed again on the next pass.
+- No daemon listening for the folder: refused before anything is asked, naming the socket and the
+  `letibot` to start there, because the seat is the daemon's and a verb that started its own daemon
+  would be choosing the flags of the one the operator runs.
+- A daemon that was given no seat (an older build) refuses the frame by name: `this daemon holds no
+  GitHub reviewer seat`.
+- A daemon with no way to ask GitHub - no `gh` and no panel - says so on every scope it holds (the
+  `failed` state) rather than on every row.
+- A pull request of a repository no mirror can be made for: the clone's own words are the row's
+  reason, and the row stays owed.
+- A panel member that fails, a `claude -p` run that ends without `structured_output`, or a panel with
+  no member at all: the reason is written on the row, and the review is owed again on the next pass.
 
 ## Turning it off
 
-Stop the process (ctrl-c in its terminal). The seat keeps no store: what it knew about a pull request is
-a row in memory, so a restart begins with an empty seat and re-learns the scope from GitHub on its first
-pass, which costs a review of every open pull request's current head.
+Nothing to stop: the seat goes when the daemon does. It keeps no store of its own, so a restarted
+daemon begins with an empty seat and re-learns the scope from GitHub on its first pass, which costs a
+review of every open pull request's current head. A scope is attached again with `letibot attach
+github <scope>`.
