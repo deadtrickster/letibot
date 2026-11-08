@@ -72,6 +72,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R138 | Stable session identities across hosts, through migrations | Code work | the build of `docs/cross-host-identity.md` (Q1-Q7) and its five open questions; until then asks are same-host only |
 | R170 | A session drives a Chrome tab the operator allows, through the extension | Code work | all of it |
 | R172 | The extension is a head: a chat panel on the session's stream | Code work | all of it, after R170 |
+| R173 | A firecode child ends its turn with a job running, and the VM closes under it | Code work | all of it |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
 | R153 | Placing a session on a busy host times out at 20 s | Needs the operator | the live proof on a loaded lab2x1: a placement there while the host is building, and a session's `job_wait` against it; the minute-long arranging budget, the one connection per host and the round a timed-out status query is not are landed |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
@@ -224,6 +225,16 @@ The card shows one ask and its reply, then is gone. Oracle's extension (`~/Proje
 Wanted: a panel that attaches to the chosen session's event stream through `letibot browser`, like the TUI. It shows the conversation, the session's asks and approvals, and R170's tab actions as they happen. Follow-ups go to the same session. The transcript is the session's own, so it survives the tab and the browser. The panel is hidden from R170's screenshots.
 
 The chat control comes from flowy (`letiflow/flowy`, `web/src/components/MessageList.tsx`, `MessageBox.tsx`, `MessageBody.tsx`, `CitedMessage.tsx`): markdown through DOMPurify, citations of a span, @name completion, attachments, reactions. It is React 19 with Vite and Tailwind. The panel is an npm package in the repo (`extensions/chrome/panel`, its `package.json` and lockfile), and every npm command on it runs inside firecode, never on the host: `extensions/chrome/build.sh` runs `npm ci` and the Vite build through firecode into one bundle, which the extension loads into a shadow root. The gate runs the same script.
+
+---
+
+## R173 - A firecode child ends its turn with a job running, and the VM closes under it
+
+**Status:** not started. left: all of it.
+
+Reported 2026-11-08 by the stroppy.io session: a `task where: firecode` child backgrounded `npm ci` and ended its turn. The VM closed with the job inside it, and the verify step exited 217 on a dead job. The child's finish read as done.
+
+Wanted: a child whose placement is a firecode VM may not end its turn with a running job. Either the turn end is refused with the job named, or the VM is held until the job settles and the child is woken with its exit. A job killed by the VM closing is reported as killed, never as a finish.
 
 ---
 
