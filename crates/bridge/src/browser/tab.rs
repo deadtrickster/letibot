@@ -56,19 +56,22 @@ impl Grant {
     }
 }
 
+/// Where a command's outcome goes: the socket thread waiting on it.
+type Reply = Sender<Result<Value, String>>;
+
 struct Command {
     id: String,
     session: String,
     act: String,
     args: Value,
-    reply: Sender<Result<Value, String>>,
+    reply: Reply,
 }
 
 #[derive(Default)]
 struct Inner {
     grants: BTreeMap<String, Grant>,
     queue: VecDeque<Command>,
-    taken: BTreeMap<String, (String, Sender<Result<Value, String>>)>,
+    taken: BTreeMap<String, (String, Reply)>,
     seen: Option<Instant>,
     next: u64,
 }
