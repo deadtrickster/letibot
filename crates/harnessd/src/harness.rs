@@ -1679,9 +1679,7 @@ pub(crate) use trail::{ASK_USER_QUESTION, asked_rows, operator_answer_text, ques
 pub use turns::abandoned_calls;
 #[cfg(test)]
 pub(crate) use turns::reconcile_rows;
-pub(crate) use turns::{
-    CHEAP_WAKE_TOKENS, CapturingSink, MAX_HTTP_RETRIES, Outage, one_line, provider_refusal,
-};
+pub(crate) use turns::{CapturingSink, MAX_HTTP_RETRIES, Outage, one_line, provider_refusal};
 pub use wall::{CompactReport, ForkReport, ForkTail, ReseatReport, reseated_for_the_model};
 #[cfg(test)]
 pub(crate) use wall::{
