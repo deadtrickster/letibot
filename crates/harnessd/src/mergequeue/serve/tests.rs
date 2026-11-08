@@ -5714,3 +5714,26 @@ fn a_train_whose_target_moved_lands_nothing_and_requeues_every_car() {
         );
     }
 }
+
+/// A gate step that runs a `firecode_only` program is named, through a script it calls too, and a
+/// step that runs none is not.
+#[test]
+fn a_firecode_only_step_is_found_through_its_script() {
+    let dir = TempDir::new("firecode-only-step");
+    std::fs::write(
+        dir.0.join("leticode.toml"),
+        "[boundary]\nfirecode_only = [\"npm\"]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.0.join("build.sh"), "set -e\nnpm ci\n").unwrap();
+    let plain = vec!["cargo test".to_string()];
+    assert_eq!(firecode_only_step(&dir.0, &plain), None);
+    let direct = vec!["cargo test".to_string(), "npm run build".to_string()];
+    assert!(
+        firecode_only_step(&dir.0, &direct).is_some_and(|w| w.contains("npm run build")),
+        "{:?}",
+        firecode_only_step(&dir.0, &direct)
+    );
+    let wrapped = vec!["sh build.sh".to_string()];
+    assert!(firecode_only_step(&dir.0, &wrapped).is_some());
+}

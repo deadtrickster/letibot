@@ -92,30 +92,45 @@ pub struct FirecodeGate {
     pub memory: Ask,
 }
 
+impl FirecodeGate {
+    fn here(&self, worktree: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
+        let bin = match self.ready.ready() {
+            Ok(b) => b,
+            Err(why) => return super::gate::could_not_run(steps, unjudged(&why)),
+        };
+        let dir = worktree.display().to_string();
+        let bin_s = bin.display().to_string();
+        let run = super::gate::run_with_launcher(worktree, steps, ctl, self.memory, &|s| {
+            launch_line(&bin_s, s, &dir)
+        });
+        // `run` leaves its VM up for the next call; the gate has no next call.
+        if cfg!(not(target_os = "macos")) {
+            let _ = run_bounded(
+                &bin,
+                &["down".into(), "--discard".into(), "--project".into(), dir],
+                Duration::from_secs(60),
+            );
+        }
+        run
+    }
+}
+
 impl GateRunner for FirecodeGate {
     fn run(&self, worktree: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
         match &self.host {
-            Some(name) => super::gate_host::run_on_host(name, worktree, steps, ctl, true),
-            None => {
-                let bin = match self.ready.ready() {
-                    Ok(b) => b,
-                    Err(why) => return super::gate::could_not_run(steps, unjudged(&why)),
-                };
-                let dir = worktree.display().to_string();
-                let bin_s = bin.display().to_string();
-                let run = super::gate::run_with_launcher(worktree, steps, ctl, self.memory, &|s| {
-                    launch_line(&bin_s, s, &dir)
-                });
-                // `run` leaves its VM up for the next call; the gate has no next call.
-                if cfg!(not(target_os = "macos")) {
-                    let _ = run_bounded(
-                        &bin,
-                        &["down".into(), "--discard".into(), "--project".into(), dir],
-                        Duration::from_secs(60),
+            Some(name) => match super::gate_host::firecode_ready(name, worktree) {
+                Ok(()) => super::gate_host::run_on_host(name, worktree, steps, ctl, true),
+                // The VM is the same Linux on either machine, so a host without firecode hands
+                // the steps to this machine's VM rather than leaving the tip unjudged.
+                Err(why) => {
+                    eprintln!(
+                        "  merge queue: {name} cannot start a firecode VM ({why}); the steps run \
+                         in this machine's"
                     );
+                    self.here(worktree, steps, ctl)
                 }
-                run
-            }
+            },
+            None => self.here(worktree, steps, ctl),
         }
     }
 

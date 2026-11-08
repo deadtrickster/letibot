@@ -742,9 +742,16 @@ impl RepoQueue {
         gate::watch(&wt, &self.key);
         let cancel = Arc::new(AtomicBool::new(false));
         let lease = self.lease_ok.clone();
-        let gate_in = (self.env.settings)(&self.repo)
+        let mut gate_in = (self.env.settings)(&self.repo)
             .map(|s| s.gate_in)
             .unwrap_or_default();
+        if let Some(why) = firecode_only_step(&self.repo, &steps) {
+            eprintln!(
+                "  merge queue: {}: {why}; the gate runs in firecode",
+                self.key
+            );
+            gate_in = super::settings::GateIn::Firecode;
+        }
         let runner = super::gate_firecode::runner_for(gate_in, &self.env.gate);
         let deadline = Instant::now() + self.env.gate_deadline;
         let budget = self.env.gate_deadline;
@@ -3839,6 +3846,26 @@ fn work(store_path: PathBuf, repo: PathBuf, env: Arc<QueueEnv>, stop: &AtomicBoo
     let _ = q
         .store
         .release_queue_lease(&key, &env.me.owner, gate::now_ms());
+}
+
+/// The first gate step that runs a `[boundary] firecode_only` program, said as a reason. Such a
+/// step never runs on a host, whatever `gate_in` says.
+pub(crate) fn firecode_only_step(repo: &Path, steps: &[String]) -> Option<String> {
+    let only = crate::perimeter::load(repo).ok()?.firecode_only;
+    if only.is_empty() {
+        return None;
+    }
+    use letibot_tools::firecode_route::{Script, examine, script_of};
+    let read = |p: &str| match std::fs::read(repo.join(p)) {
+        Ok(b) => script_of(Ok(b)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Script::Absent,
+        Err(e) => Script::Unreadable(e.to_string()),
+    };
+    steps.iter().find_map(|step| {
+        examine(step, &only, &read)
+            .hit
+            .map(|h| format!("step `{step}` runs `{}`, which is firecode_only", h.program))
+    })
 }
 
 #[cfg(test)]

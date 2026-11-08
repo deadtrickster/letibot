@@ -197,6 +197,18 @@ pub fn apparatus_from(said: &str) -> Apparatus {
     Apparatus { own_scope, missing }
 }
 
+/// Whether `name` can start a firecode VM: `firecode doctor` there, before any tree is sent.
+pub fn firecode_ready(name: &str, worktree: &Path) -> Result<(), String> {
+    let remote = Remote::open(name, worktree)?;
+    remote
+        .call(
+            &format!("asking `firecode doctor` on {name}"),
+            &format!("{} doctor", super::gate_firecode::REMOTE_BIN),
+            SETUP_BOUND,
+        )
+        .map(|_| ())
+}
+
 /// The gate, on `name`'s machine - the whole of [`super::gate::run_gate`]'s host arm.
 pub fn run_on_host(
     name: &str,

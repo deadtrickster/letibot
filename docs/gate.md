@@ -52,6 +52,11 @@ ordinary gate's, since the step is still the unit. A machine without a working f
 `/dev/kvm` on Linux, `firecode doctor` failing) leaves the tip UNJUDGED with a sentence. The steps
 never run on the host instead. Default is `gate_in = "host"`, which is today's behaviour.
 
+**A step that runs a `[boundary] firecode_only` program always runs in firecode.** The gate reads
+each step the way the seat does, through scripts it calls, and a hit puts the whole gate in a VM
+whatever `gate_in` says. When the gate host cannot start a VM, the steps run in this machine's VM
+instead. They never run bare.
+
 **`~/.config/letibot/hosts.toml` is the operator's, and is never in a repository.** A machine is a
 `[host.NAME]` table - `hostname`, `user`, `key` (the identity file ssh is given; the key itself is
 never read into a session or a log), `root`, `path` (directories put in front of the remote
