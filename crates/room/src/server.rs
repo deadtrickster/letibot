@@ -1050,8 +1050,8 @@ impl Server {
 
     /// What a name a sender wrote means: itself when somebody answers to it, else the one
     /// connected bridge a short name (`cc`, `claude-code`) stands for, else the session whose
-    /// handle it is. `Err` lists the full names when the short name fits several.
-    fn resolve_name(&self, project: &str, name: &str) -> Result<String, Vec<String>> {
+    /// handle it is. `Err` says why the name named nobody, and what it could have been.
+    fn resolve_name(&self, project: &str, name: &str, reach: Reach) -> Result<String, Miss> {
         let collapsed = Self::collapse_bridge(name);
         if collapsed != name && self.is_known(&collapsed) {
             return Ok(collapsed);
@@ -1059,7 +1059,7 @@ impl Server {
         let name: &str = &collapsed;
         match self.bridge_lookup(name) {
             Some(Lookup::One(full)) => return Ok(full),
-            Some(Lookup::Many(c) | Lookup::Group(_, c)) => return Err(c),
+            Some(Lookup::Many(c) | Lookup::Group(_, c)) => return Err(Miss::Ambiguous(c)),
             None => {}
         }
         if self.is_known(name) {
@@ -1077,8 +1077,14 @@ impl Server {
         } else if name == "gatekeeper" && !project.is_empty() {
             return Ok(format!("{GATEKEEPER}{project}"));
         }
+        // A bridge-shaped name is a bridge or nobody. Resolving `cc@x` on through the member
+        // handles is how a dm meant for `cc@serenedb` was stored against a session of another
+        // project: the handle, not the name, decided the addressee.
+        if chat::bridge_parts(name).is_some() {
+            return Err(Miss::Unknown(self.top_handles()));
+        }
         if !chat::BRIDGE_ALIASES.contains(&name) {
-            return self.resolve_handle(project, name);
+            return self.resolve_handle(project, name, reach);
         }
         let mut found: Vec<String> = self
             .external_names()
@@ -1089,8 +1095,8 @@ impl Server {
         found.dedup();
         match found.len() {
             1 => Ok(found.remove(0)),
-            0 => Ok(name.to_string()),
-            _ => Err(found),
+            0 => Err(Miss::Unknown(self.top_handles())),
+            _ => Err(Miss::Ambiguous(found)),
         }
     }
 
@@ -1165,10 +1171,10 @@ impl Server {
             .collect()
     }
 
-    /// The session id a member handle means: the one in the sender's project if that is unambiguous,
-    /// else the only one on the host. `name` itself when no member has the handle, and `Err` with
-    /// the ids when several do.
-    fn resolve_handle(&self, project: &str, name: &str) -> Result<String, Vec<String>> {
+    /// The session id a member handle means: the one in the sender's project if that is
+    /// unambiguous, else - for a seat with no project, or a door that may reach the host - the
+    /// only one that has it. `Miss` says which ids answer when it is not one name.
+    fn resolve_handle(&self, project: &str, name: &str, reach: Reach) -> Result<String, Miss> {
         let want = name.to_lowercase();
         let found: Vec<(String, String)> = {
             let rooms = self.inner.rooms.lock().expect("the rooms lock");
@@ -1184,16 +1190,20 @@ impl Server {
                 .collect()
         };
         let here: Vec<&(String, String)> = found.iter().filter(|(p, _)| p == project).collect();
+        let mut ids: Vec<String> = found.iter().map(|(_, id)| id.clone()).collect();
+        ids.sort();
+        ids.dedup();
         match (here.as_slice(), found.as_slice()) {
             ([one], _) => Ok(one.1.clone()),
-            (_, []) => Ok(name.to_string()),
-            (_, [one]) => Ok(one.1.clone()),
-            _ => {
-                let mut ids: Vec<String> = found.into_iter().map(|(_, id)| id).collect();
-                ids.sort();
-                ids.dedup();
-                Err(ids)
+            (_, []) => Err(Miss::Unknown(self.top_handles())),
+            (_, [_]) if project.is_empty() || reach == Reach::Host => Ok(found[0].1.clone()),
+            // A session's dm keeps to its own project's names: a handle that only another
+            // project answers to is that session's, and saying so is not the same as sending to
+            // it. An ask, an invite and a seat in no project may reach across.
+            _ if here.is_empty() && !project.is_empty() && reach == Reach::OwnProject => {
+                Err(Miss::Elsewhere(ids))
             }
+            _ => Err(Miss::Ambiguous(ids)),
         }
     }
 
@@ -1260,17 +1270,20 @@ impl Server {
                 out = replace_mention(&out, &m, &format!("cc@{folder}:*"));
                 continue;
             }
-            match self.resolve_name(project, &m) {
+            match self.resolve_name(project, &m, Reach::Host) {
                 Ok(full) if full != m => {
                     out = replace_mention(&out, &m, &full);
                 }
                 Ok(_) => {}
-                Err(candidates) => {
+                // A mention of nobody stays as it was written: the sentence is the sender's, and
+                // only a name that fits several is a refusal, because only that one is not.
+                Err(Miss::Ambiguous(candidates)) => {
                     return Err(crate::Refused::Ambiguous {
                         name: m,
                         candidates,
                     });
                 }
+                Err(Miss::Unknown(_) | Miss::Elsewhere(_)) => {}
             }
         }
         Ok(out)
@@ -2190,24 +2203,22 @@ impl Server {
                     return refuse(Some(id), crate::Refused::NullPost);
                 }
                 let to = to.trim().trim_start_matches('@').to_string();
-                let to = match self.resolve_name(project, &to) {
+                let to = match self.resolve_name(project, &to, Reach::OwnProject) {
                     Ok(t) => t,
-                    Err(candidates) => {
-                        return refuse(
-                            Some(id),
-                            crate::Refused::Ambiguous {
-                                name: to,
-                                candidates,
-                            },
-                        );
-                    }
+                    Err(miss) => return refuse(Some(id), miss.refused(&to)),
                 };
                 let text = &match self.resolve_mentions(project, text) {
                     Ok(t) => t,
                     Err(why) => return refuse(Some(id), why),
                 };
                 if to.is_empty() || to == name || !self.is_known(&to) {
-                    return refuse(Some(id), crate::Refused::UnknownAddressee { name: to });
+                    return refuse(
+                        Some(id),
+                        crate::Refused::UnknownAddressee {
+                            name: to,
+                            known: self.top_handles(),
+                        },
+                    );
                 }
                 if queue_seat_project(&to).is_some()
                     && seat != Seat::Operator
@@ -2429,20 +2440,18 @@ impl Server {
                     return refuse(None, crate::Refused::UnknownChatRoom { room });
                 }
                 let asked = session.trim().trim_start_matches('@');
-                let who = match self.resolve_name(project, asked) {
+                let who = match self.resolve_name(project, asked, Reach::Host) {
                     Ok(who) => who,
-                    Err(candidates) => {
-                        return refuse(
-                            None,
-                            crate::Refused::Ambiguous {
-                                name: asked.to_string(),
-                                candidates,
-                            },
-                        );
-                    }
+                    Err(miss) => return refuse(None, miss.refused(asked)),
                 };
                 if !self.is_known(&who) {
-                    return refuse(None, crate::Refused::UnknownAddressee { name: who });
+                    return refuse(
+                        None,
+                        crate::Refused::UnknownAddressee {
+                            name: who,
+                            known: self.top_handles(),
+                        },
+                    );
                 }
                 self.set_guest(&room, &who, true);
                 Response::Roster {
@@ -2459,8 +2468,8 @@ impl Server {
                 let who = match session.as_deref().map(|s| s.trim().trim_start_matches('@')) {
                     None | Some("") => name.to_string(),
                     Some(asked) => self
-                        .resolve_name(project, asked)
-                        .unwrap_or(asked.to_string()),
+                        .resolve_name(project, asked, Reach::Host)
+                        .unwrap_or_else(|_| asked.to_string()),
                 };
                 // A guest leaves by itself; the room's members and the wide seats show one out.
                 if who != name && !seat.is_wide() && project != key {
@@ -2594,20 +2603,18 @@ impl Server {
             .filter(|t| !t.is_empty())
         {
             None => None,
-            Some(t) => match self.resolve_name(project, t) {
+            Some(t) => match self.resolve_name(project, t, Reach::OwnProject) {
                 Ok(full) => Some(full),
-                Err(candidates) => {
-                    return refuse(crate::Refused::Ambiguous {
-                        name: t.to_string(),
-                        candidates,
-                    });
-                }
+                Err(miss) => return refuse(miss.refused(t)),
             },
         };
         if let Some(t) = &to
             && (t == name || !self.is_known(t))
         {
-            return refuse(crate::Refused::UnknownAddressee { name: t.clone() });
+            return refuse(crate::Refused::UnknownAddressee {
+                name: t.clone(),
+                known: self.top_handles(),
+            });
         }
         // Looked up before the room: a reply stays in its root's room, so the frame's room does
         // not decide where it lands. The chat lock is released first - a lock held across another
@@ -2654,11 +2661,25 @@ impl Server {
                     match other.filter(|t| t != name) {
                         Some(t) => Some(t),
                         None => {
-                            return refuse(crate::Refused::UnknownAddressee { name: root.room });
+                            return refuse(crate::Refused::UnknownAddressee {
+                                name: root.room,
+                                known: Vec::new(),
+                            });
                         }
                     }
                 }
             };
+            // A dm thread is the two people in it. A message that names a third cannot answer
+            // it: handing it to the thread's other party instead is how a dm to a bridge was
+            // stored, and delivered, against an unrelated session.
+            if let (Some(named), Some(party)) = (to.as_deref(), other.as_deref())
+                && named != party
+            {
+                return refuse(crate::Refused::ThreadIsAnotherDm {
+                    thread: root.seq,
+                    with: party.to_string(),
+                });
+            }
             let room = root.room;
             // A mention in a reply brings the one it names in, exactly as one in a room line does.
             if room != chat::DM_ROOM {
@@ -2726,7 +2747,7 @@ impl Server {
     /// where it was said, and the one it names is brought in rather than left outside looking in.
     fn invite_the_named(&self, room: &str, project: &str, text: &str) {
         for m in chat::mentions(text) {
-            let Ok(who) = self.resolve_name(project, &m) else {
+            let Ok(who) = self.resolve_name(project, &m, Reach::Host) else {
                 continue;
             };
             if who == chat::OPERATOR || !self.is_known(&who) {
@@ -2971,12 +2992,21 @@ impl Server {
             return refuse(crate::Refused::AskNotASession);
         }
         let asked = to.trim().trim_start_matches('@');
-        let target = match self.resolve_name(project, asked) {
+        let target = match self.resolve_name(project, asked, Reach::Host) {
             Ok(t) => t,
-            Err(candidates) => {
+            // A name nobody answers to is left to the block below, which tells another box's
+            // `x@host` from a typo: both are the same question about the same name.
+            Err(Miss::Unknown(_)) => asked.to_string(),
+            Err(Miss::Ambiguous(candidates)) => {
                 return refuse(crate::Refused::Ambiguous {
                     name: asked.to_string(),
                     candidates,
+                });
+            }
+            Err(Miss::Elsewhere(sessions)) => {
+                return refuse(crate::Refused::HandleInAnotherProject {
+                    name: asked.to_string(),
+                    sessions,
                 });
             }
         };
@@ -3776,6 +3806,45 @@ enum Lookup {
     Group(String, Vec<String>),
     /// Several bridges that share the name.
     Many(Vec<String>),
+}
+
+/// How far a written name may reach. A dm is one session talking to one other, so it keeps to
+/// its own project's names; an ask, an invite and every wide seat may name one on the host.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    OwnProject,
+    Host,
+}
+
+/// Why a written name named nobody, or more than one, and what would have named somebody.
+enum Miss {
+    /// Several principals fit it: these are the names to choose between.
+    Ambiguous(Vec<String>),
+    /// Nobody the sender may address answers to it: these are the names it could have written.
+    Unknown(Vec<String>),
+    /// It is a handle, but another project's: these are the session ids that go by it.
+    Elsewhere(Vec<String>),
+}
+
+impl Miss {
+    /// The refusal a door answers with. One place, so a door that forgets to say what it *could*
+    /// have been told is a door that does not compile.
+    fn refused(self, written: &str) -> crate::Refused {
+        match self {
+            Miss::Ambiguous(candidates) => crate::Refused::Ambiguous {
+                name: written.to_string(),
+                candidates,
+            },
+            Miss::Unknown(known) => crate::Refused::UnknownAddressee {
+                name: written.to_string(),
+                known,
+            },
+            Miss::Elsewhere(sessions) => crate::Refused::HandleInAnotherProject {
+                name: written.to_string(),
+                sessions,
+            },
+        }
+    }
 }
 
 fn is_chat_frame(frame: &Request) -> bool {

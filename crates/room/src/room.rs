@@ -254,12 +254,26 @@ pub enum Refused {
     UnknownChatRoom {
         room: String,
     },
-    /// Nobody answers to this name, so the message would be told to no one.
+    /// Nobody answers to this name, so the message would be told to no one. `known` is what a
+    /// sender could have written instead - every name the room answers to now.
     UnknownAddressee {
         name: String,
+        #[serde(default)]
+        known: Vec<String>,
+    },
+    /// A handle another project's session goes by. A session's dm keeps to its own room's names,
+    /// and a name from elsewhere is refused rather than quietly handed to that session.
+    HandleInAnotherProject {
+        name: String,
+        sessions: Vec<String>,
     },
     UnknownThread {
         thread: u64,
+    },
+    /// A message that names somebody other than the two people a dm thread belongs to.
+    ThreadIsAnotherDm {
+        thread: u64,
+        with: String,
     },
     /// A name the connection may not speak under: the operator's, or a malformed handle.
     ReservedName {
@@ -458,14 +472,32 @@ impl fmt::Display for Refused {
                 f,
                 "`{room}` is not a room you can see - list the rooms for the ones you can"
             ),
-            Refused::UnknownAddressee { name } => write!(
+            Refused::UnknownAddressee { name, known } => {
+                write!(
+                    f,
+                    "nobody on this host answers to `{name}` - a message to a typo tells no one"
+                )?;
+                if !known.is_empty() {
+                    write!(f, ". The names here are: {}", known.join(", "))?;
+                }
+                Ok(())
+            }
+            Refused::HandleInAnotherProject { name, sessions } => write!(
                 f,
-                "nobody on this host answers to `{name}` - a message to a typo tells no one"
+                "`{name}` is not a name in this room's project - a session's dm keeps to its own \
+                 project's handles, so nothing was sent. It is {}'s: name that session id to reach \
+                 it",
+                sessions.join(", ")
             ),
             Refused::UnknownThread { thread } => write!(
                 f,
                 "#{thread} is not in the history of any room you can see, so a reply cannot hang \
                  from it"
+            ),
+            Refused::ThreadIsAnotherDm { thread, with } => write!(
+                f,
+                "#{thread} is the dm between `{with}` and its author, so a message to somebody \
+                 else cannot answer it - drop `thread`, or say it to `{with}`"
             ),
             Refused::ReservedName { name } => {
                 write!(f, "`{name}` is not a name this connection may speak under")

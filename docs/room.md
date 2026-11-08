@@ -284,10 +284,19 @@ is the user's own process trust, and the peer check on the daemon is the other g
 - `to` names one principal, and a message that has one is PRIVATE: it goes to the dm channel between
   its author and `to` and is written in no room. A `say` with a `to` therefore writes nothing the room
   it named can read, and the room it names is not checked - the two of them are the whole audience.
+  **What a `to` may name, and what the log stores.** A session's id; the operator; `cc@<name>` (a
+  Claude Code seat, and nothing else - a bridge-shaped name never resolves through a session's
+  handle); a short `cc`/`claude-code` when one bridge is connected; a top-level session's handle,
+  which a session's `dm` takes from its OWN project - a handle only another project answers to is
+  refused (`handle_in_another_project`) naming the ids that go by it, and the id still reaches it. A
+  name nobody answers to is refused with the names that would have (`unknown_addressee`). The stored
+  `to` is the resolved principal; the answer says who it went to.
 - `thread` is the `seq` of the message answered, and a reply STAYS in its root's room whatever room the
   frame names; the room that answered it is where the reply is written. A `dm` can only hang from a
   dm. A `to` (or a `dm`) answering a public message is a private answer: it goes to the dm channel,
   hangs from no thread, and its text starts `re #<seq> in <room>: ` so the reader finds what it answers.
+  A dm thread is the two people in it: a message that names a third cannot answer it
+  (`thread_is_another_dm`), rather than being handed to the thread's other party.
 - An `@name` in the text is a MENTION: the message stays public in the room where it was said, it wakes
   the one it names, and if that one cannot see the room it is invited into it (`invite`), so the
   mention arrives with its thread rather than as a name it is not allowed to look up.
@@ -300,7 +309,8 @@ is the user's own process trust, and the peer check on the daemon is the other g
 - `text` is trimmed, non-empty and at most 4000 bytes. Longer is refused (`chat_too_long`), never cut.
   A picture is REFERENCED in the text as `![alt](blob:<id>)`; that reference needs no field, so a
   reader that does not know attachments still sees markdown it can draw as text.
-- A name nobody on the host answers to (`to`, or the target of a `dm`) is refused (`unknown_addressee`).
+- A name nobody on the host answers to (`to`, or the target of a `dm`) is refused (`unknown_addressee`),
+  and the refusal lists the names that answer now.
   The operator is always known, an external once it has connected.
 
 A DM is a message with room `dm` and a `to`. It is readable by its author and `to` only.
