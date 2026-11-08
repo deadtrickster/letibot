@@ -487,7 +487,7 @@ fn a_skill_the_seat_cannot_use_is_not_offered() {
         &[],
     );
     let tools: Vec<String> = vec!["bash".into(), "read".into()];
-    let never = vec!["vetoed".to_string()];
+    let never = ["vetoed".to_string()];
     let mut offers = Offers::new().with_seat(tools.iter(), never.iter());
     // Every candidate is considered: ask repeatedly as the cap is two.
     let mut seen = Vec::new();

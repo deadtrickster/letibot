@@ -200,10 +200,7 @@ fn a_runner_without_a_firecode_form_is_refused() {
 fn gate_in_is_read_from_the_queue_table() {
     let f = Fixture::new("settings");
     let p = f.dir.join("leticode.toml");
-    assert_eq!(
-        settings::parse(&p.with_file_name("none.toml")).is_err(),
-        true
-    );
+    assert!(settings::parse(&p.with_file_name("none.toml")).is_err());
     std::fs::write(&p, "[queue]\n").unwrap();
     assert_eq!(settings::parse(&p).unwrap().gate_in, GateIn::Host);
     std::fs::write(&p, "[queue]\ngate_in = \"firecode\"\n").unwrap();

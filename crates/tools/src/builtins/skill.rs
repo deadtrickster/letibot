@@ -165,9 +165,8 @@ impl Skill {
         // "the docs connector": a connector word must appear in some mcp tool name on the seat.
         let lower = self.body.to_ascii_lowercase();
         let mut words: Vec<&str> = Vec::new();
-        let mut it = lower.split_whitespace().peekable();
         let mut prev = "";
-        while let Some(w) = it.next() {
+        for w in lower.split_whitespace() {
             if w.trim_matches(|c: char| !c.is_ascii_alphanumeric()) == "connector"
                 && prev.len() > 1
                 && prev != "the"
