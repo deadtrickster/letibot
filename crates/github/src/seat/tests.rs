@@ -684,19 +684,25 @@ fn the_hourly_cap_holds_at_six_and_frees_the_seventh_an_hour_later() {
 struct Shared;
 
 impl crate::offers::Scorer for Shared {
-    fn score(&self, a: &str, b: &str) -> f64 {
+    fn scores(&self, subject: &str, texts: &[&str]) -> Vec<f64> {
         let words = |t: &str| -> Vec<String> {
             t.split(|c: char| !c.is_alphanumeric())
                 .filter(|w| w.len() > 2)
                 .map(|w| w.to_lowercase())
                 .collect()
         };
-        let (a, b) = (words(a), words(b));
-        if a.is_empty() || b.is_empty() {
-            return 0.0;
-        }
-        let shared = a.iter().filter(|w| b.contains(w)).count();
-        shared as f64 / a.len().min(b.len()) as f64
+        let a = words(subject);
+        texts
+            .iter()
+            .map(|text| {
+                let b = words(text);
+                if a.is_empty() || b.is_empty() {
+                    return 0.0;
+                }
+                let shared = a.iter().filter(|w| b.contains(w)).count();
+                shared as f64 / a.len().min(b.len()) as f64
+            })
+            .collect()
     }
 }
 

@@ -37,10 +37,13 @@ pub trait Candidates: Send + Sync {
     fn candidates(&self) -> Vec<Candidate>;
 }
 
-/// Two texts' likeness, in `0..=1`. The lexical score is `letibot_tools::similarity`; a test hands
-/// in its own, which is why nothing here needs a corpus or a model.
+/// Two texts' likeness, in `0..=1`, for one subject against a whole list at a time. The list is one
+/// call because the tree's lexical score needs a corpus: `letibot_tools::similarity` weighs a word
+/// by how few of the candidates use it, so scoring pairs one at a time would weigh every shared word
+/// as if it were in every document.
 pub trait Scorer: Send + Sync {
-    fn score(&self, a: &str, b: &str) -> f64;
+    /// One score per text, in the order the texts were given.
+    fn scores(&self, subject: &str, texts: &[&str]) -> Vec<f64>;
 }
 
 /// One offer a pull request's row carries.
@@ -69,12 +72,15 @@ pub const MOST: usize = 3;
 
 /// The offers for one subject, best first, over the floor - [`MOST`] of them.
 pub fn offers_of(subject: &str, candidates: &[Candidate], scorer: &dyn Scorer) -> Vec<Offer> {
+    let texts: Vec<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
+    let scores = scorer.scores(subject, &texts);
     let mut scored: Vec<Offer> = candidates
         .iter()
-        .map(|c| Offer {
+        .zip(scores)
+        .map(|(c, score)| Offer {
             kind: c.kind,
             label: c.label.clone(),
-            score: scorer.score(subject, &c.text),
+            score,
         })
         .filter(|o| o.score >= OFFER_FLOOR)
         .collect();
@@ -91,24 +97,30 @@ pub fn offers_of(subject: &str, candidates: &[Candidate], scorer: &dyn Scorer) -
 mod tests {
     use super::*;
 
-    /// A scorer a test can reason about: the share of the shorter text's words the longer one also
-    /// has. That is the lexical score's shape - shared terms, normalised - without a corpus.
+    /// A scorer a test can reason about: the share of the shorter text's words each text shares with
+    /// the subject, which is the lexical score's shape - shared terms, normalised - without a corpus.
     struct Shared;
 
     impl Scorer for Shared {
-        fn score(&self, a: &str, b: &str) -> f64 {
+        fn scores(&self, subject: &str, texts: &[&str]) -> Vec<f64> {
             let words = |t: &str| -> Vec<String> {
                 t.split(|c: char| !c.is_alphanumeric())
                     .filter(|w| w.len() > 2)
                     .map(|w| w.to_lowercase())
                     .collect()
             };
-            let (a, b) = (words(a), words(b));
-            if a.is_empty() || b.is_empty() {
-                return 0.0;
-            }
-            let shared = a.iter().filter(|w| b.contains(w)).count();
-            shared as f64 / a.len().min(b.len()) as f64
+            let a = words(subject);
+            texts
+                .iter()
+                .map(|text| {
+                    let b = words(text);
+                    if a.is_empty() || b.is_empty() {
+                        return 0.0;
+                    }
+                    let shared = a.iter().filter(|w| b.contains(w)).count();
+                    shared as f64 / a.len().min(b.len()) as f64
+                })
+                .collect()
         }
     }
 

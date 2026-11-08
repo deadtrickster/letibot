@@ -288,6 +288,26 @@ impl Seat {
         &self.rows
     }
 
+    /// The scopes this seat holds, in the order they were attached.
+    pub fn held(&self) -> Vec<&Scope> {
+        self.scopes.iter().map(|run| &run.scope).collect()
+    }
+
+    /// Hold one more scope - `letibot attach github <scope>` on a seat that is already watching
+    /// something. `false` when this scope is already held, which is not an error: the operator
+    /// asked for what is there.
+    pub fn attach(&mut self, scope: Scope) -> bool {
+        if self.scopes.iter().any(|r| r.scope == scope) {
+            return false;
+        }
+        self.scopes.push(ScopeRun {
+            scope,
+            state: ScopeState::Polling,
+            why: String::new(),
+        });
+        true
+    }
+
     /// Every draft, oldest first: what the operator would have to paste while nothing is posted.
     pub fn drafts(&self) -> Vec<&Draft> {
         self.rows.iter().flat_map(|r| r.drafts.iter()).collect()
@@ -309,9 +329,22 @@ impl Seat {
         }
     }
 
+    /// Say on a scope why nothing is being asked of GitHub. A scope drawn as `polling` while no pass
+    /// can run is a promise nobody keeps, so the reason is the scope's own words.
+    pub fn fail_scope(&mut self, scope: &str, why: String) {
+        for run in self.scopes.iter_mut().filter(|r| r.scope.as_str() == scope) {
+            if run.state == ScopeState::Paused {
+                continue;
+            }
+            run.state = ScopeState::Failed;
+            run.why = why.clone();
+        }
+    }
+
     /// One pass over every scope. `said` is what it did, in the order it did it, and every
-    /// sentence is also written on the row it is about.
-    pub fn poll<S: Source, R: Reviewer>(
+    /// sentence is also written on the row it is about. The source and the reviewer are `?Sized` so
+    /// the daemon can hold one of each behind a trait object: a pass is built per tick, not per poll.
+    pub fn poll<S: Source + ?Sized, R: Reviewer + ?Sized>(
         &mut self,
         source: &S,
         reviewer: &mut R,
@@ -432,7 +465,7 @@ impl Seat {
     }
 
     /// What one row is owed: a review, then an answer.
-    fn act<S: Source, R: Reviewer>(
+    fn act<S: Source + ?Sized, R: Reviewer + ?Sized>(
         &mut self,
         source: &S,
         reviewer: &mut R,
@@ -489,7 +522,7 @@ impl Seat {
 
     /// Open, review, then keep or send. `false` when the review was not made, so the answer pass
     /// waits for a poll that has a review behind it.
-    fn review<S: Source, R: Reviewer>(
+    fn review<S: Source + ?Sized, R: Reviewer + ?Sized>(
         &mut self,
         source: &S,
         reviewer: &mut R,
@@ -576,7 +609,7 @@ impl Seat {
     }
 
     /// Every mention since the row appeared and since the last one answered, answered once.
-    fn answer_mentions<S: Source, R: Reviewer>(
+    fn answer_mentions<S: Source + ?Sized, R: Reviewer + ?Sized>(
         &mut self,
         source: &S,
         reviewer: &mut R,

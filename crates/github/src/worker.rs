@@ -117,7 +117,7 @@ pub fn review_of(said: &str) -> Result<Review, String> {
     let mut body: Vec<&str> = Vec::new();
     let mut comments: Vec<Inline> = Vec::new();
     for line in said.lines() {
-        match inline_of(line) {
+        match inline_in(line) {
             Some(on_line) => comments.push(on_line),
             None => body.push(line),
         }
@@ -135,28 +135,40 @@ pub fn review_of(said: &str) -> Result<Review, String> {
 
 /// One line of an answer as an inline comment: `path:LINE: what is wrong`, where the path has to
 /// look like one - a sentence that opens with a word and a colon is prose.
-fn inline_of(line: &str) -> Option<Inline> {
+/// The spelling may sit after a member's name (`reads the diff: src/x.rs:3: leaks`), so the scan is
+/// of the whole line and not of its first word.
+pub fn inline_in(line: &str) -> Option<Inline> {
     let line = line.trim();
-    let at = line.find(':')?;
-    let path = &line[..at];
-    if path.is_empty() || path.contains(char::is_whitespace) {
-        return None;
+    for (at, _) in line.match_indices(':') {
+        let before = line[..at].trim_end();
+        let path = match before.rsplit_once(char::is_whitespace) {
+            Some((_, last)) => last,
+            None => before,
+        };
+        if path.is_empty() || path.contains(char::is_whitespace) {
+            continue;
+        }
+        if !path.contains('/') && !path.contains('.') {
+            continue;
+        }
+        let rest = line[at + 1..].trim_start();
+        let Some(digits) = rest.find(':') else {
+            continue;
+        };
+        let Ok(line_no) = rest[..digits].trim().parse::<u64>() else {
+            continue;
+        };
+        let body = rest[digits + 1..].trim();
+        if body.is_empty() {
+            continue;
+        }
+        return Some(Inline {
+            path: path.to_string(),
+            line: line_no,
+            body: body.to_string(),
+        });
     }
-    if !path.contains('/') && !path.contains('.') {
-        return None;
-    }
-    let rest = line[at + 1..].trim_start();
-    let digits = rest.find(':')?;
-    let line_no: u64 = rest[..digits].trim().parse().ok()?;
-    let body = rest[digits + 1..].trim();
-    if body.is_empty() {
-        return None;
-    }
-    Some(Inline {
-        path: path.to_string(),
-        line: line_no,
-        body: body.to_string(),
-    })
+    None
 }
 
 #[cfg(test)]

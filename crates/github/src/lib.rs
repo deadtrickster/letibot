@@ -4,12 +4,14 @@
 
 pub mod fake;
 pub mod gh;
+pub mod mirror;
 pub mod offers;
 pub mod seat;
 pub mod source;
 pub mod worker;
 
+pub use mirror::{Mirrors, github_url, slug_of_url};
 pub use offers::{Candidate, Candidates, Kind, Offer, Scorer};
 pub use seat::{Config, Draft, DraftView, PullRow, ReviewState, Seat, Session, Snapshot};
 pub use source::{Comment, Event, Inline, Pull, Review, Scope, Source, Standing};
-pub use worker::{Sessions, Worker};
+pub use worker::{Sessions, Worker, inline_in};
