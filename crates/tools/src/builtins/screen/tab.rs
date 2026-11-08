@@ -56,10 +56,14 @@ fn runtime_base() -> PathBuf {
     PathBuf::from(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// One request to the bridge, one answer. `Err` is the finished refusal.
-fn ask(socket: &Path, req: &Value) -> Result<Value, Invocation> {
+fn fail(reason: impl Into<String>, payload: impl Into<String>) -> Box<Invocation> {
+    Box::new(Invocation::failed(reason, payload))
+}
+
+/// One request to the bridge, one answer. `Err` is the finished refusal, boxed: it is large.
+fn ask(socket: &Path, req: &Value) -> Result<Value, Box<Invocation>> {
     let not_running = || {
-        Invocation::failed(
+        fail(
             "`letibot browser` is not running",
             format!(
                 "nothing answers on {}. The operator starts it on this machine with `letibot \
@@ -70,24 +74,23 @@ fn ask(socket: &Path, req: &Value) -> Result<Value, Invocation> {
     };
     let mut s = UnixStream::connect(socket).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => not_running(),
-        _ => Invocation::failed("the browser bridge is unreachable", e.to_string()),
+        _ => fail("the browser bridge is unreachable", e.to_string()),
     })?;
     let _ = s.set_read_timeout(Some(WAIT));
-    writeln!(s, "{req}")
-        .map_err(|e| Invocation::failed("the request was not sent", e.to_string()))?;
+    writeln!(s, "{req}").map_err(|e| fail("the request was not sent", e.to_string()))?;
     let mut line = String::new();
     BufReader::new(s)
         .take(LINE_MAX)
         .read_line(&mut line)
-        .map_err(|e| Invocation::failed("no answer from the browser bridge", e.to_string()))?;
+        .map_err(|e| fail("no answer from the browser bridge", e.to_string()))?;
     if line.trim().is_empty() {
-        return Err(Invocation::failed(
+        return Err(fail(
             "no answer from the browser bridge",
             "it closed the connection; is `letibot browser` still running?",
         ));
     }
     let v: Value = serde_json::from_str(&line)
-        .map_err(|e| Invocation::failed("the bridge's answer is not JSON", e.to_string()))?;
+        .map_err(|e| fail("the bridge's answer is not JSON", e.to_string()))?;
     if v["ok"].as_bool() != Some(true) {
         let why = v["error"]
             .as_str()
@@ -98,7 +101,7 @@ fn ask(socket: &Path, req: &Value) -> Result<Value, Invocation> {
         } else {
             "the tab did not do it"
         };
-        return Err(Invocation::failed(head, why));
+        return Err(fail(head, why));
     }
     Ok(v)
 }
@@ -158,7 +161,7 @@ pub fn tab(
     let req = json!({ "session": session, "act": act, "args": args });
     let v = match ask(socket, &req) {
         Ok(v) => v,
-        Err(inv) => return inv,
+        Err(inv) => return *inv,
     };
     let r = &v["result"];
     let url = match s(r, "url") {
