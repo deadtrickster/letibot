@@ -46,6 +46,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 
 | id | title | group | left |
 |---|---|---|---|
+| R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Code work | all of it |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Code work | all of it |
 | R164 | Rooms for orchestration (2/6): signal accounting, was a message acted on | Code work | all of it |
 | R165 | Rooms for orchestration (3/6): a question goes to the owner, not the room | Code work | all of it |
@@ -100,7 +101,21 @@ Things an agent can do in this repo, ordered by value: stability and UX first.
 
 ## Rooms for orchestration: ownership keeps agents focused (R163-R168)
 
-The operator, 2026-11-08: rooms exist for multi-agent orchestration, not open conversation; the aim is to promote ownership in agents so they stay focused. Agents reach out when they own something or need something from an owner, and stay quiet otherwise. Evidence: docs/reviews/2026-11-08-rooms-research.md (web research, verbatim) and the oracle reading (hands-off/letibot/reviews/2026-11-08-oracle-principles.md); where they agree it is noted per entry. Build order: R163 and R164 first (R164 is the instrument every later change is measured with), then R165-R168.
+The operator, 2026-11-08: rooms exist for multi-agent orchestration, not open conversation; the aim is to promote ownership in agents so they stay focused. Agents reach out when they own something or need something from an owner, and stay quiet otherwise. Evidence: docs/reviews/2026-11-08-rooms-research.md (web research, verbatim) and the oracle reading (hands-off/letibot/reviews/2026-11-08-oracle-principles.md); where they agree it is noted per entry. Build order: R169, then R163 and R164 (R164 is the instrument every later change is measured with), then R165-R168.
+
+## R169 - Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet
+
+**Status:** open, filed 2026-11-08 by the operator. left: all of it.
+
+The operator: models that receive a message they do not intend to act on overthink it ("this is not for me, I will just reply that it is not for me") and then post exactly that. The right response is silence: no reply, no narration, no reasoning about why it is not theirs.
+- Fewer wakes first: a message that names nobody, is not a blocker or ask to this seat, and touches nothing it owns (R163) does not wake it at all; it waits for the next digest.
+- A woken seat may end the turn with no output, and is told so plainly and once ("not yours: end the turn, say nothing"); ending silently is the expected outcome, never treated as a stall or nudged.
+- A wake for an `fyi` line runs cheap: thinking off and a small output cap, so overthinking is not possible even when the prompt is ignored.
+- The room refuses "not for me" / "not mine" / "no action needed" style posts at post time, like R168's acks.
+Echoes: research failure mode 2 (over-acknowledgement) and the interruption-cost section; oracle "a model that won't act on a fact it can state needs a harness, not a prompt".
+**Done when**: a message not for a seat either does not wake it or ends its turn silently and cheaply; measured with R164-style accounting: tokens and turns spent on wakes that ended with no action, and the count of refused "not for me" posts, before and after.
+
+---
 
 ## R163 - Rooms for orchestration (1/6): presence from facts and ownership as a lease
 
