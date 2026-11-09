@@ -157,17 +157,23 @@ pub const DELIVERED: &str = "Its completion reaches you automatically — when y
 /// ```text
 /// cargo build --release … > /tmp/release-build.log 2>&1
 /// ```
-/// That command's captured output is empty by construction. Returns the first file written to, or `None`.
-/// A write to a file on stdout or stderr counts; `2>&1` and stdin forms do not. Public because the daemon
+/// That command's captured output is empty by construction. Returns the first file stdout is written
+/// to, or `None`. Only stdout counts: `2>/dev/null` leaves the capture full. Public because the daemon
 /// puts it on the wire, so a head need not parse shell.
 pub fn output_redirect_path(command: &str) -> Option<String> {
-    output_redirect_paths(command).into_iter().next()
+    redirect_paths(command, |fd| matches!(fd, None | Some(1)))
+        .into_iter()
+        .next()
 }
 
 /// Every file a command sends its output to, in the order the command names them, each once:
 /// [`output_redirect_path`]'s rule applied to every stage of a compound command. A reader told where
 /// a lost job's output went needs all of it, and only a literal path is provable from the text.
 pub fn output_redirect_paths(command: &str) -> Vec<String> {
+    redirect_paths(command, |fd| matches!(fd, None | Some(1) | Some(2)))
+}
+
+fn redirect_paths(command: &str, captured: impl Fn(Option<u32>) -> bool) -> Vec<String> {
     let n = letibot_code::shell::normalise(command);
     let mut out: Vec<String> = Vec::new();
     for stage in &n.stages {
@@ -175,8 +181,8 @@ pub fn output_redirect_paths(command: &str) -> Vec<String> {
             if !r.op.writes() {
                 continue;
             }
-            // Descriptor 1 and 2 are what a job captures. An untagged `>` is 1.
-            if !matches!(r.fd, None | Some(1) | Some(2)) {
+            // An untagged `>` is descriptor 1.
+            if !captured(r.fd) {
                 continue;
             }
             if let letibot_code::shell::RedirectTarget::File(w) = &r.target
@@ -204,11 +210,13 @@ mod output_redirect_tests {
                 "cargo build --release > /tmp/release-build.log 2>&1",
                 Some("/tmp/release-build.log"),
             ),
-            ("make 2> err.log", Some("err.log")),
+            // Only stderr: the capture still holds stdout.
+            ("make 2> err.log", None),
+            ("grep -rn x . --include='*.md' 2>/dev/null | head -5", None),
             ("make >| out.log", Some("out.log")),
             ("make >> append.log", Some("append.log")),
             ("make 1> out.log", Some("out.log")),
-            ("make 2> err.log 1> out.log", Some("err.log")),
+            ("make 2> err.log 1> out.log", Some("out.log")),
             // Not redirected, and each for its own reason.
             //
             // `2>&1` alone is a merge into the captured stdout: the job sees everything.
