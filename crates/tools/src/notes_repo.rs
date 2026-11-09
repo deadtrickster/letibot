@@ -129,24 +129,23 @@ pub fn push(repo: &Path, remote: Option<&str>) -> Result<String, String> {
 fn git(repo: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(repo).env("GIT_TERMINAL_PROMPT", "0");
-    // A box with no identity configured still commits its notes, as letibot.
-    if !has_identity(repo) {
-        cmd.env("GIT_AUTHOR_NAME", "letibot")
-            .env("GIT_AUTHOR_EMAIL", "letibot@localhost")
-            .env("GIT_COMMITTER_NAME", "letibot")
-            .env("GIT_COMMITTER_EMAIL", "letibot@localhost");
+    // The notes are letibot's commits, not the operator's: its own name, and never the operator's
+    // signature - a daemon has no terminal for a key's passphrase, so a signing commit only waits.
+    cmd.env("GIT_AUTHOR_NAME", "letibot")
+        .env("GIT_AUTHOR_EMAIL", "letibot@localhost")
+        .env("GIT_COMMITTER_NAME", "letibot")
+        .env("GIT_COMMITTER_EMAIL", "letibot@localhost");
+    // Appended after any `GIT_CONFIG_*` pairs the environment already carries.
+    let base: usize = std::env::var("GIT_CONFIG_COUNT")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    for (at, key) in ["commit.gpgsign", "tag.gpgsign"].into_iter().enumerate() {
+        cmd.env(format!("GIT_CONFIG_KEY_{}", base + at), key)
+            .env(format!("GIT_CONFIG_VALUE_{}", base + at), "false");
     }
+    cmd.env("GIT_CONFIG_COUNT", (base + 2).to_string());
     cmd
-}
-
-fn has_identity(repo: &Path) -> bool {
-    let dir = if repo.is_dir() { repo } else { Path::new("/") };
-    Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["config", "user.email"])
-        .output()
-        .is_ok_and(|o| o.status.success() && !o.stdout.trim_ascii().is_empty())
 }
 
 fn run(repo: &Path, args: &[&str]) -> Result<String, String> {

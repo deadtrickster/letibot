@@ -103,3 +103,21 @@ fn push_rebases_over_the_remote_and_sends_main() {
     let log = git_ok(&bare, &["log", "--format=%s", "main"]);
     assert_eq!(log, "add two\nadd one");
 }
+
+/// A box that signs every commit still commits its notes: they are letibot's, unsigned, and a key
+/// that cannot sign is never asked.
+#[test]
+fn a_signing_config_does_not_stop_a_note_and_the_commit_is_letibots() {
+    let root = TempDir::new();
+    let repo = root.path().join("notes");
+    std::fs::create_dir_all(&repo).unwrap();
+    git_ok(&repo, &["init", "-q", "-b", "main"]);
+    git_ok(&repo, &["config", "commit.gpgsign", "true"]);
+    git_ok(&repo, &["config", "gpg.program", "false"]);
+    std::fs::write(repo.join("a.md"), "a\n").unwrap();
+    commit(&repo, "add a").expect("a signing config is not consulted");
+    assert_eq!(
+        git_ok(&repo, &["log", "--format=%an <%ae> | %cn | %G?"]),
+        "letibot <letibot@localhost> | letibot | N"
+    );
+}
