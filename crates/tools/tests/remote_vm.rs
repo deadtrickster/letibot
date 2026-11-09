@@ -148,6 +148,7 @@ impl Rig {
             vm,
             env: Vec::new(),
             env_secrets: Vec::new(),
+            grants: Vec::new(),
         }
     }
 

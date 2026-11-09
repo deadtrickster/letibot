@@ -299,6 +299,7 @@ fn spec_for(fake: &Fake, repo: &Path, paths: &Paths, bound: Duration) -> SshSpec
         vm: false,
         env: Vec::new(),
         env_secrets: Vec::new(),
+        grants: Vec::new(),
     }
 }
 
@@ -1204,6 +1205,7 @@ fn six_packages_on_a_real_host_at_once_are_never_refused() {
             vm: false,
             env: Vec::new(),
             env_secrets: Vec::new(),
+            grants: Vec::new(),
         };
         placers.push(std::thread::spawn(move || {
             SshBackend::place(&spec)

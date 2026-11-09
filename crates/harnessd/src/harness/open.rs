@@ -874,6 +874,21 @@ impl Harness {
         } else {
             (Vec::new(), Vec::new())
         };
+        // And the paths it grants, which are the operator's `[boundary]` and `[perimeter.<name>]`
+        // ones: a remote placement builds its own view there, so what this box's view holds has to
+        // travel with the spec. `[boundary]` grants are READ on both machines; the probe says which
+        // exist, and one that does not is a line on the notes rather than a failed open.
+        let placement_grants = if remote.is_some() {
+            let home = std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_default();
+            let p = crate::perimeter::of(cfg).map_err(HarnessError::Setup)?;
+            crate::perimeter::grants_for_placement(&p, &cfg.workspace, &home)
+                .map_err(HarnessError::Setup)?
+        } else {
+            Vec::new()
+        };
+
         // Set by the two arms whose commands run inside a boundary on this box: the seat that
         // fence was built from, so the file tools are fenced with the same one.
         let mut seat: Option<letibot_tools::exec::seat::SeatView> = None;
@@ -1123,6 +1138,9 @@ impl Harness {
                 vm: cfg.placement.is_vm(),
                 env: placement_env.clone(),
                 env_secrets: placement_secrets.clone(),
+                // The operator's `[boundary]` and `[perimeter.<name>]` grants, for the view built on
+                // that machine: what a local seat gets from `boundary::apply`, unexpanded.
+                grants: placement_grants.clone(),
             };
             let sb = letibot_tools::remote::SshBackend::place(&spec)
                 .map_err(|e| HarnessError::Setup(e.to_string()))?;

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use letibot_tools::backend::{Command, ExecBackend};
+use letibot_tools::exec::boundary::{HostGrant, Origin};
 use letibot_tools::exec::{Egress, JobId, JobState, ScopeKind, SpawnRequest};
 use letibot_tools::remote::{Host, Paths, SshBackend, SshSpec};
 
@@ -169,23 +170,27 @@ impl Rig {
             vm: false,
             env: Vec::new(),
             env_secrets: Vec::new(),
+            grants: Vec::new(),
         }
     }
 
     fn place(&mut self, egress: Egress) -> SshBackend {
-        self.place_with(egress, Vec::new(), Vec::new())
+        self.place_with(egress, Vec::new(), Vec::new(), Vec::new())
     }
 
-    /// [`Rig::place`] with the session perimeter's own pairs, as `place_the_tools` hands them over.
+    /// [`Rig::place`] with the session perimeter's own pairs and paths, as `place_the_tools` hands
+    /// them over.
     fn place_with(
         &mut self,
         egress: Egress,
         env: Vec<(String, String)>,
         env_secrets: Vec<(String, String)>,
+        grants: Vec<HostGrant>,
     ) -> SshBackend {
         let mut spec = self.spec(egress);
         spec.env = env;
         spec.env_secrets = env_secrets;
+        spec.grants = grants;
         let b =
             SshBackend::place(&spec).unwrap_or_else(|e| panic!("the placement is arranged: {e}"));
         self.worktree = PathBuf::from(b.worktree_path());
@@ -984,6 +989,7 @@ fn a_perimeters_secret_crosses_to_a_confined_command_without_its_name_helping() 
         Egress::Denied,
         vec![("A_PERIMETER_PAIR".to_string(), "a value".to_string())],
         vec![("A_PLAINLY_NAMED_PAIR".to_string(), GIVEN.to_string())],
+        Vec::new(),
     );
     assert!(b.is_confined(), "the fake host answered the probe");
     let out = b
@@ -1019,6 +1025,145 @@ fn a_perimeters_secret_crosses_to_a_confined_command_without_its_name_helping() 
     assert!(
         helper.contains("--setenv A_PERIMETER_PAIR a value"),
         "a literal is spelled as it always was: {helper}"
+    );
+}
+
+/// One of the operator's grants, for a session whose config named it at line 12 of the user file.
+fn granted(path: &str, write: bool) -> HostGrant {
+    HostGrant {
+        path: path.to_string(),
+        write,
+        label: "[boundary]".to_string(),
+        from: Origin {
+            file: PathBuf::from("/home/operator/.config/letibot/leticode.toml"),
+            line: 12,
+            user: true,
+        },
+    }
+}
+
+/// The per-command bwrap argv that bound `path`, if any: the view is the argv, since the fake helper
+/// implements no mount at all.
+fn the_call_binding(rig: &Rig, path: &Path) -> Option<String> {
+    let bind = format!("--bind {} {}", path.display(), path.display());
+    rig.bwrap_calls().into_iter().find(|c| c.contains(&bind))
+}
+
+/// A `grants_rw` in the operator's `[boundary]` reaches the view on ANOTHER machine: bound at the path
+/// where it really is there, after the tmpfs that empties `/run`, and `~/` is that machine's home.
+#[test]
+fn the_operators_grants_reach_the_view_on_the_host() {
+    let mut rig = Rig::new("grants", FAKE_READBACK, true);
+    let there = rig.home.join("scratch-granted");
+    std::fs::create_dir_all(&there).expect("a granted directory on the host");
+    let there = there.canonicalize().expect("the host's own spelling");
+    let b = rig.place_with(
+        Egress::Denied,
+        Vec::new(),
+        Vec::new(),
+        vec![granted("~/scratch-granted", true)],
+    );
+    assert!(b.is_confined(), "the fake host answered the probe");
+    // A command, so the place is asked to build the argv a command runs in.
+    let _ = b.run(&Command {
+        argv: vec!["true".into()],
+        cwd: String::new(),
+        env: Vec::new(),
+    });
+    let call = the_call_binding(&rig, &there).unwrap_or_else(|| {
+        panic!(
+            "`{}` was not bound in the view there: {:#?}",
+            there.display(),
+            rig.bwrap_calls()
+        )
+    });
+    let argv: Vec<&str> = call.trim_start_matches("ARGV ").split(' ').collect();
+    let at = |needle: &str| argv.iter().position(|a| *a == needle);
+    let tmpfs = at("/run").expect("`/run` is emptied here");
+    let bound = argv
+        .windows(2)
+        .position(|w| w[0] == "--bind" && w[1] == there.display().to_string())
+        .expect("the grant is bound");
+    assert!(
+        bound > tmpfs,
+        "a grant must come after the tmpfs, or the tmpfs hides it: {call}"
+    );
+    assert_eq!(argv[bound + 2], there.display().to_string());
+    assert!(
+        !call.contains("~/scratch-granted"),
+        "the config's spelling is not what a command is handed: {call}"
+    );
+}
+
+/// A grant this machine has and the host does not is dropped, with a line on the placement's notes:
+/// a stale line in a config must never be a placement that will not open.
+#[test]
+fn a_grant_the_host_does_not_have_is_dropped_with_a_line_on_the_notes() {
+    let mut rig = Rig::new("grantmissing", FAKE_READBACK, true);
+    let b = rig.place_with(
+        Egress::Denied,
+        Vec::new(),
+        Vec::new(),
+        vec![
+            granted("~/not-on-that-machine", true),
+            granted("/run/letibot-no-such-socket", false),
+        ],
+    );
+    assert!(
+        b.is_confined(),
+        "a path that is not there does not fail the placement"
+    );
+    let notes = b.placement_notes().join("\n");
+    for (path, key) in [
+        ("~/not-on-that-machine", "[boundary] grants_rw"),
+        ("/run/letibot-no-such-socket", "[boundary] grants_ro"),
+    ] {
+        assert!(
+            notes.contains(path) && notes.contains(key) && notes.contains(&rig.host.name),
+            "a dropped grant is said, with the key that wrote it: {notes}"
+        );
+    }
+    let argv = rig.bwrap_calls().join("\n");
+    assert!(
+        !argv.contains("not-on-that-machine") && !argv.contains("letibot-no-such-socket"),
+        "neither is bound: {argv}"
+    );
+}
+
+/// A grant of a path that is a symlink is bound where it REALLY is, because a bind lands on the
+/// target there: `/var/run/docker.sock` is `/run/docker.sock` on these hosts, and the view links the
+/// two spellings so a program asking for either finds it.
+#[test]
+fn a_granted_symlink_is_bound_where_it_really_is() {
+    let mut rig = Rig::new("grantlink", FAKE_READBACK, true);
+    let real = rig.home.join("the-real-dir");
+    std::fs::create_dir_all(&real).expect("the directory a link points at");
+    std::fs::write(real.join("a-socket"), b"not really a socket").expect("the socket file");
+    std::os::unix::fs::symlink(&real, rig.home.join("the-link")).expect("a link");
+    let real = real.canonicalize().expect("the host's own spelling");
+    let b = rig.place_with(
+        Egress::Denied,
+        Vec::new(),
+        Vec::new(),
+        vec![granted("~/the-link/a-socket", true)],
+    );
+    assert!(b.is_confined(), "the fake host answered the probe");
+    let _ = b.run(&Command {
+        argv: vec!["true".into()],
+        cwd: String::new(),
+        env: Vec::new(),
+    });
+    let target = real.join("a-socket");
+    let call = the_call_binding(&rig, &target).unwrap_or_else(|| {
+        panic!(
+            "`{}` is where the program looks, so that is what is bound: {:#?}",
+            target.display(),
+            rig.bwrap_calls()
+        )
+    });
+    assert!(
+        !call.contains("the-link"),
+        "the link is resolved on the host, not bound as written: {call}"
     );
 }
 

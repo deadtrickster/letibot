@@ -170,6 +170,7 @@ impl Rig {
             vm: false,
             env: Vec::new(),
             env_secrets: Vec::new(),
+            grants: Vec::new(),
         }
     }
 
@@ -803,6 +804,7 @@ fn a_plain_folder_is_refused_for_remote_placement() {
         vm: false,
         env: Vec::new(),
         env_secrets: Vec::new(),
+        grants: Vec::new(),
     })
     .expect_err("a folder is not a repository");
     let said = refused.to_string();
@@ -1121,6 +1123,7 @@ fn spec_for(fake: &Fake, repo: &Path, paths: &Paths, bound: Duration) -> SshSpec
         vm: false,
         env: Vec::new(),
         env_secrets: Vec::new(),
+        grants: Vec::new(),
     }
 }
 
@@ -1879,6 +1882,7 @@ fn place_spec_for_test(program: &Path, repo: &Path, paths: &Paths, host: Host) -
         vm: false,
         env: Vec::new(),
         env_secrets: Vec::new(),
+        grants: Vec::new(),
     }
 }
 

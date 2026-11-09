@@ -2047,6 +2047,10 @@ pub struct HostProbe {
     /// The toolchain paths that exist there, absolute: [`GRANT_CANDIDATES`] reduced to the
     /// ones that are really there.
     pub toolchains: Vec<String>,
+    /// One entry per path the caller asked about ([`probe_script`]'s `also`), in that order: where the
+    /// path really is on that machine, or `None` when there is no such path there. A symlink is
+    /// answered as its target, because that is where a bind has to land.
+    pub grants: Vec<Option<String>>,
     /// `/proc/self/ns/*` of the shell that ran the helper: the denominator.
     pub outer: BTreeMap<String, String>,
     /// The same, read from inside the boundary.
@@ -2080,9 +2084,12 @@ pub const GRANT_GLOBS: &[&str] = &[
 ];
 
 /// The one script a remote probe runs: the same readback the local probe runs, plus the two
-/// facts a view needs (where that home is, which toolchain directories exist) and the
-/// denominator read outside the boundary. Nothing here writes: a probe is a question.
-pub fn probe_script(view: &ViewSpec, egress: &Egress) -> String {
+/// facts a view needs (where that home is, which toolchain directories exist), the paths the caller
+/// wants asked about, and the denominator read outside the boundary. Nothing writes: a probe is a
+/// question. `also` are granted paths as the config wrote them, `~/` and all: the far shell is the
+/// only thing that can say what a `~/` means there, and a path that is a symlink is answered by its
+/// target, because that is where a bind has to land.
+pub fn probe_script(view: &ViewSpec, egress: &Egress, also: &[String]) -> String {
     let mut s = String::new();
     s.push_str("b=$(command -v bwrap 2>/dev/null || true)\n");
     s.push_str("echo \"helper=$b\"\n");
@@ -2097,6 +2104,17 @@ pub fn probe_script(view: &ViewSpec, egress: &Egress) -> String {
         s.push_str(&format!(" {c}"));
     }
     s.push_str("; do [ -d \"$d\" ] && echo \"have=$d\"; done\n");
+    if !also.is_empty() {
+        s.push_str("for d in");
+        for p in also {
+            s.push_str(&format!(" {}", crate::remote::one_entry(p)));
+        }
+        // One line per path, in the order asked: the reader pairs the answer with its question.
+        s.push_str(
+            "; do if [ -e \"$d\" ]; then printf 'grant %s\\n' \"$(readlink -f \"$d\")\"; \
+             else printf 'grant-missing\\n'; fi; done\n",
+        );
+    }
     s.push_str("if [ -n \"$b\" ]; then echo \"version=$(\"$b\" --version 2>&1 | head -1)\"; fi\n");
     s.push_str(
         "for n in user mnt pid net ipc uts cgroup; do \
@@ -2147,6 +2165,15 @@ pub fn read_probe(said: &str) -> HostProbe {
             if let (Some(n), Some(inode)) = (it.next(), it.next()) {
                 p.outer.insert(n.to_string(), inode.to_string());
             }
+            continue;
+        }
+        // One answer per granted path, in the order the script asked: where it is, or that it is not.
+        if let Some(real) = line.strip_prefix("grant ") {
+            p.grants.push(Some(real.trim().to_string()));
+            continue;
+        }
+        if line.trim() == "grant-missing" {
+            p.grants.push(None);
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {

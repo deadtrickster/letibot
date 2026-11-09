@@ -303,6 +303,26 @@ impl Perimeter {
         Ok(r)
     }
 
+    /// The grants this table asks for on a PLACEMENT's view, as the file spelled them: a `~/` path is
+    /// that machine's home, which is not this one's, so nothing is expanded here. `resolved` runs
+    /// first, so a table this box refuses refuses the session rather than opening an unchecked view.
+    pub fn host_grants(&self, home: &Path) -> Result<Vec<boundary::HostGrant>, String> {
+        self.resolved(home)?;
+        let label = self.label();
+        let mut out = Vec::new();
+        for (write, entries) in [(false, &self.grants_ro), (true, &self.grants_rw)] {
+            for e in entries.iter() {
+                out.push(boundary::HostGrant {
+                    path: e.value.clone(),
+                    write,
+                    label: label.clone(),
+                    from: e.from.clone(),
+                });
+            }
+        }
+        Ok(out)
+    }
+
     /// The `[perimeter.<name>.env]` pairs, as a placement hands them to another machine: the
     /// literals, which may be spelled, and the values a file or a command gave, which are secrets
     /// and may not. Only `env`: a named `secrets` grant is the seat's own injection and is not a

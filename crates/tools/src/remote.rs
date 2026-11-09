@@ -826,7 +826,8 @@ fn quoted_entries(entries: &[String]) -> Option<Vec<String>> {
 /// One `path` entry as the remote shell must see it. A `~` handed to `quote()` would be a literal
 /// character, so `~/.cargo/bin` would name a directory called `~` on the far side; the tilde is
 /// expanded there, once, as `"$HOME/..."`, and the rest of the entry is quoted as any word is.
-fn one_entry(e: &str) -> String {
+/// `$HOME` is the same spelling written out, which is how a probe asks about a `[boundary]` grant.
+pub(crate) fn one_entry(e: &str) -> String {
     // The characters `quote()` leaves bare. An entry made only of them needs no quoting at all.
     let plain = |s: &str| {
         !s.is_empty()
@@ -835,10 +836,11 @@ fn one_entry(e: &str) -> String {
                     || matches!(c, '/' | '.' | '_' | '-' | ':' | '+' | ',' | '@')
             })
     };
-    match e.strip_prefix("~/") {
+    let rest = e.strip_prefix("~/").or_else(|| e.strip_prefix("$HOME/"));
+    match rest {
         Some(rest) if plain(rest) => format!("\"$HOME/{rest}\""),
         Some(rest) => format!("\"$HOME\"/{}", quote(rest)),
-        None if e == "~" => "\"$HOME\"".to_string(),
+        None if e == "~" || e == "$HOME" => "\"$HOME\"".to_string(),
         None => quote(e),
     }
 }
@@ -1259,8 +1261,10 @@ static MISE: std::sync::LazyLock<Mutex<BTreeMap<String, Option<String>>>> =
 
 /// What a host said when it was asked whether it can confine a command, per process. The measurement
 /// is cached, not a boundary: the view is the session's, so a second session re-applies the same
-/// measurement to its own view. A probe that did not answer is not cached.
-static CONFINE: std::sync::LazyLock<Mutex<BTreeMap<String, crate::exec::confine::HostProbe>>> =
+/// measurement to its own view. Keyed by the granted paths too, because those are the session's and
+/// the answer says where each one is there. A probe that did not answer is not cached.
+type ProbeKey = (String, Vec<String>);
+static CONFINE: std::sync::LazyLock<Mutex<BTreeMap<ProbeKey, crate::exec::confine::HostProbe>>> =
     std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
 /// Where a host's `firecode` is, and whether it may open `/dev/kvm`, per process. Asked once per host
@@ -1790,20 +1794,19 @@ impl Ssh {
 
     /// Ask the host whether it can confine a command, once per process. The script is
     /// [`crate::exec::confine::probe_script`]'s, run the way every other remote command is run, so the
-    /// argv it measures is the argv a command will be wrapped in. Only an answer is cached.
+    /// argv it measures is the argv a command will be wrapped in. Only an answer is cached, and the
+    /// cache is keyed by the paths asked about too: two sessions on one host grant different ones.
     fn confinement_probe(
         &self,
         view: &crate::exec::ViewSpec,
         egress: &crate::exec::Egress,
+        also: &[String],
     ) -> Result<crate::exec::confine::HostProbe, String> {
-        if let Some(hit) = CONFINE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&self.host.name)
-        {
+        let key = (self.host.name.clone(), also.to_vec());
+        if let Some(hit) = CONFINE.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
             return Ok(hit.clone());
         }
-        let script = crate::exec::confine::probe_script(view, egress);
+        let script = crate::exec::confine::probe_script(view, egress, also);
         let within = self.bound.min(STEP_BOUND);
         let (said, stderr, _exit) = self
             .sh_step_within(
@@ -1826,7 +1829,7 @@ impl Ssh {
         CONFINE
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(self.host.name.clone(), probe.clone());
+            .insert(key, probe.clone());
         Ok(probe)
     }
 
@@ -3021,8 +3024,9 @@ fn confined_here(host: &str) -> Option<String> {
     let probe = CONFINE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(host)
-        .cloned()?;
+        .iter()
+        .find(|((h, _), _)| h == host)
+        .map(|(_, p)| p.clone())?;
     if probe.helper.trim().is_empty() {
         return Some("nothing was confined: no `bwrap` on that host's `PATH`".to_string());
     }
@@ -3124,13 +3128,16 @@ fn secrets_from_the_file(line: &str, secrets: Option<Vec<u8>>) -> String {
 
 /// One session's view on a host, and the boundary measured for it, or the reason there is none. The
 /// view is the policy a local confined session gets, spelled for the far machine: the checkout
-/// writable at its own path, the system roots and toolchain read-only, `$HOME` letibot's own.
+/// writable at its own path, the system roots and toolchain read-only, `$HOME` letibot's own, and the
+/// operator's own grants — which the host answers for, because a `~/` there is not a `~/` here.
 fn confine_a_checkout(
     ssh: &Ssh,
     home: &str,
     worktree: &str,
     mirror: &str,
     egress: &crate::exec::Egress,
+    grants: &[crate::exec::boundary::HostGrant],
+    notes: &mut Vec<String>,
 ) -> (Option<crate::exec::Bwrap>, Option<String>) {
     use crate::exec::confine::{Grant, HomeView, ViewSpec};
     // The mirror is part of the checkout, as git sees it: the checkout is a `git worktree` of the bare
@@ -3151,7 +3158,8 @@ fn confine_a_checkout(
                   repository and the branch, which is the whole deliverable, cannot be committed"
                 .to_string(),
         });
-    let probe = match ssh.confinement_probe(&provisional, egress) {
+    let also: Vec<String> = grants.iter().map(|g| g.path.clone()).collect();
+    let probe = match ssh.confinement_probe(&provisional, egress, &also) {
         Ok(p) => p,
         Err(why) => return (None, Some(why)),
     };
@@ -3159,6 +3167,31 @@ fn confine_a_checkout(
     let mut view = provisional;
     for g in crate::exec::seat::grants_for(&probe.toolchains) {
         view = view.granting(g);
+    }
+    // The session's own grants, which its config gives every machine it runs on. The host said where
+    // each really is — `/var/run/x` is `/run/x` there — and a path it does not have is SAID rather than
+    // bound: bwrap refuses a missing source, which would be an open that failed over a stale config.
+    for (g, there) in grants.iter().zip(probe.grants.iter()) {
+        let Some(real) = there else {
+            notes.push(format!(
+                "`{}` = `{}`, written at {}: that path is not on {}, so it is not in the view there",
+                g.key(),
+                g.path,
+                g.from,
+                ssh.host.name
+            ));
+            continue;
+        };
+        let path = PathBuf::from(real);
+        if view.grants.iter().any(|e| e.path() == path.as_path()) {
+            continue;
+        }
+        let why = format!("granted by `{}` at {}", g.key(), g.from);
+        view = view.granting(if g.write {
+            Grant::ReadWrite { path, why }
+        } else {
+            Grant::ReadOnly { path, why }
+        });
     }
     match crate::exec::confine::measured_from_probe(&probe, view, egress.clone()) {
         Ok(b) => (Some(b), None),
@@ -3284,6 +3317,10 @@ pub struct SshSpec {
     /// goes on the descriptor a secret rides (stdin here, a launcher file for a job) and never on
     /// an argv. A firecode VM has no second channel, so a foreground call there is refused.
     pub env_secrets: Vec<(String, String)>,
+    /// The session's own `[boundary]` and `[perimeter.<name>]` grants, for the view this placement
+    /// builds there: the same list a seat on this box would hold, unexpanded, because a `~/` path is
+    /// that machine's home. The host says which exist; one that does not is a note, not a refusal.
+    pub grants: Vec<crate::exec::boundary::HostGrant>,
 }
 
 /// What a placement's branch needs to come home: the local repository, the url the fetch reads and
@@ -3698,7 +3735,15 @@ impl SshBackend {
                         &format!("mkdir -p {} {}", quote(&dir), quote(&format!("{dir}/tmp"))),
                     )
                     .map_err(place)?;
-                    let measured = confine_a_checkout(&ssh, &dir, &worktree, &mirror, &spec.egress);
+                    let measured = confine_a_checkout(
+                        &ssh,
+                        &dir,
+                        &worktree,
+                        &mirror,
+                        &spec.egress,
+                        &spec.grants,
+                        &mut notes,
+                    );
                     session_home = Some(dir);
                     measured
                 }

@@ -44,6 +44,29 @@ pub struct Entry<T> {
     pub from: Origin,
 }
 
+/// One grant a PLACEMENT's view is asked for, as the file spelled it: a `~/` path is the home of
+/// the machine the view is built on, which is not this one, so it travels unexpanded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostGrant {
+    pub path: String,
+    /// `grants_rw` rather than `grants_ro`.
+    pub write: bool,
+    /// The table the entry came from, so a note names the key a reader can edit.
+    pub label: String,
+    pub from: Origin,
+}
+
+impl HostGrant {
+    /// The key this grant was written under: what a disclosure or a dropped grant names.
+    pub fn key(&self) -> String {
+        format!(
+            "{} {}",
+            self.label,
+            if self.write { "grants_rw" } else { "grants_ro" }
+        )
+    }
+}
+
 /// The five keys of both levels, unioned. Empty is today's behaviour.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BoundaryConfig {
@@ -402,6 +425,25 @@ pub fn resolve(cfg: &BoundaryConfig, home: &Path) -> Result<Resolved, String> {
     Ok(r)
 }
 
+/// The `[boundary]` grants, for a view built on ANOTHER machine: the rules are checked here, in the
+/// spelling this box can check, and each path travels as written so that a `~/` is that machine's home.
+/// A refused entry refuses the session, as it does for a seat on this box.
+pub fn host_grants(cfg: &BoundaryConfig, home: &Path) -> Result<Vec<HostGrant>, String> {
+    resolve(cfg, home)?;
+    let mut out = Vec::new();
+    for (write, entries) in [(false, &cfg.grants_ro), (true, &cfg.grants_rw)] {
+        for e in entries.iter() {
+            out.push(HostGrant {
+                path: e.value.clone(),
+                write,
+                label: "[boundary]".to_string(),
+                from: e.from.clone(),
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// Thread a resolved config into a seat. Grants join a child's view and a wide view's writes
 /// (a wide view already reads everything). `hide` masks at both levels and beats any grant.
 pub fn apply(mut seat: SeatView, r: &Resolved) -> SeatView {
@@ -719,6 +761,41 @@ mod tests {
         };
         let err = resolve(&project_rw, home).expect_err("project rw");
         assert!(err.contains("user file") && err.contains(":7:"), "{err}");
+    }
+
+    /// The grants a PLACEMENT's view is asked for are the same ones a seat gets, by the same rules,
+    /// and they travel unexpanded: a `~/` there is that machine's home, which is not `/h`.
+    #[test]
+    fn a_placement_gets_the_grants_as_written_and_the_same_refusals() {
+        let home = Path::new("/h");
+        let both = BoundaryConfig {
+            grants_ro: vec![entry("~/datasets", true)],
+            grants_rw: vec![entry("/var/run/docker.sock", true)],
+            ..Default::default()
+        };
+        let got = host_grants(&both, home).expect("both are grantable");
+        let said: Vec<(String, bool)> = got.iter().map(|g| (g.path.clone(), g.write)).collect();
+        assert_eq!(
+            said,
+            vec![
+                ("~/datasets".to_string(), false),
+                ("/var/run/docker.sock".to_string(), true)
+            ],
+            "a `~/` path is not expanded against THIS box's home"
+        );
+        assert_eq!(got[1].key(), "[boundary] grants_rw");
+        assert_eq!(got[1].from.line, 7);
+
+        // The never-granted list and the project rule are the seat's: a placement cannot be a way
+        // round them.
+        let err = host_grants(&ro("~/.ssh"), home).expect_err("~/.ssh");
+        assert!(err.contains("never-grant") && err.contains(".ssh"), "{err}");
+        let project_rw = BoundaryConfig {
+            grants_rw: vec![entry("~/scratch", false)],
+            ..Default::default()
+        };
+        let err = host_grants(&project_rw, home).expect_err("a project's rw grant");
+        assert!(err.contains("user file"), "{err}");
     }
 
     /// The deny-list is one function: a secret, a credential helper and a loader variable are
