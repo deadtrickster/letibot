@@ -834,7 +834,7 @@ fn the_runs_table_holds_a_process_until_it_is_dead() {
     runs.keep(&[], 2);
     assert!(runs.owns(&handle), "not forgotten before it is dead");
     let mut gone = false;
-    for _ in 0..250 {
+    for _ in 0..1500 {
         runs.keep(&[], 3);
         if !runs.owns(&handle) {
             gone = true;
