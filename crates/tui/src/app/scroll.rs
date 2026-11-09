@@ -1182,9 +1182,25 @@ impl App {
         };
         let bottom = self.body_len.saturating_sub(self.view_room.max(1));
         let stall_from = (delta > 0).then_some(now);
+        // A step down into lines no row holds (a seam's note, the live pane) clamps back onto the
+        // row above it, so it goes to the next row, and past the last row it is the tail.
+        let mut want = want;
+        let past_last = delta > 0
+            && match self.span_at_line(want) {
+                Some(span) if want > span.at + span.lines => {
+                    match self.spans.iter().find(|s| s.at > want && s.lines > 0) {
+                        Some(next) => {
+                            want = next.at;
+                            false
+                        }
+                        None => true,
+                    }
+                }
+                _ => false,
+            };
         // The bottom of the window is not the bottom of the session. With rows below it this head
         // has not drawn, reaching the last drawn line is a page and not a return to following.
-        if want >= bottom && delta > 0 && self.hist_ceiling.is_none() {
+        if (want >= bottom || past_last) && delta > 0 && self.hist_ceiling.is_none() {
             self.anchor = None;
             self.scroll = 0;
             // No `redraw` here either - this is the flag's second home on the scroll path.

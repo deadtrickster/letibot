@@ -5821,3 +5821,50 @@ fn letting_lines_go_from_above_with_every_row_above_the_keep_cuts_nothing() {
     assert_eq!(a.hist_lines.len(), 10);
     assert_eq!(a.spans.len(), 1);
 }
+
+/// R134: a live pane taller than the glass puts lines below the last row that no span holds. A
+/// notch down from the last row lands in them, clamps back onto that row and never reaches the
+/// bottom, so only Esc freed it.
+#[test]
+fn walking_down_into_a_live_pane_taller_than_the_glass_reaches_the_tail() {
+    let mut a = app();
+    for i in 0..60u64 {
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 1,
+            testing::appended(&format!("s.{i}"), "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 2,
+            testing::content(&format!("s.{i}"), &format!("line {i}")),
+        )));
+    }
+    a.apply(ServerFrame::Event(env(200, testing::turn_started("t1"))));
+    let answer: String = (0..80).map(|i| format!("answer line {i}\n\n")).collect();
+    a.apply(ServerFrame::Event(env(201, testing::delta("t1", &answer))));
+    a.screen(80, 24);
+    let last = *a.spans.last().expect("rows were drawn");
+    let room = a.view_room;
+    assert!(
+        a.body_len - (last.at + last.lines) > room + 3,
+        "the premise: more lines below the last row than the glass holds: body {} last {:?} room {room}",
+        a.body_len,
+        last
+    );
+
+    a.key(Key::WheelUp);
+    a.screen(80, 24);
+    assert!(!a.following(), "the notch parked the reader");
+
+    let mut notches = 0;
+    while !a.following() && notches < 40 {
+        a.key(Key::WheelDown);
+        a.screen(80, 24);
+        notches += 1;
+    }
+    assert!(
+        a.following(),
+        "{notches} notches down never reached the tail: held {} bottom {}",
+        a.held_line(),
+        a.body_len - a.view_room
+    );
+}
