@@ -244,6 +244,8 @@ fn a_peer_word_puts_nothing_on_another_sessions_board() {
         id: "ask-1".into(),
         room: HOST_ROOM.into(),
         to: "s-b".into(),
+        path: String::new(),
+        topic: String::new(),
         question: "may I land m-3?".into(),
     }) {
         Response::Asked { ask, .. } => assert!(ask.open(), "{ask:?}"),

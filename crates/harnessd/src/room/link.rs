@@ -985,6 +985,8 @@ impl SessionRoom {
             id: request_id("ask"),
             room: chat_room(room.unwrap_or("")),
             to: of.trim().to_string(),
+            path: String::new(),
+            topic: String::new(),
             question: question.trim().to_string(),
         };
         let response = self

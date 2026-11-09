@@ -67,6 +67,8 @@ fn the_scorecard_counts_what_followed() {
             id: "5".into(),
             room: String::new(),
             to: "s-b".into(),
+            path: String::new(),
+            topic: String::new(),
             question: "which port?".into(),
         })
         .unwrap()

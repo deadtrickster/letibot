@@ -67,6 +67,8 @@ impl Seated {
             id: id.into(),
             room: String::new(),
             to: to.into(),
+            path: String::new(),
+            topic: String::new(),
             question: question.into(),
         })
     }
@@ -529,6 +531,8 @@ fn an_ask_into_a_room_the_target_cannot_see_is_refused() {
         id: "q1".into(),
         room: letibot_room::project_room(A),
         to: "s-b".into(),
+        path: String::new(),
+        topic: String::new(),
         question: "which port?".into(),
     })) {
         Refused::AskCannotSee { session, room } => {
@@ -542,6 +546,8 @@ fn an_ask_into_a_room_the_target_cannot_see_is_refused() {
         id: "q2".into(),
         room: HOST_ROOM.into(),
         to: "s-b".into(),
+        path: String::new(),
+        topic: String::new(),
         question: "which port?".into(),
     }));
     assert_eq!(ask.room, HOST_ROOM);

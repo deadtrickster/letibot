@@ -2354,8 +2354,13 @@ impl Server {
                 id,
                 room,
                 to,
+                path,
+                topic,
                 question,
-            } => self.ask_asked(project, seat, name, id, room, to, question, now),
+            } => match to.trim() {
+                "" => self.ask_by_scope(project, seat, name, id, room, path, topic, question, now),
+                target => self.ask_asked(project, seat, name, id, room, target, question, now),
+            },
             Request::Reply { id, ask, text } | Request::Decline { id, ask, text } => {
                 let answer = matches!(frame, Request::Reply { .. });
                 self.ask_settled(name, seat, id, *ask, text, answer, now)
@@ -2970,6 +2975,7 @@ impl Server {
         Response::Said {
             id: id.to_string(),
             message: self.shown(message, &self.handles()),
+            note: String::new(),
         }
     }
 
@@ -3146,14 +3152,33 @@ impl Server {
         question: &str,
         now: u64,
     ) -> Response {
+        // An ask is a wait on another board, so only a session has one to wait on.
+        if seat != Seat::Session {
+            return Response::Refused {
+                id: Some(id.to_string()),
+                why: crate::Refused::AskNotASession,
+            };
+        }
+        self.ask_to(project, seat, name, id, room, to, question, now)
+    }
+
+    /// [`Server::ask_asked`] once the seat has been judged: the ask itself, whichever door opened it.
+    #[allow(clippy::too_many_arguments)]
+    fn ask_to(
+        &self,
+        project: &str,
+        seat: Seat,
+        name: &str,
+        id: &str,
+        room: &str,
+        to: &str,
+        question: &str,
+        now: u64,
+    ) -> Response {
         let refuse = |why: crate::Refused| Response::Refused {
             id: Some(id.to_string()),
             why,
         };
-        // An ask is a wait on another board, so only a session has one to wait on.
-        if seat != Seat::Session {
-            return refuse(crate::Refused::AskNotASession);
-        }
         let asked = to.trim().trim_start_matches('@');
         let target = match self.resolve_name(project, asked, Reach::Host) {
             Ok(t) => t,
@@ -3278,6 +3303,157 @@ impl Server {
         Response::Asked {
             id: id.to_string(),
             ask: self.ask_view(&ask, name, now),
+        }
+    }
+
+    /// `ask` by SCOPE: the owner the room resolves for a path or a topic, and the rule that
+    /// resolved it. Nothing owning it is not a refusal - the question goes to the project room,
+    /// where whoever knows it answers.
+    #[allow(clippy::too_many_arguments)]
+    fn ask_by_scope(
+        &self,
+        project: &str,
+        seat: Seat,
+        name: &str,
+        id: &str,
+        room: &str,
+        path: &str,
+        topic: &str,
+        question: &str,
+        now: u64,
+    ) -> Response {
+        let refuse = |why: crate::Refused| Response::Refused {
+            id: Some(id.to_string()),
+            why,
+        };
+        // A scope ask is the room's own routing, so a `cc@` seat may make one: the ask is held
+        // here and answered to it, and no board of its own is needed to receive one.
+        if !matches!(seat, Seat::Session | Seat::External) {
+            return refuse(crate::Refused::AskNotASession);
+        }
+        let scope = match crate::scope::Scope::of(path, topic) {
+            Ok(Some(scope)) => scope,
+            Ok(None) => {
+                return refuse(crate::Refused::AskBadScope {
+                    why: "an `ask` names a session (`to`), a `path` or a `topic` - this one named \
+                          nothing, so no question was held"
+                        .to_string(),
+                });
+            }
+            Err(why) => return refuse(crate::Refused::AskBadScope { why }),
+        };
+        let placed = self.place(project, &scope, name, now);
+        self.note_count(match placed.rule() {
+            crate::scope::Rule::Lease => crate::signal::Count::AskByLease,
+            crate::scope::Rule::Edit => crate::signal::Count::AskByEdit,
+            crate::scope::Rule::Owners => crate::signal::Count::AskByOwners,
+            crate::scope::Rule::Room => crate::signal::Count::AskByRoom,
+        });
+        let why = placed.why(&scope);
+        let Some(target) = placed.target().map(str::to_string) else {
+            let room = match room.trim() {
+                "" => Self::default_chat_room(seat, project),
+                r => r.to_string(),
+            };
+            if room == chat::DM_ROOM || !self.may_see(name, seat, project, &room) {
+                return refuse(crate::Refused::UnknownChatRoom { room });
+            }
+            let mut answered = self.say_and_push(
+                id,
+                &room,
+                name,
+                seat,
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+                question,
+                now,
+            );
+            if let Response::Said { note, .. } = &mut answered {
+                *note = format!("{why} - the question is in `{room}` for whoever knows");
+            }
+            return answered;
+        };
+        match self.ask_to(project, seat, name, id, room, &target, question, now) {
+            Response::Asked { id, ask } => {
+                let ask = self
+                    .inner
+                    .chat
+                    .lock()
+                    .expect("the chat lock")
+                    .ask_held(ask.seq, &why)
+                    .unwrap_or(ask);
+                Response::Asked { id, ask }
+            }
+            other => other,
+        }
+    }
+
+    /// Where an ask by scope goes, from the room's own facts: this project's live leases, its
+    /// sessions' edits, the repo's `OWNERS` file - and never the asker itself.
+    fn place(
+        &self,
+        project: &str,
+        scope: &crate::scope::Scope,
+        asker: &str,
+        now: u64,
+    ) -> crate::scope::Placement {
+        let claims: Vec<crate::own::Claim> = {
+            let claims = self.inner.claims.lock().expect("the claims lock");
+            claims
+                .get(project)
+                .map(|c| c.all().cloned().collect())
+                .unwrap_or_default()
+        };
+        let edits = self.edits_in(project);
+        let owners = self.owners_file(project);
+        crate::scope::place(scope, &claims, &edits, &owners, now, |who| {
+            who != asker
+                && who != chat::OPERATOR
+                && self.is_known(who)
+                && self.subagent_parent(who).is_none()
+        })
+    }
+
+    /// The edits this project's sessions reported, newest last: the last-edit rule's facts, which
+    /// the room already keeps to renew a path claim (R163's working-on).
+    fn edits_in(&self, project: &str) -> Vec<(String, String, u64)> {
+        let here: Vec<String> = self
+            .conn_list()
+            .iter()
+            .filter(|c| c.project == project)
+            .map(|c| c.who.session.clone())
+            .collect();
+        let seats = self.inner.seats.lock().expect("the seats lock");
+        let mut edits = Vec::new();
+        for session in here {
+            let Some((facts, _)) = seats.get(&session) else {
+                continue;
+            };
+            for edit in &facts.edits {
+                edits.push((session.clone(), edit.path.clone(), edit.at_ms));
+            }
+        }
+        edits
+    }
+
+    /// The repo's `OWNERS` file, from the project's own folder. Empty when the folder is not known
+    /// or the file is not there: the rule is skipped, never guessed.
+    fn owners_file(&self, project: &str) -> String {
+        let root = {
+            let rooms = self.inner.rooms.lock().expect("the rooms lock");
+            rooms
+                .get(project)
+                .map(|r| r.root().to_string())
+                .unwrap_or_default()
+        };
+        if root.is_empty() {
+            return String::new();
+        }
+        match std::fs::read_to_string(std::path::Path::new(&root).join("OWNERS")) {
+            Ok(text) if text.len() <= crate::scope::OWNERS_MAX => text,
+            _ => String::new(),
         }
     }
 
@@ -4538,14 +4714,14 @@ mod tests {
     /// spells the number rather than the constant, so a wire change that misses a pin is a quiet lie
     /// about what two binaries share.
     #[test]
-    fn the_room_speaks_protocol_ten() {
-        assert_eq!(ROOM_PROTOCOL_VERSION, 10);
+    fn the_room_speaks_protocol_eleven() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 11);
         // And the refusal names which side is older, in both directions.
-        let old = crate::wire::protocol_refusal(9).expect("9 is not 10");
+        let old = crate::wire::protocol_refusal(10).expect("10 is not 11");
         assert!(old.contains("the client is the older"), "{old}");
-        let new = crate::wire::protocol_refusal(11).expect("11 is not 10");
+        let new = crate::wire::protocol_refusal(12).expect("12 is not 11");
         assert!(new.contains("this room is the older"), "{new}");
-        assert_eq!(crate::wire::protocol_refusal(10), None);
+        assert_eq!(crate::wire::protocol_refusal(11), None);
         assert!(
             new.contains("letibot --room --stop && letibot --room"),
             "{new}"

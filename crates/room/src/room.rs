@@ -379,6 +379,10 @@ pub enum Refused {
         ask: u64,
         asker: String,
     },
+    /// An ask by scope with no usable scope: nothing named, or both a `path` and a `topic`.
+    AskBadScope {
+        why: String,
+    },
     /// A `Retire` for a session this connection does not speak for. B's daemon retires B.
     NotTheOwners {
         session: String,
@@ -479,6 +483,7 @@ impl fmt::Display for Refused {
                 "not posted, and this is the room's etiquette rather than an error: a message not \
                  for you needs no reply - end the turn and say nothing"
             ),
+            Refused::AskBadScope { why } => write!(f, "{why}"),
             Refused::EchoPost { seq } => write!(
                 f,
                 "not posted, and this is the room's etiquette rather than an error: this repeats \

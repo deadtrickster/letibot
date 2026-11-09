@@ -11,6 +11,7 @@ pub mod lease;
 pub mod own;
 pub mod restart;
 pub mod room;
+pub mod scope;
 pub mod seat;
 pub mod server;
 pub mod signal;
@@ -38,6 +39,7 @@ pub use room::{
     Holding, Outcome, Question, REPLAY_WINDOW, Refused, Reminder, Room, Ruling, Waiting,
     normalise_tag,
 };
+pub use scope::{OWNERS_MAX, Placement, Rule, Scope};
 pub use seat::{SeatFacts, SeatState, SeatView};
 pub use server::Server;
 pub use signal::{Act, Ledger, SIGNAL_WINDOW_MS, Scorecard, SignalRow};

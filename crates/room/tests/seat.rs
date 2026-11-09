@@ -150,6 +150,8 @@ fn the_roster_derives_each_seats_state_from_its_facts_and_the_room() {
             id: "q1".into(),
             room: String::new(),
             to: "s-b".into(),
+            path: String::new(),
+            topic: String::new(),
             question: "which port?".into(),
         })
         .unwrap();
@@ -211,6 +213,8 @@ fn an_ask_to_a_rate_limited_seat_escalates_at_once_and_clears_when_it_lifts() {
             id: "q1".into(),
             room: String::new(),
             to: "s-b".into(),
+            path: String::new(),
+            topic: String::new(),
             question: "which port?".into(),
         })
         .unwrap()

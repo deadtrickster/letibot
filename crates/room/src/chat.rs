@@ -859,6 +859,11 @@ pub struct AskView {
     /// provider error`, or `was stopped when asked`. Derived, never stored.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cannot: String,
+    /// Why the question landed on this target, when it was not named outright: the scope the room
+    /// resolved and the rule that resolved it (see [`crate::scope::Placement::why`]). Empty for an
+    /// ask addressed to a session by name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub why: String,
     pub state: AskState,
 }
 
@@ -877,16 +882,20 @@ impl AskView {
         }
     }
 
-    /// One line, as a board row or a bell says it: `#4211 in host: arango asks serenedb "which port?"`.
+    /// One line, as a board row or a bell says it: `#4211 in host: arango asks serenedb "which port?"`,
+    /// with the rule that resolved a scope ask after it - so a read says why it is that session.
     pub fn line(&self) -> String {
+        let state = match self.why.is_empty() {
+            true => self.state.line(),
+            false => format!("{}, because {}", self.state.line(), self.why),
+        };
         format!(
-            "#{} in {}: {} asks {} \"{}\" - {}",
+            "#{} in {}: {} asks {} \"{}\" - {state}",
             self.seq,
             self.room,
             self.asker,
             self.target,
-            self.question.trim(),
-            self.state.line()
+            self.question.trim()
         )
     }
 }
@@ -1437,6 +1446,7 @@ impl Chat {
             gone_since_ms: None,
             escalated: false,
             cannot: String::new(),
+            why: String::new(),
             state: AskState::Open,
         };
         self.asks.insert(seq, ask.clone());
@@ -1467,6 +1477,16 @@ impl Chat {
     /// One ask the room holds, by its id.
     pub fn ask(&self, seq: u64) -> Option<AskView> {
         self.asks.get(&seq).cloned()
+    }
+
+    /// Why an ask landed where it did: the scope the room resolved and the rule that matched. The
+    /// ask's own answer carries it, and so does every later `asks` read.
+    pub fn ask_held(&mut self, seq: u64, why: &str) -> Option<AskView> {
+        let ask = self.asks.get_mut(&seq)?;
+        ask.why = why.to_string();
+        let why = ask.clone();
+        self.write(&[Record::Ask { ask: why.clone() }]);
+        Some(why)
     }
 
     /// Every ask the room holds, open or settled, oldest first - the clock's own read.

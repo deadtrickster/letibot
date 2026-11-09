@@ -87,6 +87,8 @@ impl Seated {
             id: format!("ask-{q}"),
             room: String::new(),
             to: to.into(),
+            path: String::new(),
+            topic: String::new(),
             question: q.into(),
         })
     }

@@ -38,6 +38,8 @@ fn a_deleted_session_is_retired_in_the_room_and_its_asks_end_down() {
             id: "q1".into(),
             room: String::new(),
             to: "s-b".into(),
+            path: String::new(),
+            topic: String::new(),
             question: "which port?".into(),
         })
         .expect("an answer")

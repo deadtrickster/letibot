@@ -12,8 +12,9 @@ use crate::room::{
 /// The room's protocol version, and the room's alone - see the module header. The number moves at
 /// RELEASE POINTS: a frame added mid-series rides the next number with whatever else lands first.
 /// 10 is the ask: a version-9 coordinator knows no `Ask`, and would answer one with a refusal a
-/// session would read as *this peer cannot be asked*.
-pub const ROOM_PROTOCOL_VERSION: u16 = 10;
+/// session would read as *this peer cannot be asked*. 11 is the ask by SCOPE: a version-10
+/// coordinator knows no `path` or `topic`, and would read the asker's scope as a session name.
+pub const ROOM_PROTOCOL_VERSION: u16 = 11;
 
 /// The sentence a protocol mismatch is refused with, or `None` when the two agree. One function because
 /// two doors refuse it - a [`crate::Server`]'s and [`crate::Room::answer_traced`]'s - and two sentences
@@ -297,11 +298,19 @@ pub enum Request {
     /// Ask `to` `question` in a room, and hold the ask: its id is the `seq` the question is said
     /// with, and the room answers with [`Response::Asked`]. `room` empty is the room `say` would
     /// default to. The same asker, target and question already open is that ask, not a second one.
+    ///
+    /// An ask may name a SCOPE instead - `path` (repo-relative) or `topic` - and the room resolves
+    /// it to the session that owns it ([`crate::scope`]). A scope and no `to` is the owner's ask.
     Ask {
         id: String,
         #[serde(default)]
         room: String,
+        #[serde(default)]
         to: String,
+        #[serde(default)]
+        path: String,
+        #[serde(default)]
+        topic: String,
         question: String,
     },
     /// The target's answer to ask `ask` - a thread reply in the ask's room, addressed to the asker.
@@ -515,6 +524,11 @@ pub enum Response {
     Said {
         id: String,
         message: crate::chat::Message,
+        /// What the room wants the sender to know about a post it did not refuse: that an owner
+        /// could have answered this question, or why the question went to the room instead. Empty
+        /// for a post the room has nothing to add to.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        note: String,
     },
     History(crate::chat::History),
     /// The ask a frame made or settled, as the room holds it now - the answer to [`Request::Ask`],
@@ -846,22 +860,22 @@ impl Room {
 mod tests {
     use super::*;
 
-    /// The number is the contract: a version-9 coordinator knows no `ask`, and would answer one
-    /// with a refusal a session would read as *this peer cannot be asked*.
+    /// The number is the contract: a version-10 coordinator knows no `path` or `topic` and would
+    /// read a scope ask as an ask of a session called `""`.
     #[test]
-    fn the_protocol_is_ten() {
-        assert_eq!(ROOM_PROTOCOL_VERSION, 10);
-        assert_eq!(crate::server::protocol(), 10);
+    fn the_protocol_is_eleven() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 11);
+        assert_eq!(crate::server::protocol(), 11);
         assert_eq!(
-            protocol_refusal(10),
+            protocol_refusal(11),
             None,
             "the same build speaks to itself"
         );
-        let older = protocol_refusal(9).expect("a version-9 client is told");
-        assert!(older.contains("this room speaks protocol 10"), "{older}");
+        let older = protocol_refusal(10).expect("a version-10 client is told");
+        assert!(older.contains("this room speaks protocol 11"), "{older}");
         assert!(older.contains("the client is the older"), "{older}");
         assert!(older.contains(CLIENT_UPGRADE), "{older}");
-        let newer = protocol_refusal(11).expect("a newer client is told");
+        let newer = protocol_refusal(12).expect("a newer client is told");
         assert!(newer.contains(ROOM_UPGRADE), "{newer}");
         // And an old client's frame is still a frame: the attachments it cannot know are defaulted,
         // so a version-9 head reading a 10 daemon's `say` sees exactly what it always saw.
@@ -898,6 +912,24 @@ mod tests {
         match odd {
             Request::Say { kind, .. } => assert_ne!(kind, SayKind::Announce),
             other => panic!("a say is a say: {other:?}"),
+        }
+    }
+
+    /// An `ask` frame from before the scope names a session and nothing else: the two scope fields
+    /// default to empty, so an older client's ask is the ask it always was.
+    #[test]
+    fn an_ask_frame_from_before_the_scope_still_parses() {
+        let old: Request =
+            serde_json::from_str(r#"{"type":"ask","id":"1","to":"s-b","question":"port?"}"#)
+                .unwrap();
+        match old {
+            Request::Ask {
+                to, path, topic, ..
+            } => {
+                assert_eq!(to, "s-b");
+                assert!(path.is_empty() && topic.is_empty());
+            }
+            other => panic!("an ask is an ask: {other:?}"),
         }
     }
 }

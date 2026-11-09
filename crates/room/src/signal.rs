@@ -84,6 +84,19 @@ pub enum Count {
     HostRoomRefused,
     /// A project-room post that pointed at nothing: the leak this count is here to measure.
     ProjectPostWithoutRef,
+    /// An ask by scope that a live ownership lease resolved.
+    AskByLease,
+    /// An ask by scope that the last session to edit the path answered.
+    AskByEdit,
+    /// An ask by scope that the repo's `OWNERS` file resolved.
+    AskByOwners,
+    /// An ask by scope that nothing owned, so the question went to the project room.
+    AskByRoom,
+    /// A question broadcast in a project room that an owner could have been asked: nudged, not
+    /// refused - the share of chat that should have been one `ask`.
+    BroadcastQuestion,
+    /// A post folded into the roster's status line: `starting X`, `still on it`.
+    StatusFolded,
 }
 
 impl Count {
@@ -96,6 +109,12 @@ impl Count {
             Count::RecordOpen => "record_open",
             Count::HostRoomRefused => "host_room_refused",
             Count::ProjectPostWithoutRef => "project_post_without_ref",
+            Count::AskByLease => "ask_by_lease",
+            Count::AskByEdit => "ask_by_edit",
+            Count::AskByOwners => "ask_by_owners",
+            Count::AskByRoom => "ask_by_room",
+            Count::BroadcastQuestion => "broadcast_question",
+            Count::StatusFolded => "status_folded",
         }
     }
 }
