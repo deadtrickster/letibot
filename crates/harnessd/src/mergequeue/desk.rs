@@ -1364,9 +1364,18 @@ mod tests {
             "{said}"
         );
 
-        // And by its path, which is the same repository.
+        // And by its path, which is the same repository. The one line that moves between the two
+        // calls is the clock `target health` prints, so it is compared without its age.
         let by_path = desk.status(false, Some(&other)).unwrap();
-        assert_eq!(by_path, said);
+        let steady = |said: &str| -> Vec<String> {
+            said.lines()
+                .map(|l| match l.strip_prefix("target health") {
+                    Some(rest) => format!("target health{}", rest.split(" (").next().unwrap_or("")),
+                    None => l.to_string(),
+                })
+                .collect()
+        };
+        assert_eq!(steady(&by_path), steady(&said));
     }
 
     /// A name that matches two repositories is refused in words that name both - picking one is how a
