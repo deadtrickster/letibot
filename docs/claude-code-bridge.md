@@ -137,59 +137,66 @@ answers with `leticode_answer`. The brief's closing report is asked for in a fix
 parsed into fields by `leticode_status`. `/delegate` packages the workflow as a skill, and an
 `escalate` tool would later let a session post a design question it should not decide alone.
 
-### Permission relay: designed, and the one thing this tree cannot see
+### Permission relay: Claude Code's own prompts, to the operator through the room
 
-The channel has a second half. A server that declares
-`capabilities.experimental["claude/channel/permission"]` may relay a permission decision to Claude
-Code and/or be sent one. The bridge declares neither and must not, because a capability is a promise
-made once, in `initialize` (`crates/bridge/src/mcp.rs:128`), and every later turn is a client acting
-on it.
+The channel's second half, built and off by default. It relays the permission prompts of the
+Claude Code session the bridge serves - the tool approvals the person would answer in the terminal.
+It is not about leticode packages' asks: those already reach Claude Code as channel events (see
+*Claude Code as the approver*, above), and `leticode_answer` still settles them.
 
-**What the tree records of that half is the name, and nothing else**: TODO.md R117's bullet,
-`claude-plugin/README.md`'s *what it does not do*, and this file. There is no request shape, no answer
-shape, no fixture - the doc page was read for the manifest, the monitors and the flag
-(`claude-plugin/` was built to it), not for this. So the wire is the open question, and what follows
-is what can be settled without it.
+**What Claude Code documents** (`code.claude.com/docs/en/channels-reference.md`, *Relay permission
+prompts*, read 2026-11-09):
 
-**The three seams, once the shape is written down somewhere.**
+- **Opting in** is `capabilities.experimental["claude/channel/permission"] = {}`, declared beside
+  `claude/channel: {}`; omit the key, or set it to `false`, to opt out.
+- **Claude Code asks, as a NOTIFICATION** (no answer is expected): method
+  `notifications/claude/channel/permission_request`, `params` with four string fields -
+  `request_id` (five lowercase letters, `a` to `z` without `l`, included verbatim in the prompt
+  shown to a person), `tool_name` (e.g. `Bash`), `description` (a summary, untrusted) and
+  `input_preview` (the arguments as JSON-shaped text, untrusted).
+- **The bridge answers, also as a NOTIFICATION**: `notifications/claude/channel/permission` with
+  `{ request_id, behavior: "allow" | "deny" }`. Only ids Claude Code issued are accepted, and an
+  unmatched or repeated id is dropped silently. A verdict covers that one call.
+- **The terminal dialog stays open and the first answer wins.** The relay covers tool approvals
+  (`Bash`/`Write`/`Edit`), not trust or MCP consent dialogs.
+- **The reply grammar is the docs' own**:
+  `/^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i` - `yes <id>` or `no <id>`, and nothing else in the line.
 
-- **The capability**, declared in the same arm that serves the relay's method rather than before it -
-  the shape `queue.rs` and `seat.rs` already follow, where a pusher exists because a door answers.
-- **Outbound, the ask already carries everything a relay needs.** `Ask::to_json`
-  (`crates/bridge/src/head.rs:169`) is the ask id, `tool`, `target`, `summary`, the option ladder
-  (`option` id, `label`, `kind`) and `deadline`; the push's `Attention::Ask` arm
-  (`crates/bridge/src/push.rs:419`) is already where one is keyed and said once, so a relay rides
-  that pass instead of a second watcher.
-- **Inbound, ONE door: `Head::answer` (`crates/bridge/src/head.rs:1852`)**, the one `leticode_answer`
-  calls. It already refuses an option the ask never offered (naming the ones it did), an ask that is
-  gone (naming the open ones), and any answer at all from a watching head; a `question` is refused
-  there with the reason it travels as `AnswerQuestion`. A relay that wrote an `Answer` of its own
-  would be a second permission system with a second corpus.
+**The docs' security note decides one seam.** "Only declare the capability if your channel
+authenticates the sender, because anyone who can reply through your channel can approve or deny
+tool use in your session." The room authenticates: a connection's seat is fixed at its hello, and
+only the operator's own top-level connection may say `operator`. So a verdict is taken only from a
+message whose `kind` is the coordinator's `operator` and whose author is `operator` - never judged
+by the message's text. A session's `yes abcde`, or the bridge's own, is a model writing words.
 
-**Two rules the relay owes whatever the wire turns out to be.** An option this ask did not offer is
-never relayed upward as one that can be picked, and nothing is answered without a person: no default,
-no answer on a timeout - leticode's own `on_timeout` settles the card as nobody's, and a relay that
-guessed would be answering for somebody.
+**How it is built** (`crates/bridge/src/relay.rs`, `crates/bridge/src/mcp.rs`):
 
-**The open question, in three parts.** (1) *Direction and naming*: whether Claude Code sends the
-server a request it answers (the ask is the jsonrpc `id`) or the server notifies and the client
-answers (the ask is its own id in params) - the two spell the same decision differently, and the
-answer's correlation is the whole of a relay. (2) *The vocabulary*: Claude Code's decision carries
-allow/deny with updated input and updated permissions, while a leticode ask's answer is one of the
-five ladder ids (`allow_once`, `allow_session`, `allow_always`, `reject_once`, `reject_always`), so
-which of the two is the relay's own and how the other is derived is the protocol's to say, not ours to
-choose. (3) *A card settled twice*: what the client is told when the same ask is answered at a
-leticode head - the daemon's `Answer` already loses the race to whoever answers first, and a relay
-must say that rather than leave a card standing in Claude Code's UI.
+- **Off by default**, turned on by `[bridge] permission_relay = true` in the user's
+  `~/.config/letibot/leticode.toml` (`crates/bridge/src/settings.rs`). Off, the capability is not
+  declared and nothing else changes: no observer on the room, no verdict, no DM. The daemon's own
+  reader accepts the `[bridge]` table and interprets none of it, as it does `[embeddings]`.
+- **A request** puts its id in an open table with the instant it was asked, and DMs the operator
+  once: the tool name, the description quoted and marked untrusted, the argument preview cut
+  short, the id, and the line `reply "yes <id>" or "no <id>"`. Both untrusted halves are flattened
+  onto one line each, so nothing a model wrote can forge a line of that message. The DM goes out on
+  a thread of its own: a request is a notification, and the client's next line must not wait on the
+  room's round trip.
+- **A verdict** is sent when a message matches the grammar, its author is the authenticated
+  operator, and the id is open; then the id closes, so a second answer for it sends nothing. A
+  reply from anyone else, an unknown or a closed id, and a malformed line send nothing to Claude
+  Code. The operator's malformed or unknown-id reply gets one line back in the room, because they
+  believe they answered something; a line that never meant to be a reply gets no answer at all.
+- **Expiry.** An id is forgotten 30 minutes after it was asked, and no verdict is sent: Claude
+  Code's dialog is still in front of the person, and its own answer decides the call.
+- **Nothing is ever answered from a timeout or a default.** The only thing that sends a verdict is
+  a person saying `yes` or `no`.
 
-Nothing here can be recovered on this box: `claude` is not installed and there is no network, so both
-the doc page and the client are out of reach. **What unblocks it** is a record of the permission
-section of `code.claude.com/docs/en/channels-reference.md` - a quote in `docs/`, or better a captured
-pair of frames in a fixture - from a machine that has one. With that, the build is the three seams
-above, and the tests are the ones `push_events.rs` and `room_tools.rs` already show the way to: a fake
-daemon opening a permission card, a fake client reading the notification and answering it, and the
-daemon's own record showing the option that landed. Until then the door stays what it is: the person
-answers in the session's own terminal, or Claude reads `leticode_asks` and calls `leticode_answer`.
+Tested against a fake coordinator and a fake MCP client (`crates/bridge/tests/permission_relay.rs`):
+the capability is absent when the key is off and present when it is on; one request produces
+exactly one DM to the operator carrying the id; the operator's `yes <id>` sends allow and `no <id>`
+denies; a session's or the bridge's `yes <id>` sends nothing; an unknown id sends nothing; a second
+verdict for the same id sends nothing. What no test on this box can prove is the other end: `claude`
+is not installed here, so no real client has loaded the capability.
 
 ## The queue, from the orchestrator's side (B5)
 

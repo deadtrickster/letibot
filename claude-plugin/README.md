@@ -52,10 +52,31 @@ A bare `claude mcp add` registration of the same server is bypassed with
 `--dangerously-load-development-channels server:leticode` — the server name, for the case where
 the plugin is not what registered it.
 
+## Permission relay, off by default
+
+The bridge can relay this session's own permission prompts — the tool approvals you would answer at
+the Claude Code terminal — to the operator as one room DM, and take `yes <id>` / `no <id>` back
+(`docs/claude-code-bridge.md` § *Permission relay*). It is off until you ask for it, because
+declaring the capability is a promise that a verdict will be answered:
+
+```toml
+# ~/.config/letibot/leticode.toml
+[bridge]
+permission_relay = true
+```
+
+Two things then have to hold for it to work at all: **the session must be started with a channel
+flag** — `claude --dangerously-load-development-channels plugin:leticode@leticode` above, or
+`--dangerously-load-development-channels server:leticode` where a bare `claude mcp add` registered
+the server — and the room coordinator must be up. Without the flag Claude Code never sends a
+prompt, and the terminal dialog is the only door, as it was. That dialog stays open either way:
+whichever answer comes first wins, and an id older than 30 minutes is forgotten rather than
+answered.
+
 ## What it does not do
 
-- **Permission relay.** `experimental["claude/channel/permission"]` is not declared: the bridge
-  does not relay Claude Code's tool approvals yet (TODO.md R117).
+- **Trust and MCP consent dialogs.** The relay covers tool approvals (`Bash`, `Write`, `Edit`);
+  Claude Code does not relay the others.
 - **Non-interactive sessions.** Plugin monitors do not start with `-p`, and the development flag
   is ignored there, so a headless run gets the tools and neither push.
 - **The queue.** `leticode_queue`, `leticode_submit` and `wait-queue` (B5) are not built; land a
