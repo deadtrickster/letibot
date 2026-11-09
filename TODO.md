@@ -149,11 +149,14 @@ Echoes: research §5 P1-P3 (Slack presence vs status, Dourish & Bellotti "derive
 
 ## R165 - Rooms for orchestration (3/6): a question goes to the owner, not the room
 
-**Status:** open, filed 2026-11-08. left: all of it.
+**Status:** built, items 1-5 of the brief. left: R164's read of the counters over a real week of traffic, and no live run against a coordinator older than protocol 11 (the skew is the pinned number and a test).
 
 `ask` takes a scope (path, topic) instead of a session and resolves it: a live ownership lease (R163), else the last session to edit the path in this project, else an OWNERS file if one exists, else the project room. The resolution and its reason are shown to the asker; a broadcast `say` asking the same thing is nudged toward the ask. Agents do not post status ("starting X", "still on it"): the roster shows it, and such posts are folded into the status field.
 Echoes: research §5 P4-P5 and MAST's largest modes (step repetition, failing to ask for clarification); oracle "a miss should make the next attempt unnecessary".
 **Done when**: a scope ask lands on its owner with the reason shown; measured by asks answered by the first target, broadcast-question rate, status-line share of chat.
+
+Built. `crates/room/src/scope.rs` is the resolution, pure: `Scope { Path, Topic }`, the four `Rule`s and `place()`, which falls through a rule naming the asker, a subagent, the operator or an unknown name. The room reads what it already had - R163's live claims, its sessions' `SeatFacts::edits`, and the `OWNERS` file of the project's folder (the root a daemon's `Members` frame carries) - so no store was invented. `Request::Ask` takes `path` and `topic` beside `to` (protocol 11), the resolved rule rides `AskView::why` so the answer and every later `asks` read carry it, and a scope nothing owns is posted in the project room with the reason in `Response::Said`'s new `note` - not refused. The doors are the `room` tool's new `ask` verb (its byte budgets met by trimming, not raising), the daemon's `request_of` and `answer_sentence`, and the bridge's `room_ask` (`with_lines` shows the reason). A broadcast project-room question an owner resolves is nudged and counted, never refused (`ask_nudge`); a status post is refused by `chat::is_status_post` with `room status` named (`Refused::StatusPost`, operator exempt, a post with a ref is about that ref). Six counters (`ask_by_lease`, `ask_by_edit`, `ask_by_owners`, `ask_by_room`, `broadcast_question`, `status_folded`) ride the same `signals` frame.
+Tests: `crates/room/tests/scope_ask.rs` (12: each rule, the asker-is-never-its-own-target fall-through, the OWNERS line, the room fallback, a named ask unchanged, the nudge and what is not one, the status fold and its exemptions); `scope.rs` unit tests (specificity, expiry, the fall-through predicate, the `OWNERS` grammar); `crates/tools/src/builtins/room.rs` (`ask` names a scope or a session, and a call naming nobody reaches no room); `crates/harnessd/src/room/link/tests.rs` (the frame and the sentence); `crates/bridge/tests/room_tools.rs` (the frame's `path`/`topic`/`to` and the owner in `lines`).
 
 ---
 

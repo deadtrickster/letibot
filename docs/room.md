@@ -32,8 +32,9 @@ per line would be a turn nobody wanted. A session is never woken by its own mess
 
 #### The room's etiquette
 
-`say` runs five cheap checks at post time, with no model involved. Every refusal says what it is - the
-room's etiquette, not an error - and what to do instead. The operator is exempt from the first four.
+`say` runs cheap checks at post time, with no model involved. Every refusal says what it is - the
+room's etiquette, not an error - and what to do instead. The operator is exempt from every one but the
+count of a project-room post that points at nothing.
 
 - **An ack is not a message** (`null_post`). A post that is nothing but "noted", "thanks", "+1",
   "got it", "on it", "will do", "will look", "not for me" and their kin is refused: silence says it
@@ -56,6 +57,15 @@ room's etiquette, not an error - and what to do instead. The operator is exempt 
   `host` is what the room was built for, so it is not refused either.
 - **A project room takes anything**, and counts a post that points at nothing
   (`project_post_without_ref`): the leak a digest would close, measured rather than refused.
+- **A status line is the roster's** (`status_post`). "starting X", "still on it", "working on X",
+  "done with X" with no ref say what the sender's own `working` and `status` already show, so they are
+  refused and told to set the line with `room {"verb": "status"}`. A post carrying a ref is about that
+  row, and one past 8 words says something the roster cannot.
+
+One check is not a refusal: a project-room `say` that ends in `?`, names nobody, and names a path or
+topic some rule resolves is still posted, and its answer carries one line - *`s-a` owns this (lease on
+`crates/room/**`) - ask it: `room ask path=crates/room/src/server.rs`*. Counted
+(`broadcast_question`), and described under **Asking another session a question**.
 
 The operator is in every room. A head asks its daemon, which speaks to the coordinator as `operator`.
 
@@ -98,23 +108,48 @@ store, and that is the daemon's.
 ### Asking another session a question
 
 A row can wait on another session's ANSWER, and the room holds the wait: it is the one process that
-sees both connections and outlives either daemon. The ask is made by `todo_write`, which talks to the
-room before it writes the edge, so every refusal reaches the model in the same call:
+sees both connections and outlives either daemon. An ask names a SCOPE - a `path` in the repo, or a
+`topic` - and the room finds the session that owns it:
+
+```text
+room {"verb": "ask", "path": "crates/room/src/server.rs", "text": "which port?"}
+room {"verb": "ask", "topic": "wire", "text": "is the frame's version bumped?"}
+```
+
+The rules are tried in this order, and the one that matched is what the asker is told
+(`AskView::why`, `crates/room/src/scope.rs`):
+
+| rule | resolves to | the asker reads |
+|---|---|---|
+| `lease` | the holder of a live ownership lease covering it (most specific first) | `` `s-a` holds a live lease on `crates/room/**` `` |
+| `last edit` | the session that edited the path last in this project (its daemon's `edits`) | `` `s-b` edited `crates/room/src/chat.rs` last `` |
+| `OWNERS` | a `<glob> <handle>` line of the repo's `OWNERS` file, first match wins | `` the repo's `OWNERS` says `crates/room/** s-a`, so `s-a` `` |
+| `room` | nothing owns it: the question is POSTED in the project room | `` nothing owns `crates/x/**` `` |
+
+A rule that names the asker itself, the operator, a subagent or a name nobody answers to is passed
+over and the next rule is tried, so the order is a fall-through rather than a first hit. A stopped
+session is still askable: its answer waits, and the operator is the one told.
+The asker is told the target and the rule in the same call; a later `asks` read says it again. Nothing
+owns the scope is not a refusal - the question goes to the project room for whoever knows, and the
+answer's note says why. `to` still names a session outright, which is what `todo_write` does, and such
+an ask carries no reason because there is nothing to resolve. `room` defaults to the asker's project
+room, and a scope is resolved in THAT room's project, so a `cc@` seat asking about a project's file
+reaches that project's owners.
+
+The question is posted as a message addressed to the target, with a `ref`
+`{"kind": "ask", "id": <seq>}`, and that `seq` is the ask's id - the thread its answer goes in and the
+number `read {"thread": N}` shows. A top-level session is a SERVICE: it is expected to be running and
+one that stopped is a fault the operator repairs, so liveness never settles an ask - it only escalates.
+A subagent, the operator's seat, an unknown or ambiguous handle and another host's session are refused
+by name, and so is a target that cannot see the room (the refusal points at `host` or `invite`). The
+same asker, target and question already open is THAT ask and not a second one, so several rows carry
+one id and one settle releases them all. `todo_write` makes the same ask for a row, before it writes
+the edge, so every refusal reaches the model in that call:
 
 ```text
 todo_write {"wait_on": [{"content": "wire the port",
              "ask": {"session": "serenedb", "room": "host", "question": "which port?"}}]}
 ```
-
-`room` defaults the way `say` does, to the asker's project room. The question is posted as a message
-addressed to the target, with a `ref` `{"kind": "ask", "id": <seq>}`, and that `seq` is the ask's id —
-the thread its answer goes in and the number `read {"thread": N}` shows. A top-level session is a
-SERVICE: it is expected to be running and one that stopped is a fault the operator repairs, so
-liveness never settles an ask — it only escalates. A subagent, the operator, this very session, an
-unknown or ambiguous handle and another host's session are refused by name, and so is a target that
-cannot see the room (the refusal points at `host` or `invite`). The same asker, target and question
-already open is THAT ask and not a second one, so several rows carry one id and one settle releases
-them all.
 
 The asked session is woken once by the question and then nagged by its OWN BOARD: the room pass puts a
 row on it naming the asker, the ask, the question and both verbs. It answers with `room`:
@@ -126,7 +161,7 @@ room {"verb": "asks"}
 ```
 
 Only `answer` and `decline` settle an ask. A plain thread reply reaches the asker as ordinary chat and
-unblocks nothing, and marking the row done does nothing — the next pass puts it back while the ask is
+unblocks nothing, and marking the row done does nothing - the next pass puts it back while the ask is
 open. The answer is a thread reply in the ask's room addressed to the asker, and it becomes the words
 the asker's row keeps: `` `serenedb` answered: 5433 ``, or `` `serenedb` declined: … ``.
 
@@ -134,9 +169,9 @@ The asker's pass reads `asks` every five seconds and applies what settled, so a 
 while its daemon was away is applied on its first pass back. That same pass takes a question back when
 its row is done, cancelled, detached or re-worded, and raises the operator's card:
 
-- The target has held no connection for `ASK_GRACE_MS` — five minutes, shortened by
+- The target has held no connection for `ASK_GRACE_MS` - five minutes, shortened by
   `LETIBOT_ROOM_ASK_GRACE_MS` for a test: the ask stays OPEN and the operator is asked to restart it,
-  *"`serenedb` stopped and `arango` waits on its answer to \"which port?\" — please restart it"*. A
+  *"`serenedb` stopped and `arango` waits on its answer to \"which port?\" - please restart it"*. A
   restart inside the grace is invisible, and the card is withdrawn the moment the target reconnects.
 - The target cannot act on it (its presence, **Presence**): rate-limited, a provider error, or no
   connection at the moment it was asked. The operator's card goes up at once, naming the reason
@@ -147,9 +182,14 @@ its row is done, cancelled, detached or re-worded, and raises the operator's car
 
 An ask ends in exactly these ways: the target answers or declines; the asker withdraws it because its
 row stopped waiting; the operator withdraws it; or the target's session is DELETED, which is the one
-`DOWN` — a daemon exit, a `--stop`, a crash or a reboot is a restart the operator owes and settles
+`DOWN` - a daemon exit, a `--stop`, a crash or a reboot is a restart the operator owes and settles
 nothing. A deleted asker withdraws its own asks the same way. The room being unreachable settles
 nothing either: room down is not the target down.
+
+A question said to the whole of a project room is not an ask. `say` does not refuse it, but when it
+names a path or topic a rule resolves, the answer carries the one line that makes the next question an
+ask, and the room counts it (`broadcast_question`): the share of chat that should have been `ask` is
+the measure of whether this works.
 
 Asks live in the chat store (records `ask` and `ask_state`), and a settled one is kept 24 hours; an
 open one is never dropped. Grace clocks restart with the coordinator, so a room restarted while an ask
@@ -512,7 +552,7 @@ The whole text of a message filed as a record is kept beside the ring, up to **1
 | `seat {facts}` | `seated {owns}` | a session's daemon, every tick: the facts its presence is derived from. Kept under the connection's own name, never stored |
 | `inbox {attention?, limit?}` | `inbox {rows, skipped, cursor, head}` | what was missed since the cursor. Moves nothing |
 | `ack {seq}` | `acked {cursor}` | moves the cursor forward only, never past the head |
-| `ask {id, room, to, question}` | `asked {id, ask}` | posts the question as a `say` addressed to `to` with a ref `{"kind": "ask", "id": <seq>}` and holds the ask. `room` empty is the project room. A session connection only; the same asker, target and question already open answers the SAME ask |
+| `ask {id, room, to?, path?, topic?, question}` | `asked {id, ask}`, or `said` when nothing owns the scope | posts the question as a `say` addressed to the owner with a ref `{"kind": "ask", "id": <seq>}` and holds the ask. A `path` or a `topic` is resolved to its owner (see **Asking another session a question**); `to` names one outright. `room` empty is the project room, and a scope is resolved in that room's project. A session or a `cc@` seat; the same asker, target and question already open answers the SAME ask |
 | `reply {id, ask, text}` | `asked {id, ask}` | the target's answer: a thread reply in the ask's room addressed to the asker, and the ask becomes `answered`. Only the target may send it, and only while the ask is open |
 | `decline {id, ask, text}` | `asked {id, ask}` | the target will not answer. Posted like a `reply`; the ask becomes `declined` |
 | `withdraw {id, ask}` | `asked {id, ask}` | the asker, or the operator's seat, takes the ask back. A `system` note in the thread says so |
@@ -520,8 +560,9 @@ The whole text of a message filed as a record is kept beside the ring, up to **1
 | `asks` | `asks {by_me, of_me}` | this session's asks, both halves, settled ones included, oldest first. A read |
 | `signals` | `signals {card}` | the scorecard: a row per sender and per kind, and `counts` (see **Counters**). `room {"verb": "signals"}` is the model's door to it |
 
-An ask is `{"seq", "room", "asker", "target", "question", "asked_ms", "gone_since_ms", "escalated", "state"}`,
-where `state` is `open`, `answered {text, ms}`, `declined {text, ms}`, `down {ms}` or
+An ask is `{"seq", "room", "asker", "target", "question", "asked_ms", "gone_since_ms", "escalated", "why", "state"}`,
+where `why` is the rule that resolved a scope ask (empty for one addressed to a session) and `state` is
+`open`, `answered {text, ms}`, `declined {text, ms}`, `down {ms}` or
 `withdrawn {by, ms}`. `gone_since_ms` and `escalated` describe the OTHER end of the ask — the target's
 in `by_me`, the asker's in `of_me` — and are derived from the connection the room can see, never kept:
 a reconnect clears them. An unknown ask is `unknown_ask`, a reply from anybody but the target is
@@ -533,7 +574,7 @@ see is `unknown_chat_room`.
 
 ### Counters
 
-Six numbers say whether the etiquette above works, and one query reads them all:
+Twelve numbers say whether the etiquette above works, and one query reads them all:
 `room {"verb": "signals"}` - the `signals` frame, whose card `/signals` in a head also draws. Its
 `counts` map holds, per word:
 
@@ -545,10 +586,18 @@ Six numbers say whether the etiquette above works, and one query reads them all:
 | `record_open` | a `read` that opened a record: did the overflow get read again? |
 | `host_room_refused` | a `say` in `host` that named nobody and was not an announcement |
 | `project_post_without_ref` | a project-room post that pointed at nothing. Counted, never refused |
+| `ask_by_lease` | an ask by scope that a live ownership lease resolved |
+| `ask_by_edit` | one that the last session to edit the path answered |
+| `ask_by_owners` | one that the repo's `OWNERS` file resolved |
+| `ask_by_room` | one nothing owned, whose question therefore went to the project room |
+| `broadcast_question` | a project-room question an owner could have been asked: nudged, not refused |
+| `status_folded` | a post refused as a status line the roster already shows (`status_post`) |
 
 Each is a `count {what}` line in `room-<host key>.chat.signals`, beside the scorecard's own records, so
 a restart continues the count. They are what R164 reads: an ack rate, a duplicate rate, a false-refusal
-count, and whether a filed record is ever opened.
+count, whether a filed record is ever opened - and, for R165, the share of asks an owner answered by
+the first rule versus the ones that fell to the room, the rate of questions broadcast instead of asked,
+and the share of chat that is status.
 
 ### Blobs
 
@@ -658,16 +707,17 @@ chatted. `message` is the room `Message` as JSON. A head merges it as though a `
 
 ### Versions
 
-`ROOM_PROTOCOL_VERSION` is 10, the room's own number: 10 added the ask — `ask`, `reply`, `decline`,
-`withdraw`, `retire` and `asks` — so a question put to a version-9 coordinator is refused by name
-instead of being read as a session that cannot be asked. 9 had added the blob store and `attachments`
-on a `say`, for the same reason: a skew is refused rather than obeyed halfway.
+`ROOM_PROTOCOL_VERSION` is 11, the room's own number: 11 added the ask by SCOPE - `ask`'s `path`
+and `topic`, resolved in the room, and `why` on the ask that says which rule resolved it - so a scope
+put to a version-10 coordinator is refused by name instead of being read as an ask of a session called
+`""`. 10 added the ask itself - `ask`, `reply`, `decline`, `withdraw`, `retire` and `asks` - for the
+same reason: a skew is refused rather than obeyed halfway. 9 had added the blob store and `attachments`
+on a `say`.
 `PROTOCOL_VERSION` (head to daemon) is 65: 65 added `ServerFrame::RoomChatPushed`.
 
-Neither moved for `evidence`: a say's evidence is a `refs` entry of a new kind, so the frame and the
-message are the shapes they were, an old store replays unchanged, and an older room refuses the
-unknown kind (`bad_ref`) instead of dropping it. The two header flags are a reading of the message,
-not a field: every client renders its own.
+Neither moved for `evidence` - a say's evidence is a `refs` entry of a new kind - nor for the `note` a
+`said` carries when the room has advice to give: it is `#[serde(default)]` and empty for every post the
+room has nothing to add to, so an older client reads the message it always read.
 
 ### What is kept from flowy, and what is not
 
@@ -726,6 +776,7 @@ Tools:
 | `rooms` | - | rooms with `members`, `last_seq`, `unread` |
 | `room_read` | `{room, since, last, thread}` | `rows` and `lines`. Moves no cursor |
 | `room_say` | `{room, text, to, thread, evidence, refs, kind}` | the message. `room` defaults to `host`, which takes a mention or `kind: announce`; `evidence` is what backs a state claim |
+| `room_ask` | `{question, path, topic, to, room}` | the ask, with `lines` naming the owner and the rule that matched. Nothing named is refused here; a scope nothing owns is carried to the room |
 | `room_dm` | `{to, text, thread}` | the message, in room `dm` |
 | `room_roster` | `{room}` | who is in the room |
 | `room_inbox` | `{attention, limit, ack}` | what was missed since the cursor, `to_me` by default. `ack: true` moves the cursor past the rows returned |
