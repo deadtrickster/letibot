@@ -2809,7 +2809,10 @@ impl Server {
                 self.note_count(crate::signal::Count::ProjectPostWithoutRef);
             }
             self.invite_the_named(&room, project, &text);
-            self.say_and_push(
+            // A question the room could have put to an owner is nudged, never refused: the line
+            // lands either way, and the nudge is what makes the next question an `ask`.
+            let nudge = self.ask_nudge(project, name, seat, &room, &text, now);
+            let mut said = self.say_and_push(
                 id,
                 &room,
                 name,
@@ -2820,8 +2823,69 @@ impl Server {
                 attachments,
                 &text,
                 now,
-            )
+            );
+            if let Some(nudge) = nudge
+                && let Response::Said { note, .. } = &mut said
+            {
+                *note = nudge;
+            }
+            said
         }
+    }
+
+    /// The one-line nudge a broadcast question earns when the room can name an owner for what it
+    /// names: *`s-a` owns this, ask it*. `None` for a line that is not a question of the project
+    /// room, or for a question nothing owns - that one is `ask_by_room`'s measure, not this one.
+    fn ask_nudge(
+        &self,
+        project: &str,
+        name: &str,
+        seat: Seat,
+        room: &str,
+        text: &str,
+        now: u64,
+    ) -> Option<String> {
+        if seat == Seat::Operator
+            || chat::project_of_room(room).is_none()
+            || !text.trim_end().ends_with('?')
+            || !chat::mentions(text).is_empty()
+        {
+            return None;
+        }
+        // A path is a word with a slash in it; a topic is one of the room's own words.
+        let mut scopes: Vec<crate::scope::Scope> = chat::path_words(text)
+            .into_iter()
+            .map(crate::scope::Scope::Path)
+            .collect();
+        let words = chat::echo_words(text);
+        for claim in self.claims_in(project) {
+            if !crate::own::is_path(&claim.scope) && words.contains(&claim.scope) {
+                scopes.push(crate::scope::Scope::Topic(claim.scope.clone()));
+            }
+        }
+        for scope in scopes {
+            let placed = self.place(project, &scope, name, now);
+            let Some(target) = placed.target().map(str::to_string) else {
+                continue;
+            };
+            self.note_count(crate::signal::Count::BroadcastQuestion);
+            return Some(format!(
+                "`{target}` owns this ({}) — ask it: `room ask {}={}`",
+                placed.short(),
+                scope.word(),
+                scope.text()
+            ));
+        }
+        None
+    }
+
+    /// This project's ownership claims, live or ended: the caller reads which of them are live.
+    fn claims_in(&self, project: &str) -> Vec<crate::own::Claim> {
+        let claims = self.inner.claims.lock().expect("the claims lock");
+        claims
+            .get(project)
+            .map(|c| c.all().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// A dm answering a public message, with the thread it answers in front: `re #12 in host: …`.
@@ -3399,13 +3463,7 @@ impl Server {
         asker: &str,
         now: u64,
     ) -> crate::scope::Placement {
-        let claims: Vec<crate::own::Claim> = {
-            let claims = self.inner.claims.lock().expect("the claims lock");
-            claims
-                .get(project)
-                .map(|c| c.all().cloned().collect())
-                .unwrap_or_default()
-        };
+        let claims = self.claims_in(project);
         let edits = self.edits_in(project);
         let owners = self.owners_file(project);
         crate::scope::place(scope, &claims, &edits, &owners, now, |who| {

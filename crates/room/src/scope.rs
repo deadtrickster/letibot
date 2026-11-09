@@ -103,6 +103,29 @@ impl Placement {
         }
     }
 
+    /// The rule and what matched it, in a phrase: `lease on `crates/room/**``.
+    pub fn short(&self) -> String {
+        match self {
+            Placement::Owner {
+                rule: Rule::Lease,
+                detail,
+                ..
+            } => format!("lease on `{detail}`"),
+            Placement::Owner {
+                rule: Rule::Edit,
+                detail,
+                ..
+            } => format!("last edit to `{detail}`"),
+            Placement::Owner {
+                rule: Rule::Owners,
+                detail,
+                ..
+            } => format!("`OWNERS` line `{detail}`"),
+            Placement::Owner { .. } => String::new(),
+            Placement::Room => "no owner".to_string(),
+        }
+    }
+
     /// Why this is where the question went, as the asker reads it.
     pub fn why(&self, scope: &Scope) -> String {
         match self {

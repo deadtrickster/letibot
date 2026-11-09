@@ -583,6 +583,24 @@ pub fn has_ref(text: &str) -> bool {
     })
 }
 
+/// The words of a message that name a path - what a broadcast question could have asked an owner
+/// about. A URL, a seq and a sha name something else, and a word of one character names nothing.
+pub fn path_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|word| {
+            word.trim_matches(|c: char| {
+                matches!(
+                    c,
+                    ',' | ';' | ':' | ')' | '(' | ']' | '[' | '"' | '\'' | '.' | '!' | '?' | '`'
+                )
+            })
+        })
+        .filter(|w| w.contains('/') && w.len() > 1 && !w.contains("://"))
+        .map(|w| w.trim_start_matches("./").trim_end_matches('/').to_string())
+        .filter(|w| !w.is_empty() && !w.starts_with('#'))
+        .collect()
+}
+
 /// Is this post only an ack, with nothing in it the room could follow? `is_null_post` with a ref
 /// taken out: "on it #1034" is about a row and the room keeps it.
 pub fn is_bare_ack(text: &str) -> bool {

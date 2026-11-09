@@ -11,8 +11,8 @@ use letibot_room::client::Client;
 use letibot_room::seat::{Edit, SeatFacts};
 use letibot_room::server::Server;
 use letibot_room::{
-    AskView, Event, Group, Member, OPERATOR, Refused, Request, Response, Room, Seat, Speaker,
-    project_room, room_name,
+    AskView, Event, Group, Member, OPERATOR, Refused, Request, Response, Room, SayKind, Seat,
+    Speaker, project_room, room_name,
 };
 
 const A: &str = "aaaaaaaaaaaa";
@@ -120,6 +120,25 @@ impl Seated {
         self.heard
             .recv_timeout(Duration::from_secs(5))
             .expect("a pushed message")
+    }
+
+    /// A room line in the project room, addressed to nobody.
+    fn say(&self, id: &str, text: &str) -> Response {
+        self.say_in(String::new(), id, text)
+    }
+
+    /// The same into a room the caller names: the operator's seat is wide and has no project.
+    fn say_in(&self, room: String, id: &str, text: &str) -> Response {
+        self.call(Request::Say {
+            id: id.into(),
+            room,
+            text: text.into(),
+            to: None,
+            thread: None,
+            refs: Vec::new(),
+            attachments: Vec::new(),
+            kind: SayKind::Post,
+        })
     }
 }
 
@@ -364,4 +383,69 @@ fn the_operators_seat_cannot_hold_an_ask() {
     let op = seat(&server, OPERATOR, "", Seat::Operator);
     let why = refused(op.ask_scope("q1", "crates/room/**", "", "anyone?"));
     assert!(matches!(why, Refused::AskNotASession), "{why:?}");
+}
+
+/// A broadcast question in the project room that names something an owner has is nudged toward the
+/// ask: the line still lands, the nudge is advice, and the room counts it.
+#[test]
+fn a_broadcast_question_is_nudged_toward_the_owner() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let a = seat(&server, "s-a", A, Seat::Session);
+    let b = seat(&server, "s-b", A, Seat::Session);
+    a.own("1", "crates/room/**");
+
+    let answered = b.say("s1", "does `crates/room/src/server.rs` route the ask?");
+    let Response::Said { message, note, .. } = answered else {
+        panic!("a broadcast question is posted, not refused: {answered:?}");
+    };
+    assert_eq!(message.room, project_room(A));
+    assert!(
+        note.contains("`s-a` owns this (lease on `crates/room/**`)"),
+        "{note}"
+    );
+    // The ask it points at is the word the post named, which resolves to the same owner.
+    assert!(
+        note.contains("room ask path=crates/room/src/server.rs"),
+        "{note}"
+    );
+    // A, being in the room, still reads the line: the nudge is advice, not a filter.
+    assert!(a.next().text.contains("route the ask"));
+    assert_eq!(count(&server, "broadcast_question"), 1);
+}
+
+/// A post that is not a question is nobody's nudge, and neither is one that already names someone,
+/// nor one the operator says.
+#[test]
+fn only_an_unaddressed_question_of_a_project_room_is_nudged() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let a = seat(&server, "s-a", A, Seat::Session);
+    let b = seat(&server, "s-b", A, Seat::Session);
+    let op = seat(&server, OPERATOR, "", Seat::Operator);
+    a.own("1", "crates/room/**");
+    for (id, text) in [
+        (
+            "s1",
+            "`crates/room/src/server.rs` is where the ask path lives",
+        ),
+        (
+            "s2",
+            "@arango does `crates/room/src/server.rs` route the ask?",
+        ),
+    ] {
+        let Response::Said { note, .. } = b.say(id, text) else {
+            panic!("{text}");
+        };
+        assert_eq!(note, "", "{text}");
+    }
+    let Response::Said { note, .. } = op.say_in(
+        project_room(A),
+        "o1",
+        "does `crates/room/src/server.rs` route the ask?",
+    ) else {
+        panic!("the operator posts")
+    };
+    assert_eq!(note, "");
+    assert_eq!(count(&server, "broadcast_question"), 0);
 }
