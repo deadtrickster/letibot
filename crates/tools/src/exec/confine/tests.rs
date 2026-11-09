@@ -881,6 +881,104 @@ fn a_replaced_tmp_says_the_session_owns_it_and_not_that_it_starts_empty() {
     assert!(!notes[0].contains("starts empty"), "{}", notes[0]);
 }
 
+/// A `/run` grant is a socket at a path a program writes out of habit (`/var/run/docker.sock`), and
+/// the view empties `/run` per command. The bind has to come after that tmpfs, and the two spellings
+/// have to be one directory, or the socket is there for one of them and absent for the other.
+#[test]
+fn a_grant_under_run_binds_over_the_fresh_tmpfs_and_is_there_under_both_spellings() {
+    let docker = |p: &str| crate::exec::confine::Grant::ReadWrite {
+        path: PathBuf::from(p),
+        why: "the operator's `[boundary] grants_rw`".to_string(),
+    };
+    let view = ViewSpec::project_only("/proj").granting(docker("/run/docker.sock"));
+    let argv = build_argv(
+        Path::new("/usr/bin/bwrap"),
+        &view,
+        &Egress::Denied,
+        &ConfinePlan {
+            cwd: Path::new("/proj"),
+            env: &[],
+        },
+    );
+    let at = |needle: &str| {
+        argv.iter()
+            .position(|a| a == needle)
+            .unwrap_or_else(|| panic!("{needle} is not in {argv:?}"))
+    };
+    // The whole file is a fresh tmpfs under the view, and the grant is a mount over it: bwrap takes
+    // the last mount at a path, so the other order would hide the socket inside the empty one.
+    let tmpfs = at("/run");
+    assert_eq!(argv[tmpfs - 1], "--tmpfs", "{argv:?}");
+    let bound = argv
+        .windows(3)
+        .position(|w| w[0] == "--bind" && w[1] == "/run/docker.sock")
+        .expect("the grant is bound");
+    assert!(
+        bound > tmpfs,
+        "the grant must be bound after the tmpfs that empties `/run`: {argv:?}"
+    );
+    assert_eq!(argv[bound + 2], "/run/docker.sock");
+    // One directory, two spellings, so a program that asks for `/var/run/docker.sock` finds it.
+    let link = argv
+        .windows(3)
+        .position(|w| w[0] == "--symlink" && w[1] == "/run" && w[2] == "/var/run")
+        .expect("`/var/run` is linked to `/run`");
+    assert!(link > tmpfs && link < bound, "{argv:?}");
+    assert_eq!(
+        view.classify(Path::new("/var/run/docker.sock")),
+        Presence::Inside,
+        "the spelling a program uses is in the view too"
+    );
+
+    // The grant the other way round is the same directory: `/var/run/x` puts `/run/x` in the view.
+    let other = ViewSpec::project_only("/proj").granting(docker("/var/run/docker.sock"));
+    assert_eq!(
+        other.classify(Path::new("/run/docker.sock")),
+        Presence::Inside
+    );
+    // bwrap cannot make a mount point through the symlink, so that grant is mounted at `/run`.
+    let plan = ConfinePlan {
+        cwd: Path::new("/proj"),
+        env: &[],
+    };
+    let mounted_at_run = |argv: &[String]| {
+        argv.windows(3).any(|w| {
+            w[0] == "--bind" && w[1] == "/var/run/docker.sock" && w[2] == "/run/docker.sock"
+        })
+    };
+    let other_argv = build_argv(Path::new("/usr/bin/bwrap"), &other, &Egress::Denied, &plan);
+    assert!(mounted_at_run(&other_argv), "{other_argv:?}");
+    let wide = ViewSpec::project_only("/proj")
+        .wide()
+        .granting(docker("/var/run/docker.sock"));
+    let wide_argv = build_argv(Path::new("/usr/bin/bwrap"), &wide, &Egress::Denied, &plan);
+    assert!(mounted_at_run(&wide_argv), "{wide_argv:?}");
+    // And with no such grant, neither spelling is: `/run` is a fresh tmpfs and `/var/run` is
+    // nothing at all, so a claim of `Inside` here would be the view lying.
+    let plain = ViewSpec::project_only("/proj");
+    assert!(matches!(
+        plain.classify(Path::new("/var/run/docker.sock")),
+        Presence::Outside
+    ));
+    assert!(matches!(
+        plain.classify(Path::new("/run/docker.sock")),
+        Presence::Replaced { .. }
+    ));
+    let no_link = build_argv(
+        Path::new("/usr/bin/bwrap"),
+        &plain,
+        &Egress::Denied,
+        &ConfinePlan {
+            cwd: Path::new("/proj"),
+            env: &[],
+        },
+    );
+    assert!(
+        !no_link.iter().any(|a| a == "--symlink"),
+        "a view that grants nothing under `/run` is the argv it always was: {no_link:?}"
+    );
+}
+
 #[test]
 fn a_replaced_root_is_its_own_answer_and_not_either_of_the_other_two() {
     // The middle answer, and the note that would have been wrong: `/tmp` exists inside, so

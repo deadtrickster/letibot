@@ -503,6 +503,37 @@ const REPLACED_ROOTS: &[(&str, &str)] = &[
     ("/dev", "a minimal device set, not the host's `/dev`"),
 ];
 
+/// Is this path a grant of something under `/run`, by either spelling? Those are the ones
+/// [`pieces_of`] links `/var/run` to `/run` for.
+fn under_run(p: &Path) -> bool {
+    for r in [Path::new("/run"), Path::new("/var/run")] {
+        if p == r || p.starts_with(r) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Where a grant is mounted. bwrap cannot make a mount point through the `/var/run` symlink, in the
+/// wide view or the narrow one, so a grant under it is mounted at its `/run` spelling.
+fn mount_point(p: &Path) -> PathBuf {
+    match p.strip_prefix("/var/run") {
+        Ok(rest) => Path::new("/run").join(rest),
+        Err(_) => p.to_path_buf(),
+    }
+}
+
+/// The other spelling of the same path: `/var/run` is a symlink to `/run` on these hosts, and the
+/// view links them too, so a grant under one is there under the other.
+fn run_twin(p: &Path) -> Option<PathBuf> {
+    if let Ok(rest) = p.strip_prefix("/var/run") {
+        return Some(Path::new("/run").join(rest));
+    }
+    p.strip_prefix("/run")
+        .ok()
+        .map(|rest| Path::new("/var/run").join(rest))
+}
+
 /// Which paths are in the view, and therefore which are absent from it. The project is bound
 /// read-write at its own path so a compiler's diagnostic names the same file the `read` tool
 /// names; rewriting the root would make every path a translation.
@@ -792,6 +823,16 @@ impl ViewSpec {
         }
         if let HomeView::Dir(d) = &self.home
             && (path == d || path.starts_with(d) || d.starts_with(path))
+        {
+            return Presence::Inside;
+        }
+        // One directory, two spellings: `/var/run` is linked to `/run` inside a view that grants
+        // something under either, so the path a program actually uses is not read as absent.
+        if let Some(twin) = run_twin(path)
+            && self
+                .grants
+                .iter()
+                .any(|g| twin.as_path() == g.path() || twin.starts_with(g.path()))
         {
             return Presence::Inside;
         }
@@ -2637,6 +2678,14 @@ fn pieces_of(
         arg(&mut a, "/var/tmp");
         arg(&mut a, "--tmpfs");
         arg(&mut a, "/run");
+        // `/var/run` is a symlink to `/run` on these hosts and a fresh `/run` is a plain directory, so
+        // a grant of a socket under either spelling would be visible under one only. Linked before the
+        // grants below, which are what make it matter.
+        if view.grants.iter().any(|g| under_run(g.path())) {
+            arg(&mut a, "--symlink");
+            arg(&mut a, "/run");
+            arg(&mut a, "/var/run");
+        }
 
         // The project, read-write, at its own path.
         arg(&mut a, "--bind");
@@ -2649,12 +2698,12 @@ fn pieces_of(
             Grant::ReadOnly { path, .. } => {
                 arg(&mut a, "--ro-bind");
                 arg(&mut a, path.display().to_string());
-                arg(&mut a, path.display().to_string());
+                arg(&mut a, mount_point(path).display().to_string());
             }
             Grant::ReadWrite { path, .. } => {
                 arg(&mut a, "--bind");
                 arg(&mut a, path.display().to_string());
-                arg(&mut a, path.display().to_string());
+                arg(&mut a, mount_point(path).display().to_string());
             }
             Grant::AgentSocket { path, .. } => {
                 // Bound at a fixed path so `SSH_AUTH_SOCK` inside does not carry the
