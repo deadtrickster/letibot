@@ -682,6 +682,10 @@ pub enum TaskStatus {
     },
     /// It did not finish, and this is why.
     Failed { why: String },
+    /// Its turn ended and something it started did not: a background job was still running when
+    /// the substrate went down with the turn, and was killed there. `answer` is the child's own
+    /// words and `why` is what died under it - a finish over a killed job is not a finish.
+    Killed { answer: String, why: String },
     /// No subagent by that name was ever spawned here.
     Unknown,
 }
@@ -694,7 +698,7 @@ impl TaskStatus {
             TaskStatus::Running { child, .. } | TaskStatus::Done { child, .. } => {
                 child.as_ref().map(child_doing)
             }
-            TaskStatus::Failed { .. } | TaskStatus::Unknown => None,
+            TaskStatus::Failed { .. } | TaskStatus::Killed { .. } | TaskStatus::Unknown => None,
         }
     }
 
@@ -705,7 +709,9 @@ impl TaskStatus {
         let doing = self.doing()?;
         let child = match self {
             TaskStatus::Running { child, .. } | TaskStatus::Done { child, .. } => child.as_ref()?,
-            TaskStatus::Failed { .. } | TaskStatus::Unknown => return None,
+            TaskStatus::Failed { .. } | TaskStatus::Killed { .. } | TaskStatus::Unknown => {
+                return None;
+            }
         };
         let next = match doing {
             // Nothing to do but let it work: this is the sentence that was printed about every
@@ -1968,6 +1974,11 @@ impl Tool for TaskResultTool {
                     },
                     (None, TaskStatus::Done { .. }) => "answered".into(),
                     (None, TaskStatus::Failed { .. }) => "failed".into(),
+                    (None, TaskStatus::Killed { .. }) => {
+                        "answered, and a job it had running was killed with its substrate — not a \
+                         clean finish; `task_result` on the handle says what died"
+                            .into()
+                    }
                     (None, TaskStatus::Unknown) => "unknown".into(),
                 };
                 out.push_str(&format!("  {} — {state}\n", c.label()));
@@ -2040,7 +2051,10 @@ impl Tool for TaskResultTool {
         // An answer or a failure read here has been handed to the model - the delivery the
         // watcher would otherwise make - so the runner marks it read, and a daemon restart does
         // not announce it again as news.
-        if matches!(status, TaskStatus::Done { .. } | TaskStatus::Failed { .. }) {
+        if matches!(
+            status,
+            TaskStatus::Done { .. } | TaskStatus::Failed { .. } | TaskStatus::Killed { .. }
+        ) {
             self.runner.consumed(handle);
         }
         match status {
@@ -2087,6 +2101,17 @@ impl Tool for TaskResultTool {
                 format!(
                     "{why}\n\nNothing of its work is lost: it has its own session, \
                          and `transcript` with session=\"{handle}\" reads it."
+                ),
+            ),
+            // Its turn ended, and a job it left running was killed with the substrate that turn
+            // closed. The answer is still the child's, and it is not a finish: an abstention is
+            // the envelope for exactly that, so nothing reads it as the work being done.
+            TaskStatus::Killed { ref answer, why } => Invocation::abstained(
+                format!("subagent `{label}` finished, with a job killed under it"),
+                format!(
+                    "{why}\n\nIts own last word: \n\n{answer}\n\nNothing else of its work is \
+                     lost: it has its own session, and `transcript` with session=\"{handle}\" \
+                     reads it."
                 ),
             ),
             // The sentence that said one thing about three states: "still working" was printed

@@ -345,6 +345,10 @@ pub struct JobWatchers {
     /// Jobs with a thread blocked on them, so a re-finished call id cannot start
     /// a second watcher for one job.
     watching: Arc<Mutex<HashSet<String>>>,
+    /// Handles whose substrate was taken down under them, read by the watcher when the job ends:
+    /// a client's exit after its guest died is not the job's own ending. See
+    /// [`JobWatchers::killed_with_the_substrate`].
+    killed: Arc<Mutex<HashSet<String>>>,
     /// Jobs already published, so a late duplicate finish cannot publish a
     /// settlement twice. See [`Settled`].
     settled: Arc<Mutex<Settled>>,
@@ -435,6 +439,7 @@ impl JobWatchers {
             bell,
             stop: Arc::new(AtomicBool::new(false)),
             watching: Arc::new(Mutex::new(HashSet::new())),
+            killed: Arc::new(Mutex::new(HashSet::new())),
             settled: Arc::new(Mutex::new(Settled::default())),
             held: Arc::new(Mutex::new(Vec::new())),
             held_now: Arc::new(AtomicUsize::new(0)),
@@ -447,6 +452,14 @@ impl JobWatchers {
             read: Arc::new(Mutex::new(ReadRecord::default())),
             sweeps: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    /// These jobs' substrate was taken down under them, before their watchers could see them end.
+    /// The exit a client reports after its VM is gone is the teardown's and not the job's own, so
+    /// the watcher that settles one of these says the kill instead (R173).
+    pub fn killed_with_the_substrate(&self, handles: impl IntoIterator<Item = String>) {
+        let mut g = self.killed.lock().expect("job watchers");
+        g.extend(handles);
     }
 
     /// Tell this set where to leave a record of what it settles. A setter rather than a
@@ -508,6 +521,7 @@ impl JobWatchers {
             bell,
             stop: Arc::new(AtomicBool::new(false)),
             watching: Arc::new(Mutex::new(HashSet::new())),
+            killed: Arc::new(Mutex::new(HashSet::new())),
             settled: Arc::new(Mutex::new(Settled::default())),
             held: Arc::new(Mutex::new(Vec::new())),
             held_now: Arc::new(AtomicUsize::new(0)),
@@ -548,6 +562,7 @@ impl JobWatchers {
             bell: self.bell.clone(),
             stop: Arc::clone(&self.stop),
             watching: Arc::clone(&self.watching),
+            killed: Arc::clone(&self.killed),
             settled: Arc::clone(&self.settled),
             held: Arc::clone(&self.held),
             held_now: Arc::clone(&self.held_now),
@@ -593,6 +608,7 @@ impl JobWatchers {
             bell: self.bell.clone(),
             stop: Arc::clone(&self.stop),
             watching: Arc::clone(&tree.watching),
+            killed: Arc::clone(&tree.killed),
             settled: Arc::clone(&tree.settled),
             // Its own: what this session holds and what it asked for are this session's.
             held: Arc::clone(&self.held),
@@ -649,6 +665,7 @@ impl JobWatchers {
             // The row for a child's ending is the record's own, written wherever it settled.
             recorder: None,
             sweeps: Arc::clone(&self.sweeps),
+            killed: Arc::clone(&self.killed),
         };
         queue.push(c);
     }
@@ -1100,6 +1117,7 @@ impl JobWatchers {
             bell: self.bell.clone(),
             recorder: self.recorder.lock().expect("job recorder").clone(),
             sweeps: Arc::clone(&self.sweeps),
+            killed: Arc::clone(&self.killed),
         });
         let watching = Arc::clone(&self.watching);
         let settled = Arc::clone(&self.settled);
@@ -1198,9 +1216,17 @@ struct SettlementQueue {
     /// The spawn snapshots this session's tools handed over, keyed by handle: read here because the
     /// settlement is the last moment a job's writes are this job's own (R161).
     sweeps: Arc<Mutex<HashMap<String, letibot_tools::detect::Sweep>>>,
+    /// Handles whose substrate was taken down under them - see
+    /// [`JobWatchers::killed_with_the_substrate`]. Read at the settle.
+    killed: Arc<Mutex<HashSet<String>>>,
 }
 
 impl SettlementQueue {
+    /// Was this job's substrate taken down under it? Then the exit its client reports is the
+    /// teardown's and not the job's own, so the state the settlement carries is the kill (R173).
+    fn killed_with_the_substrate(&self, job: &str) -> bool {
+        self.killed.lock().map(|g| g.contains(job)).unwrap_or(false)
+    }
     /// What a job changed while it ran, taken out of the map because one job settles once. `None`
     /// when nothing was handed over - a job spawned outside a git tree, which is a job nothing here
     /// can say anything true about.
@@ -1628,6 +1654,14 @@ fn watch_one(
                     .map(|s: JobState| s.word())
                     .or_else(|| view.as_ref().map(|v| v.state.word()))
                     .unwrap_or_else(|| "gone".to_string());
+                // A substrate taken down under it: whatever its client exited with is what the
+                // teardown left behind, so the settlement carries the kill instead - and never an
+                // `exited 0` that reads as a finish (R173).
+                let word = if queue.killed_with_the_substrate(&job) {
+                    crate::harness::VM_LOST.to_string()
+                } else {
+                    word
+                };
                 // The session's own `job_kill` already told the model the outcome in its result.
                 // News is only a kill that did not hold.
                 let mut quiet = false;
@@ -1771,6 +1805,16 @@ fn watch_task(
             TaskStatus::Failed { why } => {
                 let slug = runner.slug_of(&job);
                 settled_here("failed", first_line(&why), &job, slug, &queue, &settled);
+                if let Some(h) = hub.upgrade() {
+                    h.refresh_activity();
+                }
+                break;
+            }
+            // Its turn ended and a job of it was killed with the substrate: the parent is told
+            // the same news a failure is, and the sentence carries what died (R173).
+            TaskStatus::Killed { why, .. } => {
+                let slug = runner.slug_of(&job);
+                settled_here("killed", first_line(&why), &job, slug, &queue, &settled);
                 if let Some(h) = hub.upgrade() {
                     h.refresh_activity();
                 }

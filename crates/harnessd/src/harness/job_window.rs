@@ -475,8 +475,27 @@ pub(crate) fn vm_jobs_lost_line(lost: &[letibot_tools::exec::JobView]) -> Option
         .join(", ");
     Some(format!(
         "[subagent jobs] {} background job(s) were still running in the subagent's VM when it \
-         was closed after its turn, and died with it: {jobs}. Nothing reported their ending and \
-         their output is gone — if the work matters, run it again yourself.",
+         was closed after its turn, and died with it ({VM_LOST}): {jobs}. Nothing reported their \
+         ending and their output is gone — if the work matters, run it again yourself.",
         lost.len()
     ))
+}
+
+/// A VM child's settlement over the jobs that died with its VM: its answer when nothing did, and
+/// a `Killed` carrying both when something did - a finish over a killed job is not a finish, so
+/// it is its own status and not a `Done` (R173). Pure, so the rule is asserted without a VM.
+pub(crate) fn vm_child_finish(
+    lost: &[letibot_tools::exec::JobView],
+    answer: String,
+) -> letibot_tools::builtins::task::TaskStatus {
+    use letibot_tools::builtins::task::TaskStatus;
+    match vm_jobs_lost_line(lost) {
+        // No reading for a VM child: its substrate is closed with its turn, so the child is not
+        // reachable and there is no present to report. See `collect`.
+        None => TaskStatus::Done {
+            answer,
+            child: None,
+        },
+        Some(why) => TaskStatus::Killed { answer, why },
+    }
 }

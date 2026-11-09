@@ -274,6 +274,16 @@ impl SubagentRecord {
                     s.settle_subagent_run(&self.child, "failed", Some(why))
                         .map_err(|e| e.to_string())
                 }),
+                // A row of its own: a restart must not bring this back as a child that
+                // answered, and the row keeps the answer and what died under it (R173).
+                TaskStatus::Killed { answer, why } => self.store.with(|s| {
+                    s.settle_subagent_run(
+                        &self.child,
+                        "killed",
+                        Some(&format!("{why}\n\n{answer}")),
+                    )
+                    .map_err(|e| e.to_string())
+                }),
                 TaskStatus::Running { .. } | TaskStatus::Unknown => return,
             }
         };

@@ -181,6 +181,7 @@ impl Harness {
                     .unwrap_or_else(|| "answered".into()),
                 TaskStatus::Done { child: None, .. }
                 | TaskStatus::Failed { .. }
+                | TaskStatus::Killed { .. }
                 | TaskStatus::Unknown => continue,
             };
             let asked = self

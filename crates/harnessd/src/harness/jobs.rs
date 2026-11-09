@@ -311,7 +311,9 @@ impl Harness {
 
     /// The jobs still running in this session's VM as it is closed, which die with it: a VM child's backend closes right
     /// after its first turn, so a job it backgrounded had its watcher stopped first and its row read `running` for ever.
-    /// Called just before `close_backend`, writing each row as lost and delivered so no restart reminds anyone.
+    /// Called just before `close_backend`, writing each row as lost and delivered so no restart reminds anyone -
+    /// and telling the watchers first, because the settle that races this close is the one that would
+    /// otherwise write its client's exit over the kill (R173).
     pub fn jobs_lost_with_the_vm(&self) -> Vec<letibot_tools::exec::JobView> {
         let Some(host) = self.runtime.backend.processes() else {
             return Vec::new();
@@ -323,6 +325,9 @@ impl Harness {
             .collect();
         if lost.is_empty() {
             return lost;
+        }
+        if let Some(w) = &self.job_watch {
+            w.killed_with_the_substrate(lost.iter().map(|j| j.id.0.clone()));
         }
         if let Some(store) = self.cfg.store.as_ref().and_then(|p| Store::open(p).ok()) {
             for j in &lost {

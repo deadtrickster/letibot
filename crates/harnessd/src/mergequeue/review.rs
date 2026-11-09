@@ -627,6 +627,16 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
                     format!("the reviewer `{child}` vanished without a verdict"),
                 )?;
             }
+            // A reviewer whose own job was killed with its substrate finished its turn, but what
+            // it was doing did not: no verdict came through the one door there is, so this is a
+            // failed attempt with the reason (R173).
+            TaskStatus::Killed { why, .. } => {
+                out.moved = true;
+                p.attempt_failed(
+                    &r,
+                    format!("the reviewer `{child}` finished with a job killed under it: {why}"),
+                )?;
+            }
         }
     }
     p.desk.keep(p.host, &still);

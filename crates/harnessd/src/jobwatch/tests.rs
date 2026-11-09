@@ -1517,6 +1517,7 @@ fn a_settlement_from_a_grandchild_skips_a_parent_that_has_stopped() {
         bell: Some(Arc::clone(&bell)),
         recorder: None,
         sweeps: Arc::clone(&c2_watch.sweeps),
+        killed: Arc::clone(&c2_watch.killed),
     };
     queue.push(settled("j-pushed", false));
     let up: Vec<String> = root_watch
@@ -1777,6 +1778,7 @@ fn a_jobs_spawn_snapshot_is_read_at_its_settlement() {
         bell: None,
         recorder: None,
         sweeps: Arc::clone(&watch.sweeps),
+        killed: Arc::clone(&watch.killed),
     };
     let found = queue.changes_of("j1").expect("the change the job made");
     assert_eq!(found.changed, vec!["a.txt".to_string()]);
@@ -1797,4 +1799,47 @@ fn a_jobs_spawn_snapshot_is_read_at_its_settlement() {
     assert!(sentence.contains("`a.txt`"), "{sentence}");
     assert!(sentence.contains("when, not who"), "{sentence}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A job whose substrate was taken down under it settles as the kill, and never as the exit its
+/// client came back with: the VM's teardown is what ended it, and a row saying `exited 0` over it
+/// is the report the parent reads as a finish (R173).
+#[test]
+fn a_job_killed_with_its_substrate_settles_as_the_kill_and_not_its_exit() {
+    let root = std::env::temp_dir().join(format!("letibot-vm-lost-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    // A host that starts nothing: this job is a table of one handle, so the settle is the test's
+    // to make and no cgroup is involved - the rule, not the kernel, is what is asserted here.
+    let host = Arc::new(HostProcesses::with_tree(
+        &root,
+        Box::new(letibot_tools::exec::NoScopes::new(
+            "a job whose ending is the test's to make starts nothing",
+        )),
+    ));
+    let hub = Hub::new("s-vm");
+    let watchers = JobWatchers::new(&(host.clone() as Arc<dyn ProcessHost>), &hub, None);
+    let table = Arc::new(Table::new("1 branch, exited 0"));
+    let id = JobId::next();
+    host.hold(
+        &id,
+        Arc::clone(&table) as Arc<dyn letibot_tools::exec::Aggregate>,
+    )
+    .expect("a host holds the job");
+    watchers.watch(id.0.clone());
+
+    // The VM goes down under it, and only then does the client come back - with 0, which is the
+    // exit that must not read as a finish.
+    watchers.killed_with_the_substrate(vec![id.0.clone()]);
+    table.finish(JobState::Exited { code: 0 });
+
+    let (word, _, _) = wait_for_settlement(&hub, &id.0);
+    assert_eq!(word, crate::harness::VM_LOST, "the published word");
+    let done = wait_for_completion(&watchers);
+    assert_eq!(
+        done.state,
+        crate::harness::VM_LOST,
+        "the sentence: {done:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }

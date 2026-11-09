@@ -125,12 +125,18 @@ impl DigestRunner for SubagentDigest {
         };
         let handle = self.runner.start(&prompt, &spec)?;
         let status = self.runner.collect(&handle, self.per_chunk);
-        if matches!(status, TaskStatus::Done { .. } | TaskStatus::Failed { .. }) {
+        if matches!(
+            status,
+            TaskStatus::Done { .. } | TaskStatus::Failed { .. } | TaskStatus::Killed { .. }
+        ) {
             self.runner.consumed(&handle);
         }
         match status {
             TaskStatus::Done { answer, .. } => Ok(answer),
             TaskStatus::Failed { why } => Err(format!("part {n} of {of}: {why}")),
+            // A part whose own job was killed under it read what it read: a digest made of
+            // that part is a digest over a failure, so it is refused with the reason.
+            TaskStatus::Killed { why, .. } => Err(format!("part {n} of {of}: {why}")),
             TaskStatus::Running { .. } => Err(format!(
                 "part {n} of {of} was still running after {}s",
                 self.per_chunk.as_secs()

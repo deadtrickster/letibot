@@ -1436,7 +1436,7 @@ fn the_jobs_a_vm_child_left_running_are_named_to_its_parent() {
         env_report: None,
     };
     assert_eq!(vm_jobs_lost_line(&[]), None);
-    let said = vm_jobs_lost_line(&[job]).expect("a line");
+    let said = vm_jobs_lost_line(std::slice::from_ref(&job)).expect("a line");
     assert!(
         said.starts_with("[subagent jobs] 1 background job(s)"),
         "{said}"
@@ -1446,4 +1446,51 @@ fn the_jobs_a_vm_child_left_running_are_named_to_its_parent() {
         "{said}"
     );
     assert!(said.contains("died with it"), "{said}");
+
+    // And the settlement over it: a finish when nothing died, and a kill that carries the
+    // child's own words when something did - the two are different statuses, because a `Done`
+    // over a job killed with its VM is the defect (R173).
+    use letibot_tools::builtins::task::TaskStatus;
+    let answer = "the sleep is still going; the tree is quiet".to_string();
+    let clean = vm_child_finish(&[], answer.clone());
+    assert!(
+        matches!(&clean, TaskStatus::Done { answer: a, child: None } if *a == answer),
+        "{clean:?}"
+    );
+    match vm_child_finish(&[job], answer.clone()) {
+        TaskStatus::Killed { answer: a, why } => {
+            assert_eq!(a, answer, "the child's own words go with the kill");
+            assert!(why.contains("`tests · j41`"), "{why}");
+            assert!(why.contains("died with it"), "{why}");
+        }
+        other => panic!("a job killed with the VM settled as {other:?}"),
+    }
+}
+
+/// A VM child's hold ends when nothing is running in its VM *and* nothing is still owed: a
+/// settlement queued, held or rung for a turn is the turn that names the job's exit, and the VM
+/// may not close before the child has read it (R173).
+#[test]
+fn the_jobs_hold_ends_only_when_nothing_runs_and_nothing_is_owed() {
+    use super::{ChildHold, hold_is_over};
+    assert!(
+        hold_is_over(ChildHold::Jobs, 0, 0, false),
+        "nothing running, nothing owed: the VM may go"
+    );
+    assert!(
+        !hold_is_over(ChildHold::Jobs, 0, 1, false),
+        "a job still running in the VM is what the hold is for"
+    );
+    assert!(
+        !hold_is_over(ChildHold::Jobs, 0, 0, true),
+        "an owed ending is the wake whose turn names the job's exit"
+    );
+    assert!(
+        hold_is_over(ChildHold::Children, 0, 1, false),
+        "a job does not hold a child for its children"
+    );
+    assert!(
+        !hold_is_over(ChildHold::Children, 2, 0, false),
+        "two unsettled children hold it"
+    );
 }

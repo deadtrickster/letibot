@@ -2640,3 +2640,69 @@ fn an_ordinary_seat_still_reaches_a_peer_by_its_id() {
         "the default reach addresses the id it was given"
     );
 }
+
+/// A child whose turn ended with a job killed under it is not a finish: `task_result` answers with
+/// an abstention carrying the child's own words and what died, so nothing a parent reads can take
+/// it for the work being done (R173).
+#[test]
+fn a_child_finished_over_a_killed_job_is_not_answered_as_a_finish() {
+    /// A runner whose child settled as `Killed`.
+    struct KilledJob;
+    impl TaskRunner for KilledJob {
+        fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
+            Ok("sub-k".into())
+        }
+        fn collect(&self, _h: &str, _t: std::time::Duration) -> TaskStatus {
+            TaskStatus::Killed {
+                answer: "the sleep was still going when I stopped".into(),
+                why: "[subagent jobs] 1 background job(s) were still running in the subagent's \
+                      VM when it was closed after its turn, and died with it: `sleep · j9`."
+                    .into(),
+            }
+        }
+        fn started(&self) -> Vec<String> {
+            vec!["sub-k".into()]
+        }
+    }
+
+    use crate::runtime::{Registry, ToolRuntime};
+    use letibot_transcript::ToolCall;
+    let mut reg = Registry::new();
+    reg.register(Box::new(TaskResultTool::new(Arc::new(KilledJob))))
+        .unwrap();
+    let d = crate::backend::tempdir::TempDir::new();
+    let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+    let rt = ToolRuntime::new(reg, Box::new(backend));
+    let mut sink = crate::NullToolSink;
+    let said = rt.invoke(
+        "t1",
+        &ToolCall {
+            id: "c1".into(),
+            name: "task_result".into(),
+            arguments: r#"{"task": "sub-k"}"#.into(),
+        },
+        &mut sink,
+    );
+    // The headline is the outcome's, not the body's: that is how an abstention is recognised.
+    assert!(
+        matches!(
+            &said.outcome,
+            letibot_transcript::ToolOutcome::Abstained { reason }
+                if reason.contains("a job killed under it")
+        ),
+        "a finish over a killed job read as {:?}: {}",
+        said.outcome,
+        said.payload
+    );
+    assert!(
+        said.payload.contains("`sleep · j9`"),
+        "the kill names the job: {}",
+        said.payload
+    );
+    assert!(
+        said.payload
+            .contains("the sleep was still going when I stopped"),
+        "the child's own words go with it: {}",
+        said.payload
+    );
+}

@@ -397,7 +397,8 @@ impl TaskSlot {
 
     /// What a settlement becomes on this slot: the kill rule, on its own so `say` can apply it before it
     /// adds the dirty-worktree line. A killed child's `Done` is replaced wholesale, and a line added first
-    /// would go with it.
+    /// would go with it. A `Killed` is not replaced: it already says what died under the turn, and a
+    /// stop that arrives once the child has answered is not the child's answer going away (R173).
     pub(crate) fn as_settled(
         &self,
         status: letibot_tools::builtins::task::TaskStatus,
@@ -543,6 +544,10 @@ impl<'a> AnswerOnce<'a> {
             TaskStatus::Done { answer, child } => TaskStatus::Done {
                 answer: deliverable::with_the_line(d, &answer),
                 child,
+            },
+            TaskStatus::Killed { answer, why } => TaskStatus::Killed {
+                answer: deliverable::with_the_line(d, &answer),
+                why,
             },
             TaskStatus::Failed { why } => TaskStatus::Failed {
                 why: deliverable::with_the_line(d, &why),
@@ -3333,16 +3338,15 @@ impl HarnessTaskRunner {
             Some(where_) => format!("{}\n\n[subagent placement] {where_}", reply.text),
             None => reply.text,
         };
+        // A job killed with the VM is not a job that finished, and neither is the turn that
+        // left it running in a substrate it then closed (R173). The status carries the lost line
+        // itself, so the answer it is given must not.
+        let status = vm_child_finish(&lost, said.clone());
         if let Some(line) = vm_jobs_lost_line(&lost) {
             said.push_str("\n\n");
             said.push_str(&line);
         }
-        answer.say(letibot_tools::builtins::task::TaskStatus::Done {
-            answer: said.clone(),
-            // No reading for a VM child: its substrate is closed with its turn, so the
-            // child is not reachable and there is no present to report. See `collect`.
-            child: None,
-        });
+        answer.say(status);
         // The child has finished, so its branch goes to the queue: this is the finish, and the two notices
         // (this one and a later `task_result`) are one entry under one id.
         self.enqueue_finished(sub_id);
@@ -3956,6 +3960,14 @@ impl HarnessTaskRunner {
                 }
                 // The backend is closed on this exit too - the other two close it below - so a
                 // child whose first turn failed does not leave its watchers and cgroups behind.
+                // And what it had running in a VM dies with that VM, said here because this exit
+                // has no answer to carry the line (R173).
+                if placement != Placement::Host
+                    && let Some(line) = vm_jobs_lost_line(&sub.jobs_lost_with_the_vm())
+                {
+                    why.push_str("\n\n");
+                    why.push_str(&line);
+                }
                 sub.close_backend();
                 // And its tree, when the branch carries nothing and the tree is clean: a failed
                 // child leaves a worktree nobody lands and nothing else looked at.

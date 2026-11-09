@@ -932,7 +932,13 @@ impl Harness {
     /// its work went. A host backend says nothing; a firecode one brings its VM
     /// down and names the sibling directory.
     pub fn close_backend(&self) -> Option<String> {
-        // The watchers first: their threads hold weak handles and re-check this
+        // A VM going down takes what was running in it, and this is the one door it goes down
+        // through: a stop, a failed turn and a shutdown all reach here. Recorded as the kill it
+        // was before the guest is gone, so no reader guesses it from the client's exit (R173).
+        if self.cfg.placement.is_vm() {
+            let _ = self.jobs_lost_with_the_vm();
+        }
+        // The watchers next: their threads hold weak handles and re-check this
         // flag at most one wait chunk after close, so a session that closes does
         // not keep its host - or its cgroups - alive behind a blocked thread.
         if let Some(w) = &self.job_watch {
