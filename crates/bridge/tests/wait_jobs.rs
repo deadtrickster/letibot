@@ -337,10 +337,21 @@ fn a_wait_holds_on_a_running_job_and_not_on_the_one_the_model_parked() {
     // The brief's turn started the job and ended: that answer, and no more, is what a `wait` must
     // not be satisfied with.
     let idle = settled_with(&bridge, &session, STARTED_ANSWER);
-    assert!(
-        idle["jobs_open"].as_array().is_some_and(|j| !j.is_empty()),
-        "the job the brief started is still running: {idle}"
-    );
+    // The head asks for the job list when the turn ends, so `jobs_open` can trail the idle by a
+    // poll. The session already names the job it waits on.
+    let deadline = Instant::now() + PATIENCE;
+    let mut status = idle;
+    while !status["jobs_open"]
+        .as_array()
+        .is_some_and(|j| !j.is_empty())
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the job the brief started is still running: {status}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+        status = bridge.status(&session).expect("status");
+    }
 
     // the first half: the wait holds until the WOKEN turn ends
     let began = Instant::now();
