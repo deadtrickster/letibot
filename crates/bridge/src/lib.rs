@@ -24,6 +24,7 @@ pub mod fleet;
 pub mod head;
 pub mod mcp;
 pub mod names;
+pub mod plugins;
 pub mod push;
 pub mod queue;
 pub mod relay;

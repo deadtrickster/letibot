@@ -1439,13 +1439,17 @@ name = "letibot-bridge"
 version = "0.6.0"
 dependencies = [
  "letibot-activation",
+ "letibot-builtins",
  "letibot-harnessd",
+ "letibot-plugin",
+ "letibot-plugins",
  "letibot-room",
  "letibot-sessionlog",
  "letibot-tokencore",
  "letibot-tools",
  "letibot-transcript",
  "libc",
+ "rano",
  "serde",
  "serde_json",
  "sha2",

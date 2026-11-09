@@ -598,7 +598,7 @@ fn a_message_the_writer_did_not_take_is_offered_again() {
     let taken = Arc::new(Mutex::new(Vec::<u64>::new()));
     let refuse = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let (t, r) = (taken.clone(), refuse.clone());
-    link.stream(Arc::new(move |m| {
+    link.stream(Arc::new(move |m, _names_you| {
         if r.load(std::sync::atomic::Ordering::SeqCst) {
             return false;
         }
@@ -621,7 +621,7 @@ fn a_delivered_message_is_acked_so_a_fresh_bridge_does_not_replay_it() {
     let first = RoomLink::at(&fake.path);
     let taken = Arc::new(Mutex::new(Vec::<u64>::new()));
     let t = taken.clone();
-    first.stream(Arc::new(move |m| {
+    first.stream(Arc::new(move |m, _names_you| {
         t.lock().unwrap().push(m["seq"].as_u64().unwrap());
         true
     }));
@@ -634,7 +634,7 @@ fn a_delivered_message_is_acked_so_a_fresh_bridge_does_not_replay_it() {
     let second = RoomLink::at(&fake.path);
     let again = Arc::new(Mutex::new(Vec::<u64>::new()));
     let a = again.clone();
-    second.stream(Arc::new(move |m| {
+    second.stream(Arc::new(move |m, _names_you| {
         a.lock().unwrap().push(m["seq"].as_u64().unwrap());
         true
     }));

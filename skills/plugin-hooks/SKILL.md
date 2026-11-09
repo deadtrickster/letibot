@@ -26,11 +26,12 @@ right one is most of the work; after that it is a small wasm module and no relea
 | the idle plan-check names the wrong row, or nags at the wrong pace | **`nag_todo`** | on every plan-check the harness is about to deliver |
 | a project's review policy (what a reviewer is told, what a verdict must reach) lives in a release | **`review_brief`** and **`review_verdict`** | when a reviewer is started, and when a verdict comes in — both from the queue's stack |
 | a child's brief needs a rule of this project's, or its seat a class of tools taken away | **`brief_worktree`** | on a `task_start` child, before it is opened |
+| a Claude Code session is woken by room lines it should not see, or misses the ones it should | **`push_channel`** | before each notification the bridge pushes to a client |
 
 The contract for some of these and for a pane is the `plugin_hooks` tool, **read from the host's
 own types**: read it before writing anything, and read it again after a refusal.
 `plugin_hooks {"hook":"condition"}` is one kind; no argument is all of them. `adjudicate_floor`,
-`digest_`, `link_`, `nag_`, `tool_`, `command_`, `steer_` and `compact_` are written out below: the
+`digest_`, `link_`, `nag_`, `tool_`, `command_`, `steer_`, `compact_` and `push_` are written out below: the
 host has no page for them yet.
 
 ### `adjudicate_floor` — the gate's floor
@@ -320,6 +321,32 @@ is no field that seats a tool, an answer carrying one (`{"seat_add": ["bash"]}`)
 and said once, and the drop is applied as a `Downgrade` — a union of denials, which nothing in this
 tree can turn into a grant.
 
+### `push_channel` — what wakes a Claude Code session, and in what words
+
+```toml
+name = "every-room-line"
+hooks = ["push_channel"]
+capabilities = []
+```
+
+The bridge (`letibot-mcp`) asks this before every channel notification it pushes to a client. In:
+`{"v": 1, "event": "addressed", "session": "cc@package", "room": "host", "to": "cc@package",
+"text": "#12 [host] from s-a (session) to you\n> the gate is red", "native": {"push": true}}`.
+`event` is a room message's reach — `operator`, `dm`, `addressed`, `passing`, the room's own words —
+or one of the package events the bridge watches (`turn_ended`, `ask`, `failed`, `trouble`,
+`limited`, `switched`, `resumed`, `job_ended`); `room` is present only for a room message; `text` is
+the sentence the client would read; and `native` is what the bridge would do with no layer. Out:
+`{"push": true|false, "text": "…"}`.
+
+R117's open choice — *every room message, or only the addressed ones* — is this hook, and the
+built-in `b-push` layer says today's answer: a `passing` line is not pushed and everything else is,
+in the bridge's own words. `{"push": false}` on any other event silences just that one, and `text`
+replaces the sentence. **An `ask` and a `failed` may be reworded and never silenced**: a
+`{"push": false}` for either is refused and the notification goes out in the bridge's own words,
+because a channel that looks quiet while a session is stuck is the one failure this hook must not
+have. A trap, an unreadable answer or a layer that passes is the bridge's own rule, so a broken
+layer never loses a push.
+
 ## The loop
 
 ```sh
@@ -349,7 +376,7 @@ A `tool_` layer is the one kind that also needs `plugin {"action":"load"}`, beca
 seated when the layer applies: a tool a session has not loaded is not in the model's tool list.
 
 `scaffold` has a template for `pane`, `notice`, `on_tool_call`, `on_tool_result` and `condition`. For
-`digest_`, `link_`, `nag_`, `steer_`, `compact_`, `command_` or `tool_`, scaffold the nearest one and
+`digest_`, `link_`, `nag_`, `steer_`, `compact_`, `command_`, `push_` or `tool_`, scaffold the nearest one and
 rename the export in `plugin.toml` and in `src/lib.rs` - the shape above is the whole of what you are
 writing.
 

@@ -50,6 +50,19 @@ sha2 = "0.10"
 libc = "0.2"
 # The browser bridge runs under launchd or systemd socket activation and exits when idle.
 letibot-activation.workspace = true
+# **The layer stack** (X25): this folder's user and project plugin directories, resolved by the same
+# crate the daemon and the head resolve theirs with - a bridge that read them its own way would offer
+# a tool the daemon refuses, or refuse one it runs.
+letibot-plugins.workspace = true
+# **The typed contract of `push_channel`**, so the hook's input, its answer and the two events a
+# layer may never silence are the daemon's own types and not a second spelling of them.
+letibot-plugin.workspace = true
+# **The binary's own layers**: `b-push` is what this bridge does with no project layer, and a scope
+# with no bottom is a stack a project's layer has nothing to sit on.
+letibot-builtins.workspace = true
+# The engine. `letibot_plugins` stays free of a wasm host on purpose, so each binary that runs a layer
+# brings its own - the same deliberation `crates/tui` records for the head.
+rano = { git = "https://github.com/deadtrickster/rano", rev = "c12f672b46f2cd3788f6f5307630e81b9575a512" }
 
 [dev-dependencies]
 # **The fixture that writes an executable needs `write_stub`**, which is the one place in this tree

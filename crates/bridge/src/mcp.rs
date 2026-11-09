@@ -89,9 +89,21 @@ fn read_loop<R: BufRead, W: Write>(
                 // legal, so the room's stream may start.
                 if request["method"] == "notifications/initialized" && bridge.stream_rooms() {
                     let tx = push.clone();
-                    bridge.rooms().stream(std::sync::Arc::new(move |m| {
-                        tx.send(crate::rooms::channel_notification(m)).is_ok()
-                    }));
+                    // Every pushed line goes through the folder's `push_channel` layer (X25): what
+                    // reaches the client is the rule's answer, and the sentence is its words when it
+                    // has better ones. A line the rule silenced was still SEEN - it is taken, so the
+                    // cursor moves and no replay owes it again.
+                    let rules = bridge.push_rules();
+                    bridge
+                        .rooms()
+                        .stream(std::sync::Arc::new(move |m, names_you| {
+                            let decision = crate::push::room_push(&rules, m, names_you);
+                            if !decision.push {
+                                return true;
+                            }
+                            tx.send(crate::rooms::channel_notification_saying(m, &decision.text))
+                                .is_ok()
+                        }));
                     // And the sessions this bridge holds, so no `leticode-wait` is needed.
                     bridge.push_sessions(push.clone());
                     // And this folder's queue, so a verdict or a landing needs no waiter either.
@@ -172,7 +184,7 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
         // receives them, and a client that sends one is asking for nothing.
         crate::relay::VERDICT => return None,
         "ping" => Some(json!({})),
-        "tools/list" => Some(crate::tools::list()),
+        "tools/list" => Some(crate::tools::list_with(bridge)),
         "tools/call" => match call_tool(bridge, &params) {
             Ok(result) => Some(result),
             // A caller's mistake is the protocol's to report, and the id is the only way the
@@ -198,12 +210,12 @@ fn call_tool(bridge: &Bridge, params: &Value) -> Result<Value, (i64, String)> {
     let Some(name) = params.get("name").and_then(Value::as_str) else {
         return Err((-32602, "tools/call needs a `name`".into()));
     };
-    if !crate::tools::names().contains(&name) {
+    if !crate::tools::names_with(bridge).iter().any(|n| n == name) {
         return Err((
             -32602,
             format!(
                 "unknown tool `{name}`; this build serves {}",
-                crate::tools::names().join(", ")
+                crate::tools::names_with(bridge).join(", ")
             ),
         ));
     }

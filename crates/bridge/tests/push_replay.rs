@@ -115,7 +115,10 @@ fn what_happened_while_nobody_was_reading_is_pushed_once_on_reconnect() {
         .expect("the head attaches"),
     );
     let (tx, rx) = mpsc::channel();
-    let outbox = letibot_bridge::push::watch(&head);
+    let outbox = letibot_bridge::push::watch(
+        &head,
+        std::sync::Arc::new(letibot_bridge::push::Rules::none()),
+    );
     outbox.attach(tx);
 
     turn(&hub, "t1", "first answer");
@@ -155,7 +158,10 @@ fn what_happened_while_nobody_was_reading_is_pushed_once_on_reconnect() {
         )
         .expect("the head attaches again"),
     );
-    let restarted = letibot_bridge::push::watch(&head);
+    let restarted = letibot_bridge::push::watch(
+        &head,
+        std::sync::Arc::new(letibot_bridge::push::Rules::none()),
+    );
     let (tx, rx) = mpsc::channel();
     restarted.attach(tx);
     assert_eq!(

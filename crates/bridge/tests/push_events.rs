@@ -77,7 +77,11 @@ fn a_turn_end_is_pushed_once_and_the_next_turn_again() {
         .expect("the head attaches"),
     );
     let (tx, rx) = mpsc::channel();
-    letibot_bridge::push::watch(&head).attach(tx);
+    letibot_bridge::push::watch(
+        &head,
+        std::sync::Arc::new(letibot_bridge::push::Rules::none()),
+    )
+    .attach(tx);
 
     turn(&hub, "t1", "first answer");
     let note = rx

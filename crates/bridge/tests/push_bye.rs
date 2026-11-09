@@ -56,7 +56,11 @@ fn a_daemon_that_goes_away_without_being_asked_is_still_a_failure() {
         .expect("the head attaches"),
     );
     let (tx, rx) = mpsc::channel();
-    letibot_bridge::push::watch(&head).attach(tx);
+    letibot_bridge::push::watch(
+        &head,
+        std::sync::Arc::new(letibot_bridge::push::Rules::none()),
+    )
+    .attach(tx);
 
     // The daemon shuts down with this session in it, and nobody asked it to: `Bye` on the
     // connection is the whole of what the head is told, and it is news.

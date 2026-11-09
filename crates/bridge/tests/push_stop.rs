@@ -72,7 +72,11 @@ fn a_stop_the_bridge_asked_for_is_not_a_failure_on_the_channel() {
         .expect("the head attaches"),
     );
     let (tx, rx) = mpsc::channel();
-    letibot_bridge::push::watch(&head).attach(tx);
+    letibot_bridge::push::watch(
+        &head,
+        std::sync::Arc::new(letibot_bridge::push::Rules::none()),
+    )
+    .attach(tx);
 
     // The verb `leticode_stop` calls, and then the proof that the daemon's goodbye did arrive:
     // without the marker this is a `failed: the daemon closed this connection` on the channel.

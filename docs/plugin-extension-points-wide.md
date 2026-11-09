@@ -446,9 +446,9 @@ refused at admit.
 - The bridge serves `tool_` layers of the user and project stacks as MCP tools, under the same
   looks and capabilities (`tools.rs:756`). A Claude Code seat gets `claude_transcript`-shaped tools
   without a bridge release.
-- `push_` hook over `Attention` and room messages: in `{event, session, room, to, text}`, out
+- `push_` hook over `Attention` and room messages: in `{event, session, room, to, text, native}`, out
   `{"push":true|false, "text":"…"}`. R117's open choice (*every room message or only addressed*) is
-  a layer. Never: suppress an `Ask` or a `Failed`.
+  a layer, and the built-in says today's answer. Never: suppress an `Ask` or a `Failed`.
 - R144's board for Claude Code seats reuses the `todo` built-in and X13, so the fleet's
   `board-nag.sh` has a successor in-tree.
 
@@ -817,12 +817,41 @@ Done when: `an_unknown_head_verb_is_offered_to_its_command_layer`,
 `a_layer_cannot_shadow_a_host_verb`, `a_lifecycle_layer_cannot_block_a_reseat`,
 `a_manifest_asking_for_an_operator_verb_is_refused`, `the_model_reseats_itself_without_tmux`.
 
-### K11 - the bridge (M, after K3 and R144's design)
+### K11 - the bridge (M, after K3 and R144's design) - **landed 2026-11**
 
 Owns `bridge/src/tools.rs` (plugin tools listed after the 23), `bridge/src/push.rs` (`push_`),
 `bridge/Cargo.toml` (`letibot-plugins`), `plugins/builtin/push/**`. Done when:
 `a_user_tool_layer_is_listed_as_an_mcp_tool`, `a_push_layer_cannot_suppress_an_ask`,
 `addressed_only_is_a_push_rule`.
+
+What landed:
+
+- **One stack per folder**, `crates/bridge/src/plugins.rs`: the user's `~/.config/letibot/plugins`, the
+  project's `.letibot/plugins` and the binary's own layers at the bottom, on a rano loader of the
+  bridge's own as the head has. Built on first use, and only by the process that serves
+  (`Bridge::with_layers_from_disk`, whose one caller is `letibot-mcp`'s `serve`), so no test reads
+  this box's config directory and a bridge nobody asked pays for no JIT.
+- **A `tool_` layer is an MCP tool.** Listed after the native ones from the manifest alone
+  (`Stack::declared_tools`), so `tools/list` compiles nothing; the description names the layer, its
+  scope and what its capabilities reach; a name that would shadow a native tool is dropped and said
+  once. A call goes through the same `tool_` input the daemon's runtime builds, with no looks - a
+  bridge has no session view, so a layer asking for one is refused in words rather than answered off
+  this process's disk.
+- **`push_channel`** (`crates/plugin-sdk/src/push.rs`) is asked for every notification: a room line
+  (with the coordinator's `names_you`, so `event` is the room's own reach - `operator`, `dm`,
+  `addressed`, `passing`) and a held package's events, in
+  `{event, session, room, to, text, native}`, out `{"push", "text"}`. `native` is what the bridge
+  would have done, which is what a built-in layer says back. An `ask` and a `failed` may be reworded
+  and never silenced; a trap, a pass or an unreadable answer is the bridge's own decision, said once.
+- **The room's `to_me` filter moved out of `RoomLink::stream`**: every pushed line reaches the sink
+  with `names_you` and the rule decides, which is what makes R117's *every room message* writable as a
+  layer. `plugins/builtin/push` (`b-push`) answers today's rule, so arriving at this hook moves no
+  notification. The queue follower's moves and the seat's own nag are not a package's events and are
+  not offered.
+- **The page follows the code**: `plugin_hooks`' `synthetic_for` and `accepted` know the kind, and the
+  `plugin-hooks` skill teaches `push_channel`.
+- Not in this package: a look inside a bridge-called tool (X26's backend view is a session's), and no
+  bridge hot reload - a layer change reaches a client when the bridge restarts.
 
 ## 7. Open questions, with defaults
 

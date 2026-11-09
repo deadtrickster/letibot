@@ -118,7 +118,9 @@ fn main() {
 
 /// Serve MCP on stdin/stdout until the client closes it.
 fn serve() -> i32 {
-    let mut bridge = Bridge::new().streaming_rooms();
+    // The folder's plugin layers (X25): a `tool_` layer becomes a tool this client can call, and
+    // `push_channel` decides what wakes it. The server's door is the only one that reads them.
+    let mut bridge = Bridge::new().streaming_rooms().with_layers_from_disk();
     // Off unless the user's file says `[bridge] permission_relay = true`: the relay approves tool
     // calls in somebody's session, which is not a thing to find switched on.
     if letibot_bridge::settings::BridgeSettings::load_user().permission_relay {

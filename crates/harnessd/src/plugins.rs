@@ -2003,7 +2003,7 @@ fn synthetic_pane_input(feeds: &BTreeMap<String, Value>) -> Value {
 /// its own first frame, which is the cheapest defect to find.
 fn synthetic_for(hook: &str, feeds: &BTreeMap<String, Value>) -> Value {
     use letibot_plugin::{
-        compact, condition, digest, link, nag, notice, steer, tool_call, tool_result,
+        compact, condition, digest, link, nag, notice, push, steer, tool_call, tool_result,
     };
     let value = if hook.starts_with("pane_") {
         return synthetic_pane_input(feeds);
@@ -2023,6 +2023,8 @@ fn synthetic_for(hook: &str, feeds: &BTreeMap<String, Value>) -> Value {
         serde_json::to_value(steer::Input::synthetic())
     } else if hook == compact::HOOK {
         serde_json::to_value(compact::Input::synthetic())
+    } else if hook.starts_with(push::PREFIX) {
+        serde_json::to_value(push::Input::synthetic())
     } else {
         serde_json::to_value(notice::Notice::synthetic())
     };
@@ -2039,7 +2041,7 @@ fn accepted(
     input: &Value,
 ) -> Result<String, String> {
     use letibot_plugin::{
-        compact, condition, digest, link, nag, notice, steer, tool_call, tool_result,
+        compact, condition, digest, link, nag, notice, push, steer, tool_call, tool_result,
     };
     if hook.starts_with("pane_") {
         let view = validated(answer, hook, hook, declared)?;
@@ -2169,6 +2171,12 @@ fn accepted(
             compact::After::Wait => "and the session waits after it".to_string(),
         });
         return Ok(said.join(", "));
+    }
+    if hook.starts_with(push::PREFIX) {
+        let out = push::read(answer)?;
+        let input: push::Input =
+            serde_json::from_value(input.clone()).map_err(|e| format!("not a push input ({e})"))?;
+        return Ok(out.said(&input));
     }
     let out: notice::NoticeOut =
         serde_json::from_value(answer.clone()).map_err(|e| format!("not a notice ({e})"))?;

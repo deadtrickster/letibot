@@ -67,6 +67,12 @@ pub struct Bridge {
     /// The relay's observer is on the room link: a client that initializes twice must not leave a
     /// second one reading the same verdicts.
     watching: Mutex<bool>,
+    /// This folder's plugin layers (X25), built on the first call that needs one: the `tool_`
+    /// layers a client may call and the `push_channel` rule. `Layers` remembers that it tried, so a
+    /// folder with nothing to load is not scanned again.
+    plugins: Mutex<crate::plugins::Layers>,
+    /// The push rule, built once from those layers and shared by every watcher and the room stream.
+    rules: Mutex<Option<Arc<crate::push::Rules>>>,
 }
 
 impl Default for Bridge {
@@ -86,6 +92,8 @@ impl Default for Bridge {
             relay: Arc::new(crate::relay::Relay::new()),
             permission_relay: false,
             watching: Mutex::new(false),
+            plugins: Mutex::new(crate::plugins::Layers::default()),
+            rules: Mutex::new(None),
         }
     }
 }
@@ -277,6 +285,53 @@ impl Bridge {
         self.stream_rooms
     }
 
+    /// The folder whose plugin scopes this bridge reads: the one a test named, else the working
+    /// directory the client started the server in - the same folder `leticode_start` resolves.
+    pub fn folder(&self) -> std::path::PathBuf {
+        match &self.names_from {
+            Some((_, folder)) => folder.clone(),
+            None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        }
+    }
+
+    /// This folder's plugin stack, built on first use. `None` when nothing could be loaded, which is
+    /// what a box with no engine or an unreadable plugins directory comes to.
+    pub fn plugin_stack(&self) -> Option<Arc<letibot_plugins::Stack>> {
+        let folder = self.folder();
+        let mut g = self.plugins.lock().unwrap_or_else(|e| e.into_inner());
+        g.stack(&folder)
+    }
+
+    /// The rule every push goes through: this folder's stack, or none when there is no layer to ask.
+    pub fn push_rules(&self) -> Arc<crate::push::Rules> {
+        let mut g = self.rules.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(rules) = g.as_ref() {
+            return rules.clone();
+        }
+        let rules = Arc::new(match self.plugin_stack() {
+            Some(stack) => crate::push::Rules::with(stack),
+            None => crate::push::Rules::none(),
+        });
+        *g = Some(rules.clone());
+        rules
+    }
+
+    /// A bridge whose layers are `stack`, for a test that must not compile one: its `tool_` layers
+    /// are listed and called, and its `push_channel` answer is the one asked.
+    pub fn with_plugins(mut self, stack: Option<Arc<letibot_plugins::Stack>>) -> Bridge {
+        self.plugins = Mutex::new(crate::plugins::Layers::with(stack));
+        self.rules = Mutex::new(None);
+        self
+    }
+
+    /// This folder's plugin layers, discovered from disk on first use: the server's door, and the
+    /// only one that reads the operator's config directory.
+    pub fn with_layers_from_disk(mut self) -> Bridge {
+        self.plugins = Mutex::new(crate::plugins::Layers::of_disk());
+        self.rules = Mutex::new(None);
+        self
+    }
+
     /// Start leticode on a worktree. A daemon this call started already holds its first
     /// session, so that is the session the brief runs in: one brief is one conversation. A daemon
     /// already up belongs to somebody else, so a new session is created and attached by id.
@@ -380,7 +435,7 @@ impl Bridge {
         if let Some(channel) = g.get(&h.session) {
             return channel.clone();
         }
-        let channel = crate::push::watch(h);
+        let channel = crate::push::watch(h, self.push_rules());
         g.insert(h.session.clone(), channel.clone());
         channel
     }
@@ -1317,6 +1372,29 @@ pub fn names() -> Vec<&'static str> {
     all
 }
 
+/// The same list with this folder's `tool_` layers after it (X25): what `tools/list` publishes and
+/// `tools/call` checks, so a name a layer declares is in both or neither.
+pub fn names_with(bridge: &Bridge) -> Vec<String> {
+    let native: Vec<String> = names().iter().map(|n| n.to_string()).collect();
+    let mut all = native.clone();
+    all.extend(crate::plugins::names(&bridge.folder(), &native));
+    all
+}
+
+/// The tool list, native first and the folder's plugin tools after them.
+pub fn list_with(bridge: &Bridge) -> Value {
+    let mut list = list();
+    let native: Vec<String> = names().iter().map(|n| n.to_string()).collect();
+    let declared = crate::plugins::tools(&bridge.folder(), &native);
+    if declared.is_empty() {
+        return list;
+    }
+    if let Some(tools) = list["tools"].as_array_mut() {
+        tools.extend(declared);
+    }
+    list
+}
+
 /// The seat's own verbs, registered here and served by `crate::seat` and `crate::seat_jobs`.
 pub const TODO_TOOLS: [&str; 6] = [
     "todo_write",
@@ -1486,9 +1564,20 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
         room if crate::rooms::TOOLS.contains(&room) => {
             crate::rooms::call(bridge.rooms(), room, args)
         }
+        // A `tool_` layer of this folder's stack (X25): listed after the native tools, and run
+        // through the same hook the daemon's runtime calls.
+        declared if names_with(bridge).iter().any(|n| n == declared) => {
+            let stack = bridge.plugin_stack().ok_or_else(|| {
+                format!(
+                    "`{declared}` is declared by a plugin layer, and this bridge could not build \
+                     the stack it answers from"
+                )
+            })?;
+            crate::plugins::call(&stack, declared, args, &bridge.folder())
+        }
         other => Err(format!(
             "unknown tool `{other}`; this build serves {}",
-            names().join(", ")
+            names_with(bridge).join(", ")
         )),
     }
 }

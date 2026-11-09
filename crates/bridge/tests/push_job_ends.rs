@@ -115,7 +115,11 @@ fn a_package_job_ending_under_a_running_turn_is_not_pushed() {
         .expect("the head attaches"),
     );
     let (tx, rx) = mpsc::channel();
-    letibot_bridge::push::watch(&head).attach(tx);
+    letibot_bridge::push::watch(
+        &head,
+        std::sync::Arc::new(letibot_bridge::push::Rules::none()),
+    )
+    .attach(tx);
     registry.set_jobs(SESSION, vec![running("j82015")]);
 
     // The job ends while the turn that started it is still running: the package reads that result

@@ -19,6 +19,7 @@ pub mod link;
 pub mod nag;
 pub mod notice;
 pub mod pane;
+pub mod push;
 pub mod review;
 pub mod steer;
 pub mod tool_call;
@@ -68,6 +69,7 @@ mod tests {
         "compact_",
         "review_",
         "brief_",
+        "push_",
     ];
 
     fn admitted(hook: &str) -> bool {
@@ -96,6 +98,8 @@ mod tests {
         assert!(admitted(review::BRIEF), "{}", review::BRIEF);
         assert!(admitted(review::VERDICT), "{}", review::VERDICT);
         assert!(admitted(brief::WORKTREE), "{}", brief::WORKTREE);
+        assert!(admitted(push::HOOK), "{}", push::HOOK);
+        assert!(admitted(&push::hook("channel")));
         for kind in notice::KINDS {
             let hook = notice::hook(kind);
             assert!(admitted(&hook), "{hook}");

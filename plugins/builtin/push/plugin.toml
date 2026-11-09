@@ -1,0 +1,9 @@
+name = "push"
+purpose = "what wakes a Claude Code session, in today's words: an addressed room line and every package event, and nothing that is only passing by"
+# **`push_channel`** is the one name the bridge asks, and `Manifest::admit` refuses any other: the
+# channel has one rule, so a second name would sit on the stack and never fire.
+hooks = ["push_channel"]
+# The decision is read off the facts the bridge hands over — no file, no program, nothing fetched —
+# which is why a layer can only reword what it was given.
+capabilities = []
+contract = 1

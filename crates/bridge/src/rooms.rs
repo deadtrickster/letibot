@@ -229,9 +229,11 @@ pub const PROTOCOL: u16 = letibot_room::ROOM_PROTOCOL_VERSION;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 const REDIAL_EVERY: Duration = Duration::from_secs(2);
 
-/// What the stream hands a message to: the bridge's MCP writer. `false` means it was not taken,
-/// so the message stays undelivered and the next replay offers it again.
-pub type Deliver = Arc<dyn Fn(&Value) -> bool + Send + Sync>;
+/// What the stream hands a message to: the bridge's sink, with the coordinator's `names_you` -
+/// which is what the push rule needs to say whether the line was addressed. `false` means it was not
+/// taken, so the message stays undelivered and the next replay offers it again; a line the rule
+/// SILENCED was taken, and the sink says so by answering `true`.
+pub type Deliver = Arc<dyn Fn(&Value, bool) -> bool + Send + Sync>;
 
 /// What one chat frame goes to: the message and the coordinator's `names_you`.
 pub type Hook = Arc<dyn Fn(&Value, bool) + Send + Sync>;
@@ -333,6 +335,37 @@ impl Attention {
     }
 }
 
+/// What a pushed message asks of its readers, in the room crate's own words (`Reach`): the fact a
+/// `push_channel` layer decides on, and the whole of R117's *only addressed* as a rule.
+pub fn reach(m: &Value, names_you: bool) -> &'static str {
+    if m["kind"] == "operator" {
+        return "operator";
+    }
+    if m["room"] == letibot_room::DM_ROOM && names_you {
+        return "dm";
+    }
+    match say_kind(m) {
+        // A note is a note whatever it sits in, and a blocker rings the room it was said in.
+        letibot_room::SayKind::Fyi => "passing",
+        letibot_room::SayKind::Blocker => "addressed",
+        _ if names_you => "addressed",
+        _ => "passing",
+    }
+}
+
+/// The `say` kind a frame claims, read off its refs as the room crate reads them, so a bridge line
+/// and a session's line agree about what a message asks.
+fn say_kind(m: &Value) -> letibot_room::SayKind {
+    m["refs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|r| r["kind"].as_str() == Some(letibot_room::chat::SAY))
+        .map(|r| letibot_room::SayKind::of(r["id"].as_str().unwrap_or("")))
+        .filter(|kind| kind.recorded())
+        .unwrap_or(letibot_room::SayKind::Post)
+}
+
 /// The `evidence` ref a frame carries: what backs its claim about the world. Trimmed and non-empty,
 /// as the room's own accessor reads it, so a blank id names nothing.
 fn evidence_in(m: &Value) -> Option<&str> {
@@ -393,6 +426,12 @@ pub fn line(m: &Value) -> String {
 /// The MCP channel notification for one message. `meta` keys are identifiers, as the channel
 /// contract wants.
 pub fn channel_notification(m: &Value) -> Value {
+    channel_notification_saying(m, &delivered(m, &handle()))
+}
+
+/// The same notification with the sentence a `push_channel` layer chose: the header and the meta are
+/// still built here, so a layer may word a line and never forge which message it is.
+pub fn channel_notification_saying(m: &Value, content: &str) -> Value {
     let mut meta = serde_json::Map::new();
     for key in ["room", "author", "kind", "to"] {
         if let Some(s) = m[key].as_str() {
@@ -403,7 +442,6 @@ pub fn channel_notification(m: &Value) -> Value {
     if let Some(t) = m["thread"].as_u64() {
         meta.insert("thread".into(), json!(t.to_string()));
     }
-    let content = delivered(m, &handle());
     json!({
         "jsonrpc": "2.0",
         "method": "notifications/claude/channel",
@@ -411,16 +449,24 @@ pub fn channel_notification(m: &Value) -> Value {
     })
 }
 
+/// Does this message name `me`, read off the frame itself: its `to`, an `@` mention in the text, or
+/// a group that includes the seat. The coordinator's own `names_you` is the authority when it comes
+/// with the message; this is the same fact for a row replayed from the inbox, which carries none.
+pub fn names_you(m: &Value, me: &str) -> bool {
+    let text = m["text"].as_str().unwrap_or("");
+    m["to"].as_str().is_some_and(|t| is_me(t, me))
+        || mentions_in(text).iter().any(|n| is_me(n, me))
+        || group_mention(text, me).is_some()
+}
+
 /// A pushed message as Claude Code reads it: the room's header line, then the text quoted. Built
 /// here from the frame's JSON, except the two claim flags, which are the room crate's so a bridge
 /// line and a session's line flag the same words.
-fn delivered(m: &Value, me: &str) -> String {
+pub fn delivered(m: &Value, me: &str) -> String {
     let text = m["text"].as_str().unwrap_or("");
     let to = m["to"].as_str();
     let named = mentions_in(text);
-    let names_you = to.is_some_and(|t| is_me(t, me))
-        || named.iter().any(|n| is_me(n, me))
-        || group_mention(text, me).is_some();
+    let names_you = names_you(m, me);
     let room = m["room"].as_str().unwrap_or("?");
     let kind = m["kind"].as_str().unwrap_or("session");
     let to_word = if names_you && room == "dm" {
@@ -822,18 +868,19 @@ impl RoomLink {
         }
     }
 
-    /// Start the stream: every pushed message that passes `to_me` goes to `deliver` once, in
-    /// order. A supervisor reopens a dropped connection and replays the inbox after the gap.
+    /// Start the stream: every pushed message goes to `deliver` once, in order, with the
+    /// coordinator's `names_you`. What passes is no longer a filter here - the bridge's own rule is
+    /// the `push_channel` layer's, and the client's sink asks it (`crate::push::room_push`), which is
+    /// how a project widens `to_me` to *every room message* (X25). A supervisor reopens a dropped
+    /// connection and replays the inbox after the gap.
     pub fn stream(&self, deliver: Deliver) {
         let weak = Arc::downgrade(&self.inner);
         let hook_weak = weak.clone();
         let live_deliver = deliver.clone();
         // A `Weak`, so the hook the link stores does not keep the link alive.
         self.on_chat(Arc::new(move |m, names_you| {
-            if Attention::ToMe.passes(m, names_you)
-                && let Some(inner) = hook_weak.upgrade()
-            {
-                let _ = RoomLink { inner }.deliver_once(m, &live_deliver);
+            if let Some(inner) = hook_weak.upgrade() {
+                let _ = RoomLink { inner }.deliver_once(m, names_you, &live_deliver);
             }
         }));
         let spawned = std::thread::Builder::new()
@@ -845,7 +892,7 @@ impl RoomLink {
     }
 
     /// `true` when this call handed `m` over and moved the mark.
-    fn deliver_once(&self, m: &Value, deliver: &Deliver) -> bool {
+    fn deliver_once(&self, m: &Value, names_you: bool, deliver: &Deliver) -> bool {
         let seq = m["seq"].as_u64().unwrap_or(0);
         let mut last = self
             .inner
@@ -855,8 +902,9 @@ impl RoomLink {
         if seq <= *last {
             return false;
         }
-        // The mark moves only once the writer took the message.
-        if deliver(m) {
+        // The mark moves only once the writer took the message - and a line the rule silenced was
+        // taken: it is seen, and it is nobody's to be owed again.
+        if deliver(m, names_you) {
             *last = seq;
             return true;
         }
@@ -866,7 +914,9 @@ impl RoomLink {
     /// A row the stream missed while it was down goes to the watchers too: an operator's verdict
     /// said during a redial is otherwise read by the model and never by the relay.
     fn replay(&self, m: &Value, deliver: &Deliver) {
-        if !self.deliver_once(m, deliver) {
+        // An inbox row carries no `names_you`: the row is what this seat's cursor held, and whether
+        // it names the seat is read off its own fields, as the sentence beside it reads them.
+        if !self.deliver_once(m, names_you(m, &handle()), deliver) {
             return;
         }
         let watchers: Vec<Hook> = self

@@ -150,7 +150,11 @@ fn an_idle_session_with_an_open_job_is_one_event_and_the_jobs_exit_is_another() 
         .expect("the head attaches"),
     );
     let (tx, rx) = mpsc::channel();
-    letibot_bridge::push::watch(&head).attach(tx);
+    letibot_bridge::push::watch(
+        &head,
+        std::sync::Arc::new(letibot_bridge::push::Rules::none()),
+    )
+    .attach(tx);
     // The head asks the daemon for its job table, which is what lists a job: the registry holds it.
     registry.set_jobs(SESSION, vec![running("j82015")]);
 

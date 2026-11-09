@@ -4,6 +4,12 @@
 //! A notification is recorded in a per-session outbox and leaves it only when a client takes it,
 //! so an event that happens while nobody is reading - a client between connections, a bridge
 //! restarted - is said once when the channel comes back, and never twice.
+//!
+//! Every notification is offered to the `push_channel` layer first (X25): the bridge's own answer is
+//! the fallback, a layer may silence or reword one, and an `ask` and a `failed` are never silenced.
+//! The room's own lines go through the same door ([`room_push`]), which is where R117's *every room
+//! message or only addressed* became a rule a project writes. The queue follower's moves and the
+//! seat's own nag are not a package's events and are pushed as they always were.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -13,6 +19,9 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+
+use letibot_plugin::push::{self, Decision, Input, Native};
+use letibot_plugins::Stack;
 
 use crate::head::{Attention, Entry, Head, LimitNews};
 
@@ -162,14 +171,145 @@ impl Outbox {
 /// Watch `head`, returning the outbox its events are recorded in; the caller attaches the client
 /// it has. One watcher per session: a client that attaches again calls [`Outbox::attach`], because
 /// a second watcher on one head would record every event twice.
-pub fn watch(head: &Arc<Head>) -> Arc<Outbox> {
+pub fn watch(head: &Arc<Head>, rules: Arc<Rules>) -> Arc<Outbox> {
     let outbox = Outbox::at(outbox_path(head));
     let weak = Arc::downgrade(head);
     let recording = outbox.clone();
     let _ = std::thread::Builder::new()
         .name(format!("leticode-push-{}", head.session))
-        .spawn(move || run(weak, recording));
+        .spawn(move || run(weak, recording, rules));
     outbox
+}
+
+/// The push rule (X25): the `push_channel` layer of this folder's stack, and the bridge's own answer
+/// when there is nobody to ask.
+///
+/// A layer that traps, answers something unreadable or passes is the bridge's own rule, said once on
+/// stderr - a channel that goes quiet because a layer broke is a session nobody hears, which is the
+/// one failure this hook must not have.
+pub struct Rules {
+    stack: Option<Arc<Stack>>,
+    /// A layer's refusal said once, so a broken layer is not a line per event.
+    told: AtomicBool,
+}
+
+/// The facts one push is decided on. `native` is what the bridge would do with no layer, and it is
+/// the fallback a silent, trapping or unreadable answer falls to.
+pub struct At<'a> {
+    pub event: &'a str,
+    pub session: &'a str,
+    pub room: Option<&'a str>,
+    pub to: Option<&'a str>,
+    pub text: &'a str,
+    pub native: bool,
+}
+
+impl Rules {
+    /// No layer: every push is what the bridge itself decided.
+    pub fn none() -> Rules {
+        Rules {
+            stack: None,
+            told: AtomicBool::new(false),
+        }
+    }
+
+    /// This folder's stack.
+    pub fn with(stack: Arc<Stack>) -> Rules {
+        Rules {
+            stack: Some(stack),
+            told: AtomicBool::new(false),
+        }
+    }
+
+    /// Offer one push to the stack, and answer what reaches the client.
+    pub fn decide(&self, at: &At<'_>) -> Decision {
+        let input = Input {
+            v: letibot_plugin::V,
+            event: at.event.to_string(),
+            session: at.session.to_string(),
+            room: at.room.map(str::to_string),
+            to: at.to.map(str::to_string),
+            text: at.text.to_string(),
+            native: Native { push: at.native },
+        };
+        let Some(stack) = self.stack.as_deref() else {
+            return Decision::native(&input);
+        };
+        let Ok(asked) = serde_json::to_value(&input) else {
+            return Decision::native(&input);
+        };
+        let resolved = stack.call(push::HOOK, &asked);
+        let answered = resolved
+            .answer
+            .as_ref()
+            .map(|answer| push::read(answer).and_then(|out| out.decide(&input)));
+        if let Some(Err(why)) = &answered {
+            self.say_once(why);
+        }
+        match answered {
+            Some(Ok(decision)) => decision,
+            // No layer answered, every one passed, or the answer was refused: today's rule stands,
+            // and a trap is said once so a broken layer is not a silence nobody can explain.
+            _ => {
+                let broke: Vec<String> = resolved.failures.iter().map(|f| f.to_string()).collect();
+                if !broke.is_empty() {
+                    self.say_once(&broke.join("; "));
+                }
+                Decision::native(&input)
+            }
+        }
+    }
+
+    fn say_once(&self, why: &str) {
+        if !self.told.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "letibot-mcp: a push layer was refused, so the bridge's own rule decides this one: \
+                 {why}"
+            );
+        }
+    }
+}
+
+/// A room line through the same rule: what the message asks of its readers is the event, the sentence
+/// the client would read is the text, and today's `to_me` filter is the bridge's own answer.
+pub fn room_push(rules: &Rules, m: &Value, names_you: bool) -> Decision {
+    let me = crate::rooms::handle();
+    rules.decide(&At {
+        event: crate::rooms::reach(m, names_you),
+        session: &me,
+        room: m["room"].as_str(),
+        to: m["to"].as_str(),
+        text: &crate::rooms::delivered(m, &me),
+        native: crate::rooms::Attention::ToMe.passes(m, names_you),
+    })
+}
+
+/// One already-built notification through the rule: `None` when a layer silenced it, and the note with
+/// the layer's words when it reworded one.
+pub fn offer(rules: &Rules, session: &str, note: (String, Value)) -> Option<(String, Value)> {
+    let (key, mut note) = note;
+    let event = note["params"]["meta"]["event"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let text = note["params"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let decision = rules.decide(&At {
+        event: &event,
+        session,
+        room: None,
+        to: None,
+        text: &text,
+        // Every event this watcher records is one the bridge pushed before there was a hook.
+        native: true,
+    });
+    if !decision.push {
+        return None;
+    }
+    note["params"]["content"] = Value::String(decision.text);
+    Some((key, note))
 }
 
 /// Where a session's channel is kept: one file per folder and session, so a bridge restarted on
@@ -183,7 +323,7 @@ pub fn outbox_path(head: &Head) -> PathBuf {
     ))
 }
 
-fn run(weak: Weak<Head>, outbox: Arc<Outbox>) {
+fn run(weak: Weak<Head>, outbox: Arc<Outbox>, rules: Arc<Rules>) {
     // The ring's head at the first pass: a job that settled before this bridge held the session
     // is history, and `leticode_events` is where history is read.
     let mut job_cursor = match weak.upgrade() {
@@ -214,12 +354,15 @@ fn run(weak: Weak<Head>, outbox: Arc<Outbox>) {
         let who = format!("leticode `{}` ({})", head.session, head.worktree.display());
         let session = head.session.clone();
         drop(head);
-        if let Some((key, note)) = limit {
-            outbox.record(key, note);
+        if let Some(note) = limit.and_then(|note| offer(&rules, &session, note)) {
+            outbox.record(note.0, note.1);
             continue;
         }
         if let Some((key, note)) = event {
-            outbox.record(key, note);
+            // A limit event is reported instead of this pass's event, so it `continue`s above.
+            if let Some((key, note)) = offer(&rules, &session, (key, note)) {
+                outbox.record(key, note);
+            }
         }
         job_cursor = page.next;
         // A ring entry that fell off before this pass is not said: `leticode_events` is where a
@@ -236,12 +379,15 @@ fn run(weak: Weak<Head>, outbox: Arc<Outbox>) {
                 continue;
             }
             let (key, note) = job_event(&who, &session, e);
-            outbox.record(key, note);
+            if let Some((key, note)) = offer(&rules, &session, (key, note)) {
+                outbox.record(key, note);
+            }
         }
         // Between turns with work still open is the state an orchestrator has no other event
         // for: the turn ended, the jobs did not, and nothing will wake `wait` again.
         if word == "idle"
             && let Some((key, note)) = idle_event(&who, &session, &jobs, rows)
+            && let Some((key, note)) = offer(&rules, &session, (key, note))
         {
             outbox.record(key, note);
         }
@@ -550,6 +696,171 @@ fn write(path: &Path, g: &Kept) -> bool {
         return false;
     }
     true
+}
+
+/// The push rule's own tests: a layer on a table (so no engine is built), and the binary's built-in
+/// layer through the real one - the two halves of *the rule is a layer* and *with no layer it is
+/// today's*.
+#[cfg(test)]
+mod rules_tests {
+    use super::*;
+    use crate::plugins::testing::Answers;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    /// A directory of its own per test, removed when it ends.
+    struct Dir(PathBuf);
+
+    impl Dir {
+        fn new(tag: &str) -> Dir {
+            let p = std::env::temp_dir()
+                .join(format!("letibot-bridge-rule-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            std::fs::create_dir_all(&p).unwrap();
+            Dir(p)
+        }
+    }
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// One layer answering `push_channel` with `answer`, loaded by a table instead of an engine.
+    fn layer(dir: &Dir, answer: Option<&str>) -> Arc<Stack> {
+        let one = dir.0.join("push");
+        std::fs::create_dir_all(&one).unwrap();
+        std::fs::write(
+            one.join("plugin.toml"),
+            "name = \"push\"\npurpose = \"a test's push rule\"\nhooks = [\"push_channel\"]\n\
+             capabilities = []\ncontract = 1\n",
+        )
+        .unwrap();
+        std::fs::write(one.join("plugin.wasm"), b"a table, not a module").unwrap();
+        let mut table = BTreeMap::new();
+        table.insert("push_channel".to_string(), answer.map(str::to_string));
+        let stack = Stack::discover(
+            Some(&dir.0),
+            None,
+            None,
+            Arc::new(Answers {
+                table,
+                traps: false,
+            }),
+        );
+        assert!(stack.failures().is_empty(), "{:?}", stack.failures());
+        Arc::new(stack)
+    }
+
+    /// The rule this hook exists for. A layer may reword an ask and a failure and may not take either
+    /// away - the refusal is the contract's, and the notification goes in the bridge's own words.
+    #[test]
+    fn a_push_layer_cannot_suppress_an_ask() {
+        let dir = Dir::new("ask");
+        let rules = Rules::with(layer(&dir, Some("{\"push\":false}")));
+        for event in ["ask", "failed"] {
+            let at = At {
+                event,
+                session: "s-1",
+                room: None,
+                to: None,
+                text: "leticode `s-1` asks (bash): run the suite",
+                native: true,
+            };
+            let decision = rules.decide(&at);
+            assert!(decision.push, "a `{event}` is not a layer's to silence");
+            assert_eq!(decision.text, at.text, "the bridge's own words stand");
+            // The same event with words of the layer's: pushed, and saying them.
+            let reworded = Rules::with(layer(&dir, Some("{\"push\":true,\"text\":\"read me\"}")));
+            let said = reworded.decide(&At { event, ..at });
+            assert_eq!(said.text, "read me");
+        }
+        // And every other event that layer silences is silenced: it is a rule, not a broken layer.
+        let quiet = rules.decide(&At {
+            event: "turn_ended",
+            session: "s-1",
+            room: None,
+            to: None,
+            text: "leticode `s-1` ended its turn",
+            native: true,
+        });
+        assert!(!quiet.push);
+    }
+
+    /// A layer that passes, traps or answers nonsense is the bridge's own rule: a channel that goes
+    /// quiet because a layer broke is a session nobody hears.
+    #[test]
+    fn a_broken_layer_loses_no_push() {
+        let dir = Dir::new("broken");
+        for rules in [
+            Rules::with(layer(&dir, None)),
+            Rules::with(layer(&dir, Some("not json at all"))),
+            Rules::with(layer(&dir, Some("{}"))),
+        ] {
+            let at = At {
+                event: "turn_ended",
+                session: "s-1",
+                room: None,
+                to: None,
+                text: "leticode `s-1` ended its turn",
+                native: true,
+            };
+            let decision = rules.decide(&at);
+            assert!(decision.push);
+            assert_eq!(decision.text, at.text);
+        }
+    }
+
+    /// The binary's own push layer, through the real engine - one module, not the whole table: what
+    /// `install` does for all of them, for the one layer this rule is.
+    fn builtin_push() -> Arc<Stack> {
+        let mut stack = Stack::discover(None, None, None, Arc::new(crate::plugins::RanoLoader));
+        let layer = letibot_builtins::table()
+            .iter()
+            .find(|b| b.name == "push")
+            .expect("the binary carries a push layer");
+        stack
+            .register_builtin_bytes(layer.name, layer.manifest, layer.wasm)
+            .expect("the built-in push layer loads");
+        Arc::new(stack)
+    }
+
+    /// R117's *only the addressed ones*, as the rule it became: the built-in layer says today's
+    /// answer, and a bridge with no layer at all says the same two things.
+    #[test]
+    fn addressed_only_is_a_push_rule() {
+        let me = crate::rooms::handle();
+        let frame = |to: Option<&str>, text: &str| json!({"seq": 1, "room": "host", "kind": "session", "author": "s-a", "to": to, "text": text, "refs": []});
+        let passing = frame(Some("s-b"), "the gate is red on wait_jobs");
+        let mine = frame(Some(&me), "build is green");
+        let mention = frame(None, &format!("@{me} have a look"));
+
+        let rules = Rules::with(builtin_push());
+        assert!(
+            !room_push(&rules, &passing, false).push,
+            "a line that names somebody else is not a wake"
+        );
+        let pushed = room_push(&rules, &mine, true);
+        assert!(pushed.push);
+        assert!(pushed.text.contains("build is green"), "{}", pushed.text);
+        assert!(
+            room_push(&rules, &mention, true).push,
+            "an @-mention names the seat"
+        );
+
+        // Installing the built-in moves nothing: no layer and the built-in agree, which is what a
+        // bottom of the stack that is today's behaviour means.
+        let native = Rules::none();
+        for (m, names_you) in [(&passing, false), (&mine, true), (&mention, true)] {
+            assert_eq!(
+                room_push(&native, m, names_you).push,
+                room_push(&rules, m, names_you).push,
+                "{}",
+                m["text"]
+            );
+        }
+    }
 }
 
 #[cfg(test)]

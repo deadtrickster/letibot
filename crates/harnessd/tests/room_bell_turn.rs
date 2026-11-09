@@ -369,14 +369,18 @@ fn the_clients_that_cannot_hear_a_room_event_say_so_where_a_person_looks() {
                 "letibot_room::claims_operator(",
                 "letibot_room::unbacked(",
                 "letibot_room::OPERATOR",
+                "letibot_room::DM_ROOM",
+                "letibot_room::SayKind::",
+                "letibot_room::SayKind {",
+                "letibot_room::chat::SAY",
             ]
             .iter()
             .map(|item| used.matches(item).count())
             .sum();
             assert_eq!(
                 named, allowed,
-                "`bridge` may name only the protocol number, the upgrade hint, the operator's name \
-                 and the peer-text checks from the room crate"
+                "`bridge` may name only the protocol number, the upgrade hint, the operator's name, \
+                 the peer-text checks and the say kinds from the room crate"
             );
             continue;
         }
