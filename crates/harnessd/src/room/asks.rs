@@ -206,6 +206,7 @@ mod tests {
             gone_since_ms: None,
             escalated: false,
             cannot: String::new(),
+            why: String::new(),
             state,
         }
     }

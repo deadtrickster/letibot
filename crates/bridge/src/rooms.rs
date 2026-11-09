@@ -1000,10 +1000,11 @@ fn why(v: &Value) -> String {
 }
 
 /// The tool names this module serves.
-pub const TOOLS: [&str; 12] = [
+pub const TOOLS: [&str; 13] = [
     "rooms",
     "room_read",
     "room_say",
+    "room_ask",
     "room_dm",
     "room_roster",
     "room_inbox",
@@ -1025,8 +1026,8 @@ pub fn tool_list() -> Vec<Value> {
         tool(
             "rooms",
             &format!(
-                "The rooms `{me}` sees: `host` and one `project/<key>` per project (`label` is its \
-                 folder), with members, newest `last_seq` and `unread`."
+                "The rooms `{me}` sees: `host` and one `project/<key>` per project (`label` its \
+                 folder), with members, `last_seq` and `unread`."
             ),
             json!({ "type": "object", "properties": {} }),
         ),
@@ -1048,13 +1049,11 @@ pub fn tool_list() -> Vec<Value> {
         tool(
             "room_say",
             &format!(
-                "Say something as `{me}`. `to` is PRIVATE: the dm between you, no room, and it wakes \
-                 them. `@name` in the text is a public mention that wakes them in this room, \
-                 inviting them if they cannot see it. `cc@<name>` is one bridge, `cc@<folder>` every \
-                 bridge of a folder; a bare `cc` is refused when several are connected. `thread` \
-                 answers a seq and stays in its room. `refs` points at a todo \
-                 (`<session>/<title>`) or a queue row. Text over 4000 bytes is refused, never cut. \
-                 A refusal is the room's etiquette, not an error."
+                "Say something as `{me}`. `to` is PRIVATE: the dm, no room, and it wakes them. \
+                 `@name` is a public mention that wakes them here, inviting them if they cannot see \
+                 it. `cc@<name>` is one bridge, `cc@<folder>` all bridges of a folder. `thread` \
+                 answers a seq and stays in its room. `refs`: a todo or queue row. Over 4000 bytes \
+                 is refused, never cut. A refusal is the room's etiquette, not an error."
             ),
             json!({
                 "type": "object",
@@ -1091,6 +1090,22 @@ pub fn tool_list() -> Vec<Value> {
                     }
                 },
                 "required": ["text"]
+            }),
+        ),
+        tool(
+            "room_ask",
+            "Ask whoever owns a `path` or a `topic`: the room finds the owner and says why. `to` asks \
+             a session instead. Only `answer` settles it.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "question": { "type": "string", "description": "What you want to know." },
+                    "path": { "type": "string", "description": "Repo-relative: `crates/room/src/server.rs`." },
+                    "topic": { "type": "string", "description": "A topic word, instead of a path." },
+                    "to": { "type": "string", "description": "A session, when you know which." },
+                    "room": { "type": "string", "description": "`host` (default) or `project/<key>`." }
+                },
+                "required": ["question"]
             }),
         ),
         tool(
@@ -1137,9 +1152,8 @@ pub fn tool_list() -> Vec<Value> {
         tool(
             "room_inbox",
             &format!(
-                "What `{me}` missed since its cursor: `to_me` (default: names you, the operator's \
-                 unaddressed lines, dms), `mentions` or `all`. `ack: true` moves the cursor past \
-                 what this returned."
+                "What `{me}` missed since its cursor: `to_me` (default), `mentions` or `all`. \
+                 `ack: true` moves the cursor past it."
             ),
             json!({
                 "type": "object",
@@ -1354,8 +1368,13 @@ fn with_lines(mut reply: Value) -> Value {
         } else {
             a["asker"].as_str().unwrap_or("?")
         };
+        // Why this session: a scope ask is resolved, and the room says which rule resolved it.
+        let why = match a["why"].as_str().filter(|w| !w.is_empty()) {
+            Some(why) => format!(" - {why}"),
+            None => String::new(),
+        };
         format!(
-            "#{} ({peer}: {:?}) - {}",
+            "#{} ({peer}: {:?}) - {}{why}",
             a["seq"],
             a["question"].as_str().unwrap_or(""),
             ask_state(&a["state"])
@@ -1376,6 +1395,13 @@ fn with_lines(mut reply: Value) -> Value {
             .map(|_| vec![ask_line(&reply["ask"], false)])
             .unwrap_or_default(),
         Some("asks") => asks,
+        // A post the room did not refuse may still carry its advice: the owner an `ask` could have
+        // reached, or why the question went to the room.
+        Some("said") => reply["note"]
+            .as_str()
+            .filter(|n| !n.is_empty())
+            .map(|n| vec![n.to_string()])
+            .unwrap_or_default(),
         _ => reply["rows"]
             .as_array()
             .map(|rows| rows.iter().map(line).collect())
@@ -1383,7 +1409,7 @@ fn with_lines(mut reply: Value) -> Value {
     };
     if matches!(
         reply["type"].as_str(),
-        Some("history" | "inbox" | "asked" | "asks")
+        Some("history" | "inbox" | "asked" | "asks" | "said")
     ) {
         reply["lines"] = json!(described);
     }
@@ -1474,6 +1500,29 @@ pub fn call_in(
             let len = f["text"].as_str().map_or(0, str::len);
             link.request(&f)
                 .map(|v| if dm { warn_long_dm(v, len) } else { v })
+        }
+        // A scope ask: the room resolves who owns the path or topic and holds the question for
+        // them. Nothing owning it is not an error - the room carries it to the room.
+        "room_ask" => {
+            let mut f = json!({
+                "type": "ask",
+                "id": link.id(),
+                "room": arg_opt_str(args, "room")?.unwrap_or_else(|| "host".into()),
+                "question": arg_str(args, "question")?,
+            });
+            for key in ["to", "path", "topic"] {
+                if let Some(v) = arg_opt_str(args, key)?.filter(|v| !v.trim().is_empty()) {
+                    f[key] = json!(v);
+                }
+            }
+            if !["to", "path", "topic"].iter().any(|key| !f[*key].is_null()) {
+                return Err(
+                    "`room_ask` puts the question to an owner: give it a `path`, a `topic` or a \
+                     `to` - nothing was sent to the room."
+                        .to_string(),
+                );
+            }
+            link.request(&f).map(with_lines)
         }
         "room_dm" => {
             let mut f = json!({

@@ -1684,10 +1684,10 @@ mod tests {
     /// to `tools/list` and forgotten in `call` (or the other way round) is the defect this pairs
     /// against.
     #[test]
-    fn the_thirty_two_tools_are_listed_with_schemas() {
+    fn the_thirty_three_tools_are_listed_with_schemas() {
         let listed = list();
         let tools = listed["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 32, "{listed}");
+        assert_eq!(tools.len(), 33, "{listed}");
         let mut named: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         named.sort_unstable();
         let mut want = names();

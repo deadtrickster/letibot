@@ -751,7 +751,14 @@ impl SessionRoom {
             .client
             .request(&request)
             .map_err(|e| format!("the room at {} did not answer: {e}", self.socket.display()))?;
-        let said = answer_sentence(&response, &self.session)?;
+        let mut said = answer_sentence(&response, &self.session)?;
+        // What the room wants the sender to know about a post it did not refuse: the owner an `ask`
+        // could have reached, or why a scope ask went to the room instead.
+        if let Response::Said { note, .. } = &response
+            && !note.is_empty()
+        {
+            said = format!("{said}\n{note}");
+        }
         // The operator's half of a read: what the store says about each claim in it. Asked for,
         // never assumed - a check is a second store read behind every message.
         if verb == "read" && args.get("check").and_then(|v| v.as_bool()) == Some(true) {
@@ -1307,6 +1314,16 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
                 kind: letibot_room::SayKind::of(&s("kind")),
             }
         }
+        // The scope ask: a path or a topic, and the room finds whoever owns it. `to` is kept so a
+        // model that already knows the session can say so, exactly as before.
+        "ask" => Request::Ask {
+            id,
+            room: chat_room(&s("room")),
+            to: s("to"),
+            path: s("path"),
+            topic: s("topic"),
+            question: s("text"),
+        },
         "read" => Request::Read {
             room: chat_room(&s("room")),
             since: n("since").unwrap_or(0),
@@ -1344,8 +1361,8 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
         other => {
             return Err(format!(
                 "`{other}` is not a room verb — the verbs are post, claim, claim_item, beat, \
-                 waiting, done, abandon, dispute, rule, queue, holding, reminders, questions, say, read, \
-                 invite, leave, answer, decline, asks and signals"
+                 waiting, done, abandon, dispute, rule, queue, holding, reminders, questions, say, \
+                 ask, read, invite, leave, answer, decline, asks and signals"
             ));
         }
     })
@@ -1596,12 +1613,16 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
             } else {
                 &ask.asker
             };
-            let what = format!(
+            let mut what = format!(
                 "ask #{} (`{peer}`: \"{}\") - {}",
                 ask.seq,
                 ask.question.trim(),
                 ask.state.line()
             );
+            // Why this session and not another: a scope ask is resolved, not addressed.
+            if !ask.why.is_empty() {
+                what.push_str(&format!(" — {}", ask.why));
+            }
             if !ask.open() {
                 what
             } else if ask.escalated {

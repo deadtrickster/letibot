@@ -72,11 +72,11 @@ impl Tool for RoomTool {
         ToolSchema::new(
             TOOL,
             format!(
-                "The host room. A TAG is a lock on a scarce thing (RAM, a port): one live claim, \
-                 others refused; `rule` is the arbiter's. `say`: `to` is a private dm, `@name` in \
-                 the text a public mention; both wake them. Only `answer` and `decline` settle an \
-                 ask. `own` a scope (path glob or topic) so others see who has it; edits in it \
-                 renew it; `hand` waits for the receiver's `accept`. `status` is your one line, it \
+                "The host room. A TAG is a lock (RAM, a port): one live claim, others refused; \
+                 `rule` is the arbiter's. `say`: `to` is a private dm, `@name` in the text a public \
+                 mention; both wake them. An `ask` names a `path` or `topic` and the room asks its \
+                 owner; only `answer` and `decline` settle one. `own` a scope so others see who has \
+                 it; edits renew it; `hand` waits for `accept`. `status` is your one line; it \
                  expires. `claude-code` and `cc@...` are other seats. `host` takes `@name` or \
                  `kind: announce`; a refusal is etiquette, not an error. {beat} {STANDING_RULE}"
             ),
@@ -88,10 +88,10 @@ impl Tool for RoomTool {
                         "enum": [
                             "post", "claim", "claim_item", "beat", "waiting", "done", "abandon",
                             "dispute", "rule", "queue", "holding", "reminders", "questions",
-                            "say", "read", "invite", "leave", "asks", "answer", "decline",
+                            "say", "ask", "read", "invite", "leave", "asks", "answer", "decline",
                             "own", "hand", "accept", "release", "status"
                         ],
-                        "description": "Needs: `post` tag+body; `claim`/`queue` tag; `beat`/`done`/`claim_item`/`waiting` item; `abandon` item+why; `dispute` item+says; `rule` question+decision; `say` text; `invite` room+session; `answer`/`decline` ask+text; `own`/`hand`/`accept`/`release` scope."
+                        "description": "`post` tag+body; `claim`/`queue` tag; an item verb an item; `rule` question+decision; `say`/`ask` text; `answer`/`decline` ask+text; `own`/`hand`/`accept`/`release` scope."
                     },
                     "tag": {
                         "type": "string",
@@ -111,7 +111,7 @@ impl Tool for RoomTool {
                     },
                     "text": {
                         "type": "string",
-                        "description": "The message, your `waiting`/`status` line, or an `answer`/`decline` reply."
+                        "description": "The words: a message, your line, or an `answer`."
                     },
                     "why": {
                         "type": "string"
@@ -131,11 +131,19 @@ impl Tool for RoomTool {
                     },
                     "to": {
                         "type": "string",
-                        "description": "`say`: one principal, PRIVATE, dm only. `rule`/`hand`: the new holder."
+                        "description": "`say`: a principal, PRIVATE, dm only. `ask`: a session, else `path`/`topic`. `rule`/`hand`: the holder."
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "`ask`: a repo path; its owner is asked."
+                    },
+                    "topic": {
+                        "type": "string",
+                        "description": "`ask`: a topic word."
                     },
                     "room": {
                         "type": "string",
-                        "description": "`project` (default), `host`, `dm` (read only), or `project/<key>`."
+                        "description": "`project` (default), `host`, `dm` (read), `project/<key>`."
                     },
                     "since": {
                         "type": "integer",
@@ -147,7 +155,7 @@ impl Tool for RoomTool {
                     },
                     "thread": {
                         "type": "integer",
-                        "description": "`say`/`own`: the seq you answer. `read`: that thread."
+                        "description": "`say`/`own`: the seq answered. `read`: that thread."
                     },
                     "todo": {
                         "type": "string",
@@ -155,11 +163,11 @@ impl Tool for RoomTool {
                     },
                     "queue": {
                         "type": "string",
-                        "description": "`say`: a merge-queue row id."
+                        "description": "`say`: a queue row id."
                     },
                     "evidence": {
                         "type": "string",
-                        "description": "`say`: a sha or gate/queue row id backing a claim, else it reads `unbacked`."
+                        "description": "`say`: a sha or row id backing a claim; else `unbacked`."
                     },
                     "check": {
                         "type": "boolean",
@@ -167,7 +175,7 @@ impl Tool for RoomTool {
                     },
                     "session": {
                         "type": "string",
-                        "description": "Id or name; default you."
+                        "description": "Id or name (you)."
                     },
                     "scope": {
                         "type": "string",
@@ -180,7 +188,7 @@ impl Tool for RoomTool {
                     "attachments": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "`say`: up to 4 paths, 8 MiB each (png, jpeg, gif, webp, text)."
+                        "description": "`say`: up to 4 file paths, 8 MiB each."
                     },
                     "kind": {
                         "type": "string",
@@ -361,6 +369,7 @@ fn dispatch(
             }
         }
         "say" if !nonempty(args, "text") => Some("text"),
+        "ask" if !nonempty(args, "text") => Some("text"),
         "own" | "accept" | "release" | "hand" if !nonempty(args, "scope") => Some("scope"),
         "hand" if !nonempty(args, "to") => Some("to"),
         "answer" | "decline" => {
@@ -393,6 +402,14 @@ fn dispatch(
                 "the `room` verb `{verb}` cannot be run without `{field}` — nothing was sent to \
                  the room."
             ),
+        ));
+    }
+    if verb == "ask" && !(nonempty(args, "path") || nonempty(args, "topic") || nonempty(args, "to"))
+    {
+        return Err(Invocation::failed(
+            "`ask` names who to ask",
+            "the `room` verb `ask` puts a question to an owner: name a `path`, a `topic`, or the \
+             session's `to` — nothing was sent to the room.",
         ));
     }
     if verb != "say" && args.get("attachments").is_some_and(|v| !v.is_null()) {
@@ -702,6 +719,52 @@ mod tests {
             assert!(verbs.contains(&want), "`{want}` is not a verb: {verbs:?}");
         }
         assert!(schema.parameters["properties"]["ask"].is_object());
+    }
+
+    /// `ask` puts a question to an owner: a `path`, a `topic` or a session, and the words. A call
+    /// that names nobody never reaches the room, and the schema says which fields there are.
+    #[test]
+    fn ask_names_a_scope_or_a_session_and_the_question() {
+        let link = Recorder::new(Ok("ask #3 (`s-a`: \"which port?\") - open"));
+        let (ok, text) = invoke(
+            link.clone(),
+            json!({"verb": "ask", "path": "crates/room/src/server.rs", "text": "which port?"}),
+        );
+        assert!(ok, "{text}");
+        {
+            let seen = link.seen.lock().unwrap();
+            assert_eq!(seen[0].0, "ask");
+            assert_eq!(seen[0].1["path"], json!("crates/room/src/server.rs"));
+        }
+        let link = Recorder::new(Ok("ask #4 (`s-b`: \"which user?\") - open"));
+        let (ok, _) = invoke(
+            link.clone(),
+            json!({"verb": "ask", "topic": "wire", "text": "which user?"}),
+        );
+        assert!(ok);
+        assert_eq!(link.seen.lock().unwrap()[0].1["topic"], json!("wire"));
+        // Nothing named, nothing sent - and the sentence says what to name.
+        for args in [
+            json!({"verb": "ask", "text": "anyone?"}),
+            json!({"verb": "ask", "path": "crates/room/**"}),
+        ] {
+            let link = Recorder::new(Ok("never"));
+            let (ok, text) = invoke(link.clone(), args);
+            assert!(!ok, "{text}");
+            assert!(
+                link.seen.lock().unwrap().is_empty(),
+                "the room was not asked"
+            );
+        }
+        let schema = RoomTool::new(Arc::new(NoRoom)).schema();
+        let verbs = schema.parameters["properties"]["verb"]["enum"].to_string();
+        assert!(verbs.contains("\"ask\""), "{verbs}");
+        for field in ["path", "topic", "to", "text"] {
+            assert!(
+                schema.parameters["properties"][field].is_object(),
+                "`{field}` is a field"
+            );
+        }
     }
 
     /// The beat paragraph is the link's, and the two links say opposite things: the sentence a

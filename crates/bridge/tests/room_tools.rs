@@ -239,6 +239,12 @@ fn serve_one(
                     "room": "host", "asker": "s-arango", "target": "claude-code",
                     "question": "which port?", "asked_ms": 1, "state": state}})
             }
+            // A scope ask: the room resolved an owner for the path, and holds the question.
+            "ask" => json!({"type": "asked", "id": f["id"], "ask": {"seq": 4212,
+                "room": "host", "asker": "claude-code", "target": "s-arango",
+                "question": f["question"], "asked_ms": 1,
+                "why": "`s-arango` holds a live lease on `crates/room/**`",
+                "state": {"state": "open"}}}),
             other => json!({"type": "refused", "id": null, "why": {"refused": other}}),
         };
         if writeln!(w, "{reply}").is_err() {
@@ -839,4 +845,52 @@ fn a_claude_code_seat_can_be_asked_and_can_answer() {
             "{tool} sent a frame with a field missing"
         );
     }
+}
+
+/// The seat asks by scope: the frame carries the path and the words, and the room's answer says
+/// which rule put the question on which session. A call that names nobody reaches no room.
+#[test]
+fn a_scope_ask_carries_the_path_and_shows_the_owner() {
+    let fake = Fake::start("scope-ask");
+    let link = RoomLink::at(&fake.path);
+
+    let asked = call(
+        &link,
+        "room_ask",
+        json!({"path": "crates/room/src/server.rs", "question": "which port?"}),
+    )
+    .unwrap();
+    assert_eq!(asked["type"], "asked");
+    let frame = &fake.frames("ask")[0];
+    assert_eq!(frame["path"], "crates/room/src/server.rs");
+    assert_eq!(frame["question"], "which port?");
+    assert!(frame["id"].is_string(), "a request id goes with it");
+    assert_eq!(frame["room"], "host", "the seat's default room");
+    let line = asked["lines"][0]
+        .as_str()
+        .unwrap_or_else(|| panic!("{asked}"));
+    assert!(line.contains("s-arango"), "{line}");
+    assert!(line.contains("live lease on `crates/room/**`"), "{line}");
+
+    // A topic and a named session go the same way.
+    call(
+        &link,
+        "room_ask",
+        json!({"topic": "wire", "question": "which version?"}),
+    )
+    .unwrap();
+    assert_eq!(fake.frames("ask")[1]["topic"], "wire");
+    call(
+        &link,
+        "room_ask",
+        json!({"to": "s-b", "question": "which port?"}),
+    )
+    .unwrap();
+    assert_eq!(fake.frames("ask")[2]["to"], "s-b");
+
+    // Nothing named is refused here, and no frame is written.
+    let before = fake.frames("ask").len();
+    let why = call(&link, "room_ask", json!({"question": "anyone?"})).expect_err("refused");
+    assert!(why.contains("`path`"), "{why}");
+    assert_eq!(fake.frames("ask").len(), before);
 }

@@ -3401,6 +3401,17 @@ impl Server {
         if !matches!(seat, Seat::Session | Seat::External) {
             return refuse(crate::Refused::AskNotASession);
         }
+        // The room the ask lands in: the asker's own, unless it names one. A scope is resolved in
+        // THAT room's project - a `cc@` seat has no project of its own, and a question about a
+        // project's file is about that project's owners.
+        let room = match room.trim() {
+            "" => Self::default_chat_room(seat, project),
+            r => r.to_string(),
+        };
+        if room == chat::DM_ROOM || !self.may_see(name, seat, project, &room) {
+            return refuse(crate::Refused::UnknownChatRoom { room });
+        }
+        let project = chat::project_of_room(&room).unwrap_or(project);
         let scope = match crate::scope::Scope::of(path, topic) {
             Ok(Some(scope)) => scope,
             Ok(None) => {
@@ -3421,13 +3432,6 @@ impl Server {
         });
         let why = placed.why(&scope);
         let Some(target) = placed.target().map(str::to_string) else {
-            let room = match room.trim() {
-                "" => Self::default_chat_room(seat, project),
-                r => r.to_string(),
-            };
-            if room == chat::DM_ROOM || !self.may_see(name, seat, project, &room) {
-                return refuse(crate::Refused::UnknownChatRoom { room });
-            }
             let mut answered = self.say_and_push(
                 id,
                 &room,
@@ -3445,7 +3449,7 @@ impl Server {
             }
             return answered;
         };
-        match self.ask_to(project, seat, name, id, room, &target, question, now) {
+        match self.ask_to(project, seat, name, id, &room, &target, question, now) {
             Response::Asked { id, ask } => {
                 let ask = self
                     .inner

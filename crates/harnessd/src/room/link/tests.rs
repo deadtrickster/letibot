@@ -84,6 +84,7 @@ fn every_verb_becomes_a_frame_with_a_request_id() {
         json!({"verb": "asks"}),
         json!({"verb": "answer", "ask": 4211, "text": "5433"}),
         json!({"verb": "decline", "ask": 4211, "text": "not my area"}),
+        json!({"verb": "ask", "path": "crates/room/src/server.rs", "text": "which port?"}),
     ];
     for args in cases {
         let verb = args["verb"].as_str().unwrap();
@@ -104,6 +105,53 @@ fn every_verb_becomes_a_frame_with_a_request_id() {
             "{verb}: a mutating frame needs a request id and a read must not have one: {frame:?}"
         );
     }
+}
+
+/// The scope ask: the verb carries the path (or the topic, or a session) into the frame, and a
+/// sentence about a resolved ask says which rule put the question on which session.
+#[test]
+fn ask_carries_a_scope_and_its_sentence_says_why() {
+    match request_of(
+        "ask",
+        &json!({"verb": "ask", "path": " crates/room/src/server.rs ", "text": " which port? "}),
+    )
+    .expect("a frame")
+    {
+        Request::Ask {
+            path,
+            topic,
+            to,
+            question,
+            ..
+        } => {
+            assert_eq!(path, "crates/room/src/server.rs");
+            assert_eq!(question, "which port?");
+            assert!(topic.is_empty() && to.is_empty(), "a scope, not a session");
+        }
+        other => panic!("an ask is an ask: {other:?}"),
+    }
+    let ask = letibot_room::AskView {
+        seq: 4212,
+        room: "host".into(),
+        asker: "s-a".into(),
+        target: "s-b".into(),
+        question: "which port?".into(),
+        asked_ms: 1,
+        gone_since_ms: None,
+        escalated: false,
+        cannot: String::new(),
+        why: "`s-b` holds a live lease on `crates/room/**`".into(),
+        state: letibot_room::AskState::Open,
+    };
+    let said = answer_sentence(
+        &Response::Asked {
+            id: "q1".into(),
+            ask,
+        },
+        "s-a",
+    )
+    .unwrap();
+    assert!(said.contains("live lease on `crates/room/**`"), "{said}");
 }
 
 /// The two verbs that settle an ask carry the number and the words, and the sentence a model
@@ -144,6 +192,7 @@ fn an_answer_becomes_a_reply_and_its_sentence_names_the_ask() {
         gone_since_ms: gone.then_some(2),
         escalated: false,
         cannot: String::new(),
+        why: String::new(),
         state,
     };
     let answered = answer_sentence(
@@ -244,6 +293,7 @@ fn a_say_that_names_nobody_says_it_asked_nobody() {
             attachments: Vec::new(),
             text: text.into(),
         },
+        note: String::new(),
     };
     let plain = answer_sentence(&said(None, "arango session: two questions"), "s-a").unwrap();
     assert!(plain.contains("nobody is asked to reply"), "{plain}");
