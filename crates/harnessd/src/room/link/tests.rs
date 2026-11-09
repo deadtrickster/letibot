@@ -306,7 +306,8 @@ fn a_sessions_unaddressed_chat_wakes_every_other_session() {
     other
         .call(
             "say",
-            &serde_json::json!({"room": "host", "text": "arango session: two questions"}),
+            &serde_json::json!({"room": "host", "text": "arango session: two questions",
+                "kind": "announce"}),
         )
         .expect("a say");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
@@ -476,7 +477,8 @@ fn a_host_line_between_others_does_not_wake_a_project_session() {
     other
         .call(
             "say",
-            &serde_json::json!({"room": "host", "text": "anyone seen the fleet key?"}),
+            &serde_json::json!({"room": "host", "text": "anyone seen the fleet key?",
+                "kind": "announce"}),
         )
         .expect("a say");
     other
@@ -1237,7 +1239,7 @@ fn a_say_with_an_attachment_uploads_it_and_references_it() {
         .call(
             "say",
             &serde_json::json!({"room": "host", "text": "look at this",
-                "attachments": [shot.to_string_lossy()]}),
+                "kind": "announce", "attachments": [shot.to_string_lossy()]}),
         )
         .expect("the say");
     assert!(said.starts_with("said #"), "{said}");

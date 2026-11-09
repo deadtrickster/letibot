@@ -265,7 +265,7 @@ mod tests {
         other
             .call(
                 "say",
-                &json!({"room": "host", "text": "pushed, not polled"}),
+                &json!({"room": "host", "text": "pushed, not polled", "kind": "announce"}),
             )
             .expect("the session's word lands");
         let reached = |head: &str| -> bool {
@@ -306,7 +306,7 @@ mod tests {
         let said = me
             .call(
                 "say",
-                &json!({"room": "host", "text": "passing by: build is red"}),
+                &json!({"room": "host", "text": "passing by: build is red",  "kind": "announce"}),
             )
             .expect("the word lands");
         let seq: u64 = said
@@ -470,7 +470,10 @@ mod tests {
         // inbox to begin with.
         seat.ask("h2", json!({"type": "rooms"}));
         for i in 0..3 {
-            let said = a1.call("say", &json!({"room": "host", "text": format!("note {i}")}));
+            let said = a1.call(
+                "say",
+                &json!({"room": "host", "text": format!("note {i}"), "kind": "announce"}),
+            );
             said.expect("the session's word lands");
         }
         // h1 has read to the head of the log.

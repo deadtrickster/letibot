@@ -79,18 +79,18 @@ fn sessions_the_operator_and_the_daemons_facts_share_the_rooms() {
         "an author is not woken by itself"
     );
 
-    // A session's unaddressed line in the host room wakes no other session: the host room is
-    // nobody's own room, so chatter there is read when it is read, not a turn for everyone.
+    // A session's announcement in the host room wakes no other session: the host room is
+    // nobody's own room, so a line there is read when it is read, not a turn for everyone.
     a1.call(
         "say",
-        &json!({"room": "host", "text": "just thinking aloud"}),
+        &json!({"room": "host", "text": "just thinking aloud", "kind": "announce"}),
     )
     .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(500));
     let woken = wake::take("s-chat-b1");
     assert!(
         !woken.iter().any(|l| l.contains("just thinking aloud")),
-        "host chatter woke a session of another project: {woken:?}"
+        "a host announcement woke a session of another project: {woken:?}"
     );
 
     // The operator's unaddressed word in the host room wakes both.

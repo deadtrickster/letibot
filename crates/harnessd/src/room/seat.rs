@@ -443,7 +443,10 @@ mod tests {
 
         let say = |text: &str| {
             other
-                .call("say", &serde_json::json!({"room": "host", "text": text}))
+                .call(
+                    "say",
+                    &serde_json::json!({"room": "host", "text": text, "kind": "announce"}),
+                )
                 .expect("say");
         };
         let rang_for_me = || {
