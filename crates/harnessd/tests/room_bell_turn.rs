@@ -352,8 +352,8 @@ fn the_clients_that_cannot_hear_a_room_event_say_so_where_a_person_looks() {
         let manifest = root.join("crates").join(crate_name).join("Cargo.toml");
         let text = std::fs::read_to_string(&manifest)
             .unwrap_or_else(|e| panic!("{} is readable: {e}", manifest.display()));
-        // The bridge takes the protocol number from the room crate and nothing else, so a
-        // dependency is allowed there while no other `letibot_room` item is named in its source.
+        // The bridge takes the protocol number and the pure text checks of peer lines from the
+        // room crate, so a dependency is allowed while nothing that connects is named in its source.
         if crate_name == "bridge" && text.contains("letibot-room") {
             let mut used = String::new();
             for entry in std::fs::read_dir(root.join("crates/bridge/src")).expect("bridge src") {
@@ -362,11 +362,20 @@ fn the_clients_that_cannot_hear_a_room_event_say_so_where_a_person_looks() {
                 used.push_str(&src);
             }
             let named = used.matches("letibot_room::").count();
-            let allowed = used.matches("letibot_room::ROOM_PROTOCOL_VERSION").count()
-                + used.matches("letibot_room::wire::upgrade_hint").count();
+            let allowed: usize = [
+                "letibot_room::ROOM_PROTOCOL_VERSION",
+                "letibot_room::wire::upgrade_hint",
+                "letibot_room::EVIDENCE",
+                "letibot_room::claims_operator(",
+                "letibot_room::unbacked(",
+            ]
+            .iter()
+            .map(|item| used.matches(item).count())
+            .sum();
             assert_eq!(
                 named, allowed,
-                "`bridge` may name only the protocol number and the upgrade hint from the room crate"
+                "`bridge` may name only the protocol number, the upgrade hint and the peer-text \
+                 checks from the room crate"
             );
             continue;
         }

@@ -21,8 +21,9 @@ letibot-sessionlog.workspace = true
 # A transcript row is the source of the last assistant message, and it is this crate's
 # type — the session log re-exports its rows, and matching on them needs the type named.
 letibot-transcript.workspace = true
-# Only `ROOM_PROTOCOL_VERSION`: the number this bridge says in its hello is the room's own, so a
-# bump cannot leave the bridge on the old one.
+# The protocol number this bridge says in its hello is the room's own, so a bump cannot leave the
+# bridge on the old one; and the two claim readings, so a room line and a bridge line flag the same
+# words the same way - one rule, one place.
 letibot-room.workspace = true
 # The store the package sessions of every daemon on this box are listed from.
 letibot-tokencore.workspace = true

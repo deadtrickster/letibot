@@ -414,6 +414,36 @@ fn claude_code_cannot_post_as_the_operator_or_a_session() {
     }
 }
 
+/// What backs a `say`'s claim is sent as an `evidence` ref, and a `say` that names nothing sends
+/// no such ref: the frame keeps one shape for everything a message points at.
+#[test]
+fn room_say_carries_evidence_as_a_ref() {
+    let fake = Fake::start("evidence");
+    let link = RoomLink::at(&fake.path);
+    let said = call(
+        &link,
+        "room_say",
+        json!({"text": "landed", "evidence": "2b97a092",
+            "refs": [{"kind": "todo", "id": "s-a/x"}]}),
+    )
+    .unwrap();
+    assert_eq!(
+        said["message"]["refs"],
+        json!([{"kind": "todo", "id": "s-a/x"}, {"kind": "evidence", "id": "2b97a092"}])
+    );
+    assert_eq!(
+        fake.frames("say")[0]["refs"],
+        json!([{"kind": "todo", "id": "s-a/x"}, {"kind": "evidence", "id": "2b97a092"}])
+    );
+
+    call(&link, "room_say", json!({"text": "who has the disk?"})).unwrap();
+    assert_eq!(
+        fake.frames("say")[1]["refs"],
+        json!([]),
+        "nothing was named, so nothing rides the refs"
+    );
+}
+
 #[test]
 fn a_message_to_claude_code_reaches_the_notification_path() {
     let fake = Fake::start("stream");
