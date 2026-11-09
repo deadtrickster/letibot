@@ -77,6 +77,20 @@ pub fn of(cfg: &crate::config::Config) -> Result<Perimeter, String> {
     )
 }
 
+/// The grants a session's perimeter asks for on a view built on ANOTHER machine: its own table's
+/// first, then `[boundary]`'s, which is the order a seat applies them. Both are checked here, so a
+/// file this box refuses refuses the session; a `~/` path stays as written, because that machine's
+/// home is not this one's and only its own shell can say where it is.
+pub fn grants_for_placement(
+    p: &Perimeter,
+    workspace: &Path,
+    home: &Path,
+) -> Result<Vec<boundary::HostGrant>, String> {
+    let mut out = p.host_grants(home)?;
+    out.extend(boundary::host_grants(&load(workspace)?, home)?);
+    Ok(out)
+}
+
 /// The perimeter a CHILD of `parent` gets: the parent's at the tight level, narrowed by the table
 /// `named` (the `subagent` one when the spawn named none) and the config's tables, widened by
 /// what the operator granted for this spawn. A child's own children start from here.
@@ -331,6 +345,50 @@ mod tests {
         let none = lines(Level::Wide, &Mode::WRITES_ALLOWED, &dir).join("\n");
         assert!(none.contains("probe: not measured here"), "{none}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A placement's view is asked for the same grants a seat on this box holds: the perimeter's own
+    /// table and `[boundary]`'s, each as written, because a `~/` there is that machine's home. A file
+    /// this box refuses refuses the session, rather than opening an unchecked view there.
+    #[test]
+    fn the_grants_a_placement_is_asked_for_are_the_seats_own() {
+        let dir = workspace(
+            "placement-grants",
+            "[boundary]\ngrants_ro = [\"/opt/data\"]\n",
+        );
+        let home = std::path::Path::new("/h");
+        let top =
+            of_level(Level::Wide, &tables(&dir).expect("the tables parse")).expect("the top level");
+        let got = grants_for_placement(&top, &dir, home).expect("both are grantable");
+        assert!(
+            got.iter()
+                .any(|g| g.path == "/opt/data" && g.key() == "[boundary] grants_ro"),
+            "the operator's own grants travel, unexpanded: {got:?}"
+        );
+
+        // A project file may not make a path writable, and it may not reach a credential store: the
+        // rules run before anything is handed over.
+        let rw = workspace(
+            "placement-grants-rw",
+            "[boundary]\ngrants_rw = [\"~/scratch\"]\n",
+        );
+        let p = of_level(Level::Wide, &tables(&rw).expect("the tables parse"));
+        let err = p
+            .and_then(|p| grants_for_placement(&p, &rw, home))
+            .expect_err("a project's rw grant");
+        assert!(err.contains("user file"), "{err}");
+        let ssh = workspace(
+            "placement-grants-ssh",
+            "[boundary]\ngrants_ro = [\"~/.ssh/id_ed25519\"]\n",
+        );
+        let p = of_level(Level::Wide, &tables(&ssh).expect("the tables parse"));
+        let err = p
+            .and_then(|p| grants_for_placement(&p, &ssh, home))
+            .expect_err("a key");
+        assert!(err.contains(".ssh"), "{err}");
+        for d in [dir, rw, ssh] {
+            let _ = std::fs::remove_dir_all(&d);
+        }
     }
 
     /// The project's `[perimeter.subagent]` table narrows every child of that project, and a
