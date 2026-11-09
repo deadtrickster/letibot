@@ -1479,6 +1479,29 @@ pub(crate) fn pragmas(conn: &Connection) -> Result<()> {
 }
 
 impl Store {
+    /// `queue_mute` joined the modes batch after v27 without a version of its own, so a store past
+    /// v27 may lack it. Added only where its sibling `project_mode` is: a split set's project file
+    /// holds neither.
+    fn repair_queue_mute(&self) -> Result<()> {
+        let conn = self.conn();
+        let has = |t: &str| -> Result<bool> {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [t],
+                |r| r.get::<_, i64>(0),
+            )? > 0)
+        };
+        if !has("project_mode")? || has("queue_mute")? {
+            return Ok(());
+        }
+        for stmt in modes::MODES_SQL.split(';') {
+            if stmt.contains("EXISTS queue_mute") {
+                conn.execute_batch(stmt)?;
+            }
+        }
+        Ok(())
+    }
+
     /// The process's one connection to this store file: SQLite caches a descriptor per inode inside
     /// the process and releases it only when the last connection closes, so a connection per caller
     /// is a descriptor leak wearing a pool's clothes.
@@ -1670,6 +1693,7 @@ impl Store {
             // and cannot be recreated, and before v2 `SCHEMA_SQL` only ran on an empty file.
             Some(v) if v < SCHEMA_VERSION => {
                 self.migrate_from(v)?;
+                self.repair_queue_mute()?;
                 self.conn().execute("DELETE FROM schema_version", [])?;
                 self.conn().execute(
                     "INSERT INTO schema_version (version) VALUES (?1)",
@@ -1689,6 +1713,7 @@ impl Store {
             // floor existed, which a newer build could not tell from a store whose schema broke it.
             Some(_) => {
                 self.ensure_reader_floor(SCHEMA_VERSION)?;
+                self.repair_queue_mute()?;
                 return Ok(());
             }
             None => {}

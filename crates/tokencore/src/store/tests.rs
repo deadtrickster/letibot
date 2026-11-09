@@ -3386,3 +3386,34 @@ fn a_store_from_before_the_corpus_index_is_migrated_onto_it() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+/// A store at this version that lacks `queue_mute`, the table the modes batch gained without a
+/// version, gets it on open: the split refuses a store whose tables are not this schema's.
+#[test]
+fn a_current_store_missing_queue_mute_gets_it_on_open() {
+    let dir = std::env::temp_dir().join(format!(
+        "store-queue-mute-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("one.db");
+    drop(Store::open(&path).unwrap());
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch("DROP TABLE queue_mute")
+        .unwrap();
+    let s = Store::open_reader(&path).unwrap();
+    assert!(
+        s.connection().prepare("SELECT 1 FROM queue_mute").is_err(),
+        "the fixture dropped it"
+    );
+    drop(s);
+    let s = Store::open_private(&path).unwrap();
+    s.connection()
+        .prepare("SELECT 1 FROM queue_mute")
+        .expect("the open put it back");
+    drop(s);
+    let _ = std::fs::remove_dir_all(&dir);
+}
