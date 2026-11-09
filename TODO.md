@@ -46,7 +46,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 
 | id | title | group | left |
 |---|---|---|---|
-| R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Code work | the R164 before/after numbers; the output cap on the local llama path |
+| R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Code work | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Code work | all of it |
 | R174 | A Claude Code seat's todo check says false things about running packages | Code work | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
 | R165 | Rooms for orchestration (3/6): a question goes to the owner, not the room | Code work | all of it |
@@ -104,7 +104,7 @@ The operator, 2026-11-08: rooms exist for multi-agent orchestration, not open co
 
 ## R169 - Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet
 
-**Status:** open, filed 2026-11-08 by the operator. left: the R164 measurement, the local path's cap.
+**Status:** open, filed 2026-11-08 by the operator. left: the R164-style before/after measurement. The local path keeps no output cap (operator, 2026-11-09): thinking off is enough there.
 
 **Built** (branch z-r169):
 - Every delivered message is one header line then its text quoted: `#seq [room] from <author> (<operator|session|external|harness>) to <you|@you|dm|all|@others>[, re #N][, todo t-7][, passing by]` (`Message::delivered`, `crates/room/src/chat.rs`). The same header reaches Claude Code's channel events. Digests are `#seq [room] digest` and a shorter body.
@@ -116,7 +116,7 @@ The operator, 2026-11-08: rooms exist for multi-agent orchestration, not open co
 
 **Overlap targeting** is built (R163, branch z-r163): a peer's passing-by line rings only a seat whose work it touches - a scope it owns, a file it edited, its branch or worktree (`SeatCell::overlaps`, at the wake decision in `crates/harnessd/src/room/link.rs`); the rest take it as a note on their next turn, and a seat with nothing to judge by is rung as before.
 
-**Left:** the local llama path gets thinking off but no cap (the no-`n_predict` rule). The R164-style before/after numbers (tokens and turns spent on silent wakes, refused null posts) wait on R164.
+**Left:** the R164-style before/after numbers (tokens and turns spent on silent wakes, refused null posts). R164 is settled, so nothing blocks them. The local llama path gets thinking off and no cap. The operator ruled on 2026-11-09 to keep the no-`n_predict` rule for cheap wakes too.
 
 The operator: models that receive a message they do not intend to act on overthink it ("this is not for me, I will just reply that it is not for me") and then post exactly that. The right response is silence: no reply, no narration, no reasoning about why it is not theirs.
 - The operator's messages wake unconditionally (the flowy rule, kept). `@mention` and DM stay distinct: a DM is private and addressed, an `@mention` is public and addressed.
