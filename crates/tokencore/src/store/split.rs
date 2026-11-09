@@ -444,6 +444,9 @@ pub fn open_handle(dir: &Path, key: &str, create: bool) -> Result<Store> {
     let shared_path = dir.join(SHARED_FILE);
     let project_path = projects.join(format!("{key}.db"));
     if create {
+        // A daemon is the first to touch a fresh directory, so its door refuses an un-split one
+        // too: creating a set beside `sessions.db` hides every session that file holds.
+        refuse_unsplit(dir)?;
         std::fs::create_dir_all(&projects).map_err(|e| {
             StoreError::Refused(format!("could not make {}: {e}", projects.display()))
         })?;

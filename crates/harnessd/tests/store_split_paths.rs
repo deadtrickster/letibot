@@ -207,6 +207,29 @@ fn a_directory_that_still_holds_sessions_db_is_refused_with_the_migrations_name(
     );
 }
 
+/// The daemon's own door refuses it too: a daemon that created the set beside `sessions.db` would
+/// hide every session that file holds, and a resume would open each one a second time.
+#[test]
+fn a_daemon_does_not_create_a_set_beside_sessions_db() {
+    let fixture = Fixture::new();
+    let cfg = fixture.config();
+    Store::open(&fixture.data.join("sessions.db")).expect("a single-file store");
+    let refused = cfg
+        .store_at()
+        .expect("a store is configured")
+        .open()
+        .err()
+        .expect("the daemon's open is refused");
+    assert!(
+        refused.to_string().contains("letibot-migrate-split"),
+        "the refusal names the command that splits it: {refused}"
+    );
+    assert!(
+        !fixture.data.join(SHARED_FILE).exists(),
+        "the refused open created no shared file"
+    );
+}
+
 /// The other half of that rule: once a data directory IS a split store, a `--store` that names
 /// the old `sessions.db` inside it is refused BY NAME too - a daemon that went on writing that
 /// file would be writing a store nothing reads.
