@@ -50,6 +50,7 @@ pub mod embeddings;
 pub mod etalon;
 pub mod etalon_map;
 pub mod etalon_oracle;
+pub mod exe_stamp;
 pub mod facts;
 pub mod footprint;
 pub mod github;

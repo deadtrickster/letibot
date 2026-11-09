@@ -2519,7 +2519,19 @@ impl<'a> Sessions<'a> {
         if self.base.idle_exit_after.is_some() && self.idle_exit_at.is_none() {
             return Some(Instant::now());
         }
-        self.next_idle_at()
+        let exe = self
+            .base
+            .idle_exit_after
+            .map(|_| Instant::now() + crate::exe_stamp::CHECK);
+        [self.next_idle_at(), exe].into_iter().flatten().min()
+    }
+
+    /// Whether this daemon should leave now because its executable was replaced and nothing holds
+    /// it. Only a daemon with an idle window: one that never idles out, the room's, keeps running.
+    pub fn exe_replaced_exit_due(&self) -> Option<std::path::PathBuf> {
+        self.base.idle_exit_after?;
+        let path = crate::exe_stamp::replaced()?;
+        self.idle_exit_refusal().is_none().then_some(path)
     }
 
     /// When the earliest limit clock falls due, as an `Instant` from the harnesses' own clocks: the

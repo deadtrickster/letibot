@@ -349,6 +349,15 @@ impl Daemon {
                     // And the daemon itself goes when nothing has needed it for its window
                     // (`Config::idle_exit_after`), last on the pass so a review or a nag the pass just started
                     // holds it.
+                    if let Some(exe) = sessions.exe_replaced_exit_due() {
+                        eprintln!(
+                            "  {} was rebuilt and nothing holds this daemon - exiting so the next \
+                             start runs the new build; every session is in the store",
+                            exe.display()
+                        );
+                        self.registry().close();
+                        break;
+                    }
                     if sessions.idle_exit_due() {
                         eprintln!(
                             "  idle for {} min: no head, turn, job, subagent, monitor or queue work \
