@@ -339,7 +339,7 @@ pub struct FirecodeSpec {
     /// started in when the two are different, because the copy is the guest's whole world. Filled
     /// by `Config::vm_copy_source`, the one resolution of what this session's VM copies.
     pub source: PathBuf,
-    /// Copies live under here - `~/.cache/letibot/firecode` by default.
+    /// Copies live under here - `$XDG_CACHE_HOME/letibot/firecode`, else `~/.cache/letibot/firecode`.
     pub cache: PathBuf,
     /// A name for the copy: the child session's id.
     pub name: String,
@@ -374,13 +374,12 @@ pub struct FirecodeSpec {
 
 impl FirecodeSpec {
     pub fn new(source: impl Into<PathBuf>, name: impl Into<String>) -> Self {
-        let cache = std::env::var_os("HOME")
-            .map(|h| {
-                PathBuf::from(h)
-                    .join(".cache")
-                    .join("letibot")
-                    .join("firecode")
-            })
+        // `$XDG_CACHE_HOME` first, as the XDG spec has it: a test points it at its own root.
+        let cache = std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+            .map(|c| c.join("letibot").join("firecode"))
             .unwrap_or_else(|| PathBuf::from(".letibot-firecode"));
         FirecodeSpec {
             source: source.into(),

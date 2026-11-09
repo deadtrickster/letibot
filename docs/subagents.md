@@ -42,6 +42,14 @@ default, libvirt/qemu when a device must be passed through - and the VM is the b
 mode is allow-all and no gate question is ever asked, because nothing it does reaches the host except
 through doors the host holds. The downgrade composes on top; it is the caller's explicit ask.
 
+**A VM's life is the turn's, so the turn does not end over a job still running in it.** A child that
+backgrounds work and answers is HELD: the VM stays up, the job's settlement rings the child's bell, the
+wake runs a turn that names the job's exit, and the VM comes down when nothing is left running and
+nothing is left owed. A job killed anyway - the child stopped, the daemon shutting down, the turn
+failed - is recorded and reported as `lost with its VM` and never as the exit its `firecode in` client
+came back with, and the child's finish is not a `Done` over it: `task_result` answers
+`TaskStatus::Killed` (an abstention) with the child's own words and the kill.
+
 Placement never widens permissions, and a placement the box cannot honour is refused by name with
 nothing spawned: `where: firecode` on a box with no `firecode` binary, or `host:NAME` for a machine the
 operator never declared, is a failed call and not a silent fallback to the host. Running here and
