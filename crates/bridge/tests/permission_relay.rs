@@ -92,6 +92,14 @@ impl Fake {
         }
     }
 
+    /// The coordinator hangs up on everybody, as a restart does. What is pushed until the bridge
+    /// redials reaches the log only.
+    fn hang_up(&self) {
+        for c in self.conns.lock().unwrap().drain(..) {
+            let _ = c.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
     fn frames(&self, kind: &str) -> Vec<Value> {
         self.frames
             .lock()
@@ -166,9 +174,14 @@ fn with_client(bridge: &Bridge, body: impl FnOnce(&ChannelInput, &SharedOut)) ->
     let out2 = out.clone();
     std::thread::scope(|scope| {
         let h = scope.spawn(|| mcp::serve(BufReader::new(input.reader()), out2, bridge).unwrap());
-        body(&input, &out);
+        // A failed assertion still closes the input: the scope otherwise waits on `serve` forever
+        // and the failure reads as a hang.
+        let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&input, &out)));
         input.close();
         h.join().unwrap();
+        if let Err(panic) = body {
+            std::panic::resume_unwind(panic);
+        }
     });
     out.lines()
 }
@@ -356,6 +369,37 @@ fn an_unknown_id_sends_nothing_and_costs_one_line() {
         "{said}"
     );
     assert_eq!(said.lines().count(), 1, "one line: {said}");
+}
+
+/// A verdict said while the bridge was offline still lands: the redial's catch-up reaches the relay,
+/// not only the model.
+#[test]
+fn a_verdict_said_while_the_bridge_redials_still_lands() {
+    let fake = Fake::start("redial");
+    let bridge = Bridge::with_room_socket(&fake.path)
+        .streaming_rooms()
+        .relaying();
+    let lines = with_client(&bridge, |input, out| {
+        input.send(INIT);
+        input.send(INITIALIZED);
+        wait_until(|| !fake.conns.lock().unwrap().is_empty());
+        input.send(&request("abcde"));
+        wait_until(|| fake.frames("dm").len() == 1);
+        let hellos = fake.frames("hello").len();
+        fake.hang_up();
+        fake.push(
+            "operator",
+            "operator",
+            "dm",
+            Some("claude-code"),
+            "yes abcde",
+        );
+        wait_until(|| fake.frames("hello").len() > hellos);
+        wait_until(|| !verdicts(&out.lines()).is_empty());
+    });
+    let sent = verdicts(&lines);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0]["params"]["behavior"], "allow");
 }
 
 /// A verdict covers one call: the second `yes` for an id that is already answered sends nothing.

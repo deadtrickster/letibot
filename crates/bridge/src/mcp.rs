@@ -79,6 +79,12 @@ fn read_loop<R: BufRead, W: Write>(
         }
         let answer = match serde_json::from_str::<Value>(line.trim()) {
             Ok(request) => {
+                // The relay reads the operator's verdicts off the room, and puts its own answer
+                // on the same writer; off unless the config asked for it. Before the stream, so
+                // the first message pushed is read by the relay too.
+                if request["method"] == "notifications/initialized" {
+                    bridge.watch_permissions(push.clone());
+                }
                 // The client has applied `initialize`: from here a channel notification is
                 // legal, so the room's stream may start.
                 if request["method"] == "notifications/initialized" && bridge.stream_rooms() {
@@ -92,11 +98,6 @@ fn read_loop<R: BufRead, W: Write>(
                     bridge.push_queue(push.clone());
                     // And the seat's plan check, whose nag is a channel frame like the rest.
                     bridge.push_seat(push.clone());
-                }
-                // The relay reads the operator's verdicts off the room, and puts its own answer
-                // on the same writer; off unless the config asked for it.
-                if request["method"] == "notifications/initialized" {
-                    bridge.watch_permissions(push.clone());
                 }
                 handle(bridge, &request)
             }

@@ -833,7 +833,7 @@ impl RoomLink {
             if Attention::ToMe.passes(m, names_you)
                 && let Some(inner) = hook_weak.upgrade()
             {
-                RoomLink { inner }.deliver_once(m, &live_deliver);
+                let _ = RoomLink { inner }.deliver_once(m, &live_deliver);
             }
         }));
         let spawned = std::thread::Builder::new()
@@ -844,7 +844,8 @@ impl RoomLink {
         }
     }
 
-    fn deliver_once(&self, m: &Value, deliver: &Deliver) {
+    /// `true` when this call handed `m` over and moved the mark.
+    fn deliver_once(&self, m: &Value, deliver: &Deliver) -> bool {
         let seq = m["seq"].as_u64().unwrap_or(0);
         let mut last = self
             .inner
@@ -852,11 +853,30 @@ impl RoomLink {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if seq <= *last {
-            return;
+            return false;
         }
         // The mark moves only once the writer took the message.
         if deliver(m) {
             *last = seq;
+            return true;
+        }
+        false
+    }
+
+    /// A row the stream missed while it was down goes to the watchers too: an operator's verdict
+    /// said during a redial is otherwise read by the model and never by the relay.
+    fn replay(&self, m: &Value, deliver: &Deliver) {
+        if !self.deliver_once(m, deliver) {
+            return;
+        }
+        let watchers: Vec<Hook> = self
+            .inner
+            .observing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        for watcher in watchers {
+            watcher(m, true);
         }
     }
 
@@ -895,7 +915,7 @@ fn supervise(weak: Weak<Inner>, deliver: Deliver) {
             // A gap or a first start: what the cursor still holds for this seat.
             if let Ok(reply) = link.inbox(Attention::ToMe, 200) {
                 for m in reply["rows"].as_array().into_iter().flatten() {
-                    link.deliver_once(m, &deliver);
+                    link.replay(m, &deliver);
                 }
             }
         }
