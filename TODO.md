@@ -56,7 +56,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R162 | A granted directory does not cover what is under it, and every subagent asks for the same path again | Code work | a grant covers what is under it at that access, a tree's grants are shared with its subagents, one path is one card, and the card names the asker — built; left: an end-to-end run against a real `bwrap` view, which this box cannot open |
 | R74 | What the 2026-10-11 landings left open | Code work | item 34, recorded OPEN and not scheduled (35, 36 and 39 settled) |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | leticl's `:turn-finished` arm (`src/session/seq-gap.lisp:254`) does not read `ends_turn`, so every round's end is drawn as the turn's end |
-| R121 | What a command boundary holds is hardcoded and invisible | Code work | built: items 1-8, a `leticode` seat with no shell has its file tools held to its own perimeter, and R95's carry-over calls `boundary::env_refusal`. left only what is ruled, not pending: `grants_rw` and `secrets` are the user file's alone (operator ruling 2026-11-05), a perimeter's `env` reaches no remote or VM command |
+| R121 | What a command boundary holds is hardcoded and invisible | Code work | built: items 1-8, a `leticode` seat with no shell has its file tools held to its own perimeter, R95's carry-over calls `boundary::env_refusal`, and a perimeter's `env` reaches a remote placement's and a firecode VM's commands. left: `grants_rw` and `secrets` are the user file's alone (operator ruling 2026-11-05), and two doors still carry no perimeter env - a job in a LOCAL firecode VM and the `firecode_only` route |
 | R126 | Reviewers fan out to the declared hosts, opt-in | Needs the operator | setting `[queue] reviewer_hosts` in the operator's `leticode.toml` and one live review on lab2x1 (the fan-out is landed and tested against fakes, never against a real host) |
 | R125 | Script plugin layers: where a JavaScript engine comes from, and the JS-side contract | Needs the operator | the two decisions, then `docs/plugins-plan.md` step 11: no JavaScript engine is available offline here, and a vendored one compiled in would run freely as a built-in |
 | R117 | The leticode MCP bridge pushes package and queue events into Claude Code as a channel | Code work | built: the plugin (`claude-plugin/`), its marketplace (`.claude-plugin/marketplace.json`), the two skills it carries, the room waiter as a plugin monitor, and the one `/plugin install` line in `install.sh --help` and the READMEs. left: a self-published channel still needs `--dangerously-load-development-channels`, permission relay is not declared, and no real `claude` has loaded it (the box has none) |
@@ -804,7 +804,7 @@ Heads: this one reads it in `turn_busy` and the bridge gates `Turn::Idle` on it.
 
 ## R121 - What a command boundary holds is hardcoded and invisible
 
-Status: BUILT. Items 1-8 are done: 1-4 (except 4's tool half) on branch z-r121, their remainders and 8 after it, and 5-7 on R121's perimeter branch - and the row's last two are in: a `leticode` seat that seats no shell has its file tools held to its own perimeter, and R95's carry-over refuses through `boundary::env_refusal`. The macOS seatbelt suite passed on the Mac (22 tests, including the new hide test).
+Status: BUILT. Items 1-8 are done: 1-4 (except 4's tool half) on branch z-r121, their remainders and 8 after it, and 5-7 on R121's perimeter branch - and the row's last three are in: a `leticode` seat that seats no shell has its file tools held to its own perimeter, R95's carry-over refuses through `boundary::env_refusal`, and a perimeter's `env` pairs reach the commands of a remote placement and of a firecode VM, by a channel that is never an argv when the value is a secret. The macOS seatbelt suite passed on the Mac (22 tests, including the new hide test).
 
 The paths a confined command sees are two constant lists: `GRANT_CANDIDATES` in
 `crates/tools/src/exec/confine.rs` (`~/.cargo`, `~/.rustup`, `~/.local/bin`, mise's data and
@@ -902,6 +902,25 @@ Closed after z-r121, on R121's own branch (item 3's probe line, item 4's tool ha
   not measured here" and names the command that does measure one. Tests:
   `the_probe_lines_say_what_was_measured` and `the_report_shows_what_the_probe_measured`.
 
+Closed on R121's perimeter-env branch (a placement's environment):
+
+- The row's last item: a perimeter's `env` pairs reach a REMOTE placement's commands and a firecode
+  VM's. `Perimeter::env_pairs` splits them by provenance (a literal is spellable, a value a file or a
+  command gave is a secret), `place_the_tools` hands them to `SshSpec` and `FirecodeBackend::with_env`,
+  and the door filters them again with `boundary::env_for_a_placement`, naming on the placement's
+  notes what it dropped. A host keeps every secret off every argv the way it already did - the
+  descriptor the command's own secrets ride, and a job's launcher file - and `remote_pieces` now asks
+  for `--args` when a value is a secret by PROVENANCE and not only by name. A firecode VM takes the
+  pairs in the command string it wraps and refuses a secret one by name: `firecode in` has no
+  descriptor, so the only other channel is the host's own `ps`. The named `secrets` grant stays the
+  seat's injection and does not cross. Tests: `a_perimeters_env_reaches_a_remote_command_and_a_job`,
+  `a_perimeters_secret_value_is_never_on_the_ssh_command_line`,
+  `a_perimeters_secret_crosses_to_a_confined_command_without_its_name_helping`,
+  `a_perimeters_env_reaches_the_guests_command`,
+  `a_perimeters_secret_value_is_refused_inside_a_vm_and_never_reaches_an_argv`,
+  `a_placements_pairs_are_split_by_provenance_and_a_refusal_is_said`,
+  `a_placement_keeps_the_ordinary_pairs_and_names_what_it_refused`.
+
 Open:
 
 - `grants_rw` and `secrets` are the user file's alone, at both `[boundary]` and `[perimeter.<name>]`:
@@ -909,8 +928,10 @@ Open:
 - Item 8's fence is this process's, not a sandbox: a session that runs its own code goes round it by
   construction - that is the shell's view's job, which is why the fence is built from the same view.
   `read_many` over a remote or VM backend is not fenced: those substrates have their own view.
-- A perimeter's `env` does not reach a REMOTE or VM placement's commands yet: those substrates have
-  their own view and their own environment.
+- A job in a LOCAL firecode VM still carries no perimeter env: its launcher runs on this box and
+  `FirecodeConfinement::wrap` ignores the plan's pairs, so only a foreground call gets them.
+- The `firecode_only` route (`firecode run`, `crates/tools/src/firecode_route.rs`) has no seat to ask,
+  so a command it runs carries no perimeter env either.
 - `load_user` in `leticode-config` reads the user file as `Level::Project`; `perimeter::load` uses
   `load_as(.., Level::User)` instead. Left alone.
 - Today's injection gap stands: the masking of `GH_TOKEN` happens when a call's output is read, so a

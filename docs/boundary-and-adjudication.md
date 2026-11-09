@@ -567,10 +567,10 @@ reported, minus the deny-list (§4j.5). The seed is *true by construction* (`har
 the pinned `PATH`, `HOME` and `Config::build_env`, and the keep-list a boundary passes through
 (`exec::confine::KEEP_ENV`), which is `--clearenv`'d and re-`--setenv`'d from *this* process's
 environment. All of it is seeded for `Placement::Host` and for nothing else: a remote host's and a
-guest's spawn export the **call's** own pairs into their own shell (`SshBackend`'s launcher gets
-`export NAME=value` lines, a firecode guest its own), so a seed built here would read a command as
-placed on a machine it is not on - the over-claim direction - and the honest answer there is the
-unread one. The same condition arms the trailer: `Gate::observes_shell_env` is true exactly where
+guest's spawn export the **call's** own pairs, and the perimeter's (§4), into their own shell
+(`SshBackend`'s launcher gets `export NAME=value` lines, a firecode guest its own), so a seed built
+here would read a command as placed on a machine it is not on - the over-claim direction - and the
+honest answer there is the unread one. The same condition arms the trailer: `Gate::observes_shell_env` is true exactly where
 the seed is, so a remote or guest session runs no trailer and claims nothing. A command that
 does not parse as a whole program gets no trailer either - text appended after an unterminated
 heredoc or a dangling `|` would become part of the command - and the job's row keeps the model's
@@ -978,6 +978,15 @@ spelling, a `.` or `..` must not climb, and the refusal names the file, the line
 - **Secrets are named, and only `github` exists**: `gh auth token` run by the daemon outside the box,
   plus a git credential helper that answers `password=$GH_TOKEN` on github.com and nothing else. The
   wide level's default carries it; the tight level's carries nothing (`secrets_follow_the_perimeter`).
+- **Where an `env` pair goes.** A local command reads it off the seat. A remote placement and a
+  firecode VM have no seat on this box, so `place_the_tools` asks the perimeter for its pairs
+  (`Perimeter::env_pairs`) and hands them over on the spec - and the door applies the table's rule
+  again (`boundary::env_for_a_placement`), so a loader variable written by anything is refused there
+  and the placement's notes name what it dropped. A literal is spelled; a value whose PROVENANCE is a
+  secret rides a channel that is not an argv - the descriptor a command's own secrets already use on
+  a host, and a job's launcher file, which is a file on that machine - and a firecode VM, whose only
+  channel is the one command string `firecode in` takes, refuses it by name instead of putting it on
+  the host's `ps`. The named `secrets` grant stays the seat's injection and does not cross.
 - `/boundary` draws the perimeter a session actually got, including what a spawn had to be granted
   for it and why (`Perimeter::lines`).
 
