@@ -2240,7 +2240,7 @@ impl Server {
                 thread,
                 attachments,
             } => {
-                if seat != Seat::Operator && attachments.is_empty() && chat::is_null_post(text) {
+                if seat != Seat::Operator && attachments.is_empty() && chat::is_bare_ack(text) {
                     self.note_null_post(name, seat);
                     return refuse(Some(id), crate::Refused::NullPost);
                 }
@@ -2628,7 +2628,7 @@ impl Server {
             id: Some(id.to_string()),
             why,
         };
-        if seat != Seat::Operator && attachments.is_empty() && chat::is_null_post(text) {
+        if seat != Seat::Operator && attachments.is_empty() && chat::is_bare_ack(text) {
             self.note_null_post(name, seat);
             return refuse(crate::Refused::NullPost);
         }

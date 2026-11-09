@@ -1516,6 +1516,9 @@ fn a_null_post_is_refused_and_the_operator_is_exempt() {
         "noted, thanks!",
         "+1",
         "@s-other no action needed",
+        "will do",
+        "On it",
+        "@s-other will look",
     ]
     .iter()
     .enumerate()
@@ -1581,4 +1584,26 @@ fn a_say_may_carry_the_evidence_for_what_it_claims() {
     }));
     assert_eq!(bad, Refused::BadRef);
     assert!(bad.to_string().contains("evidence"), "{bad}");
+}
+
+/// The same words with a `#seq`, a sha, a todo id, a path or a URL in them are a message: the ref
+/// is what the reader follows, so the ack rule does not apply.
+#[test]
+fn an_ack_carrying_a_ref_is_not_refused() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let peer = seat(&server, "s-peer", A, Seat::Session);
+    for (i, text) in [
+        "on it #14",
+        "will do 3fa2d1e",
+        "will look at docs/room.md",
+        "on it s-peer/write the doc",
+        "will do — https://example.test/plan",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let m = said(peer.say(&format!("r{i}"), "", text));
+        assert_eq!(m.text, *text);
+    }
 }

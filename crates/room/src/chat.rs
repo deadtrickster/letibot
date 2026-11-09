@@ -461,6 +461,8 @@ const NULL_PHRASES: &[&str] = &[
     "not relevant to me",
     "no action required",
     "no action needed",
+    "will take a look",
+    "will have a look",
     "nothing for me",
     "nothing to add",
     "nothing to do",
@@ -474,6 +476,9 @@ const NULL_PHRASES: &[&str] = &[
     "noted",
     "thanks",
     "got it",
+    "will do",
+    "will look",
+    "on it",
     "ignoring",
     "roger",
     "okay",
@@ -554,6 +559,34 @@ pub fn claims_operator(text: &str) -> bool {
             .join(" ");
         OPERATOR_CLAIMS.iter().any(|p| flat.starts_with(p))
     })
+}
+
+/// Does this post point at something: a `#seq`, a sha, a todo id, a path or a URL? A word like
+/// that is what makes the shortest post a message, so an ack carrying one is not an ack.
+pub fn has_ref(text: &str) -> bool {
+    text.split_whitespace().any(|word| {
+        let w = word.trim_matches(|c: char| {
+            matches!(
+                c,
+                ',' | ';' | ':' | ')' | '(' | ']' | '[' | '"' | '\'' | '.' | '!' | '?' | '*'
+            )
+        });
+        let seq = w
+            .strip_prefix('#')
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        let hex = (7..=40).contains(&w.len())
+            && w.bytes().all(|b| b.is_ascii_hexdigit())
+            && w.bytes().any(|b| b.is_ascii_digit());
+        let path = w.contains('/') && w.len() > 1;
+        let url = w.contains("://") || w.starts_with("www.");
+        seq || hex || path || url
+    })
+}
+
+/// Is this post only an ack, with nothing in it the room could follow? `is_null_post` with a ref
+/// taken out: "on it #1034" is about a row and the room keeps it.
+pub fn is_bare_ack(text: &str) -> bool {
+    !has_ref(text) && is_null_post(text)
 }
 
 /// The author of a digest message, kind `system`.
@@ -1757,6 +1790,10 @@ mod tests {
             "@s-a thanks!",
             "ok, got it",
             "This is not for me.",
+            "will do",
+            "On it",
+            "will look",
+            "@s-b will do",
         ] {
             assert!(is_null_post(t), "{t}");
         }
@@ -1771,6 +1808,32 @@ mod tests {
         ] {
             assert!(!is_null_post(t), "{t}");
         }
+    }
+
+    /// An ack is refused only when it points at nothing: a `#seq`, a sha, a todo id, a path or a
+    /// URL is the message, so the room keeps the post that carries one.
+    #[test]
+    fn a_bare_ack_is_refused_and_one_carrying_a_ref_is_not() {
+        for t in ["will do", "on it", "will look", "ok", "ok on it"] {
+            assert!(is_bare_ack(t), "{t}");
+            assert!(!has_ref(t), "{t}");
+        }
+        for t in [
+            "on it #1034",
+            "will do #12.",
+            "will look: 3fa2d1e is in",
+            "will look at docs/room.md",
+            "will look at /tmp/x",
+            "on it ~/Projects/letibot",
+            "will do — https://example.test/plan",
+            "ok s-a/write the doc",
+        ] {
+            assert!(has_ref(t), "{t}");
+            assert!(!is_bare_ack(t), "{t}");
+        }
+        // A long hex-looking word needs a digit to be a sha, so ordinary prose stays prose.
+        assert!(!has_ref("defaced"));
+        assert!(has_ref("defaced0"));
     }
 
     #[test]
