@@ -339,3 +339,29 @@ fn a_handles_call_lands_in_the_file_its_table_is_assigned() {
         "a single-file store holds every table, so nothing is routed"
     );
 }
+
+/// No door creates a set's file beside `sessions.db`: a daemon that opened `shared.db` by path
+/// made a full-schema file there, and every door after it took the box for split.
+#[test]
+fn no_set_file_is_created_beside_the_legacy_store() {
+    let dir = temp("beside-legacy");
+    Store::open(&dir.join(split::LEGACY_FILE)).expect("the pre-split store");
+    let shared = dir.join(split::SHARED_FILE);
+    let project = dir.join(split::PROJECTS_DIR).join(format!("{KEY}.db"));
+    std::fs::create_dir_all(project.parent().unwrap()).unwrap();
+    for path in [&shared, &project] {
+        let refused = Store::open(path).err().expect("refused");
+        assert!(
+            refused.to_string().contains("letibot-migrate-split"),
+            "the refusal names the command that splits it: {refused}"
+        );
+        assert!(
+            !path.exists(),
+            "the refused open created {}",
+            path.display()
+        );
+    }
+    // A file already there opens: the migration reads its own copy back before the rename.
+    Connection::open(&shared).expect("made by hand");
+    Store::open(&shared).expect("an existing file opens");
+}

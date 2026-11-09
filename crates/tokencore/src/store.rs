@@ -1532,6 +1532,7 @@ impl Store {
     }
 
     fn open_sharing(path: &Path, share: bool) -> Result<Self> {
+        split::refuse_creating_beside_legacy(path)?;
         let key = if share {
             Some(canonical_key(path))
         } else {

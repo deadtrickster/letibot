@@ -479,6 +479,39 @@ pub fn open_handle(dir: &Path, key: &str, create: bool) -> Result<Store> {
     Ok(Store::of_set(shared.shared.clone(), project))
 }
 
+/// A set's file that is not there yet, in a data directory that still holds `sessions.db`, is
+/// refused rather than created: any door that made one would hide every session the old file
+/// holds. A file already there opens, which is what the migration's own checks need.
+pub(crate) fn refuse_creating_beside_legacy(path: &Path) -> Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    let parent = path.parent();
+    let dir = match path.file_name().and_then(|n| n.to_str()) {
+        Some(SHARED_FILE) => parent,
+        _ if parent
+            .and_then(Path::file_name)
+            .is_some_and(|n| n == PROJECTS_DIR) =>
+        {
+            parent.and_then(Path::parent)
+        }
+        _ => None,
+    };
+    let Some(dir) = dir else { return Ok(()) };
+    let old = dir.join(LEGACY_FILE);
+    if old.is_file() {
+        return Err(StoreError::Refused(format!(
+            "{} is not split yet: it holds {LEGACY_FILE}, so {} is not created beside it. Stop \
+             every daemon and run `letibot-migrate-split {} {}`.",
+            dir.display(),
+            path.display(),
+            old.display(),
+            dir.display()
+        )));
+    }
+    Ok(())
+}
+
 /// The single file a daemon used to write and the pass that splits it are the operator's: a
 /// daemon that started by migrating would be copying a store nobody had stopped writing to.
 pub fn refuse_unsplit(dir: &Path) -> Result<()> {
