@@ -19,11 +19,49 @@ A session's `room` tool has `say` and `read`. The room defaults to the session's
 room {"verb": "say", "room": "host", "text": "@s-b who has the disk?"}
 room {"verb": "say", "text": "build is green", "todo": "s-a/write the doc"}
 room {"verb": "say", "text": "landed in 2b97a092", "evidence": "2b97a092"}
-room {"verb": "say", "room": "host", "text": "the box restarts at six", "kind": "announce"}
 room {"verb": "read", "room": "host", "last": 20}
 room {"verb": "read", "thread": 14}
 room {"verb": "read", "room": "host", "check": true}
 ```
+
+#### Kinds: what a line asks of its readers
+
+Every `say` has a `kind`, and the kind is the whole of *does this need an answer* — a room of
+agents that leaves it to its reader's judgement spends a turn per line. `post` is the default and
+what every frame written before kinds decodes to, so an old client, an old stored line and a word
+this build does not know all read as an ordinary line. A kind other than `post` is carried as a
+`refs` entry `{"kind": "say", "id": "<word>"}`: the wire frame, the stored message and every
+rendering keep their shape, and the header says what it is (`, blocker`, `, decision`, `, fyi`).
+
+| kind | what it asks | wakes |
+|---|---|---|
+| `post` (default) | an ordinary line | that room's own sessions, or whoever it names |
+| `fyi` | nothing: it is a note for a next turn | nobody but the dm it is addressed as |
+| `ask` | an answer from one named principal, held until given | the target, and its own board carries the wait |
+| `blocker` | somebody is stopped until this is answered | the room it was said in, its target, and it flags the operator |
+| `decision` | nothing, but it is what the thread concluded | as `post`; the digest ranks it above the talk |
+| `announce` | one line for the whole room, naming nobody | as `post`; `host` takes it where it takes no unaddressed line |
+
+```text
+room {"verb": "say", "room": "host", "text": "the box restarts at six", "kind": "announce"}
+room {"verb": "say", "text": "the port is 5433 now", "kind": "fyi"}
+room {"verb": "say", "text": "which port is free?", "to": "serenedb", "kind": "ask"}
+room {"verb": "say", "text": "the disk is full, nothing lands", "kind": "blocker"}
+room {"verb": "say", "text": "land m-3 before m-4", "kind": "decision"}
+```
+
+- **`fyi` wakes nobody.** It is queued as a note for the session's next (cheap) turn and never rings
+  a bell; the one exception is a `fyi` sent as a dm, which wakes the one person it is addressed to.
+- **`ask` is the room's ask.** It must name its `to` (`ask_names_nobody` otherwise), and it becomes
+  the same held ask `todo_write`'s `wait_on` makes: the target's own board carries the question,
+  only `answer` or `decline` settles it, and the asking session's row is released by that settle.
+  A `say` without a `to` cannot be an ask, and an ask is a session's, not the operator's.
+- **`blocker` rings and flags.** Its target is rung, the room it was said in is rung, and the
+  operator's connection is pushed it as if it named them - the header carries `, blocker` - because
+  a stopped session is the person's to unblock. It is counted as `blocker_flagged`.
+- **`decision` is kept.** It wakes like a `post` and it is what the digest ranks directly under the
+  open asks and the blockers, so the conclusion of a long thread is one line at the top of the next
+  reader's digest rather than six replies down.
 
 A message that names a session (`to`, or `@session-id` in the text) wakes that session's daemon and
 starts a turn with a one-line notice. So does the operator's unaddressed message. Everything else is
@@ -33,8 +71,9 @@ per line would be a turn nobody wanted. A session is never woken by its own mess
 #### The room's etiquette
 
 `say` runs cheap checks at post time, with no model involved. Every refusal says what it is - the
-room's etiquette, not an error - and what to do instead. The operator is exempt from every one but the
-count of a project-room post that points at nothing.
+room's etiquette, not an error - and what to do instead. The operator is exempt from the ack, the echo,
+the host-room rule, the status rule, the budget and the depth cap; the harness's own `notify` lines from
+all of them.
 
 - **An ack is not a message** (`null_post`). A post that is nothing but "noted", "thanks", "+1",
   "got it", "on it", "will do", "will look", "not for me" and their kin is refused: silence says it
@@ -49,9 +88,10 @@ count of a project-room post that points at nothing.
   whole, and the room carries its first line and a ref:
   `the build is red at step three … [record #12, 1834 bytes: room read #12]`. `read` of that seq
   answers the whole text, before and after a restart.
-- **`host` is announcements and mentions** (`host_room_unaddressed`). In the box-wide room a session's
-  `say` that names nobody is refused: name who it is for with `@name`, dm them, or send it as
-  `kind: announce`. An announcement is one line (`announce_not_one_line`), a picture's
+- **`host` is announcements, blockers and mentions** (`host_room_unaddressed`). In the box-wide room
+  a session's `say` that names nobody is refused: name who it is for with `@name`, dm them, send it as
+  `kind: announce`, or say it as a `kind: blocker` - the one other line that names a state of the box
+  rather than a reader. An announcement is one line (`announce_not_one_line`), a picture's
   `![alt](blob:<id>)` counting as a reference rather than a second line. A reply is not refused - it
   answers its root's author, who is named by the thread - and the operator's own unaddressed line in
   `host` is what the room was built for, so it is not refused either.
@@ -61,6 +101,15 @@ count of a project-room post that points at nothing.
   "done with X" with no ref say what the sender's own `working` and `status` already show, so they are
   refused and told to set the line with `room {"verb": "status"}`. A post carrying a ref is about that
   row, and one past 8 words says something the roster cannot.
+- **A sender has a budget per room** (`budget`). A token bucket of `BUDGET_POSTS` (10) posts, one
+  coming back every `BUDGET_REFILL_MS` (30 s), keyed by sender and room: the eleventh post in a burst
+  is refused with the size, the refill and when the next one is allowed, and is counted as
+  `budget_refused`. It is what stops one session filling every reader's context; the operator and the
+  harness are never charged.
+- **A thread with no operator in it has a depth** (`thread_too_deep`). An agent-only thread whose next
+  reply would sit deeper than `MAX_AGENT_DEPTH` (6) is refused - *file a row or ask the operator* - and
+  counted as `depth_capped`. The conclusion of a long exchange belongs in a row the operator reads or
+  in an `ask`, not six replies down a room; one operator line in the thread lifts the cap.
 
 One check is not a refusal: a project-room `say` that ends in `?`, names nobody, and names a path or
 topic some rule resolves is still posted, and its answer carries one line - *`s-a` owns this (lease on
@@ -543,7 +592,7 @@ The whole text of a message filed as a record is kept beside the ring, up to **1
 |---|---|---|
 | `hello {protocol, speaker, room, seat, token}` | `welcome` | `room` is `<host key>/<project key>` for a session; `token` is the operator's |
 | `rooms` | `rooms {rows}` | the rooms this connection may see |
-| `say {id, room, text, to?, thread?, refs?, attachments?, kind?}` | `said {id, message}` | `room` empty is the project room, or `host` with no project. A `to` makes it a dm (see **Messages**): no room is written and the room named is not checked. `attachments` are blob ids, at most 4. `kind` is `post` (the default, and every frame written before it) or `announce`; it is not stored on the message, and the box-wide room's refusal is the only thing it decides |
+| `say {id, room, text, to?, thread?, refs?, attachments?, kind?}` | `said {id, message}` or `asked {id, ask}` | `room` empty is the project room, or `host` with no project. A `to` makes it a dm (see **Messages**), except with `kind: ask`, which makes it the room's ask. `attachments` are blob ids, at most 4. `kind` is `post` (the default, and every frame written before it), `fyi`, `ask`, `blocker`, `decision` or `announce` (see **Kinds**). Every kind but `post`, an announcement and an unknown word is kept as a `refs` entry `{"kind": "say", "id": "<word>"}`, so the message says after the fact what it asked |
 | `dm {id, to, text, thread?, attachments?}` | `said` | the private message a `say` with `to` becomes |
 | `notify {id, room, source, text, refs?}` | `said` | daemons only, kind `system` |
 | `read {room, since?, last?, thread?, before?}` | `history {room, rows, last_seq, trimmed}` | moves no cursor. `last` defaults to 200, the most one read returns. `thread` returns the root and replies. `before` is a seq: the newest `last` messages older than it, one page back |
@@ -574,7 +623,7 @@ see is `unknown_chat_room`.
 
 ### Counters
 
-Twelve numbers say whether the etiquette above works, and one query reads them all:
+Fifteen numbers say whether the etiquette above works, and one query reads them all:
 `room {"verb": "signals"}` - the `signals` frame, whose card `/signals` in a head also draws. Its
 `counts` map holds, per word:
 
@@ -584,7 +633,7 @@ Twelve numbers say whether the etiquette above works, and one query reads them a
 | `echo_refused` | a post refused as a repeat of one of the last 20 (`echo_post`) |
 | `record_made` | a post filed as a record, over 3 lines or 400 characters |
 | `record_open` | a `read` that opened a record: did the overflow get read again? |
-| `host_room_refused` | a `say` in `host` that named nobody and was not an announcement |
+| `host_room_refused` | a `say` in `host` that named nobody, was not an announcement and was not a blocker |
 | `project_post_without_ref` | a project-room post that pointed at nothing. Counted, never refused |
 | `ask_by_lease` | an ask by scope that a live ownership lease resolved |
 | `ask_by_edit` | one that the last session to edit the path answered |
@@ -592,12 +641,18 @@ Twelve numbers say whether the etiquette above works, and one query reads them a
 | `ask_by_room` | one nothing owned, whose question therefore went to the project room |
 | `broadcast_question` | a project-room question an owner could have been asked: nudged, not refused |
 | `status_folded` | a post refused as a status line the roster already shows (`status_post`) |
+| `budget_refused` | a post held back by its sender's budget for the room |
+| `depth_capped` | a reply refused by the depth cap on a thread the operator is not in |
+| `blocker_flagged` | a `blocker` said: the operator has been flagged on its account |
 
 Each is a `count {what}` line in `room-<host key>.chat.signals`, beside the scorecard's own records, so
 a restart continues the count. They are what R164 reads: an ack rate, a duplicate rate, a false-refusal
 count, whether a filed record is ever opened - and, for R165, the share of asks an owner answered by
 the first rule versus the ones that fell to the room, the rate of questions broadcast instead of asked,
-and the share of chat that is status.
+and the share of chat that is status. The same card's `kinds` rows are what a kind COST: its messages, how
+many something followed, and `silent N/M (K tok)` for the wakes it rang that ended with nothing said
+and no tool called. That is the per-message wake count by kind R164 wants - `blocker` and `decision`
+wakes against `fyi`'s and `post`'s - and the counters say whether the refusals above fire.
 
 ### Blobs
 
@@ -643,9 +698,13 @@ model call, from the log after that mark (a member never seen: the last hour, `D
 - messages addressed to the member (mentions, DMs, the operator's unaddressed lines), verbatim, oldest
   first, the newest 64 (`MAX_PENDING`). A note says how many older ones were left out.
 - one digest per room for everything else, pushed as a `chat` message of kind `system`, author `room`,
-  `to` the member: count since the mark, authors with counts (5), the last 3 lines (text cut at 240
-  bytes, with the cut said), unanswered questions (`?` with no thread reply), open items in that room,
-  and "+N more: `room read <room>`".
+  `to` the member: RANKED by what the reader needs, so it opens with the open asks waiting on them
+  (`ask #12 s-b asks you "which port?"`), then the blockers, then the decisions, then the lines that
+  touch the room's rows and files (a `todo`/`queue`/`evidence` ref, or a path like
+  `crates/room/src/chat.rs`) - every one of those with its `seq` - and only then the counts: count since
+  the mark, authors with counts (5), the last 3 lines (text cut at 240 bytes, with the cut said),
+  unanswered questions (`?` with no thread reply), open items in that room, and "+N more: `room read
+  <room>`". `crates/room/src/chat.rs::summarise` is the whole of it, with no model call.
 
 Full history stays readable with `read`. A daemon turns a digest into a wake sentence and the bridge hands
 it to Claude Code, so a restart notice and a reconnect say the same thing.
@@ -775,7 +834,7 @@ Tools:
 |---|---|---|
 | `rooms` | - | rooms with `members`, `last_seq`, `unread` |
 | `room_read` | `{room, since, last, thread}` | `rows` and `lines`. Moves no cursor |
-| `room_say` | `{room, text, to, thread, evidence, refs, kind}` | the message. `room` defaults to `host`, which takes a mention or `kind: announce`; `evidence` is what backs a state claim |
+| `room_say` | `{room, text, to, thread, evidence, refs, kind}` | the message. `room` defaults to `host`, which takes a mention, `kind: announce` or `kind: blocker`; `evidence` is what backs a state claim; `kind` is mapped to the room's own words, never passed through |
 | `room_ask` | `{question, path, topic, to, room}` | the ask, with `lines` naming the owner and the rule that matched. Nothing named is refused here; a scope nothing owns is carried to the room |
 | `room_dm` | `{to, text, thread}` | the message, in room `dm` |
 | `room_roster` | `{room}` | who is in the room |
