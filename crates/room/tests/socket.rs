@@ -903,7 +903,7 @@ fn an_external_that_has_gone_is_not_known_any_more() {
         c.request(&Request::Say {
             id: id.into(),
             room: HOST_ROOM.into(),
-            text: "over to you".into(),
+            text: format!("over to you {id}"),
             to: Some("claude-code".into()),
             thread: None,
             refs: Vec::new(),
@@ -958,7 +958,7 @@ fn a_name_is_known_the_moment_its_welcome_is_read() {
             .request(&Request::Say {
                 id: format!("w{i}"),
                 room: HOST_ROOM.into(),
-                text: "over to you".into(),
+                text: format!("over to you {i}"),
                 to: Some("claude-code".into()),
                 thread: None,
                 refs: Vec::new(),

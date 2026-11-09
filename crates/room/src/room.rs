@@ -250,6 +250,11 @@ pub enum Refused {
     },
     /// A post that only says it was not for the poster, or acks. Silence costs nothing.
     NullPost,
+    /// A post that repeats one of the room's last few messages nearly word for word. Silence, or
+    /// the new part alone, says it once.
+    EchoPost {
+        seq: u64,
+    },
     /// A chat room this connection may not see, or that does not exist.
     UnknownChatRoom {
         room: String,
@@ -467,6 +472,11 @@ impl fmt::Display for Refused {
             Refused::NullPost => write!(
                 f,
                 "not posted: a message not for you needs no reply - end the turn and say nothing"
+            ),
+            Refused::EchoPost { seq } => write!(
+                f,
+                "not posted: this repeats #{seq} almost word for word - say only what is new, or \
+                 point at #{seq}"
             ),
             Refused::UnknownChatRoom { room } => write!(
                 f,

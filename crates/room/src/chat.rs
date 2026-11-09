@@ -589,6 +589,48 @@ pub fn is_bare_ack(text: &str) -> bool {
     !has_ref(text) && is_null_post(text)
 }
 
+/// The newest messages of a room or thread a repeat is looked for in.
+pub const ECHO_WINDOW: usize = 20;
+/// How much of two posts' words must agree for the second to be the first said again.
+pub const ECHO_JACCARD: f64 = 0.9;
+
+/// A post's words for the repeat test: lowercase, punctuation dropped, whitespace collapsed, and
+/// `#seq` and sha tokens kept, because two posts that point at different rows are not one post.
+pub fn echo_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|w| {
+            w.chars()
+                .filter(|c| c.is_alphanumeric() || matches!(c, '#' | '-' | '_'))
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// The `seq` of a recent post `text` repeats: the same words in the same order, or a token set at
+/// or above [`ECHO_JACCARD`]. The newest match wins, so the refusal names the nearest one.
+pub fn echo_of(text: &str, recent: &[Message]) -> Option<u64> {
+    let mine = echo_words(text);
+    if mine.is_empty() {
+        return None;
+    }
+    let my_set: BTreeSet<&String> = mine.iter().collect();
+    for m in recent.iter().rev() {
+        let theirs = echo_words(&m.text);
+        if theirs == mine {
+            return Some(m.seq);
+        }
+        let their_set: BTreeSet<&String> = theirs.iter().collect();
+        let union = my_set.union(&their_set).count();
+        let shared = my_set.intersection(&their_set).count();
+        if union > 0 && shared as f64 / union as f64 >= ECHO_JACCARD {
+            return Some(m.seq);
+        }
+    }
+    None
+}
+
 /// The author of a digest message, kind `system`.
 pub const DIGEST_AUTHOR: &str = "room";
 /// Window of history a member with no mark is told about.
@@ -1407,6 +1449,31 @@ impl Chat {
         }
     }
 
+    /// The message `author` already made for `request`, when the ring still holds it: a client's
+    /// repeat is answered with that message, so it must not be read as a repeat of its own words.
+    pub fn repeated(&self, room: &str, author: &str, request: &str) -> Option<Message> {
+        let (_, seq) = self
+            .said
+            .iter()
+            .find(|((who, r), _)| who == author && r == request)?;
+        self.find(room, *seq).cloned()
+    }
+
+    /// The newest `n` messages a repeat of a post could echo: the room's, or the thread's when one
+    /// is named. A dm's window is the two people's, because naming another pair's seq leaks it.
+    pub fn recent(&self, room: &str, thread: Option<u64>, who: &str, n: usize) -> Vec<Message> {
+        let Some(ring) = self.rings.get(room) else {
+            return Vec::new();
+        };
+        let mut rows: Vec<&Message> = ring
+            .iter()
+            .filter(|m| thread.is_none_or(|t| m.seq == t || m.thread == Some(t)))
+            .filter(|m| room != DM_ROOM || m.author == who || m.to.as_deref() == Some(who))
+            .collect();
+        rows.drain(..rows.len().saturating_sub(n));
+        rows.into_iter().cloned().collect()
+    }
+
     /// Start `name`'s inbox at the head of the log if it has none: a reader hears what happens next.
     pub fn arm(&mut self, name: &str) {
         let head = self.next;
@@ -1834,6 +1901,62 @@ mod tests {
         // A long hex-looking word needs a digit to be a sha, so ordinary prose stays prose.
         assert!(!has_ref("defaced"));
         assert!(has_ref("defaced0"));
+    }
+
+    /// A post that repeats one says nothing new: the same words, or nine tenths of them, are the
+    /// message already there, and the room says which one.
+    #[test]
+    fn a_second_post_of_the_same_words_names_the_first() {
+        let msg = |seq: u64, text: &str| Message {
+            seq,
+            ts: 0,
+            room: HOST_ROOM.into(),
+            author: "s-a".into(),
+            kind: Seat::Session,
+            to: None,
+            thread: None,
+            refs: Vec::new(),
+            attachments: Vec::new(),
+            text: text.into(),
+        };
+        let recent = vec![
+            msg(11, "the gate is red on lab2x1, step 3 of the build"),
+            msg(12, "who has the disk?"),
+        ];
+        // Identical words, and a case/punctuation/whitespace difference.
+        assert_eq!(
+            echo_of("The gate is red on lab2x1, step 3 of the build.", &recent),
+            Some(11)
+        );
+        assert_eq!(echo_of("who  has the disk", &recent), Some(12));
+        // One word of eleven swapped is below the threshold, and the newest match is the one named.
+        assert_eq!(
+            echo_of("the gate is red on lab2x1, step 4 of the build", &recent),
+            None
+        );
+        assert_eq!(
+            echo_of("who has the disk? the gate is red on lab2x1, step 3 of the build", &recent),
+            None
+        );
+        // A ref that differs is a different post, and so is a post that says more.
+        assert_eq!(echo_of("who has the disk? #12", &recent), None);
+        assert_eq!(echo_of("the gate is red on lab2x1", &recent), None);
+        assert_eq!(echo_of("re #9 of the build", &recent), None);
+        assert_eq!(echo_of("", &recent), None);
+
+        // The threshold, measured: one word of eleven swapped is not a repeat, one of twenty is.
+        let long = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi \
+                    omicron pi rho sigma tau upsilon";
+        let recent = vec![msg(13, long)];
+        assert_eq!(
+            echo_of("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi \
+                     omicron pi rho sigma tau phi", &recent),
+            Some(13)
+        );
+        assert_eq!(
+            echo_of("the gate is red on lab2x1, step 4 of the build", &recent),
+            None
+        );
     }
 
     #[test]

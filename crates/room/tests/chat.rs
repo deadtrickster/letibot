@@ -787,8 +787,8 @@ fn a_short_bridge_name_resolves_when_unique_and_both_show_qualified_when_two_sha
         roster_names(&a1).len() == 1
     });
     assert_eq!(roster_names(&a1), vec!["cc@stroppy-conformity".to_string()]);
-    let again = said(a1.say("4", "host", "@cc@stroppy-conformity hi"));
-    assert_eq!(again.text, "@cc@stroppy-conformity hi");
+    let again = said(a1.say("4", "host", "@cc@stroppy-conformity hi once more"));
+    assert_eq!(again.text, "@cc@stroppy-conformity hi once more");
 }
 
 #[test]
@@ -814,9 +814,9 @@ fn a_folder_mention_wakes_every_bridge_of_the_folder_and_an_exact_single_stays_s
     let _ = (g2.next(), g3.next());
 
     let sibling = seat(&server, "cc@solo:other", "", Seat::External);
-    let m = said(a1.say("3", "host", "@cc@solo hi"));
+    let m = said(a1.say("3", "host", "@cc@solo hi again"));
     assert_eq!(
-        m.text, "@cc@solo:* hi",
+        m.text, "@cc@solo:* hi again",
         "a shared folder makes the folder form a group"
     );
     assert!(solo.next().1);
@@ -1079,7 +1079,7 @@ fn a_review_queue_reads_and_answers_as_gatekeeper_at_its_project() {
     assert_eq!(heard.author, "gatekeeper@arangodb", "{heard:?}");
 
     for (i, to) in ["gatekeeper@arangodb", "gatekeeper"].iter().enumerate() {
-        let m = said(say_to(&a1, &format!("t{i}"), to, "review mine"));
+        let m = said(say_to(&a1, &format!("t{i}"), to, &format!("review row {i}")));
         let (heard, names_you) = gk.next_seq(m.seq);
         assert!(names_you, "`{to}` did not reach the queue: {heard:?}");
     }
@@ -1333,7 +1333,7 @@ fn a_reply_stays_in_its_roots_room() {
     let via_dm = said(a2.call(Request::Dm {
         id: "7".into(),
         to: "s-a1".into(),
-        text: "privately".into(),
+        text: "privately, from the dm".into(),
         thread: Some(root.seq),
         attachments: Vec::new(),
     }));
@@ -1606,4 +1606,72 @@ fn an_ack_carrying_a_ref_is_not_refused() {
         let m = said(peer.say(&format!("r{i}"), "", text));
         assert_eq!(m.text, *text);
     }
+}
+
+/// A post that repeats one of the last twenty messages of its room or thread is refused, naming the
+/// message it repeats. The operator is exempt and a post that says something new goes through.
+#[test]
+fn a_repeat_of_a_recent_post_is_refused_and_names_it() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let a1 = seat(&server, "s-a1", A, Seat::Session);
+    let a2 = seat(&server, "s-a2", A, Seat::Session);
+    let op = seat(&server, OPERATOR, "", Seat::Operator);
+    let line = "the gate is red on lab2x1 at step three";
+    let first = said(a1.say("1", "", line));
+    let why = refused(a2.say("2", "", "The gate is red on lab2x1, at step three!"));
+    assert_eq!(why, Refused::EchoPost { seq: first.seq });
+    assert!(
+        why.to_string().contains(&format!("#{}", first.seq)),
+        "{why}"
+    );
+    // The thread's own window: the same words again as a reply to the message it repeats.
+    let thread = Request::Say {
+        id: "3".into(),
+        room: String::new(),
+        text: line.into(),
+        to: None,
+        thread: Some(first.seq),
+        refs: Vec::new(),
+        attachments: Vec::new(),
+    };
+    assert_eq!(refused(a2.call(thread)), Refused::EchoPost { seq: first.seq });
+    // New words are a message, and the operator may say a thing twice.
+    said(a2.say("4", "", "the gate is red on lab2x1 at step three, and I have the log"));
+    said(op.say("5", "", "noted"));
+    said(op.say("6", "", "noted"));
+}
+
+/// A dm's window is the two people's: another pair saying the same words in their own dm is not
+/// this pair repeating itself.
+#[test]
+fn a_dms_window_is_the_two_peoples_and_not_the_channels() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let (a1, _a2, b1, _b2) = (
+        seat(&server, "s-a1", A, Seat::Session),
+        seat(&server, "s-a2", A, Seat::Session),
+        seat(&server, "s-b1", B, Seat::Session),
+        seat(&server, "s-b2", B, Seat::Session),
+    );
+    let dm = |from: &Seated, id: &str, to: &str, text: &str| {
+        from.call(Request::Dm {
+            id: id.into(),
+            to: to.into(),
+            text: text.into(),
+            thread: None,
+            attachments: Vec::new(),
+        })
+    };
+    said(dm(&a1, "1", "s-a2", "the port is 5433 on lab2x1"));
+    // The same words to the same person are a repeat.
+    assert!(matches!(
+        dm(&a1, "2", "s-a2", "the port is 5433 on lab2x1"),
+        Response::Refused {
+            why: Refused::EchoPost { .. },
+            ..
+        }
+    ));
+    // Another pair's dm with the same words is not.
+    said(dm(&b1, "3", "s-b2", "the port is 5433 on lab2x1"));
 }

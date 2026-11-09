@@ -2298,7 +2298,7 @@ impl Server {
                 }
                 let text = &text;
                 let thread = &thread;
-                self.append_and_push(
+                self.say_and_push(
                     id,
                     chat::DM_ROOM,
                     name,
@@ -2677,7 +2677,7 @@ impl Server {
                 && root.room != chat::DM_ROOM
             {
                 let text = Self::linked_to(&root, &text);
-                return self.append_and_push(
+                return self.say_and_push(
                     id,
                     chat::DM_ROOM,
                     name,
@@ -2727,7 +2727,7 @@ impl Server {
             if room != chat::DM_ROOM {
                 self.invite_the_named(&room, project, &text);
             }
-            self.append_and_push(
+            self.say_and_push(
                 id,
                 &room,
                 name,
@@ -2744,7 +2744,7 @@ impl Server {
         } else if let Some(to) = to {
             // `to` is a private message: it goes to the dm channel between the two, and the room
             // the frame named is not written to at all.
-            self.append_and_push(
+            self.say_and_push(
                 id,
                 chat::DM_ROOM,
                 name,
@@ -2765,7 +2765,7 @@ impl Server {
                 return refuse(crate::Refused::UnknownChatRoom { room });
             }
             self.invite_the_named(&room, project, &text);
-            self.append_and_push(
+            self.say_and_push(
                 id,
                 &room,
                 name,
@@ -2815,6 +2815,56 @@ impl Server {
             .map(|(k, _)| k.clone())
             .unwrap_or_default();
         (Seat::Session, key)
+    }
+
+    /// The refusal a repeat of one of the room's or thread's last messages earns, naming it. The
+    /// operator is exempt - saying a thing twice is how a person underlines it - and so is a
+    /// repeat of a request the room has already answered.
+    fn echo(
+        &self,
+        seat: Seat,
+        who: &str,
+        room: &str,
+        thread: Option<u64>,
+        request: &str,
+        text: &str,
+    ) -> Option<u64> {
+        if seat == Seat::Operator {
+            return None;
+        }
+        let chat = self.inner.chat.lock().expect("the chat lock");
+        if chat.repeated(room, who, request).is_some() {
+            return None;
+        }
+        let recent = chat.recent(room, thread, who, chat::ECHO_WINDOW);
+        chat::echo_of(text, &recent)
+    }
+
+    /// A post, after the room's two etiquette checks: a repeat of a recent message is refused, and
+    /// a long one is filed as a record the room names (see [`chat::Chat::append`]).
+    #[allow(clippy::too_many_arguments)]
+    fn say_and_push(
+        &self,
+        id: &str,
+        room: &str,
+        author: &str,
+        kind: Seat,
+        to: Option<String>,
+        thread: Option<u64>,
+        refs: Vec<chat::Ref>,
+        attachments: Vec<chat::Attachment>,
+        text: &str,
+        now: u64,
+    ) -> Response {
+        if let Some(seq) = self.echo(kind, author, room, thread, id, text) {
+            return Response::Refused {
+                id: Some(id.to_string()),
+                why: crate::Refused::EchoPost { seq },
+            };
+        }
+        self.append_and_push(
+            id, room, author, kind, to, thread, refs, attachments, text, now,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
