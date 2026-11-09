@@ -65,6 +65,10 @@ fn commit_makes_the_repository_and_ensure_adds_origin_once() {
     let repo = root.path().join("notes");
     std::fs::create_dir_all(repo.join("proj-1")).unwrap();
     std::fs::write(repo.join("proj-1/a.md"), "a\n").unwrap();
+    // The box's global git may sign every commit with a key a daemon has not got, so the fixture
+    // makes the repository and states its policy before the commit that is under test.
+    ensure(&repo, None).expect("commit makes the repository through ensure");
+    crate::testing::repo_config(&repo);
     commit(&repo, "add a").expect("first commit");
     commit(&repo, "nothing").expect("an empty commit is not an error");
     assert_eq!(git_ok(&repo, &["log", "--format=%s"]), "add a");
@@ -90,6 +94,8 @@ fn push_rebases_over_the_remote_and_sends_main() {
     let a = root.path().join("a");
     std::fs::create_dir_all(a.join("p")).unwrap();
     std::fs::write(a.join("p/one.md"), "one\n").unwrap();
+    ensure(&a, None).expect("a repository");
+    crate::testing::repo_config(&a);
     commit(&a, "add one").unwrap();
     assert!(push(&a, None).unwrap_err().contains("no `origin`"));
     push(&a, Some(&url)).expect("first push");
@@ -97,6 +103,8 @@ fn push_rebases_over_the_remote_and_sends_main() {
     let b = root.path().join("b");
     std::fs::create_dir_all(b.join("p")).unwrap();
     std::fs::write(b.join("p/two.md"), "two\n").unwrap();
+    ensure(&b, None).expect("a repository");
+    crate::testing::repo_config(&b);
     commit(&b, "add two").unwrap();
     push(&b, Some(&url)).expect("a push over another box's history");
 

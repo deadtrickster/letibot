@@ -985,6 +985,11 @@ fn a_placed_sessions_note_lands_in_the_notes_checkout_and_in_neither_tree() {
 #[test]
 fn a_write_is_committed_in_the_notes_repository() {
     let mut h = writable_harness();
+    // The box's global git may sign every commit with a key the daemon has not got, so the notes
+    // checkout states its own identity and signing policy before the tool writes into it.
+    let repo = h.notes_repo();
+    crate::notes_repo::ensure(&repo, None).expect("a notes repository");
+    crate::testing::repo_config(&repo);
     for args in [
         r#"{"action":"add","name":"first","text":"the first note"}"#,
         r#"{"action":"append","name":"first","text":"and more of it"}"#,
