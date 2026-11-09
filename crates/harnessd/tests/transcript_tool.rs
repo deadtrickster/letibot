@@ -122,7 +122,7 @@ fn store_with_a_fork(dir: &std::path::Path) -> (Store, String) {
 
 fn source(dir: &std::path::Path, session_id: &str) -> Arc<dyn TranscriptSource> {
     Arc::new(
-        StoreTranscripts::open(&dir.join("sessions.db"), session_id.to_string())
+        StoreTranscripts::open(dir.join("sessions.db"), session_id.to_string())
             .expect("opening the reader"),
     )
 }
@@ -265,8 +265,7 @@ fn a_session_resolves_by_a_fragment_of_its_title() {
     let (_store, session_id) = store_with_a_fork(d.path());
     // Opened as if from somewhere else entirely, so the default session is not it.
     let src: Arc<dyn TranscriptSource> = Arc::new(
-        StoreTranscripts::open(&d.path().join("sessions.db"), "some-other".into())
-            .expect("opening"),
+        StoreTranscripts::open(d.path().join("sessions.db"), "some-other".into()).expect("opening"),
     );
     let hits = src
         .find(&TranscriptQuery {

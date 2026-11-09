@@ -601,9 +601,8 @@ impl Report {
 /// corpus it was fitted to rather than with a config the operator edits by hand. `None` when no
 /// store is configured, which is a box that keeps no corpus and so can earn nothing.
 pub fn calibration_path(cfg: &Config) -> Option<std::path::PathBuf> {
-    cfg.store
-        .as_ref()
-        .map(|s| s.with_extension("calibration.json"))
+    cfg.store_at()
+        .map(|at| at.path("adjudication").with_extension("calibration.json"))
 }
 
 /// The serialised shape. Its own struct rather than serialising [`OracleScope`] directly, so the

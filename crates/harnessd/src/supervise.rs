@@ -337,13 +337,14 @@ impl Supervisor {
         };
         let at = (self.now_ms)();
         // An in-memory store has no path, so nothing could release through one. The honest answer
-        // is to say so rather than to pretend the reaper ran.
-        let Some(path) = self
+        // is to say so rather than to pretend the reaper ran. A split set's handle answers
+        // `shared.db`, which is where every lease is - so this is that one file, not the set.
+        let Some(store_at) = self
             .store
             .lock()
             .expect("the supervisor's store")
             .path()
-            .map(std::path::Path::to_path_buf)
+            .map(|p| crate::config::StoreAt::File(p.to_path_buf()))
         else {
             return;
         };
@@ -371,7 +372,7 @@ impl Supervisor {
         // Now the locks are down. A release may run an ssh round trip, so it must not happen
         // with the tick's store lock held.
         for session in due {
-            for line in crate::leases::release_session(&path, &session, "its owner was gone") {
+            for line in crate::leases::release_session(&store_at, &session, "its owner was gone") {
                 report.released.push(line);
             }
         }
@@ -862,14 +863,18 @@ impl Probe for HostProbe {
 /// Start the supervisor as the daemon's own thread - after [`crate::vm_reap::spawn`] and
 /// for its reason: its own thread, its own clock, and no session's work waiting on it. The
 /// first tick IS the recovery.
-pub fn spawn(store_path: Option<std::path::PathBuf>, registry: Arc<letibot_sessionlog::Registry>) {
-    let Some(path) = store_path else {
+pub fn spawn(
+    store_at: Option<impl Into<crate::config::StoreAt>>,
+    registry: Arc<letibot_sessionlog::Registry>,
+) {
+    let Some(at) = store_at.map(Into::into) else {
         return;
     };
     let _ = std::thread::Builder::new()
         .name("supervisor".into())
         .spawn(move || {
-            let Ok(store) = Store::open(&path) else {
+            // The daemon's own start, so a fresh data directory's two files are made here.
+            let Ok(store) = at.open() else {
                 eprintln!("  supervisor: the store did not open; no process is supervised");
                 return;
             };

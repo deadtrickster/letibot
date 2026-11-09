@@ -9,10 +9,10 @@ use crate::config::Config;
 /// What to tell every head, or `Ok(None)` when there is nothing to tell. `Err` is a store
 /// this build must not serve; the message names the fix and the caller makes it fatal.
 pub fn said(cfg: &Config) -> Result<Option<String>, String> {
-    let Some(path) = cfg.store.as_ref() else {
+    let Some(at) = cfg.store_at() else {
         return Ok(None);
     };
-    match letibot_tokencore::store::Store::open(path) {
+    match at.open_existing() {
         // `newer_store` and not a version comparison of our own: whether an
         // older reader may read a newer file is the store's declaration to make
         // and a second opinion here is a second answer to one question.
@@ -27,7 +27,7 @@ pub fn said(cfg: &Config) -> Result<Option<String>, String> {
         // already report them: a `database is locked` at startup is a wait, not a sentence about
         // this binary, and making it one would refuse to start because a neighbour was committing.
         Err(e @ letibot_tokencore::store::StoreError::SchemaTooNew { .. }) => {
-            Err(format!("store: opening {path:?}: {e}"))
+            Err(format!("store: opening {}: {e}", at.display()))
         }
         Err(_) => Ok(None),
     }

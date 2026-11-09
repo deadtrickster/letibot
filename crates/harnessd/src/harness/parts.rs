@@ -95,15 +95,16 @@ impl Parts {
         Ok(Parts {
             vocab: std::sync::Arc::new(vocab),
             wiring: std::sync::Arc::new(wiring),
+            // The mode rows are the shared file's, so a set's project file is never opened for them.
             mode_store: std::sync::Arc::new(std::sync::RwLock::new(crate::modes::ModeStore::open(
-                cfg.store.as_deref(),
+                cfg.store_at().map(|at| at.path("project_mode")).as_deref(),
             ))),
             tasks,
             lsp,
             skills,
             // The daemon-wide board map, over the same store the sessions write - see the
             // field's doc for why it is here and not on a harness.
-            child_boards: crate::child_todos::ChildBoards::shared(cfg.store.clone()),
+            child_boards: crate::child_todos::ChildBoards::shared(cfg.store_at()),
             // A root session is its own tree; it has no parent's watcher set to join.
             tree_watch: None,
             // Nor a parent's handle list: a root's runner gets a fresh one.

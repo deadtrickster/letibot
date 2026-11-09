@@ -362,7 +362,10 @@ mkdir -p "$RUNDIR"
 KEY="$(printf '%s' "$WORKSPACE" | sha12)"
 SOCKET="${LETIBOT_SOCKET:-$RUNDIR/$KEY.sock}"
 RECORD="$RUNDIR/$KEY.json"
-STORE="${LETIBOT_STORE:-$HOME/.local/share/letibot/sessions.db}"
+STORE="${LETIBOT_STORE:-$HOME/.local/share/letibot}"
+# The one file a caller that still takes a single store path wants: `letibot migrate` moves a
+# session's project file, and the key is the one this folder's socket already wears.
+STORE_FILE="$STORE/projects/$KEY.db"
 
 # **Each folder's daemon logs to its own file** (TODO R92.3), keyed like its socket. One file
 # shared by every folder's daemon meant a boot failure's reason sat among other daemons' lines,
@@ -2426,7 +2429,7 @@ case "${1:-}" in
     # nothing invokes it by a program name.
     [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the migration verb lives there)"
     shift
-    exec "$BIN/letibot" migrate "$@" --store "$STORE"
+    exec "$BIN/letibot" migrate "$@" --store "$STORE_FILE"
     ;;
   --reattach)
     # What this script runs when a moved session's forward has dropped, here so an operator can ask
@@ -2435,7 +2438,7 @@ case "${1:-}" in
     [ $# -ge 2 ] || need "ID" --reattach
     [ -x "$BIN/letibot" ] || die "no letibot at $BIN"
     shift
-    exec "$BIN/letibot" migrate --reattach "$1" --store "$STORE"
+    exec "$BIN/letibot" migrate --reattach "$1" --store "$STORE_FILE"
     ;;
   --ls | --list-all)
     # **The byobu view: every folder's daemon, and what is live inside it.**
@@ -3122,7 +3125,7 @@ if live && [ -n "$ENDPOINT" ]; then
   fi
 fi
 
-mkdir -p "$(dirname "$STORE")" "$(dirname "$LOG")" "$(dirname "$SHARED_LOG")"
+mkdir -p "$STORE" "$(dirname "$LOG")" "$(dirname "$SHARED_LOG")"
 
 # **THE BOX'S ROOM, BEFORE ANY SESSION CAN LOOK FOR IT** (`docs/room.md` § *Still owed* item 4).
 #

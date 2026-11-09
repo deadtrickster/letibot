@@ -16,11 +16,12 @@ pub struct StoreDecisions {
 }
 
 impl StoreDecisions {
-    pub fn open(path: &std::path::Path, session_id: String) -> Result<Self, String> {
-        let store = Store::open(path).map_err(|e| {
+    pub fn open(at: impl Into<crate::config::StoreAt>, session_id: String) -> Result<Self, String> {
+        let at: crate::config::StoreAt = at.into();
+        let store = at.open_existing().map_err(|e| {
             format!(
                 "the decision corpus at {} could not be opened: {e}",
-                path.display()
+                at.display()
             )
         })?;
         Ok(StoreDecisions {

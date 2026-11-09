@@ -14,13 +14,14 @@ pub struct StoreTranscripts {
 }
 
 impl StoreTranscripts {
-    /// Open the store at `path` for reading. `Err` names the path, because the
+    /// Open the store at `at` for reading. `Err` names the store, because the
     /// one thing a caller can do about it is check the daemon's `--store`.
-    pub fn open(path: &std::path::Path, session_id: String) -> Result<Self, String> {
-        let store = Store::open(path).map_err(|e| {
+    pub fn open(at: impl Into<crate::config::StoreAt>, session_id: String) -> Result<Self, String> {
+        let at: crate::config::StoreAt = at.into();
+        let store = at.open_existing().map_err(|e| {
             format!(
                 "the transcript store at {} could not be opened: {e}",
-                path.display()
+                at.display()
             )
         })?;
         Ok(StoreTranscripts {

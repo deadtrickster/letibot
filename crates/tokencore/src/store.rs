@@ -1227,7 +1227,12 @@ struct Shared {
 }
 
 pub struct Store {
+    /// `shared.db` of a split set, or the one file of a single-file store.
     shared: std::sync::Arc<Shared>,
+    /// The set's second file. `None` on a single-file store, where every table resolves to
+    /// `shared` and [`split::place_of`] decides nothing; `Some(None)` on a set whose project file
+    /// is not there, which is the listing a renamed-away project must still answer.
+    project: Option<Option<std::sync::Arc<Shared>>>,
 }
 
 /// The process's store lock, held: what [`Store::connection`] answers and what every method takes
@@ -1385,6 +1390,60 @@ pub(crate) fn sessions_sql(filter: &str) -> String {
     )
 }
 
+/// The session list for a split set: the same columns in the same order, and the four the
+/// transcript answers are `NULL`/`0`, because the index cannot read a project file (P4's sweep is
+/// where a listing gets a history back). A free function so a split test can compare the two.
+pub(crate) fn sessions_index_sql(filter: &str) -> String {
+    format!(
+        "SELECT s.id, s.title, s.model_id, s.dialect_sha, s.workspace_root, s.owner,
+                    s.created_at,
+                    NULL,
+                    0,
+                    NULL,
+                    s.role,
+                    s.parent_session_id,
+                    s.context_tokens,
+                    s.context_cached,
+                    s.context_ledger,
+                    s.provider_choice,
+                    s.context_window,
+                    s.auto_compact_resident,
+                    s.auto_compact_after,
+                    NULL,
+                    s.prefix_fingerprint,
+                    s.nags_paused_until,
+                    s.lives_on,
+                    s.moved_ms,
+                    s.origin
+               FROM session s{filter}"
+    )
+}
+
+/// The table a statement is about, from its own text: the word after `INSERT [OR x] INTO`,
+/// `UPDATE` or `DELETE FROM`. `None` for a statement naming no table (`PRAGMA`, `BEGIN`), which
+/// then takes the first file - a single-file store has everything there anyway.
+fn table_in(sql: &str) -> Option<String> {
+    let mut words = sql.split_whitespace();
+    let head = words.next()?.to_ascii_uppercase();
+    let rest: Vec<&str> = words.collect();
+    let name = match head.as_str() {
+        "INSERT" | "REPLACE" => {
+            let at = rest.iter().position(|w| w.eq_ignore_ascii_case("into"))?;
+            *rest.get(at + 1)?
+        }
+        "UPDATE" => *rest.first()?,
+        "DELETE" => {
+            let at = rest.iter().position(|w| w.eq_ignore_ascii_case("from"))?;
+            *rest.get(at + 1)?
+        }
+        _ => return None,
+    };
+    Some(
+        name.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .to_string(),
+    )
+}
+
 /// The pragmas and the busy handler every connection to a store file takes: WAL so readers and the
 /// writer run at once, the handler that sleeps and counts the lock wait, and `FULL` because this
 /// file is the only copy of the tokens - a lost commit is a lost turn.
@@ -1402,6 +1461,21 @@ impl Store {
     /// is a descriptor leak wearing a pool's clothes.
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_sharing(path, true)
+    }
+
+    /// A split set's one handle: `shared.db` and `projects/<key>.db` under `dir`, created if they
+    /// are not there, routing every call by [`split::place_of`]. One handle rather than two so no
+    /// caller has to know, and so a body that wrote to both files is the only thing that changes
+    /// - see [`Store::write_tx_at`].
+    pub fn open_set(dir: &Path, key: &str) -> Result<Self> {
+        split::open_handle(dir, key, true)
+    }
+
+    /// [`Store::open_set`] for a caller that must not create anything: a listing, or a question
+    /// about a session. A file that is not there is not opened, and a data directory with no
+    /// `shared.db` is refused by [`split::refuse_unsplit`].
+    pub fn open_set_existing(dir: &Path, key: &str) -> Result<Self> {
+        split::open_handle(dir, key, false)
     }
 
     /// A connection of its own to a store file, never shared - for the tests that measure two
@@ -1424,7 +1498,10 @@ impl Store {
             && let Some(shared) = open.get(key).and_then(std::sync::Weak::upgrade)
             && shared.still_the_same_file()
         {
-            return Ok(Store { shared });
+            return Ok(Store {
+                shared,
+                project: None,
+            });
         }
         let store = Self::from_connection(Connection::open(path)?, Some(path.to_path_buf()))?;
         if let Some(key) = key {
@@ -1450,6 +1527,40 @@ impl Store {
         Conn(self.shared.conn())
     }
 
+    /// The connection that holds `table`, by [`split::place_of`]: the whole of the routing. A
+    /// single-file store answers its one connection for everything, so `place_of` decides
+    /// nothing there and no existing call site changes meaning.
+    fn at(&self, table: &str) -> Conn<'_> {
+        match (&self.project, split::place_of(table)) {
+            (Some(Some(project)), Some(split::Place::Project)) => Conn(project.conn()),
+            _ => Conn(self.shared.conn()),
+        }
+    }
+
+    /// Is this handle a split set's? A set whose project file is missing is still one: its
+    /// listing may not fall back to the single-file query, which reads a file it has not got.
+    pub fn is_set(&self) -> bool {
+        self.project.is_some()
+    }
+
+    /// The handle onto a set's two files, built by `split` - the one place a `Store` has more
+    /// than one connection. Private to this module and its children, because `Shared` is.
+    fn of_set(shared: std::sync::Arc<Shared>, project: Option<std::sync::Arc<Shared>>) -> Self {
+        Store {
+            shared,
+            project: Some(project),
+        }
+    }
+
+    /// [`Store::at`] for a statement whose table is read off its own text - the door [`exec`]
+    /// takes, so 57 call sites keep saying only what they write.
+    fn at_sql(&self, sql: &str) -> Conn<'_> {
+        match table_in(sql) {
+            Some(table) => self.at(&table),
+            None => self.conn(),
+        }
+    }
+
     /// How many connections to store files this process holds open right now: the census a test
     /// measures a session's lifetime by, because a descriptor count is a proxy and this is the
     /// thing.
@@ -1473,6 +1584,7 @@ impl Store {
                 path,
                 newer: std::sync::Mutex::new(None),
             }),
+            project: None,
         };
         // Taken here and not on success: `Drop` gives it back on every path, and `migrate` may
         // refuse and drop this store, so an add after the `?` would leave that drop subtracting
@@ -2215,7 +2327,7 @@ impl Store {
     }
 
     pub fn get_stable_prefix(&self, id: &str) -> Result<(Vec<TokenId>, [u8; 32])> {
-        Self::stable_prefix_on(&self.conn(), id)
+        Self::stable_prefix_on(&self.at("stable_prefix"), id)
     }
 
     /// [`Store::get_stable_prefix`] on a connection the caller already holds - see
@@ -2244,7 +2356,7 @@ impl Store {
             Vec<u8>,
             String,
         ) = self
-            .conn()
+            .at("stable_prefix")
             .query_row(
                 "SELECT dialect_sha, system, tools_json, tokens, h_init, vocab_source
                    FROM stable_prefix WHERE id = ?1",
@@ -2367,7 +2479,7 @@ impl Store {
     /// prompts, and that is the whole comparison a daemon needs.
     pub fn transcript_prefix_id(&self, transcript_id: &str) -> Result<Option<String>> {
         Ok(self
-            .conn()
+            .at("transcript")
             .query_row(
                 "SELECT stable_prefix_id FROM transcript WHERE id = ?1",
                 params![transcript_id],
@@ -2389,7 +2501,7 @@ impl Store {
             return Ok(());
         }
         let rows: Option<i64> = self
-            .conn()
+            .at("transcript")
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM transcript_item WHERE transcript_id = ?1)
                    FROM transcript WHERE id = ?1",
@@ -2413,7 +2525,7 @@ impl Store {
     /// when its rows do not rebuild under the prefix it names. A length and not an id, because
     /// the id is content-addressed on the prompt's text.
     pub fn stable_prefix_ids_of_len(&self, n_tokens: u32) -> Result<Vec<String>> {
-        let conn = self.conn();
+        let conn = self.at("stable_prefix");
         let mut stmt = conn.prepare(
             "SELECT id FROM stable_prefix WHERE LENGTH(tokens) / 4 = ?1
               ORDER BY created_at DESC, rowid DESC",
@@ -2452,7 +2564,7 @@ impl Store {
         // `LENGTH` of the blob, not `n_tokens`: the bytes are what a restore replays, and
         // the two can only differ for a prefix row somebody wrote by hand.
         let prefix_len: i64 = self
-            .conn()
+            .at("transcript")
             .query_row(
                 "SELECT LENGTH(sp.tokens) / 4
                    FROM transcript t JOIN stable_prefix sp ON sp.id = t.stable_prefix_id
@@ -2462,7 +2574,7 @@ impl Store {
             )
             .optional()?
             .ok_or_else(|| StoreError::NotFound(format!("transcript {transcript_id}")))?;
-        let before: i64 = self.conn().query_row(
+        let before: i64 = self.at("transcript_item").query_row(
             "SELECT COALESCE(SUM(tok_len), 0) FROM transcript_item
               WHERE transcript_id = ?1 AND seq < ?2",
             params![transcript_id, seq as i64],
@@ -2530,9 +2642,10 @@ impl Store {
         self.append_items_with_context(transcript_id, first_seq, rows, None)
     }
 
-    /// [`Store::append_items`], plus the session's context row in the last chunk's commit when
-    /// `context` is given: `(session id, tokens, cached, ledger)`, as [`Store::set_context`] takes
-    /// them. One fsync instead of two. A missing session row is not an error: context is a measurement.
+    /// [`Store::append_items`], plus the session's context row when `context` is given:
+    /// `(session id, tokens, cached, ledger)`, as [`Store::set_context`] takes them. A missing
+    /// session row is not an error: context is a measurement. The rows and the context are two
+    /// commits on a split set - the history and the index, and no transaction spans them.
     pub fn append_items_with_context<'a, I>(
         &self,
         transcript_id: &str,
@@ -2550,6 +2663,10 @@ impl Store {
         if let Some((_, row, _)) = rows.first() {
             self.assert_anchored(transcript_id, first_seq, row.tok_offset)?;
         }
+        // One commit for both on a single-file store, where the two tables are one connection and
+        // the fsync is the turn's cost. A set keeps them in two files, so its context row is the
+        // second commit - nothing else can be, since no transaction spans the two.
+        let one_commit = self.project.is_none();
         let chunks = rows.chunks(Self::APPEND_CHUNK).count();
         for (c, chunk) in rows.chunks(Self::APPEND_CHUNK).enumerate() {
             let base = first_seq + (c * Self::APPEND_CHUNK) as u32;
@@ -2564,7 +2681,7 @@ impl Store {
                     tokens_to_blob(tokens),
                 ));
             }
-            self.write_tx(|tx| {
+            self.write_tx_at("transcript_item", |tx| {
                 let mut st = tx.prepare_cached(APPEND_SQL)?;
                 for (i, (kind, json, row, blob)) in encoded.iter().enumerate() {
                     let seq = base + i as u32;
@@ -2590,7 +2707,9 @@ impl Store {
                         }
                     })?;
                 }
-                if let (true, Some((id, tokens, cached, ledger))) = (last, context) {
+                if let (true, true, Some((id, tokens, cached, ledger))) =
+                    (last, one_commit, context)
+                {
                     tx.execute(
                         "UPDATE session SET context_tokens = ?2, context_cached = ?3, \
                          context_ledger = ?4 WHERE id = ?1",
@@ -2605,6 +2724,20 @@ impl Store {
                 Ok(())
             })?;
         }
+        // The context row is the index's and the rows above are the history's, so on a set this is
+        // a second commit - nothing else can be, since no transaction spans the two files.
+        if let (false, Some((id, tokens, cached, ledger))) = (one_commit, context) {
+            self.exec(
+                "UPDATE session SET context_tokens = ?2, context_cached = ?3, \
+                 context_ledger = ?4 WHERE id = ?1",
+                params![
+                    id,
+                    tokens.map(|t| t as i64),
+                    cached.map(|c| c as i64),
+                    ledger.map(|l| l as i64)
+                ],
+            )?;
+        }
         Ok(())
     }
 
@@ -2617,7 +2750,7 @@ impl Store {
     /// writer in WAL, but it holds the snapshot that keeps a checkpoint from moving the WAL, and
     /// this is the read that stalls when the disk is saturated.
     pub fn load_transcript(&self, transcript_id: &str) -> Result<LoadedTranscript> {
-        let conn = self.conn();
+        let conn = self.at("transcript");
         busy::retry_store(|| Self::load_transcript_on(&conn, transcript_id))
     }
 
@@ -2680,7 +2813,7 @@ impl Store {
     }
 
     pub fn item_count(&self, transcript_id: &str) -> Result<u32> {
-        let n: i64 = self.conn().query_row(
+        let n: i64 = self.at("transcript_item").query_row(
             "SELECT COUNT(*) FROM transcript_item WHERE transcript_id = ?1",
             params![transcript_id],
             |r| r.get(0),
@@ -2692,7 +2825,7 @@ impl Store {
     /// rather than a whole transcript load, because a resume walks the chain.
     pub fn parent_of(&self, transcript_id: &str) -> Result<Option<String>> {
         Ok(self
-            .conn()
+            .at("transcript")
             .query_row(
                 "SELECT parent_transcript_id FROM transcript WHERE id = ?1",
                 params![transcript_id],
@@ -2707,7 +2840,7 @@ impl Store {
     /// whole point of it.
     pub fn row_json_at(&self, transcript_id: &str, seq: u32) -> Result<Option<String>> {
         Ok(self
-            .conn()
+            .at("transcript_item")
             .query_row(
                 "SELECT item_json FROM transcript_item\n                   WHERE transcript_id = ?1 AND seq = ?2",
                 params![transcript_id, seq as i64],
@@ -2725,7 +2858,7 @@ impl Store {
         from: u32,
         count: u32,
     ) -> Result<Vec<RowJson>> {
-        let conn = self.conn();
+        let conn = self.at("transcript_item");
         let mut st = conn.prepare(
             "SELECT seq, item_id, kind, item_json, created_at FROM transcript_item\n              WHERE transcript_id = ?1 AND seq >= ?2 ORDER BY seq ASC LIMIT ?3",
         )?;
@@ -2750,7 +2883,7 @@ impl Store {
     /// new base.
     pub fn current_transcript_id(&self, session_id: &str) -> Result<Option<String>> {
         Ok(self
-            .conn()
+            .at("transcript")
             .query_row(
                 "SELECT id FROM transcript WHERE session_id = ?1\n                   ORDER BY created_at DESC, rowid DESC LIMIT 1",
                 params![session_id],
@@ -2779,9 +2912,17 @@ impl Store {
         // by `created_at DESC, rowid DESC`, because a fork shares its parent's millisecond and needs it.
         // The session list, timed: it is what a picker, `--sessions` and the fleet view read,
         // and until this it was one of the reads no instrument could see.
+        //
+        // On a split set the history columns are read now here and then not at all: `transcript`
+        // and `transcript_item` are the project file's, the index may not reach into another
+        // project's file, and the listing is the index's own read (§ Table assignment).
+        let sql = match self.project.is_some() {
+            true => sessions_index_sql(filter),
+            false => sessions_sql(filter),
+        };
         let conn = self.conn();
         busy::retry_store(|| {
-            let mut stmt = conn.prepare(&sessions_sql(filter))?;
+            let mut stmt = conn.prepare(&sql)?;
             let mut out: Vec<StoredSession> = stmt
                 .query_map(args, |r| {
                     let created_ms: i64 = r.get(6)?;
@@ -3110,7 +3251,7 @@ impl Store {
     /// wrote one" and "cleared it": from outside they are the same state.
     pub fn todos(&self, session_id: &str) -> Result<Vec<TodoItem>> {
         let json: Option<String> = self
-            .conn()
+            .at("todo")
             .query_row(
                 "SELECT todos_json FROM todo WHERE session_id = ?1",
                 params![session_id],
@@ -3126,7 +3267,7 @@ impl Store {
     /// Every session with a row waiting on the operator, and how many questions are open: the
     /// picker's mark, read for all sessions in one pass. Narrowed in SQL, decided in Rust.
     pub fn sessions_waiting_on_operator(&self) -> Result<BTreeMap<String, usize>> {
-        let conn = self.conn();
+        let conn = self.at("todo");
         let mut st = conn.prepare(
             "SELECT session_id, todos_json FROM todo WHERE todos_json LIKE '%\"kind\":\"operator\"%'",
         )?;
@@ -3165,7 +3306,7 @@ impl Store {
 
     /// [`Store::jobs`], narrowed by a fixed SQL condition (never a caller's text).
     fn jobs_where(&self, session_id: &str, and: &str) -> Result<Vec<JobRecord>> {
-        let conn = self.conn();
+        let conn = self.at("job");
         let mut st = conn.prepare(&format!(
             "SELECT handle, command, how, state, produced, elapsed_ms, redirect
                FROM job WHERE session_id = ?1 {and} ORDER BY updated_ms, handle"
@@ -3239,7 +3380,7 @@ impl Store {
     /// daemon seeds its handle counter above at start, so a handle is never minted twice for one
     /// session across restarts. `0` for a store with no `jN` handle.
     pub fn max_job_number(&self) -> Result<u64> {
-        let conn = self.conn();
+        let conn = self.at("job");
         let mut st = conn.prepare("SELECT handle FROM job WHERE handle GLOB 'j[0-9]*'")?;
         let rows = st.query_map([], |r| r.get::<_, String>(0))?;
         let mut max = 0u64;
@@ -3268,10 +3409,14 @@ impl Store {
             )));
         }
         // Order matters: `transcript.session_id` is a foreign key and
-        // `foreign_keys` is on. One IMMEDIATE transaction, so the two deletes land together
-        // and a busy store is waited for rather than leaving a session with no transcript.
-        self.write_tx(|tx| {
+        // `foreign_keys` is on. One IMMEDIATE transaction per file, because a split set keeps the
+        // history and the index in two and no transaction spans them: the history goes first, so
+        // a session row is never left pointing at a transcript that is gone.
+        self.write_tx_at("transcript", |tx| {
             tx.execute("DELETE FROM transcript WHERE session_id = ?1", params![id])?;
+            Ok(())
+        })?;
+        self.write_tx_at("session", |tx| {
             tx.execute("DELETE FROM session WHERE id = ?1", params![id])?;
             Ok(())
         })
@@ -3280,7 +3425,7 @@ impl Store {
     /// What a stable prefix was rendered from and by. `None` if it is not here.
     pub fn stable_prefix_meta(&self, id: &str) -> Result<Option<StablePrefixMeta>> {
         Ok(self
-            .conn()
+            .at("stable_prefix")
             .query_row(
                 "SELECT dialect_sha, vocab_source, n_tokens FROM stable_prefix WHERE id = ?1",
                 params![id],
@@ -3348,7 +3493,7 @@ impl Store {
     /// The highest decision number this session has already stored: `AdjudicatedGate` numbers
     /// requests from an in-memory counter, so a resumed session re-emits ids that are taken.
     pub fn max_adjudication_seq(&self, session_id: &str) -> Result<u64> {
-        let n: Option<i64> = self.conn().query_row(
+        let n: Option<i64> = self.at("adjudication").query_row(
             "SELECT MAX(CAST(substr(request_id, length(?1) + 6) AS INTEGER))
                FROM adjudication WHERE session_id = ?1",
             params![session_id],
@@ -3394,7 +3539,7 @@ impl Store {
         };
         let sql = format!("SELECT {field} FROM adjudication WHERE request_id = ?1");
         let out: Option<Option<String>> = self
-            .conn()
+            .at("adjudication")
             .query_row(&sql, rusqlite::params![request_id], |r| r.get(0))
             .optional()?;
         // Nothing flattened: a row that is not there and a column that is `NULL` are the same
@@ -3420,7 +3565,7 @@ impl Store {
         } else {
             format!("SELECT {COLS} FROM adjudication ORDER BY decided_ms DESC LIMIT ?1")
         };
-        let conn = self.conn();
+        let conn = self.at("adjudication");
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map([limit as i64], |r| {
@@ -3466,51 +3611,92 @@ impl Store {
     /// Shapes this operator approved by hand, under this workspace: the warm start for the shape
     /// cache, which was in-memory and died with the process, exactly when a restart needed it.
     pub fn approved_shapes(&self, workspace_root: &str) -> Result<Vec<(String, String)>> {
-        let conn = self.conn();
+        // The rows are the corpus's file and the workspace they belong to is the index's, so a
+        // split set needs two reads where one JOIN used to do: the sessions first, the rows after.
+        let mine: std::collections::HashSet<String> = {
+            let conn = self.conn();
+            let mut st = conn.prepare("SELECT id FROM session WHERE workspace_root = ?1")?;
+            let rows = st.query_map([workspace_root], |r| r.get::<_, String>(0))?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+        let conn = self.at("adjudication");
         let mut stmt = conn.prepare(
-            "SELECT a.shape, a.shape_class
-               FROM adjudication a
-               JOIN session s ON s.id = a.session_id
-              WHERE a.shape IS NOT NULL
-                AND a.shape_class IS NOT NULL
-                AND a.tier = 'may_approve'
-                AND a.effect = 'admit'
-                AND a.verdict_by LIKE 'human%'
-                AND a.baseline NOT LIKE '%destroy%'
-                AND s.workspace_root = ?1
-              ORDER BY a.decided_ms DESC",
+            "SELECT shape, shape_class, session_id
+               FROM adjudication
+              WHERE shape IS NOT NULL
+                AND shape_class IS NOT NULL
+                AND tier = 'may_approve'
+                AND effect = 'admit'
+                AND verdict_by LIKE 'human%'
+                AND baseline NOT LIKE '%destroy%'
+              ORDER BY decided_ms DESC",
         )?;
-        let rows = stmt
-            .query_map([workspace_root], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (shape, class, session) = row?;
+            if mine.contains(&session) {
+                out.push((shape, class));
+            }
+        }
+        Ok(out)
     }
 
     /// Human admits recorded before the shape column was filled in: the input to the backfill, and
     /// nothing else reads it. It carries the workspace from the session rather than assuming one.
     pub fn shapeless_human_admits(&self) -> Result<Vec<ShapelessAdmit>> {
-        let conn = self.conn();
+        // [`Store::approved_shapes`]'s two reads, for its reason: the corpus and the index are one
+        // file on a single-file store and two on a split set.
+        let mut workspaces: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        {
+            let conn = self.conn();
+            let mut st = conn.prepare("SELECT id, workspace_root FROM session")?;
+            let rows =
+                st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            for row in rows {
+                let (id, root) = row?;
+                workspaces.insert(id, root);
+            }
+        }
+        let conn = self.at("adjudication");
         let mut stmt = conn.prepare(
-            "SELECT a.request_id, s.workspace_root, a.tool, a.arguments_json
-               FROM adjudication a
-               JOIN session s ON s.id = a.session_id
-              WHERE a.shape IS NULL
-                AND a.tier = 'may_approve'
-                AND a.effect = 'admit'
-                AND a.verdict_by LIKE 'human%'
-              ORDER BY a.decided_ms ASC",
+            "SELECT request_id, session_id, tool, arguments_json
+               FROM adjudication
+              WHERE shape IS NULL
+                AND tier = 'may_approve'
+                AND effect = 'admit'
+                AND verdict_by LIKE 'human%'
+              ORDER BY decided_ms ASC",
         )?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok(ShapelessAdmit {
-                    request_id: r.get(0)?,
-                    workspace_root: r.get(1)?,
-                    tool: r.get(2)?,
-                    arguments_json: r.get(3)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (request_id, session_id, tool, arguments_json) = row?;
+            // A JOIN used to drop a row whose session the store does not hold; so does this.
+            if let Some(workspace_root) = workspaces.get(&session_id) {
+                out.push(ShapelessAdmit {
+                    request_id,
+                    workspace_root: workspace_root.clone(),
+                    tool,
+                    arguments_json,
+                });
+            }
+        }
+        Ok(out)
     }
 
     /// Write a shape and its class onto a row that has neither. `WHERE shape IS NULL` is the whole
@@ -3528,8 +3714,9 @@ impl Store {
     /// Counts for the startup disclosure: a corpus nobody can see the size of is
     /// a corpus nobody maintains.
     pub fn corpus_counts(&self) -> Result<CorpusCounts> {
-        let (total, asked, measured, disagreements, model_decided) =
-            self.conn().query_row(&corpus_counts_sql(), [], |r| {
+        let (total, asked, measured, disagreements, model_decided) = self
+            .at("adjudication")
+            .query_row(&corpus_counts_sql(), [], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, i64>(1)?,
@@ -3550,21 +3737,36 @@ impl Store {
     }
 
     /// One autocommit write statement, taken again while the store is busy. Every write method
-    /// takes this, and a retry writes once because the statement either ran or did not.
+    /// takes this, and a retry writes once because the statement either ran or did not. The table
+    /// the statement names decides the file, so no caller says it twice.
     #[track_caller]
     fn exec<P: Params + Clone>(&self, sql: &str, p: P) -> rusqlite::Result<usize> {
-        busy::retry_sql(|| self.conn().execute(sql, p.clone()))
+        busy::retry_sql(|| self.at_sql(sql).execute(sql, p.clone()))
     }
 
     /// A write transaction: `BEGIN IMMEDIATE`, the body, `COMMIT`, taken again while busy.
     /// IMMEDIATE because a deferred transaction that reads first holds a lock it cannot upgrade.
+    /// This takes the FIRST file of a set - the index's - which is where every caller without a
+    /// table of its own writes; a body that writes a project table wants [`Store::write_tx_at`].
     #[track_caller]
     pub fn write_tx<T>(
         &self,
+        body: impl FnMut(&rusqlite::Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.write_tx_at("session", body)
+    }
+
+    /// [`Store::write_tx`] on the file that holds `table`: a transaction cannot span the two files
+    /// of a split set, so the caller names the one it writes - and a body that would write to both
+    /// is two transactions.
+    #[track_caller]
+    pub fn write_tx_at<T>(
+        &self,
+        table: &str,
         mut body: impl FnMut(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         busy::retry_store(|| {
-            let conn = self.conn();
+            let conn = self.at(table);
             let tx = rusqlite::Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
             let out = body(&tx)?;
             tx.commit()?;
@@ -3576,6 +3778,12 @@ impl Store {
     /// not `&Connection`, because there is one connection per store file per process.
     pub fn connection(&self) -> Conn<'_> {
         self.conn()
+    }
+
+    /// [`Store::connection`] for a raw statement that names `table`: the escape hatch a caller with
+    /// its own SQL needs on a split set, where the file a statement reads is not a guess.
+    pub fn connection_of(&self, table: &str) -> Conn<'_> {
+        self.at(table)
     }
 }
 

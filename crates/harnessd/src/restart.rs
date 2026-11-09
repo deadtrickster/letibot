@@ -77,17 +77,18 @@ pub const RESTORE_WITHIN: Duration = Duration::from_secs(3600);
 
 /// A hub's queued operator prompts, kept in the session store.
 pub struct StoreJournal {
-    path: PathBuf,
+    at: crate::config::StoreAt,
     session_id: String,
     store: Option<Store>,
 }
 
 impl StoreJournal {
-    /// Attach `hub` to the store at `path`: put back the prompts a dead daemon left queued, and
+    /// Attach `hub` to the store at `at`: put back the prompts a dead daemon left queued, and
     /// keep the queue saved from here on. Returns how many were put back.
-    pub fn attach(hub: &letibot_sessionlog::Hub, path: &std::path::Path) -> usize {
+    pub fn attach(hub: &letibot_sessionlog::Hub, at: impl Into<crate::config::StoreAt>) -> usize {
+        let at = at.into();
         let session_id = hub.session_id();
-        let store = Store::open(path).ok();
+        let store = at.open_existing().ok();
         let stored = store
             .as_ref()
             .and_then(|s| s.queued_prompts(&session_id).ok())
@@ -103,7 +104,7 @@ impl StoreJournal {
             })
             .collect();
         let journal = StoreJournal {
-            path: path.to_path_buf(),
+            at,
             session_id,
             store,
         };
@@ -114,7 +115,7 @@ impl StoreJournal {
 impl letibot_sessionlog::PromptJournal for StoreJournal {
     fn save(&mut self, prompts: &[letibot_sessionlog::JournaledPrompt]) -> Result<(), String> {
         if self.store.is_none() {
-            self.store = Some(Store::open(&self.path).map_err(|e| e.to_string())?);
+            self.store = Some(self.at.open_existing().map_err(|e| e.to_string())?);
         }
         let rows: Vec<_> = prompts
             .iter()
@@ -144,17 +145,26 @@ pub struct Lifeline {
 }
 
 impl Lifeline {
-    pub fn start(path: Option<PathBuf>, registry: Arc<Registry>) -> Lifeline {
+    pub fn start(
+        at: Option<impl Into<crate::config::StoreAt>>,
+        registry: Arc<Registry>,
+    ) -> Lifeline {
+        let at = at.map(Into::into);
         let mut store = None;
-        if let Some(p) = &path {
+        if let Some(at) = &at {
             let instance = registry.instance().to_string();
             let started = registry.started_ms();
-            match Store::open(p).and_then(|s| s.life_started(&instance, started).map(|()| s)) {
+            // The daemon's very first store call, so a fresh data directory's two files are made
+            // here rather than a start that was not recorded.
+            match at
+                .open()
+                .and_then(|s| s.life_started(&instance, started).map(|()| s))
+            {
                 Ok(s) => {
                     store = Some(s);
                     // A second HANDLE on the same connection, moved to the heartbeat's thread
                     // `Store::open` shares, so this opens no descriptor of its own.
-                    if let Ok(beat) = Store::open(p) {
+                    if let Ok(beat) = at.open() {
                         let reg = registry.clone();
                         let _ = std::thread::Builder::new()
                             .name("daemon-heartbeat".into())
@@ -944,7 +954,7 @@ pub fn rows_waiting_on(rows: &[TodoItem], handle: &str, slug: Option<&str>) -> V
 /// retirement closes it. Everything else is the tool's own.
 pub struct RecordingMonitor {
     pub inner: letibot_tools::builtins::monitor::Monitor,
-    pub path: Option<PathBuf>,
+    pub at: Option<crate::config::StoreAt>,
     pub session_id: String,
     pub instance: String,
 }
@@ -967,15 +977,14 @@ impl letibot_tools::Tool for RecordingMonitor {
         if out.outcome != letibot_transcript::ToolOutcome::Ok {
             return out;
         }
-        let (Some(path), Some(name)) = (&self.path, args.get("name").and_then(|v| v.as_str()))
-        else {
+        let (Some(at), Some(name)) = (&self.at, args.get("name").and_then(|v| v.as_str())) else {
             return out;
         };
         let action = args
             .get("action")
             .and_then(|v| v.as_str())
             .unwrap_or("watch");
-        let wrote = Store::open(path).and_then(|s| match action {
+        let wrote = at.open_existing().and_then(|s| match action {
             "retire" => s.end_monitor(&self.session_id, name),
             "renew" => {
                 let ttl = ttl_of(args);

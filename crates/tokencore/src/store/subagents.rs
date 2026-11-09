@@ -2,6 +2,7 @@
 //! children it owes an answer to. The window is the oldest record this store holds: before it a
 //! missing row says nothing.
 
+use letibot_transcript::TranscriptItem;
 use rusqlite::{OptionalExtension, params};
 
 use super::{Result, Store, now_ms};
@@ -277,7 +278,7 @@ impl Store {
     /// Every child any session started, oldest first - what the daemon's session list reads
     /// the children's names from (their slugs are in `spec_json`, the spawn's own description).
     pub fn subagent_runs(&self) -> Result<Vec<SubagentRun>> {
-        let conn = self.conn();
+        let conn = self.at("subagent_run");
         let mut st = conn.prepare(&format!("{SELECT_RUN} ORDER BY started_ms, child_id"))?;
         let rows = st.query_map([], run_of)?;
         let mut out = Vec::new();
@@ -290,7 +291,7 @@ impl Store {
     /// Every child this session started, oldest first - what a parent reads when it is
     /// opened.
     pub fn subagent_runs_of(&self, parent_id: &str) -> Result<Vec<SubagentRun>> {
-        let conn = self.conn();
+        let conn = self.at("subagent_run");
         let mut st = conn.prepare(&format!(
             "{SELECT_RUN} WHERE parent_id = ?1 ORDER BY started_ms, child_id"
         ))?;
@@ -305,9 +306,11 @@ impl Store {
     /// When this store began recording children: the oldest `subagent_run` row's start, or `None`
     /// for a store that never did. This is the window a missing row is read against.
     pub fn first_subagent_run_ms(&self) -> Result<Option<u64>> {
-        let at: Option<i64> =
-            self.conn()
-                .query_row("SELECT MIN(started_ms) FROM subagent_run", [], |r| r.get(0))?;
+        let at: Option<i64> = self.at("subagent_run").query_row(
+            "SELECT MIN(started_ms) FROM subagent_run",
+            [],
+            |r| r.get(0),
+        )?;
         Ok(at.map(|v| v as u64))
     }
 
@@ -346,53 +349,88 @@ impl Store {
             Some(at) => i64::try_from(at).unwrap_or(i64::MAX),
             None => i64::MAX,
         };
+        // The children are the index's and the record of which have a run is this file's, so the
+        // one query the single-file store could write is two reads here: the recorded ids first,
+        // then the children the index names that are not among them.
+        let recorded: std::collections::HashSet<String> = {
+            let conn = self.at("subagent_run");
+            let mut st = conn.prepare("SELECT child_id FROM subagent_run")?;
+            let rows = st.query_map([], |r| r.get::<_, String>(0))?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
         // The last row is read with the same "newest transcript, then highest seq" rule
         // `sessions_matching` uses, and for the same reason: a compaction fork is written in the
         // same millisecond as the transcript it forked from, so the rowid is what breaks the tie.
-        let conn = self.conn();
-        let mut st = conn.prepare(
-            "SELECT s.id, s.title, s.role, s.workspace_root, s.created_at,
-                    CASE WHEN s.created_at >= ?2 THEN 1 ELSE 0 END,
-                    (SELECT i.item_json FROM transcript_item i
-                      WHERE i.transcript_id = (SELECT t.id FROM transcript t
-                          WHERE t.session_id = s.id
-                          ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)
-                        AND i.kind <> 'offer'
-                      ORDER BY i.seq DESC LIMIT 1)
-               FROM session s
-              WHERE s.parent_session_id = ?1
-                -- the same `?2` the CASE reads: the list keeps only the children a row was due
-                -- for, the keyed read takes whichever class the child it was asked about is in
-                AND (?3 = 1 OR s.created_at >= ?2)
-                AND (?4 IS NULL OR s.id = ?4)
-                AND NOT EXISTS (SELECT 1 FROM subagent_run r WHERE r.child_id = s.id)
-              ORDER BY s.created_at DESC, s.rowid DESC",
-        )?;
-        let rows = st.query_map(
-            params![parent_id, since, if due_only { 0i64 } else { 1 }, child_id],
-            |r| {
-                Ok(UnrecordedChild {
-                    id: r.get(0)?,
-                    title: r.get(1)?,
-                    role: r.get(2)?,
-                    workspace_root: r.get(3)?,
-                    created_ms: r.get(4)?,
-                    why: if r.get::<_, i64>(5)? != 0 {
-                        NoRecord::Due
-                    } else {
-                        NoRecord::BeforeTheStore
-                    },
-                    last_item: r
-                        .get::<_, Option<String>>(6)?
-                        .and_then(|j| serde_json::from_str(&j).ok()),
-                })
-            },
-        )?;
+        //
+        // The rows are COLLECTED before anything is read from another file: on a single-file store
+        // the two reads are one connection, and a second guard on it, taken while the first is
+        // held, is a deadlock rather than a wait.
+        let mut children: Vec<UnrecordedChild> = {
+            let conn = self.conn();
+            let mut st = conn.prepare(
+                "SELECT s.id, s.title, s.role, s.workspace_root, s.created_at,
+                        CASE WHEN s.created_at >= ?2 THEN 1 ELSE 0 END
+                   FROM session s
+                  WHERE s.parent_session_id = ?1
+                    -- the same `?2` the CASE reads: the list keeps only the children a row was due
+                    -- for, the keyed read takes whichever class the child it was asked about is in
+                    AND (?3 = 1 OR s.created_at >= ?2)
+                    AND (?4 IS NULL OR s.id = ?4)
+                  ORDER BY s.created_at DESC, s.rowid DESC",
+            )?;
+            let rows = st.query_map(
+                params![parent_id, since, if due_only { 0i64 } else { 1 }, child_id],
+                |r| {
+                    let created_ms: i64 = r.get(4)?;
+                    Ok(UnrecordedChild {
+                        id: r.get(0)?,
+                        title: r.get(1)?,
+                        role: r.get(2)?,
+                        workspace_root: r.get(3)?,
+                        created_ms,
+                        why: if r.get::<_, i64>(5)? != 0 {
+                            NoRecord::Due
+                        } else {
+                            NoRecord::BeforeTheStore
+                        },
+                        last_item: None,
+                    })
+                },
+            )?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r?);
+            }
+            out
+        };
         let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
+        for mut child in children.drain(..) {
+            if recorded.contains(&child.id) {
+                continue;
+            }
+            child.last_item = self.last_item_of(&child.id)?;
+            out.push(child);
         }
         Ok(out)
+    }
+
+    /// The newest non-offer row of a session's newest transcript: what a list shows of a
+    /// conversation it is not opening, and the one read [`Store::unrecorded_of`] needs twice.
+    fn last_item_of(&self, session_id: &str) -> Result<Option<TranscriptItem>> {
+        let conn = self.at("transcript_item");
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT i.item_json FROM transcript_item i
+                  WHERE i.transcript_id = (SELECT t.id FROM transcript t
+                      WHERE t.session_id = ?1
+                      ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)
+                    AND i.kind <> 'offer'
+                  ORDER BY i.seq DESC LIMIT 1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(json.and_then(|j| serde_json::from_str(&j).ok()))
     }
 }
 
@@ -431,7 +469,7 @@ impl Store {
 
     /// Every monitor row of a session, live or not, by name.
     pub fn monitors_of(&self, session_id: &str) -> Result<Vec<StoredMonitor>> {
-        let conn = self.conn();
+        let conn = self.at("session_monitor");
         let mut st = conn.prepare(
             "SELECT session_id, name, args_json, instance, ttl_ms, live, declared_ms, updated_ms
                FROM session_monitor WHERE session_id = ?1 ORDER BY name",

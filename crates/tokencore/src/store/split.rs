@@ -23,6 +23,10 @@ pub const SHARED_FILE: &str = "shared.db";
 /// One file per folder's daemon, under the data directory: `projects/<key>.db`.
 pub const PROJECTS_DIR: &str = "projects";
 
+/// The single file a daemon wrote before the split. This build opens it only through P2's
+/// migration, so a data directory still holding it is a refusal that names the command.
+pub const LEGACY_FILE: &str = "sessions.db";
+
 /// Which file a table lives in, as § Table assignment lists it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place {
@@ -428,6 +432,64 @@ impl StoreSet {
             StoreFile::Project => self.dir.join(PROJECTS_DIR).join(format!("{}.db", self.key)),
         }
     }
+}
+
+/// A handle onto one key's two files: both connections in one [`Store`], so a call routes by
+/// [`place_of`] and no caller names a file. `create` is the daemon's door, which makes the files
+/// when they are not there; a reader's door leaves them alone, and a data directory whose store
+/// has not been split is [`refuse_unsplit`]'s refusal by name.
+pub fn open_handle(dir: &Path, key: &str, create: bool) -> Result<Store> {
+    check_key(key)?;
+    let projects = dir.join(PROJECTS_DIR);
+    let shared_path = dir.join(SHARED_FILE);
+    let project_path = projects.join(format!("{key}.db"));
+    if create {
+        std::fs::create_dir_all(&projects).map_err(|e| {
+            StoreError::Refused(format!("could not make {}: {e}", projects.display()))
+        })?;
+        // Created from the tree's own DDL filtered by the assignment, and stamped with this
+        // build's version, so `Store::open` below has nothing to migrate in either file.
+        for (path, file) in [
+            (&shared_path, StoreFile::Shared),
+            (&project_path, StoreFile::Project),
+        ] {
+            let conn = Connection::open(path)?;
+            pragmas(&conn)?;
+            prepare(&conn, path, file)?;
+        }
+    } else {
+        refuse_unsplit(dir)?;
+        if !shared_path.is_file() {
+            return Err(StoreError::Refused(format!(
+                "{} holds no {SHARED_FILE}: there is no split store here to read",
+                dir.display()
+            )));
+        }
+    }
+    let shared = Store::open(&shared_path)?;
+    // A set whose project file is not there is still a set: its listing is the index's, and a
+    // question about a transcript is the question a renamed-away file cannot answer.
+    let project = match project_path.is_file() {
+        true => Some(Store::open(&project_path)?.shared.clone()),
+        false => None,
+    };
+    Ok(Store::of_set(shared.shared.clone(), project))
+}
+
+/// The single file a daemon used to write and the pass that splits it are the operator's: a
+/// daemon that started by migrating would be copying a store nobody had stopped writing to.
+pub fn refuse_unsplit(dir: &Path) -> Result<()> {
+    let old = dir.join(LEGACY_FILE);
+    if old.is_file() && !dir.join(SHARED_FILE).is_file() {
+        return Err(StoreError::Refused(format!(
+            "{} is not split yet: it holds {LEGACY_FILE} and no {SHARED_FILE}. Stop every daemon \
+             and run `letibot-migrate-split {} {}` - this daemon never migrates on its own.",
+            dir.display(),
+            old.display(),
+            dir.display()
+        )));
+    }
+    Ok(())
 }
 
 /// Every set this process has open, by data directory and project key. A `Weak`, like [`Store`]'s

@@ -1895,10 +1895,9 @@ impl HarnessTaskRunner {
     /// store: nothing is recorded and nothing can be brought back.
     fn run_store(&self) -> Option<crate::subagent_record::RunStore> {
         self.base
-            .store
-            .as_ref()
-            .map(|path| crate::subagent_record::RunStore {
-                path: path.clone(),
+            .store_at()
+            .map(|at| crate::subagent_record::RunStore {
+                at,
                 cell: self.merge_store.clone(),
             })
     }
@@ -3233,7 +3232,7 @@ impl HarnessTaskRunner {
                 news: false,
             });
         };
-        let Some(path) = self.base.store.clone() else {
+        let Some(at) = self.base.store_at() else {
             return Err(format!(
                 "this daemon has no `--store`, and the queues live in the session store — so \
                  there is nowhere to put `{}` up for review. The branch is still in `{}`, and \
@@ -3246,8 +3245,8 @@ impl HarnessTaskRunner {
         let mut cell = self.merge_store.lock().expect("merge store");
         if cell.is_none() {
             *cell = Some(
-                Store::open(&path)
-                    .map_err(|e| format!("the session store at {}: {e}", path.display()))?,
+                at.open_existing()
+                    .map_err(|e| format!("the session store at {}: {e}", at.display()))?,
             );
         }
         let store = cell.as_ref().expect("just opened");

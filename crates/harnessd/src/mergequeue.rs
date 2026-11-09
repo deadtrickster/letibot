@@ -637,7 +637,8 @@ pub fn spawn_for(
     desk: Arc<letibot_tools::builtins::verdict::ReviewDesk>,
     claude: Arc<review::claude::Runs>,
 ) -> Option<JoinHandle<()>> {
-    let store_path = cfg.store.clone()?;
+    // The queue's tables are the shared file's, and the door below reads nothing else.
+    let store_path = cfg.store_at()?.path("merge_queue");
     let env = serve::QueueEnv::production(
         Arc::new(RegistryDoor {
             registry: registry.clone(),

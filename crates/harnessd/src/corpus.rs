@@ -19,10 +19,14 @@ pub struct StoreCorpus {
 }
 
 impl StoreCorpus {
-    /// Take the session store's handle, for the gate's lifetime.
-    pub fn open(path: &std::path::Path) -> Result<Self, letibot_tokencore::store::StoreError> {
+    /// Take the session store's handle, for the gate's lifetime. The corpus is a project file's,
+    /// so a set's handle is asked for the table it reads.
+    pub fn open(
+        at: impl Into<crate::config::StoreAt>,
+    ) -> Result<Self, letibot_tokencore::store::StoreError> {
+        let at: crate::config::StoreAt = at.into();
         Ok(StoreCorpus {
-            store: Mutex::new(Store::open(path)?),
+            store: Mutex::new(at.open_existing()?),
             lost: AtomicU64::new(0),
             orphan_rulings: AtomicU64::new(0),
         })
@@ -197,7 +201,7 @@ mod shape_cache_tests {
             .expect("session");
         }
 
-        let sink = std::sync::Arc::new(StoreCorpus::open(&path).expect("corpus"));
+        let sink = std::sync::Arc::new(StoreCorpus::open(path.clone()).expect("corpus"));
 
         // Session one: the operator is asked, and says yes.
         let asked_first = {

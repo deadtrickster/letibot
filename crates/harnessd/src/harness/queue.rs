@@ -558,7 +558,10 @@ impl Harness {
             warn: &|repository: &str, e| {
                 crate::mergequeue::publish_for_repository(
                     &registry,
-                    self.cfg.store.as_deref(),
+                    self.cfg
+                        .store_at()
+                        .map(|at| at.path("merge_queue"))
+                        .as_deref(),
                     repository,
                     e,
                 );

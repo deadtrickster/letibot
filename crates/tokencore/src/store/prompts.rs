@@ -34,7 +34,7 @@ pub struct QueuedPrompt {
 impl Store {
     /// Make the stored queue of `session_id` exactly `prompts`, in order.
     pub fn replace_queued_prompts(&self, session_id: &str, prompts: &[QueuedPrompt]) -> Result<()> {
-        self.write_tx(|tx| {
+        self.write_tx_at("queued_prompt", |tx| {
             tx.execute(
                 "DELETE FROM queued_prompt WHERE session_id = ?1",
                 params![session_id],
@@ -61,7 +61,7 @@ impl Store {
 
     /// The stored queue of `session_id`, oldest first.
     pub fn queued_prompts(&self, session_id: &str) -> Result<Vec<QueuedPrompt>> {
-        let conn = self.conn();
+        let conn = self.at("queued_prompt");
         let mut st = conn.prepare(
             "SELECT enqueued_ms, head_id, identity, client_request_id, text, attachments_json \
              FROM queued_prompt WHERE session_id = ?1 ORDER BY seq",

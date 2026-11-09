@@ -2123,9 +2123,9 @@ impl<'a> Sessions<'a> {
         }
         // Every block of ports this daemon's sessions held goes back (RH9) - before the
         // backends close, because a session's placement is what a remote teardown's ssh runs over.
-        if let Some(path) = &self.base.store {
+        if let Some(at) = self.base.store_at() {
             for id in self.open.keys().chain(self.courts.keys()) {
-                for line in crate::leases::release_session(path, id, "the daemon stopping") {
+                for line in crate::leases::release_session(&at, id, "the daemon stopping") {
                     eprintln!("  {id} · lease: {line}");
                 }
             }
@@ -2317,10 +2317,10 @@ impl<'a> Sessions<'a> {
             .config()
             .parent_session_id
             .as_ref()
-            .and(h.config().store.clone())
-            .map(|path| crate::subagent_record::SubagentRecord {
+            .and(h.config().store_at())
+            .map(|at| crate::subagent_record::SubagentRecord {
                 store: crate::subagent_record::RunStore {
-                    path,
+                    at,
                     cell: Default::default(),
                 },
                 child: session_id.to_string(),
@@ -2866,8 +2866,8 @@ impl<'a> Sessions<'a> {
         // And the blocks of ports it held go back (RH9), with what it made under its prefixes
         // removed and nothing else. After the processes, because a role's containers are what its
         // processes started.
-        if let Some(path) = &self.base.store {
-            for line in crate::leases::release_session(path, session_id, "the session closing") {
+        if let Some(at) = self.base.store_at() {
+            for line in crate::leases::release_session(&at, session_id, "the session closing") {
                 eprintln!("  {session_id} · lease: {line}");
             }
         }
@@ -4592,8 +4592,9 @@ impl StoreSessions {
     /// and a source that answered "no sessions" would be indistinguishable from a
     /// store that is empty.
     pub fn open(cfg: &Config) -> Option<Arc<StoreSessions>> {
-        let path = cfg.store.as_ref()?;
-        let store = Store::open(path).ok()?;
+        // The daemon's own first open of the store, so a fresh data directory's two files are
+        // made here; a head or a listing goes through `run_query`, which creates nothing.
+        let store = cfg.store_at()?.open().ok()?;
         Some(Arc::new(StoreSessions {
             store: Mutex::new(store),
             wiring: Sessions::wiring(cfg),

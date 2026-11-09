@@ -428,21 +428,22 @@ impl Harness {
         }
         // The store opens before anything else, because it may change the configuration: a session
         // already in it carries its own workspace root, and its tools must be confined to THAT tree
-        // rather than to the directory this daemon happened to start in.
-        let store = match &cfg.store {
+        // rather than to the directory this daemon happened to start in. One handle onto both files
+        // of a split set, so no call below has to say which one it wants.
+        let at = cfg.store_at();
+        let store = match &at {
             None => None,
-            Some(path) => Some(
-                Store::open(path)
-                    .map_err(|e| HarnessError::Store(format!("opening {path:?}: {e}")))?,
+            Some(at) => Some(
+                at.open()
+                    .map_err(|e| HarnessError::Store(format!("opening {}: {e}", at.display())))?,
             ),
         };
         // A handle onto the connection `store` holds, not a second one, since the store became one
         // connection per file per process. A corpus that will not open is reported and not fatal: a
         // harness that will not start because its telemetry will not is a worse harness.
-        let opened_corpus = cfg
-            .store
+        let opened_corpus = at
             .as_ref()
-            .and_then(|path| crate::corpus::StoreCorpus::open(path).ok())
+            .and_then(|at| crate::corpus::StoreCorpus::open(at).ok())
             .map(std::sync::Arc::new);
         // Job handles must be above every one the store has seen, or the first job after a restart
         // is an old `j7` to every reader. Seeded on every open, because a session can arrive from a
@@ -1948,9 +1949,10 @@ impl Harness {
         // The merge queue, from the model's side, registered before the session tools so the real
         // desk is the one seated. Bound to THIS session, so every move is recorded as
         // `agent:<session>`; a daemon with no store gets the tool that says so.
-        let queue_desk: Arc<dyn letibot_tools::builtins::queue::QueueDesk> = match &cfg.store {
-            Some(path) => Arc::new(crate::mergequeue::desk::SessionQueue {
-                store_path: path.clone(),
+        let queue_desk: Arc<dyn letibot_tools::builtins::queue::QueueDesk> = match cfg.store_at() {
+            Some(at) => Arc::new(crate::mergequeue::desk::SessionQueue {
+                // The queue's tables are the shared file's, and a desk reads nothing else.
+                store_path: at.path("merge_queue"),
                 session: cfg.session_id.clone(),
                 workspace: cfg.workspace.clone(),
                 registry: session_registry.clone(),
@@ -2197,7 +2199,7 @@ impl Harness {
                 // store, so a daemon restart can make the same call again (`crate::restart`).
                 registry.register(Box::new(crate::restart::RecordingMonitor {
                     inner: letibot_tools::builtins::monitor::Monitor,
-                    path: cfg.store.clone(),
+                    at: cfg.store_at(),
                     session_id: cfg.session_id.clone(),
                     instance: session_registry.instance().to_string(),
                 }))
@@ -2215,20 +2217,20 @@ impl Harness {
         // Work across hosts: `fanout` and `scenario`, with the daemon's own process book behind
         // them, so a branch on ANOTHER machine is a supervised process a restart finds. A session
         // with no store gets the tool that works and writes nothing.
-        let process_book: std::sync::Arc<dyn letibot_tools::fleet::ProcessBook> = match &cfg.store {
-            Some(path) => std::sync::Arc::new(crate::supervise::StoreBook::new(
-                path.clone(),
-                cfg.session_id.clone(),
-            )),
+        let process_book: std::sync::Arc<dyn letibot_tools::fleet::ProcessBook> = match cfg
+            .store_at()
+        {
+            Some(at) => {
+                std::sync::Arc::new(crate::supervise::StoreBook::new(at, cfg.session_id.clone()))
+            }
             None => std::sync::Arc::new(letibot_tools::fleet::NoBook),
         };
         // Resource leases: the block of a shared host's ports this session may use, and the prefix
         // its containers are named under, behind the same store. With no store the tool refuses a
         // `ready: {"port": "lease"}` with a sentence rather than starting against port 0.
         let leases = cfg
-            .store
-            .as_ref()
-            .map(|path| std::sync::Arc::new(crate::leases::blocks(path, &cfg.session_id)));
+            .store_at()
+            .map(|at| std::sync::Arc::new(crate::leases::blocks(&at, &cfg.session_id)));
         registry
             .register(Box::new({
                 let mut tool =
@@ -2277,10 +2279,10 @@ impl Harness {
         // that is absent reads as a capability this build lacks, so it refuses by name instead.
         if registry.get("transcript").is_none() {
             let src: Arc<dyn letibot_tools::builtins::transcript::TranscriptSource> =
-                match cfg.store.as_deref() {
-                    Some(path) => {
+                match cfg.store_at() {
+                    Some(at) => {
                         match crate::transcript_source::StoreTranscripts::open(
-                            path,
+                            &at,
                             cfg.session_id.clone(),
                         ) {
                             Ok(s) => Arc::new(s),
@@ -2301,9 +2303,9 @@ impl Harness {
             // The gate's own record, by the same argument and from the same file: a model must not
             // derive the storage, its format, or where it lives.
             let decisions: Arc<dyn letibot_tools::builtins::decisions::DecisionSource> =
-                match cfg.store.as_deref() {
-                    Some(path) => match crate::decision_source::StoreDecisions::open(
-                        path,
+                match cfg.store_at() {
+                    Some(at) => match crate::decision_source::StoreDecisions::open(
+                        &at,
                         cfg.session_id.clone(),
                     ) {
                         Ok(s) => Arc::new(s),
@@ -2793,11 +2795,11 @@ impl Harness {
                 },
             );
             // Where a settlement gets written down: the watcher threads cannot be handed this harness's `Store`, so
-            // they get its PATH and open a handle onto the process's one connection. This session's own id and not the
-            // tree's, since a job a child backgrounded is the child's row.
-            if let Some(path) = store.as_ref().and_then(|s| s.path()) {
+            // they get the store it came from and open a handle onto the process's one connection. This session's own id
+            // and not the tree's, since a job a child backgrounded is the child's row.
+            if let Some(at) = cfg.store_at() {
                 w.record_jobs_into(
-                    path.to_path_buf(),
+                    at,
                     cfg.session_id.clone(),
                     session_registry.instance(),
                     // Where this session's jobs run, which is what the record's `host` column says, and what decides
@@ -3161,7 +3163,7 @@ impl Harness {
                 Ok(p) => Some(scoped_provider(
                     p,
                     marks_for_provider,
-                    Some(persist_marks(cfg.store.clone(), cfg.session_id.clone())),
+                    Some(persist_marks(cfg.store_at(), cfg.session_id.clone())),
                 )),
                 Err(_) if key_is_missing(pc) => {
                     key_wanted = Some(pc.clone());
@@ -3963,14 +3965,15 @@ pub(crate) fn scoped_provider(
 }
 
 /// Where a learned mark goes: the session's own row, which is what makes it survive a restart. By
-/// path because the store hands one connection per file, and a refusal is rare.
+/// store rather than by handle, because a store hands one connection per file, and a refusal is rare.
 pub(crate) fn persist_marks(
-    store: Option<std::path::PathBuf>,
+    store: Option<impl Into<crate::config::StoreAt>>,
     session_id: String,
 ) -> std::sync::Arc<dyn Fn(&letibot_provider::marks::Marks) + Send + Sync> {
+    let store: Option<crate::config::StoreAt> = store.map(Into::into);
     std::sync::Arc::new(move |marks: &letibot_provider::marks::Marks| {
-        let Some(path) = &store else { return };
-        if let Ok(s) = letibot_tokencore::store::Store::open(path) {
+        let Some(at) = &store else { return };
+        if let Ok(s) = at.open_existing() {
             let _ = s.set_session_marks(&session_id, &marks.to_json());
         }
     })

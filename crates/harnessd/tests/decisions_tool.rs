@@ -110,7 +110,7 @@ fn corpus(dir: &std::path::Path) -> (Store, String) {
 
 fn src(dir: &std::path::Path, session_id: &str) -> Arc<dyn DecisionSource> {
     Arc::new(
-        StoreDecisions::open(&dir.join("sessions.db"), session_id.to_string()).expect("opening"),
+        StoreDecisions::open(dir.join("sessions.db"), session_id.to_string()).expect("opening"),
     )
 }
 

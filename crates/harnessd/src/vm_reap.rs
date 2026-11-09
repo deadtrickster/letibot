@@ -431,14 +431,15 @@ pub fn pass(
 /// The reaper's thread: a pass at start - before anything waits on a slot a dead daemon's
 /// child still holds - then every [`SWEEP_EVERY`], or sooner when [`look_now`] asks, until the
 /// daemon stops. Its own store connection; nothing when there is no store.
-pub fn spawn(store_path: Option<PathBuf>, registry: Arc<Registry>) {
-    let Some(path) = store_path else {
+pub fn spawn(store_at: Option<impl Into<crate::config::StoreAt>>, registry: Arc<Registry>) {
+    let Some(at) = store_at.map(Into::into) else {
         return;
     };
     let _ = std::thread::Builder::new()
         .name("vm-reaper".into())
         .spawn(move || {
-            let Ok(store) = Store::open(&path) else {
+            // The daemon's own start, so a fresh data directory's two files are made here.
+            let Ok(store) = at.open() else {
                 return;
             };
             let me = registry.instance().to_string();

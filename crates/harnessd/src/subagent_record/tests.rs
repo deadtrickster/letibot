@@ -66,7 +66,7 @@ fn a_row_the_spawn_could_not_write_is_written_when_the_child_settles() {
         let _ = std::fs::remove_file(format!("{}{s}", path.display()));
     }
     let store = RunStore {
-        path: path.clone(),
+        at: path.clone().into(),
         cell: Default::default(),
     };
     let mut row = run("running");
@@ -117,7 +117,7 @@ fn a_later_answer_the_shutdown_interrupted_is_not_recorded() {
         let _ = std::fs::remove_file(format!("{}{s}", path.display()));
     }
     let store = RunStore {
-        path: path.clone(),
+        at: path.clone().into(),
         cell: Default::default(),
     };
     let mut row = run("done");

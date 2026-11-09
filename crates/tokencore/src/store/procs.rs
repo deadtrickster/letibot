@@ -300,7 +300,7 @@ impl Store {
     /// Every process still open, across every session and host: the supervisor's first read after
     /// a restart and its work list on each tick.
     pub fn open_processes(&self) -> Result<Vec<ProcessRecord>> {
-        let conn = self.conn();
+        let conn = self.at("process");
         let mut st = conn.prepare(&format!(
             "SELECT {COLUMNS} FROM process WHERE state IN ('starting', 'running', 'lost')
               ORDER BY host IS NOT NULL, host, session_id, handle"
@@ -316,7 +316,7 @@ impl Store {
     /// Every process this session owns, open or ended, oldest first - what a teardown reads
     /// and what a test asserts against.
     pub fn processes_of(&self, session_id: &str) -> Result<Vec<ProcessRecord>> {
-        let conn = self.conn();
+        let conn = self.at("process");
         let mut st = conn.prepare(&format!(
             "SELECT {COLUMNS} FROM process WHERE session_id = ?1 ORDER BY started_ms, handle"
         ))?;

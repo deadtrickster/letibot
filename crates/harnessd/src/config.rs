@@ -361,8 +361,14 @@ pub struct Config {
     /// The root every read-only tool is confined to.
     pub workspace: PathBuf,
     pub socket: PathBuf,
-    /// `None` keeps the transcript in memory only - usable, and honest about it.
+    /// `None` keeps the transcript in memory only - usable, and honest about it. `Some` is a DATA
+    /// DIRECTORY (`shared.db` and `projects/<key>.db`, § store-split.md) - or, for a test fixture
+    /// only, one file, which is the pre-split shape and is told from a directory by its `.db`.
     pub store: Option<PathBuf>,
+    /// The project key a data directory's project file is named by: the folder's path hash, the
+    /// one the daemon socket already wears. `None` derives it from `workspace` - never from the
+    /// stored session's own, which a resume may change after the store is open.
+    pub store_key: Option<String>,
     pub session_id: String,
     /// The session that spawned this one as a subagent, or `None` for a top-level
     /// session. Recorded into the store so a subagent tree is a fact on disk, not an
@@ -1536,10 +1542,25 @@ fn parse_permission() -> letibot_tools::permission::Ruleset {
 }
 
 impl Config {
+    /// Where this config's store is, once, so nothing downstream has to decide between a data
+    /// directory and a fixture's file: `--store` names a directory on the daemon's path and the
+    /// split set under it opens with this folder's key.
+    pub fn store_at(&self) -> Option<StoreAt> {
+        let path = self.store.clone()?;
+        if path.extension().is_some_and(|e| e == "db") {
+            return Some(StoreAt::File(path));
+        }
+        let key = self.store_key.clone().unwrap_or_else(|| {
+            letibot_tokencore::migrate_split::project_key(&self.workspace.to_string_lossy())
+        });
+        Some(StoreAt::Set { dir: path, key })
+    }
+
     /// A session against the box this repository is developed on - named so because the endpoint, the
     /// model alias and the GGUF path are this machine's, and a `Default` would let them travel silently.
     /// Every fixture builds on it, so `reviewers` is [`Reviewers::Host`].
     pub fn for_this_box(workspace: impl Into<PathBuf>) -> Config {
+        let workspace: PathBuf = workspace.into();
         Config {
             dialect: Dialect::Qwen,
             model: "qwen-3.8-flash-next".into(),
@@ -1548,9 +1569,14 @@ impl Config {
             // other machine is a file that is not there; a provider needs none, and a
             // local model is named by `--vocab` (the launcher always passes one).
             vocab_gguf: None,
-            workspace: workspace.into(),
+            workspace: workspace.clone(),
             socket: letibot_sessionlog::server::default_socket_path(),
             store: None,
+            // The folder this config serves, pinned at construction: a session's own workspace is
+            // read from the store later and may be another folder.
+            store_key: Some(letibot_tokencore::migrate_split::project_key(
+                &workspace.to_string_lossy(),
+            )),
             session_id: format!("s-{}", now_ns()),
             parent_session_id: None,
             parent_seat: None,
@@ -1929,10 +1955,7 @@ impl Config {
         if keys.len() < 2 {
             return Vec::new();
         }
-        let store = self
-            .store
-            .as_ref()
-            .and_then(|p| letibot_tokencore::store::Store::open(p).ok());
+        let store = self.store_at().and_then(|at| at.open_existing().ok());
         let stored = store
             .as_ref()
             .map(|s| crate::mergequeue::listen::effective(Some(s), &self.workspace, &[]))
@@ -2452,7 +2475,15 @@ impl Config {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "none".into()),
             "--store",
-            "",
+            "a data directory: shared.db and projects/<key>.db",
+        ));
+        out.push(row(
+            "project",
+            self.store_key
+                .clone()
+                .unwrap_or_else(|| "this folder's hash".into()),
+            "--project",
+            "the key projects/<key>.db is named by",
         ));
         out
     }
@@ -2575,7 +2606,7 @@ impl Config {
                 "store",
                 "MEMORY",
                 "the transcript is not persisted; the session ends with the process. \
-                 Pass --store PATH.",
+                 Pass --store DIR.",
             ));
         }
         // , found live 2026-09-10: GLM's end-of-turn token is also the *name* of a thing an agent
@@ -3165,6 +3196,122 @@ impl std::fmt::Display for Disclosure {
             write!(f, "{}: {}", self.subject, self.detail)
         } else {
             write!(f, "{}: {} — {}", self.subject, self.state, self.detail)
+        }
+    }
+}
+
+/// Where a daemon's store is, decided once from [`Config::store`] and [`Config::store_key`]: the
+/// data directory the split lives under, or - a test fixture's shape, never a deployment's - one
+/// file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreAt {
+    /// `shared.db` and `projects/<key>.db` under a data directory (§ store-split.md).
+    Set { dir: PathBuf, key: String },
+    /// One file, the pre-split shape.
+    File(PathBuf),
+}
+
+/// A path is the one-file shape: a test fixture says `StoreAt::File` this way, and nothing on the
+/// daemon's own path goes through it.
+impl From<PathBuf> for StoreAt {
+    fn from(path: PathBuf) -> StoreAt {
+        StoreAt::File(path)
+    }
+}
+
+impl From<&Path> for StoreAt {
+    fn from(path: &Path) -> StoreAt {
+        StoreAt::File(path.to_path_buf())
+    }
+}
+
+impl From<&PathBuf> for StoreAt {
+    fn from(path: &PathBuf) -> StoreAt {
+        StoreAt::File(path.clone())
+    }
+}
+
+impl From<&StoreAt> for StoreAt {
+    fn from(at: &StoreAt) -> StoreAt {
+        at.clone()
+    }
+}
+
+impl StoreAt {
+    /// The daemon's door: a set is created when it is not there, so a fresh data directory opens.
+    /// A data directory still holding the un-migrated `sessions.db` is refused by name, and the
+    /// refusal is the migration's to act on - a daemon never splits a store on its own.
+    pub fn open(
+        &self,
+    ) -> Result<letibot_tokencore::store::Store, letibot_tokencore::store::StoreError> {
+        match self {
+            StoreAt::Set { dir, key } => letibot_tokencore::store::Store::open_set(dir, key),
+            StoreAt::File(path) => {
+                self.refuse_a_split_boxes_legacy(path)?;
+                letibot_tokencore::store::Store::open(path)
+            }
+        }
+    }
+
+    /// A question's door: nothing is created, and a data directory that has not been split yet is
+    /// refused with the command that does it rather than answering from an empty index.
+    pub fn open_existing(
+        &self,
+    ) -> Result<letibot_tokencore::store::Store, letibot_tokencore::store::StoreError> {
+        match self {
+            StoreAt::Set { dir, key } => {
+                letibot_tokencore::store::Store::open_set_existing(dir, key)
+            }
+            StoreAt::File(path) => {
+                self.refuse_a_split_boxes_legacy(path)?;
+                letibot_tokencore::store::Store::open(path)
+            }
+        }
+    }
+
+    /// A `sessions.db` path is the one thing this build may not be handed: on a box that HAS been
+    /// split, pointing at the old file is how a daemon would go on writing a store nobody reads.
+    fn refuse_a_split_boxes_legacy(
+        &self,
+        path: &Path,
+    ) -> Result<(), letibot_tokencore::store::StoreError> {
+        let migrated = path.parent().is_some_and(|dir| {
+            dir.join(letibot_tokencore::store::split::SHARED_FILE)
+                .is_file()
+        });
+        if path.file_name().is_some_and(|n| n == "sessions.db") && migrated {
+            return Err(letibot_tokencore::store::StoreError::Refused(format!(
+                "--store {} names the file this store was split out of, and {} is a split store: \
+                 point --store at the DIRECTORY, not the old sessions.db",
+                path.display(),
+                path.parent().unwrap_or(path).display()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Where a file holding `table` is, or would be - for a line that names a file, and for a
+    /// caller that has to open one itself.
+    pub fn path(&self, table: &str) -> PathBuf {
+        match self {
+            StoreAt::File(path) => path.clone(),
+            StoreAt::Set { dir, key } => {
+                let file = letibot_tokencore::store::split::place_of(table);
+                match file {
+                    Some(letibot_tokencore::store::split::Place::Project) => dir
+                        .join(letibot_tokencore::store::split::PROJECTS_DIR)
+                        .join(format!("{key}.db")),
+                    _ => dir.join(letibot_tokencore::store::split::SHARED_FILE),
+                }
+            }
+        }
+    }
+
+    /// The directory a set is under, or the file's own - what a line about "the store" names.
+    pub fn display(&self) -> String {
+        match self {
+            StoreAt::Set { dir, .. } => dir.display().to_string(),
+            StoreAt::File(path) => path.display().to_string(),
         }
     }
 }

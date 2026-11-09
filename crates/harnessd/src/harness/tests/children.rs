@@ -353,7 +353,7 @@ fn a_later_turns_answer_is_written_beside_the_first_one() {
 
     let record = SubagentRecord {
         store: RunStore {
-            path: path.clone(),
+            at: path.clone().into(),
             cell: Default::default(),
         },
         child: "s-1-sub-1".into(),
@@ -1464,7 +1464,7 @@ fn recorded_slots(tag: &str, count: usize, later: &str) -> Vec<(String, Arc<Task
                 .expect("the child's row");
             let record = SubagentRecord {
                 store: RunStore {
-                    path: path.clone(),
+                    at: path.clone().into(),
                     cell: Default::default(),
                 },
                 child: child.clone(),
@@ -1588,7 +1588,7 @@ fn a_later_turn_that_fails_leaves_the_first_outcome_in_the_record() {
         .expect("the child's row");
     let record = SubagentRecord {
         store: RunStore {
-            path: path.clone(),
+            at: path.clone().into(),
             cell: Default::default(),
         },
         child: "s-1-sub-1".into(),

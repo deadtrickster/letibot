@@ -195,7 +195,7 @@ impl RecordedSpec {
 /// behind a mutex on the first write).
 #[derive(Clone)]
 pub struct RunStore {
-    pub path: PathBuf,
+    pub at: crate::config::StoreAt,
     pub cell: Arc<Mutex<Option<Store>>>,
 }
 
@@ -204,8 +204,9 @@ impl RunStore {
         let mut g = self.cell.lock().unwrap_or_else(|e| e.into_inner());
         if g.is_none() {
             *g = Some(
-                Store::open(&self.path)
-                    .map_err(|e| format!("the session store at {}: {e}", self.path.display()))?,
+                self.at
+                    .open_existing()
+                    .map_err(|e| format!("the session store at {}: {e}", self.at.display()))?,
             );
         }
         f(g.as_ref().expect("just opened"))

@@ -1,7 +1,6 @@
 //! Where a fanout's and a scenario's processes are written down - the daemon's half of
 //! `letibot_tools::fleet::ProcessBook`.
 
-use std::path::PathBuf;
 use std::sync::Mutex;
 
 use letibot_tokencore::store::{Check, ProcState, ProcessRecord, Store};
@@ -9,7 +8,7 @@ use letibot_tools::fleet::{ProcessBook, ProcessNote};
 
 /// One session's process table, opened on first use.
 pub struct StoreBook {
-    path: PathBuf,
+    at: crate::config::StoreAt,
     session: String,
     /// Opened lazily, and kept: a session that never fans out pays nothing, and one that fans out
     /// twice pays one open. It is a handle onto the process's one connection, not a second one.
@@ -17,9 +16,9 @@ pub struct StoreBook {
 }
 
 impl StoreBook {
-    pub fn new(path: impl Into<PathBuf>, session: impl Into<String>) -> StoreBook {
+    pub fn new(at: impl Into<crate::config::StoreAt>, session: impl Into<String>) -> StoreBook {
         StoreBook {
-            path: path.into(),
+            at: at.into(),
             session: session.into(),
             store: Mutex::new(None),
         }
@@ -31,7 +30,7 @@ impl StoreBook {
             return;
         };
         if g.is_none() {
-            match Store::open(&self.path) {
+            match self.at.open_existing() {
                 Ok(s) => *g = Some(s),
                 Err(e) => {
                     drop(g);
@@ -119,7 +118,7 @@ mod tests {
 
     /// A store on disk - `StoreBook` opens a path, so an in-memory one would not exercise the thing
     /// under test.
-    fn store_path(tag: &str) -> PathBuf {
+    fn store_path(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("letibot-book-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch");

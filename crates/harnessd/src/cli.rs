@@ -3,7 +3,7 @@
 //! `harnessd` - the daemon.
 //!
 //! ```text
-//! harnessd [--workspace DIR] [--socket PATH] [--store PATH]
+//! harnessd [--workspace DIR] [--socket PATH] [--store DIR] [--project KEY]
 //!          [--dialect glm|qwen] [--model ALIAS] [--endpoint HOST:PORT]
 //!          [--vocab GGUF] [--system TEXT] [--system-file FILE]
 //!          [--effort low|medium|high|xhigh]
@@ -282,7 +282,7 @@ fn unreachable_models(
 }
 
 fn usage() -> String {
-    "harnessd [--workspace DIR] [--socket PATH] [--store PATH]\n\
+    "harnessd [--workspace DIR] [--socket PATH] [--store DIR|FILE] [--project KEY]\n\
      \x20        [--dialect glm|qwen] [--model ALIAS] [--endpoint HOST:PORT]\n\
      \x20        [--vocab GGUF] [--system TEXT|--system-file FILE]\n\
      \x20        [--effort low|medium|high|xhigh]\n\
@@ -804,7 +804,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             }
             "--workspace" => cfg.workspace = PathBuf::from(next()?),
             "--socket" => cfg.socket = PathBuf::from(next()?),
+            // A data directory: `shared.db` and `projects/<key>.db` under it. A path ending in
+            // `.db` is one file, the pre-split shape this build keeps for a test fixture.
             "--store" => cfg.store = Some(PathBuf::from(next()?)),
+            // Which project file this daemon serves, when it is not the folder's own: a worktree's
+            // daemon stands for the folder it was cut from, and the key is that folder's.
+            "--project" => cfg.store_key = Some(next()?),
             "--session" => {
                 let named = next()?;
                 // `host` is the box's own agent, by name, and `host:<tag>` is one tag's - the room's
@@ -1802,15 +1807,15 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // This daemon's life, written down - its start now, a heartbeat while it runs, and its
     // stop on the orderly path below - so the next daemon can say how long it was down
     // (`crate::restart`).
-    let lifeline = crate::restart::Lifeline::start(cfg.store.clone(), registry.clone());
+    let lifeline = crate::restart::Lifeline::start(cfg.store_at(), registry.clone());
     // The VM reaper, from the start - a VM whose owner is finished, or whose owner's
     // daemon is gone, is brought down rather than left holding a slot every review then waits
     // on (`crate::vm_reap`). Its own thread, so a reap that takes minutes is not the worker's
-    crate::vm_reap::spawn(cfg.store.clone(), registry.clone());
+    crate::vm_reap::spawn(cfg.store_at(), registry.clone());
     // The process supervisor, from the start - RH7. Its own thread, and its FIRST tick is
     // the recovery: it reads every record the last daemon left open, checks each host once
     // and writes down which processes are still the ones recorded.
-    crate::supervise::spawn(cfg.store.clone(), registry.clone());
+    crate::supervise::spawn(cfg.store_at(), registry.clone());
     boot.step(match resume_rows(&cfg) {
         Some(n) if n > 0 => format!("resuming the session ({n} rows)"),
         _ => "opening the session".to_string(),
@@ -2399,16 +2404,15 @@ fn revert_transcript(
 /// How many sessions the store already holds, or `None` when there is no store. A `SELECT`
 /// through `Store::connection`, which is the escape hatch that exists for exactly this
 fn resume_rows(cfg: &Config) -> Option<u32> {
-    let store = letibot_tokencore::store::Store::open(cfg.store.as_ref()?).ok()?;
+    let store = cfg.store_at()?.open_existing().ok()?;
     let t = store.current_transcript_id(&cfg.session_id).ok()??;
     store.item_count(&t).ok()
 }
 
 fn stored_sessions(cfg: &Config) -> Option<u64> {
-    let path = cfg.store.as_ref()?;
-    let store = letibot_tokencore::store::Store::open(path).ok()?;
+    let store = cfg.store_at()?.open_existing().ok()?;
     store
-        .connection()
+        .connection_of("session")
         .query_row("SELECT COUNT(*) FROM session", [], |r| r.get::<_, i64>(0))
         .ok()
         .map(|n| n as u64)
@@ -2520,6 +2524,29 @@ pub(crate) fn listen_offline(
     Ok(if ok { 0 } else { 2 })
 }
 
+/// The store a question about `session` reads: a split set opened with the key its own index row
+/// records (`session.project`), or the store as configured when there is nothing to switch to.
+fn session_project(at: &crate::config::StoreAt, session: &str) -> Option<crate::config::StoreAt> {
+    let crate::config::StoreAt::Set { dir, .. } = at else {
+        return None;
+    };
+    let index = at.open_existing().ok()?;
+    let key: Option<String> = index
+        .connection_of("session")
+        .query_row(
+            "SELECT project FROM session WHERE id = ?1",
+            [session],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten();
+    let key = key.filter(|k| !k.is_empty())?;
+    Some(crate::config::StoreAt::Set {
+        dir: dir.clone(),
+        key,
+    })
+}
+
 fn run_query(
     cfg: &Config,
     q: Query,
@@ -2537,12 +2564,25 @@ fn run_query(
     }
     // `--note-continued` needs the store - it composes the line out of the session's own
     // row - so it is answered below, with `--handover`, once `--store` is known.
-    let path = cfg
-        .store
-        .as_ref()
+    let at = cfg
+        .store_at()
         .ok_or("no --store, and a question about stored sessions needs one")?;
-    let store = letibot_tokencore::store::Store::open(path)
-        .map_err(|e| format!("opening {}: {e}", path.display()))?;
+    // A query that names ONE session reads that session's project file, whose key the shared index
+    // records - not this folder's, which for a verb run from elsewhere is another file entirely.
+    let at = match &q {
+        Query::Handover { session, .. } | Query::NoteContinued { session, .. } => {
+            session_project(&at, session).unwrap_or(at)
+        }
+        Query::Delete(id) => session_project(&at, id).unwrap_or(at),
+        _ => at,
+    };
+    // The verbs below read one file's rows: a replay and a measurement want the history, which a
+    // split set keeps in the project file - a single-file store answers its own path.
+    let path = at.path("transcript");
+    let path = &path;
+    let store = at
+        .open_existing()
+        .map_err(|e| format!("opening {}: {e}", at.display()))?;
 
     match q {
         // Answered above, before the store was asked for. Here only because a `match` must be
@@ -2564,7 +2604,7 @@ fn run_query(
         // on it verifies as a broken chain at row 0 and refuses to resume - with the
         Query::RepairPrefixes => {
             let empty: Vec<(String, String, String, String)> = store
-                .connection()
+                .connection_of("stable_prefix")
                 .prepare("SELECT id, system, tools_json, dialect_sha FROM stable_prefix WHERE n_tokens = 0")
                 .and_then(|mut st| {
                     st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))

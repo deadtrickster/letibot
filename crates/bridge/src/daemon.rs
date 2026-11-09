@@ -200,7 +200,9 @@ pub fn resolve(workspace: &Path) -> Result<Daemon, String> {
     };
     let store = match std::env::var_os("LETIBOT_STORE") {
         Some(s) if !s.is_empty() => PathBuf::from(s),
-        _ => home()?.join(".local/share/letibot/sessions.db"),
+        // A DATA DIRECTORY, not `sessions.db`: the daemon opens `shared.db` and
+        // `projects/<key>.db` under it, and the key is this folder's own.
+        _ => home()?.join(".local/share/letibot"),
     };
     // The daemon's own record, with its socket's identity in it: a record left by a daemon that
     // is gone answers nothing, which the caller must treat as *unknown*.

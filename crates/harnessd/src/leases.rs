@@ -3,7 +3,6 @@
 //! the seam
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use letibot_tokencore::store::{Ask, Lease, Store};
@@ -17,7 +16,7 @@ pub const GRACE_MS: i64 = 60_000;
 /// A session's leases, over the store - the implementation of
 /// [`letibot_tools::lease::Leases`] the daemon registers.
 pub struct StoreLeases {
-    path: PathBuf,
+    at: crate::config::StoreAt,
     session: String,
     /// Opened on first use and kept, `StoreBook`'s shape for its reason: a session that never takes
     /// a block pays nothing, and one that takes two pays one open.
@@ -25,9 +24,9 @@ pub struct StoreLeases {
 }
 
 impl StoreLeases {
-    pub fn new(path: impl Into<PathBuf>, session: impl Into<String>) -> StoreLeases {
+    pub fn new(at: impl Into<crate::config::StoreAt>, session: impl Into<String>) -> StoreLeases {
         StoreLeases {
-            path: path.into(),
+            at: at.into(),
             session: session.into(),
             store: Mutex::new(None),
         }
@@ -40,10 +39,11 @@ impl StoreLeases {
             .lock()
             .map_err(|_| "the lease connection is poisoned".to_string())?;
         if g.is_none() {
-            *g =
-                Some(Store::open(&self.path).map_err(|e| {
-                    format!("the store `{}` did not open: {e}", self.path.display())
-                })?);
+            *g = Some(
+                self.at
+                    .open_existing()
+                    .map_err(|e| format!("the store `{}` did not open: {e}", self.at.display()))?,
+            );
         }
         match g.as_ref() {
             Some(store) => f(store),
@@ -77,20 +77,20 @@ impl std::fmt::Debug for StoreLeases {
 
 /// The engine a session's tools and a close both use: the operator's hosts, this box's
 /// ssh material, and a [`StoreLeases`] behind it.
-pub fn blocks(path: &Path, session: &str) -> Blocks {
-    Blocks::new(session).with_leases(std::sync::Arc::new(StoreLeases::new(path, session)))
+pub fn blocks(at: &crate::config::StoreAt, session: &str) -> Blocks {
+    Blocks::new(session).with_leases(std::sync::Arc::new(StoreLeases::new(at.clone(), session)))
 }
 
 /// Give back every block a session still holds, and remove exactly what it created - a
 /// session's close, the daemon's stop, and the reaper's act, in one place. Returns one line
 /// per lease, so the caller can log what happened
-pub fn release_session(path: &Path, session: &str, by: &str) -> Vec<String> {
-    let store = match Store::open(path) {
+pub fn release_session(at: &crate::config::StoreAt, session: &str, by: &str) -> Vec<String> {
+    let store = match at.open_existing() {
         Ok(s) => s,
         Err(e) => {
             return vec![format!(
                 "the store `{}` did not open, so {session}'s leases were left as they are: {e}",
-                path.display()
+                at.display()
             )];
         }
     };
@@ -105,7 +105,7 @@ pub fn release_session(path: &Path, session: &str, by: &str) -> Vec<String> {
     if held.is_empty() {
         return Vec::new();
     }
-    let engine = blocks(path, session);
+    let engine = blocks(at, session);
     let mut said = Vec::new();
     for lease in &held {
         said.extend(engine.release(lease, by));
@@ -168,7 +168,7 @@ mod tests {
     use super::*;
     use letibot_tokencore::store::Store;
 
-    fn store_at(tag: &str) -> (PathBuf, Store) {
+    fn store_at(tag: &str) -> (std::path::PathBuf, Store) {
         let dir = std::env::temp_dir().join(format!("letibot-leases-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch");
@@ -256,13 +256,13 @@ mod tests {
         let (path, store) = store_at("close");
         let yours = take(&store, "s-c", 2);
         let theirs = take(&store, "s-d", 2);
-        let said = release_session(&path, "s-c", "the session closing");
+        let said = release_session(&path.clone().into(), "s-c", "the session closing");
         assert!(!said.is_empty(), "{said:?}");
         let held = store.held_leases().expect("held");
         assert_eq!(held.len(), 1);
         assert_eq!(held[0].session, "s-d");
         // And releasing again is a no-op rather than an error: three callers can reach one lease.
-        assert!(release_session(&path, "s-c", "the session closing").is_empty());
+        assert!(release_session(&path.clone().into(), "s-c", "the session closing").is_empty());
         let _ = (yours, theirs);
     }
 }

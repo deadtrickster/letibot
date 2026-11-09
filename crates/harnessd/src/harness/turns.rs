@@ -730,23 +730,23 @@ impl Harness {
     /// `None` when there was nothing to do, which is the ordinary open.
     pub fn restore_after_restart(&mut self) -> Option<String> {
         use letibot_tools::builtins::task::{RestartFate, RestoreMode};
-        let Some(path) = self.cfg.store.clone() else {
+        let Some(at) = self.cfg.store_at() else {
             return self.say_restore_unavailable("this session has no store".into());
         };
         // Prompts accepted but not started when the last daemon died: put back, and kept saved.
-        let back = crate::restart::StoreJournal::attach(&self.hub, &path);
+        let back = crate::restart::StoreJournal::attach(&self.hub, &at);
         if back > 0 {
             eprintln!(
                 "  {} · restart: {back} queued prompt(s) put back",
                 self.cfg.session_id
             );
         }
-        let store = match Store::open(&path) {
+        let store = match at.open_existing() {
             Ok(s) => s,
             Err(e) => {
                 return self.say_restore_unavailable(format!(
                     "its store {} could not be opened ({e})",
-                    path.display()
+                    at.display()
                 ));
             }
         };

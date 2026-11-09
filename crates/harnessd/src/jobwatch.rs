@@ -466,13 +466,13 @@ impl JobWatchers {
     /// constructor parameter: `new` is called in twelve places and all but a couple are tests.
     pub fn record_jobs_into(
         &self,
-        path: std::path::PathBuf,
+        at: impl Into<crate::config::StoreAt>,
         session_id: String,
         instance: &str,
         placement: Option<String>,
     ) {
         *self.recorder.lock().expect("job recorder") = Some(
-            JobRecorder::new(path, session_id, self.hub.clone())
+            JobRecorder::new(at, session_id, self.hub.clone())
                 .owned_by(instance)
                 .on(placement),
         );
@@ -1283,7 +1283,7 @@ impl SettlementQueue {
 /// Not a `Store`
 #[derive(Clone)]
 pub struct JobRecorder {
-    path: std::path::PathBuf,
+    at: crate::config::StoreAt,
     session_id: String,
     /// Where a write that failed is said. `Weak::new` for a recorder nobody is watching.
     hub: Weak<Hub>,
@@ -1298,9 +1298,9 @@ pub struct JobRecorder {
 }
 
 impl JobRecorder {
-    pub fn new(path: std::path::PathBuf, session_id: String, hub: Weak<Hub>) -> Self {
+    pub fn new(at: impl Into<crate::config::StoreAt>, session_id: String, hub: Weak<Hub>) -> Self {
         JobRecorder {
-            path,
+            at: at.into(),
             session_id,
             hub,
             store: Arc::new(Mutex::new(None)),
@@ -1381,7 +1381,7 @@ impl JobRecorder {
             return;
         };
         if g.is_none() {
-            match Store::open(&self.path) {
+            match self.at.open_existing() {
                 Ok(s) => *g = Some(s),
                 Err(e) => {
                     drop(g);

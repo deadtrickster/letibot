@@ -268,3 +268,74 @@ fn a_key_that_is_not_a_name_is_refused() {
         "a refused key created something"
     );
 }
+/// P3's half of the assignment: one handle over both files routes each call by `place_of`, so an
+/// index row lands in `shared.db` and a session's own state in the project file without the caller
+/// saying which. A single-file store routes nothing - it has one connection - which is why every
+/// call site kept its meaning.
+#[test]
+fn a_handles_call_lands_in_the_file_its_table_is_assigned() {
+    let dir = temp("routes");
+    let set = Store::open_set(&dir, KEY).expect("a set's handle");
+    set.put_session(&super::SessionRecord {
+        id: "s1".into(),
+        title: Some("one".into()),
+        model_id: "m".into(),
+        dialect_sha: "d".into(),
+        workspace_root: "/tmp".into(),
+        owner: "op".into(),
+        approvers: Vec::new(),
+        role: None,
+        parent_session_id: None,
+    })
+    .expect("a session row");
+    // A foreign key to `session` would refuse this row in a file that has no index; the project
+    // file drops those keys for exactly this reason (P1), so the row lands.
+    set.put_todos("s1", &[]).expect("a todo row");
+    let count = |table: &str, path: &Path| -> i64 {
+        Connection::open(path)
+            .expect("a connection of the test's own")
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap_or_else(|e| panic!("counting {table} in {}: {e}", path.display()))
+    };
+    let shared = dir.join(split::SHARED_FILE);
+    let project = dir.join(split::PROJECTS_DIR).join(format!("{KEY}.db"));
+    assert_eq!(
+        count("session", &shared),
+        1,
+        "the index is the shared file's"
+    );
+    assert_eq!(
+        count("todo", &project),
+        1,
+        "a session's board is its project file's"
+    );
+    assert!(
+        !tables_in_file(&shared).iter().any(|t| t == "todo"),
+        "shared.db holds no project table at all"
+    );
+    assert!(
+        !tables_in_file(&project).iter().any(|t| t == "session"),
+        "and the project file holds no index"
+    );
+    assert!(set.is_set(), "the handle knows it is a set's");
+
+    // And a single-file store has one connection for everything: the routing decides nothing.
+    let one = Store::open(&dir.join("one.db")).expect("one file");
+    one.put_session(&super::SessionRecord {
+        id: "s2".into(),
+        title: None,
+        model_id: "m".into(),
+        dialect_sha: "d".into(),
+        workspace_root: "/tmp".into(),
+        owner: "op".into(),
+        approvers: Vec::new(),
+        role: None,
+        parent_session_id: None,
+    })
+    .expect("a session row");
+    one.put_todos("s2", &[]).expect("a todo row");
+    assert!(
+        !one.is_set() && count("todo", &dir.join("one.db")) == 1,
+        "a single-file store holds every table, so nothing is routed"
+    );
+}

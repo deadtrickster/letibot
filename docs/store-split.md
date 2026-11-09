@@ -1,7 +1,7 @@
 # Store split: one file per project, one shared file
 
-Status: proposal, design settled, P0, P1 and P2 built (their own paragraphs in § Build plan say what
-landed), P3 and P4 to build. The corpus question is decided: decisions live
+Status: proposal, design settled, P0, P1, P2 and P3 built (their own paragraphs in § Build plan say what
+landed), P4 to build. The corpus question is decided: decisions live
 in project files and there is no shared copy (§ The corpus). The stalls the split is meant to
 remove were measured on lab2x1 on 2026-11-07 (§ What the daemons logged), and the build is in
 five packages with their done-tests at the end.
@@ -325,14 +325,50 @@ row's `h_k` under the append-only trigger; and
 `a_live_writer_claim_is_a_refusal_and_a_stale_one_is_not`, which is the command's own refusal, since
 a claim on another host is one this box cannot ask about pids for and so is not taken for stale.
 
-**P3 — the daemon opens two paths.** `crates/harnessd/src/config.rs`,
-`crates/harnessd/src/cli.rs`, `crates/harnessd/src/daemon.rs`,
-`crates/bridge/src/daemon.rs`, `scripts/letibot`,
-`crates/harnessd/tests/store_split_paths.rs` (new). `--store` becomes a data directory plus a
-project key (the bridge already resolves the key from the folder); `sessions.db` is accepted as a
-path only by P2's migration. Done-test: a daemon on a temp data directory writes a session to
-`shared.db` and a transcript row to `projects/<key>.db`; `--sessions` still answers with that
-project file renamed away, and lists the session.
+**P3 — the daemon opens two paths.** Built. `crates/harnessd/src/config.rs` (`StoreAt` and
+`Config::store_at`), `crates/harnessd/src/cli.rs`, `crates/harnessd/src/daemon.rs` (untouched:
+the process loop holds no store), `crates/bridge/src/daemon.rs`, `scripts/letibot`,
+`crates/harnessd/tests/store_split_paths.rs` (new), and - because a call has to be routed
+somewhere - the routing itself in `crates/tokencore/src/store.rs` and
+`crates/tokencore/src/store/split.rs`. What the doc asked for and what landed: `--store` is a DATA
+DIRECTORY, and the key is the folder's own - `Config::store_key`, pinned at `for_this_box` from
+`migrate_split::project_key`, overridden by `--project KEY`, and never derived from a stored
+session's workspace, which a resume may change after the store is open. The bridge's default is
+`~/.local/share/letibot` and the launcher's `$LETIBOT_STORE` is that directory; `letibot migrate`,
+which takes one file, is handed `$STORE/projects/<key>.db`. `Config::store_at` is the one door:
+`StoreAt::Set { dir, key }` opens `shared.db` and `projects/<key>.db` through P1's `StoreSet` -
+`open` for a daemon, which creates them and refuses a data directory still holding `sessions.db`
+and no `shared.db` with the `letibot-migrate-split` line, and `open_existing` for a question,
+which creates nothing. One rule keeps every existing test's meaning: a path ending in `.db` is ONE
+file, the pre-split shape, which is a fixture's and never a deployment's - and a `sessions.db`
+whose directory already holds `shared.db` is refused by name, because a daemon that went on
+writing the old file would be writing a store nobody reads. Routing is `Store::at(table)`: a
+single-file store answers its one connection for every table, so `place_of` decides nothing
+there, and a set's handle holds both connections, so no caller names a file. `exec` reads the
+table out of its own SQL (57 call sites unchanged); `write_tx_at(table, ..)` names the file a
+transaction is in, and the two bodies that wrote both files - the append's context row and a
+session delete - are two commits now, because no transaction spans them. The listing runs
+`sessions_index_sql` on a set: `transcript`/`transcript_item` are the project file's and the index
+may not reach into another project's file, so its four history columns are `NULL` (P4's sweep is
+where a listing gets them back), which is also why a listing answers with the project file renamed
+away. Three cross-file JOINs lost theirs: `approved_shapes` and `shapeless_human_admits` read the
+sessions first and then the corpus, and `unrecorded_of` reads the recorded child ids and then the
+children the index names. Consumers whose tables are all in the shared file are handed that FILE -
+`StoreAt::path(<a shared table>)` for the queues and the modes, and a lease's release or a
+writer's claim, which read the handle's own `Store::path()`, which a set answers with
+`shared.db`. P1's `split::Writer` threads are still not the write path: `exec` and `write_tx_at`
+keep the process's one connection per file, and pointing every write at the queue is left for a
+later package. Done-tests, all on temp directories:
+`a_daemon_writes_the_index_and_the_history_to_two_files`
+(a daemon opened on a data directory writes the `session` row to `shared.db` and the `transcript`
+row to `projects/<key>.db`, `shared.db` has no `transcript_item` and no `adjudication` table at all,
+and `harnessd --store DIR --list-sessions` still lists the session with the project file renamed
+away),
+`a_directory_that_still_holds_sessions_db_is_refused_with_the_migrations_name` (a directory holding
+only `sessions.db` is refused, names the file and `letibot-migrate-split`, and writes no
+`shared.db`) and `the_legacy_file_inside_a_split_directory_is_refused_by_name` (the other half of
+that rule: once the directory IS a store, a `--store` naming the old file inside it is refused and
+points at the DIRECTORY).
 
 **P4 — the corpus sweep.** `crates/harnessd/src/corpus.rs`,
 `crates/harnessd/src/decision_source.rs`, `crates/harnessd/src/slash.rs`,

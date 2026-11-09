@@ -1531,7 +1531,7 @@ impl Harness {
     /// restart re-arms only what was really watching. Called where a firing, a retirement or an
     /// expiry has just been seen (a wake, a turn's end).
     fn sync_monitor_records(&mut self) {
-        let (Some(monitors), Some(path)) = (&self.monitors, &self.cfg.store) else {
+        let (Some(monitors), Some(at)) = (&self.monitors, self.cfg.store_at()) else {
             return;
         };
         let mut live = monitors.live_names();
@@ -1543,7 +1543,7 @@ impl Harness {
         }
         self.monitors_seen_live = live.clone();
         let me = self.session_registry.instance();
-        let Ok(store) = Store::open(path) else {
+        let Ok(store) = at.open_existing() else {
             return;
         };
         for m in store.monitors_of(&self.cfg.session_id).unwrap_or_default() {

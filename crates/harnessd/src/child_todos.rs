@@ -3,7 +3,6 @@
 //! the SAME daemon but never in the same [`crate::harness::Harness`]
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use letibot_sessionlog::SessionEvent;
@@ -18,10 +17,10 @@ use letibot_tools::builtins::todo::{ChildTodos, TodoBoard};
 #[derive(Default)]
 pub struct ChildBoards {
     boards: Mutex<HashMap<String, Arc<TodoBoard>>>,
-    /// The session store's path, for the resolver's flush. `None` is a storeless daemon: the
+    /// The session store, for the resolver's flush. `None` is a storeless daemon: the
     /// write still lands on the board, publishes to the child's hub, and is honestly not
     /// durable - the same shape a storeless session's own todos have.
-    store_path: Option<PathBuf>,
+    at: Option<crate::config::StoreAt>,
     /// The store, opened once on first write - a handle onto the process's one connection to
     /// that file (`Store::open`), behind a `Mutex` because a flush runs on whichever thread wrote
     /// the board. There is one per file per process.
@@ -30,10 +29,10 @@ pub struct ChildBoards {
 
 impl ChildBoards {
     /// The daemon-wide object, from the config the daemon started under.
-    pub fn shared(store_path: Option<PathBuf>) -> Arc<ChildBoards> {
+    pub fn shared(at: Option<impl Into<crate::config::StoreAt>>) -> Arc<ChildBoards> {
         Arc::new(ChildBoards {
             boards: Mutex::new(HashMap::new()),
-            store_path,
+            at: at.map(Into::into),
             store: Mutex::new(None),
         })
     }
@@ -60,11 +59,11 @@ impl ChildBoards {
     /// this runs, so a flush failure is reported and never unwritten.
     fn flush(&self, child: &str, board: &TodoBoard) {
         let items = board.snapshot();
-        if let Some(path) = &self.store_path {
+        if let Some(at) = &self.at {
             let mut cell = self.store.lock().unwrap_or_else(|e| e.into_inner());
             let store = match cell.as_ref() {
                 Some(s) => s,
-                None => match Store::open(path) {
+                None => match at.open_existing() {
                     Ok(s) => {
                         // `Option::insert` hands back the `&mut Store` it just placed
                         // there. The next line takes that borrow again, so the returned
@@ -88,10 +87,10 @@ impl ChildBoards {
     /// `subagent_run` rows. A child is recorded the moment it is spawned and registered only once
     /// its session has opened, which for a `firecode` child is after its VM has booted.
     fn running_children(&self, parent: &str) -> Vec<(String, String)> {
-        let Some(path) = &self.store_path else {
+        let Some(at) = &self.at else {
             return Vec::new();
         };
-        let Ok(runs) = Store::open(path).and_then(|s| s.subagent_runs_of(parent)) else {
+        let Ok(runs) = at.open_existing().and_then(|s| s.subagent_runs_of(parent)) else {
             return Vec::new();
         };
         runs.into_iter()
@@ -358,7 +357,7 @@ mod tests {
     /// `Harness` registers them.
     fn family() -> (Arc<Registry>, Arc<ChildBoards>, ParentTodos) {
         let registry = Registry::new();
-        let boards = ChildBoards::shared(None);
+        let boards = ChildBoards::shared(None::<crate::config::StoreAt>);
         for (id, parent) in [
             ("s-parent-1111", None),
             ("s-child-aaaa", Some("s-parent-1111")),

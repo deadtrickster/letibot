@@ -297,7 +297,7 @@ impl TurnMeter {
 /// operator's box `~/.local/share/letibot/metrics.db`, and a test's temp store gets a temp
 /// file), under the `[metrics]` section of `providers.toml` (on by default).
 pub fn start_writer(cfg: &crate::config::Config) {
-    let Some(store) = &cfg.store else {
+    let Some(store) = cfg.store_at().map(|at| at.path("session")) else {
         return;
     };
     let raw = letibot_provider::keys::metrics(None);
@@ -312,7 +312,7 @@ pub fn start_writer(cfg: &crate::config::Config) {
         eprintln!("  metrics: off ([metrics] enabled = false)");
         return;
     }
-    let path = letibot_metrics::store::path_beside(store);
+    let path = letibot_metrics::store::path_beside(&store);
     let me = crate::mergequeue::lease::this_daemon();
     let id = letibot_metrics::store::Identity {
         daemon: me.owner.clone(),

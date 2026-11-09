@@ -329,7 +329,7 @@ impl Harness {
         if let Some(w) = &self.job_watch {
             w.killed_with_the_substrate(lost.iter().map(|j| j.id.0.clone()));
         }
-        if let Some(store) = self.cfg.store.as_ref().and_then(|p| Store::open(p).ok()) {
+        if let Some(store) = self.cfg.store_at().and_then(|at| at.open_existing().ok()) {
             for j in &lost {
                 let row = JobRecord {
                     handle: j.id.0.clone(),

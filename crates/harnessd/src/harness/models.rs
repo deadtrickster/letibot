@@ -581,7 +581,7 @@ impl Harness {
                     p,
                     self.picture_marks.clone(),
                     Some(persist_marks(
-                        self.cfg.store.clone(),
+                        self.cfg.store_at(),
                         self.cfg.session_id.clone(),
                     )),
                 ));
