@@ -40,8 +40,14 @@ impl FileText {
         }
     }
 
+    /// Counted in bytes, so an offset inside a multi-byte character cannot panic.
     pub fn line_of(&self, byte: usize) -> usize {
-        self.lf[..byte.min(self.lf.len())].matches('\n').count() + 1
+        let end = byte.min(self.lf.len());
+        self.lf.as_bytes()[..end]
+            .iter()
+            .filter(|b| **b == b'\n')
+            .count()
+            + 1
     }
 }
 
@@ -573,5 +579,21 @@ mod tests {
         let s = changed_span("", "x\ny\n");
         assert_eq!(s.before_lines, 0);
         assert_eq!(s.after_lines, 2, "a trailing newline is not a third line");
+    }
+}
+
+#[cfg(test)]
+mod line_of_tests {
+    use super::FileText;
+
+    /// The last byte of a match that ends in a two-byte letter is inside that letter.
+    #[test]
+    fn an_offset_inside_a_multibyte_character_names_its_line() {
+        let file = FileText::of("первая\nвторая строка и\n".as_bytes());
+        let old = "строка и";
+        let at = file.lf.find(old).expect("found");
+        assert_eq!(file.line_of(at), 2);
+        assert_eq!(file.line_of(at + old.len() - 1), 2);
+        assert_eq!(file.line_of(usize::MAX), 3);
     }
 }
