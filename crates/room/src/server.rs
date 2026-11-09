@@ -2650,7 +2650,7 @@ impl Server {
         }
         // The host room is an announcement channel, and an announcement is one line: a long one is
         // refused here rather than filed, because the room's first line would be the whole of it.
-        if kind == crate::SayKind::Announce && text.lines().count() > 1 {
+        if kind == crate::SayKind::Announce && !chat::one_line(text) {
             return refuse(crate::Refused::AnnounceNotOneLine);
         }
         let text = match self.resolve_mentions(project, text) {

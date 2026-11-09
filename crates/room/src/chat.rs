@@ -589,6 +589,20 @@ pub fn is_bare_ack(text: &str) -> bool {
     !has_ref(text) && is_null_post(text)
 }
 
+/// Is this the one line an announcement may be? A `![alt](blob:<id>)` on a line of its own is not
+/// a second line: it is how a `say` names the file it carries, and one picture must not cost an
+/// announcement its announcement-ness.
+pub fn one_line(text: &str) -> bool {
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter(|l| {
+            let t = l.trim();
+            !(t.starts_with("![") && t.contains("](blob:") && t.ends_with(')'))
+        })
+        .count()
+        <= 1
+}
+
 /// The newest messages of a room or thread a repeat is looked for in.
 pub const ECHO_WINDOW: usize = 20;
 /// How much of two posts' words must agree for the second to be the first said again.
@@ -1964,6 +1978,18 @@ mod tests {
         let quiet = msg(HOST_ROOM, Seat::Session, None, "who has the disk?");
         assert_eq!(quiet.unbacked(), None);
         assert!(!quiet.line().contains("unbacked"));
+    }
+
+    /// An announcement is one line - and a picture a `say` carries is named on a line of its own
+    /// by `referenced`, which is a reference and not a second sentence.
+    #[test]
+    fn an_announcement_is_one_line_but_a_picture_it_carries_is_not_a_second() {
+        assert!(one_line("the box restarts at six"));
+        assert!(one_line("the box restarts at six\n\n"));
+        assert!(one_line("look at this\n![shot.png](blob:abc)"));
+        assert!(one_line("![shot.png](blob:abc)"));
+        assert!(!one_line("one line\nand another"));
+        assert!(!one_line("one line\n![shot.png](blob:a)\nand another"));
     }
 
     #[test]

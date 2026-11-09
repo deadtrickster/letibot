@@ -894,8 +894,7 @@ mod tests {
         // A word this build does not know is a line, not a frame nobody can read: a newer client's
         // third kind must not make an older room refuse the message outright.
         let odd: Request =
-            serde_json::from_str(r#"{"type":"say","id":"1","text":"hi","kind":"fyi"}"#)
-                .unwrap();
+            serde_json::from_str(r#"{"type":"say","id":"1","text":"hi","kind":"fyi"}"#).unwrap();
         match odd {
             Request::Say { kind, .. } => assert_ne!(kind, SayKind::Announce),
             other => panic!("a say is a say: {other:?}"),
