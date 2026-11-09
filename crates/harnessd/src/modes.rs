@@ -21,6 +21,8 @@ pub struct Unreadable {
 pub struct ModeStore {
     /// The session store the rows live in. `None` is a store that forgets, and says so.
     db: Option<PathBuf>,
+    /// The file `session_mode` lives in: `db` for one store file, the project file of a split set.
+    session_db: Option<PathBuf>,
     /// The legacy `modes.tsv` still to import, taken at the first read.
     legacy: Option<PathBuf>,
     by_root: BTreeMap<PathBuf, Mode>,
@@ -48,6 +50,7 @@ impl ModeStore {
     pub fn load(db: &Path) -> ModeStore {
         let mut s = ModeStore {
             db: Some(db.to_path_buf()),
+            session_db: Some(db.to_path_buf()),
             ..Default::default()
         };
         s.refresh();
@@ -57,8 +60,15 @@ impl ModeStore {
     /// The store at `db`, not yet read - or a forgetful store when the daemon has no
     /// session store. Nothing is opened here
     pub fn open(db: Option<&Path>) -> ModeStore {
+        ModeStore::open_split(db, db)
+    }
+
+    /// [`ModeStore::open`] for a split set: the project rows in `db`, the session rows in
+    /// `session_db`, which is the folder's project file.
+    pub fn open_split(db: Option<&Path>, session_db: Option<&Path>) -> ModeStore {
         ModeStore {
             db: db.map(Path::to_path_buf),
+            session_db: session_db.map(Path::to_path_buf),
             legacy: db.and(legacy_path()),
             ..Default::default()
         }
@@ -189,7 +199,7 @@ impl ModeStore {
     /// The point this session was put at, with the answer that opened it - `None` for a
     /// session nobody moved, which opens at its project's point.
     pub fn session(&self, session_id: &str) -> Option<(Mode, Option<String>)> {
-        let db = self.db.as_ref()?;
+        let db = self.session_db.as_ref()?;
         let (name, when) = Store::open(db).ok()?.session_mode(session_id).ok()??;
         Some((Mode::parse(&name).ok()?, when))
     }
@@ -201,7 +211,7 @@ impl ModeStore {
         mode: Mode,
         consented: Option<&str>,
     ) -> std::io::Result<()> {
-        let Some(db) = &self.db else {
+        let Some(db) = &self.session_db else {
             return Ok(());
         };
         Store::open(db)
@@ -360,6 +370,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         Db(d)
+    }
+
+    /// A split set keeps a session's mode in its project file: written there and read back from
+    /// there, with the shared file never asked for a table it does not hold.
+    #[test]
+    fn a_split_set_keeps_the_session_mode_in_the_project_file() {
+        let d = db("split-session");
+        let shared = d.0.join("shared.db");
+        let project = d.0.join("project.db");
+        let s = ModeStore::open_split(Some(&shared), Some(&project));
+        s.set_session("s-1", Mode::ALLOW_ALL, Some("now"))
+            .expect("the session's point is recorded");
+        let (mode, when) = s.session("s-1").expect("and read back");
+        assert_eq!(mode.name, Mode::ALLOW_ALL.name);
+        assert_eq!(when.as_deref(), Some("now"));
+        let in_shared = Store::open(&shared)
+            .expect("shared")
+            .session_mode("s-1")
+            .expect("readable");
+        assert!(in_shared.is_none(), "the row went to the shared file");
     }
 
     /// The operator's answer round-trips, and only on the row it was given for - and

@@ -95,10 +95,13 @@ impl Parts {
         Ok(Parts {
             vocab: std::sync::Arc::new(vocab),
             wiring: std::sync::Arc::new(wiring),
-            // The mode rows are the shared file's, so a set's project file is never opened for them.
-            mode_store: std::sync::Arc::new(std::sync::RwLock::new(crate::modes::ModeStore::open(
-                cfg.store_at().map(|at| at.path("project_mode")).as_deref(),
-            ))),
+            // A project's mode is the shared file's and a session's is the project file's.
+            mode_store: std::sync::Arc::new(std::sync::RwLock::new(
+                crate::modes::ModeStore::open_split(
+                    cfg.store_at().map(|at| at.path("project_mode")).as_deref(),
+                    cfg.store_at().map(|at| at.path("session_mode")).as_deref(),
+                ),
+            )),
             tasks,
             lsp,
             skills,
