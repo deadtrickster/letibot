@@ -517,6 +517,7 @@ The whole text of a message filed as a record is kept beside the ring, up to **1
 | `withdraw {id, ask}` | `asked {id, ask}` | the asker, or the operator's seat, takes the ask back. A `system` note in the thread says so |
 | `retire {id, session}` | `asks {by_me, of_me}` | the session named is deleted, so every open ask of it ends `down` and every ask it made is withdrawn. That session's own connection only, sent before it closes |
 | `asks` | `asks {by_me, of_me}` | this session's asks, both halves, settled ones included, oldest first. A read |
+| `signals` | `signals {card}` | the scorecard: a row per sender and per kind, and `counts` (see **Counters**). `room {"verb": "signals"}` is the model's door to it |
 
 An ask is `{"seq", "room", "asker", "target", "question", "asked_ms", "gone_since_ms", "escalated", "state"}`,
 where `state` is `open`, `answered {text, ms}`, `declined {text, ms}`, `down {ms}` or

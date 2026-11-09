@@ -1418,8 +1418,10 @@ pub fn call_in(
                 "text": text,
                 "refs": arg_refs(args)?,
             });
-            if let Some(kind) = arg_opt_str(args, "kind")? {
-                f["kind"] = json!(kind);
+            // Only the one word the room's wire knows: a caller's `kind` is not passed through, so
+            // no tool argument can put a kind on the frame that the room cannot parse.
+            if arg_opt_str(args, "kind")?.as_deref().map(str::trim) == Some("announce") {
+                f["kind"] = json!("announce");
             }
             if !files.is_empty() {
                 f["attachments"] = json!(

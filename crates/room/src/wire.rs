@@ -67,6 +67,10 @@ pub enum SayKind {
     #[default]
     Post,
     Announce,
+    /// A word this build does not know: an ordinary line, because a frame from a newer client (or
+    /// a careless one) should say something rather than fail to parse.
+    #[serde(other)]
+    Other,
 }
 
 impl SayKind {
@@ -887,5 +891,14 @@ mod tests {
         assert_eq!(SayKind::of("announce"), SayKind::Announce);
         assert_eq!(SayKind::of("announce "), SayKind::Announce);
         assert_eq!(SayKind::of("fyi"), SayKind::Post);
+        // A word this build does not know is a line, not a frame nobody can read: a newer client's
+        // third kind must not make an older room refuse the message outright.
+        let odd: Request =
+            serde_json::from_str(r#"{"type":"say","id":"1","text":"hi","kind":"fyi"}"#)
+                .unwrap();
+        match odd {
+            Request::Say { kind, .. } => assert_ne!(kind, SayKind::Announce),
+            other => panic!("a say is a say: {other:?}"),
+        }
     }
 }
