@@ -737,14 +737,9 @@ mod tests {
         let main = d.0.join("main");
         std::fs::create_dir_all(&main).unwrap();
         let git = |args: &[&str]| {
-            let out = Command::new("git")
-                .arg("-C")
-                .arg(&main)
+            // The fixture's own `git`: the box's global config may sign what it cannot.
+            let out = letibot_tools::testing::git(&main)
                 .args(args)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@example.com")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@example.com")
                 .output()
                 .expect("git");
             assert!(

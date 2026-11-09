@@ -1614,22 +1614,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         for args in [
             vec!["init", "-q"],
-            vec![
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "commit",
-                "-q",
-                "--allow-empty",
-                "-m",
-                "x",
-            ],
+            vec!["commit", "-q", "--allow-empty", "-m", "x"],
         ] {
+            // The fixture's own `git`: the box's global config may sign what it cannot.
             assert!(
-                std::process::Command::new("git")
-                    .arg("-C")
-                    .arg(&dir)
+                letibot_tools::testing::git(&dir)
                     .args(args)
                     .status()
                     .unwrap()

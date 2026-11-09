@@ -1851,11 +1851,11 @@ mod tests {
     fn the_name_follows_the_repository_not_the_folder_inside_it() {
         let root = std::env::temp_dir().join(format!("letibot-ccname-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
+        // The fixture's own `git`: the box's global config may sign commits with a key this test
+        // has not got, and the name a folder derives is what is under test, not the box.
         let git = |dir: &std::path::Path, args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            let out = letibot_tools::testing::git(dir)
                 .args(args)
-                .current_dir(dir)
                 .output()
                 .expect("git runs");
             assert!(out.status.success(), "git {args:?}: {out:?}");
