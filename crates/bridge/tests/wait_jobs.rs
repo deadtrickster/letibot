@@ -314,6 +314,21 @@ fn settled_with(bridge: &Bridge, session: &str, marker: &str) -> Value {
     }
 }
 
+/// Poll `status` until it lists an open job. The head asks for the job list when a turn ends, so
+/// `jobs_open` can trail the idle that `settled_with` saw by a poll.
+fn with_a_job_open(bridge: &Bridge, session: &str, mut status: Value, what: &str) -> Value {
+    let deadline = Instant::now() + PATIENCE;
+    while !status["jobs_open"]
+        .as_array()
+        .is_some_and(|j| !j.is_empty())
+    {
+        assert!(Instant::now() < deadline, "{what}: {status}");
+        std::thread::sleep(Duration::from_millis(25));
+        status = bridge.status(session).expect("status");
+    }
+    status
+}
+
 #[test]
 fn a_wait_holds_on_a_running_job_and_not_on_the_one_the_model_parked() {
     // The seat names a process backend, so the apparatus is a tree the box must have; absent
@@ -337,21 +352,12 @@ fn a_wait_holds_on_a_running_job_and_not_on_the_one_the_model_parked() {
     // The brief's turn started the job and ended: that answer, and no more, is what a `wait` must
     // not be satisfied with.
     let idle = settled_with(&bridge, &session, STARTED_ANSWER);
-    // The head asks for the job list when the turn ends, so `jobs_open` can trail the idle by a
-    // poll. The session already names the job it waits on.
-    let deadline = Instant::now() + PATIENCE;
-    let mut status = idle;
-    while !status["jobs_open"]
-        .as_array()
-        .is_some_and(|j| !j.is_empty())
-    {
-        assert!(
-            Instant::now() < deadline,
-            "the job the brief started is still running: {status}"
-        );
-        std::thread::sleep(Duration::from_millis(25));
-        status = bridge.status(&session).expect("status");
-    }
+    with_a_job_open(
+        &bridge,
+        &session,
+        idle,
+        "the job the brief started is still running",
+    );
 
     // the first half: the wait holds until the WOKEN turn ends
     let began = Instant::now();
@@ -373,11 +379,11 @@ fn a_wait_holds_on_a_running_job_and_not_on_the_one_the_model_parked() {
         .send(&session, PARK_BRIEF)
         .expect("a second line into the session");
     let parked = settled_with(&bridge, &session, PARKED_ANSWER);
-    assert!(
-        parked["jobs_open"]
-            .as_array()
-            .is_some_and(|j| !j.is_empty()),
-        "the parked job is still running, so what follows is about the declaration: {parked}"
+    with_a_job_open(
+        &bridge,
+        &session,
+        parked,
+        "the parked job is still running, so what follows is about the declaration",
     );
     let began = Instant::now();
     let (code, said) = tools::wait(&tree, &session, Instant::now() + Duration::from_secs(20));
