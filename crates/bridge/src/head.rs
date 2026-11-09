@@ -97,6 +97,9 @@ pub const MODEL_PATIENCE: Duration = Duration::from_secs(120);
 /// which is quick; a daemon busy past this is reported as not confirmed.
 pub const CLOSE_PATIENCE: Duration = Duration::from_secs(30);
 
+/// How long `stop` waits, after the ack, for the goodbye of the session it closed.
+const BYE_PATIENCE: Duration = Duration::from_secs(5);
+
 /// The answer to one request for a mode confirmation. `answer` is `yes`, `no` or
 /// `nobody`; `applied` is a different question, and a `yes` the session cannot carry is
 /// `applied: false` with the prerequisite check's words in `said`.
@@ -1937,6 +1940,25 @@ impl Head {
         loop {
             let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
             if g.close_acks.contains(&id) {
+                // The goodbye of the closed session follows the ack. A detach sent first races it
+                // and the daemon may never say it, so it is given a moment to arrive.
+                let bye_by = Instant::now() + BYE_PATIENCE;
+                let mut g = g;
+                while g.closed.is_none() {
+                    let left = bye_by.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        break;
+                    }
+                    g = self
+                        .shared
+                        .bell
+                        .wait_timeout(g, left)
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0;
+                }
+                if g.closed.is_some() {
+                    return Ok(());
+                }
                 drop(g);
                 // A daemon that shuts down with its last session ends this connection with a
                 // goodbye right behind the ack: the close was seen, and there is nothing to detach.
