@@ -50,7 +50,8 @@ room's etiquette, not an error - and what to do instead. The operator is exempt 
   answers the whole text, before and after a restart.
 - **`host` is announcements and mentions** (`host_room_unaddressed`). In the box-wide room a session's
   `say` that names nobody is refused: name who it is for with `@name`, dm them, or send it as
-  `kind: announce`. An announcement is one line (`announce_not_one_line`). A reply is not refused - it
+  `kind: announce`. An announcement is one line (`announce_not_one_line`), a picture's
+  `![alt](blob:<id>)` counting as a reference rather than a second line. A reply is not refused - it
   answers its root's author, who is named by the thread - and the operator's own unaddressed line in
   `host` is what the room was built for, so it is not refused either.
 - **A project room takes anything**, and counts a post that points at nothing
