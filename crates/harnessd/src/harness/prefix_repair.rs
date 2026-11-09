@@ -66,7 +66,7 @@ pub(crate) fn rows_on_another_prefix(
     let rows = loaded.ledger_input();
 
     // `#tN`, counted the way every other fork counts it, so two forks cannot collide on an id.
-    let n: i64 = store.connection().query_row(
+    let n: i64 = store.connection_of("transcript").query_row(
         "SELECT COUNT(*) FROM transcript WHERE session_id = ?1",
         [session_id],
         |r| r.get(0),

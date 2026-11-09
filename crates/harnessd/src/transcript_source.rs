@@ -93,7 +93,7 @@ impl StoreTranscripts {
     /// reason
     fn chain(&self, session_id: &str) -> Result<Vec<ChainLink>, String> {
         let store = self.store();
-        let conn = store.connection();
+        let conn = store.connection_of("transcript");
         let mut stmt = conn
             .prepare(
                 "SELECT t.id, t.forked_at_seq,
@@ -154,7 +154,7 @@ impl TranscriptSource for StoreTranscripts {
 
         let needle = q.matching.as_ref().map(|m| m.to_lowercase());
         let store = self.store();
-        let conn = store.connection();
+        let conn = store.connection_of("transcript");
         let mut scanned = 0usize;
         let mut matched: Vec<TranscriptRow> = Vec::new();
 

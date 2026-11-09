@@ -128,7 +128,7 @@ fn seed(
     // buggy build left behind has to be written the way that build wrote it.
     for (seq, (offset, tokens, h_k)) in rows.iter().enumerate() {
         store
-            .connection()
+            .connection_of("transcript")
             .execute(
                 "INSERT INTO transcript_item
                    (transcript_id, seq, item_id, kind, item_json,

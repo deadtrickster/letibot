@@ -1624,7 +1624,7 @@ impl Harness {
             ));
         };
         let n: i64 = store
-            .connection()
+            .connection_of("transcript")
             .query_row(
                 "SELECT COUNT(*) FROM transcript WHERE session_id = ?1",
                 [self.cfg.session_id.as_str()],

@@ -259,3 +259,39 @@ fn the_legacy_file_inside_a_split_directory_is_refused_by_name() {
         "the refusal has to say which file and where the store is:\n{said}"
     );
 }
+
+/// `Store::connection` is the index's file on a split set, so a raw read of the history through it
+/// fails with `no such table` there and nowhere else. The history goes through `connection_of`.
+#[test]
+fn no_source_reads_the_history_through_the_index_connection() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = Vec::new();
+    let mut stack = vec![src];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("the source tree") {
+            let path = entry.expect("an entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("a source file");
+            let lines: Vec<&str> = text.lines().collect();
+            for (at, line) in lines.iter().enumerate() {
+                if !line.contains(".connection()") {
+                    continue;
+                }
+                let near = lines[at..lines.len().min(at + 6)].join("\n");
+                if near.contains("FROM transcript") || near.contains("INTO transcript") {
+                    found.push(format!("{}:{}", path.display(), at + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "these read the history through the index's connection: {found:#?}"
+    );
+}

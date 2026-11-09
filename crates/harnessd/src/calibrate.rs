@@ -418,7 +418,7 @@ pub fn replay_rows(
 /// decision. Bounded like an utterance, for the same reason.
 fn claim_before(db: &Store, session_id: &str, before_ms: i64) -> Option<String> {
     let text: Option<String> = db
-        .connection()
+        .connection_of("transcript")
         .query_row(
             "SELECT item_json FROM transcript_item
               WHERE transcript_id LIKE ?1 AND kind = 'assistant' AND created_at <= ?2

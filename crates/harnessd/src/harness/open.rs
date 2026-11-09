@@ -331,7 +331,7 @@ pub(crate) const STORE_BUSY_PATIENCE: std::time::Duration = std::time::Duration:
 /// the append-only guarantees are triggers, so a read here cannot weaken them.
 fn transcript_exists(store: &Store, transcript_id: &str) -> bool {
     store
-        .connection()
+        .connection_of("transcript")
         .query_row(
             "SELECT 1 FROM transcript WHERE id = ?1",
             [transcript_id],
@@ -1369,7 +1369,7 @@ impl Harness {
                     // `#tN`, N counted the way `fork_to_summary` counts it, so the
                     // two forks cannot collide on an id.
                     let n: i64 = store
-                        .connection()
+                        .connection_of("transcript")
                         .query_row(
                             "SELECT COUNT(*) FROM transcript WHERE session_id = ?1",
                             [cfg.session_id.as_str()],
