@@ -81,7 +81,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R66 | A harnessd reached 113 GB | Needs the operator | the LOCAL-model route (needs a local server and a GGUF on this box), and the incident's own 113 GB |
 | R65 | The model chooses each tool call's memory cap | Needs the operator | the cross-session ledger, a proposal the operator has not decided |
 | N5 | The agent should know the view is hermetic, and propose the grant it needs | Needs the operator | which asks must be refused rather than prompted: `grant_view` raises an ordinary card for `~/.ssh`, with no never-write precheck |
-| T25 | Everything waiting on the operator | Needs the operator | the operator's answers to D14, D15, D17, D20 to D24; D13, D16, D25, D28 are built, D18 is fixed untested, D27 has item 5 open, D26 is answered and on main |
+| T25 | Everything waiting on the operator | Needs the operator | the operator's answers to D14, D15, D17, D20 to D24; D13, D16, D18, D25, D27, D28 are built, D26 is answered and on main |
 | T17 | harnessd: M1 exit criterion not met as written | Needs the operator | the 30-turn re-measurement in D11's metric (one run against a local :8080 server), M0's opencode baseline, C7's server half and C8's `length`, C2 run as part of the exit |
 | T19 | Rewrite or not, on the KV representation | Needs the operator | row 3 (one checkpoint at `TokenLedger::prefix_len()`); the measurement that says whether it pays needs the :8080 server restarted |
 | T18 | The prompt cache costs ~120 KiB/token on recurrent models | Needs the operator | nothing in this tree: the cost is the server's (`--cache-ram`, `-c`, per-sequence accumulator cap, eviction and warm/cold figures, `--cache-reuse` on dense models) |
@@ -2002,9 +2002,11 @@ memory-cost admission.
 harnesses have it, the most complete is 14 actions, and it needs a language server per
 language. Its own decision, not a group.
 
-— fixed in b5ee36d5 in code, untested beyond the config: `crates/tools/src/builtins/lsp.rs`
-spawns a server and pulls its diagnostics, and the only test names the default language list
-(`default_config_names_its_languages`).
+— ✓ fixed in b5ee36d5, tested and fixed again in fa078386: a fake server in
+`crates/tools/src/builtins/lsp.rs` exposed that pushed `publishDiagnostics` were ignored and that
+a silent server was waited on forever. Tests a_pushed_diagnostic_comes_back_with_its_file_line_and_message,
+a_server_that_exits_before_answering_is_reported_not_waited_on,
+a_server_that_never_answers_is_stopped_at_the_deadline.
 
 **D20 — `never_hit` now sees network arguments.** A `web_search` or `github` string that
 merely *mentions* `.config/gh` or `.password-store` is denied by the never-write list.
@@ -2097,9 +2099,10 @@ a_mode_set_mid_turn_survives_a_restart.
 — item 4, *mode does not persist per project*: ✓ fixed as the paragraph above records —
 `ModeStore` (`crates/harnessd/src/modes.rs`), test a_mode_set_mid_turn_survives_a_restart reads
 the row back the way a restart does.
-— item 5, *a resumed session does not disclose a tool-list mismatch*: OPEN — no warning code
-carries it (`crates/sessionlog/src/warning.rs` has none), and `reseat_unchecked` is about the
-carry against the window, not the tools the prompt was built with.
+— item 5, *a resumed session does not disclose a tool-list mismatch*: ✓ built in 73da5cce —
+`prefix_stale` (`crates/sessionlog/src/warning.rs`) names tools added, removed and grown against
+the stored prefix. Tests a_tool_that_arrived_is_named_in_the_sentence and, in 96f2dd4a,
+a_resume_with_a_tool_removed_names_it_and_the_same_tools_say_nothing.
 — item 6, *the write prompt has no one-keypress answer*: ✓ fixed — the prompt is a card whose
 option ids answer by prefix (`crates/tui/src/app/tests/decisions.rs:183`) or by digit-and-Enter
 (`crates/tui/src/app/keys/cards.rs:351`, and `a_digit_inside_a_half_typed_line_is_not_an_answer`).
