@@ -1308,7 +1308,12 @@ fn a_bash_env_planted_in_the_parent_never_reaches_the_child() {
         std::env::remove_var("BASH_ENV");
         std::env::remove_var("SHELLOPTS");
     }
-    assert!(text.starts_with("be=\npath=/"), "{text}");
+    let pinned = std::env::var("PATH").unwrap_or_default();
+    assert_eq!(
+        text,
+        format!("be=\npath={pinned}\n"),
+        "the child runs on the pinned PATH"
+    );
     std::fs::remove_dir_all(&root).ok();
 }
 

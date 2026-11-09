@@ -1896,10 +1896,15 @@ impl ProcessHost for HostProcesses {
                     "BASH_ENV" | "ENV" | "SHELLOPTS" | "BASHOPTS" | "PATH"
                 )
             };
+            // The filter is the session's pairs' alone: run over the pinned `PATH` too, it dropped
+            // that as well and every command fell back to the shell's built-in path.
             std::iter::once(("PATH".to_string(), path))
-                .chain(standing)
-                .chain(plan_env.iter().cloned())
-                .filter(keep)
+                .chain(
+                    standing
+                        .into_iter()
+                        .chain(plan_env.iter().cloned())
+                        .filter(keep),
+                )
                 .collect()
         };
         // The environment trailer, appended only where the caller armed one, the run has no
