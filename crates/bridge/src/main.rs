@@ -118,7 +118,12 @@ fn main() {
 
 /// Serve MCP on stdin/stdout until the client closes it.
 fn serve() -> i32 {
-    let bridge = Bridge::new().streaming_rooms();
+    let mut bridge = Bridge::new().streaming_rooms();
+    // Off unless the user's file says `[bridge] permission_relay = true`: the relay approves tool
+    // calls in somebody's session, which is not a thing to find switched on.
+    if letibot_bridge::settings::BridgeSettings::load_user().permission_relay {
+        bridge = bridge.relaying();
+    }
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     match mcp::serve(stdin.lock(), stdout, &bridge) {

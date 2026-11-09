@@ -93,6 +93,11 @@ fn read_loop<R: BufRead, W: Write>(
                     // And the seat's plan check, whose nag is a channel frame like the rest.
                     bridge.push_seat(push.clone());
                 }
+                // The relay reads the operator's verdicts off the room, and puts its own answer
+                // on the same writer; off unless the config asked for it.
+                if request["method"] == "notifications/initialized" {
+                    bridge.watch_permissions(push.clone());
+                }
                 handle(bridge, &request)
             }
             Err(e) => Some(error(Value::Null, -32700, &format!("parse error: {e}"))),
@@ -107,6 +112,17 @@ fn write_message<W: Write>(out: &mut W, message: &Value) -> std::io::Result<()> 
     serde_json::to_writer(&mut *out, message)?;
     out.write_all(b"\n")?;
     out.flush()
+}
+
+/// What `initialize` offers under `capabilities.experimental`: the channel, always, and the
+/// permission relay when the config asked for it.
+fn capabilities(bridge: &Bridge) -> Value {
+    let mut experimental = serde_json::Map::new();
+    experimental.insert("claude/channel".into(), json!({}));
+    if bridge.relays_permissions() {
+        experimental.insert(crate::relay::CAPABILITY.into(), json!({}));
+    }
+    Value::Object(experimental)
 }
 
 /// One request in, at most one message out.
@@ -124,8 +140,14 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
         "initialize" => Some(json!({
             "protocolVersion": PROTOCOL_VERSION,
             // `claude/channel` lets Claude Code start a turn on a room message; a client that
-            // was not started with the channel flag ignores it and the tools still work.
-            "capabilities": { "tools": {}, "experimental": { "claude/channel": {} } },
+            // was not started with the channel flag ignores it and the tools still work. The
+            // relay's own capability is declared only when the config asked for it: declaring
+            // it is a promise that a verdict will be answered, and anyone who can reply through
+            // the room would be approving tool use in this session.
+            "capabilities": {
+                "tools": {},
+                "experimental": capabilities(bridge),
+            },
             "instructions": format!("Room messages for `{}` and your leticode sessions' turn \
                 ends, asks and failures arrive as <channel> events. Each message is a header \
                 (`#seq [room] from <author> (<seat>) to <you|@you|dm|all>`) and its text quoted. \
@@ -139,6 +161,15 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
         // A notification, by contract: the client says it has applied `initialize`. There
         // is nothing to do and nothing to answer.
         "notifications/initialized" | "notifications/cancelled" => return None,
+        // Claude Code's own permission prompt: a notification, answered in the room and not on
+        // the wire. Nothing is owed here even for a request this build cannot read.
+        crate::relay::REQUEST => {
+            bridge.permission_request(&params);
+            return None;
+        }
+        // A verdict from Claude Code is not a method this server takes: it sends them, never
+        // receives them, and a client that sends one is asking for nothing.
+        crate::relay::VERDICT => return None,
         "ping" => Some(json!({})),
         "tools/list" => Some(crate::tools::list()),
         "tools/call" => match call_tool(bridge, &params) {

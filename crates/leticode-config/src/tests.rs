@@ -321,6 +321,18 @@ fn the_embeddings_table_is_carried_not_refused() {
     assert!(cfg.main_model.is_none(), "and sets no model at this level");
 }
 
+/// The `[bridge]` table is carried and not interpreted too: the permission relay's key is the
+/// MCP bridge's own, and this reader refuses nothing it has no opinion about - except that a
+/// `deny_unknown_fields` refusal here would make the daemon reject the very file that turns the
+/// bridge's feature on.
+#[test]
+fn the_bridge_table_is_carried_not_refused() {
+    let dir = project_dir("bridge_table");
+    let path = write_file(&dir, "[bridge]\npermission_relay = true\n");
+    let cfg = LeticodeConfig::load(&path).expect("the section is carried");
+    assert!(cfg.main_model.is_none(), "and sets no model at this level");
+}
+
 /// A typo inside a role's table is named too, and that is the half serde cannot do:
 /// `[roles.coder]` is read key by key, so a `temperatuer` that was accepted and read
 /// as nothing would leave the operator no way to tell they were ignored.

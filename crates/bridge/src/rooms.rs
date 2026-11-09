@@ -233,7 +233,8 @@ const REDIAL_EVERY: Duration = Duration::from_secs(2);
 /// so the message stays undelivered and the next replay offers it again.
 pub type Deliver = Arc<dyn Fn(&Value) -> bool + Send + Sync>;
 
-type Hook = Arc<dyn Fn(&Value, bool) + Send + Sync>;
+/// What one chat frame goes to: the message and the coordinator's `names_you`.
+pub type Hook = Arc<dyn Fn(&Value, bool) + Send + Sync>;
 
 /// The host key, as the room crate and `scripts/letibot` derive it.
 pub fn host_key_of(raw: &str) -> String {
@@ -537,6 +538,9 @@ struct Inner {
     call: Mutex<()>,
     waiting: Mutex<Option<Sender<Value>>>,
     hook: Mutex<Option<Hook>>,
+    /// Watchers that see every chat frame and deliver none of them - the permission relay reads
+    /// verdicts here, and a message it reads is still pushed to Claude Code as it always was.
+    observing: Mutex<Vec<Hook>>,
     generation: AtomicU64,
     ids: AtomicU64,
     /// The newest seq handed to the stream, so a replay never repeats a push.
@@ -582,6 +586,7 @@ impl RoomLink {
                 call: Mutex::new(()),
                 waiting: Mutex::new(None),
                 hook: Mutex::new(None),
+                observing: Mutex::new(Vec::new()),
                 generation: AtomicU64::new(0),
                 ids: AtomicU64::new(0),
                 delivered: Mutex::new(0),
@@ -610,6 +615,17 @@ impl RoomLink {
     /// Hear pushed chat on the reader thread: the message and the coordinator's `names_you`.
     pub fn on_chat(&self, hook: Hook) {
         *self.inner.hook.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    }
+
+    /// Also hear every pushed chat, beside whichever hook delivers it. Additive, because a watcher
+    /// takes nothing away from the stream: the relay reads a verdict and the message is still the
+    /// model's to see.
+    pub fn observe(&self, hook: Hook) {
+        self.inner
+            .observing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(hook);
     }
 
     /// Open the connection if it is not open. `true` when this call opened it.
@@ -906,9 +922,20 @@ fn read_loop(mut reader: BufReader<UnixStream>, weak: Weak<Inner>, generation: u
             None => n == 0,
             Some(f) => match f["type"].as_str() {
                 Some("chat") => {
+                    let names_you = f["names_you"].as_bool().unwrap_or(false);
                     let hook = inner.hook.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     if let Some(hook) = hook {
-                        hook(&f["message"], f["names_you"].as_bool().unwrap_or(false));
+                        hook(&f["message"], names_you);
+                    }
+                    // Beside the delivery, never instead of it: a watcher's own answer is the
+                    // client's too, and the writer thread stays the only one that speaks to it.
+                    let watchers: Vec<Hook> = inner
+                        .observing
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    for watcher in watchers {
+                        watcher(&f["message"], names_you);
                     }
                     false
                 }
@@ -1376,6 +1403,12 @@ fn ask_state(state: &Value) -> String {
         ),
         _ => "open".to_string(),
     }
+}
+
+/// A private message from this seat to one principal, as `room_dm` sends one and without a tool
+/// argument in between: the permission relay's two lines go out this way, to the operator.
+pub fn dm(link: &RoomLink, to: &str, text: &str) -> Result<Value, String> {
+    link.request(&json!({ "type": "dm", "id": link.id(), "to": to, "text": text }))
 }
 
 /// Run one room tool, resolving an attachment's path against the folder this process works in.

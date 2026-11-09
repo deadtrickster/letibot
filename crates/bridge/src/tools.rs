@@ -57,6 +57,13 @@ pub struct Bridge {
     /// How long the seat sits quiet before the plan check comes due - [`crate::seat::NAG_AFTER`]
     /// in every bridge, and a field for a test that must drive a delivery without the minute.
     seat_window: Duration,
+    /// Claude Code's own permission prompts: off unless `[bridge] permission_relay` says so, and
+    /// the same flag that declares the capability.
+    relay: Arc<crate::relay::Relay>,
+    permission_relay: bool,
+    /// The relay's observer is on the room link: a client that initializes twice must not leave a
+    /// second one reading the same verdicts.
+    watching: Mutex<bool>,
 }
 
 impl Default for Bridge {
@@ -73,6 +80,9 @@ impl Default for Bridge {
             // Written out rather than derived: a derived `Duration` is zero, and a zero window is
             // a bridge that nags the moment a row is written.
             seat_window: crate::seat::NAG_AFTER,
+            relay: Arc::new(crate::relay::Relay::new()),
+            permission_relay: false,
+            watching: Mutex::new(false),
         }
     }
 }
@@ -144,6 +154,63 @@ impl Bridge {
     pub fn streaming_rooms(mut self) -> Bridge {
         self.stream_rooms = true;
         self
+    }
+
+    /// Relay this session's own permission prompts to the operator: the capability is declared at
+    /// `initialize`, a request is asked in the room, and the operator's `yes <id>` is the verdict.
+    /// Off unless the user's `leticode.toml` says `[bridge] permission_relay = true`.
+    pub fn relaying(mut self) -> Bridge {
+        self.permission_relay = true;
+        self
+    }
+
+    /// The relay's open ids, unpruned - what the operator was asked about and has not answered.
+    pub fn relay_open(&self) -> Vec<String> {
+        self.relay.open()
+    }
+
+    /// Does this bridge declare `claude/channel/permission` and take verdicts?
+    pub fn relays_permissions(&self) -> bool {
+        self.permission_relay
+    }
+
+    /// A `permission_request` from Claude Code: keep the id and DM the operator what the call is.
+    /// The DM goes out on a thread of its own, because this is a notification and the client's next
+    /// line must not wait on the room's round trip.
+    pub fn permission_request(&self, params: &Value) {
+        if !self.permission_relay {
+            return;
+        }
+        let Some(text) = self.relay.asked(params) else {
+            return;
+        };
+        let link = self.rooms.clone();
+        std::thread::spawn(move || {
+            if let Err(why) = crate::rooms::dm(&link, letibot_room::OPERATOR, &text) {
+                eprintln!("letibot-mcp: the permission prompt did not reach the operator: {why}");
+            }
+        });
+    }
+
+    /// Read every room message for a verdict from now on, and put the ones that are one on `push`:
+    /// the client's own writer, so a verdict is written by the thread that owns stdout. Installed
+    /// once, at `notifications/initialized`, which is when the client may be told anything at all.
+    pub fn watch_permissions(&self, push: std::sync::mpsc::Sender<Value>) {
+        if !self.permission_relay {
+            return;
+        }
+        {
+            let mut watching = self.watching.lock().unwrap_or_else(|e| e.into_inner());
+            if *watching {
+                return;
+            }
+            *watching = true;
+        }
+        let relay = self.relay.clone();
+        let link = self.rooms.clone();
+        let hook: crate::rooms::Hook =
+            Arc::new(move |m, _names_you| on_message(&relay, &link, &push, m));
+        self.rooms.observe(hook);
     }
 
     pub fn rooms(&self) -> &crate::rooms::RoomLink {
@@ -1492,6 +1559,30 @@ fn settle_branch(
                 "`{branch}` is not in {} and fetching it failed: {why}",
                 repo.display()
             ));
+        }
+    }
+}
+
+/// One room message as the relay reads it: a verdict goes to the client's writer, which is the only
+/// thread that speaks to it, and the one line that corrects the operator is a DM on its own thread.
+fn on_message(
+    relay: &crate::relay::Relay,
+    link: &crate::rooms::RoomLink,
+    push: &std::sync::mpsc::Sender<Value>,
+    message: &Value,
+) {
+    match relay.see(message) {
+        crate::relay::Reply::Nothing => {}
+        crate::relay::Reply::Send(frame) => {
+            let _ = push.send(frame);
+        }
+        crate::relay::Reply::Say(line) => {
+            let link = link.clone();
+            std::thread::spawn(move || {
+                if let Err(why) = crate::rooms::dm(&link, letibot_room::OPERATOR, &line) {
+                    eprintln!("letibot-mcp: the reply did not reach the operator: {why}");
+                }
+            });
         }
     }
 }

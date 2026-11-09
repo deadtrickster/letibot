@@ -2575,6 +2575,13 @@ struct LeticodeConfigFile {
     #[serde(default)]
     #[allow(dead_code)]
     embeddings: Option<toml::Value>,
+    /// The `[bridge]` table, read by `letibot_bridge::settings` from this same file: the Claude
+    /// Code MCP bridge's own key. Accepted and not interpreted for `[embeddings]`' reason - it
+    /// starts no model and seats no tool - and because a refusal here would make the daemon reject
+    /// a user file the bridge wrote a key into.
+    #[serde(default)]
+    #[allow(dead_code)]
+    bridge: Option<toml::Value>,
     /// The `[notes]` table, see [`NotesKeys`].
     #[serde(default)]
     notes: Option<toml::Value>,

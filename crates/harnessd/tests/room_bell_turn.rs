@@ -368,14 +368,15 @@ fn the_clients_that_cannot_hear_a_room_event_say_so_where_a_person_looks() {
                 "letibot_room::EVIDENCE",
                 "letibot_room::claims_operator(",
                 "letibot_room::unbacked(",
+                "letibot_room::OPERATOR",
             ]
             .iter()
             .map(|item| used.matches(item).count())
             .sum();
             assert_eq!(
                 named, allowed,
-                "`bridge` may name only the protocol number, the upgrade hint and the peer-text \
-                 checks from the room crate"
+                "`bridge` may name only the protocol number, the upgrade hint, the operator's name \
+                 and the peer-text checks from the room crate"
             );
             continue;
         }

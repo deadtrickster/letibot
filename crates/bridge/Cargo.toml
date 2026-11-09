@@ -30,6 +30,10 @@ letibot-tokencore.workspace = true
 serde_json.workspace = true
 # The browser bridge's `/ask` body.
 serde.workspace = true
+# `[bridge]` in the user's `leticode.toml` - the one setting this binary owns. The file is read
+# for its own table only, so the daemon's parser and this one cannot disagree about a key neither
+# of them owns; `leticode-config` accepts the table and reads none of it.
+toml.workspace = true
 # **Where a host name is checked, and it is the tree's one reader** (`crates/tools/src/remote.rs`,
 # RH5): `~/.config/letibot/hosts.toml`, parsed strictly, with the refusal that lists the declared
 # names. `leticode_start { host }` needs exactly that and must give exactly that refusal — a
