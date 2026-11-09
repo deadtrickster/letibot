@@ -1637,10 +1637,10 @@ mod wall;
 pub(crate) use children::steer_for_turn;
 #[cfg(test)]
 pub(crate) use children::{
-    AnswerOnce, ChildCommand, PlacedChild, SUBAGENT_TITLE_MAX, TaskSlot,
+    AnswerOnce, ChildCommand, ChildHold, PlacedChild, SUBAGENT_TITLE_MAX, TaskSlot,
     a_child_that_ends_stops_its_own, child_command, child_leave_said, children_stopped_notice,
-    finish_child_thread, inherited_spawn_model, mint_sub_id_at, name_repos, owed_answers,
-    release_delivered, repos_under, stoppable_children, subagent_ask_target,
+    finish_child_thread, hold_is_over, inherited_spawn_model, mint_sub_id_at, name_repos,
+    owed_answers, release_delivered, repos_under, stoppable_children, subagent_ask_target,
     subagent_depth_refusal, subagent_title, unsettled_children,
 };
 pub use children::{

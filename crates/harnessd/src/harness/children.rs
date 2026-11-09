@@ -26,15 +26,21 @@ impl Harness {
         if self.subagents.live_children() > 0 {
             return Some("a subagent it started is still alive");
         }
-        let running = self.runtime.backend.processes().is_some_and(|p| {
-            p.jobs()
-                .iter()
-                .any(|j| matches!(j.state, letibot_tools::exec::JobState::Running))
-        });
-        if running {
+        if self.live_jobs() > 0 {
             return Some("a job it started is still running");
         }
         None
+    }
+
+    /// The background jobs this session started that are still running, as its own process host
+    /// lists them: whether this session may be parked, and whether a VM child's turn may end
+    /// (R173). Not `running_jobs`, which is the plan-check's question about a board's rows.
+    pub fn live_jobs(&self) -> usize {
+        self.runtime
+            .backend
+            .processes()
+            .map(|p| p.jobs().iter().filter(|j| j.state.is_running()).count())
+            .unwrap_or(0)
     }
 
     /// Wait until every subagent in this tree has left its own thread, up to `timeout`; `true` when they
@@ -747,7 +753,7 @@ pub(crate) fn serve_child(
     sub_id: &str,
     mut turns: ChildTurns,
 ) -> ChildExit {
-    serve_child_with(sub, hub, sub_id, &mut turns, false)
+    serve_child_with(sub, hub, sub_id, &mut turns, None)
 }
 
 /// The one exit every subagent thread takes: closes the child's hub and removes the session from
@@ -794,9 +800,51 @@ pub enum ChildExit {
     /// Idle past the park window with nothing alive under it - parked as store-only. See
     /// `Config::child_park_after` for the policy and what reopens it.
     Parked,
-    /// Held for its children, and none is left unsettled - the hold's own end
-    /// (`serve_child_with`'s `hold`): the caller now gives the child's newest answer.
+    /// Held for something under it, and that thing is gone - the hold's own end
+    /// ([`ChildHold`]): the caller now gives the child's newest answer.
     Settled,
+}
+
+/// What a child's serving loop stays up for after its answer, when it stays up at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildHold {
+    /// Its own children, until none is left unsettled.
+    Children,
+    /// The jobs it backgrounded in its VM, until none is running: the VM goes down with the
+    /// turn, so a job left in it dies there unread and unreported (R173).
+    Jobs,
+}
+
+impl ChildHold {
+    /// Whether the hold is over, from the three facts it is about. The jobs half asks what is still
+    /// OWED as well: a settlement queued, held or rung is the turn that names the job's exit, and
+    /// the VM must not close over an ending the child never read (R173).
+    fn over(self, sub: &Harness, hub: &Hub) -> bool {
+        let children = sub.unsettled_children();
+        let jobs = sub.live_jobs();
+        // Queued, held for a wake that is coming, or taken for a turn not yet begun - or not
+        // queued yet: a job's process exits before its watcher pushes, so a watched job is owed.
+        let owed = hub.work_pending()
+            || sub.job_watchers().is_some_and(|w| {
+                let f = w.activity_facts();
+                f.pending
+                    || f.held > 0
+                    || f.in_flight
+                    || w.watching_now()
+                        .iter()
+                        .any(|(_, kind, _)| *kind == crate::jobwatch::BackgroundKind::Job)
+            });
+        hold_is_over(self, children, jobs, owed)
+    }
+}
+
+/// [`ChildHold::over`] as arithmetic over the facts, so the decision is a thing a test can state
+/// without a VM, a job or a daemon.
+pub(crate) fn hold_is_over(hold: ChildHold, children: usize, jobs: usize, owed: bool) -> bool {
+    match hold {
+        ChildHold::Children => children == 0,
+        ChildHold::Jobs => jobs == 0 && !owed,
+    }
 }
 
 /// [`serve_child`] with the clock handed in - the tests' door, and the only difference between
@@ -809,7 +857,7 @@ pub fn serve_child_under(
     nag: crate::sessions::TodoNagClock,
 ) -> ChildExit {
     let mut turns = ChildTurns::new(sub, sub_id, nag);
-    serve_child_with(sub, hub, sub_id, &mut turns, false)
+    serve_child_with(sub, hub, sub_id, &mut turns, None)
 }
 
 /// A subagent's own half of the shared turn tail: the `TurnOwner` for a session served on its own
@@ -983,7 +1031,7 @@ pub(crate) fn serve_child_with(
     hub: &Hub,
     sub_id: &str,
     turns: &mut ChildTurns,
-    hold: bool,
+    hold: Option<ChildHold>,
 ) -> ChildExit {
     use crate::turn_tail::Door;
     use letibot_sessionlog::hub::OwnWork;
@@ -997,10 +1045,10 @@ pub(crate) fn serve_child_with(
     // whose last turn left work open.
     turns.rearm(sub, true);
     loop {
-        // Holding its answer for its children (the operator: a child with live children is
-        // not done): back to the caller the moment none is left unsettled, which is when its
-        // newest answer is the one to give.
-        if hold && sub.unsettled_children() == 0 {
+        // Holding its answer for what is still under it (the operator: a child with live children
+        // is not done; R173: nor is one with a job in a VM that dies with its turn): back to the
+        // caller the moment nothing is left, which is when its newest answer is the one to give.
+        if hold.is_some_and(|h| h.over(sub, hub)) {
             return ChildExit::Settled;
         }
         let deadline = [turns.nag.due_at(), park_at, turns.sweep_at]
@@ -1026,9 +1074,12 @@ pub(crate) fn serve_child_with(
         {
             // Nothing armed, the window spent: park unless something the harness owns, or a head
             // watching it, says the session is still in use - then look again a window later.
+            // A jobs hold never parks: parking closes the VM, and a job that has just exited is
+            // still owed the turn that says so. The hold's own end is the way out.
             if turns.nag.due_at().is_none()
                 && hub.attached_heads() == 0
                 && sub.park_refusal().is_none()
+                && hold != Some(ChildHold::Jobs)
             {
                 return ChildExit::Parked;
             }
@@ -3925,7 +3976,41 @@ impl HarnessTaskRunner {
                 ),
                 None,
             );
-            let _ = serve_child_with(&mut sub, &sub_hub, &sub_id, &mut turns, true);
+            let _ = serve_child_with(
+                &mut sub,
+                &sub_hub,
+                &sub_id,
+                &mut turns,
+                Some(ChildHold::Children),
+            );
+            if let Some(newest) = sub.items().iter().rev().find_map(|i| match i {
+                TranscriptItem::Assistant { text, .. } if !text.trim().is_empty() => {
+                    Some(text.clone())
+                }
+                _ => None,
+            }) {
+                reply.text = newest;
+            }
+        }
+        // A VM goes down with this turn, so the turn may not end over a job still running in it:
+        // the VM is held, the child woken with each job's exit, and it goes when nothing is left -
+        // before the "done" row, so the head never draws a finish it then retracts.
+        if placement != Placement::Host && sub.live_jobs() > 0 {
+            publish(
+                "running",
+                &format!(
+                    "{title} — answered, and holding its VM open until the jobs it backgrounded \
+                     have ended"
+                ),
+                None,
+            );
+            let _ = serve_child_with(
+                &mut sub,
+                &sub_hub,
+                &sub_id,
+                &mut turns,
+                Some(ChildHold::Jobs),
+            );
             if let Some(newest) = sub.items().iter().rev().find_map(|i| match i {
                 TranscriptItem::Assistant { text, .. } if !text.trim().is_empty() => {
                     Some(text.clone())
