@@ -68,10 +68,12 @@ mod tests {
         std::fs::write(&bin, "old").expect("write");
         let s = Stamp::of(bin.clone()).expect("stamped");
         assert!(!s.replaced(), "the same file");
-        std::fs::remove_file(&bin).expect("rm");
-        assert!(!s.replaced(), "a build in progress");
+        // Written while `bin` still holds its inode: a filesystem that hands the freed one to the
+        // next create would leave two files at the same (dev, ino) and read as not replaced.
         let next = dir.join("next");
         std::fs::write(&next, "new").expect("write");
+        std::fs::remove_file(&bin).expect("rm");
+        assert!(!s.replaced(), "a build in progress");
         std::fs::rename(&next, &bin).expect("rename");
         assert!(s.replaced(), "a new file at the path");
         let _ = std::fs::remove_dir_all(&dir);
