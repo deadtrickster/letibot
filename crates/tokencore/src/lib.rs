@@ -5,6 +5,7 @@
 pub mod apparatus;
 pub mod control;
 pub mod ledger;
+pub mod migrate_split;
 pub mod region;
 pub mod store;
 pub mod vocab;

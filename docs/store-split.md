@@ -1,7 +1,7 @@
 # Store split: one file per project, one shared file
 
-Status: proposal, design settled, P0 and P1 built (their own paragraphs in § Build plan say what
-landed), P2-P4 to build. The corpus question is decided: decisions live
+Status: proposal, design settled, P0, P1 and P2 built (their own paragraphs in § Build plan say what
+landed), P3 and P4 to build. The corpus question is decided: decisions live
 in project files and there is no shared copy (§ The corpus). The stalls the split is meant to
 remove were measured on lab2x1 on 2026-11-07 (§ What the daemons logged), and the build is in
 five packages with their done-tests at the end.
@@ -289,15 +289,41 @@ read it, because this daemon is the one that writes it. Done-tests, all on temp 
 `a_project_file_takes_its_own_rows_and_keeps_its_own_keys`,
 `every_statement_the_schema_is_built_from_names_its_table` and `a_key_that_is_not_a_name_is_refused`.
 
-**P2 — the offline migration** (before P3 runs on a box, after P1's schema exists).
-`crates/tokencore/src/migrate_split.rs` (new), `crates/tokencore/src/lib.rs` (one `pub mod`
-line), `crates/harnessd/src/bin/letibot-migrate-split.rs` (new),
-`crates/harnessd/tests/store_split_migrate.rs` (new). The five steps of § Migration, the project
-key from the session's root and never its worktree, one transaction per file, and the
-verification as a refusal rather than a print. Done-test: a fixture store with two projects, a
-child in a worktree and one empty project — every row lands in exactly one file, the key hashes
-match, `shared.db` has no `adjudication`, a second run refuses, and a deliberately broken
-verification leaves `sessions.db` in place under its own name.
+**P2 — the offline migration.** Built. `crates/tokencore/src/migrate_split.rs` (new), one `pub mod`
+line in `crates/tokencore/src/lib.rs`, `crates/harnessd/src/bin/letibot-migrate-split.rs` (new),
+`crates/harnessd/tests/store_split_migrate.rs` (new). What the doc asked for and what landed: every
+session is walked up `parent_session_id` to its tree's root, and the ROOT's recorded
+`workspace_root` is hashed into the project key (`migrate_split::project_key`: the first twelve hex
+of its SHA-256, which is the key the folder's daemon socket and log already wear), so a child's
+worktree names no file; each key's file is created from P1's `schema_sql(StoreFile::Project)` and
+its rows copied in one transaction, row by row in primary-key order so the append-only trigger under
+`transcript_item` accepts them, with `defer_foreign_keys` so a fork may name a transcript written
+after it; `shared.db` is written the same way and its `session` table gains the `project` column the
+index needs to say which file a session's rows are in; `stable_prefix` is copied into every project
+file whose transcripts name it, the one row in two files and the assignment's own rule. Step 4 is a
+refusal and not a print: per file, each table's row count and a hash of its primary keys are the old
+store's for those rows; across files, every project table's sum is the old count and every
+`adjudication` row is in exactly one file; `shared.db` holds no `adjudication` table at all; and
+every transcript's chain is replayed through `TokenLedger::restore`, the read a resume does. A failed
+check names what did not add up, removes the files the pass wrote and leaves `sessions.db` under its
+own name, which is why step 5 renames only after step 4 passes. The command refuses while a daemon
+holds the store (the `session_writer` lease, live while the pid it names runs on this host) and
+refuses a second run: a data directory that already holds `shared.db` or a project file is a split
+store, and copying a fresh `sessions.db` over files a daemon has written since is the one thing this
+pass must never do. Two things the doc left open, decided here: the v24 archive's
+`merge_queue_v23`/`merge_review_v23` go to `shared.db` — created from the old file's own
+`sqlite_master` row, because no DDL here creates them — when they hold rows and are dropped when
+empty, as § Table assignment says; and a parent edge naming a session the store does not hold stops
+the walk, so that child is its own root, which is the answer a resume gives it. Done-tests, all on
+temp directories: `every_row_lands_in_exactly_one_file_and_the_keys_hash` — three root folders, two
+of them with rows and one whose session wrote nothing, a child in a worktree, and one prefix both
+projects name, so the file names, the key hashes, the empty file, the duplicated prefix, the
+`session.project` column and the absence of `adjudication` from `shared.db` are all asserted;
+`a_second_run_refuses`, with the old file restored as well as renamed away;
+`a_broken_verification_leaves_sessions_db_in_place_under_its_own_name`, whose fixture breaks one
+row's `h_k` under the append-only trigger; and
+`a_live_writer_claim_is_a_refusal_and_a_stale_one_is_not`, which is the command's own refusal, since
+a claim on another host is one this box cannot ask about pids for and so is not taken for stale.
 
 **P3 — the daemon opens two paths.** `crates/harnessd/src/config.rs`,
 `crates/harnessd/src/cli.rs`, `crates/harnessd/src/daemon.rs`,
