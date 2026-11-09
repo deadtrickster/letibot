@@ -60,14 +60,25 @@ pub fn upgrade_hint(why: &str) -> Option<&'static str> {
     }
 }
 
-/// What a `say` is. A room line is the default; an ANNOUNCEMENT is the one host-room line that
-/// may name nobody, and it is one line by construction.
+/// What a `say` is. `post` is a room line and the default every frame written before this decodes
+/// to; the other words are what the line asks of its readers, so they change who is woken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SayKind {
     #[default]
     Post,
+    /// The one host-room line that may name nobody, and it is one line by construction.
     Announce,
+    /// Nothing is asked of any reader: a note for the next turn, never a turn of its own. A dm
+    /// addressed to a reader still wakes them, because a dm is the one thing that is theirs.
+    Fyi,
+    /// A question for one named principal, held as a room ask - see [`Request::Ask`].
+    Ask,
+    /// Something that stops the poster until it is answered: it rings its target and flags the
+    /// operator, because a blocked session is the person's to unblock.
+    Blocker,
+    /// A conclusion the room keeps: the digest ranks it above the talk it settles.
+    Decision,
     /// A word this build does not know: an ordinary line, because a frame from a newer client (or
     /// a careless one) should say something rather than fail to parse.
     #[serde(other)]
@@ -75,13 +86,56 @@ pub enum SayKind {
 }
 
 impl SayKind {
-    /// The kind a word names; anything but `announce` is an ordinary line, so an old client and a
+    /// The kinds a sender may name, in the order a reader needs them - the schema's list and the
+    /// one this crate answers to.
+    pub const NAMED: [SayKind; 6] = [
+        SayKind::Post,
+        SayKind::Fyi,
+        SayKind::Ask,
+        SayKind::Blocker,
+        SayKind::Decision,
+        SayKind::Announce,
+    ];
+
+    /// The kind a word names; anything unknown is an ordinary line, so an old client and a
     /// misspelling both say something rather than fail.
     pub fn of(word: &str) -> SayKind {
-        match word.trim() {
+        match word.trim().to_ascii_lowercase().as_str() {
             "announce" => SayKind::Announce,
+            "fyi" => SayKind::Fyi,
+            "ask" => SayKind::Ask,
+            "blocker" => SayKind::Blocker,
+            "decision" => SayKind::Decision,
             _ => SayKind::Post,
         }
+    }
+
+    /// The word a client writes for this kind - what [`SayKind::of`] reads back, and what a stored
+    /// message keeps in its [`crate::chat::SAY`] ref.
+    pub fn word(self) -> &'static str {
+        match self {
+            SayKind::Post | SayKind::Other => "post",
+            SayKind::Announce => "announce",
+            SayKind::Fyi => "fyi",
+            SayKind::Ask => "ask",
+            SayKind::Blocker => "blocker",
+            SayKind::Decision => "decision",
+        }
+    }
+
+    /// Does this kind need a target named in the frame? An ask does: a question nobody was asked
+    /// is not held for anybody to answer.
+    pub fn needs_target(self) -> bool {
+        self == SayKind::Ask
+    }
+
+    /// Is this a word a stored message has to carry, because it changes how a reader treats it?
+    /// `post`, an announcement and an unknown word do not: they read as they always did.
+    pub fn recorded(self) -> bool {
+        matches!(
+            self,
+            SayKind::Fyi | SayKind::Ask | SayKind::Blocker | SayKind::Decision
+        )
     }
 }
 
@@ -128,8 +182,8 @@ pub enum Request {
         /// server fills the message's attachments from its store and refuses an id it does not hold.
         #[serde(default)]
         attachments: Vec<String>,
-        /// A room line, or an announcement: the host room takes no line that names nobody unless it
-        /// says this. Absent from every frame written before it, which is an ordinary line.
+        /// What the line asks of its readers - see [`SayKind`]. Absent from every frame written
+        /// before it, which is an ordinary room line.
         #[serde(default)]
         kind: SayKind,
     },
@@ -904,11 +958,11 @@ mod tests {
         }
         assert_eq!(SayKind::of("announce"), SayKind::Announce);
         assert_eq!(SayKind::of("announce "), SayKind::Announce);
-        assert_eq!(SayKind::of("fyi"), SayKind::Post);
+        assert_eq!(SayKind::of("shout"), SayKind::Post);
         // A word this build does not know is a line, not a frame nobody can read: a newer client's
-        // third kind must not make an older room refuse the message outright.
+        // next kind must not make an older room refuse the message outright.
         let odd: Request =
-            serde_json::from_str(r#"{"type":"say","id":"1","text":"hi","kind":"fyi"}"#).unwrap();
+            serde_json::from_str(r#"{"type":"say","id":"1","text":"hi","kind":"shout"}"#).unwrap();
         match odd {
             Request::Say { kind, .. } => assert_ne!(kind, SayKind::Announce),
             other => panic!("a say is a say: {other:?}"),

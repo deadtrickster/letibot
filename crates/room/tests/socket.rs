@@ -773,6 +773,8 @@ fn a_stalled_reader_is_disconnected_and_does_not_block_the_others() {
     let server = Server::serve(&scratch.socket(), Room::new()).expect("a socket");
     // A healthy reader never has this many frames in flight; a stalled one has nothing else.
     server.with_outbox(64);
+    // A thousand frames from one sender is what fills the queue, so the budget is lifted.
+    server.with_budget(1_100);
     // The stalled connection: a hand-written client that reads its `welcome` and then nothing.
     let mut stalled = {
         use std::io::{BufRead, BufReader, Write};
@@ -947,6 +949,8 @@ fn an_external_that_has_gone_is_not_known_any_more() {
 fn a_name_is_known_the_moment_its_welcome_is_read() {
     let scratch = Scratch::new("welcome-known");
     let server = Server::serve(&scratch.socket(), Room::new()).expect("a socket");
+    // Forty lines from one sender: the budget is not what this test is about.
+    server.with_budget(50);
     let (me, _events) = client(&server, "s-a");
     for i in 0..40 {
         let external = Client::connect_as(

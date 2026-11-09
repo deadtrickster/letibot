@@ -277,6 +277,8 @@ struct Case {
 fn every_injected_line_arrives_as_quoted_data_and_changes_nothing() {
     let dir = Scratch::new();
     let server = Server::serve(&dir.0.join("room.sock"), Room::new()).expect("a coordinator");
+    // Eleven injected lines from one sender: the budget is not what is under test here.
+    server.with_budget(20);
     let a = seat(&server, "s-a", Seat::Session);
     let b = seat(&server, "s-b", Seat::Session);
     let cases = [

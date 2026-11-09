@@ -293,17 +293,20 @@ impl SessionRoom {
                 let wakes = m.kind != letibot_room::Seat::System || names;
                 // A peer's passing line rings only a seat whose work it touches (an owned scope, an
                 // edited file, its branch); the rest take it as a note on their next turn. A seat
-                // with nothing to judge by is rung as before.
+                // with nothing to judge by is rung as before. The kind decides two of these: an
+                // `fyi` never rings (a dm to you still does), and a `blocker` always does.
                 if plain && wakes && m.wakes(&me, names, &sits_in) {
                     let reach = wake::reach(m, names);
-                    let ring = reach != letibot_room::chat::Reach::Passing
-                        || m.kind == letibot_room::Seat::System
-                        || judge
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .as_ref()
-                            .and_then(|s| s.overlaps(&m.text))
-                            .unwrap_or(true);
+                    let fyi = m.say_kind() == letibot_room::SayKind::Fyi;
+                    let ring = !fyi
+                        && (reach != letibot_room::chat::Reach::Passing
+                            || m.kind == letibot_room::Seat::System
+                            || judge
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .as_ref()
+                                .and_then(|s| s.overlaps(&m.text))
+                                .unwrap_or(true));
                     wake::push_chat(&me, m.seq, reach, wake::chat_sentence(m, names));
                     if ring {
                         bell(&me);
@@ -1714,3 +1717,6 @@ mod dm_cap_tests {
 #[cfg(test)]
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod kinds_tests;

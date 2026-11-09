@@ -50,6 +50,9 @@ impl RoomLink for NoRoom {
     }
 }
 
+/// The kinds a `say` may name: the room's own list, in the order a reader needs them.
+pub const SAY_KINDS: [&str; 6] = ["post", "fyi", "ask", "blocker", "decision", "announce"];
+
 /// The `room` tool.
 pub struct RoomTool {
     link: Arc<dyn RoomLink>,
@@ -95,11 +98,11 @@ impl Tool for RoomTool {
                     },
                     "tag": {
                         "type": "string",
-                        "description": "Lowercased: `RAM` is `ram`."
+                        "description": "Lowercased."
                     },
                     "body": {
                         "type": "string",
-                        "description": "The need: `8 GB, ~10 min`."
+                        "description": "The need: `8 GB, 10 min`."
                     },
                     "item": {
                         "type": "integer",
@@ -111,14 +114,14 @@ impl Tool for RoomTool {
                     },
                     "text": {
                         "type": "string",
-                        "description": "The words: a message, your line, or an `answer`."
+                        "description": "A message, your line, or an answer."
                     },
                     "why": {
                         "type": "string"
                     },
                     "says": {
                         "type": "string",
-                        "description": "`dispute`: why it is yours."
+                        "description": "`dispute`: why."
                     },
                     "question": {
                         "type": "integer",
@@ -127,15 +130,15 @@ impl Tool for RoomTool {
                     "decision": {
                         "type": "string",
                         "enum": ["retry", "hand", "drop"],
-                        "description": "`hand` gives it to `to`."
+                        "description": "`hand`: to `to`."
                     },
                     "to": {
                         "type": "string",
-                        "description": "`say`: a principal, PRIVATE, dm only. `ask`: a session, else `path`/`topic`. `rule`/`hand`: the holder."
+                        "description": "`say`: a principal, PRIVATE dm. `ask`: a session or `path`/`topic`. `rule`/`hand`: the holder."
                     },
                     "path": {
                         "type": "string",
-                        "description": "`ask`: a repo path; its owner is asked."
+                        "description": "`ask`: a repo path."
                     },
                     "topic": {
                         "type": "string",
@@ -143,7 +146,7 @@ impl Tool for RoomTool {
                     },
                     "room": {
                         "type": "string",
-                        "description": "`project` (default), `host`, `dm` (read), `project/<key>`."
+                        "description": "`project` (default), `host`, `dm`, `project/<key>`."
                     },
                     "since": {
                         "type": "integer",
@@ -151,7 +154,7 @@ impl Tool for RoomTool {
                     },
                     "last": {
                         "type": "integer",
-                        "description": "`read`: the newest N (20)."
+                        "description": "`read`: newest N (20)."
                     },
                     "thread": {
                         "type": "integer",
@@ -167,11 +170,11 @@ impl Tool for RoomTool {
                     },
                     "evidence": {
                         "type": "string",
-                        "description": "`say`: a sha or row id backing a claim; else `unbacked`."
+                        "description": "`say`: a sha or row id backing a claim, else `unbacked`."
                     },
                     "check": {
                         "type": "boolean",
-                        "description": "`read`: judge claims against the queue."
+                        "description": "`read`: check claims vs the queue."
                     },
                     "session": {
                         "type": "string",
@@ -188,12 +191,12 @@ impl Tool for RoomTool {
                     "attachments": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "`say`: up to 4 file paths, 8 MiB each."
+                        "description": "`say`: up to 4 files, 8 MiB each."
                     },
                     "kind": {
                         "type": "string",
-                        "enum": ["post", "announce"],
-                        "description": "`say`: one line to all."
+                        "enum": ["post", "fyi", "ask", "blocker", "decision", "announce"],
+                        "description": "`say`: `fyi` wakes nobody, `ask` needs `to`, `blocker` flags the operator, `decision` ranks."
                     }
                 },
                 "required": ["verb"]
@@ -370,6 +373,12 @@ fn dispatch(
         }
         "say" if !nonempty(args, "text") => Some("text"),
         "ask" if !nonempty(args, "text") => Some("text"),
+        "say"
+            if args.get("kind").and_then(|v| v.as_str()).map(str::trim) == Some("ask")
+                && !nonempty(args, "to") =>
+        {
+            Some("to")
+        }
         "own" | "accept" | "release" | "hand" if !nonempty(args, "scope") => Some("scope"),
         "hand" if !nonempty(args, "to") => Some("to"),
         "answer" | "decline" => {
@@ -820,6 +829,54 @@ mod tests {
             assert!(
                 link.seen.lock().unwrap().is_empty(),
                 "nothing reaches the room: {text}"
+            );
+        }
+    }
+
+    /// A `say`'s kind reaches the room, and an `ask` without a target never does: a question
+    /// nobody was asked is not a held ask, so the model is told which field it is missing.
+    #[test]
+    fn a_kind_reaches_the_room_and_an_ask_names_its_target_first() {
+        let link = Recorder::new(Ok("said"));
+        for kind in ["fyi", "blocker", "decision", "announce", "post"] {
+            let (ok, text) = invoke(
+                link.clone(),
+                json!({"verb": "say", "text": "the port is 5433", "kind": kind}),
+            );
+            assert!(ok, "{kind}: {text}");
+        }
+        let seen = link.seen.lock().unwrap();
+        assert_eq!(seen.len(), 5, "each say reached the room once");
+        for (i, kind) in ["fyi", "blocker", "decision", "announce", "post"]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(seen[i].1["kind"], json!(kind), "the kind is handed over");
+        }
+        drop(seen);
+        let link = Recorder::new(Ok("never"));
+        let (ok, text) = invoke(
+            link.clone(),
+            json!({"verb": "say", "text": "which port?", "kind": "ask"}),
+        );
+        assert!(!ok && text.contains("`to`"), "{text}");
+        assert!(
+            link.seen.lock().unwrap().is_empty(),
+            "the room was not asked"
+        );
+        let (ok, text) = invoke(
+            link,
+            json!({"verb": "say", "text": "which port?", "kind": "ask", "to": "serenedb"}),
+        );
+        assert!(ok, "{text}");
+        // The schema names every kind a caller may write, and the tool's own list is the same.
+        let s = RoomTool::new(Arc::new(NoRoom)).schema();
+        let listed = s.parameters["properties"]["kind"]["enum"].to_string();
+        for kind in super::SAY_KINDS {
+            assert_eq!(kind, kind.trim());
+            assert!(
+                listed.contains(&format!("\"{kind}\"")),
+                "{kind} is in the schema"
             );
         }
     }

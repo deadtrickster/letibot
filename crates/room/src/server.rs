@@ -152,6 +152,9 @@ struct Inner {
     missed: Mutex<BTreeMap<String, Missed>>,
     /// The chat log, its rings and every principal's inbox cursor. Kept in a store when [`Server::with_chat_store`] was called, memory only otherwise.
     chat: Mutex<Chat>,
+    /// What one sender may post in one room, and when the next post comes back - see
+    /// [`crate::budget`]. The operator and the harness never reach it.
+    budget: Mutex<crate::budget::Budget>,
     /// What followed each message. Its own lock and file so recording never waits on the chat.
     signals: Mutex<crate::signal::Ledger>,
     signal_window_ms: AtomicU64,
@@ -301,6 +304,7 @@ impl Server {
                 lease: Mutex::new(None),
                 missed: Mutex::new(BTreeMap::new()),
                 chat: Mutex::new(Chat::new()),
+                budget: Mutex::new(crate::budget::Budget::default()),
                 signals: Mutex::new(crate::signal::Ledger::default()),
                 signal_window_ms: AtomicU64::new(crate::signal::SIGNAL_WINDOW_MS),
                 items: Mutex::new(None),
@@ -575,6 +579,20 @@ impl Server {
     pub fn with_ask_grace(&self, ms: u64) -> &Self {
         self.inner.ask_grace_ms.store(ms, Ordering::SeqCst);
         self
+    }
+
+    /// Set the posts one sender may make in one room - [`crate::budget::BUDGET_POSTS`], or a
+    /// test's smaller number. The refill stays the module's own.
+    pub fn with_budget(&self, posts: u32) -> &Self {
+        *self.inner.budget.lock().expect("the budget lock") =
+            crate::budget::Budget::new(posts, crate::budget::BUDGET_REFILL_MS);
+        self
+    }
+
+    /// The budget's size and refill, as the room holds them.
+    pub fn budget(&self) -> (u32, u64) {
+        let b = self.inner.budget.lock().expect("the budget lock");
+        (b.posts(), b.refill_ms())
     }
 
     /// The grace an ask's other end has before the operator is owed a restart.
@@ -1436,7 +1454,7 @@ impl Server {
             return;
         }
         let now = now_ms();
-        let (seen, head, rows) = {
+        let (seen, head, rows, asks_to_me) = {
             let chat = self.inner.chat.lock().expect("the chat lock");
             let seen = chat.seen(session);
             let rows = chat.missed(
@@ -1445,7 +1463,8 @@ impl Server {
                 now.saturating_sub(chat::DIGEST_WINDOW_MS),
                 |_| true,
             );
-            (seen, chat.head(), rows)
+            let asks: Vec<chat::AskView> = chat.asks_of(session);
+            (seen, chat.head(), rows, asks)
         };
         // Visibility reads the rooms, so it runs after the chat lock is released.
         let rows: Vec<chat::Message> = rows
@@ -1486,7 +1505,12 @@ impl Server {
         }
         for (room, rows) in by_room {
             let items = self.open_item_lines(&room);
-            if let Some(text) = chat::summarise(&room, &since, &rows, &items) {
+            let asks: Vec<chat::AskView> = asks_to_me
+                .iter()
+                .filter(|a| a.room == room)
+                .cloned()
+                .collect();
+            if let Some(text) = chat::summarise(&room, &since, &rows, &items, &asks) {
                 notes.push((room, text));
             }
         }
@@ -2649,6 +2673,15 @@ impl Server {
             id: Some(id.to_string()),
             why,
         };
+        // `kind: ask` IS the room's ask: one held question, so the target's own board carries it
+        // and only `answer` releases it. It has to name somebody, or nothing holds it.
+        if kind.needs_target() {
+            let asked = to.map(str::trim).filter(|t| !t.is_empty());
+            let Some(asked) = asked else {
+                return refuse(crate::Refused::AskNamesNobody);
+            };
+            return self.ask_asked(project, seat, name, id, room, asked, text, now);
+        }
         if seat != Seat::Operator && attachments.is_empty() && chat::is_bare_ack(text) {
             self.note_null_post(name, seat);
             return refuse(crate::Refused::NullPost);
@@ -2664,6 +2697,12 @@ impl Server {
         if kind == crate::SayKind::Announce && !chat::one_line(text) {
             return refuse(crate::Refused::AnnounceNotOneLine);
         }
+        // What the line asks of its readers rides the refs, so the frame and the store keep their
+        // shape and an old row still reads as a post.
+        let refs = match chat::with_say_ref(kind, refs) {
+            Ok(refs) => refs,
+            Err(why) => return refuse(why),
+        };
         let text = match self.resolve_mentions(project, text) {
             Ok(t) => t,
             Err(why) => return refuse(why),
@@ -2755,6 +2794,26 @@ impl Server {
                 });
             }
             let room = root.room;
+            // An agent-only thread past the depth cap is a conversation nothing reads: the answer
+            // belongs in a row the operator can see, not six replies down a room.
+            if seat != Seat::Operator
+                && room != chat::DM_ROOM
+                && let Some(shape) = self
+                    .inner
+                    .chat
+                    .lock()
+                    .expect("the chat lock")
+                    .thread_shape(&room, root.seq)
+                && !shape.operator
+                && shape.depth > chat::MAX_AGENT_DEPTH
+            {
+                self.note_count(crate::signal::Count::DepthCapped);
+                return refuse(crate::Refused::ThreadTooDeep {
+                    depth: shape.depth as u64,
+                    max: chat::MAX_AGENT_DEPTH as u64,
+                    root: shape.root,
+                });
+            }
             // A mention in a reply brings the one it names in, exactly as one in a room line does.
             if room != chat::DM_ROOM {
                 self.invite_the_named(&room, project, &text);
@@ -2766,7 +2825,7 @@ impl Server {
                 seat,
                 other,
                 Some(root.seq),
-                refs.to_vec(),
+                refs,
                 attachments,
                 &text,
                 now,
@@ -2796,20 +2855,22 @@ impl Server {
             if !self.may_see(name, seat, project, &room) {
                 return refuse(crate::Refused::UnknownChatRoom { room });
             }
-            // The box-wide room carries announcements and mentions, not talk: a line there is for
-            // somebody or it is for everybody, and anything else belongs to a project room.
+            // The box-wide room carries announcements, blockers and mentions, not talk: a line
+            // there is for somebody, for everybody, or it stops the box - anything else belongs to
+            // a project room.
             if room == chat::HOST_ROOM
                 && seat != Seat::Operator
-                && kind != crate::SayKind::Announce
+                && !matches!(kind, crate::SayKind::Announce | crate::SayKind::Blocker)
                 && chat::mentions(&text).is_empty()
             {
                 self.note_count(crate::signal::Count::HostRoomRefused);
                 return refuse(crate::Refused::HostRoomUnaddressed);
             }
             // A project room's line that points at nothing is the leak to measure, not to refuse.
+            // The kind's own ref names no row, so it does not make a line point at something.
             if seat != Seat::Operator
                 && chat::project_of_room(&room).is_some()
-                && refs.is_empty()
+                && refs.iter().all(|r| r.kind == chat::SAY)
                 && !chat::has_ref(&text)
             {
                 self.note_count(crate::signal::Count::ProjectPostWithoutRef);
@@ -3005,6 +3066,23 @@ impl Server {
         text: &str,
         now: u64,
     ) -> Response {
+        // The budget is the room's answer to one session's chatter, and it is charged before the
+        // append so a refused post is never stored: the operator and the harness are never charged.
+        if !matches!(kind, Seat::Operator | Seat::System) {
+            let allowed = self
+                .inner
+                .budget
+                .lock()
+                .expect("the budget lock")
+                .allowed(author, room, now);
+            if let Err(why) = allowed {
+                self.note_count(crate::signal::Count::BudgetRefused);
+                return Response::Refused {
+                    id: Some(id.to_string()),
+                    why,
+                };
+            }
+        }
         // The operator's long line is carried whole: a person is not filing a record for the room.
         let file = kind != Seat::Operator;
         let appended = self.inner.chat.lock().expect("the chat lock").append_post(
@@ -3029,6 +3107,14 @@ impl Server {
                 };
             }
         };
+        if !matches!(kind, Seat::Operator | Seat::System) {
+            let _ = self
+                .inner
+                .budget
+                .lock()
+                .expect("the budget lock")
+                .spend(author, room, now);
+        }
         // Pushed after the log lock is released, and a repeat of `id` pushes again. A reply answers
         // its root's author, who is the one the room names: the root may be in another room, so
         // nothing in the text says so.
@@ -3040,6 +3126,11 @@ impl Server {
             .is_record(message.seq);
         if filed {
             self.note_count(crate::signal::Count::RecordMade);
+        }
+        // A blocker is the one line that flags the operator: it is counted here, and `deliver`
+        // pushes it to the person's own connection as if it named them.
+        if message.say_kind() == crate::SayKind::Blocker {
+            self.note_count(crate::signal::Count::BlockerFlagged);
         }
         self.deliver(&message, now);
         Response::Said {
@@ -3067,19 +3158,29 @@ impl Server {
             .counted(what);
     }
 
-    /// Enter a message in the signal ledger, and credit the thread it answers.
+    /// Enter a message in the signal ledger, and credit the thread it answers. The row's `kind` is
+    /// what the line asked of its readers when it asked anything - an `ask`, a `blocker`, a
+    /// `decision`, an `fyi` - and the seat it came from otherwise, so `signals` counts wakes per
+    /// message by the kind that rang them.
     fn note_message(&self, message: &chat::Message, now: u64) {
         if message.kind == Seat::System {
             return;
         }
-        let is_ask = self
+        let say = message.say_kind();
+        let asked = self
             .inner
             .chat
             .lock()
             .expect("the chat lock")
             .ask(message.seq)
             .is_some();
-        let kind = if is_ask { "ask" } else { message.kind.word() };
+        let kind = if say.recorded() {
+            say.word()
+        } else if asked {
+            "ask"
+        } else {
+            message.kind.word()
+        };
         let mut ledger = self.inner.signals.lock().expect("the signals lock");
         ledger.message(message.seq, message.ts, &message.author, kind);
         if let Some(t) = message.thread {
@@ -3103,6 +3204,9 @@ impl Server {
         });
         let mut here: BTreeSet<String> = BTreeSet::new();
         let handles = self.handles();
+        // A blocker is the operator's business whoever it names: a session that is stopped is the
+        // person's to unblock, so it arrives on their connection as if it were addressed to them.
+        let blocked = message.say_kind() == crate::SayKind::Blocker;
         for c in self.conn_list() {
             let name = c.who.session.as_str();
             here.insert(name.to_string());
@@ -3110,7 +3214,9 @@ impl Server {
                 continue;
             }
             c.send(Response::Chat {
-                names_you: message.names(name) || answered.as_deref() == Some(name),
+                names_you: message.names(name)
+                    || answered.as_deref() == Some(name)
+                    || (blocked && c.seat == Seat::Operator),
                 message: self.shown(message.clone(), &handles),
             });
             // A session's daemon marks what its model took, with `Ack`: a push it dropped, or held

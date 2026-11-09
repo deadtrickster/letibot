@@ -97,6 +97,12 @@ pub enum Count {
     BroadcastQuestion,
     /// A post folded into the roster's status line: `starting X`, `still on it`.
     StatusFolded,
+    /// A post refused by its sender's budget for the room.
+    BudgetRefused,
+    /// A reply refused by the depth cap on a thread the operator is not in.
+    DepthCapped,
+    /// A `blocker` was said: the operator has been flagged on its account.
+    BlockerFlagged,
 }
 
 impl Count {
@@ -115,6 +121,9 @@ impl Count {
             Count::AskByRoom => "ask_by_room",
             Count::BroadcastQuestion => "broadcast_question",
             Count::StatusFolded => "status_folded",
+            Count::BudgetRefused => "budget_refused",
+            Count::DepthCapped => "depth_capped",
+            Count::BlockerFlagged => "blocker_flagged",
         }
     }
 }

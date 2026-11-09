@@ -520,6 +520,8 @@ fn a_message_to_a_session_that_is_away_is_delivered_when_it_connects() {
 fn an_absent_members_inbox_is_bounded_and_the_ring_still_has_the_rest() {
     let dir = Scratch::new();
     let server = coordinator(&dir);
+    // The flood is this test's subject, not the room's etiquette: one sender says all of it.
+    server.with_budget(letibot_room::server::MAX_PENDING as u32 + 20);
     let away = seat(&server, "s-away", A, Seat::Session);
     drop(away);
     until("the away session's connection to close", || {
@@ -572,6 +574,8 @@ fn drained(s: &Seated) -> Vec<Message> {
 fn a_member_joining_a_busy_room_gets_a_digest_and_its_mention_verbatim() {
     let dir = Scratch::new();
     let server = coordinator(&dir);
+    // A busy room is the subject here, so the sender's budget is lifted out of the way.
+    server.with_budget(40);
     let talker = seat(&server, "s-talker", A, Seat::Session);
     for i in 0..30 {
         said(talker.say(&format!("m{i}"), "", &format!("line {i}")));
@@ -608,6 +612,8 @@ fn a_member_joining_a_busy_room_gets_a_digest_and_its_mention_verbatim() {
 fn a_member_reconnecting_after_a_restart_gets_a_digest_of_what_it_missed() {
     let dir = Scratch::new();
     let first = stored(&dir);
+    // Eleven lines from one sender into one room: the budget would hold the last back.
+    first.with_budget(20);
     let away = seat(&first, "s-away", A, Seat::Session);
     let talker = seat(&first, "s-talker", A, Seat::Session);
     let heard = said(talker.say("a", "", "while connected"));

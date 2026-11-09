@@ -260,6 +260,21 @@ pub enum Refused {
     HostRoomUnaddressed,
     /// An announcement that runs to more than one line. An announcement is one line, refusably.
     AnnounceNotOneLine,
+    /// A post past the sender's budget for this room: a token bucket, and the sentence names its
+    /// size, its refill and when the next post is allowed.
+    Budget {
+        posts: u64,
+        refill_ms: u64,
+        wait_ms: u64,
+    },
+    /// A reply that would take an agent-only thread past the depth cap.
+    ThreadTooDeep {
+        depth: u64,
+        max: u64,
+        root: u64,
+    },
+    /// `kind: ask` with nobody named: a question nobody was asked is held for nobody.
+    AskNamesNobody,
     /// A chat room this connection may not see, or that does not exist.
     UnknownChatRoom {
         room: String,
@@ -508,6 +523,29 @@ impl fmt::Display for Refused {
                 "not posted, and this is the room's etiquette rather than an error: an announcement \
                  is one line - say the first line as the announcement, and file the rest as a row \
                  or a record"
+            ),
+            Refused::Budget {
+                posts,
+                refill_ms,
+                wait_ms,
+            } => write!(
+                f,
+                "not posted, and this is the room's etiquette rather than an error: this room's \
+                 budget is {posts} posts per sender, and this one holds a post back - one comes back \
+                 every {}, so the next post is allowed in {}",
+                crate::item::duration(*refill_ms),
+                crate::item::duration(*wait_ms)
+            ),
+            Refused::ThreadTooDeep { depth, max, root } => write!(
+                f,
+                "not posted: this thread has no operator in it and reply #{depth} would be past the \
+                 depth cap of {max} - file a row or ask the operator, so the conclusion is kept \
+                 where it is read rather than {depth} lines down #{root}"
+            ),
+            Refused::AskNamesNobody => write!(
+                f,
+                "not posted: `kind: ask` is a question held for one named principal, and this one \
+                 named nobody - put who it is for in `to`, or say it as a plain line"
             ),
             Refused::UnknownChatRoom { room } => write!(
                 f,

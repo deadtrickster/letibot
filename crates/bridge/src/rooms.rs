@@ -1085,8 +1085,8 @@ pub fn tool_list() -> Vec<Value> {
                     },
                     "kind": {
                         "type": "string",
-                        "enum": ["post", "announce"],
-                        "description": "`announce` is one line for the whole room, the only `host` line that names nobody."
+                        "enum": ["post", "fyi", "ask", "blocker", "decision", "announce"],
+                        "description": "`fyi` wakes nobody, `ask` needs `to` and is held until answered, `blocker` rings and flags the operator, `decision` ranks in the digest, `announce` is one line for the whole room."
                     }
                 },
                 "required": ["text"]
@@ -1477,10 +1477,19 @@ pub fn call_in(
                 "text": text,
                 "refs": arg_refs(args)?,
             });
-            // Only the one word the room's wire knows: a caller's `kind` is not passed through, so
-            // no tool argument can put a kind on the frame that the room cannot parse.
-            if arg_opt_str(args, "kind")?.as_deref().map(str::trim) == Some("announce") {
-                f["kind"] = json!("announce");
+            // A caller's `kind` is MAPPED, never passed through: a word this build does not know is
+            // refused here rather than sent as a frame the room cannot read.
+            match arg_opt_str(args, "kind")?.as_deref().map(str::trim) {
+                None | Some("") | Some("post") => {}
+                Some(word @ ("announce" | "fyi" | "ask" | "blocker" | "decision")) => {
+                    f["kind"] = json!(word)
+                }
+                Some(other) => {
+                    return Err(format!(
+                        "`{other}` is not a `kind`: `post`, `fyi`, `ask`, `blocker`, `decision` \
+                         or `announce` - nothing was sent to the room"
+                    ));
+                }
             }
             if !files.is_empty() {
                 f["attachments"] = json!(

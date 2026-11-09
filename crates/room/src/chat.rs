@@ -158,6 +158,10 @@ pub struct Ref {
 /// shows it without a second writer.
 pub const EVIDENCE: &str = "evidence";
 
+/// The ref kind that says what a line asks of its readers ([`crate::SayKind`]). It rides `refs`
+/// so the frame, the store and every rendering keep their shape, and an old row reads as a post.
+pub const SAY: &str = "say";
+
 /// How many refs one message may carry.
 pub const MAX_REFS: usize = 8;
 /// The longest ref id, in bytes.
@@ -258,6 +262,24 @@ pub enum Attention {
     All,
 }
 
+/// The refs a `say` of `kind` carries: the caller's own, plus the one that records a kind a reader
+/// has to see. A post, an announcement and an unknown word record nothing, and a line already at
+/// [`MAX_REFS`] is refused rather than left unflagged.
+pub fn with_say_ref(kind: crate::SayKind, refs: &[Ref]) -> Result<Vec<Ref>, crate::Refused> {
+    let mut out = refs.to_vec();
+    if !kind.recorded() {
+        return Ok(out);
+    }
+    if out.len() >= MAX_REFS {
+        return Err(crate::Refused::BadRef);
+    }
+    out.push(Ref {
+        kind: SAY.to_string(),
+        id: kind.word().to_string(),
+    });
+    Ok(out)
+}
+
 impl Message {
     /// The message as one plain line: `#seq [room] author -> to: text (todo t-7)`. A newline inside
     /// the text becomes a quoted line, so no line of a peer's words can pass for a header.
@@ -268,8 +290,7 @@ impl Message {
             .map(|t| format!(" -> {t}"))
             .unwrap_or_default();
         let refs: String = self
-            .refs
-            .iter()
+            .rows_refs()
             .map(|r| format!(" ({} {})", r.kind, r.id))
             .collect();
         let text = self.text.lines().collect::<Vec<_>>().join("\n> ");
@@ -278,6 +299,23 @@ impl Message {
             "#{} [{}] {}{to}: {text}{refs}{flags}",
             self.seq, self.room, self.author
         )
+    }
+
+    /// The refs a rendering shows: every one but the [`SAY`] ref, which is not a row the message
+    /// points at but the kind its header's flags already say.
+    pub fn rows_refs(&self) -> impl Iterator<Item = &Ref> {
+        self.refs.iter().filter(|r| r.kind != SAY)
+    }
+
+    /// What this line asks of its readers. A message from before this, and one whose kind needed
+    /// no saying, is an ordinary post.
+    pub fn say_kind(&self) -> crate::SayKind {
+        self.refs
+            .iter()
+            .find(|r| r.kind == SAY)
+            .map(|r| crate::SayKind::of(&r.id))
+            .filter(|k| k.recorded())
+            .unwrap_or(crate::SayKind::Post)
     }
 
     /// Does this message claim, in its own words, to come from the operator? Authority is the
@@ -301,10 +339,17 @@ impl Message {
         crate::claim::unbacked(&self.text, self.evidence())
     }
 
-    /// What a header says about the message itself, after its addressing: a peer that talks like
-    /// the operator, and a claim about the world that names nothing to check it against.
+    /// What a header says about the message itself, after its addressing: what it asks of a
+    /// reader, a peer that talks like the operator, and a claim about the world that names nothing
+    /// to check it against.
     fn flags(&self) -> String {
         let mut out = String::new();
+        match self.say_kind() {
+            crate::SayKind::Blocker => out.push_str(", blocker"),
+            crate::SayKind::Decision => out.push_str(", decision"),
+            crate::SayKind::Fyi => out.push_str(", fyi"),
+            _ => {}
+        }
         if self.impersonates() {
             out.push_str(", claims operator");
         }
@@ -315,16 +360,21 @@ impl Message {
     }
 
     /// Why this message reached a reader, from the room's `names_you`: the fact a model needs to
-    /// stay quiet without reasoning about it.
+    /// stay quiet without reasoning about it. The kind decides the two cases a room line cannot:
+    /// an `fyi` is a note whatever it sits in (a dm to you still wakes you), and a `blocker` is
+    /// never a cheap turn whatever it names.
     pub fn reach(&self, names_you: bool) -> Reach {
         if self.kind == Seat::Operator {
-            Reach::Operator
-        } else if names_you && self.room == DM_ROOM {
-            Reach::Dm
-        } else if names_you {
-            Reach::Addressed
-        } else {
-            Reach::Passing
+            return Reach::Operator;
+        }
+        if names_you && self.room == DM_ROOM {
+            return Reach::Dm;
+        }
+        match self.say_kind() {
+            crate::SayKind::Fyi => Reach::Passing,
+            crate::SayKind::Blocker => Reach::Addressed,
+            _ if names_you => Reach::Addressed,
+            _ => Reach::Passing,
         }
     }
 
@@ -364,7 +414,7 @@ impl Message {
         if let Some(t) = self.thread {
             head.push_str(&format!(", re #{t}"));
         }
-        for r in &self.refs {
+        for r in self.rows_refs() {
             head.push_str(&format!(", {} {}", r.kind, r.id));
         }
         head.push_str(&self.flags());
@@ -413,12 +463,21 @@ impl Message {
                 .any(|m| m == who || group_names(m, who))
     }
 
-    /// Does this message start a turn for `who`? `named` is the room's own answer to *does it name
+    /// Does this message reach `who` at all? `named` is the room's own answer to *does it name
     /// you* (which counts a reply to your own message). The operator wakes wherever they speak; a
     /// room line wakes that room's own sessions; talk between two others wakes nobody else.
+    /// An `fyi` reaches its room and whoever it names, and its own `reach` keeps that to a note; a
+    /// `blocker` rings its target and the room it was said in, because the room is blocked on it.
     pub fn wakes(&self, who: &str, named: bool, sits_in: impl Fn(&str) -> bool) -> bool {
         if self.author == who {
             return false;
+        }
+        match self.say_kind() {
+            crate::SayKind::Fyi => return named || sits_in(&self.room),
+            crate::SayKind::Blocker => {
+                return named || self.kind == Seat::Operator || sits_in(&self.room);
+            }
+            _ => {}
         }
         named
             || self.kind == Seat::Operator
@@ -743,16 +802,69 @@ pub const DIGEST_NAMED: usize = 5;
 /// Longest text of a digest's verbatim line, in bytes.
 pub const DIGEST_LINE: usize = 240;
 
-/// The deterministic "said since" for one room: counts, authors, the last lines, what is open.
+/// The deterministic "said since" for one room, RANKED by what the reader needs: the open asks
+/// waiting on them, blockers, decisions, lines touching their rows and files, then the counts and
+/// the last lines. Every ranked line keeps its `seq`, because that is how a reader answers it.
 pub fn summarise(
     room: &str,
     since: &str,
     rows: &[Message],
     open_items: &[String],
+    asks_to_me: &[AskView],
 ) -> Option<String> {
-    if rows.is_empty() {
+    if rows.is_empty() && asks_to_me.is_empty() {
         return None;
     }
+    let mut lines: Vec<String> = Vec::new();
+    // 1. The questions this reader owes an answer to, first because they are the only lines
+    //    something is waiting on.
+    let open: Vec<&AskView> = asks_to_me.iter().filter(|a| a.open()).collect();
+    for a in open.iter().take(DIGEST_NAMED) {
+        lines.push(format!(
+            "  ask #{} {} asks you \"{}\"",
+            a.seq,
+            a.asker,
+            flattened(&a.question)
+        ));
+    }
+    if open.len() > DIGEST_NAMED {
+        lines.push(format!("  +{} more asks to you", open.len() - DIGEST_NAMED));
+    }
+    // 2-4. Then what the room said, in the order a reader needs it: what stops somebody, what was
+    //      concluded, what touches the rows and files of this room.
+    let mut ranked: Vec<u64> = Vec::new();
+    for kind in [
+        crate::SayKind::Blocker,
+        crate::SayKind::Decision,
+        crate::SayKind::Post,
+    ] {
+        let bucket: Vec<&Message> = rows
+            .iter()
+            .filter(|m| !ranked.contains(&m.seq))
+            .filter(|m| match kind {
+                crate::SayKind::Post => touches_rows(m),
+                other => m.say_kind() == other,
+            })
+            .collect();
+        let label = match kind {
+            crate::SayKind::Blocker => "blocker",
+            crate::SayKind::Decision => "decision",
+            _ => "touching",
+        };
+        for m in bucket.iter().take(DIGEST_NAMED) {
+            ranked.push(m.seq);
+            lines.push(format!(
+                "  {label} #{} {}: {}",
+                m.seq,
+                m.author,
+                flattened(&m.text)
+            ));
+        }
+        if bucket.len() > DIGEST_NAMED {
+            lines.push(format!("  +{} more {label}", bucket.len() - DIGEST_NAMED));
+        }
+    }
+    // 5. Then the counts, the last lines, and what is open - what this digest always said.
     let mut by: BTreeMap<&str, u64> = BTreeMap::new();
     for m in rows {
         *by.entry(m.author.as_str()).or_default() += 1;
@@ -760,8 +872,8 @@ pub fn summarise(
     let mut authors: Vec<(&str, u64)> = by.into_iter().collect();
     authors.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
     let more_authors = authors.len().saturating_sub(DIGEST_NAMED);
-    let mut out = format!("{} since {since}: ", rows.len());
-    out.push_str(
+    let mut counts = format!("{} since {since}: ", rows.len());
+    counts.push_str(
         &authors
             .iter()
             .take(DIGEST_NAMED)
@@ -770,21 +882,12 @@ pub fn summarise(
             .join(", "),
     );
     if more_authors > 0 {
-        out.push_str(&format!(", +{more_authors} authors"));
+        counts.push_str(&format!(", +{more_authors} authors"));
     }
+    lines.push(counts);
     let tail = rows.len().min(DIGEST_TAIL);
     for m in &rows[rows.len() - tail..] {
-        let mut text = m.text.replace('\n', " ");
-        if text.len() > DIGEST_LINE {
-            let mut end = DIGEST_LINE;
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            let cut = text.len() - end;
-            text.truncate(end);
-            text.push_str(&format!(" [+{cut} bytes]"));
-        }
-        out.push_str(&format!("\n  #{} {}: {text}", m.seq, m.author));
+        lines.push(format!("  #{} {}: {}", m.seq, m.author, flattened(&m.text)));
     }
     // A question is open while nothing in the batch answers it as a thread reply.
     let answered: std::collections::BTreeSet<u64> = rows.iter().filter_map(|m| m.thread).collect();
@@ -799,30 +902,84 @@ pub fn summarise(
             .take(DIGEST_NAMED)
             .map(|m| format!("#{} {}", m.seq, m.author))
             .collect();
-        out.push_str(&format!("\n  unanswered: {}", shown.join(", ")));
+        let mut line = format!("  unanswered: {}", shown.join(", "));
         if questions.len() > DIGEST_NAMED {
-            out.push_str(&format!(", {} more", questions.len() - DIGEST_NAMED));
+            line.push_str(&format!(", {} more", questions.len() - DIGEST_NAMED));
         }
+        lines.push(line);
     }
     if !open_items.is_empty() {
-        out.push_str(&format!(
-            "\n  open: {}",
+        let mut line = format!(
+            "  open: {}",
             open_items
                 .iter()
                 .take(DIGEST_NAMED)
                 .cloned()
                 .collect::<Vec<_>>()
                 .join("; ")
-        ));
+        );
         if open_items.len() > DIGEST_NAMED {
-            out.push_str(&format!("; {} more", open_items.len() - DIGEST_NAMED));
+            line.push_str(&format!("; {} more", open_items.len() - DIGEST_NAMED));
         }
+        lines.push(line);
     }
-    let left = rows.len() - tail;
+    let left = rows.len().saturating_sub(tail);
     if left > 0 {
-        out.push_str(&format!("\n  +{left} more: `room read {room}`"));
+        lines.push(format!("  +{left} more: `room read {room}`"));
     }
-    Some(out)
+    Some(lines.join("\n"))
+}
+
+/// Does this line touch a row or a file of the room's project? A ref names a todo or a queue row,
+/// and a path token (`crates/x/src/y.rs`, `docs/room.md`) names a file. It is what the digest ranks
+/// above the talk, and it is deliberately a reading of the message and not of the disk.
+pub fn touches_rows(m: &Message) -> bool {
+    m.rows_refs()
+        .any(|r| matches!(r.kind.as_str(), "todo" | "queue" | EVIDENCE))
+        || m.text.split_whitespace().any(|w| {
+            let w = w.trim_matches(|c: char| c.is_ascii_punctuation() && c != '/' && c != '.');
+            w.contains('/')
+                && w.rsplit_once('.').is_some_and(|(_, ext)| {
+                    ext.len() <= 5
+                        && !ext.is_empty()
+                        && ext.bytes().all(|b| b.is_ascii_alphanumeric())
+                })
+        })
+}
+
+/// One digest line: the text flattened to one line, cut at [`DIGEST_LINE`] with the cut said.
+fn flattened(text: &str) -> String {
+    let mut text = text.replace('\n', " ");
+    if text.len() > DIGEST_LINE {
+        let mut end = DIGEST_LINE;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let cut = text.len() - end;
+        text.truncate(end);
+        text.push_str(&format!(" [+{cut} bytes]"));
+    }
+    text
+}
+
+/// How far up a thread a depth or a root is looked for, so a bent frame is a number and not a
+/// hang. Deeper than any thread a depth cap lets stand.
+pub const MAX_THREAD_WALK: u32 = 64;
+
+/// How deep a thread with no operator in it may go before the room refuses the next reply. Past
+/// this the conversation has stopped reaching anybody: the answer belongs in a row or a question,
+/// which is what the refusal says.
+pub const MAX_AGENT_DEPTH: u32 = 6;
+
+/// A thread as a new reply sees it: the root it hangs from, how deep the reply would sit, and
+/// whether the operator has spoken anywhere in it - the one thing that lets a thread run on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThreadShape {
+    pub root: u64,
+    /// 1 for a reply to the root.
+    pub depth: u32,
+    /// The operator has a message in this thread, so it is not an agent-only conversation.
+    pub operator: bool,
 }
 
 /// A room as one principal lists it.
@@ -1367,7 +1524,7 @@ impl Chat {
         }
         if refs.len() > MAX_REFS
             || refs.iter().any(|r| {
-                !matches!(r.kind.as_str(), "todo" | "queue" | "ask" | EVIDENCE)
+                !matches!(r.kind.as_str(), "todo" | "queue" | "ask" | EVIDENCE | SAY)
                     || r.id.trim().is_empty()
                     || r.id.len() > MAX_REF_ID
             })
@@ -1597,6 +1754,65 @@ impl Chat {
             .flatten()
             .find(|m| m.seq == thread && see(m))
             .cloned()
+    }
+
+    /// How a new reply answers up the tree: the root `seq` of the message `to` answers, how deep
+    /// that answer sits (1 answers the root), and whether the operator has spoken anywhere in the
+    /// thread. `None` when `to` is not in `room`. The walk stops at [`MAX_THREAD_WALK`], so a
+    /// thread a hand-built frame bent into a circle is a depth, not a hang.
+    pub fn thread_shape(&self, room: &str, to: u64) -> Option<ThreadShape> {
+        let root_of = |seq: u64| self.root_of(room, seq);
+        let root = root_of(to)?;
+        let depth = 1 + self.depth_to(room, to);
+        let mut operator = false;
+        for m in self.rings.get(room).into_iter().flatten() {
+            if root_of(m.seq) != Some(root) {
+                continue;
+            }
+            operator |= m.kind == Seat::Operator;
+            if operator {
+                break;
+            }
+        }
+        Some(ThreadShape {
+            root,
+            depth,
+            operator,
+        })
+    }
+
+    /// The root of `seq`'s thread. A message that answers nothing is its own root.
+    fn root_of(&self, room: &str, seq: u64) -> Option<u64> {
+        let mut here = self.find(room, seq)?;
+        for _ in 0..MAX_THREAD_WALK {
+            match here.thread {
+                Some(up) => here = self.find(room, up)?,
+                None => return Some(here.seq),
+            }
+        }
+        Some(here.seq)
+    }
+
+    /// How many answers sit between `seq` and its root: 0 for the root itself.
+    fn depth_to(&self, room: &str, seq: u64) -> u32 {
+        let mut here = match self.find(room, seq) {
+            Some(m) => m,
+            None => return 0,
+        };
+        let mut depth = 0;
+        for _ in 0..MAX_THREAD_WALK {
+            match here.thread {
+                Some(up) => match self.find(room, up) {
+                    Some(m) => {
+                        here = m;
+                        depth += 1;
+                    }
+                    None => break,
+                },
+                None => break,
+            }
+        }
+        depth
     }
 
     /// Who wrote `seq` in `room` - the one a reply there answers.

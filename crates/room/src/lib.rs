@@ -3,6 +3,7 @@
 
 pub mod agent;
 pub mod blob;
+pub mod budget;
 pub mod chat;
 pub mod claim;
 pub mod client;
