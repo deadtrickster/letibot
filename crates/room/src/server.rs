@@ -2396,6 +2396,15 @@ impl Server {
                     *before,
                     |m| self.visible(name, seat, project, m),
                 );
+                let opened = history.rows.iter().filter(|m| chat.is_record(m.seq)).count();
+                drop(chat);
+                // The measurement R164 needs: a record filed is only worth filing if it is opened.
+                if opened > 0 {
+                    let mut ledger = self.inner.signals.lock().expect("the signals lock");
+                    for _ in 0..opened {
+                        ledger.counted(crate::signal::Count::RecordOpen);
+                    }
+                }
                 history.rows = history
                     .rows
                     .into_iter()
@@ -2881,18 +2890,26 @@ impl Server {
         text: &str,
         now: u64,
     ) -> Response {
-        let appended = self.inner.chat.lock().expect("the chat lock").append(
-            now,
-            id,
-            room,
-            author,
-            kind,
-            to,
-            thread,
-            refs,
-            attachments,
-            text,
-        );
+        // The operator's long line is carried whole: a person is not filing a record for the room.
+        let file = kind != Seat::Operator;
+        let appended = self
+            .inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .append_post(
+                now,
+                id,
+                room,
+                author,
+                kind,
+                to,
+                thread,
+                refs,
+                attachments,
+                text,
+                file,
+            );
         let message = match appended {
             Ok(m) => m,
             Err(why) => {

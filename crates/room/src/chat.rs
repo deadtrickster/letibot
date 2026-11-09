@@ -631,6 +631,42 @@ pub fn echo_of(text: &str, recent: &[Message]) -> Option<u64> {
     None
 }
 
+/// The most lines, and the most characters, a post may have before the room files it as a record:
+/// the room carries the first line, and the whole text is one `read` away.
+pub const RECORD_LINES: usize = 3;
+pub const RECORD_CHARS: usize = 400;
+/// The most of a record's first line the room itself carries, in bytes.
+pub const RECORD_HEAD: usize = 240;
+/// The most whole-record text kept beside the ring, in bytes. Past it the oldest goes: the ring's own
+/// cap is on what is delivered, and a record's whole text is only fetched by a read.
+pub const RECORD_BYTES: usize = 1024 * 1024;
+
+/// Is this post one the room files as a record instead of carrying whole?
+pub fn is_record_post(text: &str) -> bool {
+    text.lines().count() > RECORD_LINES || text.chars().count() > RECORD_CHARS
+}
+
+/// The line the room carries for a record: its first line, and the number `read` takes for the rest.
+pub fn record_line(seq: u64, whole: &str) -> String {
+    let mut head = whole
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if head.len() > RECORD_HEAD {
+        let mut end = RECORD_HEAD;
+        while !head.is_char_boundary(end) {
+            end -= 1;
+        }
+        head.truncate(end);
+    }
+    format!(
+        "{head} … [record #{seq}, {} bytes: room read #{seq}]",
+        whole.len()
+    )
+}
+
 /// The author of a digest message, kind `system`.
 pub const DIGEST_AUTHOR: &str = "room";
 /// Window of history a member with no mark is told about.
@@ -928,6 +964,12 @@ enum Record {
         seq: u64,
         state: AskState,
     },
+    /// The whole text of a message filed as a record. The message in the ring carries its first
+    /// line and a ref to this, so a restart reads the record back as it was said.
+    Whole {
+        seq: u64,
+        text: String,
+    },
 }
 
 /// The file chat is kept in, and the size it had at the last write.
@@ -953,6 +995,9 @@ pub struct Chat {
     /// How many times the store has been rewritten from live state: the one moment the ring's
     /// answer to *what does a message still name* is exact, so it is when blobs are collected.
     rewrites: u64,
+    /// The whole text of each message filed as a record, by its `seq`, and their bytes together.
+    whole: BTreeMap<u64, String>,
+    whole_bytes: usize,
 }
 
 fn ring_bytes(ring: &VecDeque<Message>) -> usize {
@@ -997,6 +1042,7 @@ impl Chat {
                         ask.state = state;
                     }
                 }
+                Ok(Record::Whole { seq, text }) => c.keep_whole(seq, text),
                 Err(e) => eprintln!(
                     "room: chat store {} line {} is not a record ({e}); skipped",
                     path.display(),
@@ -1033,6 +1079,9 @@ impl Chat {
                 bytes -= old.text.len();
                 let d = self.dropped_to.entry(room.to_string()).or_insert(0);
                 *d = (*d).max(old.seq);
+                if let Some(whole) = self.whole.remove(&old.seq) {
+                    self.whole_bytes -= whole.len();
+                }
             }
         }
     }
@@ -1124,6 +1173,12 @@ impl Chat {
                 },
             });
         }
+        for (seq, text) in &self.whole {
+            records.push(Record::Whole {
+                seq: *seq,
+                text: text.clone(),
+            });
+        }
         let mut buf = String::new();
         for r in &records {
             if let Ok(line) = serde_json::to_string(r) {
@@ -1183,6 +1238,38 @@ impl Chat {
         attachments: Vec<Attachment>,
         text: &str,
     ) -> Result<Message, Refused> {
+        self.append_post(
+            now,
+            request,
+            room,
+            author,
+            kind,
+            to,
+            thread,
+            refs,
+            attachments,
+            text,
+            false,
+        )
+    }
+
+    /// [`Chat::append`] with the one choice a post has about its size: `file` files a long text as
+    /// a record - the room carries its first line and a ref, and [`Chat::read`] answers the whole.
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_post(
+        &mut self,
+        now: u64,
+        request: &str,
+        room: &str,
+        author: &str,
+        kind: Seat,
+        to: Option<String>,
+        thread: Option<u64>,
+        refs: Vec<Ref>,
+        attachments: Vec<Attachment>,
+        text: &str,
+        file: bool,
+    ) -> Result<Message, Refused> {
         let key = (author.to_string(), request.to_string());
         if let Some((_, seq)) = self.said.iter().find(|(k, _)| *k == key)
             && let Some(m) = self.find(room, *seq)
@@ -1220,8 +1307,10 @@ impl Chat {
             });
         }
         self.next += 1;
+        let seq = self.next;
+        let whole = (file && is_record_post(text)).then(|| text.to_string());
         let m = Message {
-            seq: self.next,
+            seq,
             ts: now,
             room: room.to_string(),
             author: author.to_string(),
@@ -1230,7 +1319,10 @@ impl Chat {
             thread,
             refs,
             attachments,
-            text: text.to_string(),
+            text: match &whole {
+                Some(whole) => record_line(seq, whole),
+                None => text.to_string(),
+            },
         };
         self.rings
             .entry(room.to_string())
@@ -1245,7 +1337,30 @@ impl Chat {
             request: request.to_string(),
             message: m.clone(),
         }]);
+        if let Some(whole) = whole {
+            self.keep_whole(seq, whole.clone());
+            self.write(&[Record::Whole { seq, text: whole }]);
+        }
         Ok(m)
+    }
+
+    /// Keep the whole text of a record, dropping the oldest once the kept records outgrow their cap.
+    fn keep_whole(&mut self, seq: u64, text: String) {
+        if let Some(old) = self.whole.insert(seq, text.clone()) {
+            self.whole_bytes -= old.len();
+        }
+        self.whole_bytes += text.len();
+        while self.whole_bytes > RECORD_BYTES && self.whole.len() > 1 {
+            let oldest = *self.whole.keys().next().expect("a record is there");
+            if let Some(gone) = self.whole.remove(&oldest) {
+                self.whole_bytes -= gone.len();
+            }
+        }
+    }
+
+    /// Is the message `seq` one the room filed as a record? The read of one is what R164 counts.
+    pub fn is_record(&self, seq: u64) -> bool {
+        self.whole.contains_key(&seq)
     }
 
     /// Append a question and record it as an ask, whose id is the `seq` the message got. One act in
@@ -1440,6 +1555,13 @@ impl Chat {
         if rows.len() > keep {
             // The newest rows are the ones a reader wants when it asks for a tail.
             rows.drain(..rows.len() - keep);
+        }
+        // A record is answered whole here: the ring carries its first line and a ref, and the read
+        // is the door the ref names.
+        for row in &mut rows {
+            if let Some(whole) = self.whole.get(&row.seq) {
+                row.text = whole.clone();
+            }
         }
         History {
             room: room.to_string(),
@@ -2389,6 +2511,75 @@ mod store_tests {
         assert_eq!(again.head(), 1);
         assert_eq!(again.cursor("r"), 3999);
         let _ = std::fs::remove_file(&p);
+    }
+
+    /// A long post is filed: the room carries its first line and a ref, `read` answers the whole,
+    /// and a restart reads the record back - the store holds both halves.
+    #[test]
+    fn a_long_post_is_a_record_the_room_carries_by_ref() {
+        let p = path("record");
+        let mut c = Chat::open(&p);
+        let whole = format!(
+            "the first line of a long report\n{}",
+            "and a paragraph of detail. ".repeat(40)
+        )
+        .trim_end()
+        .to_string();
+        assert!(is_record_post(&whole));
+        let m = c
+            .append_post(
+                1,
+                "1",
+                HOST_ROOM,
+                "s-a",
+                Seat::Session,
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+                &whole,
+                true,
+            )
+            .expect("a message");
+        assert_eq!(
+            m.text,
+            format!(
+                "the first line of a long report … [record #{}, {} bytes: room read #{}]",
+                m.seq,
+                whole.len(),
+                m.seq
+            )
+        );
+        assert!(c.is_record(m.seq));
+        let back = c.read(HOST_ROOM, 0, None, None, None, |_| true);
+        assert_eq!(back.rows[0].text, whole, "the read answers the record whole");
+        let again = Chat::open(&p);
+        let back = again.read(HOST_ROOM, 0, None, None, None, |_| true);
+        assert_eq!(back.rows[0].text, whole, "and it survives a restart");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// A post that is not long is carried whole, whether or not the room was willing to file it.
+    #[test]
+    fn a_short_post_is_never_filed() {
+        let mut c = Chat::new();
+        let m = c
+            .append_post(
+                1,
+                "1",
+                HOST_ROOM,
+                "s-a",
+                Seat::Session,
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+                "three lines at most\nand this is two",
+                true,
+            )
+            .expect("a message");
+        assert_eq!(m.text, "three lines at most\nand this is two");
+        assert!(!c.is_record(m.seq));
     }
 
     /// A store written before attachments existed says nothing about them, and must replay as it

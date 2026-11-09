@@ -62,6 +62,27 @@ enum Line {
         author: String,
         kind: String,
     },
+    /// One named counter went up: what the room refused, what it filed, what was opened again.
+    Count {
+        what: String,
+    },
+}
+
+/// The measurements the room keeps beside its scorecard. One query reads them all: the `signals`
+/// frame's `counts`, one row per word below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Count {
+    /// A `read` of a message the room filed as a record: did the overflow get opened again?
+    RecordOpen,
+}
+
+impl Count {
+    /// The word the count is kept and read by.
+    pub fn word(self) -> &'static str {
+        match self {
+            Count::RecordOpen => "record_open",
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -141,6 +162,9 @@ pub struct Scorecard {
     pub kinds: Vec<SignalRow>,
     /// Outcomes dropped from memory by [`MAX_OUTCOMES`]. They stay in the file.
     pub forgotten: u64,
+    /// The room's named counters, by [`Count::word`].
+    #[serde(default)]
+    pub counts: BTreeMap<String, u64>,
 }
 
 enum Cmd {
@@ -152,6 +176,7 @@ pub struct Ledger {
     window_ms: u64,
     rows: BTreeMap<u64, Outcome>,
     refused: BTreeMap<(String, String), u64>,
+    counts: BTreeMap<String, u64>,
     forgotten: u64,
     tx: Option<mpsc::Sender<Cmd>>,
 }
@@ -168,6 +193,7 @@ impl Ledger {
             window_ms,
             rows: BTreeMap::new(),
             refused: BTreeMap::new(),
+            counts: BTreeMap::new(),
             forgotten: 0,
             tx: None,
         }
@@ -261,6 +287,9 @@ impl Ledger {
             Line::Refused { author, kind } => {
                 *self.refused.entry((author, kind)).or_insert(0) += 1;
             }
+            Line::Count { what } => {
+                *self.counts.entry(what).or_insert(0) += 1;
+            }
         }
     }
 
@@ -321,6 +350,13 @@ impl Ledger {
         });
     }
 
+    /// `what` happened once more.
+    pub fn counted(&mut self, what: Count) {
+        self.record(Line::Count {
+            what: what.word().into(),
+        });
+    }
+
     /// The scorecard as of `now`: a message counts once something followed or its window closed.
     pub fn scorecard(&self, now: u64) -> Scorecard {
         let mut senders: BTreeMap<String, SignalRow> = BTreeMap::new();
@@ -370,6 +406,7 @@ impl Ledger {
             senders: sorted(senders),
             kinds: sorted(kinds),
             forgotten: self.forgotten,
+            counts: self.counts.clone(),
         }
     }
 }

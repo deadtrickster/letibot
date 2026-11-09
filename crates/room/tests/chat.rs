@@ -1608,6 +1608,54 @@ fn an_ack_carrying_a_ref_is_not_refused() {
     }
 }
 
+/// A post over 3 lines or 400 characters is filed as a record: the room carries its first line and
+/// a ref, one read answers the whole, and the read is what the room counts.
+#[test]
+fn a_long_post_becomes_a_record_one_read_answers_whole() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let peer = seat(&server, "s-peer", A, Seat::Session);
+    let op = seat(&server, OPERATOR, "", Seat::Operator);
+    let whole = format!("the build is red at step three\n{}", "detail. ".repeat(120))
+        .trim_end()
+        .to_string();
+    assert!(whole.len() > 400);
+    let m = said(peer.say("1", "", &whole));
+    assert_eq!(
+        m.text,
+        format!(
+            "the build is red at step three … [record #{}, {} bytes: room read #{}]",
+            m.seq,
+            whole.len(),
+            m.seq
+        )
+    );
+    // The push carries the first line and the ref, never the whole: that is the point.
+    let (heard, _) = op.next();
+    assert_eq!(heard.text, m.text);
+    // The read of that seq is the door the ref names, and it answers the whole text.
+    match op.call(Request::Read {
+        room: project_room(A),
+        since: m.seq - 1,
+        last: Some(1),
+        thread: None,
+        before: None,
+    }) {
+        Response::History(h) => assert_eq!(h.rows[0].text, whole),
+        other => panic!("{other:?}"),
+    }
+    // A person's long line is not filed for them: the operator's post is carried whole.
+    let theirs = said(op.say("2", "", &whole));
+    assert_eq!(theirs.text, whole);
+    server.flush_signals();
+    let card = server.scorecard();
+    assert_eq!(
+        card.counts.get("record_open"),
+        Some(&1),
+        "one read opened one record: {card:?}"
+    );
+}
+
 /// A post that repeats one of the last twenty messages of its room or thread is refused, naming the
 /// message it repeats. The operator is exempt and a post that says something new goes through.
 #[test]
