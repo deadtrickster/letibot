@@ -476,22 +476,25 @@ impl fmt::Display for Refused {
             ),
             Refused::NullPost => write!(
                 f,
-                "not posted: a message not for you needs no reply - end the turn and say nothing"
+                "not posted, and this is the room's etiquette rather than an error: a message not \
+                 for you needs no reply - end the turn and say nothing"
             ),
             Refused::EchoPost { seq } => write!(
                 f,
-                "not posted: this repeats #{seq} almost word for word - say only what is new, or \
-                 point at #{seq}"
+                "not posted, and this is the room's etiquette rather than an error: this repeats \
+                 #{seq} almost word for word - say only what is new, or point at #{seq}"
             ),
             Refused::HostRoomUnaddressed => write!(
                 f,
-                "not posted: `host` carries announcements and mentions - name who it is for with \
-                 `@name`, dm them, or send it as `kind: announce`"
+                "not posted, and this is the room's etiquette rather than an error: `host` carries \
+                 announcements and mentions - name who it is for with `@name`, dm them, or send it \
+                 as `kind: announce`"
             ),
             Refused::AnnounceNotOneLine => write!(
                 f,
-                "not posted: an announcement is one line - say the first line as the announcement, \
-                 and file the rest as a row or a record"
+                "not posted, and this is the room's etiquette rather than an error: an announcement \
+                 is one line - say the first line as the announcement, and file the rest as a row \
+                 or a record"
             ),
             Refused::UnknownChatRoom { room } => write!(
                 f,

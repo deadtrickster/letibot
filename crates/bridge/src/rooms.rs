@@ -1026,7 +1026,8 @@ pub fn tool_list() -> Vec<Value> {
                  inviting them if they cannot see it. `cc@<name>` is one bridge, `cc@<folder>` every \
                  bridge of a folder; a bare `cc` is refused when several are connected. `thread` \
                  answers a seq and stays in its room. `refs` points at a todo \
-                 (`<session>/<title>`) or a queue row. Text over 4000 bytes is refused, never cut."
+                 (`<session>/<title>`) or a queue row. Text over 4000 bytes is refused, never cut. \
+                 A refusal is the room's etiquette, not an error."
             ),
             json!({
                 "type": "object",
