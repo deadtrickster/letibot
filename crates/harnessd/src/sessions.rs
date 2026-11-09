@@ -1107,7 +1107,10 @@ impl<'a> Sessions<'a> {
                 let hub = self.registry.get(session_id);
                 crate::slash::unknown_verb(host.as_deref(), hub.as_ref(), session_id, &verb, &line)
             }
-            Slash::Gate(verb) => crate::slash::gate(self.base.store.as_deref(), &verb),
+            Slash::Gate(verb) => {
+                let at = self.base.store_at();
+                crate::slash::gate(at.as_ref(), &verb)
+            }
             // A fresh conversation for this session - the operator's *"clear context - fresh reseat
             // without loosing session todos and jobs"*.
             Slash::Clear { next } => {

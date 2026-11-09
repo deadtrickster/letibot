@@ -1485,6 +1485,29 @@ impl Store {
         Self::open_sharing(path, false)
     }
 
+    /// Another folder's project file, for the corpus sweep only (§ The corpus, `docs/store-split.md`):
+    /// no write lock, no migration and no file created, so a question cannot stall the daemon that
+    /// writes it. Not `open`: that door migrates, and migrating somebody else's file is a write.
+    pub fn open_reader(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        // Not `pragmas`: `journal_mode = WAL` is not a no-op on a file this one may not write.
+        conn.busy_handler(Some(busy::on_busy))?;
+        let store = Store {
+            shared: std::sync::Arc::new(Shared {
+                conn: std::sync::Mutex::new(std::mem::ManuallyDrop::new(conn)),
+                file: file_id(path),
+                path: Some(path.to_path_buf()),
+                newer: std::sync::Mutex::new(None),
+            }),
+            project: None,
+        };
+        LIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(store)
+    }
+
     fn open_sharing(path: &Path, share: bool) -> Result<Self> {
         let key = if share {
             Some(canonical_key(path))

@@ -69,6 +69,9 @@ pub struct DecisionCounts {
     pub measured: u64,
     /// The operator ruled against what the model would have done.
     pub disagreements: u64,
+    /// Project files a whole-corpus sweep could not read, named. A total that leaves a file's
+    /// rows out must say so rather than read as the whole corpus (§ The corpus).
+    pub unreadable: Vec<String>,
 }
 
 /// What one `decisions` call asked for. Predicates AND, like `transcript`'s.
@@ -108,6 +111,9 @@ pub struct DecisionHits {
     pub tools_present: Vec<String>,
     /// Distinct `verdict_by` values in scope.
     pub deciders_present: Vec<String>,
+    /// Project files a whole-corpus sweep could not read, named: an answer from three files
+    /// while a fourth was unreadable must not read as the whole corpus.
+    pub unreadable: Vec<String>,
 }
 
 /// The corpus, as this tool needs it. Implemented by the daemon over `Store`.
@@ -209,11 +215,11 @@ impl DecisionsTool {
         let session = args.get("session").and_then(|v| v.as_str());
         match self.src.counts(session) {
             Err(e) => Invocation::failed(e, String::new()),
-            Ok(c) if c.total == 0 => Invocation::ok(
+            Ok(c) if c.total == 0 => Invocation::ok(format!(
                 "no decisions recorded. Either nothing has been gated here yet, or \
-                 this seat's tools are all read-only — a read never reaches the gate."
-                    .to_string(),
-            ),
+                 this seat's tools are all read-only — a read never reaches the gate.{}",
+                unread(&c.unreadable)
+            )),
             Ok(c) => Invocation::ok(format!(
                 "{} decision(s) recorded.\n\n  \
                  {} a person was actually asked and answered\n  \
@@ -221,8 +227,12 @@ impl DecisionsTool {
                  {} the operator later ruled AGAINST what the gate did\n\n\
                  The first two are independent: a decision can be measured by an \
                  oracle and answered by a person, or settled by a standing rule with \
-                 neither.\n",
-                c.total, c.decided_by_operator, c.measured, c.disagreements
+                 neither.\n{}",
+                c.total,
+                c.decided_by_operator,
+                c.measured,
+                c.disagreements,
+                unread(&c.unreadable)
             )),
         }
     }
@@ -274,8 +284,9 @@ impl DecisionsTool {
                     "no decision `{want}` in this corpus. {} decision(s) were searched. \
                      A request id is minted per gated call and looks like \
                      `adj-<session>-<n>`; `decisions last=20` lists recent ones with \
-                     their ids.",
-                    hits.scanned
+                     their ids.{}",
+                    hits.scanned,
+                    unread(&hits.unreadable)
                 )),
             };
         }
@@ -304,8 +315,24 @@ impl DecisionsTool {
                 hits.matched - shown
             ));
         }
+        out.push_str(&unread(&hits.unreadable));
         Invocation::ok(out)
     }
+}
+
+/// The whole-corpus sweep's other half: the files it could not read, named. Empty for a scoped
+/// read, which opens one file and says so when it fails instead of answering without it.
+fn unread(files: &[String]) -> String {
+    if files.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n{} project file(s) could not be read, so nothing in them was searched: {}. \
+         The corpus is split one file per project, and a file that will not open is named \
+         rather than read as empty.\n",
+        files.len(),
+        files.join(", ")
+    )
 }
 
 /// One decision, in full. Every field, and the two bases kept apart - which is
@@ -469,12 +496,18 @@ fn miss(q: &DecisionQuery, hits: &DecisionHits) -> String {
         hits.scanned,
         hits.session_id,
     );
-    if hits.scanned == 0 {
+    if hits.scanned == 0 && hits.unreadable.is_empty() {
         out.push_str(
             "\nThe corpus has no rows for this session at all. A read-only seat never \
              reaches the gate, so a session that only read files records nothing here. \
              `session=any` searches every session.\n",
         );
+        return out;
+    }
+    if hits.scanned == 0 {
+        // Zero because a file would not open is not `nothing was gated`: the empty result is
+        // the sweep's, and the line below names what it could not read.
+        out.push_str(&unread(&hits.unreadable));
         return out;
     }
     let mut named = false;
@@ -518,6 +551,7 @@ fn miss(q: &DecisionQuery, hits: &DecisionHits) -> String {
              whole corpus.\n",
         );
     }
+    out.push_str(&unread(&hits.unreadable));
     out
 }
 
@@ -566,6 +600,7 @@ mod tests {
                 verdicts_present: verdicts,
                 tools_present: tools,
                 deciders_present: by,
+                unreadable: Vec::new(),
             })
         }
         fn counts(&self, _s: Option<&str>) -> Result<DecisionCounts, String> {
@@ -574,6 +609,7 @@ mod tests {
                 decided_by_operator: self.0.iter().filter(|r| r.asked).count() as u64,
                 measured: self.0.iter().filter(|r| r.oracle_ms.is_some()).count() as u64,
                 disagreements: 1,
+                unreadable: Vec::new(),
             })
         }
     }

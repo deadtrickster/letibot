@@ -1,10 +1,16 @@
 //! Where the gate's decisions go so they outlive the daemon. > *"we should assemble my
 //! decisions and model decisions into corpus across our > letibot/leticode runs.
+//!
+//! The corpus is one file per project (§ The corpus, `docs/store-split.md`): the sink here
+//! writes this daemon's own project file, and the sweep below reads every one of them.
 
+use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use letibot_tokencore::store::Store;
+use letibot_tokencore::migrate_split::project_key;
+use letibot_tokencore::store::split::PROJECTS_DIR;
+use letibot_tokencore::store::{CorpusCounts, Store, StoredAdjudication};
 use letibot_tools::{CorpusRow, CorpusSink, OperatorOverride};
 
 pub struct StoreCorpus {
@@ -157,6 +163,157 @@ impl CorpusSink for StoreCorpus {
             self.orphan_rulings.fetch_add(1, Ordering::Relaxed);
         }
     }
+}
+
+/// Every file a whole-corpus question reads, in key order (§ The corpus): a data directory's
+/// `projects/*.db`, or the one file of a fixture's single-file store. Ordered by key so a listing
+/// cut short is a stable prefix.
+pub fn project_files(at: &crate::config::StoreAt) -> Vec<std::path::PathBuf> {
+    let dir = match at {
+        crate::config::StoreAt::File(path) => return vec![path.clone()],
+        crate::config::StoreAt::Set { dir, .. } => dir,
+    };
+    let Ok(entries) = std::fs::read_dir(dir.join(PROJECTS_DIR)) else {
+        return Vec::new();
+    };
+    let mut files: Vec<std::path::PathBuf> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|e| e == "db"))
+        .collect();
+    files.sort();
+    files
+}
+
+/// The corpus's counts, summed over every file, with the files that would not open NAMED. The
+/// sweep is the accepted cost (§ The corpus) and a file it could not read is said, never counted
+/// as empty.
+pub fn sweep_counts(at: &crate::config::StoreAt) -> (CorpusCounts, Vec<String>) {
+    let mut total = CorpusCounts::default();
+    let mut unreadable = Vec::new();
+    for path in project_files(at) {
+        match Store::open_reader(&path).and_then(|s| s.corpus_counts()) {
+            Ok(c) => {
+                total.total += c.total;
+                total.decided_by_operator += c.decided_by_operator;
+                total.measured += c.measured;
+                total.disagreements += c.disagreements;
+                total.model_decided += c.model_decided;
+            }
+            Err(e) => unreadable.push(named(&path, &e.to_string())),
+        }
+    }
+    (total, unreadable)
+}
+
+/// The corpus's newest decisions: each file's newest `per_file`, merged, sorted and cut to `take`,
+/// because `last` and `offset` mean one page of one corpus and not a page per file.
+pub fn sweep_recent(
+    at: &crate::config::StoreAt,
+    per_file: usize,
+    take: usize,
+) -> (Vec<StoredAdjudication>, Vec<String>) {
+    let mut rows = Vec::new();
+    let mut unreadable = Vec::new();
+    for path in project_files(at) {
+        match Store::open_reader(&path).and_then(|s| s.corpus(false, per_file)) {
+            Ok(mut some) => rows.append(&mut some),
+            Err(e) => unreadable.push(named(&path, &e.to_string())),
+        }
+    }
+    rows.sort_by(|a, b| {
+        b.decided_ms
+            .cmp(&a.decided_ms)
+            .then_with(|| b.request_id.cmp(&a.request_id))
+    });
+    rows.truncate(take);
+    (rows, unreadable)
+}
+
+/// The one file a scoped question reads (§ The corpus).
+pub enum Scoped {
+    /// This daemon's own project file: the handle already holds the connection.
+    Own,
+    /// Another folder's project file, which the sweep's read-only door opens.
+    Elsewhere(std::path::PathBuf),
+}
+
+/// Which project file a session's decisions are in, resolved through the shared index alone. The
+/// key the migration recorded when there is one, and otherwise the folder hash of the tree's ROOT
+/// workspace - a child's own workspace is its worktree and names no file (§ Migration 1).
+pub fn session_file(
+    at: &crate::config::StoreAt,
+    index: &Store,
+    session: &str,
+) -> Result<Scoped, String> {
+    let crate::config::StoreAt::Set { dir, key } = at else {
+        // A single-file store is one file: there is nothing to resolve and nothing to sweep.
+        return Ok(Scoped::Own);
+    };
+    let root = root_of(index, session).ok_or_else(|| {
+        format!(
+            "session `{session}` is not in the index at {}, so no project file's rows are its",
+            at.display()
+        )
+    })?;
+    let want = recorded_project(index, &root).unwrap_or_else(|| project_key(&root.workspace_root));
+    if want.eq_ignore_ascii_case(key) {
+        let own = at.path("adjudication");
+        return match own.is_file() {
+            true => Ok(Scoped::Own),
+            false => Err(format!(
+                "session `{session}` is in this daemon's project {key}, and {} is not there - \
+                 the file its decisions would be read from",
+                own.display()
+            )),
+        };
+    }
+    let path = dir.join(PROJECTS_DIR).join(format!("{want}.db"));
+    match path.is_file() {
+        true => Ok(Scoped::Elsewhere(path)),
+        false => Err(format!(
+            "session `{session}` is in project {want}, and {} is not there - the file its \
+             decisions would be read from",
+            path.display()
+        )),
+    }
+}
+
+/// The session at the top of this one's tree, from the index's `parent_session_id`. A parent the
+/// index does not hold stops the walk, which is the answer a resume gives that child too.
+fn root_of(index: &Store, session: &str) -> Option<letibot_tokencore::store::StoredSession> {
+    let mut here = index.session(session).ok().flatten()?;
+    for _ in 0..64 {
+        let Some(parent) = here.parent_session_id.clone() else {
+            return Some(here);
+        };
+        let Some(up) = index.session(&parent).ok().flatten() else {
+            return Some(here);
+        };
+        here = up;
+    }
+    Some(here)
+}
+
+/// The key the migration recorded for a session: `session.project`. `None` for a session written
+/// since the split, which `put_session` records without it, and for a store from before P2.
+fn recorded_project(
+    index: &Store,
+    session: &letibot_tokencore::store::StoredSession,
+) -> Option<String> {
+    let conn = index.connection_of("session");
+    conn.query_row(
+        "SELECT project FROM session WHERE id = ?1",
+        [&session.id],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
+/// A file a sweep could not read, as the answer names it: the path, and why.
+fn named(path: &Path, why: &str) -> String {
+    format!("{} ({why})", path.display())
 }
 
 /// A JSON string literal, for the one place above that builds JSON by hand.

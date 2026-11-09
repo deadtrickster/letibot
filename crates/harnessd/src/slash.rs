@@ -1434,9 +1434,11 @@ mod tests {
 }
 
 /// The supervised-labelling loop, served from the store. Deliberately not routed through
-/// the live gate, for the deadlock `answers` is shaped around
-pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply {
-    let Some(path) = store_path else {
+/// the live gate, for the deadlock `answers` is shaped around. The corpus is one file per project
+/// (§ The corpus, `docs/store-split.md`): `counts` and `recent` are whole-corpus questions and
+/// sweep every project file read-only, naming the ones they could not read.
+pub fn gate(at: Option<&crate::config::StoreAt>, verb: &GateVerb) -> SlashReply {
+    let Some(at) = at else {
         return SlashReply {
             lines: vec![
                 "no session store is configured (`--store`), so no decision has ever been \
@@ -1447,50 +1449,45 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
             ok: false,
         };
     };
-    let store = match letibot_tokencore::store::Store::open(path) {
-        Ok(s) => s,
-        Err(e) => {
-            return SlashReply {
-                lines: vec![format!("opening {}: {e}", path.display())],
-                ok: false,
-            };
-        }
-    };
+    // The store has to be there before a sweep can answer: a data directory that is not split
+    // yet is the migration's refusal, not an empty corpus.
+    if let Err(e) = at.open_existing() {
+        return SlashReply {
+            lines: vec![e.to_string()],
+            ok: false,
+        };
+    }
 
     match verb {
-        GateVerb::Counts => match store.corpus_counts() {
-            Ok(c) => SlashReply {
-                lines: vec![
-                    format!("{} decisions recorded", c.total),
-                    // Who decided and what it was measured against are independent, and one
-                    // number for both is how a session where the operator personally answered
-                    // four hundred calls read as "0 ruled on".
-                    format!("  {} you answered yourself", c.decided_by_operator),
-                    format!("  {} where an oracle was actually consulted", c.measured),
-                    format!(
-                        "  {} where you and the model differ — the rows a fine-tune is for",
-                        c.disagreements
-                    ),
-                    format!("  {} decided by a model, not by a rule", c.model_decided),
-                    format!(
-                        "  {} decided by a rule or a mode with nobody asked",
-                        c.total.saturating_sub(c.decided_by_operator)
-                    ),
-                    // The two columns nothing writes, named here rather than left for a reader to discover
-                    // `p_allow` has no producer because the oracle answers with a hard label, and
-                    // `oracle_model` is empty because the model is already named in full on `verdict_by`.
-                    "  p_allow and oracle_model are NULL on every row: neither has a \
+        GateVerb::Counts => {
+            let (c, unreadable) = crate::corpus::sweep_counts(at);
+            let mut lines = vec![
+                format!("{} decisions recorded", c.total),
+                // Who decided and what it was measured against are independent, and one
+                // number for both is how a session where the operator personally answered
+                // four hundred calls read as "0 ruled on".
+                format!("  {} you answered yourself", c.decided_by_operator),
+                format!("  {} where an oracle was actually consulted", c.measured),
+                format!(
+                    "  {} where you and the model differ — the rows a fine-tune is for",
+                    c.disagreements
+                ),
+                format!("  {} decided by a model, not by a rule", c.model_decided),
+                format!(
+                    "  {} decided by a rule or a mode with nobody asked",
+                    c.total.saturating_sub(c.decided_by_operator)
+                ),
+                // The two columns nothing writes, named here rather than left for a reader to discover
+                // `p_allow` has no producer because the oracle answers with a hard label, and
+                // `oracle_model` is empty because the model is already named in full on `verdict_by`.
+                "  p_allow and oracle_model are NULL on every row: neither has a \
                      producer — see `CorpusRow` in `letibot-tools`. A reader must not \
                      read their NULL as a measurement."
-                        .to_string(),
-                ],
-                ok: true,
-            },
-            Err(e) => SlashReply {
-                lines: vec![e.to_string()],
-                ok: false,
-            },
-        },
+                    .to_string(),
+            ];
+            lines.extend(unreadable_line(&unreadable));
+            SlashReply { lines, ok: true }
+        }
 
         GateVerb::Recent {
             limit,
@@ -1498,16 +1495,9 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
         } => {
             // `corpus(only_labelled)` narrows the other way, so the unlabelled queue is filtered
             // here rather than by asking for a set that excludes itself.
-            let rows = match store.corpus(false, if *only_unlabelled { limit * 8 } else { *limit })
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    return SlashReply {
-                        lines: vec![e.to_string()],
-                        ok: false,
-                    };
-                }
-            };
+            let per_file = if *only_unlabelled { limit * 8 } else { *limit };
+            let take = if *only_unlabelled { per_file } else { *limit };
+            let (rows, unreadable) = crate::corpus::sweep_recent(at, per_file, take);
             let mut lines = Vec::new();
             // "Unruled" is not "nobody answered it": a call the operator was put in front of already
             // carries their judgement in `verdict_by`, and listing it as work would ask the same
@@ -1544,6 +1534,7 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
             } else {
                 lines.push("`/gate ok|grant|revoke REQUEST-ID [note]`".into());
             }
+            lines.extend(unreadable_line(&unreadable));
             SlashReply { lines, ok: true }
         }
 
@@ -1552,6 +1543,15 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
             kind,
             note,
         } => {
+            let store = match at.open_existing() {
+                Ok(s) => s,
+                Err(e) => {
+                    return SlashReply {
+                        lines: vec![e.to_string()],
+                        ok: false,
+                    };
+                }
+            };
             match store.record_operator_ruling(request_id, kind, note) {
                 Ok(true) => SlashReply {
                     lines: vec![format!("{request_id}: {kind}")],
@@ -1574,6 +1574,20 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
                 },
             }
         }
+    }
+}
+
+/// The sweep's other half, for this verb's answer: the project files it could not read, named.
+fn unreadable_line(files: &[String]) -> Vec<String> {
+    match files.is_empty() {
+        true => Vec::new(),
+        false => vec![format!(
+            "\n{} project file(s) could not be read, and nothing in them was counted: {}. \
+             The corpus is one file per project, and a file that will not open is named \
+             rather than read as empty.",
+            files.len(),
+            files.join(", ")
+        )],
     }
 }
 

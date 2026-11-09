@@ -1,7 +1,8 @@
 # Store split: one file per project, one shared file
 
-Status: proposal, design settled, P0, P1, P2 and P3 built (their own paragraphs in § Build plan say what
-landed), P4 to build. The corpus question is decided: decisions live
+Status: proposal, design settled, P0, P1, P2, P3 and P4 built (their own paragraphs in § Build plan
+say what landed). Left: the live migration of the real store on this box, which is the operator's
+to run. The corpus question is decided: decisions live
 in project files and there is no shared copy (§ The corpus). The stalls the split is meant to
 remove were measured on lab2x1 on 2026-11-07 (§ What the daemons logged), and the build is in
 five packages with their done-tests at the end.
@@ -90,17 +91,22 @@ What reads the corpus, as the tree has it today (paths in this repo):
 - The start-up disclosure (`crates/harnessd/src/corpus.rs`): the sink counts the rows in its own
   file, so after the split the number a daemon prints is its project's. It opens one file and no
   sweep is involved.
-- `/gate` (`crates/harnessd/src/slash.rs`), which opens a connection of its own on the store
-  path: `counts` and `recent` follow the same two rules — one file for a scoped question, a
-  sweep for the whole corpus.
+- `/gate` (`crates/harnessd/src/slash.rs`), which takes the same `StoreAt` the rest of the daemon
+  does: `counts` and `recent` are whole-corpus questions and sweep; `ok|grant|revoke` still writes
+  the one file it is handed.
 - `Store::corpus(only_labelled, limit)` is `/gate recent`'s query; beyond that it is reached only
   from `tokencore`'s own tests.
+- `Store::open_reader(path)` is the sweep's door onto another folder's file: a read-only
+  connection that migrates nothing and creates nothing. `Store::open` would migrate it, and
+  migrating a file somebody else's daemon is writing is the one write a question may not make.
 
 The sweep is the accepted cost: 29 read-only opens on lab2x1, ordered by project key so that a
 listing cut short is still a stable prefix. It takes no write lock on any file, so it cannot
 stall a project's daemon the way a shared writer does; a file that has gone missing or is half
-migrated is named in the answer and the sweep goes on with the rest. That answer is also why the
-sweep is not on the start-up path: a daemon must not wait on 29 files to say hello.
+migrated is named in the answer and the sweep goes on with the rest — the count of the files it
+could not read rides the answer beside the count of the rows it found, because a total that
+leaves a file out must not read as the whole corpus. That answer is also why the sweep is not on
+the start-up path: a daemon must not wait on 29 files to say hello.
 
 ## Migration
 
@@ -370,14 +376,41 @@ only `sessions.db` is refused, names the file and `letibot-migrate-split`, and w
 that rule: once the directory IS a store, a `--store` naming the old file inside it is refused and
 points at the DIRECTORY).
 
-**P4 — the corpus sweep.** `crates/harnessd/src/corpus.rs`,
+**P4 — the corpus sweep.** Built. `crates/harnessd/src/corpus.rs`,
 `crates/harnessd/src/decision_source.rs`, `crates/harnessd/src/slash.rs`,
-`crates/harnessd/tests/store_split_corpus.rs` (new). A scoped read resolves through the shared
-index to one project file; `session=any`, `counts` and `/gate` sweep every project file
-read-only in key order, name a file they could not read, and keep going; the start-up count stays
-the daemon's own file. Done-test: three project files — `decisions session=any` returns rows from
-all three, a session-scoped read returns only its own, and with one file unreadable the sweep
-names it and still returns the other two.
+`crates/harnessd/tests/store_split_corpus.rs` (new), one line of `crates/harnessd/src/sessions.rs`
+(`/gate` is handed the `StoreAt` rather than a path), `crates/tools/src/builtins/decisions.rs`
+(`DecisionHits` and `DecisionCounts` carry the files a sweep could not read, and the answer names
+them), and `Store::open_reader` in `crates/tokencore/src/store.rs`. What the doc asked for and what
+landed: a scoped read resolves through the shared index — the `project` column the migration wrote
+when a row has one, and otherwise the folder hash of the tree's ROOT workspace, walked up
+`parent_session_id`, because a child's own workspace is its worktree and names no file (P2's step
+1, done here from the index alone) — and opens that one file; `session=any`, `counts` and
+`/gate counts|recent` sweep every `projects/*.db` in key order through `Store::open_reader`, which
+is a read-only connection that migrates nothing and creates nothing, since `Store::open` would
+have migrated another daemon's file; a file that will not open or will not answer is named in the
+answer beside the count and the listing, and the sweep goes on with the rest; and the start-up
+count is untouched, because the sink reads the handle it already holds. Three things the doc left
+open, decided here: a count that fails is an ERROR and not a zero, so a file that is not a
+database is named rather than counted as empty; a sweep's page is one page of the corpus, so each
+file's newest `offset+limit` rows are merged and sorted before the page is taken, and `last` caps
+the summed match set; and `request=<id>` stops the sweep at the file that holds the row, an id
+being unique, rather than opening the other 28. What the review of P3 left broken and this fixes:
+`find` read `adjudication` off the shared connection, which on a set is a file that has no such
+table. Done-tests, all on temp directories: `a_corpus_sweep_reads_every_project_file_and_a_scoped_read_opens_one`
+— three project files, `session=any` returns all three, `session=s-b` returns only the other
+project's row, no `session` at all returns this daemon's own, `counts` follows the same two rules,
+the start-up count stays at one, a `request=` is found in the third file, and with `c` overwritten
+as junk the sweep names it and still returns the other two (and `/gate counts` says "2 decisions
+recorded" with the unreadable file named, `/gate recent` lists neither);
+`a_sweep_takes_no_write_lock_and_renames_nothing` — the other project's bytes are unchanged and
+its journal holds no frames after a sweep; and `a_sweep_of_twenty_nine_project_files_is_measured`,
+which is where the open question below got its number.
+
+Left of P4: nothing. Left of R129: the live migration of the real store on this box —
+`letibot-migrate-split ~/.local/share/letibot/sessions.db ~/.local/share/letibot`, with every
+daemon stopped — which is the operator's to run, and the daemons go back on the split store after
+it.
 
 ## Open questions
 
@@ -387,6 +420,13 @@ names it and still returns the other two.
   remote side.
 - What a corpus sweep costs on 29 project files — the open, the count and the newest-200 list —
   measured after P3, since a sweep that takes a second would push `decisions` into the slow-call
-  log and read as a store problem.
+  log and read as a store problem. **Answered by P4: 9-10 ms.** `a_sweep_of_twenty_nine_project_files_is_measured`
+  builds 29 project files (8 decisions each) in a temp data directory and times
+  `corpus::sweep_counts` plus `corpus::sweep_recent(200, 200)` — 29 read-only opens, 29 counts and
+  a merged newest-200 — at 9-10 ms across reruns of a debug test build on a warm page cache. That
+  is two orders of magnitude under `busy::SLOW_CALL`, so a `decisions session=any` is not the line
+  that gets read as a store problem; the test fails if the sweep ever passes a second. It is a
+  fixture's number, not lab2x1's: a cold cache on a 29-file store the size of that box's would be
+  the disk's cost, which § What the daemons logged already says the split does not separate.
 - Whether P0's instrument then shows the seven calls above to be waits or I/O. If they are I/O,
   the split's benefit on this box is the WAL per file and nothing more, and the disk is the work.
