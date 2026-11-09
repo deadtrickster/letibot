@@ -414,6 +414,9 @@ impl Harness {
         // A firing is a delivery and not one more sentence among the settlements: it gets a row
         // of its own, folded per monitor, so nothing has to remember whose words it is.
         let mut firing_row: Option<String> = None;
+        // The facts the firing's sentence was composed from, for the row: the head draws the card
+        // from them, so a `notice_` layer's rewording of the sentence leaves the card where it was.
+        let mut firing_facts: Option<letibot_plugin::notice::Facts> = None;
         if let Some(monitors) = self.monitors.clone() {
             let since = self.monitor_cursor.load(Ordering::SeqCst);
             let settled = monitors.settled_count();
@@ -428,7 +431,9 @@ impl Harness {
                         d.log_firings(&fired);
                     }
                     if let Some(text) = monitor_notice(&fired) {
-                        firing_row = self.say(&monitor_facts(&fired), &text);
+                        let facts = monitor_facts(&fired);
+                        firing_row = self.say(&facts, &text);
+                        firing_facts = Some(facts);
                     }
                 }
             }
@@ -528,7 +533,11 @@ impl Harness {
             });
         }
         if let Some(text) = firing_row {
-            items.push(notice_row(letibot_transcript::NoticeKind::Monitor, text));
+            items.push(notice_row(
+                letibot_transcript::NoticeKind::Monitor,
+                text,
+                firing_facts.as_ref(),
+            ));
         }
         // The wall is checked BEFORE the send, as `nag_turn`'s pre-flight is. Not the load-bearing
         // fix: a refused wake is classified as the wall and recovered by the turn tail, so this only

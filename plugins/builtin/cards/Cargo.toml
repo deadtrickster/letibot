@@ -1,0 +1,34 @@
+[package]
+name = "letibot-builtin-cards"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "the head's transcript cards: one line for a notice, drawn from the facts it was composed from"
+
+# **Not a member of letibot's workspace, deliberately.** This crate is a GUEST: `crates/builtins`'
+# build script compiles it for `wasm32-unknown-unknown` and the module is `include_bytes!`d into the
+# binary. The root manifest excludes `plugins`, so the workspace never builds a `cdylib` for the
+# host.
+[workspace]
+
+[lib]
+# `cdylib` is the module the host loads; `rlib` is what this crate's own tests link - the cards are
+# worth testing where they live, natively, with no engine and no wasm toolchain in the way.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# rano ABI v1 - the input region, the answer arena and the result block.
+letibot-guest-abi = { path = "../abi" }
+# **The contract AND the readers, from the crate that compiles into the head too.** The input this
+# layer is handed, the blocks it answers with, and the text readers it draws a row with when there
+# are no facts are `letibot_plugin::card`'s: one source, so a card cannot be drawn two ways.
+letibot-plugin = { path = "../../../crates/plugin-sdk" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+# A guest module is embedded in the daemon's binary, so its size is the binary's size.
+opt-level = "s"
+strip = true
+lto = true
+panic = "abort"

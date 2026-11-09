@@ -9,6 +9,7 @@ pub const V: u32 = 1;
 
 pub mod adjudicate;
 pub mod brief;
+pub mod card;
 pub mod command;
 pub mod compact;
 pub mod complete;
@@ -70,6 +71,7 @@ mod tests {
         "review_",
         "brief_",
         "push_",
+        "card_",
     ];
 
     fn admitted(hook: &str) -> bool {
@@ -100,6 +102,9 @@ mod tests {
         assert!(admitted(brief::WORKTREE), "{}", brief::WORKTREE);
         assert!(admitted(push::HOOK), "{}", push::HOOK);
         assert!(admitted(&push::hook("channel")));
+        for hook in card::HOOKS {
+            assert!(admitted(hook), "{hook}");
+        }
         for kind in notice::KINDS {
             let hook = notice::hook(kind);
             assert!(admitted(&hook), "{hook}");

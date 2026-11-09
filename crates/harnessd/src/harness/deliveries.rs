@@ -74,13 +74,17 @@ pub(crate) fn monitor_notice(fired: &[letibot_tools::exec::monitor::Firing]) -> 
 
 /// The row a delivery becomes: a `Notice`, so nothing has to remember to attribute it. A `User`
 /// row's `speaker` defaults to the operator, and a row written without one reads as their words.
+/// The facts the sentence was composed from ride the row: a head draws the card from them, so a
+/// `notice_` layer that rewords the sentence cannot take the card with it (X22).
 pub(crate) fn notice_row(
     kind: letibot_transcript::NoticeKind,
     text: impl Into<String>,
+    facts: Option<&Facts>,
 ) -> TranscriptItem {
     TranscriptItem::Notice {
         kind,
         text: text.into(),
+        facts: facts.map(Facts::to_value),
     }
 }
 

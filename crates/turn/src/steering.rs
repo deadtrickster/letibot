@@ -113,6 +113,9 @@ impl SteeringMessage {
             return TranscriptItem::Notice {
                 kind,
                 text: self.text.clone(),
+                // A steering message carries words and no facts: the door that composes a firing's
+                // sentence has them, and this one is handed the sentence.
+                facts: None,
             };
         }
         TranscriptItem::User {

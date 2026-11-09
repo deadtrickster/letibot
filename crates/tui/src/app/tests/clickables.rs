@@ -194,6 +194,7 @@ fn every_session_card_opens_on_a_click_whichever_row_carried_it() {
             with_item(TranscriptItem::Notice {
                 kind: NoticeKind::Monitor,
                 text: text.clone(),
+                facts: None,
             }),
             &format!("{name} (notice row)"),
         );

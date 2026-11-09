@@ -148,6 +148,12 @@ pub enum TranscriptItem {
         /// What sort of news, so a head draws it and a reader counts it.
         kind: NoticeKind,
         text: String,
+        /// What the sentence was composed from, as `letibot_plugin::notice::Facts` carries it: the
+        /// delivery keeps its facts so a head draws the card from THEM, and a `notice_` layer that
+        /// rewords the sentence cannot take the card with it (X22). Absent on a row a daemon built
+        /// before the field, and on one whose site had nothing to hand over.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        facts: Option<serde_json::Value>,
     },
     /// What the model was offered in a round, for the operator. Display-only: every renderer skips
     /// it, so it adds no tokens and no request item, and heads draw it in place from the record.

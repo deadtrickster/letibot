@@ -246,6 +246,7 @@ fn a_notice_row_is_stored_with_its_own_kind_and_reads_back_as_a_delivery() {
     let item = TranscriptItem::Notice {
         kind: letibot_transcript::NoticeKind::Monitor,
         text: "[monitor] `watch` fired: the file changed.".into(),
+        facts: None,
     };
     let toks = vec![10];
     let row = ledger.append("it-0", &toks).unwrap().clone();

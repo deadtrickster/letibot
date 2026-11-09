@@ -80,7 +80,7 @@ fn carried_row(item: &TranscriptItem, reasoning: bool) -> Option<Value> {
         }
         // A delivery, as its own kind on the wire: a bridge reader that draws the operator's
         // words differently from the session's must not have to infer which this is.
-        TranscriptItem::Notice { kind, text } => json!({
+        TranscriptItem::Notice { kind, text, .. } => json!({
             "kind": "notice",
             "of": match kind {
                 letibot_transcript::NoticeKind::Monitor => "monitor",

@@ -1,27 +1,29 @@
-//! Every notice is ONE line with the whole of it one click away: the fallback behind the card
-//! readers, so a session row or hub warning no reader accounts for still draws as a line. The
-//! shapes it knows:
+//! Every notice is ONE line with the whole of it one click away: the two lines that are not a
+//! notice - a system row and a hub warning - and the frame the session row's notices are drawn in.
+//!
+//! The notices themselves are `letibot_plugin::card::readers`' now: one copy of the readers, which
+//! the built-in `cards` layer is compiled from as well, so a card drawn by the layer and a card drawn
+//! by this head are the same card (X22). What stays here is what is the head's: where a row splits
+//! into notices, and the shapes only a head has the figures for:
 //!
 //! ```text
-//! length cap · 6902 calls not executed (bash ×6901, read ×1) · click for details
-//! todo · review-main (entry red-main-…) · queue's · 2 more open · click for details
-//! parent s-gatekeeper · Two new constraints from the operator… · click for details
-//! context check · 54% full · not the wall · click for details
 //! system · compacted summary (18.7k chars) · click for details
 //! daemon_stopping · `deadtrickster` asked this daemon to stop · click for details
-//! ! ledger_chain_mismatch · row 41's head is not the one that was stored · click for details
+//! compacted · 958k → ≈ 100k deepseek tokens · kept a 13.5k-char summary · nothing dropped · click for details
 //! ```
 //!
-//! A shape it has not been taught falls back to a lead, the first clause and `click for details`. The popup is the text verbatim, and a
-//! reader that does not recognise a shape answers `None` rather than guessing which half is the fact.
+//! A shape nothing has been taught falls back to a lead, the first clause and `click for details`.
+//! The popup is the text verbatim.
 
 use rano::style::Role;
 
+#[cfg(test)]
+use crate::ui::render::visible_width;
 use crate::ui::transcript::line_cards::{CLICK, Card, first_clause, flat, sentences};
 
 /// The longest a summarised part of a line is before it is cut with `…` - so the line's other
 /// facts and its hint survive at an ordinary width.
-const PART: usize = 60;
+pub(crate) const PART: usize = 60;
 
 /// `s` cut to `n` characters with the head's `…`.
 pub(crate) fn short(s: &str, n: usize) -> String {
@@ -74,29 +76,10 @@ fn gist(text: &str) -> String {
     first_clause(first)
 }
 
-/// The one line for a session row no card reader and no fold accounts for - never `None`.
+/// The one line for a notice with no facts and no layer: the readers, and the generic line for a
+/// shape none of them knows. What a popup holding only a row's words draws, and what a test asks.
 pub(crate) fn session_notice(text: &str) -> Card {
-    const READERS: &[fn(&str) -> Option<Card>] = &[
-        length_cap,
-        todo_check,
-        from_the_parent,
-        message_from_a_session,
-        intent_check,
-        context_check,
-        merge_queue,
-        reseat,
-        monitor,
-        progress,
-        deliverable,
-        stale_session,
-        answer,
-        context_wall,
-        overthinking,
-    ];
-    READERS
-        .iter()
-        .find_map(|r| r(text))
-        .unwrap_or_else(|| generic(text))
+    crate::app::Cards::readers_only().lines(&[text]).remove(0)
 }
 
 /// Whether a `\n\n` group opens a notice of its own - where [`notices`] splits a row.
@@ -141,439 +124,12 @@ pub(crate) fn notices(text: &str) -> Vec<&str> {
     out
 }
 
-/// `[tag] rest` → `(tag, rest)`.
-fn tagged(text: &str) -> Option<(&str, &str)> {
-    let rest = text.strip_prefix('[')?;
-    let (tag, rest) = rest.split_once("] ")?;
-    tag.chars()
-        .all(|c| c.is_ascii_lowercase() || c == ' ')
-        .then_some((tag, rest))
-}
-
-/// The fallback: the tag (or `notice`), and the first clause of what follows.
-pub(crate) fn generic(text: &str) -> Card {
-    let (lead, body) = match tagged(text) {
-        Some((tag, rest)) => (tag.to_string(), rest),
-        None => ("notice".to_string(), text),
-    };
-    let said = gist(body);
-    card(
-        &lead,
-        Role::Attention,
-        vec![said.clone()],
-        format!("{lead} · {}", short(&said, PART)),
-    )
-}
-
 /// A lead and a whole short text - a note this head wrote as one sentence for one line
 /// already (`not run`, an answer): flattened, not cut at a clause, and cut to the width by
 /// [`Card::cut`].
 pub(crate) fn whole_parts(lead: &str, role: Role, text: &str) -> Card {
     let said = flat(text);
     card(lead, role, vec![said.clone()], short(&said, PART))
-}
-
-/// `Tool call X was cut off and not run. …`, once a call - the length cap's salvage. The words
-/// once opened with `was not executed` and are still in every stored transcript.
-fn length_cap(text: &str) -> Option<Card> {
-    const AFTER: &[&str] = &[" was cut off and not run", " was not executed"];
-    let mut by: Vec<(String, usize)> = Vec::new();
-    let mut n = 0;
-    for l in text.lines().filter(|l| !l.trim().is_empty()) {
-        let rest = l.strip_prefix("Tool call ")?;
-        let tool = AFTER.iter().find_map(|a| rest.split_once(a))?.0;
-        n += 1;
-        match by.iter_mut().find(|(t, _)| t == tool) {
-            Some((_, c)) => *c += 1,
-            None => by.push((tool.to_string(), 1)),
-        }
-    }
-    if n == 0 {
-        return None;
-    }
-    by.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    let tools = by
-        .iter()
-        .map(|(t, c)| format!("{t} ×{c}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let said = format!(
-        "{n} call{} not executed ({tools})",
-        if n == 1 { "" } else { "s" }
-    );
-    Some(card(
-        "length cap",
-        Role::Attention,
-        vec![said.clone()],
-        format!("length cap · {said}"),
-    ))
-}
-
-/// `[todo check] …` - the plan check, as ONE line whatever it carries: the first row of the plan,
-/// whose row it is, and how many more are open. The whole check is the popup.
-fn todo_check(text: &str) -> Option<Card> {
-    let rest = text.strip_prefix("[todo check] ")?;
-    let (head, body) = rest.split_once('\n').unwrap_or((rest, ""));
-    let items: Vec<&str> = body
-        .lines()
-        .filter_map(|l| l.strip_prefix("  - "))
-        .collect();
-    let mut parts = Vec::new();
-    if head.contains("NOTHING can start") {
-        parts.push("nothing can start".to_string());
-        parts.push(format!(
-            "{} wait{}",
-            items.len(),
-            if items.len() == 1 { "s" } else { "" }
-        ));
-        if let Some(first) = items.first() {
-            parts.push(short(&first_clause(&flat(first)), PART));
-        }
-    } else {
-        let bullet = items.first()?;
-        // Whose row it is is the bullet's own tail, ` - yours` / ` - the operator's` / ` -
-        // Parent <id>` / ` - the merge queue's`; the advice under it is prose, and prose is
-        // reworded.
-        let (item, owner, in_progress) = owner_of(bullet);
-        parts.push(short(&first_clause(&flat(item)), PART));
-        let whose = owner.unwrap_or_else(|| {
-            // A row written before the tail was there is read from the advice under it.
-            if body.contains("the operator asked for this one")
-                || body.contains("operator asked for it")
-            {
-                "operator's"
-            } else if body.contains("your parent asked for this one")
-                || body.contains("Your parent asked for it")
-            {
-                "parent's"
-            } else if body.contains("this row is the merge queue's")
-                || body.contains("— the merge queue's")
-            {
-                "queue's"
-            } else {
-                "yours"
-            }
-        });
-        parts.push(whose.to_string());
-        if in_progress {
-            parts.push("in progress".to_string());
-        }
-        // An older notice carries the count in its head and still says it. The
-        // daemon writes none now, so a later one is counted by the rows it names - which is what
-        // the card is drawn from, and the only count that notice really has.
-        match head.rsplit_once('(').and_then(|(_, m)| {
-            m.strip_suffix("more open):")
-                .or(m.strip_suffix("more open)"))
-        }) {
-            Some(more) => parts.push(format!("{}more open", more)),
-            None if items.len() > 1 => parts.push(format!("{} rows", items.len())),
-            None => {}
-        }
-    }
-    let title = format!("todo · {}", parts.first().cloned().unwrap_or_default());
-    Some(card("todo", Role::Attention, parts, title))
-}
-
-/// `T2 · the launcher - yours` → the item, whose row it is, and whether it is in progress. The
-/// tail is the daemon's own word for the author, so it is read and not guessed at.
-fn owner_of(bullet: &str) -> (&str, Option<&'static str>, bool) {
-    let b = bullet.trim();
-    let (b, in_progress) = match b.strip_suffix(" (in progress)") {
-        Some(head) => (head, true),
-        None => (b, false),
-    };
-    let Some((item, tail)) = b.rsplit_once(" — ") else {
-        return (b, None, in_progress);
-    };
-    let whose = match tail.trim() {
-        "yours" => Some("yours"),
-        "the operator's" => Some("operator's"),
-        "the merge queue's" => Some("queue's"),
-        t if t.starts_with("Parent ") => Some("parent's"),
-        _ => return (b, None, in_progress),
-    };
-    (item.trim_end(), whose, in_progress)
-}
-
-/// `[parent] ...` - what the parent session said to this child. The relation
-/// is the tag and the id is gone, so the card names the edge and not a session to act on.
-fn from_the_parent(text: &str) -> Option<Card> {
-    let said = text.strip_prefix("[parent] ")?;
-    Some(card(
-        "parent",
-        Role::Pending,
-        vec![gist(said)],
-        "a message from your parent session".into(),
-    ))
-}
-
-/// `message from your parent session `ID`: ...` and `message from session `ID`: ...` - a parent
-/// wrote to its child, or any other session did. Two openings and one card, because both are chat:
-/// the words are the same and only the relation differs, so the lead says it (`parent` / `agent`).
-fn message_from_a_session(text: &str) -> Option<Card> {
-    let (lead_word, rest) = text
-        .strip_prefix("message from your parent session `")
-        .map(|r| ("parent", r))
-        .or_else(|| {
-            text.strip_prefix("message from session `")
-                .map(|r| ("agent", r))
-        })?;
-    let (id, said) = rest.split_once("`: ")?;
-    let lead = format!("{lead_word} {id}");
-    let g = gist(said);
-    Some(card(
-        &lead,
-        Role::Pending,
-        vec![g],
-        format!("message from {lead_word} {id}"),
-    ))
-}
-
-/// The number before `word` in `s`: `declared 6 item(s)` → `6` for `item`.
-fn number_before(s: &str, word: &str) -> Option<String> {
-    let at = s.find(word)?;
-    let n = s[..at].trim_end().rsplit(' ').next()?;
-    n.chars().all(|c| c.is_ascii_digit()).then(|| n.to_string())
-}
-
-/// `[intent check] this turn declared N item(s); M tool call(s) succeeded …`.
-fn intent_check(text: &str) -> Option<Card> {
-    let rest = text.strip_prefix("[intent check] ")?;
-    let head = rest.lines().next()?;
-    let declared = number_before(head, " item(s)")?;
-    let ran = number_before(head, " tool call(s) succeeded").unwrap_or_else(|| "?".into());
-    let mut parts = vec![format!("{declared} declared, {ran} ran")];
-    if let Some(board) = rest.lines().find_map(|l| l.strip_prefix("board: ")) {
-        let (done, of) = board.split_once(" of ")?;
-        let of = of.split(' ').next()?;
-        parts.push(format!("board {done}/{of}"));
-    }
-    let title = format!("intent check · {}", parts[0]);
-    Some(card("intent check", Role::Attention, parts, title))
-}
-
-/// `[context check] you said "…". Your context is 54% full - 547,198 of 999,999 tokens. …`.
-fn context_check(text: &str) -> Option<Card> {
-    let rest = text.strip_prefix("[context check] ")?;
-    let mut parts = Vec::new();
-    if let Some((_, after)) = rest.split_once("Your context is ")
-        && let Some((pct, _)) = after.split_once(" full")
-    {
-        parts.push(format!("{pct} full"));
-        if rest.contains("That is not the wall") {
-            parts.push("not the wall".into());
-        }
-    } else {
-        parts.push(gist(rest));
-    }
-    if let Some((_, q)) = rest.split_once('"')
-        && let Some((quote, _)) = q.split_once('"')
-    {
-        parts.push(format!("\"{}\"", short(&flat(quote), 40)));
-    }
-    let title = format!("context check · {}", parts[0]);
-    Some(card("context check", Role::Attention, parts, title))
-}
-
-/// `The merge queue cannot …` / `is holding …` - the queue's older notices no card reads.
-fn merge_queue(text: &str) -> Option<Card> {
-    let rest = text.strip_prefix("The merge queue ")?;
-    let first = flat(rest.split("\n\n").next()?);
-    let first = sentences(&first).into_iter().next()?.to_string();
-    // The entry id is the popup's: `(entry `s-…`)` says nothing on a line.
-    let mut said = first.clone();
-    while let Some(at) = said.find(" (entry ") {
-        match said[at..].find(')') {
-            Some(end) => said.replace_range(at..at + end + 1, ""),
-            None => break,
-        }
-    }
-    let said = short(&first_clause(&said), PART + 20);
-    Some(card(
-        "‼ queue",
-        Role::Failure,
-        vec![said.clone()],
-        format!("merge queue · {}", short(&said, PART)),
-    ))
-}
-
-/// `[reseat] The person re-seated this conversation with `/reseat`: …`.
-fn reseat(text: &str) -> Option<Card> {
-    let rest = text.strip_prefix("[reseat] ")?;
-    let flat = flat(rest);
-    let mut parts = vec![if flat.contains("carried across as it was") {
-        "verbatim".to_string()
-    } else if flat.contains("summar") {
-        "summarised".to_string()
-    } else {
-        String::new()
-    }];
-    let list = |lead: &str| -> Option<String> {
-        let (_, after) = flat.split_once(lead)?;
-        Some(after.split(". ").next()?.trim_end_matches('.').to_string())
-    };
-    if let Some(l) = list("You can now call: ") {
-        parts.push(format!("new: {l}"));
-    }
-    if let Some(l) = list("read them again before calling: ") {
-        parts.push(format!("changed: {l}"));
-    }
-    Some(card(
-        "reseated",
-        Role::Pending,
-        parts,
-        "reseated · what the model was told".into(),
-    ))
-}
-
-/// What a monitor's bullet says after the watch's own description: `FIRED after 0.3s - …`.
-pub(crate) fn monitor_said(bullet: &str) -> Option<(String, String)> {
-    let b = bullet.strip_prefix('`')?;
-    let (name, rest) = b.split_once('`')?;
-    let said = match rest.find(", declared by turn ") {
-        Some(at) => rest[at..].split_once(": ").map_or(rest, |(_, s)| s),
-        None => rest,
-    };
-    Some((name.to_string(), said.trim().to_string()))
-}
-
-/// `[monitor] N watch(es) fired:` and its bullets, when the fold did not take it - or
-/// one `[monitor] \`name\` fired: why.` / `… expired without firing.` line per watch.
-fn monitor(text: &str) -> Option<Card> {
-    let rest = text.strip_prefix("[monitor] ")?;
-    let mut bullets: Vec<(String, String)> = rest
-        .lines()
-        .filter_map(|l| l.strip_prefix("  - "))
-        .filter_map(monitor_said)
-        .collect();
-    if bullets.is_empty() {
-        bullets = text
-            .lines()
-            .filter_map(|l| l.strip_prefix("[monitor] `"))
-            .filter_map(|l| {
-                let (name, said) = l.split_once("` ")?;
-                let said = said.strip_prefix("fired: ").unwrap_or(said);
-                Some((name.to_string(), said.trim_end_matches('.').to_string()))
-            })
-            .collect();
-    }
-    let (name, said) = bullets.first()?;
-    let mut parts = vec![format!("{name} {}", short(&first_clause(said), PART))];
-    if bullets.len() > 1 {
-        parts.push(format!("{} more", bullets.len() - 1));
-    }
-    // A watch firing or expiring is routine news; the yellow register is for what needs the operator.
-    Some(card(
-        "monitor",
-        Role::Faint,
-        parts,
-        format!("monitor · {name}"),
-    ))
-}
-
-/// `Your last 4 rounds returned nothing new. …` - the progress nudge. The sentence before
-/// once opened `The harness is watching what your tool calls return` and is still in every
-/// stored transcript.
-fn progress(text: &str) -> Option<Card> {
-    let said = match text.strip_prefix("Your last ") {
-        Some(rest) => {
-            let rounds = rest.split(' ').next()?;
-            format!("last {rounds} rounds: nothing new")
-        }
-        None => {
-            let rest = text.strip_prefix("The harness is watching what your tool calls return")?;
-            let (_, after) = rest.split_once("the last ")?;
-            let rounds = after.split(' ').next()?;
-            let calls = number_before(after, " calls and")?;
-            let (_, nothing) = after.split_once(" calls and ")?;
-            let fresh = nothing.split(' ').next()?;
-            format!("last {rounds} rounds: {calls} calls, {fresh} returned anything new")
-        }
-    };
-    Some(card(
-        "progress",
-        Role::Attention,
-        vec![said.clone()],
-        format!("progress · {said}"),
-    ))
-}
-
-/// `[the deliverable] Your worktree `…` has uncommitted changes, so the branch `B` does not hold
-/// them: FILES. …`.
-fn deliverable(text: &str) -> Option<Card> {
-    let rest = text.strip_prefix("[the deliverable] ")?;
-    let mut parts = Vec::new();
-    if let Some((_, b)) = rest.split_once("the branch `")
-        && let Some((branch, _)) = b.split_once('`')
-    {
-        parts.push(branch.to_string());
-    }
-    match rest.split_once("does not hold them: ") {
-        Some((_, files)) => {
-            let files = files.split(". ").next().unwrap_or(files);
-            parts.push(format!("uncommitted: {}", short(files, 40)));
-        }
-        None => parts.push(gist(rest)),
-    }
-    Some(card(
-        "deliverable",
-        Role::Attention,
-        parts,
-        "the deliverable".into(),
-    ))
-}
-
-/// `session ID was seated … with a prompt this daemon would not compose now: …` - the stale
-/// prompt's sentence, as the session row it is also written as: the `prefix_stale` card's line.
-fn stale_session(text: &str) -> Option<Card> {
-    crate::ui::transcript::stale_card::stale_card(text)
-}
-
-/// `[answer] on "ROW": you asked "…" - the operator chose "X"…`.
-fn answer(text: &str) -> Option<Card> {
-    let rest = text.strip_prefix("[answer] on \"")?;
-    let (row, after) = rest.split_once("\": ")?;
-    let mut parts = Vec::new();
-    if let Some((_, c)) = after.rsplit_once("the operator chose \"") {
-        let chose = c.split('"').next().unwrap_or(c);
-        parts.push(format!("chose \"{}\"", short(chose, 30)));
-    }
-    parts.push(format!("on \"{}\"", short(&flat(row), 40)));
-    Some(card(
-        "answer",
-        Role::Pending,
-        parts,
-        "the operator's answer".into(),
-    ))
-}
-
-/// `Your previous turn was stopped at the context wall and the conversation was then compacted…`.
-fn context_wall(text: &str) -> Option<Card> {
-    text.starts_with("Your previous turn was stopped at the context wall")
-        .then(|| {
-            card(
-                "context wall",
-                Role::Pending,
-                vec!["compacted, continuing from the summary".into()],
-                "context wall".into(),
-            )
-        })
-}
-
-/// `You keep overthinking. … (reasoning_only) …`.
-fn overthinking(text: &str) -> Option<Card> {
-    let rest = text.strip_prefix("You keep overthinking.")?;
-    let why = rest
-        .split_once('(')
-        .and_then(|(_, w)| w.split_once(')'))
-        .map(|(w, _)| w.replace('_', "-"))
-        .unwrap_or_else(|| "reasoning only".into());
-    Some(card(
-        "nudge",
-        Role::Attention,
-        vec![format!("{why} turn, told to answer first")],
-        "nudge · overthinking".into(),
-    ))
 }
 
 /// A System row's one line - `system · compacted summary (18.7k chars)`, or its first clause.
@@ -734,31 +290,16 @@ fn count_before(text: &str, marker: &str) -> Option<u64> {
     number_before(text, marker)?.parse().ok()
 }
 
+/// The number before `word` in `s`: `declared 6 item(s)` → `6` for `item`.
+fn number_before(s: &str, word: &str) -> Option<String> {
+    let at = s.find(word)?;
+    let n = s[..at].trim_end().rsplit(' ').next()?;
+    n.chars().all(|c| c.is_ascii_digit()).then(|| n.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn line(c: &Card) -> &str {
-        &c.line
-    }
-
-    #[test]
-    fn a_length_cap_salvage_is_one_line_with_its_counts() {
-        let mut text = String::from(
-            "Tool call read was not executed: the response hit the output token limit, so its \
-             arguments may be truncated. Re-issue the tool call with complete arguments.",
-        );
-        for _ in 0..6901 {
-            text.push_str(
-                "\nTool call bash was not executed: the response hit the output token limit, so \
-                 its arguments may be truncated. Re-issue the tool call with complete arguments.",
-            );
-        }
-        assert_eq!(
-            line(&session_notice(&text)),
-            "length cap · 6902 calls not executed (bash ×6901, read ×1) · click for details"
-        );
-    }
 
     #[test]
     fn a_plan_check_names_its_item_whose_it_is_and_how_many_more() {
@@ -807,84 +348,21 @@ mod tests {
         );
     }
 
-    /// The one-line-per-watch shape draws one card, the first watch named.
+    /// The one-line-per-watch shape draws one card, the first watch named - and the generic line a
+    /// shape no reader knows falls to.
     #[test]
-    fn a_monitor_line_per_watch_is_one_card() {
+    fn a_monitor_line_per_watch_is_one_card_and_an_unknown_shape_is_generic() {
         let text =
             "[monitor] `ci` fired: the run exited 0.\n[monitor] `log` expired without firing.";
-        let c = monitor(text).expect("the new shape is a card");
+        let c = session_notice(text);
         assert_eq!(c.title, "monitor · ci");
         let line = &c.line;
         assert!(line.contains("ci the run exited 0"), "{line}");
         assert!(line.contains("1 more"), "{line}");
-    }
-
-    #[test]
-    fn the_readers_say_the_facts_and_the_fallback_says_the_first_clause() {
-        let cases = [
-            (
-                "message from your parent session `s-g`: Two new constraints from the operator, \
-                 fold them into the plan.\n\n1. REPLICATION",
-                "parent s-g · Two new constraints from the operator, fold them into the plan · \
-                 click for details",
-            ),
-            (
-                "[intent check] this turn declared 6 item(s); 0 tool call(s) succeeded and 0 ran \
-                 without producing a result.\n  - #1 \"x\" was declared\nboard: 0 of 6 complete — \
-                 0 in progress",
-                "intent check · 6 declared, 0 ran · board 0/6 · click for details",
-            ),
-            (
-                "[context check] you said \"my context is nearly out\". Your context is 54% full — \
-                 547,198 of 999,999 tokens. That is not the wall, … Continue.",
-                "context check · 54% full · not the wall · \"my context is nearly out\" · click \
-                 for details",
-            ),
-            (
-                "The harness is watching what your tool calls return, not how many you make, and \
-                 the last 4 rounds ran 8 calls and 0 of 8 returned a result this turn had not \
-                 already seen (8 ok).",
-                "progress · last 4 rounds: 8 calls, 0 returned anything new · click for details",
-            ),
-            (
-                "[the deliverable] Your worktree `/w` has uncommitted changes, so the branch \
-                 `agent/x` does not hold them: ?? a.jsonl. The branch is the deliverable.",
-                "deliverable · agent/x · uncommitted: ?? a.jsonl · click for details",
-            ),
-            (
-                "[monitor] 1 watch(es) fired:\n  - `ci` (command `gh run watch` exiting), \
-                 declared by turn s#t8#226: FIRED after 0.3s — the command exited 2\nOnly a FIRED \
-                 watch is an answer about the world.",
-                "monitor · ci FIRED after 0.3s… · click for details",
-            ),
-            (
-                "[answer] on \"GAP (latency)\": you asked \"Postpone?\" — the operator chose \
-                 \"Postpone it\"",
-                "answer · chose \"Postpone it\" · on \"GAP (latency)\" · click for details",
-            ),
-            (
-                "[reseat] The person re-seated this conversation with `/reseat`: the conversation \
-                 was carried across as it was, nothing summarised. You can now call: web_fetch. \
-                 The notice no longer applies.",
-                "reseated · verbatim · new: web_fetch · click for details",
-            ),
-            (
-                "You keep overthinking. Cut it short. Your last turn spent its whole output on \
-                 reasoning (reasoning_only) and nothing was recorded.",
-                "nudge · reasoning-only turn, told to answer first · click for details",
-            ),
-            (
-                "[something new] the daemon learned to say this, and more. Second sentence.",
-                "something new · the daemon learned to say this… · click for details",
-            ),
-            (
-                "A sentence no reader knows; it goes on.",
-                "notice · A sentence no reader knows · click for details",
-            ),
-        ];
-        for (text, want) in cases {
-            assert_eq!(session_notice(text).line, want, "{text}");
-        }
+        assert_eq!(
+            session_notice("A sentence no reader knows; it goes on.").line,
+            "notice · A sentence no reader knows · click for details"
+        );
     }
 
     /// One honest line per compaction: the size before and after in the daemon's unit, what the summary stands in
@@ -984,5 +462,22 @@ mod tests {
             .line,
             "daemon_stopping · `dead` asked this daemon to stop · click for details"
         );
+    }
+
+    /// A card cut to a width keeps its hint whenever the facts can leave it room, and gives it up
+    /// whole when they cannot - the reader who cannot see anything else needs the door first.
+    #[test]
+    fn a_card_cuts_to_its_width_and_keeps_the_hint() {
+        let c = session_notice("[answer] on \"the row\": the operator chose \"Postpone it\"");
+        let cut = c.cut(40);
+        assert!(cut.text.ends_with("click for details"), "{}", cut.text);
+        assert!(visible_width(&cut.text) <= 40, "{}", cut.text);
+        let narrow = c.cut(12);
+        assert!(
+            !narrow.text.contains("click for details"),
+            "{}",
+            narrow.text
+        );
+        assert!(visible_width(&narrow.text) <= 12, "{}", narrow.text);
     }
 }

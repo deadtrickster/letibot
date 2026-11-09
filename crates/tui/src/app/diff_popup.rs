@@ -386,13 +386,18 @@ impl App {
                         // Only a row holding a `[task]` group can name a child, and the check
                         // is a substring because a held batch and a restart's deliveries carry
                         // their groups inside a bigger notice.
-                        (Some(it), Some(t)) if t.contains("[task] ") => session_row_children(
-                            &t,
-                            it.ts,
-                            &self.cfg,
-                            &self.subagents,
-                            &self.job_tails,
-                        ),
+                        (Some(it), Some(t)) if t.contains("[task] ") => {
+                            let host = self.sessions_host.borrow();
+                            let cards = Cards::row(host.as_ref(), it);
+                            session_row_children(
+                                &t,
+                                it.ts,
+                                &self.cfg,
+                                &self.subagents,
+                                &self.job_tails,
+                                &cards,
+                            )
+                        }
                         _ => Vec::new(),
                     };
                     // One list or none - see this function's docstring.

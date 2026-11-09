@@ -1,0 +1,19 @@
+name = "cards"
+purpose = "the head's transcript cards: one line per notice, drawn from the facts the row was composed from"
+# **`card_`** is the prefix the head asks for a row's card and for the verb a tool call is drawn as.
+# `card_item` answers one block per part of the row, and `card_call` answers the verb - the two
+# things a transcript row is drawn with, and the only two a head has to ask about.
+hooks = ["card_item", "card_call"]
+#
+# `card_item` reads the row's typed facts FIRST and its words second. The facts are what survives a
+# `notice_` layer rewording the sentence - that is the defect this hook exists to close (X22) - and
+# the words are the same readers the head falls back to, compiled from one source
+# (`letibot_plugin::card::readers`), so which of the two drew a line is invisible on the screen.
+#
+# **`capabilities = []`**: it reads no file, runs no program and fetches nothing. A card is drawn
+# from the row the host hands in, and the words it answers with are all it can produce.
+capabilities = []
+# **`actions = []`**: a card is a line on a screen, not a verb - nothing this layer answers can
+# cause anything, which is the whole of what a manifest has to say to a reviewer here.
+actions = []
+contract = 1

@@ -1505,6 +1505,7 @@ mod the_tail_and_the_template {
         TranscriptItem::Notice {
             kind: letibot_transcript::NoticeKind::Monitor,
             text: text.into(),
+            facts: None,
         }
     }
 

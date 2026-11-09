@@ -72,6 +72,9 @@ impl App {
             let answered = round_results(items, i);
             let re = question_before(items, i);
             let ctx = ItemCtx {
+                // A child's rows are drawn with the head's own readers: this head does not hold the
+                // child's stack, and a peeked child's cards are not its session's to ask.
+                cards: &Cards::readers_only(),
                 cfg: &cfg,
                 think: Fold::Folded,
                 tools: Fold::Folded,

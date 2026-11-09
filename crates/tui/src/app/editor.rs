@@ -367,7 +367,15 @@ impl App {
             .map(Vec::as_slice)
             .unwrap_or(edits);
         let edit = edits.first();
-        if !card::Verb::of(crate::ui::drawn_as(name, edit)).is_an_edit() {
+        // The verb the row was DRAWN as, so ctrl-] opens the file a card drew as an edit - asked of
+        // the same layer answer the drawing asked for, and the head's own rule when there is none.
+        let verb = if self.card_layers_on() {
+            let host = self.plugin_host();
+            Cards::call(host.as_ref(), &it.item_id).verb(name, edit)
+        } else {
+            crate::ui::drawn_as(name, edit).to_string()
+        };
+        if !card::Verb::of(&verb).is_an_edit() {
             return None;
         }
         edit.map(FileRef::of)

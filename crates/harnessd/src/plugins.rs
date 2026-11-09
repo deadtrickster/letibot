@@ -2003,7 +2003,7 @@ fn synthetic_pane_input(feeds: &BTreeMap<String, Value>) -> Value {
 /// its own first frame, which is the cheapest defect to find.
 fn synthetic_for(hook: &str, feeds: &BTreeMap<String, Value>) -> Value {
     use letibot_plugin::{
-        compact, condition, digest, link, nag, notice, push, steer, tool_call, tool_result,
+        card, compact, condition, digest, link, nag, notice, push, steer, tool_call, tool_result,
     };
     let value = if hook.starts_with("pane_") {
         return synthetic_pane_input(feeds);
@@ -2019,6 +2019,8 @@ fn synthetic_for(hook: &str, feeds: &BTreeMap<String, Value>) -> Value {
         serde_json::to_value(link::Input::synthetic())
     } else if hook.starts_with(nag::PREFIX) {
         serde_json::to_value(nag::Input::synthetic())
+    } else if hook.starts_with(card::PREFIX) {
+        serde_json::to_value(card::Input::synthetic())
     } else if hook == steer::HOOK {
         serde_json::to_value(steer::Input::synthetic())
     } else if hook == compact::HOOK {
@@ -2041,7 +2043,7 @@ fn accepted(
     input: &Value,
 ) -> Result<String, String> {
     use letibot_plugin::{
-        compact, condition, digest, link, nag, notice, push, steer, tool_call, tool_result,
+        card, compact, condition, digest, link, nag, notice, push, steer, tool_call, tool_result,
     };
     if hook.starts_with("pane_") {
         let view = validated(answer, hook, hook, declared)?;
@@ -2140,6 +2142,12 @@ fn accepted(
         } else {
             said.join(", ")
         });
+    }
+    if hook.starts_with(card::PREFIX) {
+        let out = card::read(answer)?;
+        let asked: card::Input =
+            serde_json::from_value(input.clone()).map_err(|e| format!("not a card input ({e})"))?;
+        return Ok(out.said(asked.parts.len()));
     }
     if hook.starts_with(nag::PREFIX) {
         let out = nag::read(answer)?;

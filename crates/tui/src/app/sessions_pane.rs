@@ -107,6 +107,14 @@ pub(crate) struct Host {
     /// asked about and did not know, which is cached too - a frame asks once per word, not once
     /// per frame (`docs/plugins-plan.md` \u{00a7}4.6).
     links: Mutex<std::collections::BTreeMap<String, Option<String>>>,
+    /// The `card_` answer for each row, by `hook` and row id: a card is asked for ONCE and drawn on
+    /// every frame after it, so a layer sees a row once per head rather than once per frame (X22).
+    /// A `None` is a row the layer drew nothing for, which is also not worth asking twice.
+    cards: Mutex<std::collections::BTreeMap<String, Option<Value>>>,
+    /// How many asks reached the layer: a miss is one call, so this is what *asked once per row*
+    /// means, and a test reads it rather than believing the cache.
+    #[cfg(test)]
+    asked: std::sync::atomic::AtomicUsize,
     /// The last failure a layer met, until somebody is told. Fail down LOUDLY
     /// (`docs/plugins-plan.md`): the list the person sees may be the built-in's or
     /// the head's own, and either way the reason their layer is not drawing it is news.
@@ -118,6 +126,10 @@ pub(crate) struct Host {
     /// `Stack::poll_changes` and a rebuild redraws with no restart. See `Host::reload_if_due`.
     next_poll: u64,
 }
+
+/// How many rows' cards a host keeps: a transcript window is bounded, and a session that has read
+/// more than this many rows re-asks for the ones it draws again - one call per row, once.
+const MAX_CARDS: usize = 4096;
 
 /// How often the head looks for a rebuilt layer - the daemon's own `POLL_EVERY`, for the same
 /// reason: a stat per layer is free, and two seconds is the longest a person waits after saving.
@@ -265,6 +277,18 @@ impl Host {
     /// Does any layer on disk answer `link_`? The head reads manifests and no modules, so a session
     /// with no such layer keeps the head it had instead of compiling a stack on its first frame.
     pub(crate) fn any_link_layer(session: &str, workspace: &Path) -> bool {
+        Self::any_layer_answering(session, workspace, letibot_plugin::link::PREFIX)
+    }
+
+    /// Does any layer on disk answer `card_`? The same question as `any_link_layer`'s and for the
+    /// same reason: the head's own readers draw what the built-in layer draws, so only a layer a
+    /// person wrote is worth compiling a stack on the first frame a row is drawn.
+    pub(crate) fn any_card_layer(session: &str, workspace: &Path) -> bool {
+        Self::any_layer_answering(session, workspace, letibot_plugin::card::PREFIX)
+    }
+
+    /// Whether a placed layer's manifest names a hook under `prefix` - no module is loaded to ask.
+    fn any_layer_answering(session: &str, workspace: &Path, prefix: &str) -> bool {
         let roots = [
             session_plugins_dir(session),
             Some(workspace.join(".letibot").join("plugins")),
@@ -279,10 +303,7 @@ impl Host {
                 let Ok(manifest) = letibot_plugins::Manifest::read(&dir) else {
                     return false;
                 };
-                manifest
-                    .hooks
-                    .iter()
-                    .any(|h| h.starts_with(letibot_plugin::link::PREFIX))
+                manifest.hooks.iter().any(|h| h.starts_with(prefix))
             })
         })
     }
@@ -305,6 +326,9 @@ impl Host {
             cache: Mutex::new(Cached::default()),
             state: Mutex::new(std::collections::BTreeMap::new()),
             links: Mutex::new(std::collections::BTreeMap::new()),
+            cards: Mutex::new(std::collections::BTreeMap::new()),
+            #[cfg(test)]
+            asked: std::sync::atomic::AtomicUsize::new(0),
             problem: Mutex::new(problem),
             workspace,
             next_poll: 0,
@@ -351,6 +375,9 @@ impl Host {
             cache: Mutex::new(Cached::default()),
             state: Mutex::new(std::collections::BTreeMap::new()),
             links: Mutex::new(std::collections::BTreeMap::new()),
+            cards: Mutex::new(std::collections::BTreeMap::new()),
+            #[cfg(test)]
+            asked: std::sync::atomic::AtomicUsize::new(0),
             problem: Mutex::new(problem),
             workspace: workspace.to_path_buf(),
             next_poll: 0,
@@ -392,6 +419,11 @@ impl Host {
             }
             if let Ok(mut links) = self.links.lock() {
                 links.clear();
+            }
+            // And every card is drawn again: a card is kept by row id, and the row's answer was the
+            // OLD module's.
+            if let Ok(mut cards) = self.cards.lock() {
+                cards.clear();
             }
         }
     }
@@ -544,6 +576,55 @@ impl Host {
             view,
             fuel: resolved.by.as_deref().and_then(|id| self.stack.fuel(id)),
             answer: resolved.answer,
+        }
+    }
+
+    /// The `card_` answer for one row, asked at most once: the id it is kept by is the row's, and a
+    /// row is asked about once per head however many frames draw it (X22). `ask` is only called on a
+    /// miss, because building the input is the row's words and facts.
+    ///
+    /// The cache is bounded and dropped whole at `MAX_CARDS`: a long session holds more rows than a
+    /// map should, and asking for them again is one call per row.
+    pub(crate) fn card_answer(
+        &self,
+        hook: &str,
+        id: &str,
+        ask: impl FnOnce() -> Option<Value>,
+    ) -> Option<Value> {
+        let key = format!("{hook}\n{id}");
+        if let Some(known) = self.cards.lock().ok().and_then(|c| c.get(&key).cloned()) {
+            return known;
+        }
+        let input = ask()?;
+        #[cfg(test)]
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let resolved = self.stack.call(hook, &input);
+        if let (Some(said), Ok(mut slot)) = (resolved.failures.first(), self.problem.lock()) {
+            *slot = Some(format!(
+                "a plugin layer could not draw this row's card, so the head's own readers did: \
+                 {said}"
+            ));
+        }
+        if let Ok(mut cards) = self.cards.lock() {
+            if cards.len() >= MAX_CARDS {
+                cards.clear();
+            }
+            cards.insert(key, resolved.answer.clone());
+        }
+        resolved.answer
+    }
+
+    /// How many `card_` asks reached the layer - a test's measure of *once per row*.
+    #[cfg(test)]
+    pub(crate) fn cards_asked(&self) -> usize {
+        self.asked.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Say why a row was drawn the head's way rather than a layer's - the one problem slot, so a
+    /// sentence is not repeated per frame.
+    pub(crate) fn complain(&self, why: String) {
+        if let Ok(mut slot) = self.problem.lock() {
+            *slot = Some(why);
         }
     }
 

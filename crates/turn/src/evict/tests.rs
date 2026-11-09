@@ -540,6 +540,7 @@ fn a_notice_opens_the_exchange_in_hand() {
         TranscriptItem::Notice {
             kind: letibot_transcript::NoticeKind::Monitor,
             text: "[monitor] `pr-watch` fired: the pull request was merged.".into(),
+            facts: None,
         },
         read("c2", "src/b.rs", 4_000)[0].clone(),
         read("c2", "src/b.rs", 4_000)[1].clone(),

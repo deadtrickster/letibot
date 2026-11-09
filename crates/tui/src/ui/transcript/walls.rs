@@ -11,6 +11,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::app::Cards;
     use crate::ui::render::RenderConfig;
     use crate::ui::transcript::item::system_row_lines;
     use crate::ui::transcript::user::session_row_lines;
@@ -77,7 +78,7 @@ mod tests {
             } else {
                 (
                     key(text),
-                    session_row_lines(text, ts, &cfg, &[], &tails).len(),
+                    session_row_lines(text, ts, &cfg, &[], &tails, &Cards::readers_only()).len(),
                 )
             };
             let wall = drawn > allowed(text);
@@ -87,7 +88,7 @@ mod tests {
                 && v["kind"] == "agent"
             {
                 println!("==== {k} ({drawn} rows, {} allowed)", allowed(text));
-                for l in session_row_lines(text, ts, &cfg, &[], &tails) {
+                for l in session_row_lines(text, ts, &cfg, &[], &tails, &Cards::readers_only()) {
                     println!("{l}");
                 }
             }

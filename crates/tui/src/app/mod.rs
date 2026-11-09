@@ -943,6 +943,12 @@ pub struct App {
     /// starts answering without a restart.
     pub(crate) link_layers: Option<bool>,
     pub(crate) link_layers_at: u64,
+    /// Whether a `card_` layer is on disk at all, and when it was last asked: the same rule as the
+    /// links' - manifests alone, so a session whose cards are the head's own never compiles a
+    /// plugin stack for them (`Host::any_card_layer`), asked again every minute so a layer written
+    /// in this session starts drawing without a restart.
+    pub(crate) card_layers: Option<bool>,
+    pub(crate) card_layers_at: u64,
     /// The background read of them, and which repository it is for.
     pub(crate) gh_job: Option<(String, std::sync::mpsc::Receiver<Option<ghlinks::GitRefs>>)>,
     /// Which repository was last read, and when.
@@ -1489,6 +1495,8 @@ impl App {
             gh_refs: None,
             link_layers: None,
             link_layers_at: 0,
+            card_layers: None,
+            card_layers_at: 0,
             gh_job: None,
             gh_read: (String::new(), 0),
             git_pinned: None,
@@ -1660,6 +1668,7 @@ mod action;
 mod asks;
 mod attachments;
 mod attention;
+pub(crate) mod cards_plugin;
 pub(crate) mod chat_adapter;
 pub(crate) mod chat_input;
 pub(crate) mod chat_media;
@@ -1706,6 +1715,7 @@ mod waiting;
 pub use action::*;
 pub(crate) use asks::*;
 pub(crate) use attention::*;
+pub(crate) use cards_plugin::*;
 pub(crate) use commands::*;
 pub use editor::*;
 pub(crate) use events::*;

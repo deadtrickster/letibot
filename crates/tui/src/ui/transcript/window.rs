@@ -731,6 +731,13 @@ impl App {
         in_flight: &std::collections::HashSet<String>,
         turn_rows: &std::collections::HashSet<String>,
     ) {
+        // The stack the transcript's cards are asked of: built only when a layer ON DISK answers
+        // `card_`, because the head's own facts and readers draw what the built-in layer draws and a
+        // stack is a wasm compile per built-in. Asked before the destructure takes the head apart.
+        self.note_card_layers();
+        if self.card_layers_on() {
+            let _ = self.plugin_host();
+        }
         let App {
             hist_lines,
             hist_upto,
@@ -766,10 +773,16 @@ impl App {
             quiet,
             read_marks,
             absorbed,
+            sessions_host,
             ..
         } = self;
         let diff_split = *diff_split;
         let echo_open = *echo_open;
+        // The cards layer, built here because the destructure below leaves `self` apart: a row's card
+        // is asked of the SAME stack the picker asks, so a layer installed is a layer answering every
+        // row of the conversation too. Borrowed per row - the ask is cached inside it by row id.
+        let cards_host = sessions_host.borrow();
+        let cards_host = cards_host.as_ref();
         // The runs and the ids, once per frame: the questions below are per row, and
         // re-deriving them from `items` per row is what made a long hidden run
         // quadratic (R123.3).
@@ -958,9 +971,12 @@ impl App {
                     open_run && crate::app::runclick::run_skips(*lift, &items[*hist_upto]);
                 let (body_class, body) =
                     if (open_run || unseen.is_none()) && !absorbed_here && !skipped {
+                        // This row's cards, asked of the layer once and kept by the row's id.
+                        let cards = Cards::row(cards_host, &items[*hist_upto]);
                         item_lines(
                             &items[*hist_upto],
                             &ItemCtx {
+                                cards: &cards,
                                 cfg: &row_cfg,
                                 think: if open_run {
                                     crate::app::runclick::run_think(*lift, think)

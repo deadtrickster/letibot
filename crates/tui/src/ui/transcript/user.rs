@@ -45,7 +45,7 @@ pub(crate) fn user_row_lines(
         }
         letibot_transcript::Speaker::Agent => (
             RowClass::Other,
-            session_row_lines(&text, it.ts, cfg, subagents, job_tails),
+            session_row_lines(&text, it.ts, cfg, subagents, job_tails, ctx.cards),
         ),
     }
 }
@@ -58,8 +58,9 @@ pub(crate) fn session_row_lines(
     cfg: &crate::ui::render::RenderConfig,
     subagents: &[crate::app::SubagentState],
     job_tails: &std::collections::HashMap<String, crate::ui::transcript::job_card::JobTail>,
+    cards: &crate::app::Cards<'_>,
 ) -> Vec<String> {
-    session_row(text, ts, cfg, subagents, job_tails).0
+    session_row(text, ts, cfg, subagents, job_tails, cards).0
 }
 
 /// The child each drawn line of a session row is about: one entry per line [`session_row_lines`]
@@ -71,8 +72,9 @@ pub(crate) fn session_row_children(
     cfg: &crate::ui::render::RenderConfig,
     subagents: &[crate::app::SubagentState],
     job_tails: &std::collections::HashMap<String, crate::ui::transcript::job_card::JobTail>,
+    cards: &crate::app::Cards<'_>,
 ) -> Vec<Option<String>> {
-    session_row(text, ts, cfg, subagents, job_tails).1
+    session_row(text, ts, cfg, subagents, job_tails, cards).1
 }
 
 /// A session row drawn, and who each line of it is about - the one drawing behind
@@ -83,6 +85,7 @@ fn session_row(
     cfg: &crate::ui::render::RenderConfig,
     subagents: &[crate::app::SubagentState],
     job_tails: &std::collections::HashMap<String, crate::ui::transcript::job_card::JobTail>,
+    cards: &crate::app::Cards<'_>,
 ) -> (Vec<String>, Vec<Option<String>>) {
     // A job's completion notice is two lines a job, and the whole card is a click away (the notice
     // popup); see `job_card` for the shape and for where the output line comes from.
@@ -118,7 +121,7 @@ fn session_row(
         // drawn as it arrived, a plan check or a parent's brief at six thousand lines. Each notice in
         // it is a line (`notice_card`), the whole row a click away.
         None => {
-            let parts = notice_parts(text, subagents, job_tails, cols);
+            let parts = notice_parts(text, subagents, job_tails, cards, cols);
             let children = parts.iter().map(|(_, c)| c.clone()).collect();
             let lines = parts.into_iter().map(|(l, _)| l).collect::<Vec<_>>();
             (session_card_block(&lines, ts, cfg), children)
@@ -133,12 +136,20 @@ fn notice_parts(
     text: &str,
     subagents: &[crate::app::SubagentState],
     job_tails: &std::collections::HashMap<String, crate::ui::transcript::job_card::JobTail>,
+    cards: &crate::app::Cards<'_>,
     cols: usize,
 ) -> Vec<(crate::ui::transcript::line_cards::CardLine, Option<String>)> {
     use crate::ui::transcript::line_cards::CardLine;
-    use crate::ui::transcript::notice_card::{notices, session_notice};
+    use crate::ui::transcript::notice_card::notices;
+    // The cards asked for ONCE for the row, one per part: the layer's answer where it has one, and
+    // the readers - the same functions the built-in layer is built from - where it does not.
+    let parts = notices(text);
+    let mut drawn = cards.lines(&parts).into_iter();
     let mut out = Vec::new();
-    for part in notices(text) {
+    for part in parts {
+        let card = drawn
+            .next()
+            .unwrap_or_else(|| crate::ui::transcript::notice_card::session_notice(part));
         if let Some(lines) = compact_cards(part, subagents, job_tails, cols) {
             out.extend(lines.into_iter().map(|l| (l, None)));
         } else if let Some(lines) = compact_notice(part, subagents, job_tails, cols) {
@@ -150,7 +161,7 @@ fn notice_parts(
                     .map(|(l, c)| (CardLine::plain(trim_to(&l, cols)), c)),
             );
         } else {
-            out.push((session_notice(part).cut(cols), None));
+            out.push((card.cut(cols), None));
         }
     }
     out

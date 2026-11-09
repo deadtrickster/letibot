@@ -182,6 +182,18 @@ impl App {
         let cfg = self.cfg.clone();
         let (think, tool, raw, diff_split) =
             (self.reasoning, self.tools, self.raw_calls, self.diff_split);
+        // The cards these rows are measured as: the same question the drawing walk asks, answered the
+        // same way - a layer on disk, or the head's own facts and readers.
+        self.note_card_layers();
+        if self.card_layers_on() {
+            let _ = self.plugin_host();
+        }
+        let cards_host = self.sessions_host.borrow();
+        let cards_host = if self.card_layers_on() {
+            cards_host.as_ref()
+        } else {
+            None
+        };
         let in_flight: std::collections::HashSet<String> = self
             .turn
             .as_ref()
@@ -333,9 +345,13 @@ impl App {
             });
             let (body_class, body) = if (open_run || unseen.is_none()) && !absorbed_here && !skipped
             {
+                // The same cards the drawing asks for: this walk measures the rows the other one
+                // draws, and a card a layer answered must be as many rows here as it is there.
+                let cards = Cards::row(cards_host, &self.items[k]);
                 item_lines(
                     &self.items[k],
                     &ItemCtx {
+                        cards: &cards,
                         cfg: &row_cfg,
                         think: if open_run {
                             crate::app::runclick::run_think(self.lift, think)

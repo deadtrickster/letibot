@@ -83,14 +83,14 @@ pub(crate) fn tool_result_row_lines(
         origin,
         Some(letibot_transcript::CallOrigin::Operator { .. })
     );
-    let shown = crate::ui::drawn_as(name, edit);
+    let shown = ctx.cards.verb(name, edit);
     let target = match targets.get(call_id) {
         // An edit card names its file, and a note's target is its stem and its text.
-        _ if shown != name => edit.map(|e| e.path.clone()).unwrap_or_default(),
+        _ if shown != *name => edit.map(|e| e.path.clone()).unwrap_or_default(),
         Some(t) if !t.is_empty() => t.clone(),
         _ => String::new(),
     };
-    let verb = rano::agent::card::Verb::of(shown);
+    let verb = rano::agent::card::Verb::of(&shown);
     // An edit draws its diff, not the tool's prose - when this head holds both sides; a
     // row it did not watch keeps the prose, which is the `Replayed` rule.
     let diff = edit
@@ -137,7 +137,12 @@ pub(crate) fn tool_result_row_lines(
         // row is drawn as its dim body with the step in front of it, and a step taken inside the line
         // would put the step under the dim - the same columns, but not the same bytes.
         indent: 0,
-        ..ToolRow::new(shown, call_id, crate::ui::display_outcome(outcome), payload)
+        ..ToolRow::new(
+            &shown,
+            call_id,
+            crate::ui::display_outcome(outcome),
+            payload,
+        )
     };
     let layout = row.layout(cfg.width.saturating_sub(ind));
     if let (Some(max), Some(cell)) = (layout.max_page, payload_max) {

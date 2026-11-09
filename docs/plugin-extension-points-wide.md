@@ -759,13 +759,62 @@ host's, and a name here would be a second model-resolution door; and the queue's
 only `brief_add`, not a replacement `brief`, because that prompt is the protocol (the rows, the
 child, the operator's verbs) and not a project's to rewrite.
 
-### K6 - cards from facts (M, after K2 and P2)
+### K6 - cards from facts (M, after K2 and P2) - **landed 2026-11**
 
 Owns `tui/src/ui/transcript/notice_card.rs` (readers become the fallback),
 `tui/src/ui/transcript/call.rs` (`drawn_as` from the answer), `tui/src/app/cards_plugin.rs` (new),
 `plugins/builtin/cards/**`. Done when:
 `a_reworded_notice_keeps_its_card`, `a_card_is_asked_once_per_item`,
 `the_builtin_cards_layer_draws_what_the_readers_drew` (the readers' existing fixtures).
+
+What landed:
+
+- **One contract, two names.** `plugin-sdk/src/card/` is the `card_` contract: `card_item` (a row's card) and
+  `card_call` (the verb a tool row is drawn as): in `{"v", "item": {"id", "kind", "text",
+  "facts", "call"}, "parts": […]}` and out `{"blocks": […], "verb": …}`. The answer is
+  POSITIONAL - one block per part the head split the row into - and `Out::cards` refuses an answer
+  that is a block short whole, because a shifted row draws one notice's facts under another's
+  words. A block of a kind the head does not draw is `None` for that part (the readers' cue), a
+  `verb` outside rano's seven is refused, and a card is the parts of one line, the accented part,
+  its register and the popup's title - never a painted cell.
+- **The readers are one source, compiled twice.** The fifteen text-prefix readers moved out of
+  `notice_card.rs` into `plugin-sdk/src/card/readers.rs`, and the built-in layer is compiled from
+  them: the head asks them when no layer answers, and the guest answers `card_item` with the same
+  functions, so "the built-in draws what the readers drew" is a fact about one source rather than a
+  copy kept in step. `readers::FIXTURES` is the readers' own fixture list, and the head's test holds
+  the layer to it. The facts renderer (`card::facts::read`) is the same shape for the same reason:
+  a card drawn from a row's facts is one function, and the guest and the head both call it.
+- **Facts reach the row.** A monitor firing is the one delivery that is a row of its own kind, so
+  `TranscriptItem::Notice` gains `facts` - what `notice::Facts` the sentence was composed from,
+  written by `deliveries::notice_row` from `turns.rs`'s own `monitor_facts` - and both the layer and
+  the head draw the card from it. That is the defect X22 names: a `notice_` layer may reword the
+  sentence a model reads, and the card no longer has to be recovered from the words - it survives
+  with no layer at all. A row whose daemon wrote no facts (a `User` row joining several sentences of
+  several kinds) is drawn by the readers, which is byte for byte what the head drew before.
+- **Asked once per row, and only when there is a layer to ask.** `cards_plugin.rs`'s `Cards` is built
+  per row at the walk and the answer is kept in the head's `Host` by `hook` and row id
+  (`Host::card_answer`, bounded at 4096 rows and dropped whole past it), so a row redrawn on a
+  hundred frames is one call. Which is worth nothing if the stack is built for every head: compiling
+  the twelve built-in guests costs seconds on a first frame, and the built-in `cards` layer draws
+  exactly what the head's own facts and readers draw. So the transcript builds the stack only when a
+  layer ON DISK answers `card_` (`Host::any_card_layer`, the rule `any_link_layer` already
+  followed, asked once a minute) - a project's or the operator's card layer is asked, and a session
+  whose cards are the built-in's never compiles a stack for them.
+- **The verb.** `card_call` answers `notes`' `edit`/`write`; every other call answers nothing and
+  `call::drawn_as` - the native rule - stands. The live card is drawn by the native rule because a
+  call in flight has no row to ask about; the settled row and ctrl-]'s `change_of_row` ask the
+  layer, so the file a card drew as an edit is the file the chord opens.
+- **The stack is not built for a head's own cards.** `walk_history` asks `note_card_layers` and
+  builds the host only on a yes; the measuring walk in `scroll.rs` and ctrl-]'s `change_of_row` ask
+  the same question, so a measurement and the drawing it measures cannot disagree about which layer
+  drew a row.
+- **`plugin test` and `load` know the kind**: `synthetic_for` hands a card layer the plan's own
+  monitor firing and `accepted` reports what the answer would draw; `SERVED_KINDS` gains `card_` and
+  `plugin-hooks` teaches both names.
+- Not in this package: a `system` row and a hub warning keep their own readers in
+  `notice_card.rs` (their figures are the head's - a compaction's counts, a summary's size - and
+  they are not a notice's facts); and a `User` row's joined sentences still carry no facts, so
+  their cards come from the readers rather than from what composed them.
 
 ### K7 - `adjudicate_` floor (S, independent)
 

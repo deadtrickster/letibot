@@ -85,9 +85,10 @@ fn a_firing_is_a_notice_and_never_a_row_of_somebodys_words() {
     let row = notice_row(
         letibot_transcript::NoticeKind::Monitor,
         "[monitor] a firing",
+        None,
     );
     match &row {
-        TranscriptItem::Notice { kind, text } => {
+        TranscriptItem::Notice { kind, text, .. } => {
             assert_eq!(
                 *kind,
                 letibot_transcript::NoticeKind::Monitor,

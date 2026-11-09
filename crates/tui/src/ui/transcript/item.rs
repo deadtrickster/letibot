@@ -143,6 +143,10 @@ pub(crate) struct ItemCtx<'a> {
     /// The row drawn just before this one, when it is the session's question to a person (`asked:`,
     /// `asked_card`) - what an operator's row right under it answers. `None` everywhere else.
     pub(crate) replied_to: Option<&'a str>,
+    /// The cards layer for this row: asked once per row id, and the readers where it answers nothing.
+    /// On the context for the reason every other per-row reading is - `item_lines` is a free
+    /// function, and the walk that holds the head apart is the only place a `Host` can be borrowed.
+    pub(crate) cards: &'a Cards<'a>,
 }
 
 /// The question the row at `k` answers, when the row before it is the session's question
@@ -204,6 +208,7 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
                 cfg,
                 ctx.subagents,
                 ctx.job_tails,
+                ctx.cards,
             ),
         ),
         TranscriptItem::User { .. } => {

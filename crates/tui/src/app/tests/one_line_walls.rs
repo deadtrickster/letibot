@@ -23,7 +23,15 @@ fn cfg80() -> RenderConfig {
 /// One session row, drawn through the transcript's own renderer at eighty columns: its screen
 /// rows, the glass, and the text its popup holds.
 fn drawn(text: &str) -> (usize, String, String) {
-    let rows = session_row_lines(text, TS, &cfg80(), &[], &std::collections::HashMap::new()).len();
+    let rows = session_row_lines(
+        text,
+        TS,
+        &cfg80(),
+        &[],
+        &std::collections::HashMap::new(),
+        &Cards::readers_only(),
+    )
+    .len();
     let mut a = with_notice(text);
     let glass = a.screen(80, 40).join("\n");
     (rows, glass, newest_notice(&mut a))

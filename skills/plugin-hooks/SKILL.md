@@ -27,6 +27,7 @@ right one is most of the work; after that it is a small wasm module and no relea
 | a project's review policy (what a reviewer is told, what a verdict must reach) lives in a release | **`review_brief`** and **`review_verdict`** | when a reviewer is started, and when a verdict comes in — both from the queue's stack |
 | a child's brief needs a rule of this project's, or its seat a class of tools taken away | **`brief_worktree`** | on a `task_start` child, before it is opened |
 | a Claude Code session is woken by room lines it should not see, or misses the ones it should | **`push_channel`** | before each notification the bridge pushes to a client |
+| a row's card in the head is wrong, or a notice a layer reworded lost its card | **`card_item`** and **`card_call`** | once per transcript row, in the head, with the row's typed facts |
 
 The contract for some of these and for a pane is the `plugin_hooks` tool, **read from the host's
 own types**: read it before writing anything, and read it again after a refusal.
@@ -346,6 +347,37 @@ replaces the sentence. **An `ask` and a `failed` may be reworded and never silen
 because a channel that looks quiet while a session is stuck is the one failure this hook must not
 have. A trap, an unreadable answer or a layer that passes is the bridge's own rule, so a broken
 layer never loses a push.
+
+### `card_item` and `card_call` — how a row of the conversation is drawn
+
+```toml
+name = "no-monitor-cards"
+hooks = ["card_item", "card_call"]
+capabilities = []
+```
+
+Asked by the HEAD, once per transcript row, and kept by the row's id — a row redrawn a hundred frames
+is one call. It is asked when a layer **on disk** answers `card_` (this session's, the project's or the
+operator's): a session with only the built-in layer is drawn by the head's own readers, which are the
+same functions the built-in is compiled from, so compiling a stack on every head's first frame would
+buy nothing. In: `{"v": 1, "item": {"id", "kind", "text", "facts", "call"}, "parts": ["…"]}`.
+`kind` is `notice` or `call`; `facts` is the typed facts the row was delivered with
+(`notice::Facts`, one document) and is absent on a row the daemon composed from nothing it kept;
+`call` is a tool row's own facts — the name, how it ended, the files it changed. `parts` is the
+notices the head split the row into, and **the answer is positional**: one block per part.
+
+Out: `{"blocks": [{"lines": {"parts": ["monitor", "ci the run exited 0", "click for details"],
+"accent": 0, "role": "faint", "title": "monitor · ci"}}], "verb": "edit"}`. A part you have
+nothing to say about is a block of any other kind (`{"none": null}`), and the head draws that part
+itself — a block kind this host does not know is that same cue, never a refusal. An answer whose
+blocks are not one per part is refused WHOLE (a shifted row draws one notice's facts under another's
+words), and so is a `verb` outside `read`, `edit`, `write`, `search`, `list`, `run`, `fetch`.
+
+**The facts are why the hook exists**: a notice's card is drawn from what the row was composed from,
+so a `notice_` layer that rewords the sentence cannot take the card with it. The renderers this build
+falls back to are `letibot_plugin::card::facts` and `::readers`, and the built-in `cards` layer is
+compiled from the same ones — a layer of yours above it may draw differently, and the head cuts,
+colours and wraps what you answer, so a card here is words and a register and never a cell.
 
 ## The loop
 

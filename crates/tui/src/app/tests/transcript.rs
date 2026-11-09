@@ -1143,6 +1143,7 @@ fn the_ladder_cycles_through_the_conversation_rung_by_name() {
     let delivery = T::Notice {
         kind: letibot_transcript::NoticeKind::Monitor,
         text: "[monitor] `pr-watch` fired: the pull request was merged.".into(),
+        facts: None,
     };
     for kept in [&user, &answer, &delivery] {
         assert!(Verbosity::Conversation.keeps(kept), "{kept:?}");
@@ -7258,6 +7259,7 @@ fn a_notice_is_drawn_as_the_sessions_own_news() {
         TranscriptItem::Notice {
             kind: letibot_transcript::NoticeKind::Monitor,
             text: said.into(),
+            facts: None,
         },
     );
     assert_eq!(

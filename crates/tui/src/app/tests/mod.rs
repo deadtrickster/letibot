@@ -462,6 +462,7 @@ fn item_rendered(
         item: Some(item),
     };
     let ctx = ItemCtx {
+        cards: &Cards::readers_only(),
         cfg: &cfg,
         think: Fold::Open,
         tools: Fold::Open,
@@ -1329,6 +1330,7 @@ mod attention;
 mod bindings;
 mod bursts;
 mod cardkeys;
+mod cards;
 mod chat_plugin;
 mod cite;
 mod clickables;
