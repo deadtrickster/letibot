@@ -763,6 +763,10 @@ pub type BroadcastObserver = Arc<dyn Fn(&crate::event::SessionEvent) + Send + Sy
 
 pub type JobOutputSource = Arc<dyn Fn(&str, u64) -> Option<crate::SessionEvent> + Send + Sync>;
 
+/// A session's job table read at the moment a head asks. The mailbox trails the job events, and a
+/// head that asked in between kept the old table until the next event.
+pub type JobListSource = Arc<dyn Fn() -> Vec<crate::protocol::JobEntry> + Send + Sync>;
+
 /// The settings row that says what holds the daemon's idle exit.
 pub const IDLE_EXIT_KEY: &str = "idle exit";
 
@@ -793,6 +797,8 @@ pub struct Registry {
     /// One per session that has a process host, installed by its harness at open beside
     /// [`Registry::notes`] and removed with the session. See [`JobOutputSource`].
     job_output: Mutex<std::collections::HashMap<String, JobOutputSource>>,
+    /// Removed with the session, like `job_output`. See [`JobListSource`].
+    job_list: Mutex<std::collections::HashMap<String, JobListSource>>,
     room_chat: Mutex<Option<RoomChatSeat>>,
     /// The heads whose connection has chatted, and how to write a pushed message to each. A head
     /// that never chatted is absent, which is what keeps a passing reader from being woken.
@@ -959,6 +965,7 @@ impl Registry {
             notes_dirs: Mutex::new(std::collections::HashMap::new()),
             skills: Mutex::new(std::collections::HashMap::new()),
             job_output: Mutex::new(std::collections::HashMap::new()),
+            job_list: Mutex::new(std::collections::HashMap::new()),
             room_chat: Mutex::new(None),
             chatting: Mutex::new(std::collections::BTreeMap::new()),
             broadcast_observer: Mutex::new(None),
@@ -1639,6 +1646,11 @@ impl Registry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(session_id);
+        let job_list = self
+            .job_list
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session_id);
         // Dropped outside every lock: a closure's captures can run arbitrary `Drop`s (a
         // `HostProcesses` ends its deadline thread), and none of them may run under a registry
         // mutex another thread is waiting on.
@@ -1651,6 +1663,7 @@ impl Registry {
             boundary,
             job_output,
             pane_driver,
+            job_list,
         ));
         Some(entry.hub)
     }
@@ -1759,8 +1772,8 @@ impl Registry {
             .clone()
     }
 
-    /// The jobs a session's harness last published. A mailbox rather than a live read, for the
-    /// settings row's reason: the process table belongs to the worker.
+    /// The jobs a session's harness last published: the answer for a session that installed no
+    /// [`JobListSource`].
     pub fn set_jobs(&self, session_id: &str, jobs: Vec<crate::protocol::JobEntry>) {
         let mut g = self.lock();
         if let Some(e) = g.entry_mut(session_id) {
@@ -1784,7 +1797,18 @@ impl Registry {
             .unwrap_or_default()
     }
 
+    /// The session's jobs: read live when its harness installed a source, else the mailbox.
     pub fn jobs(&self, session_id: &str) -> Vec<crate::protocol::JobEntry> {
+        // Cloned out before it is called, so the lock is not held across the host's own.
+        let source = self
+            .job_list
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session_id)
+            .cloned();
+        if let Some(source) = source {
+            return source();
+        }
         let g = self.lock();
         g.entry(session_id)
             .map(|e| e.jobs.clone())
@@ -1852,6 +1876,14 @@ impl Registry {
             .get(session_id)
             .cloned();
         source.map(|s| s()).unwrap_or_default()
+    }
+
+    /// Install a session's live job-list read. See [`JobListSource`].
+    pub fn set_job_list_source(&self, session_id: &str, source: JobListSource) {
+        self.job_list
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id.to_string(), source);
     }
 
     /// Install a session's live job-output read. Called by the session's own harness at open, when

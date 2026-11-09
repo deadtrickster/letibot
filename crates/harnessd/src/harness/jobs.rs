@@ -75,10 +75,23 @@ impl Harness {
         let Some(host) = self.runtime.backend.processes_arc() else {
             return;
         };
+        let list = host.clone();
         self.session_registry.set_job_output_source(
             &self.cfg.session_id,
             Arc::new(move |job, offset| {
                 live_job_output(host.as_ref(), job, offset, JOB_OUTPUT_WINDOW)
+            }),
+        );
+        // The list too: a head asks the moment it sees a job event, which is before the worker
+        // refills the mailbox.
+        self.session_registry.set_job_list_source(
+            &self.cfg.session_id,
+            Arc::new(move || {
+                list.jobs()
+                    .iter()
+                    .filter(|j| Self::worth_listing(j))
+                    .map(Self::job_entry)
+                    .collect()
             }),
         );
     }
