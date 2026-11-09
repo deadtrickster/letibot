@@ -79,6 +79,9 @@ fn run(args: &[String]) -> Result<(), String> {
     for table in &report.carried {
         println!("  the v24 archive's {table} went to shared.db");
     }
+    for transcript in &report.unreplayed {
+        println!("  {transcript} did not replay in the old store either - copied as stored");
+    }
     println!(
         "kept {} until you are sure - delete it when the daemons have run on the split store",
         report.kept.display()

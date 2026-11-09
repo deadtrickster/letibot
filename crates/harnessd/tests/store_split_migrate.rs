@@ -334,11 +334,18 @@ fn a_second_run_refuses() {
 fn a_broken_verification_leaves_sessions_db_in_place_under_its_own_name() {
     let fixture = temp("broken");
     seed(&fixture.store());
-    break_one_chain(&fixture.store());
+    // A row naming no session lands in no file, so the count check refuses after files are written.
+    Connection::open(fixture.store())
+        .expect("the store")
+        .execute(
+            "INSERT INTO todo (session_id, todos_json, updated_ms) VALUES ('s-nobody', '[]', 1)",
+            [],
+        )
+        .expect("an orphan row");
     let refused = migrate_split::migrate(&fixture.store(), &fixture.data)
-        .expect_err("a chain that does not replay is a refusal");
+        .expect_err("a row in no file is a refusal");
     let said = refused.to_string();
-    assert!(said.contains("a#t0"), "{said}");
+    assert!(said.contains("todo"), "{said}");
     assert!(said.contains("renamed"), "{said}");
     assert!(
         fixture.store().is_file(),
@@ -355,6 +362,23 @@ fn a_broken_verification_leaves_sessions_db_in_place_under_its_own_name() {
     assert!(
         files(&fixture.projects()).is_empty(),
         "and so did the project files"
+    );
+}
+
+/// A chain that does not replay in the old store either is copied as stored and named: the copy
+/// is faithful, and a resume repairs the shapes it knows.
+#[test]
+fn a_chain_broken_in_the_old_store_is_carried_and_named() {
+    let fixture = temp("carried");
+    seed(&fixture.store());
+    break_one_chain(&fixture.store());
+    let report = migrate_split::migrate(&fixture.store(), &fixture.data)
+        .expect("a faithful copy of a broken chain is not a refusal");
+    assert_eq!(report.unreplayed.len(), 1, "{:?}", report.unreplayed);
+    assert!(
+        report.unreplayed[0].starts_with("a#t0 "),
+        "{:?}",
+        report.unreplayed
     );
 }
 

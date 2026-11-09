@@ -50,6 +50,9 @@ pub struct Report {
     pub kept: PathBuf,
     /// The v24 archive tables carried into `shared.db` because they held rows.
     pub carried: Vec<String>,
+    /// Transcripts that did not replay in the old store either, copied as they were stored: a
+    /// resume repairs the shapes it knows, and the split is not where history is rewritten.
+    pub unreplayed: Vec<String>,
 }
 
 /// One daemon's claim on a session's transcript, as the `session_writer` rows put it.
@@ -104,7 +107,7 @@ pub fn migrate(store: &Path, data_dir: &Path) -> Result<Report> {
     let plan = plan(&old)?;
     let from = Connection::open(store)?;
     match split_into(&from, data_dir, &plan) {
-        Ok((projects, carried)) => {
+        Ok((projects, carried, unreplayed)) => {
             drop(from);
             drop(old);
             let kept = keep_old(store)?;
@@ -113,6 +116,7 @@ pub fn migrate(store: &Path, data_dir: &Path) -> Result<Report> {
                 projects,
                 kept,
                 carried,
+                unreplayed,
             })
         }
         Err(refused) => {
@@ -139,14 +143,14 @@ fn split_into(
     from: &Connection,
     data_dir: &Path,
     plan: &Plan,
-) -> Result<(Vec<ProjectFile>, Vec<String>)> {
+) -> Result<(Vec<ProjectFile>, Vec<String>, Vec<String>)> {
     let mut projects = Vec::with_capacity(plan.by_key.len());
     for (key, sessions) in &plan.by_key {
         projects.push(write_project(from, data_dir, key, sessions)?);
     }
     let (_, carried) = write_shared(from, data_dir, plan)?;
-    verify_across(from, &projects)?;
-    Ok((projects, carried))
+    let unreplayed = verify_across(from, &projects)?;
+    Ok((projects, carried, unreplayed))
 }
 
 /// One project file: created, every project table's rows for this key copied, and both sides of
@@ -432,14 +436,20 @@ fn verify_tables(
 }
 
 /// Step 4 across files: every old row in exactly one file, and every transcript replaying its
-/// hash chain the way a resume reads it.
-fn verify_across(from: &Connection, projects: &[ProjectFile]) -> Result<()> {
+/// hash chain the way a resume reads it - or failing exactly as it does in the old store.
+fn verify_across(from: &Connection, projects: &[ProjectFile]) -> Result<Vec<String>> {
     verify_once(from, projects)?;
     verify_adjudication(from, projects)?;
+    let source = from
+        .path()
+        .filter(|p| !p.is_empty())
+        .map(|p| Store::open_reader(Path::new(p)))
+        .transpose()?;
+    let mut unreplayed = Vec::new();
     for file in projects {
-        verify_chains(&file.path)?;
+        unreplayed.extend(verify_chains(&file.path, source.as_ref())?);
     }
-    Ok(())
+    Ok(unreplayed)
 }
 
 /// "A row of every project table is in exactly one file": one file per key was checked as it was
@@ -507,28 +517,42 @@ fn verify_adjudication(from: &Connection, projects: &[ProjectFile]) -> Result<()
 
 /// The last clause of step 4, and the one check that reads the copy the way a resume will: every
 /// transcript's rows rebuild its chain from the stable prefix it names.
-fn verify_chains(path: &Path) -> Result<()> {
+fn verify_chains(path: &Path, source: Option<&Store>) -> Result<Vec<String>> {
+    let replay = |store: &Store, transcript: &str| -> Result<Option<String>> {
+        let loaded = store.load_transcript(transcript)?;
+        Ok(TokenLedger::restore(
+            transcript,
+            &loaded.prefix_tokens,
+            loaded.h_init,
+            &loaded.ledger_input(),
+        )
+        .err()
+        .map(|e| e.to_string()))
+    };
     let store = Store::open(path)?;
     let transcripts = {
         let conn = store.connection();
         strings(&conn, "SELECT id FROM transcript ORDER BY id")?
     };
+    let mut unreplayed = Vec::new();
     for transcript in transcripts {
-        let loaded = store.load_transcript(&transcript)?;
-        if let Err(e) = TokenLedger::restore(
-            &transcript,
-            &loaded.prefix_tokens,
-            loaded.h_init,
-            &loaded.ledger_input(),
-        ) {
-            return Err(StoreError::Refused(format!(
-                "{}: transcript {transcript} does not replay after the copy - {e}. Nothing was \
-                 renamed",
-                path.display()
-            )));
+        let Some(e) = replay(&store, &transcript)? else {
+            continue;
+        };
+        // The copy is faithful when the old store fails the same way: carried, and said.
+        if let Some(old) = source
+            && replay(old, &transcript)?.as_deref() == Some(e.as_str())
+        {
+            unreplayed.push(format!("{transcript} ({e})"));
+            continue;
         }
+        return Err(StoreError::Refused(format!(
+            "{}: transcript {transcript} does not replay after the copy - {e}. Nothing was \
+             renamed",
+            path.display()
+        )));
     }
-    Ok(())
+    Ok(unreplayed)
 }
 
 /// The old file, under the name step 5 leaves it.
