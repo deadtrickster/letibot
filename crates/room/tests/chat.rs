@@ -1535,3 +1535,50 @@ fn a_null_post_is_refused_and_the_operator_is_exempt() {
     said(peer.say("long", "", "not for me, but the port is 5433 on lab2x1"));
     said(op.say("op", HOST_ROOM, "noted"));
 }
+
+/// A `say` may carry what backs its claim about the world: the room keeps it on the message and
+/// hands it back with every read. A ref kind the room does not know is refused as a whole.
+#[test]
+fn a_say_may_carry_the_evidence_for_what_it_claims() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let a1 = seat(&server, "s-a1", A, Seat::Session);
+    let said_now = said(a1.call(Request::Say {
+        id: "e1".into(),
+        room: HOST_ROOM.into(),
+        text: "landed: the gate is green".into(),
+        to: None,
+        thread: None,
+        refs: vec![letibot_room::Ref {
+            kind: letibot_room::EVIDENCE.into(),
+            id: "m-7".into(),
+        }],
+        attachments: Vec::new(),
+    }));
+    assert_eq!(said_now.evidence(), Some("m-7"));
+    assert_eq!(said_now.unbacked(), None);
+    match a1.call(Request::Read {
+        room: HOST_ROOM.into(),
+        since: 0,
+        last: None,
+        thread: None,
+        before: None,
+    }) {
+        Response::History(h) => assert_eq!(h.rows[0].evidence(), Some("m-7")),
+        other => panic!("{other:?}"),
+    }
+    let bad = refused(a1.call(Request::Say {
+        id: "e2".into(),
+        room: HOST_ROOM.into(),
+        text: "landed".into(),
+        to: None,
+        thread: None,
+        refs: vec![letibot_room::Ref {
+            kind: "vibes".into(),
+            id: "m-7".into(),
+        }],
+        attachments: Vec::new(),
+    }));
+    assert_eq!(bad, Refused::BadRef);
+    assert!(bad.to_string().contains("evidence"), "{bad}");
+}

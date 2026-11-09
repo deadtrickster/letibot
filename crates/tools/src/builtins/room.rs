@@ -90,7 +90,7 @@ impl Tool for RoomTool {
                             "say", "read", "invite", "leave", "asks", "answer", "decline",
                             "own", "hand", "accept", "release", "status"
                         ],
-                        "description": "Needs: `post` tag+body; `claim`, `queue` tag; `claim_item`, `beat`, `done` item; `waiting` item+text; `abandon` item+why; `dispute` item+says; `rule` question+decision; `say` text; `invite` room+session; `answer`, `decline` ask+text; `own`, `hand`, `accept`, `release` scope."
+                        "description": "Needs: `post` tag+body; `claim`/`queue` tag; `beat`/`done`/`claim_item`/`waiting` item; `abandon` item+why; `dispute` item+says; `rule` question+decision; `say` text; `invite` room+session; `answer`/`decline` ask+text; `own`/`hand`/`accept`/`release` scope."
                     },
                     "tag": {
                         "type": "string",
@@ -102,15 +102,15 @@ impl Tool for RoomTool {
                     },
                     "item": {
                         "type": "integer",
-                        "description": "The item's number (`#7`)."
+                        "description": "The item's number."
                     },
                     "ask": {
                         "type": "integer",
-                        "description": "From `asks` or your board."
+                        "description": "From `asks`."
                     },
                     "text": {
                         "type": "string",
-                        "description": "`say`: the message. `waiting`, `status`: your line, empty clears. `answer`, `decline`: the reply. `hand`: a note."
+                        "description": "`say`: the message. `waiting`/`status`: your line. `answer`/`decline`: the reply."
                     },
                     "why": {
                         "type": "string",
@@ -127,27 +127,27 @@ impl Tool for RoomTool {
                     "decision": {
                         "type": "string",
                         "enum": ["retry", "hand", "drop"],
-                        "description": "`retry` offers it again, `hand` gives it to `to`, `drop` removes it."
+                        "description": "`retry`, `hand` (to `to`) or `drop`."
                     },
                     "to": {
                         "type": "string",
-                        "description": "`say`: one principal, PRIVATE, in the dm and no room. `rule` and `hand`: the new holder."
+                        "description": "`say`: one principal, PRIVATE, dm only. `rule`/`hand`: the new holder."
                     },
                     "room": {
                         "type": "string",
-                        "description": "`project` (default), `host`, `dm` (read only) or an invited `project/<key>`. A reply stays in its root's room."
+                        "description": "`project` (default), `host`, `dm` (read only), or `project/<key>`."
                     },
                     "since": {
                         "type": "integer",
-                        "description": "`read`: only after this seq."
+                        "description": "`read`: after this seq."
                     },
                     "last": {
                         "type": "integer",
-                        "description": "`read`: the newest N, default 20."
+                        "description": "`read`: the newest N (20)."
                     },
                     "thread": {
                         "type": "integer",
-                        "description": "`say`, `own`: the seq you answer; it names its author. `read`: that thread."
+                        "description": "`say`/`own`: the seq you answer. `read`: that thread."
                     },
                     "todo": {
                         "type": "string",
@@ -157,22 +157,26 @@ impl Tool for RoomTool {
                         "type": "string",
                         "description": "`say`: a merge-queue row id."
                     },
+                    "evidence": {
+                        "type": "string",
+                        "description": "`say`: what backs a state claim: a commit sha, a gate or queue row id. Without it the claim reads `unbacked`."
+                    },
                     "session": {
                         "type": "string",
                         "description": "Id or name; default you."
                     },
                     "scope": {
                         "type": "string",
-                        "description": "A path glob (`crates/x/**`) or a topic."
+                        "description": "A path glob or a topic."
                     },
                     "ttl": {
                         "type": "integer",
-                        "description": "Minutes; `own` 60, `status` 30 default, max 240."
+                        "description": "Minutes; `own` 60, `status` 30, max 240."
                     },
                     "attachments": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "`say`: up to 4 workspace paths, 8 MiB each: png, jpeg, gif, webp or text."
+                        "description": "`say`: up to 4 workspace paths, 8 MiB each (png, jpeg, gif, webp, text)."
                     }
                 },
                 "required": ["verb"]
@@ -391,6 +395,15 @@ fn dispatch(
             ),
         ));
     }
+    if verb != "say" && nonempty(args, "evidence") {
+        return Err(Invocation::failed(
+            "`evidence` is a `say` thing",
+            format!(
+                "`{verb}` takes no `evidence`: only a `say` makes a claim about the world, and \
+                 nothing was sent to the room."
+            ),
+        ));
+    }
     let files = match attachments_of(args, workspace) {
         Ok(files) => files,
         Err(why) => return Err(Invocation::failed(why.clone(), why)),
@@ -531,6 +544,26 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What backs a claim about the world is a `say`'s, and it reaches the room as it was written.
+    /// Any other verb that carries one is refused before the room is asked.
+    #[test]
+    fn evidence_is_a_say_thing_and_reaches_the_room() {
+        let link = Recorder::new(Ok("said #1"));
+        let (ok, text) = invoke(
+            link.clone(),
+            json!({"verb": "say", "text": "landed", "evidence": "m-7"}),
+        );
+        assert!(ok, "{text}");
+        assert_eq!(link.seen.lock().unwrap()[0].1["evidence"], "m-7");
+        let link = Recorder::new(Err("never"));
+        let (ok, text) = invoke(
+            link.clone(),
+            json!({"verb": "post", "tag": "ram", "body": "8 GB", "evidence": "m-7"}),
+        );
+        assert!(!ok && text.contains("`evidence` is a `say` thing"), "{text}");
+        assert!(link.seen.lock().unwrap().is_empty(), "the room was not asked");
     }
 
     #[test]

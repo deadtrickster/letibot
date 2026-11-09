@@ -148,10 +148,15 @@ impl Seat {
 /// A pointer from a message to a row another part of letibot owns. The row is not copied.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ref {
-    /// `todo`, `queue` or `ask`.
+    /// `todo`, `queue`, `ask`, or [`EVIDENCE`]: a commit, a gate or queue row, a seq or a blob.
     pub kind: String,
     pub id: String,
 }
+
+/// The ref kind that says what backs a message's claim about the world. It rides `refs` rather
+/// than a field of its own, so a message from before this reads unchanged and every rendering
+/// shows it without a second writer.
+pub const EVIDENCE: &str = "evidence";
 
 /// How many refs one message may carry.
 pub const MAX_REFS: usize = 8;
@@ -281,12 +286,30 @@ impl Message {
         self.kind != Seat::Operator && claims_operator(&self.text)
     }
 
+    /// What this message names as the backing for its claim: a commit sha, a gate or queue row id,
+    /// a seq or a blob ref. `None` for a message that names nothing, and for one written before
+    /// the room had the idea.
+    pub fn evidence(&self) -> Option<&str> {
+        self.refs
+            .iter()
+            .find(|r| r.kind == EVIDENCE && !r.id.trim().is_empty())
+            .map(|r| r.id.trim())
+    }
+
+    /// The state claim this message makes that nothing in it backs, if it makes one.
+    pub fn unbacked(&self) -> Option<crate::claim::StateClaim> {
+        crate::claim::unbacked(&self.text, self.evidence())
+    }
+
     /// What a header says about the message itself, after its addressing: a peer that talks like
-    /// the operator, and nothing else yet.
+    /// the operator, and a claim about the world that names nothing to check it against.
     fn flags(&self) -> String {
         let mut out = String::new();
         if self.impersonates() {
             out.push_str(", claims operator");
+        }
+        if self.unbacked().is_some() {
+            out.push_str(", unbacked");
         }
         out
     }
@@ -1111,7 +1134,7 @@ impl Chat {
         }
         if refs.len() > MAX_REFS
             || refs.iter().any(|r| {
-                !matches!(r.kind.as_str(), "todo" | "queue" | "ask")
+                !matches!(r.kind.as_str(), "todo" | "queue" | "ask" | EVIDENCE)
                     || r.id.trim().is_empty()
                     || r.id.len() > MAX_REF_ID
             })
@@ -1689,6 +1712,31 @@ mod tests {
             msg(HOST_ROOM, Seat::Session, None, "hi").line(),
             "#15 [host] s-peer: hi"
         );
+    }
+
+    /// A claim about the world with nothing behind it is flagged `unbacked`; an evidence ref or a
+    /// sha in the text stops the flag, and a note that claims nothing is quiet.
+    #[test]
+    fn a_claim_about_the_world_with_nothing_behind_it_is_unbacked() {
+        let mut m = msg(HOST_ROOM, Seat::Session, None, "landed: the fix is on main");
+        let got = m.delivered(false, 600);
+        assert!(got.contains("to all, unbacked, passing by"), "{got}");
+        assert!(m.line().ends_with(", unbacked"), "{}", m.line());
+        m.refs.push(Ref {
+            kind: EVIDENCE.into(),
+            id: "m-7".into(),
+        });
+        assert_eq!(m.evidence(), Some("m-7"));
+        assert_eq!(m.unbacked(), None);
+        let got = m.delivered(false, 600);
+        assert!(got.contains(", evidence m-7, passing by"), "{got}");
+        assert!(!got.contains("unbacked"), "{got}");
+        // A sha in the text is evidence too, and a text with no claim is not flagged at all.
+        let sha = msg(HOST_ROOM, Seat::Session, None, "gate is green as of 2b97a092");
+        assert_eq!(sha.unbacked(), None);
+        let quiet = msg(HOST_ROOM, Seat::Session, None, "who has the disk?");
+        assert_eq!(quiet.unbacked(), None);
+        assert!(!quiet.line().contains("unbacked"));
     }
 
     #[test]

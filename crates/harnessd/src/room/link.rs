@@ -1251,6 +1251,15 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
                     });
                 }
             }
+            // What backs a claim about the world. It rides `refs`, so the wire is unchanged and a
+            // message from before it reads as one that named nothing.
+            let evidence = s("evidence");
+            if !evidence.is_empty() {
+                refs.push(letibot_room::Ref {
+                    kind: letibot_room::EVIDENCE.to_string(),
+                    id: evidence,
+                });
+            }
             Request::Say {
                 id,
                 room: chat_room(&s("room")),

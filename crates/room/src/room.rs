@@ -517,7 +517,7 @@ impl fmt::Display for Refused {
             ),
             Refused::BadRef => write!(
                 f,
-                "a ref is `todo` or `queue` with a row id, at most {} per message",
+                "a ref is `todo`, `queue` or `evidence` with an id, at most {} per message",
                 crate::chat::MAX_REFS
             ),
             Refused::UnknownBlob { id } => write!(

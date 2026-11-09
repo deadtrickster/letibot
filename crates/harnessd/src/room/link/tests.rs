@@ -202,6 +202,30 @@ fn a_hand_without_a_target_is_refused_here_and_never_sent() {
     assert!(e.contains("not a room verb"), "{e}");
 }
 
+/// What backs a claim about the world rides `refs` as an `evidence` ref, so the frame's shape did
+/// not change and a `say` without one carries no such ref at all.
+#[test]
+fn an_evidence_ref_travels_with_the_say_that_carries_it() {
+    let Request::Say { refs, .. } = request_of(
+        "say",
+        &json!({"text": "landed", "evidence": " 2b97a092 ", "queue": "m-7"}),
+    )
+    .expect("a frame") else {
+        panic!("a say is a `Request::Say`")
+    };
+    let kinds: Vec<(&str, &str)> = refs
+        .iter()
+        .map(|r| (r.kind.as_str(), r.id.as_str()))
+        .collect();
+    assert_eq!(kinds, vec![("queue", "m-7"), ("evidence", "2b97a092")]);
+    let Request::Say { refs, .. } =
+        request_of("say", &json!({"text": "who has the disk?"})).expect("a frame")
+    else {
+        panic!("a say is a `Request::Say`")
+    };
+    assert!(refs.is_empty(), "nothing claimed, nothing to back");
+}
+
 /// A session wrote "arango session: ..." with no `to`, which asks nobody for a reply. The
 /// reply says so, and an addressed message does not.
 #[test]
