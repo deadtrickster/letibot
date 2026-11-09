@@ -262,7 +262,7 @@ impl Daemon {
         // and says so, which is what lets this loop act on a PAUSE and not only on an event. Three
         // clocks feed it and one never stands down
         loop {
-            let deadline = sessions.next_idle_at();
+            let deadline = sessions.daemon_idle_at();
             match self.registry().next_work_until(deadline) {
                 // Nothing to do and the deadline is not here yet: the registry never answers
                 // this while there is work, and a session with no check armed and no review clock

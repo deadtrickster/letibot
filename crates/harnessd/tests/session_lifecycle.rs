@@ -697,6 +697,12 @@ fn a_daemon_nothing_needs_exits_after_its_window_and_a_head_holds_it_up() {
         .expect("the daemon opens");
     // The window is armed by this, the first look, and not by the open - so what is asserted is
     // arithmetic against a clock the test took, not how fast this box opened a session.
+    assert!(
+        sessions
+            .daemon_idle_at()
+            .is_some_and(|at| at <= Instant::now()),
+        "an unarmed idle exit makes the daemon's first look due at once"
+    );
     let armed_at = Instant::now();
     assert!(
         !sessions.idle_exit_due(),
@@ -708,6 +714,10 @@ fn a_daemon_nothing_needs_exits_after_its_window_and_a_head_holds_it_up() {
     assert!(
         deadline >= armed_at + window,
         "the first look arms a whole window: {deadline:?} came before {armed_at:?} + {window:?}"
+    );
+    assert!(
+        sessions.daemon_idle_at().is_some_and(|at| at <= deadline),
+        "and the loop wakes for it"
     );
     let hub = d.registry.get(ROOT).expect("the root's hub");
     let head = hub.attach("tui", "test", Caps::default(), 0);

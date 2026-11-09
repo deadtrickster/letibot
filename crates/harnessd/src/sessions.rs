@@ -2512,6 +2512,16 @@ impl<'a> Sessions<'a> {
         .min()
     }
 
+    /// The daemon loop's deadline: [`Sessions::next_idle_at`], and due at once while the idle exit
+    /// is unarmed. Only an idle pass arms it, so a daemon with no other clock would otherwise
+    /// wait with no deadline and never leave. A court never arms it, so this is the daemon's alone.
+    pub fn daemon_idle_at(&self) -> Option<Instant> {
+        if self.base.idle_exit_after.is_some() && self.idle_exit_at.is_none() {
+            return Some(Instant::now());
+        }
+        self.next_idle_at()
+    }
+
     /// When the earliest limit clock falls due, as an `Instant` from the harnesses' own clocks: the
     /// park that resumes a session, and the switch back a limit owes. `None` when nothing is
     /// limited, which is the common case and the one that arms no deadline at all.
