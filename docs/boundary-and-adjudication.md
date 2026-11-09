@@ -978,15 +978,22 @@ spelling, a `.` or `..` must not climb, and the refusal names the file, the line
 - **Secrets are named, and only `github` exists**: `gh auth token` run by the daemon outside the box,
   plus a git credential helper that answers `password=$GH_TOKEN` on github.com and nothing else. The
   wide level's default carries it; the tight level's carries nothing (`secrets_follow_the_perimeter`).
-- **Where an `env` pair goes.** A local command reads it off the seat. A remote placement and a
-  firecode VM have no seat on this box, so `place_the_tools` asks the perimeter for its pairs
-  (`Perimeter::env_pairs`) and hands them over on the spec - and the door applies the table's rule
-  again (`boundary::env_for_a_placement`), so a loader variable written by anything is refused there
-  and the placement's notes name what it dropped. A literal is spelled; a value whose PROVENANCE is a
-  secret rides a channel that is not an argv - the descriptor a command's own secrets already use on
-  a host, and a job's launcher file, which is a file on that machine - and a firecode VM, whose only
-  channel is the one command string `firecode in` takes, refuses it by name instead of putting it on
-  the host's `ps`. The named `secrets` grant stays the seat's injection and does not cross.
+- **Where a grant, and an `env` pair, goes.** A seat on this box reads both off its own view. A
+  remote placement and a firecode VM have no seat here, so `place_the_tools` asks the perimeter
+  (`Perimeter::host_grants`, `Perimeter::env_pairs`) and hands the answers over on the spec, and the far
+  side applies the table's rules again: `boundary::host_grants` refuses what a seat refuses (`~/.ssh`
+  and every fenced store, the home, `/`, a project file's `grants_rw`) and `boundary::env_for_a_placement`
+  refuses a loader variable whatever wrote it, with what it dropped on the placement's notes. A `~/`
+  path is resolved on the MACHINE the view is for and not here, and the host says which paths it has
+  and where they really are - `/var/run/docker.sock` is `/run/docker.sock` there - so a grant is bound
+  where a program looks; one that machine does not have is dropped with a line on the notes rather than
+  failing the open. A grant under `/run` binds over the fresh tmpfs that empties it, and the view links
+  `/var/run` to `/run`, so one bind serves both spellings. The `hide` list does not cross, and neither
+  does the named `secrets` grant, which stays the seat's injection. An env pair: a literal is spelled; a
+  value whose PROVENANCE is a secret rides a channel that is not an argv - the descriptor a command's
+  own secrets already use on a host, and a job's launcher file, which is a file on that machine - and a
+  firecode VM, whose only channel is the one command string `firecode in` takes, refuses it by name
+  instead of putting it on the host's `ps`.
 - `/boundary` draws the perimeter a session actually got, including what a spawn had to be granted
   for it and why (`Perimeter::lines`).
 

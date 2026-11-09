@@ -56,7 +56,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R162 | A granted directory does not cover what is under it, and every subagent asks for the same path again | Code work | a grant covers what is under it at that access, a tree's grants are shared with its subagents, one path is one card, and the card names the asker — built; left: an end-to-end run against a real `bwrap` view, which this box cannot open |
 | R74 | What the 2026-10-11 landings left open | Code work | item 34, recorded OPEN and not scheduled (35, 36 and 39 settled) |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | leticl's `:turn-finished` arm (`src/session/seq-gap.lisp:254`) does not read `ends_turn`, so every round's end is drawn as the turn's end |
-| R121 | What a command boundary holds is hardcoded and invisible | Code work | built: items 1-8, a `leticode` seat with no shell has its file tools held to its own perimeter, R95's carry-over calls `boundary::env_refusal`, and a perimeter's `env` reaches a remote placement's and a firecode VM's commands. left: `grants_rw` and `secrets` are the user file's alone (operator ruling 2026-11-05), and two doors still carry no perimeter env - a job in a LOCAL firecode VM and the `firecode_only` route |
+| R121 | What a command boundary holds is hardcoded and invisible | Code work | built: items 1-8, a `leticode` seat with no shell has its file tools held to its own perimeter, R95's carry-over calls `boundary::env_refusal`, a perimeter's `env` reaches a remote placement's and a firecode VM's commands, and its `[boundary]`/`[perimeter.<name>]` grants build a remote placement's view. left: `grants_rw` and `secrets` are the user file's alone (operator ruling 2026-11-05), a placement's view takes the grants but not a `hide`, and two doors still carry no perimeter env - a job in a LOCAL firecode VM and the `firecode_only` route |
 | R126 | Reviewers fan out to the declared hosts, opt-in | Needs the operator | setting `[queue] reviewer_hosts` in the operator's `leticode.toml` and one live review on lab2x1 (the fan-out is landed and tested against fakes, never against a real host) |
 | R125 | Script plugin layers: where a JavaScript engine comes from, and the JS-side contract | Needs the operator | the two decisions, then `docs/plugins-plan.md` step 11: no JavaScript engine is available offline here, and a vendored one compiled in would run freely as a built-in |
 | R117 | The leticode MCP bridge pushes package and queue events into Claude Code as a channel | Code work | built: the plugin (`claude-plugin/`), its marketplace (`.claude-plugin/marketplace.json`), the two skills it carries, the room waiter as a plugin monitor, and the one `/plugin install` line in `install.sh --help` and the READMEs. left: a self-published channel still needs `--dangerously-load-development-channels`, permission relay is not declared, and no real `claude` has loaded it (the box has none) |
@@ -804,7 +804,7 @@ Heads: this one reads it in `turn_busy` and the bridge gates `Turn::Idle` on it.
 
 ## R121 - What a command boundary holds is hardcoded and invisible
 
-Status: BUILT. Items 1-8 are done: 1-4 (except 4's tool half) on branch z-r121, their remainders and 8 after it, and 5-7 on R121's perimeter branch - and the row's last three are in: a `leticode` seat that seats no shell has its file tools held to its own perimeter, R95's carry-over refuses through `boundary::env_refusal`, and a perimeter's `env` pairs reach the commands of a remote placement and of a firecode VM, by a channel that is never an argv when the value is a secret. The macOS seatbelt suite passed on the Mac (22 tests, including the new hide test).
+Status: BUILT. Items 1-8 are done: 1-4 (except 4's tool half) on branch z-r121, their remainders and 8 after it, and 5-7 on R121's perimeter branch - and the row's last three are in: a `leticode` seat that seats no shell has its file tools held to its own perimeter, R95's carry-over refuses through `boundary::env_refusal`, and a perimeter's `env` pairs reach the commands of a remote placement and of a firecode VM, by a channel that is never an argv when the value is a secret. Its grants reach a placement's view too: the `[boundary]` and `[perimeter.<name>]` paths that build a seat here build the view of a session placed on another machine, so the operator's `grants_rw` on lab2x1 is a socket at its path on lubuntu2. The macOS seatbelt suite passed on the Mac (22 tests, including the new hide test).
 
 The paths a confined command sees are two constant lists: `GRANT_CANDIDATES` in
 `crates/tools/src/exec/confine.rs` (`~/.cargo`, `~/.rustup`, `~/.local/bin`, mise's data and
@@ -921,10 +921,33 @@ Closed on R121's perimeter-env branch (a placement's environment):
   `a_placements_pairs_are_split_by_provenance_and_a_refusal_is_said`,
   `a_placement_keeps_the_ordinary_pairs_and_names_what_it_refused`.
 
+Closed on R121's grants branch (a placement's view, `docs/boundary-and-adjudication.md` §4m):
+
+- The bug the fleet had: the operator set `[boundary] grants_rw = ["/var/run/docker.sock",
+  "/run/docker.sock"]` on lab2x1, and a session placed on lubuntu2 still saw `/run` as an empty tmpfs
+  and no socket, because the view built THERE was the toolchain list and nothing else.
+  `Perimeter::host_grants` and `boundary::host_grants` are the session's grants as the file wrote them
+  (the rules checked here, a `~/` left for the machine that will read it), `place_the_tools` hands them
+  to `SshSpec`, and `Ssh::confinement_probe` asks the host about each one: `HostProbe::grants` says
+  where a path really is there (`readlink -f`, so a symlink is answered by its target) or that it is
+  not. `confine_a_checkout` binds the ones that are, after the tmpfs that empties `/run`, and drops the
+  rest with a line on the placement's notes - a stale config line is never a failed open. A grant under
+  `/run` or `/var/run` makes `pieces_of` emit `--symlink /run /var/run`, so one bind serves both
+  spellings, and `ViewSpec::classify` reads the twin spelling as `Inside`. The probe's cache is keyed by
+  the paths asked about as well as the host, since those are the session's. Tests:
+  `the_operators_grants_reach_the_view_on_the_host`,
+  `a_grant_the_host_does_not_have_is_dropped_with_a_line_on_the_notes`,
+  `a_granted_symlink_is_bound_where_it_really_is`,
+  `a_grant_under_run_binds_over_the_fresh_tmpfs_and_is_there_under_both_spellings` (the local view's
+  argv and classify too), `a_placement_gets_the_grants_as_written_and_the_same_refusals`,
+  `the_grants_a_placement_is_asked_for_are_the_seats_own`.
+
 Open:
 
 - `grants_rw` and `secrets` are the user file's alone, at both `[boundary]` and `[perimeter.<name>]`:
   a project file is editable by a session, and both are a widening. Operator ruling 2026-11-05.
+- A placement's view takes the grants and not a `hide`: `[boundary] hide` masks a seat on this box, and
+  a remote placement's view is built from grants alone, so a hide does not travel there.
 - Item 8's fence is this process's, not a sandbox: a session that runs its own code goes round it by
   construction - that is the shell's view's job, which is why the fence is built from the same view.
   `read_many` over a remote or VM backend is not fenced: those substrates have their own view.
