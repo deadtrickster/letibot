@@ -146,6 +146,8 @@ impl Rig {
             // ask this box what it can confine.
             confine: Some(false),
             vm,
+            env: Vec::new(),
+            env_secrets: Vec::new(),
         }
     }
 

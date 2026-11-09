@@ -852,6 +852,28 @@ impl Harness {
             hub.warn(WORKSPACE_GONE, said.clone());
             return Err(HarnessError::Setup(said));
         }
+        // The perimeter's own `env` pairs, for the two substrates that are ANOTHER machine: a local
+        // backend reads them off its seat, and a remote or VM one has no seat on this box, so the
+        // pairs are asked for here and handed over. Only `env`: a named `secrets` grant stays the
+        // seat's injection. A value that could not be read is said, not dropped in silence.
+        let (placement_env, placement_secrets) = if local_vm || remote.is_some() {
+            let home = std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_default();
+            let p = crate::perimeter::of(cfg).map_err(HarnessError::Setup)?;
+            let (mut spelled, secrets, said) = p.env_pairs(&home);
+            // `[boundary] env` is every level's too, and it is constants only: the seat applies it
+            // after the perimeter's own pairs, so it comes last here for the same reason.
+            let r =
+                crate::perimeter::resolved(&cfg.workspace, &home).map_err(HarnessError::Setup)?;
+            spelled.extend(r.env.iter().map(|(k, v, _)| (k.clone(), v.clone())));
+            for note in said {
+                hub.warn(REMOTE_PLACEMENT, note);
+            }
+            (spelled, secrets)
+        } else {
+            (Vec::new(), Vec::new())
+        };
         // Set by the two arms whose commands run inside a boundary on this box: the seat that
         // fence was built from, so the file tools are fenced with the same one.
         let mut seat: Option<letibot_tools::exec::seat::SeatView> = None;
@@ -1096,6 +1118,8 @@ impl Harness {
                 // --vm` places the tools in a firecode guest there; the probe and the boot are
                 // `SshBackend::place`'s, and a host that cannot boot one is refused by name.
                 vm: cfg.placement.is_vm(),
+                env: placement_env.clone(),
+                env_secrets: placement_secrets.clone(),
             };
             let sb = letibot_tools::remote::SshBackend::place(&spec)
                 .map_err(|e| HarnessError::Setup(e.to_string()))?;

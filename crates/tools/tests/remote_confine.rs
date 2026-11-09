@@ -167,12 +167,27 @@ impl Rig {
             // `bwrap`, and a rig built without one answers that it has none.
             confine: None,
             vm: false,
+            env: Vec::new(),
+            env_secrets: Vec::new(),
         }
     }
 
     fn place(&mut self, egress: Egress) -> SshBackend {
-        let b = SshBackend::place(&self.spec(egress))
-            .unwrap_or_else(|e| panic!("the placement is arranged: {e}"));
+        self.place_with(egress, Vec::new(), Vec::new())
+    }
+
+    /// [`Rig::place`] with the session perimeter's own pairs, as `place_the_tools` hands them over.
+    fn place_with(
+        &mut self,
+        egress: Egress,
+        env: Vec<(String, String)>,
+        env_secrets: Vec<(String, String)>,
+    ) -> SshBackend {
+        let mut spec = self.spec(egress);
+        spec.env = env;
+        spec.env_secrets = env_secrets;
+        let b =
+            SshBackend::place(&spec).unwrap_or_else(|e| panic!("the placement is arranged: {e}"));
         self.worktree = PathBuf::from(b.worktree_path());
         self.jobs = self
             .worktree
@@ -955,6 +970,55 @@ fn a_secret_crosses_to_a_remote_command_without_being_on_any_command_line() {
     assert!(
         helper.contains("--setenv LETIBOT_PLAIN in-the-open"),
         "an ordinary pair still travels as it did: {helper}"
+    );
+}
+
+/// The perimeter's own pairs reach a confined command too, and a value whose PROVENANCE is a secret
+/// goes on the descriptor even when its name says nothing: a name-based split would have spelled it
+/// on the helper's argv, which `ps` on that machine reads.
+#[test]
+fn a_perimeters_secret_crosses_to_a_confined_command_without_its_name_helping() {
+    const GIVEN: &str = "r121fixtureCONFINEDsecret0123456789";
+    let mut rig = Rig::new("perimeterenv", FAKE_READBACK, true);
+    let b = rig.place_with(
+        Egress::Denied,
+        vec![("A_PERIMETER_PAIR".to_string(), "a value".to_string())],
+        vec![("A_PLAINLY_NAMED_PAIR".to_string(), GIVEN.to_string())],
+    );
+    assert!(b.is_confined(), "the fake host answered the probe");
+    let out = b
+        .run(&Command {
+            argv: vec![
+                "sh".into(),
+                "-c".into(),
+                "printf '%s|%s' \"$A_PERIMETER_PAIR\" \"$A_PLAINLY_NAMED_PAIR\"".to_string(),
+            ],
+            cwd: String::new(),
+            env: Vec::new(),
+        })
+        .expect("the command runs");
+    let said = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.exit, 0, "{said}");
+    assert_eq!(said, format!("a value|{GIVEN}"), "{said}");
+
+    let ssh = rig.ssh_calls();
+    assert!(
+        !ssh.contains(GIVEN),
+        "the secret is on the ssh command line, where `ps` reads it: {ssh}"
+    );
+    let helper = rig.bwrap_calls().join("\n");
+    assert!(
+        !helper.contains(GIVEN),
+        "the secret is in the helper's argv on that machine: {helper}"
+    );
+    assert!(
+        helper.contains("--args 200"),
+        "a value the caller marks a secret has to ask for the descriptor, whatever its name: \
+         {helper}"
+    );
+    assert!(
+        helper.contains("--setenv A_PERIMETER_PAIR a value"),
+        "a literal is spelled as it always was: {helper}"
     );
 }
 

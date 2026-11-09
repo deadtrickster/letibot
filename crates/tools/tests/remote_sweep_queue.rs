@@ -113,6 +113,8 @@ fn spec_for(repo: &Path, paths: &Paths, program: &Path) -> SshSpec {
         egress: Egress::Denied,
         confine: Some(false),
         vm: false,
+        env: Vec::new(),
+        env_secrets: Vec::new(),
     }
 }
 

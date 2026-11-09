@@ -168,6 +168,8 @@ impl Rig {
             egress: Egress::Denied,
             confine: Some(false),
             vm: false,
+            env: Vec::new(),
+            env_secrets: Vec::new(),
         }
     }
 
@@ -180,7 +182,20 @@ impl Rig {
     /// than built here, because the remote resolves its root with `pwd -P` and a symlinked
     /// `/var` would make the two spellings differ for a reason that is not the placement.
     fn place(&mut self) -> SshBackend {
-        let b = SshBackend::place(&self.spec()).expect("the placement is arranged");
+        self.place_with(Vec::new(), Vec::new())
+    }
+
+    /// [`Rig::place`] with the session perimeter's own pairs, exactly as `place_the_tools` hands
+    /// them over: one list a literal carries, one a value a file or a command gave.
+    fn place_with(
+        &mut self,
+        env: Vec<(String, String)>,
+        env_secrets: Vec<(String, String)>,
+    ) -> SshBackend {
+        let mut spec = self.spec();
+        spec.env = env;
+        spec.env_secrets = env_secrets;
+        let b = SshBackend::place(&spec).expect("the placement is arranged");
         self.worktree = PathBuf::from(b.worktree_path());
         self.jobs = self
             .worktree
@@ -786,6 +801,8 @@ fn a_plain_folder_is_refused_for_remote_placement() {
         egress: Egress::Denied,
         confine: Some(false),
         vm: false,
+        env: Vec::new(),
+        env_secrets: Vec::new(),
     })
     .expect_err("a folder is not a repository");
     let said = refused.to_string();
@@ -1102,6 +1119,8 @@ fn spec_for(fake: &Fake, repo: &Path, paths: &Paths, bound: Duration) -> SshSpec
         egress: Egress::Denied,
         confine: Some(false),
         vm: false,
+        env: Vec::new(),
+        env_secrets: Vec::new(),
     }
 }
 
@@ -1858,6 +1877,8 @@ fn place_spec_for_test(program: &Path, repo: &Path, paths: &Paths, host: Host) -
         egress: Egress::Denied,
         confine: Some(false),
         vm: false,
+        env: Vec::new(),
+        env_secrets: Vec::new(),
     }
 }
 
@@ -2780,4 +2801,169 @@ fn a_collect_of_nothing_names_the_host_and_the_path_it_looked_for() {
         said.contains("nothing at") && said.contains("99ffffff"),
         "the refusal names the path it looked for: {said}"
     );
+}
+
+/// The perimeter's own `env` pairs reach a REMOTE placement's commands - a foreground call and a
+/// job alike - and a pair that changes what every command runs is refused at the door rather than
+/// handed to another machine's shell.
+#[test]
+fn a_perimeters_env_reaches_a_remote_command_and_a_job() {
+    let mut rig = Rig::new("perimeter-env");
+    let b = rig.place_with(
+        vec![
+            ("A_PERIMETER_PAIR".into(), "a value".into()),
+            ("BASH_ENV".into(), "/tmp/a-loader-nobody-meant".into()),
+        ],
+        Vec::new(),
+    );
+
+    let out = b
+        .run(&Command {
+            argv: vec![
+                "sh".into(),
+                "-c".into(),
+                "printf %s \"$A_PERIMETER_PAIR\"".into(),
+            ],
+            cwd: String::new(),
+            env: Vec::new(),
+        })
+        .expect("the command runs");
+    assert_eq!(out.exit, 0, "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "a value",
+        "the pair did not reach the command's environment there"
+    );
+
+    // The loader variable never crossed, and the placement says which one it dropped: a variable
+    // that is missing in silence is a session guessing at a config it cannot see.
+    let out = b
+        .run(&Command {
+            argv: vec![
+                "sh".into(),
+                "-c".into(),
+                "printf 'loader=%s' \"${BASH_ENV:-none}\"".into(),
+            ],
+            cwd: String::new(),
+            env: Vec::new(),
+        })
+        .expect("the command runs");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "loader=none");
+    let notes = b.placement_notes().join("\n");
+    assert!(
+        notes.contains("BASH_ENV") && notes.contains("not passed"),
+        "the placement does not say it dropped the loader variable: {notes}"
+    );
+
+    // And a job, which is a launcher FILE on that machine rather than this command's environment.
+    let host = b.processes_arc().expect("this backend starts processes");
+    let id = host
+        .spawn(&SpawnRequest {
+            command: "printf 'job=%s' \"$A_PERIMETER_PAIR\"".into(),
+            slug: Some("the-perimeter-pair".into()),
+            cwd: String::new(),
+            scope: ScopeKind::Session,
+            scope_name: None,
+            background: true,
+            env: Vec::new(),
+            tty: false,
+            memory: None,
+            env_trailer: false,
+        })
+        .expect("the job starts");
+    let _ = host.wait_job(&id, Duration::from_secs(30));
+    let waited = Instant::now();
+    let mut seen = String::new();
+    while waited.elapsed() < Duration::from_secs(20) {
+        seen = host
+            .output(&id, 0, 4096)
+            .map(|s| s.text().to_string())
+            .unwrap_or_default();
+        if seen.contains("job=a value") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        seen.contains("job=a value"),
+        "the job's command did not carry the perimeter's pair: {seen}"
+    );
+    assert!(
+        !rig.ssh_log().contains("a-loader-nobody-meant"),
+        "a refused pair reached the far side's command line: {}",
+        rig.ssh_log()
+    );
+}
+
+/// A pair whose VALUE is a secret is never on an argv on either machine, whatever it is called:
+/// one the file spelled under a secret's name, and one a file or a command gave under a name that
+/// says nothing. Both ride the descriptor the command's own secrets already use.
+#[test]
+fn a_perimeters_secret_value_is_never_on_the_ssh_command_line() {
+    const SPELLED: &str = "ghs_r121fixtureSPELLEDvalue0123456789";
+    const GIVEN: &str = "r121fixtureGIVENvalue0123456789";
+    let mut rig = Rig::new("perimeter-secret");
+    let b = rig.place_with(
+        // A name the rule calls a secret, so its value is kept off every argv.
+        vec![("GH_TOKEN".into(), SPELLED.into())],
+        // A value a file gave, under a name nothing would call a secret: the provenance is what
+        // makes it one, and the placement has to know that too.
+        vec![("A_PLAINLY_NAMED_PAIR".into(), GIVEN.into())],
+    );
+    let out = b
+        .run(&Command {
+            argv: vec![
+                "sh".into(),
+                "-c".into(),
+                "printf '%s|%s' \"$GH_TOKEN\" \"$A_PLAINLY_NAMED_PAIR\"".into(),
+            ],
+            cwd: String::new(),
+            env: Vec::new(),
+        })
+        .expect("the command runs");
+    let said = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.exit, 0, "{said}");
+    assert_eq!(
+        said,
+        format!("{SPELLED}|{GIVEN}"),
+        "the values did not reach the command's environment there"
+    );
+
+    // A job too: its pairs are `export` lines in a launcher FILE, which is not an argv.
+    let host = b.processes_arc().expect("this backend starts processes");
+    let id = host
+        .spawn(&SpawnRequest {
+            command: "printf 'job=%s' \"$A_PLAINLY_NAMED_PAIR\"".into(),
+            slug: None,
+            cwd: String::new(),
+            scope: ScopeKind::Session,
+            scope_name: None,
+            background: true,
+            env: Vec::new(),
+            tty: false,
+            memory: None,
+            env_trailer: false,
+        })
+        .expect("the job starts");
+    let _ = host.wait_job(&id, Duration::from_secs(30));
+
+    let log = rig.ssh_log();
+    assert!(
+        !log.contains(SPELLED) && !log.contains(GIVEN),
+        "a perimeter's secret value is on the ssh command line, where `ps` reads it:\n{log}"
+    );
+    // And the job really had it, so the check above is not a pair that never travelled.
+    let waited = Instant::now();
+    let mut seen = String::new();
+    while waited.elapsed() < Duration::from_secs(20) {
+        seen = host
+            .output(&id, 0, 4096)
+            .map(|s| s.text().to_string())
+            .unwrap_or_default();
+        if seen.contains(&format!("job={GIVEN}")) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(seen.contains(&format!("job={GIVEN}")), "{seen}");
 }

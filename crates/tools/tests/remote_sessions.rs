@@ -297,6 +297,8 @@ fn spec_for(fake: &Fake, repo: &Path, paths: &Paths, bound: Duration) -> SshSpec
         egress: Egress::Denied,
         confine: Some(false),
         vm: false,
+        env: Vec::new(),
+        env_secrets: Vec::new(),
     }
 }
 
@@ -1200,6 +1202,8 @@ fn six_packages_on_a_real_host_at_once_are_never_refused() {
             // Production's own answer: ask the host whether it can confine, and use what it says.
             confine: None,
             vm: false,
+            env: Vec::new(),
+            env_secrets: Vec::new(),
         };
         placers.push(std::thread::spawn(move || {
             SshBackend::place(&spec)

@@ -303,6 +303,55 @@ impl Perimeter {
         Ok(r)
     }
 
+    /// The `[perimeter.<name>.env]` pairs, as a placement hands them to another machine: the
+    /// literals, which may be spelled, and the values a file or a command gave, which are secrets
+    /// and may not. Only `env`: a named `secrets` grant is the seat's own injection and is not a
+    /// placement's business. Every entry is checked by the table's own rule again, and one that
+    /// cannot be read comes back as a line rather than a silent absence.
+    pub fn env_pairs(
+        &self,
+        home: &Path,
+    ) -> (Vec<(String, String)>, Vec<(String, String)>, Vec<String>) {
+        let label = self.label();
+        let mut spelled = Vec::new();
+        let mut secret = Vec::new();
+        let mut said = Vec::new();
+        for e in &self.env {
+            let (k, value) = &e.value;
+            if !a_variable_name(k) {
+                said.push(format!(
+                    "{}: {label} env: `{k}` is not a variable name",
+                    e.from
+                ));
+                continue;
+            }
+            let refused = match value {
+                EnvValue::Constant(_) => boundary::env_refusal(k),
+                _ => boundary::env_shape_refusal(k),
+            };
+            if let Some(why) = refused {
+                said.push(format!(
+                    "{}: {label} env: `{k}` is refused, {why}; it did not travel",
+                    e.from
+                ));
+                continue;
+            }
+            let got = match value {
+                EnvValue::Constant(v) => Ok(v.clone()),
+                EnvValue::File(path) => read_one(home, path),
+                EnvValue::Command(cmd) => run_one(cmd),
+            };
+            match got {
+                Ok(v) => match value {
+                    EnvValue::Constant(_) => spelled.push((k.clone(), v)),
+                    _ => secret.push((k.clone(), v)),
+                },
+                Err(why) => said.push(format!("{label} carries no `{k}`: {why}")),
+            }
+        }
+        (spelled, secret, said)
+    }
+
     /// What this perimeter's computed env is worth: every value a file or a command gives, and
     /// every named secret, asked of the box at open. Each answer is a secret, so it is masked in
     /// every slice the daemon reads back.
@@ -843,6 +892,67 @@ mod tests {
             "{said}"
         );
         assert!(!said.contains("s3cr3t"), "{said}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The pairs a PLACEMENT hands over: a literal is spellable, a value a file or a command gave is
+    /// a secret whatever it is called, and one that cannot be read is a line rather than a silent
+    /// absence. A named `secrets` grant is in neither list - it is the seat's injection.
+    #[test]
+    fn a_placements_pairs_are_split_by_provenance_and_a_refusal_is_said() {
+        let home = std::env::temp_dir().join(format!("letibot-perimeter-e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("a fixture home");
+        std::fs::write(home.join("token"), "s3cr3t-from-a-file\n").expect("a token");
+        let mut p = Perimeter::default_for(Level::Wide);
+        p.env.push(entry(
+            ("RUST_LOG".to_string(), EnvValue::Constant("info".into())),
+            true,
+        ));
+        p.env.push(entry(
+            (
+                "A_PLAINLY_NAMED".to_string(),
+                EnvValue::File("~/token".into()),
+            ),
+            true,
+        ));
+        p.env.push(entry(
+            (
+                "A_PLAINLY_NAMED_TOO".to_string(),
+                EnvValue::File("~/nothing-here".into()),
+            ),
+            true,
+        ));
+        p.env.push(entry(
+            ("BASH_ENV".to_string(), EnvValue::Constant("/tmp/no".into())),
+            true,
+        ));
+        let (spelled, secret, said) = p.env_pairs(&home);
+        assert_eq!(spelled, vec![("RUST_LOG".to_string(), "info".to_string())]);
+        assert_eq!(
+            secret,
+            vec![(
+                "A_PLAINLY_NAMED".to_string(),
+                "s3cr3t-from-a-file".to_string()
+            )],
+            "a value a file gave is a secret whatever it is called"
+        );
+        assert!(
+            said.iter()
+                .any(|s| s.contains("BASH_ENV") && s.contains("refused")),
+            "{said:?}"
+        );
+        assert!(
+            said.iter().any(|s| s.contains("A_PLAINLY_NAMED_TOO")),
+            "an unreadable value is said, not dropped: {said:?}"
+        );
+        // The named grant is not a placement's business, even at a level that carries it.
+        assert!(
+            !spelled
+                .iter()
+                .chain(secret.iter())
+                .any(|(k, _)| k == "GH_TOKEN")
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 

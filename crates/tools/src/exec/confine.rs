@@ -1601,16 +1601,25 @@ pub const SECRET_FD: i32 = 200;
 /// [`SECRET_FD`]; `None` when there are none, and then the argv asks for no descriptor. The bytes
 /// are what a local spawn writes into a pipe and what a remote one feeds the ssh session's stdin.
 pub fn secret_args(env: &[(String, String)]) -> Option<Vec<u8>> {
+    let out = setenv_triples(
+        env.iter()
+            .filter(|(k, _)| super::boundary::is_secret_name(k)),
+    );
+    (!out.is_empty()).then_some(out)
+}
+
+/// The same `--setenv` triples, for pairs the CALLER has decided are secret values rather than
+/// ones a NAME marks: a perimeter's `TOKEN = { file = ... }` is a secret whatever it is called, and
+/// a value on an argv is what `ps` reads. Empty when the caller's list is.
+pub fn setenv_triples<'a>(pairs: impl IntoIterator<Item = &'a (String, String)>) -> Vec<u8> {
     let mut out = Vec::new();
-    for (k, v) in env {
-        if super::boundary::is_secret_name(k) {
-            for part in ["--setenv", k.as_str(), v.as_str()] {
-                out.extend_from_slice(part.as_bytes());
-                out.push(0);
-            }
+    for (k, v) in pairs {
+        for part in ["--setenv", k.as_str(), v.as_str()] {
+            out.extend_from_slice(part.as_bytes());
+            out.push(0);
         }
     }
-    (!out.is_empty()).then_some(out)
+    out
 }
 
 /// Give `cmd` the secret pairs of `env` on [`SECRET_FD`], for a bwrap argv that asks for them.
@@ -2106,6 +2115,7 @@ pub fn probe_script(view: &ViewSpec, egress: &Egress) -> String {
         },
         Session::Detached,
         EnvSource::Remote,
+        false,
     );
     s.push_str(&join(&pieces));
     s.push_str(&format!(" /bin/sh -c {}\n", crate::remote::quote(READBACK)));
@@ -2313,7 +2323,7 @@ impl Confinement for Bwrap {
         match env {
             // The far side's own shell supplies the keep-list, and the session is the remote
             // one so a group kill still reaches the sandbox: see [`Session`].
-            EnvSource::Remote => self.remote_pieces(plan, Session::Kept),
+            EnvSource::Remote => self.remote_pieces(plan, Session::Kept, false),
             EnvSource::Process => Ok(self
                 .wrap_with(plan, Session::Detached)?
                 .into_iter()
@@ -2387,6 +2397,7 @@ impl Bwrap {
         &self,
         plan: &ConfinePlan<'_>,
         session: Session,
+        secrets: bool,
     ) -> Result<Vec<Piece>, ExecError> {
         self.check(plan)?;
         Ok(pieces_of(
@@ -2396,6 +2407,7 @@ impl Bwrap {
             plan,
             session,
             EnvSource::Remote,
+            secrets,
         ))
     }
 
@@ -2464,6 +2476,7 @@ fn build_argv(
         plan,
         Session::Detached,
         EnvSource::Process,
+        false,
     )
     .into_iter()
     .map(|p| match p {
@@ -2491,6 +2504,7 @@ pub(crate) fn build_argv_with(
         plan,
         session,
         EnvSource::Process,
+        false,
     )
     .into_iter()
     .map(|p| match p {
@@ -2502,7 +2516,9 @@ pub(crate) fn build_argv_with(
 
 /// The one builder, in pieces: the local argv, the pane's argv and a command on another
 /// machine all come out of here. `helper` is a [`Piece`] because a remote probe has to spell
-/// it `"$(command -v bwrap)"`, which is not known here until that script has run.
+/// it `"$(command -v bwrap)"`, which is not known here until that script has run. `secrets` says a
+/// `--setenv` payload arrives on [`SECRET_FD`] whatever these pairs are called, which is what a
+/// value a file or a command gave needs: its provenance is the secret, not its name.
 fn pieces_of(
     helper: Piece,
     view: &ViewSpec,
@@ -2510,6 +2526,7 @@ fn pieces_of(
     plan: &ConfinePlan<'_>,
     session: Session,
     env: EnvSource,
+    secrets: bool,
 ) -> Vec<Piece> {
     let mut a: Vec<Piece> = vec![helper];
     fn arg(a: &mut Vec<Piece>, s: impl Into<String>) {
@@ -2797,7 +2814,7 @@ fn pieces_of(
         arg(&mut a, k);
         arg(&mut a, v);
     }
-    if sealed {
+    if sealed || secrets {
         arg(&mut a, "--args");
         arg(&mut a, SECRET_FD.to_string());
     }

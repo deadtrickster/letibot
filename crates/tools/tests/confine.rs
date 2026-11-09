@@ -1060,6 +1060,7 @@ fn a_remote_render_names_the_descriptor_and_never_a_secret() {
                 env: &env,
             },
             letibot_tools::exec::Session::Kept,
+            false,
         )
         .expect("a remote command line");
     let line = letibot_tools::exec::confine::join(&pieces);

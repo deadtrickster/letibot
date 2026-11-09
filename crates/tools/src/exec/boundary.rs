@@ -127,6 +127,23 @@ pub fn env_shape_refusal(name: &str) -> Option<&'static str> {
     None
 }
 
+/// The pairs a PLACEMENT's commands may be given, and what was left out: the table's own shape
+/// rule asked again at the door, because these cross to another machine's shell and a caller that
+/// never read the table can hand them over too. A secret's NAME is not refused here - a value a
+/// file or a command gave may legitimately be called `GH_TOKEN` - so keeping its value off every
+/// argv is the caller's job; a literal that carried one was refused when the table was read.
+pub fn env_for_a_placement(pairs: &[(String, String)]) -> (Vec<(String, String)>, Vec<String>) {
+    let mut kept = Vec::new();
+    let mut refused = Vec::new();
+    for (k, v) in pairs {
+        match env_shape_refusal(k) {
+            None => kept.push((k.clone(), v.clone())),
+            Some(why) => refused.push(format!("`{k}` was not passed to the commands there: {why}")),
+        }
+    }
+    (kept, refused)
+}
+
 /// `~` and `$HOME` read as `home`; anything else must already be absolute.
 fn expand(raw: &str, home: &Path) -> PathBuf {
     let rest = raw
@@ -732,6 +749,32 @@ mod tests {
             assert!(err.contains(bad) && err.contains(":7:"), "{err}");
         }
         assert!(env_refusal("RUST_LOG").is_none());
+    }
+
+    /// The door a placement checks its pairs at: a loader variable or one that places the command is
+    /// refused by name, whatever wrote it, and an ordinary pair - or a secret's NAME, which a
+    /// computed value may legitimately carry - passes and is the caller's to route.
+    #[test]
+    fn a_placement_keeps_the_ordinary_pairs_and_names_what_it_refused() {
+        let pairs = vec![
+            ("RUST_LOG".to_string(), "info".to_string()),
+            ("A_PERIMETER_PAIR".to_string(), "a value".to_string()),
+            ("GH_TOKEN".to_string(), "a value".to_string()),
+            ("BASH_ENV".to_string(), "/tmp/no".to_string()),
+            ("LD_PRELOAD".to_string(), "/tmp/no.so".to_string()),
+            ("PATH".to_string(), "/evil".to_string()),
+        ];
+        let (kept, refused) = env_for_a_placement(&pairs);
+        let names: Vec<&str> = kept.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(names, vec!["RUST_LOG", "A_PERIMETER_PAIR", "GH_TOKEN"]);
+        for bad in ["BASH_ENV", "LD_PRELOAD", "PATH"] {
+            assert!(
+                refused
+                    .iter()
+                    .any(|r| r.contains(bad) && r.contains("not passed")),
+                "{bad} was not named: {refused:?}"
+            );
+        }
     }
 
     /// Today's behaviour: no config changes nothing.

@@ -3058,23 +3058,28 @@ fn confined_here(host: &str) -> Option<String> {
 ///
 /// The line is secret-free on both machines, and the secrets it left out come back with it: the
 /// helper reads them from a descriptor (`--args`), which the caller fills from the session's stdin.
+/// `secrets` are the pairs whose VALUE is the secret - a perimeter's `TOKEN = { file = ... }` may
+/// be called anything - so they are payload even when their name says nothing.
 fn wrap_confined(
     confine: &crate::exec::Bwrap,
     cwd: &str,
     env: &[(String, String)],
+    secrets: &[(String, String)],
     argv: &[String],
 ) -> Result<(String, Option<Vec<u8>>), crate::exec::ExecError> {
     let plan = crate::exec::ConfinePlan {
         cwd: std::path::Path::new(cwd),
         env,
     };
-    let pieces = confine.remote_pieces(&plan, crate::exec::Session::Kept)?;
+    let mut payload = crate::exec::confine::secret_args(env).unwrap_or_default();
+    payload.extend(crate::exec::confine::setenv_triples(secrets));
+    let pieces = confine.remote_pieces(&plan, crate::exec::Session::Kept, !payload.is_empty())?;
     let mut line = crate::exec::confine::join(&pieces);
     for a in argv {
         line.push(' ');
         line.push_str(&quote(a));
     }
-    Ok((line, crate::exec::confine::secret_args(env)))
+    Ok((line, (!payload.is_empty()).then_some(payload)))
 }
 
 /// The far shell's own words for taking the secret payload off stdin before the command starts.
@@ -3271,6 +3276,14 @@ pub struct SshSpec {
     /// Boot a firecode VM on the host and run every command of this session inside it (`--host NAME
     /// --vm`). The guest is the boundary, so no `bwrap` is probed for.
     pub vm: bool,
+    /// The pairs this session's perimeter hands its commands (`[boundary] env` and
+    /// `[perimeter.<name>.env]`), filtered again at [`SshBackend::place`]: another machine's shell
+    /// is a door, not a reader of this file. A literal is spelled; a secret's value never is.
+    pub env: Vec<(String, String)>,
+    /// The pairs whose value came from a file or a command: a secret whatever it is called, so it
+    /// goes on the descriptor a secret rides (stdin here, a launcher file for a job) and never on
+    /// an argv. A firecode VM has no second channel, so a foreground call there is refused.
+    pub env_secrets: Vec<(String, String)>,
 }
 
 /// What a placement's branch needs to come home: the local repository, the url the fetch reads and
@@ -3323,6 +3336,12 @@ pub struct SshBackend {
     /// `RUSTUP_HOME` and `CARGO_HOME` at the read-only grants. Without them a confined `cargo` looks
     /// under the session's own empty `$HOME` and finds no toolchain.
     confined_env: Vec<(String, String)>,
+    /// The perimeter's own pairs for every command of this session: `[boundary] env` and
+    /// `[perimeter.<name>.env]`, filtered by [`crate::exec::boundary::env_for_a_placement`] where
+    /// they arrived. The first list may be spelled; the second is a secret's value and rides the
+    /// descriptor, never an argv.
+    env: Vec<(String, String)>,
+    env_secrets: Vec<(String, String)>,
     /// Why it is not confined, when it is not: the probe's own reason.
     unconfined: Option<String>,
     /// What the placement had to say: the worktree, and the local edits that stayed here.
@@ -3705,6 +3724,14 @@ impl SshBackend {
             ));
         }
         let confined_env = toolchain_env(confine.as_ref());
+        // The perimeter's own pairs, at the door of another machine's shell: a loader variable is
+        // refused here whatever wrote it, and what was dropped is said on the notes rather than
+        // left as a variable a command quietly does not have.
+        let (env, mut dropped) = crate::exec::boundary::env_for_a_placement(&spec.env);
+        let (env_secrets, secret_dropped) =
+            crate::exec::boundary::env_for_a_placement(&spec.env_secrets);
+        dropped.extend(secret_dropped);
+        notes.extend(dropped);
         // Every arranging step has run by now, and one that took its time says how long it took: no
         // sink was listening while the placement was being arranged, so the notes are the report.
         notes.extend(ssh.slow_steps());
@@ -3718,7 +3745,8 @@ impl SshBackend {
                     // a pid or exit status a command of this session could write is a kill and a
                     // settlement this daemon would believe.
                     .with_ledger(ledger.clone())
-                    .confined(confine.clone(), confined_env.clone()),
+                    .confined(confine.clone(), confined_env.clone())
+                    .with_env(env.clone(), env_secrets.clone()),
             ))
         } else {
             None
@@ -3760,6 +3788,8 @@ impl SshBackend {
                 .map(|b| b.view.clone()),
             confine,
             confined_env,
+            env,
+            env_secrets,
             unconfined,
             vm,
             brought_back: Mutex::new(None),
@@ -3915,6 +3945,7 @@ impl SshBackend {
         argv: &[String],
     ) -> Result<(String, Option<Vec<u8>>), crate::exec::ExecError> {
         let mut pairs: Vec<(String, String)> = self.confined_env.clone();
+        pairs.extend(self.env.iter().cloned());
         pairs.extend(env.iter().cloned());
         let (line, secrets) = wrap_confined(
             self.confine
@@ -3922,6 +3953,7 @@ impl SshBackend {
                 .expect("only called where a boundary was measured"),
             cwd,
             &pairs,
+            &self.env_secrets,
             argv,
         )?;
         Ok((
@@ -4626,6 +4658,9 @@ impl ExecBackend for SshBackend {
                 "this subagent was downgraded to no exec, so nothing runs on its host",
             ));
         }
+        // What this command carries: the perimeter's own pairs, then the call's, which win.
+        let mut pairs: Vec<(String, String)> = self.env.clone();
+        pairs.extend(cmd.env.iter().cloned());
         let joined = cmd
             .argv
             .iter()
@@ -4634,12 +4669,19 @@ impl ExecBackend for SshBackend {
             .join(" ");
         // A secret's name stays out of this prefix as its value does: the far shell exports it out
         // of the bytes on stdin instead, and `ps` on that machine reads argv too.
-        let env_prefix = cmd
-            .env
+        let env_prefix = pairs
             .iter()
             .filter(|(k, _)| !crate::exec::boundary::is_secret_name(k))
             .map(|(k, v)| format!("{}={} ", quote(k), quote(v)))
             .collect::<String>();
+        // What a VM cannot take: a name this machine calls a secret, and a value whose provenance
+        // is one. Named before anything is sent, so the refusal says which variable is missing.
+        let secret_names: Vec<String> = pairs
+            .iter()
+            .filter(|(k, _)| crate::exec::boundary::is_secret_name(k))
+            .map(|(k, _)| k.clone())
+            .chain(self.env_secrets.iter().map(|(k, _)| k.clone()))
+            .collect();
         let cwd = self.abs(&cmd.cwd);
         // The command's remote process group is recorded as it starts, in this session's own
         // directory there, so a command that has to be abandoned can be ended there. The name
@@ -4658,7 +4700,9 @@ impl ExecBackend for SshBackend {
                 .confined_script(&cwd, &cmd.env, &cmd.argv)
                 .map_err(|e| BackendError::Io(e.to_string()))?,
             None => {
-                let sealed = crate::exec::confine::secret_args(&cmd.env);
+                let mut sealed = crate::exec::confine::secret_args(&pairs).unwrap_or_default();
+                sealed.extend(crate::exec::confine::setenv_triples(&self.env_secrets));
+                let sealed = (!sealed.is_empty()).then_some(sealed);
                 let line = format!("cd {} && {env_prefix}{joined}", quote(&cwd));
                 (secrets_from_stdin(&line, sealed.as_deref(), true), sealed)
             }
@@ -4667,9 +4711,10 @@ impl ExecBackend for SshBackend {
         // needs a secret there is refused rather than run without it.
         if secrets.is_some() && self.vm.is_some() {
             return Err(BackendError::Io(format!(
-                "a secret cannot reach a command inside a firecode VM on {}: `firecode in` does not \
+                "`{}` cannot reach a command inside a firecode VM on {}: `firecode in` does not \
                  carry this session's stdin, and the only other way in is the command line, which \
                  every user there reads with `ps`. Nothing was run.",
+                secret_names.join("`, `"),
                 self.host
             )));
         }
@@ -4980,6 +5025,10 @@ pub struct RemoteProcesses {
     confine: Option<crate::exec::Bwrap>,
     /// The toolchain environment a confined job carries. See [`toolchain_env`].
     confined_env: Vec<(String, String)>,
+    /// The perimeter's pairs for a job: the first list is spelled in the launcher file and the
+    /// second is a secret's value, which is a file on that machine and never an argv either.
+    env: Vec<(String, String)>,
+    env_secrets: Vec<(String, String)>,
 }
 
 /// One job, as this daemon remembers it. The files are the truth; this is the index.
@@ -5064,6 +5113,8 @@ impl RemoteProcesses {
             turn_scope: Mutex::new(None),
             confine: None,
             confined_env: Vec::new(),
+            env: Vec::new(),
+            env_secrets: Vec::new(),
         }
     }
 
@@ -5094,6 +5145,19 @@ impl RemoteProcesses {
         self
     }
 
+    /// The perimeter's own pairs, applied to every job this session starts. A confined job gets
+    /// them inside the boundary; an unconfined one gets them as `export` lines in its launcher,
+    /// which is a file on that machine and, unlike an argv, is what a secret may sit in.
+    pub fn with_env(
+        mut self,
+        env: Vec<(String, String)>,
+        secrets: Vec<(String, String)>,
+    ) -> RemoteProcesses {
+        self.env = env;
+        self.env_secrets = secrets;
+        self
+    }
+
     /// [`wrap_confined`] with this session's own environment folded in, for a launcher FILE: a job
     /// outlives the connection and its stdin is `/dev/null`, so the secrets sit in that file as
     /// base64 on a descriptor instead — still on no argv, and the helper reads them as it would
@@ -5105,10 +5169,11 @@ impl RemoteProcesses {
         argv: &[String],
     ) -> Result<String, ExecError> {
         let mut pairs = self.confined_env.clone();
+        pairs.extend(self.env.iter().cloned());
         pairs.extend(env.iter().cloned());
         match &self.confine {
             Some(c) => {
-                let (line, secrets) = wrap_confined(c, cwd, &pairs, argv)?;
+                let (line, secrets) = wrap_confined(c, cwd, &pairs, &self.env_secrets, argv)?;
                 Ok(secrets_from_the_file(&line, secrets))
             }
             None => Ok(String::new()),
@@ -5316,7 +5381,15 @@ impl RemoteProcesses {
         let mut launcher = String::from("#!/bin/bash\n");
         launcher.push_str(&format!("echo $$ > {}\n", quote(&pid_path)));
         launcher.push_str(&format!("cd {} || exit 97\n", quote(&cwd)));
-        for (k, v) in &req.env {
+        // The perimeter's pairs, then the call's. A confined job's launcher is an OUTER shell that
+        // the helper clears, so what has to reach inside also rides the descriptor; a job in a VM
+        // has no helper at all, and this file - not an argv - is where its `export`s land.
+        for (k, v) in self
+            .env
+            .iter()
+            .chain(self.env_secrets.iter())
+            .chain(req.env.iter())
+        {
             launcher.push_str(&format!("export {}={}\n", quote(k), quote(v)));
         }
         // A SUBSHELL, not a brace group: `{ ...; }` runs in the launcher's own shell, so a command
