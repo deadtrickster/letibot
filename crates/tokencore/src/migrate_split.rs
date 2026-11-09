@@ -360,8 +360,9 @@ fn rows_of(table: &str) -> Option<Rows> {
         | "job_context" | "process" | "queued_prompt" | "adjudication" => {
             Rows::Session("session_id")
         }
-        // parent and child are always in one daemon, and the child is the one that names itself
-        "subagent_run" => Rows::Session("child_id"),
+        // parent and child are always in one daemon, and a child that never got a session row of
+        // its own still has a parent that did
+        "subagent_run" => Rows::Session("parent_id"),
         _ => return None,
     })
 }

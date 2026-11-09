@@ -153,16 +153,18 @@ fn seed(path: &Path) {
         params![S_A],
     )
     .expect("a todo row");
-    // `subagent_run` names the CHILD in the column the filter reads, and the child's own
-    // `workspace_root` is the worktree: the row and its transcript must land in A's file anyway.
-    conn.execute(
-        "INSERT INTO subagent_run
-           (child_id, parent_id, state, prompt, spec_json, instance, resumes, outcome,
-            later_answer, delivered, started_ms, updated_ms)
-         VALUES (?1, ?2, 'done', 'look', '{}', 'box/1/1', 0, 'seen', NULL, 0, 1, 1)",
-        params![S_CHILD, S_A],
-    )
-    .expect("a child run");
+    // The child's own `workspace_root` is the worktree: its run and its transcript land in A's
+    // file anyway. The second run's child never got a session row, and its parent did.
+    for child in [S_CHILD, "s-never-opened"] {
+        conn.execute(
+            "INSERT INTO subagent_run
+               (child_id, parent_id, state, prompt, spec_json, instance, resumes, outcome,
+                later_answer, delivered, started_ms, updated_ms)
+             VALUES (?1, ?2, 'done', 'look', '{}', 'box/1/1', 0, 'seen', NULL, 0, 1, 1)",
+            params![child, S_A],
+        )
+        .expect("a child run");
+    }
     for (request, session) in [("req-a", S_A), ("req-b", S_B)] {
         conn.execute(
             "INSERT INTO adjudication
@@ -261,7 +263,11 @@ fn every_row_lands_in_exactly_one_file_and_the_keys_hash() {
     // Per-session rows, the child's run, and the decisions: one file each, by the column that
     // names them.
     assert_eq!(count(&a.path, "todo"), 1);
-    assert_eq!(count(&a.path, "subagent_run"), 1, "the child's run");
+    assert_eq!(
+        count(&a.path, "subagent_run"),
+        2,
+        "the child's run, and the run whose child has no session row"
+    );
     assert_eq!(count(&a.path, "adjudication"), 1);
     assert_eq!(count(&b.path, "adjudication"), 1);
     // § Table assignment duplicates a content-addressed prefix per project rather than sharing it,
