@@ -375,6 +375,9 @@ pub struct Sessions<'a> {
     /// idle window counts from the later of this and the newest event, because a head that
     /// detaches may say nothing
     busy_seen: Instant,
+    /// What last held the idle exit off, said once each time it changes, so a daemon that never
+    /// exits names why in its log.
+    idle_held: Option<String>,
     /// The operator's run, per session: whether one is in flight on its own thread and the
     /// lines queued behind it. See [`crate::bangrun::State`] - this map only holds the handle
     bangs: HashMap<String, Arc<crate::bangrun::State>>,
@@ -718,6 +721,7 @@ impl<'a> Sessions<'a> {
             // window a loaded box has spent before that look ever comes.
             idle_exit_at: None,
             busy_seen: Instant::now(),
+            idle_held: None,
             bangs: HashMap::new(),
             gatekeeper_said: None,
             plugins: HashMap::new(),
@@ -977,6 +981,7 @@ impl<'a> Sessions<'a> {
             room_at: Some(Instant::now()),
             idle_exit_at: None,
             busy_seen: Instant::now(),
+            idle_held: None,
             bangs: HashMap::new(),
             gatekeeper_said: None,
             plugins: HashMap::new(),
@@ -3050,7 +3055,15 @@ impl<'a> Sessions<'a> {
             Some(at) if at > now => return false,
             Some(_) => {}
         }
-        if self.idle_exit_refusal().is_some() {
+        let held = self.idle_exit_refusal();
+        if held != self.idle_held {
+            match &held {
+                Some(why) => eprintln!("  idle exit held: {why}"),
+                None => eprintln!("  idle exit no longer held"),
+            }
+            self.idle_held = held.clone();
+        }
+        if held.is_some() {
             self.busy_seen = now;
             self.idle_exit_at = Some(now + IDLE_EXIT_RECHECK.min(window / 4));
             return false;
