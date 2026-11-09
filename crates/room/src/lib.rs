@@ -46,4 +46,4 @@ pub use tree::{
     DEFAULT_PROJECT, Group, Member, PROJECT_KEY_LEN, is_project_key, project_key, project_labels,
     room_name, room_of_name, tree_order,
 };
-pub use wire::{Answer, ROOM_PROTOCOL_VERSION, Request, Response};
+pub use wire::{Answer, ROOM_PROTOCOL_VERSION, Request, Response, SayKind};

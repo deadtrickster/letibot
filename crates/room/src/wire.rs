@@ -59,6 +59,27 @@ pub fn upgrade_hint(why: &str) -> Option<&'static str> {
     }
 }
 
+/// What a `say` is. A room line is the default; an ANNOUNCEMENT is the one host-room line that
+/// may name nobody, and it is one line by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SayKind {
+    #[default]
+    Post,
+    Announce,
+}
+
+impl SayKind {
+    /// The kind a word names; anything but `announce` is an ordinary line, so an old client and a
+    /// misspelling both say something rather than fail.
+    pub fn of(word: &str) -> SayKind {
+        match word.trim() {
+            "announce" => SayKind::Announce,
+            _ => SayKind::Post,
+        }
+    }
+}
+
 /// What a client sends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -102,6 +123,10 @@ pub enum Request {
         /// server fills the message's attachments from its store and refuses an id it does not hold.
         #[serde(default)]
         attachments: Vec<String>,
+        /// A room line, or an announcement: the host room takes no line that names nobody unless it
+        /// says this. Absent from every frame written before it, which is an ordinary line.
+        #[serde(default)]
+        kind: SayKind,
     },
     /// A direct message: read by its author and `to` only.
     Dm {
@@ -838,8 +863,29 @@ mod tests {
         // so a version-9 head reading a 10 daemon's `say` sees exactly what it always saw.
         let old: Request = serde_json::from_str(r#"{"type":"say","id":"1","text":"hi"}"#).unwrap();
         match old {
-            Request::Say { attachments, .. } => assert!(attachments.is_empty()),
+            Request::Say {
+                attachments, kind, ..
+            } => {
+                assert!(attachments.is_empty());
+                assert_eq!(
+                    kind,
+                    SayKind::Post,
+                    "a frame with no kind is an ordinary line"
+                );
+            }
             other => panic!("a say is a say: {other:?}"),
         }
+        // The one kind a host room takes from a session that names nobody, and the default for
+        // every other word: a misspelling says something rather than failing.
+        let announce: Request =
+            serde_json::from_str(r#"{"type":"say","id":"1","text":"hi","kind":"announce"}"#)
+                .unwrap();
+        match announce {
+            Request::Say { kind, .. } => assert_eq!(kind, SayKind::Announce),
+            other => panic!("a say is a say: {other:?}"),
+        }
+        assert_eq!(SayKind::of("announce"), SayKind::Announce);
+        assert_eq!(SayKind::of("announce "), SayKind::Announce);
+        assert_eq!(SayKind::of("fyi"), SayKind::Post);
     }
 }

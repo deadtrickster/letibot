@@ -1302,6 +1302,7 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
                 // Filled by `SessionRoom::call` once the files are uploaded: the ids exist only
                 // after the room has hashed the bytes.
                 attachments: Vec::new(),
+                kind: letibot_room::SayKind::of(&s("kind")),
             }
         }
         "read" => Request::Read {

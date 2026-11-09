@@ -2057,7 +2057,10 @@ mod tests {
             None
         );
         assert_eq!(
-            echo_of("who has the disk? the gate is red on lab2x1, step 3 of the build", &recent),
+            echo_of(
+                "who has the disk? the gate is red on lab2x1, step 3 of the build",
+                &recent
+            ),
             None
         );
         // A ref that differs is a different post, and so is a post that says more.
@@ -2071,8 +2074,11 @@ mod tests {
                     omicron pi rho sigma tau upsilon";
         let recent = vec![msg(13, long)];
         assert_eq!(
-            echo_of("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi \
-                     omicron pi rho sigma tau phi", &recent),
+            echo_of(
+                "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi \
+                     omicron pi rho sigma tau phi",
+                &recent
+            ),
             Some(13)
         );
         assert_eq!(
@@ -2552,7 +2558,10 @@ mod store_tests {
         );
         assert!(c.is_record(m.seq));
         let back = c.read(HOST_ROOM, 0, None, None, None, |_| true);
-        assert_eq!(back.rows[0].text, whole, "the read answers the record whole");
+        assert_eq!(
+            back.rows[0].text, whole,
+            "the read answers the record whole"
+        );
         let again = Chat::open(&p);
         let back = again.read(HOST_ROOM, 0, None, None, None, |_| true);
         assert_eq!(back.rows[0].text, whole, "and it survives a restart");

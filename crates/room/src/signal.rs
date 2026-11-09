@@ -74,6 +74,10 @@ enum Line {
 pub enum Count {
     /// A `read` of a message the room filed as a record: did the overflow get opened again?
     RecordOpen,
+    /// A `say` into the host room that named nobody and was not an announcement.
+    HostRoomRefused,
+    /// A project-room post that pointed at nothing: the leak this count is here to measure.
+    ProjectPostWithoutRef,
 }
 
 impl Count {
@@ -81,6 +85,8 @@ impl Count {
     pub fn word(self) -> &'static str {
         match self {
             Count::RecordOpen => "record_open",
+            Count::HostRoomRefused => "host_room_refused",
+            Count::ProjectPostWithoutRef => "project_post_without_ref",
         }
     }
 }

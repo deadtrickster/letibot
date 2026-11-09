@@ -2220,6 +2220,7 @@ impl Server {
                 thread,
                 refs,
                 attachments,
+                kind,
             } => self.route_say(
                 project,
                 seat,
@@ -2231,6 +2232,7 @@ impl Server {
                 *thread,
                 refs,
                 attachments,
+                *kind,
                 now,
             ),
             Request::Dm {
@@ -2396,7 +2398,11 @@ impl Server {
                     *before,
                     |m| self.visible(name, seat, project, m),
                 );
-                let opened = history.rows.iter().filter(|m| chat.is_record(m.seq)).count();
+                let opened = history
+                    .rows
+                    .iter()
+                    .filter(|m| chat.is_record(m.seq))
+                    .count();
                 drop(chat);
                 // The measurement R164 needs: a record filed is only worth filing if it is opened.
                 if opened > 0 {
@@ -2631,6 +2637,7 @@ impl Server {
         thread: Option<u64>,
         refs: &[chat::Ref],
         attachments: &[String],
+        kind: crate::SayKind,
         now: u64,
     ) -> Response {
         let refuse = |why: crate::Refused| Response::Refused {
@@ -2640,6 +2647,11 @@ impl Server {
         if seat != Seat::Operator && attachments.is_empty() && chat::is_bare_ack(text) {
             self.note_null_post(name, seat);
             return refuse(crate::Refused::NullPost);
+        }
+        // The host room is an announcement channel, and an announcement is one line: a long one is
+        // refused here rather than filed, because the room's first line would be the whole of it.
+        if kind == crate::SayKind::Announce && text.lines().count() > 1 {
+            return refuse(crate::Refused::AnnounceNotOneLine);
         }
         let text = match self.resolve_mentions(project, text) {
             Ok(t) => t,
@@ -2773,6 +2785,24 @@ impl Server {
             if !self.may_see(name, seat, project, &room) {
                 return refuse(crate::Refused::UnknownChatRoom { room });
             }
+            // The box-wide room carries announcements and mentions, not talk: a line there is for
+            // somebody or it is for everybody, and anything else belongs to a project room.
+            if room == chat::HOST_ROOM
+                && seat != Seat::Operator
+                && kind != crate::SayKind::Announce
+                && chat::mentions(&text).is_empty()
+            {
+                self.note_count(crate::signal::Count::HostRoomRefused);
+                return refuse(crate::Refused::HostRoomUnaddressed);
+            }
+            // A project room's line that points at nothing is the leak to measure, not to refuse.
+            if seat != Seat::Operator
+                && chat::project_of_room(&room).is_some()
+                && refs.is_empty()
+                && !chat::has_ref(&text)
+            {
+                self.note_count(crate::signal::Count::ProjectPostWithoutRef);
+            }
             self.invite_the_named(&room, project, &text);
             self.say_and_push(
                 id,
@@ -2872,7 +2902,16 @@ impl Server {
             };
         }
         self.append_and_push(
-            id, room, author, kind, to, thread, refs, attachments, text, now,
+            id,
+            room,
+            author,
+            kind,
+            to,
+            thread,
+            refs,
+            attachments,
+            text,
+            now,
         )
     }
 
@@ -2892,24 +2931,19 @@ impl Server {
     ) -> Response {
         // The operator's long line is carried whole: a person is not filing a record for the room.
         let file = kind != Seat::Operator;
-        let appended = self
-            .inner
-            .chat
-            .lock()
-            .expect("the chat lock")
-            .append_post(
-                now,
-                id,
-                room,
-                author,
-                kind,
-                to,
-                thread,
-                refs,
-                attachments,
-                text,
-                file,
-            );
+        let appended = self.inner.chat.lock().expect("the chat lock").append_post(
+            now,
+            id,
+            room,
+            author,
+            kind,
+            to,
+            thread,
+            refs,
+            attachments,
+            text,
+            file,
+        );
         let message = match appended {
             Ok(m) => m,
             Err(why) => {
@@ -2935,6 +2969,15 @@ impl Server {
             .lock()
             .expect("the signals lock")
             .refused(name, seat.word());
+    }
+
+    /// One of the room's named counters, up by one - what the `signals` frame's `counts` reads.
+    fn note_count(&self, what: crate::signal::Count) {
+        self.inner
+            .signals
+            .lock()
+            .expect("the signals lock")
+            .counted(what);
     }
 
     /// Enter a message in the signal ledger, and credit the thread it answers.
@@ -4781,11 +4824,12 @@ mod tests {
             &Request::Say {
                 id: "1".into(),
                 room: chat::HOST_ROOM.into(),
-                text: "look: ![shot](blob:ID)".into(),
+                text: "@s-a look: ![shot](blob:ID)".into(),
                 to: None,
                 thread: None,
                 refs: Vec::new(),
                 attachments: vec![blob.id.clone()],
+                kind: Default::default(),
             },
             1_001,
         );
@@ -4837,6 +4881,7 @@ mod tests {
                 thread: None,
                 refs: Vec::new(),
                 attachments: vec!["a".repeat(64)],
+                kind: Default::default(),
             },
             1_000,
         );

@@ -794,7 +794,8 @@ fn a_stalled_reader_is_disconnected_and_does_not_block_the_others() {
     let (poster, _events) = client(&server, "s-poster");
     // A frame is at most 4 000 bytes of text, and this is more than any socket buffer on a box:
     // the stalled writer blocks on its socket, and then its queue is the only thing taking frames.
-    const FRAMES: usize = 400;
+    // The room files each of these as a record - the head and a ref - so the count is what fills it.
+    const FRAMES: usize = 1_000;
     let text = "x".repeat(3_990);
     for i in 0..FRAMES {
         let answer = call(
@@ -807,6 +808,7 @@ fn a_stalled_reader_is_disconnected_and_does_not_block_the_others() {
                 thread: None,
                 refs: Vec::new(),
                 attachments: Vec::new(),
+                kind: letibot_room::SayKind::Announce,
             },
         );
         assert!(matches!(answer, Response::Said { .. }), "{answer:?}");
@@ -908,6 +910,7 @@ fn an_external_that_has_gone_is_not_known_any_more() {
             thread: None,
             refs: Vec::new(),
             attachments: Vec::new(),
+            kind: Default::default(),
         })
         .expect("an answer")
     };
@@ -963,6 +966,7 @@ fn a_name_is_known_the_moment_its_welcome_is_read() {
                 thread: None,
                 refs: Vec::new(),
                 attachments: Vec::new(),
+                kind: Default::default(),
             })
             .expect("an answer");
         assert!(matches!(answer, Response::Said { .. }), "{i}: {answer:?}");

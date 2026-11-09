@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use letibot_room::client::Client;
 use letibot_room::lease::CoordinatorLease;
 use letibot_room::server::{Server, now_ms};
-use letibot_room::{Request, Response, Room, Speaker};
+use letibot_room::{HOST_ROOM, Request, Response, Room, Speaker};
 
 const LEASE: u64 = 90_000;
 const LONG_SWEEP: u64 = 3_600_000;
@@ -89,12 +89,13 @@ fn a_session_reconnects_across_a_restart_on_the_same_listener_and_loses_nothing(
     let said = match c
         .request(&Request::Say {
             id: "m1".into(),
-            room: String::new(),
-            text: "before the restart".into(),
+            room: HOST_ROOM.into(),
+            text: "@s-a before the restart".into(),
             to: None,
             thread: None,
             refs: Vec::new(),
             attachments: Vec::new(),
+            kind: Default::default(),
         })
         .expect("say")
     {
@@ -145,7 +146,7 @@ fn a_session_reconnects_across_a_restart_on_the_same_listener_and_loses_nothing(
         .expect("read after the restart")
     {
         Response::History(h) => assert!(
-            h.rows.iter().any(|m| m.text == "before the restart"),
+            h.rows.iter().any(|m| m.text == "@s-a before the restart"),
             "{:?}",
             h.rows
         ),

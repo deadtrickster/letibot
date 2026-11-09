@@ -1055,6 +1055,11 @@ pub fn tool_list() -> Vec<Value> {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Up to 4 paths in this working folder, 8 MiB each: png, jpeg, gif, webp or text."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["post", "announce"],
+                        "description": "`announce` is one line for the whole room, the only `host` line that names nobody."
                     }
                 },
                 "required": ["text"]
@@ -1412,6 +1417,9 @@ pub fn call_in(
                 "text": text,
                 "refs": arg_refs(args)?,
             });
+            if let Some(kind) = arg_opt_str(args, "kind")? {
+                f["kind"] = json!(kind);
+            }
             if !files.is_empty() {
                 f["attachments"] = json!(
                     files

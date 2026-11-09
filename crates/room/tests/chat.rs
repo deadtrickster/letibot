@@ -70,6 +70,7 @@ impl Seated {
             thread: None,
             refs: Vec::new(),
             attachments: Vec::new(),
+            kind: Default::default(),
         })
     }
 
@@ -161,10 +162,11 @@ fn two_projects_and_the_host_room_on_one_coordinator() {
         Refused::UnknownChatRoom { .. }
     ));
 
-    // A host message reaches both projects and the operator, but not its author.
-    said(a1.say("3", HOST_ROOM, "to the host"));
-    assert_eq!(b1.next().0.text, "to the host");
-    assert_eq!(op.next().0.text, "to the host");
+    // A host message reaches both projects and the operator, but not its author. The host room
+    // carries a mention, so this one names the session it is for.
+    said(a1.say("3", HOST_ROOM, "@s-b1 to the host"));
+    assert_eq!(b1.next().0.text, "@s-b1 to the host");
+    assert_eq!(op.next().0.text, "@s-b1 to the host");
     a1.silent();
 
     // The operator posts in all three rooms.
@@ -227,6 +229,7 @@ fn dms_mentions_threads_and_the_inbox() {
         thread: Some(root.seq),
         refs: Vec::new(),
         attachments: Vec::new(),
+        kind: Default::default(),
     }));
     assert_eq!(reply.thread, Some(root.seq));
     assert_eq!(reply.room, project_room(A));
@@ -672,6 +675,7 @@ fn a_short_bridge_name_is_the_one_connected_bridge_or_ambiguous() {
         thread: None,
         refs: Vec::new(),
         attachments: Vec::new(),
+        kind: Default::default(),
     }));
     assert_eq!(m.to.as_deref(), Some("cc@app"));
     assert_eq!(m.text, "@cc@app look");
@@ -881,6 +885,7 @@ fn say_to(s: &Seated, id: &str, to: &str, text: &str) -> Response {
         thread: None,
         refs: Vec::new(),
         attachments: Vec::new(),
+        kind: Default::default(),
     })
 }
 
@@ -1079,7 +1084,12 @@ fn a_review_queue_reads_and_answers_as_gatekeeper_at_its_project() {
     assert_eq!(heard.author, "gatekeeper@arangodb", "{heard:?}");
 
     for (i, to) in ["gatekeeper@arangodb", "gatekeeper"].iter().enumerate() {
-        let m = said(say_to(&a1, &format!("t{i}"), to, &format!("review row {i}")));
+        let m = said(say_to(
+            &a1,
+            &format!("t{i}"),
+            to,
+            &format!("review row {i}"),
+        ));
         let (heard, names_you) = gk.next_seq(m.seq);
         assert!(names_you, "`{to}` did not reach the queue: {heard:?}");
     }
@@ -1115,6 +1125,7 @@ fn a_to_is_a_private_message_and_no_room_holds_a_copy() {
         thread: None,
         refs: Vec::new(),
         attachments: Vec::new(),
+        kind: Default::default(),
     }));
     assert_eq!(m.room, "dm", "a `to` say is a dm, not a host line");
     assert_eq!(m.to.as_deref(), Some("s-a2"));
@@ -1146,6 +1157,7 @@ fn a_to_is_a_private_message_and_no_room_holds_a_copy() {
         thread: None,
         refs: Vec::new(),
         attachments: Vec::new(),
+        kind: Default::default(),
     }));
     assert_eq!(m.room, "dm");
     assert_eq!(b1.next_seq(m.seq).0.text, "over to your project");
@@ -1159,6 +1171,7 @@ fn a_to_is_a_private_message_and_no_room_holds_a_copy() {
         thread: None,
         refs: Vec::new(),
         attachments: Vec::new(),
+        kind: Default::default(),
     }));
     assert_eq!(m.room, "dm");
     assert_eq!(op.next_seq(m.seq).0.text, "a question for you");
@@ -1220,6 +1233,7 @@ fn an_at_of_an_outsider_invites_them_into_the_room() {
         thread: Some(root.seq),
         refs: Vec::new(),
         attachments: Vec::new(),
+        kind: Default::default(),
     }));
     assert_eq!(m.room, room_a, "a mention does not move the message");
     assert_eq!(m.to, None, "nothing about a mention is private");
@@ -1271,6 +1285,7 @@ fn a_reply_stays_in_its_roots_room() {
         thread: Some(root.seq),
         refs: Vec::new(),
         attachments: Vec::new(),
+        kind: Default::default(),
     }));
     assert_eq!(reply.room, room_a, "the root's room, not the one named");
     assert!(a1.next_seq(reply.seq).1, "a reply names its root's author");
@@ -1284,6 +1299,7 @@ fn a_reply_stays_in_its_roots_room() {
         thread: Some(root.seq),
         refs: Vec::new(),
         attachments: Vec::new(),
+        kind: Default::default(),
     }));
     assert_eq!(private.room, "dm");
     assert_eq!(private.to.as_deref(), Some("s-a1"));
@@ -1305,6 +1321,7 @@ fn a_reply_stays_in_its_roots_room() {
             thread: Some(9_999),
             refs: Vec::new(),
             attachments: Vec::new(),
+            kind: Default::default(),
         })),
         Refused::UnknownThread { thread: 9_999 }
     ));
@@ -1325,6 +1342,7 @@ fn a_reply_stays_in_its_roots_room() {
         thread: Some(dm.seq),
         refs: Vec::new(),
         attachments: Vec::new(),
+        kind: Default::default(),
     }));
     assert_eq!(back.room, "dm");
     assert_eq!(back.to.as_deref(), Some("s-a1"));
@@ -1608,6 +1626,66 @@ fn an_ack_carrying_a_ref_is_not_refused() {
     }
 }
 
+/// The host room carries announcements and mentions: a session's line that names nobody is refused
+/// there and said instead in its project room; the operator and an announcement are exempt.
+#[test]
+fn the_host_room_refuses_a_line_that_names_nobody() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let peer = seat(&server, "s-peer", A, Seat::Session);
+    let other = seat(&server, "s-other", A, Seat::Session);
+    let op = seat(&server, OPERATOR, "", Seat::Operator);
+    let why = refused(peer.say("1", HOST_ROOM, "the build is green"));
+    assert_eq!(why, Refused::HostRoomUnaddressed);
+    assert!(why.to_string().contains("@name"), "{why}");
+    server.flush_signals();
+    assert_eq!(server.scorecard().counts.get("host_room_refused"), Some(&1));
+    // A mention is how a line names somebody, an announcement is how it names everybody, and the
+    // operator's own broadcast is the room's original traffic.
+    said(peer.say("2", HOST_ROOM, "@s-other the build is green"));
+    let announced = peer.call(Request::Say {
+        id: "3".into(),
+        room: HOST_ROOM.into(),
+        text: "the box restarts at six".into(),
+        to: None,
+        thread: None,
+        refs: Vec::new(),
+        attachments: Vec::new(),
+        kind: letibot_room::SayKind::Announce,
+    });
+    said(announced);
+    said(op.say("4", HOST_ROOM, "the box restarts at six"));
+    // An announcement is one line, and a longer one is refused rather than filed.
+    let multi = peer.call(Request::Say {
+        id: "5".into(),
+        room: HOST_ROOM.into(),
+        text: "one line\nand another".into(),
+        to: None,
+        thread: None,
+        refs: Vec::new(),
+        attachments: Vec::new(),
+        kind: letibot_room::SayKind::Announce,
+    });
+    assert_eq!(refused(multi), Refused::AnnounceNotOneLine);
+    // A project room takes the same line, and counts that it points at nothing.
+    said(other.say("6", "", "the build is green"));
+    server.flush_signals();
+    let card = server.scorecard();
+    assert_eq!(
+        card.counts.get("project_post_without_ref"),
+        Some(&1),
+        "{card:?}"
+    );
+    // A line that points at something is what the project room is for.
+    said(other.say("7", "", "the build is green, see #2"));
+    server.flush_signals();
+    assert_eq!(
+        server.scorecard().counts.get("project_post_without_ref"),
+        Some(&1),
+        "a ref is not counted"
+    );
+}
+
 /// A post over 3 lines or 400 characters is filed as a record: the room carries its first line and
 /// a ref, one read answers the whole, and the read is what the room counts.
 #[test]
@@ -1682,10 +1760,18 @@ fn a_repeat_of_a_recent_post_is_refused_and_names_it() {
         thread: Some(first.seq),
         refs: Vec::new(),
         attachments: Vec::new(),
+        kind: Default::default(),
     };
-    assert_eq!(refused(a2.call(thread)), Refused::EchoPost { seq: first.seq });
+    assert_eq!(
+        refused(a2.call(thread)),
+        Refused::EchoPost { seq: first.seq }
+    );
     // New words are a message, and the operator may say a thing twice.
-    said(a2.say("4", "", "the gate is red on lab2x1 at step three, and I have the log"));
+    said(a2.say(
+        "4",
+        "",
+        "the gate is red on lab2x1 at step three, and I have the log",
+    ));
     said(op.say("5", "", "noted"));
     said(op.say("6", "", "noted"));
 }

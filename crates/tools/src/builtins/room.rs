@@ -77,7 +77,8 @@ impl Tool for RoomTool {
                  the text a public mention; both wake them. Only `answer` and `decline` settle an \
                  ask. `own` a scope (path glob or topic) so others see who has it; edits in it \
                  renew it; `hand` waits for the receiver's `accept`. `status` is your one line, it \
-                 expires. `claude-code` and `cc@...` are other seats. {beat} {STANDING_RULE}"
+                 expires. `claude-code` and `cc@...` are other seats. `host` takes `@name` or \
+                 `kind: announce`; a refusal is etiquette, not an error. {beat} {STANDING_RULE}"
             ),
             json!({
                 "type": "object",
@@ -110,11 +111,10 @@ impl Tool for RoomTool {
                     },
                     "text": {
                         "type": "string",
-                        "description": "`say`: the message. `waiting`/`status`: your line. `answer`/`decline`: the reply."
+                        "description": "The message, your `waiting`/`status` line, or an `answer`/`decline` reply."
                     },
                     "why": {
-                        "type": "string",
-                        "description": "`abandon`: why."
+                        "type": "string"
                     },
                     "says": {
                         "type": "string",
@@ -127,7 +127,7 @@ impl Tool for RoomTool {
                     "decision": {
                         "type": "string",
                         "enum": ["retry", "hand", "drop"],
-                        "description": "`retry`, `hand` (to `to`) or `drop`."
+                        "description": "`hand` gives it to `to`."
                     },
                     "to": {
                         "type": "string",
@@ -159,11 +159,11 @@ impl Tool for RoomTool {
                     },
                     "evidence": {
                         "type": "string",
-                        "description": "`say`: what backs a state claim: a sha, a gate or queue row id. Without it the claim reads `unbacked`."
+                        "description": "`say`: a sha or gate/queue row id backing a claim, else it reads `unbacked`."
                     },
                     "check": {
                         "type": "boolean",
-                        "description": "`read`: judge each claim against the queue."
+                        "description": "`read`: judge claims against the queue."
                     },
                     "session": {
                         "type": "string",
@@ -180,7 +180,12 @@ impl Tool for RoomTool {
                     "attachments": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "`say`: up to 4 workspace paths, 8 MiB each (png, jpeg, gif, webp, text)."
+                        "description": "`say`: up to 4 paths, 8 MiB each (png, jpeg, gif, webp, text)."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["post", "announce"],
+                        "description": "`say`: one line to all."
                     }
                 },
                 "required": ["verb"]

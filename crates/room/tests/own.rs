@@ -151,6 +151,7 @@ fn a_claim_is_refused_by_overlap_handed_over_closed_loop_and_kept_in_the_store()
             thread: None,
             refs: Vec::new(),
             attachments: Vec::new(),
+            kind: Default::default(),
         })
         .unwrap()
     {

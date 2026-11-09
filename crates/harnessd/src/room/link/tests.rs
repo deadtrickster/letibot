@@ -521,6 +521,7 @@ fn a_host_line_between_others_does_not_wake_a_project_session() {
             thread: None,
             refs: Vec::new(),
             attachments: Vec::new(),
+            kind: Default::default(),
         })
         .expect("the operator says");
     assert!(

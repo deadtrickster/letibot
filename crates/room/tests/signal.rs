@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use letibot_room::client::Client;
 use letibot_room::server::Server;
-use letibot_room::{Act, Event, HOST_ROOM, Request, Response, Room, Seat, Speaker, room_name};
+use letibot_room::{Act, Event, Request, Response, Room, Seat, Speaker, room_name};
 
 const WINDOW_MS: u64 = 400;
 
@@ -26,12 +26,14 @@ fn seat(server: &Server, name: &str) -> Client {
 fn say(c: &Client, id: &str, thread: Option<u64>, text: &str) -> Response {
     c.request(&Request::Say {
         id: id.into(),
-        room: HOST_ROOM.into(),
+        // The project room: the host room carries mentions and announcements only.
+        room: String::new(),
         text: text.into(),
         to: None,
         thread,
         refs: Vec::new(),
         attachments: Vec::new(),
+        kind: Default::default(),
     })
     .expect("an answer")
 }
@@ -88,7 +90,7 @@ fn the_scorecard_counts_what_followed() {
     // A read of the thread by another member is an action too.
     let read = seq(say(&a, "7", None, "who owns the cache?"));
     b.request(&Request::Read {
-        room: HOST_ROOM.into(),
+        room: String::new(),
         since: 0,
         last: None,
         thread: Some(read),

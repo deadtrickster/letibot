@@ -80,6 +80,7 @@ impl Seated {
             thread,
             refs: Vec::new(),
             attachments: Vec::new(),
+            kind: Default::default(),
         })
     }
 

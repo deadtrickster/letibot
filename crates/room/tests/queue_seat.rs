@@ -68,6 +68,7 @@ impl Seated {
             thread: None,
             refs: Vec::new(),
             attachments: Vec::new(),
+            kind: Default::default(),
         })
     }
 

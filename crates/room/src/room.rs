@@ -255,6 +255,11 @@ pub enum Refused {
     EchoPost {
         seq: u64,
     },
+    /// A line in the box-wide host room that names nobody: that room carries announcements and
+    /// mentions, and talk between two sessions belongs in their project room or a dm.
+    HostRoomUnaddressed,
+    /// An announcement that runs to more than one line. An announcement is one line, refusably.
+    AnnounceNotOneLine,
     /// A chat room this connection may not see, or that does not exist.
     UnknownChatRoom {
         room: String,
@@ -477,6 +482,16 @@ impl fmt::Display for Refused {
                 f,
                 "not posted: this repeats #{seq} almost word for word - say only what is new, or \
                  point at #{seq}"
+            ),
+            Refused::HostRoomUnaddressed => write!(
+                f,
+                "not posted: `host` carries announcements and mentions - name who it is for with \
+                 `@name`, dm them, or send it as `kind: announce`"
+            ),
+            Refused::AnnounceNotOneLine => write!(
+                f,
+                "not posted: an announcement is one line - say the first line as the announcement, \
+                 and file the rest as a row or a record"
             ),
             Refused::UnknownChatRoom { room } => write!(
                 f,
