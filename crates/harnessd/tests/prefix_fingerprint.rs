@@ -410,3 +410,97 @@ fn a_head_attached_before_the_harness_opens_is_told_after_the_restored_rows() {
          whole conversation: offer at {told}, last row at {last_row}"
     );
 }
+
+/// Open with a head already attached and return the `prefix_stale` warning it was sent, if any.
+/// The head is the reader the disclosure is for, so the test reads what reached it.
+fn stale_warning_on_open(parts: &Parts, cfg: &Config) -> Option<String> {
+    let hub = Hub::new(&cfg.session_id);
+    let registry = Registry::of(hub.clone());
+    let head = hub.attach(
+        "tui",
+        "operator",
+        letibot_sessionlog::protocol::Caps::default(),
+        0,
+    );
+    let h = Harness::open_with_registry(parts, cfg.clone(), hub.clone(), None, None, registry)
+        .expect("the session must open");
+    assert!(h.resumed().is_some(), "the seeded session resumes");
+    let events = loop {
+        match hub.next_batch(&head.head_id, 1_000_000) {
+            letibot_sessionlog::hub::Delivery::Events(b) => break b.events().to_vec(),
+            letibot_sessionlog::hub::Delivery::Frames(_) => {}
+            other => panic!("the attached head must be fed live, got {other:?}"),
+        }
+    };
+    events.into_iter().find_map(|e| match e.event {
+        letibot_sessionlog::SessionEvent::Warning { code, detail, .. }
+            if code == "prefix_stale" =>
+        {
+            Some(detail)
+        }
+        _ => None,
+    })
+}
+
+/// A resume seated with fewer tools than its prompt names says which ones are gone, through the
+/// warning table's `prefix_stale`; a resume with the same tools says nothing.
+#[test]
+fn a_resume_with_a_tool_removed_names_it_and_the_same_tools_say_nothing() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("tools-gone");
+    let ws = TempDir::new("ws-tools-gone");
+    let store = dir.path().join("sessions.db");
+    let session_id = "prefix-tools-gone";
+    let mut with_bash = config(&store, session_id, ws.path());
+    with_bash.seat = Seat::Leticode;
+    with_bash.allow_bash = true;
+    let parts = empty_modes(Parts::load(&with_bash).expect("the vocabulary must load"));
+
+    {
+        let hub = Hub::new(session_id);
+        let registry = Registry::of(hub.clone());
+        let mut h =
+            match Harness::open_with_registry(&parts, with_bash.clone(), hub, None, None, registry)
+            {
+                Ok(h) => h,
+                Err(e) => {
+                    let e = e.to_string();
+                    assert!(
+                        e.contains("cgroup") || e.contains("boundary") || e.contains("confin"),
+                        "a confined backend failed for a reason it did not name: {e}"
+                    );
+                    return letibot_tokencore::apparatus::absent(
+                        "a boundary this box can build (cgroup v2; process groups on macOS) — the \
+                     coder seat will not open without one",
+                    );
+                }
+            };
+        assert!(
+            h.wiring().seated.iter().any(|s| s == "bash"),
+            "the fixture must seat the shell first, or nothing is removed: {:?}",
+            h.wiring().seated
+        );
+        seed(&mut h);
+    }
+
+    assert_eq!(
+        stale_warning_on_open(&parts, &with_bash),
+        None,
+        "the same tools on resume must be silent"
+    );
+
+    let mut bare = with_bash.clone();
+    bare.allow_bash = false;
+    let said = stale_warning_on_open(&parts, &bare).expect("a removed tool must be said");
+    let gone = said
+        .split(". ")
+        .find(|s| s.starts_with("In the prompt but not seated here"))
+        .unwrap_or_else(|| panic!("the removed half is its own clause: {said}"));
+    assert!(gone.contains("bash"), "and names the tool: {said}");
+    assert!(
+        !said.contains("Seated here but not in this conversation's prompt"),
+        "nothing was added, so nothing is claimed added: {said}"
+    );
+}
