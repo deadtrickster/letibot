@@ -50,10 +50,9 @@ fn words(text: &str) -> Vec<String> {
 
 /// Is the word at `i` followed by these words?
 fn next_is(w: &[String], i: usize, want: &[&str]) -> bool {
-    want.iter().enumerate().all(|(n, word)| {
-        w.get(i + 1 + n)
-            .is_some_and(|got| got.as_str() == *word)
-    })
+    want.iter()
+        .enumerate()
+        .all(|(n, word)| w.get(i + 1 + n).is_some_and(|got| got.as_str() == *word))
 }
 
 /// The state this text claims, if it claims one. Cheap and literal: no model, no negation
@@ -181,10 +180,11 @@ fn tokens(text: &str, evidence: Option<&str>) -> Vec<String> {
     let mut take = |raw: &str| {
         let t = raw.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
         let t = t.to_ascii_lowercase();
-        let sha = (SHA_MIN..=SHA_MAX).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_hexdigit());
-        let row = t
-            .split_once('-')
-            .is_some_and(|(kind, n)| kind.len() <= 3 && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        let sha =
+            (SHA_MIN..=SHA_MAX).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_hexdigit());
+        let row = t.split_once('-').is_some_and(|(kind, n)| {
+            kind.len() <= 3 && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
+        });
         if !t.is_empty() && (sha || row) && !out.contains(&t) {
             out.push(t);
         }
@@ -238,16 +238,16 @@ pub fn check(text: &str, evidence: Option<&str>, facts: &[Fact]) -> Option<Check
             } else {
                 (
                     Verdict::Contradicted,
-                    format!("merge {} is `{}`, not on {}", fact.id, fact.state, fact.target),
+                    format!(
+                        "merge {} is `{}`, not on {}",
+                        fact.id, fact.state, fact.target
+                    ),
                 )
             }
         }
         StateClaim::Pushed => {
             if fact.pushed {
-                (
-                    Verdict::Supported,
-                    format!("merge {} was pushed", fact.id),
-                )
+                (Verdict::Supported, format!("merge {} was pushed", fact.id))
             } else {
                 (
                     Verdict::Contradicted,
@@ -256,10 +256,7 @@ pub fn check(text: &str, evidence: Option<&str>, facts: &[Fact]) -> Option<Check
             }
         }
         StateClaim::GateGreen | StateClaim::Passes => match fact.gate_green {
-            Some(true) => (
-                Verdict::Supported,
-                format!("{} gate is green", fact.target),
-            ),
+            Some(true) => (Verdict::Supported, format!("{} gate is green", fact.target)),
             Some(false) => (
                 Verdict::Contradicted,
                 format!("{} gate is not green", fact.target),
@@ -377,7 +374,10 @@ mod tests {
         assert_eq!(early.verdict, Verdict::Contradicted);
         assert!(early.why.contains("gating"), "{}", early.why);
         // The gate, from the target's own health row.
-        assert_eq!(got("the gate is green in m-7", None).verdict, Verdict::Supported);
+        assert_eq!(
+            got("the gate is green in m-7", None).verdict,
+            Verdict::Supported
+        );
         assert_eq!(
             got("gate green", Some("m-8")).verdict,
             Verdict::Contradicted
@@ -388,10 +388,7 @@ mod tests {
             "no gate record for the target"
         );
         // Nothing names a row this store holds, and a port is not a row at all.
-        assert_eq!(
-            got("landed in deadbe12", None).verdict,
-            Verdict::NotCovered
-        );
+        assert_eq!(got("landed in deadbe12", None).verdict, Verdict::NotCovered);
         assert_eq!(got("landed", None).verdict, Verdict::NotCovered);
         assert_eq!(
             got("port 5433 is free", Some("q-3")).verdict,

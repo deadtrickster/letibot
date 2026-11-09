@@ -575,8 +575,14 @@ mod tests {
             link.clone(),
             json!({"verb": "post", "tag": "ram", "body": "8 GB", "evidence": "m-7"}),
         );
-        assert!(!ok && text.contains("`evidence` is a `say` thing"), "{text}");
-        assert!(link.seen.lock().unwrap().is_empty(), "the room was not asked");
+        assert!(
+            !ok && text.contains("`evidence` is a `say` thing"),
+            "{text}"
+        );
+        assert!(
+            link.seen.lock().unwrap().is_empty(),
+            "the room was not asked"
+        );
     }
 
     /// `check` is a `read`'s: it reaches the link with the read, and any other verb that carries
@@ -596,7 +602,10 @@ mod tests {
             json!({"verb": "say", "text": "landed", "check": true}),
         );
         assert!(!ok && text.contains("`check` is a `read` thing"), "{text}");
-        assert!(link.seen.lock().unwrap().is_empty(), "the room was not asked");
+        assert!(
+            link.seen.lock().unwrap().is_empty(),
+            "the room was not asked"
+        );
     }
 
     #[test]

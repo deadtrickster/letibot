@@ -116,11 +116,26 @@ mod tests {
             message(7, "port 5433 is free", Some("q-3")),
         ];
         let said = lines(&rows, &[landed()]);
-        assert!(said.starts_with("check (3 claim(s) against 1 merge row(s)):"), "{said}");
-        assert!(said.contains("#4 (s-peer): SUPPORTED - merge m-7 is `landed`"), "{said}");
-        assert!(said.contains("#5 (s-peer): NOT COVERED - no merge or gate row names `m-8`"), "{said}");
-        assert!(said.contains("#7 (s-peer): NOT COVERED - the store holds no port rows"), "{said}");
-        assert!(!said.contains("#6 "), "nothing claimed, nothing checked: {said}");
+        assert!(
+            said.starts_with("check (3 claim(s) against 1 merge row(s)):"),
+            "{said}"
+        );
+        assert!(
+            said.contains("#4 (s-peer): SUPPORTED - merge m-7 is `landed`"),
+            "{said}"
+        );
+        assert!(
+            said.contains("#5 (s-peer): NOT COVERED - no merge or gate row names `m-8`"),
+            "{said}"
+        );
+        assert!(
+            said.contains("#7 (s-peer): NOT COVERED - the store holds no port rows"),
+            "{said}"
+        );
+        assert!(
+            !said.contains("#6 "),
+            "nothing claimed, nothing checked: {said}"
+        );
         assert_eq!(
             lines(&rows[2..3], &[]),
             "check: no state claim in these 1 message(s)"
@@ -136,7 +151,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("sessions.db");
         let store = Store::open(&db).expect("a store");
-        assert!(facts(&db).expect("a read").is_empty(), "an empty store covers nothing");
+        assert!(
+            facts(&db).expect("a read").is_empty(),
+            "an empty store covers nothing"
+        );
         store
             .connection()
             .execute_batch(

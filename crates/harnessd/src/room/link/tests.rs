@@ -389,25 +389,22 @@ fn a_read_can_check_the_rooms_claims_against_the_queues_rows() {
     )
     .expect("s-a connects");
     me.set_store(Some(db.clone()));
-    for text in [
-        "landed in 2b97a092",
-        "landed as m-9, the gate is green",
-    ] {
+    for text in ["landed in 2b97a092", "landed as m-9, the gate is green"] {
         me.call("say", &json!({"room": "host", "text": text}))
             .expect("a say");
     }
     let read = me
         .call("read", &json!({"room": "host", "check": true, "last": 10}))
         .expect("a read");
-    assert!(
-        read.contains("SUPPORTED - merge m-3 is `landed`"),
-        "{read}"
-    );
+    assert!(read.contains("SUPPORTED - merge m-3 is `landed`"), "{read}");
     assert!(
         read.contains("NOT COVERED - no merge or gate row names `m-9`"),
         "{read}"
     );
-    assert!(read.contains("check (2 claim(s) against 1 merge row(s))"), "{read}");
+    assert!(
+        read.contains("check (2 claim(s) against 1 merge row(s))"),
+        "{read}"
+    );
     // The same read without `check` says nothing about verdicts: it is a read, not a judgement.
     let plain = me
         .call("read", &json!({"room": "host", "last": 10}))
@@ -424,7 +421,10 @@ fn a_read_can_check_the_rooms_claims_against_the_queues_rows() {
     )
     .expect("s-b connects");
     blind
-        .call("say", &json!({"room": "host", "text": "landed in 2b97a092"}))
+        .call(
+            "say",
+            &json!({"room": "host", "text": "landed in 2b97a092"}),
+        )
         .expect("a say");
     let read = blind
         .call("read", &json!({"room": "host", "check": true}))

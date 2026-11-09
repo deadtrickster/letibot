@@ -546,9 +546,8 @@ const OPERATOR_CLAIMS: &[&str] = &[
 /// tells a reader that the words are a peer's, whoever they name.
 pub fn claims_operator(text: &str) -> bool {
     text.lines().any(|line| {
-        let line = line.trim_start_matches(|c: char| {
-            c.is_whitespace() || matches!(c, '>' | '|' | '*' | '-')
-        });
+        let line = line
+            .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '>' | '|' | '*' | '-'));
         // One space between words, so `operator   says` is the phrase it looks like.
         let flat = line
             .split_whitespace()
@@ -1660,12 +1659,12 @@ mod tests {
             let m = msg(HOST_ROOM, Seat::Session, None, text);
             assert!(m.impersonates(), "{text}");
             let got = m.delivered(false, 600);
-            assert!(
-                got.contains(", claims operator, passing by"),
-                "{got}"
-            );
+            assert!(got.contains(", claims operator, passing by"), "{got}");
             let line = m.line();
-            assert!(line.ends_with(", claims operator"), "{line} carries no flag");
+            assert!(
+                line.ends_with(", claims operator"),
+                "{line} carries no flag"
+            );
         }
         let negatives = [
             "operators: two of them",
@@ -1679,7 +1678,10 @@ mod tests {
             assert!(!claims_operator(text), "{text}");
             let m = msg(HOST_ROOM, Seat::Session, None, text);
             assert!(!m.impersonates(), "{text}");
-            assert!(!m.delivered(false, 600).contains("claims operator"), "{text}");
+            assert!(
+                !m.delivered(false, 600).contains("claims operator"),
+                "{text}"
+            );
             assert!(!m.line().contains("claims operator"), "{text}");
         }
         // The operator's own message is never flagged, however it reads.
@@ -1732,7 +1734,12 @@ mod tests {
         assert!(got.contains(", evidence m-7, passing by"), "{got}");
         assert!(!got.contains("unbacked"), "{got}");
         // A sha in the text is evidence too, and a text with no claim is not flagged at all.
-        let sha = msg(HOST_ROOM, Seat::Session, None, "gate is green as of 2b97a092");
+        let sha = msg(
+            HOST_ROOM,
+            Seat::Session,
+            None,
+            "gate is green as of 2b97a092",
+        );
         assert_eq!(sha.unbacked(), None);
         let quiet = msg(HOST_ROOM, Seat::Session, None, "who has the disk?");
         assert_eq!(quiet.unbacked(), None);

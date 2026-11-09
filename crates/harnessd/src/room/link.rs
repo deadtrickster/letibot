@@ -780,11 +780,7 @@ impl SessionRoom {
         let Response::History(h) = response else {
             return "check: nothing was read".to_string();
         };
-        let db = self
-            .store
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let db = self.store.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let Some(db) = db else {
             return "check: this session has no store, so no row could be looked up".to_string();
         };

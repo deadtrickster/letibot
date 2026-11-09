@@ -1999,7 +1999,10 @@ impl Harness {
                 let seat = seat.clone();
                 // The queue's rows the `read` claim check looks up: the store THIS daemon opened,
                 // which a link without one reports as a check it could not make.
-                let db = store.as_ref().and_then(|s| s.path()).map(|p| p.to_path_buf());
+                let db = store
+                    .as_ref()
+                    .and_then(|s| s.path())
+                    .map(|p| p.to_path_buf());
                 let connect: crate::room::link::Connector = Box::new(move || {
                     let room = crate::room::link::SessionRoom::connect(
                         &session,
