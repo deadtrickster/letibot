@@ -130,6 +130,41 @@ fn a_listed_session_carries_its_last_row() {
     assert_eq!(s.list_sessions().unwrap()[0].last_item, Some(answer));
 }
 
+/// A split set's keyed session carries the history its project file holds: the resume reads
+/// `items` and `transcript_id` off it, and empty columns there open the session a second time.
+#[test]
+fn a_split_sets_session_carries_its_project_files_history() {
+    let dir = std::env::temp_dir().join(format!(
+        "store-split-history-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let s = Store::open_set(&dir, "42ce9f1aae08").expect("a set's handle");
+    let (tr, _) = seeded(&s);
+    let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
+    let answer = TranscriptItem::Assistant {
+        text: "the answer".into(),
+        tool_calls: vec![],
+        truncated: false,
+    };
+    let row = ledger.append("it-0", &[10]).unwrap().clone();
+    s.append_item(&tr, 0, &answer, &row, &[10]).unwrap();
+
+    let keyed = s.session("sess-1").unwrap().expect("held");
+    assert_eq!(keyed.items, 1, "the row in the project file is counted");
+    assert_eq!(keyed.transcript_id.as_deref(), Some(tr.as_str()));
+    assert_eq!(keyed.last_item, Some(answer));
+    assert_eq!(
+        s.list_sessions().unwrap()[0],
+        keyed,
+        "the listing is the same row"
+    );
+    drop(s);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// one row, by ordinal, without loading the transcript it is in. The read behind
 /// `FetchRow` for a row the daemon's bounded view has trimmed. It is one indexed lookup -
 /// the primary key is `(transcript_id, seq)` - and an ordinal is relative to the current transcript.

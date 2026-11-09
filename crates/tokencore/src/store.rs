@@ -1390,9 +1390,32 @@ pub(crate) fn sessions_sql(filter: &str) -> String {
     )
 }
 
+/// One session's four history columns - current transcript, row count, last activity and last
+/// item - read from the file that holds its transcript: what a set's listing fills from its own
+/// project file, so a resume and `--continue` see the rows the index cannot.
+pub(crate) const HISTORY_SQL: &str = "SELECT
+        (SELECT t.id FROM transcript t
+          WHERE t.session_id = ?1
+          ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1),
+        (SELECT COALESCE(MAX(i.seq) + 1, 0) FROM transcript_item i
+          WHERE i.transcript_id = (SELECT t.id FROM transcript t
+              WHERE t.session_id = ?1
+              ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)),
+        (SELECT MAX((SELECT i.created_at FROM transcript_item i
+                      WHERE i.transcript_id = t.id
+                      ORDER BY i.seq DESC LIMIT 1))
+           FROM transcript t WHERE t.session_id = ?1),
+        (SELECT i.item_json FROM transcript_item i
+          WHERE i.transcript_id = (SELECT t.id FROM transcript t
+              WHERE t.session_id = ?1
+              ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)
+            AND i.kind <> 'offer'
+          ORDER BY i.seq DESC LIMIT 1)";
+
 /// The session list for a split set: the same columns in the same order, and the four the
-/// transcript answers are `NULL`/`0`, because the index cannot read a project file (P4's sweep is
-/// where a listing gets a history back). A free function so a split test can compare the two.
+/// transcript answers are `NULL`/`0`, because the index cannot read a project file. The set's own
+/// project file fills them afterwards ([`HISTORY_SQL`]). A free function so a split test can
+/// compare the two.
 pub(crate) fn sessions_index_sql(filter: &str) -> String {
     format!(
         "SELECT s.id, s.title, s.model_id, s.dialect_sha, s.workspace_root, s.owner,
@@ -2936,15 +2959,14 @@ impl Store {
         // The session list, timed: it is what a picker, `--sessions` and the fleet view read,
         // and until this it was one of the reads no instrument could see.
         //
-        // On a split set the history columns are read now here and then not at all: `transcript`
-        // and `transcript_item` are the project file's, the index may not reach into another
-        // project's file, and the listing is the index's own read (§ Table assignment).
+        // On a split set the index cannot read `transcript`: the history columns come from the
+        // set's own project file below, and stay empty for a session another file holds.
         let sql = match self.project.is_some() {
             true => sessions_index_sql(filter),
             false => sessions_sql(filter),
         };
         let conn = self.conn();
-        busy::retry_store(|| {
+        let mut out = busy::retry_store(|| {
             let mut stmt = conn.prepare(&sql)?;
             let mut out: Vec<StoredSession> = stmt
                 .query_map(args, |r| {
@@ -3001,7 +3023,37 @@ impl Store {
                 .collect::<std::result::Result<_, _>>()?;
             out.sort_by_key(|s| std::cmp::Reverse(s.last_activity_ms));
             Ok(out)
-        })
+        })?;
+        drop(conn);
+        // A set's own project file holds these sessions' history; one in another project's file,
+        // or a set whose file is gone, keeps the index's empty columns. Read after the index's
+        // lock is let go, so this call never holds both files' locks.
+        if let Some(Some(project)) = &self.project {
+            let pconn = project.conn();
+            busy::retry_store(|| {
+                let mut hist = pconn.prepare_cached(HISTORY_SQL)?;
+                for s in out.iter_mut() {
+                    let (tid, items, last, item): (
+                        Option<String>,
+                        i64,
+                        Option<i64>,
+                        Option<String>,
+                    ) = hist.query_row([&s.id], |r| {
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                    })?;
+                    if tid.is_none() {
+                        continue;
+                    }
+                    s.transcript_id = tid;
+                    s.items = items as u32;
+                    s.last_activity_ms = last.unwrap_or(s.created_ms);
+                    s.last_item = item.and_then(|j| serde_json::from_str(&j).ok());
+                }
+                Ok(())
+            })?;
+            out.sort_by_key(|s| std::cmp::Reverse(s.last_activity_ms));
+        }
+        Ok(out)
     }
 
     /// The name on disk right now, or `None` for a session nobody has named. Read rather than
