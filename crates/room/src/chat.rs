@@ -540,10 +540,8 @@ const OPERATOR_CLAIMS: &[&str] = &[
 ];
 
 /// Does this text claim to speak for the operator? Case, a quote's `>`, a bullet and extra spaces
-/// are ignored, because those are how a claim hides; the words must still open a line.
-///
-/// It is a claim and not authority: authority is the authenticated author and kind, so this flag
-/// tells a reader that the words are a peer's, whoever they name.
+/// are ignored, because those are how a claim hides; the words must still open a line. It is a
+/// claim and not authority: that is the authenticated author and kind.
 pub fn claims_operator(text: &str) -> bool {
     text.lines().any(|line| {
         let line = line
