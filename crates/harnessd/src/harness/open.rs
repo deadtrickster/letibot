@@ -1997,6 +1997,9 @@ impl Harness {
                 let session = cfg.session_id.clone();
                 let path = socket.clone();
                 let seat = seat.clone();
+                // The queue's rows the `read` claim check looks up: the store THIS daemon opened,
+                // which a link without one reports as a check it could not make.
+                let db = store.as_ref().and_then(|s| s.path()).map(|p| p.to_path_buf());
                 let connect: crate::room::link::Connector = Box::new(move || {
                     let room = crate::room::link::SessionRoom::connect(
                         &session,
@@ -2007,6 +2010,7 @@ impl Harness {
                         supervisor.clone(),
                     )?;
                     room.set_seat(seat.clone());
+                    room.set_store(db.clone());
                     Ok(room)
                 });
                 // No socket yet is not an error: the coordinator may start after this session, and

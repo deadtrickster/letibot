@@ -103,6 +103,183 @@ pub fn unbacked(text: &str, evidence: Option<&str>) -> Option<StateClaim> {
     sha_in(text).is_none().then_some(claim)
 }
 
+/// One row the store has, as the checker reads it: a merge row and the gate row of its target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fact {
+    /// The merge row's own id, e.g. `m-7`.
+    pub id: String,
+    pub repository: String,
+    pub target: String,
+    pub branch: String,
+    /// The row's state word: `landed`, `gating`, `failed`, ...
+    pub state: String,
+    pub approved_sha: String,
+    pub landed_sha: String,
+    /// Whether the push to origin happened.
+    pub pushed: bool,
+    /// The target's gate: `None` when no `target_health` row covers it.
+    pub gate_green: Option<bool>,
+    /// The row's own evidence text, searched for the id a claim names.
+    pub evidence: String,
+}
+
+impl Fact {
+    /// Is this row on the target, however far the push got?
+    fn on_the_target(&self) -> bool {
+        self.state == "landed" || self.state == "landed_local"
+    }
+
+    /// Does this row answer to `token`: its id, a sha it judged, or its own evidence text?
+    fn answers_to(&self, token: &str) -> bool {
+        self.id.eq_ignore_ascii_case(token)
+            || [&self.approved_sha, &self.landed_sha]
+                .iter()
+                .any(|sha| !sha.is_empty() && sha.to_ascii_lowercase().starts_with(token))
+            || self
+                .evidence
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '#')
+                .any(|w| w.trim_start_matches('#').eq_ignore_ascii_case(token))
+    }
+}
+
+/// What the store says about a claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// A row or a gate record says the same thing.
+    Supported,
+    /// A row or a gate record says otherwise.
+    Contradicted,
+    /// The store holds nothing that speaks to it either way.
+    NotCovered,
+}
+
+impl Verdict {
+    /// The verdict as a check line names it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Verdict::Supported => "SUPPORTED",
+            Verdict::Contradicted => "CONTRADICTED",
+            Verdict::NotCovered => "NOT COVERED",
+        }
+    }
+}
+
+/// One message's claim, judged against the store's rows, with the row that decided it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checked {
+    pub claim: StateClaim,
+    pub verdict: Verdict,
+    /// One line saying which row said so, or what the store does not hold.
+    pub why: String,
+}
+
+/// The tokens a message names as its backing: the evidence ref's words, and every sha or row id in
+/// the text (`m-7`, `q-12`, `2b97a092`).
+fn tokens(text: &str, evidence: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut take = |raw: &str| {
+        let t = raw.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+        let t = t.to_ascii_lowercase();
+        let sha = (SHA_MIN..=SHA_MAX).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_hexdigit());
+        let row = t
+            .split_once('-')
+            .is_some_and(|(kind, n)| kind.len() <= 3 && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if !t.is_empty() && (sha || row) && !out.contains(&t) {
+            out.push(t);
+        }
+    };
+    for t in evidence.unwrap_or("").split_whitespace() {
+        take(t);
+    }
+    for w in text.split(|c: char| !c.is_ascii_alphanumeric() && c != '-') {
+        take(w);
+    }
+    out
+}
+
+/// Judge what a message claims about the world against the rows the store has. `None` when the
+/// message claims no state at all - there is nothing to check.
+pub fn check(text: &str, evidence: Option<&str>, facts: &[Fact]) -> Option<Checked> {
+    let claim = state_claim(text)?;
+    if claim == StateClaim::PortFree {
+        return Some(Checked {
+            claim,
+            verdict: Verdict::NotCovered,
+            why: "the store holds no port rows".to_string(),
+        });
+    }
+    let named = tokens(text, evidence);
+    let asked = named.first().map(String::as_str).unwrap_or("");
+    let Some(fact) = named
+        .iter()
+        .find_map(|t| facts.iter().find(|f| f.answers_to(t)))
+    else {
+        return Some(Checked {
+            claim,
+            verdict: Verdict::NotCovered,
+            why: if named.is_empty() {
+                format!(
+                    "`{}` is claimed with no sha, row or evidence to look up",
+                    claim.word()
+                )
+            } else {
+                format!("no merge or gate row names `{asked}`")
+            },
+        });
+    };
+    let (verdict, why) = match claim {
+        StateClaim::Landed | StateClaim::Merged | StateClaim::FixedIn => {
+            if fact.on_the_target() {
+                (
+                    Verdict::Supported,
+                    format!("merge {} is `{}`", fact.id, fact.state),
+                )
+            } else {
+                (
+                    Verdict::Contradicted,
+                    format!("merge {} is `{}`, not on {}", fact.id, fact.state, fact.target),
+                )
+            }
+        }
+        StateClaim::Pushed => {
+            if fact.pushed {
+                (
+                    Verdict::Supported,
+                    format!("merge {} was pushed", fact.id),
+                )
+            } else {
+                (
+                    Verdict::Contradicted,
+                    format!("merge {} is `{}` and was never pushed", fact.id, fact.state),
+                )
+            }
+        }
+        StateClaim::GateGreen | StateClaim::Passes => match fact.gate_green {
+            Some(true) => (
+                Verdict::Supported,
+                format!("{} gate is green", fact.target),
+            ),
+            Some(false) => (
+                Verdict::Contradicted,
+                format!("{} gate is not green", fact.target),
+            ),
+            None => (
+                Verdict::NotCovered,
+                format!("no gate record for {}", fact.target),
+            ),
+        },
+        StateClaim::PortFree => (
+            Verdict::NotCovered,
+            "the store holds no port rows".to_string(),
+        ),
+    };
+    Some(Checked {
+        claim,
+        verdict,
+        why,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +336,67 @@ mod tests {
         assert_eq!(unbacked("landed", Some("abc1234")), None);
         assert_eq!(unbacked("landed in 2b97a092", None), None);
         assert_eq!(unbacked("who has the disk?", None), None);
+    }
+
+    fn row(id: &str, state: &str, landed: &str, gate: Option<bool>) -> Fact {
+        Fact {
+            id: id.into(),
+            repository: "/box/letibot".into(),
+            target: "main".into(),
+            branch: format!("topic/{id}"),
+            state: state.into(),
+            approved_sha: "aaaaaaa1111".into(),
+            landed_sha: landed.into(),
+            pushed: state == "landed",
+            gate_green: gate,
+            evidence: format!("landed on main ({id})"),
+        }
+    }
+
+    /// The four verdicts a claim about a merge can get, and the row each one rests on.
+    #[test]
+    fn a_claim_is_judged_against_the_rows_the_store_has() {
+        let facts = vec![
+            row("m-7", "landed", "2b97a092", Some(true)),
+            row("m-8", "gating", "", Some(false)),
+            row("m-9", "landed", "", None),
+        ];
+        let got = |text: &str, evidence: Option<&str>| {
+            check(text, evidence, &facts).expect("a claim is judged")
+        };
+        // By the sha the message names, and by an evidence ref that names the row.
+        let landed = got("landed in 2b97a092", None);
+        assert_eq!(landed.verdict, Verdict::Supported);
+        assert!(landed.why.contains("m-7"), "{}", landed.why);
+        let by_row = got("the fix merged", Some("m-7"));
+        assert_eq!(by_row.verdict, Verdict::Supported);
+        // A row that is not on the target contradicts a landing.
+        let early = got("landed as m-8", None);
+        assert_eq!(early.verdict, Verdict::Contradicted);
+        assert!(early.why.contains("gating"), "{}", early.why);
+        // The gate, from the target's own health row.
+        assert_eq!(got("the gate is green in m-7", None).verdict, Verdict::Supported);
+        assert_eq!(
+            got("gate green", Some("m-8")).verdict,
+            Verdict::Contradicted
+        );
+        assert_eq!(
+            got("all green", Some("m-9")).verdict,
+            Verdict::NotCovered,
+            "no gate record for the target"
+        );
+        // Nothing names a row this store holds, and a port is not a row at all.
+        assert_eq!(
+            got("landed in deadbe12", None).verdict,
+            Verdict::NotCovered
+        );
+        assert_eq!(got("landed", None).verdict, Verdict::NotCovered);
+        assert_eq!(
+            got("port 5433 is free", Some("q-3")).verdict,
+            Verdict::NotCovered
+        );
+        assert!(got("port 5433 is free", Some("q-3")).why.contains("port"));
+        // A message that claims no state is not judged at all.
+        assert_eq!(check("who has the disk?", None, &facts), None);
     }
 }

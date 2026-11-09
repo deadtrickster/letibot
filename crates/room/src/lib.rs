@@ -25,7 +25,7 @@ pub use chat::{
     History, MAX_ATTACHMENTS, MAX_TEXT, Message, OPERATOR, Presence, RING, Ref, RoomInfo, Seat,
     claims_operator, is_member_handle, project_room, valid_handle,
 };
-pub use claim::{StateClaim, sha_in, state_claim, unbacked};
+pub use claim::{Checked, Fact, StateClaim, Verdict, check, sha_in, state_claim, unbacked};
 pub use item::{Abandonment, Claim, Item, Speaker, State, Wait, Why, duration};
 pub use lease::{
     Acquired, COORDINATOR_LEASE_TTL_MS, CoordinatorLease, Held, Holder, LEASE_BEAT_EVERY_MS,

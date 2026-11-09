@@ -61,6 +61,10 @@ pub struct SessionRoom {
     /// The tree, from the daemon that can see it - `None` on a link whose caller has no
     /// registry (a fixture, the coordinator's own daemon). A link with none sends no `Members`.
     roster: Option<Arc<dyn crate::room::roster::RosterSource>>,
+    /// The store the claim checker reads the queue's rows from. `None` on a fixture and on a
+    /// session whose daemon has none, and then `read` says the check could not be made rather than
+    /// answering NOT COVERED for everything.
+    store: Mutex<Option<std::path::PathBuf>>,
     /// The beat, while a turn is running. `None` between turns, which is exactly when the lease is
     /// counting - see [`SessionRoom::turn_ended`].
     beat: Mutex<Option<Beat>>,
@@ -321,6 +325,8 @@ impl SessionRoom {
             socket: socket.to_path_buf(),
             project: project.to_string(),
             roster,
+            // Filled by the daemon that opens this session, which is the one holding a store.
+            store: Mutex::new(None),
             beat: Mutex::new(None),
             room: Mutex::new(None),
             supervisor,
@@ -391,6 +397,11 @@ impl SessionRoom {
 
     pub fn seat(&self) -> Option<Arc<super::seat::SeatCell>> {
         self.seat.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Where the claim checker reads the queue's rows from: the store this session's daemon opened.
+    pub fn set_store(&self, db: Option<std::path::PathBuf>) {
+        *self.store.lock().unwrap_or_else(|e| e.into_inner()) = db;
     }
 
     /// Tell the room this session's facts, on the same tick as the tree: a restarted coordinator
@@ -741,6 +752,11 @@ impl SessionRoom {
             .request(&request)
             .map_err(|e| format!("the room at {} did not answer: {e}", self.socket.display()))?;
         let said = answer_sentence(&response, &self.session)?;
+        // The operator's half of a read: what the store says about each claim in it. Asked for,
+        // never assumed - a check is a second store read behind every message.
+        if verb == "read" && args.get("check").and_then(|v| v.as_bool()) == Some(true) {
+            return Ok(format!("{said}\n{}", self.check_claims(&response)));
+        }
         if !acknowledges {
             return Ok(said);
         }
@@ -756,6 +772,26 @@ impl SessionRoom {
                  you are doing with it"
             ),
         })
+    }
+
+    /// What the store says about each state claim a read returned. A session with no store says so
+    /// rather than letting an empty answer read as NOT COVERED for every line.
+    fn check_claims(&self, response: &Response) -> String {
+        let Response::History(h) = response else {
+            return "check: nothing was read".to_string();
+        };
+        let db = self
+            .store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let Some(db) = db else {
+            return "check: this session has no store, so no row could be looked up".to_string();
+        };
+        match crate::room::claims::facts(&db) {
+            Ok(facts) => crate::room::claims::lines(&h.rows, &facts),
+            Err(why) => format!("check: the store could not be read ({why})"),
+        }
     }
 
     /// The files a session's `say` carries, uploaded before the message that names them. The tool

@@ -355,6 +355,84 @@ fn a_sessions_unaddressed_chat_wakes_every_other_session() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `read` with `check: true` judges each state claim in the room against the store's queue rows,
+/// naming the row that decided it; a session with no store says the check could not be made
+/// rather than letting NOT COVERED stand in for every line.
+#[test]
+fn a_read_can_check_the_rooms_claims_against_the_queues_rows() {
+    let dir = std::env::temp_dir().join(format!("letibot-room-check-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("room.sock");
+    let _server =
+        letibot_room::Server::serve(&path, letibot_room::Room::new()).expect("a room to talk to");
+    let db = dir.join("sessions.db");
+    let store = letibot_tokencore::store::Store::open(&db).expect("a store");
+    store
+        .connection()
+        .execute_batch(
+            "INSERT INTO merge_queue (id, review_id, repository, target, branch, approved_sha,
+                approved_by, priority, state, landed_sha, pushed, evidence, created_ms, state_ms,
+                updated_ms)
+             VALUES ('m-3', 'r-3', '/box/letibot', 'main', 'topic/y', 'aaaaaaa1111', 'queue',
+                'urgent', 'landed', '2b97a092', 'pushed origin/main', 'landed', 1, 1, 1);",
+        )
+        .expect("a landed row");
+    let bell: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|_: &str| {});
+    let me = SessionRoom::connect(
+        "s-a-check",
+        &path,
+        letibot_room::DEFAULT_PROJECT,
+        None,
+        bell.clone(),
+        None,
+    )
+    .expect("s-a connects");
+    me.set_store(Some(db.clone()));
+    for text in [
+        "landed in 2b97a092",
+        "landed as m-9, the gate is green",
+    ] {
+        me.call("say", &json!({"room": "host", "text": text}))
+            .expect("a say");
+    }
+    let read = me
+        .call("read", &json!({"room": "host", "check": true, "last": 10}))
+        .expect("a read");
+    assert!(
+        read.contains("SUPPORTED - merge m-3 is `landed`"),
+        "{read}"
+    );
+    assert!(
+        read.contains("NOT COVERED - no merge or gate row names `m-9`"),
+        "{read}"
+    );
+    assert!(read.contains("check (2 claim(s) against 1 merge row(s))"), "{read}");
+    // The same read without `check` says nothing about verdicts: it is a read, not a judgement.
+    let plain = me
+        .call("read", &json!({"room": "host", "last": 10}))
+        .expect("a read");
+    assert!(!plain.contains("SUPPORTED"), "{plain}");
+    // A session whose daemon has no store says so, once, rather than judging nothing.
+    let blind = SessionRoom::connect(
+        "s-b-check",
+        &path,
+        letibot_room::DEFAULT_PROJECT,
+        None,
+        bell,
+        None,
+    )
+    .expect("s-b connects");
+    blind
+        .call("say", &json!({"room": "host", "text": "landed in 2b97a092"}))
+        .expect("a say");
+    let read = blind
+        .call("read", &json!({"room": "host", "check": true}))
+        .expect("a read");
+    assert!(read.contains("this session has no store"), "{read}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Rule 5, end to end: a session is woken by its own room, by a dm to it and by the operator's
 /// own words - and not by the host room's talk between two others.
 #[test]

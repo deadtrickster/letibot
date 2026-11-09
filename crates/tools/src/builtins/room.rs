@@ -122,7 +122,7 @@ impl Tool for RoomTool {
                     },
                     "question": {
                         "type": "integer",
-                        "description": "`rule`: the question's number."
+                        "description": "`rule`: the question."
                     },
                     "decision": {
                         "type": "string",
@@ -159,7 +159,11 @@ impl Tool for RoomTool {
                     },
                     "evidence": {
                         "type": "string",
-                        "description": "`say`: what backs a state claim: a commit sha, a gate or queue row id. Without it the claim reads `unbacked`."
+                        "description": "`say`: what backs a state claim: a sha, a gate or queue row id. Without it the claim reads `unbacked`."
+                    },
+                    "check": {
+                        "type": "boolean",
+                        "description": "`read`: judge each claim against the queue."
                     },
                     "session": {
                         "type": "string",
@@ -404,6 +408,15 @@ fn dispatch(
             ),
         ));
     }
+    if verb != "read" && args.get("check").is_some_and(|v| !v.is_null()) {
+        return Err(Invocation::failed(
+            "`check` is a `read` thing",
+            format!(
+                "`{verb}` takes no `check`: only `read` hands the messages back for judging, and \
+                 nothing was sent to the room."
+            ),
+        ));
+    }
     let files = match attachments_of(args, workspace) {
         Ok(files) => files,
         Err(why) => return Err(Invocation::failed(why.clone(), why)),
@@ -563,6 +576,26 @@ mod tests {
             json!({"verb": "post", "tag": "ram", "body": "8 GB", "evidence": "m-7"}),
         );
         assert!(!ok && text.contains("`evidence` is a `say` thing"), "{text}");
+        assert!(link.seen.lock().unwrap().is_empty(), "the room was not asked");
+    }
+
+    /// `check` is a `read`'s: it reaches the link with the read, and any other verb that carries
+    /// one is refused before the room is asked.
+    #[test]
+    fn check_is_a_read_thing_and_reaches_the_room() {
+        let link = Recorder::new(Ok("#4 ...\ncheck: nothing to check"));
+        let (ok, text) = invoke(
+            link.clone(),
+            json!({"verb": "read", "room": "host", "check": true}),
+        );
+        assert!(ok, "{text}");
+        assert_eq!(link.seen.lock().unwrap()[0].1["check"], true);
+        let link = Recorder::new(Err("never"));
+        let (ok, text) = invoke(
+            link.clone(),
+            json!({"verb": "say", "text": "landed", "check": true}),
+        );
+        assert!(!ok && text.contains("`check` is a `read` thing"), "{text}");
         assert!(link.seen.lock().unwrap().is_empty(), "the room was not asked");
     }
 

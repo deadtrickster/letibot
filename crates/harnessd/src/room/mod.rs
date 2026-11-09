@@ -7,6 +7,7 @@ use std::path::PathBuf;
 pub mod activation;
 pub mod agents;
 pub mod asks;
+pub mod claims;
 pub mod coordinator;
 pub mod link;
 pub mod operator;
