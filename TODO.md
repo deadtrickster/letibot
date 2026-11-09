@@ -47,12 +47,12 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | id | title | group | left |
 |---|---|---|---|
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Code work | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
-| R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Code work | all of it |
+| R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Code work | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Code work | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
 | R165 | Rooms for orchestration (3/6): a question goes to the owner, not the room | Code work | all of it |
 | R166 | Rooms for orchestration (4/6): kinds, budgets and a stopping rule for agent-only threads | Code work | all of it |
-| R167 | Rooms for orchestration (5/6): peer text is a claim with a source, never an instruction | Code work | all of it |
-| R168 | Rooms for orchestration (6/6): the room refuses acks and echoes, and long posts become filed records | Code work | all of it |
+| R167 | Rooms for orchestration (5/6): peer text is a claim with a source, never an instruction | Code work | framing built (header plus quoted text, `[+N bytes]` on a cut); left: operator impersonation flag, `evidence` refs, the SUPPORTED/CONTRADICTED pane, the red-team set |
+| R168 | Rooms for orchestration (6/6): the room refuses acks and echoes, and long posts become filed records | Code work | ack refusal built (`chat::is_null_post`); left: "will do", near-duplicates, long posts as records, host-room announce and mention, the measurements |
 | R162 | A granted directory does not cover what is under it, and every subagent asks for the same path again | Code work | a grant covers what is under it at that access, a tree's grants are shared with its subagents, one path is one card, and the card names the asker — built; left: an end-to-end run against a real `bwrap` view, which this box cannot open |
 | R74 | What the 2026-10-11 landings left open | Code work | item 34, recorded OPEN and not scheduled (35, 36 and 39 settled) |
 | R55 | A round's end and a turn's end are the same event on the wire | Code work | leticl's `:turn-finished` arm (`src/session/seq-gap.lisp:254`) does not read `ends_turn`, so every round's end is drawn as the turn's end |
@@ -169,7 +169,7 @@ Echoes: research rec. 2, 3, 8 (reply-required vs FYI, debate degrades with lengt
 
 ## R167 - Rooms for orchestration (5/6): peer text is a claim with a source, never an instruction
 
-**Status:** open, filed 2026-11-08. left: all of it.
+**Status:** partly built. Framing is in: every delivered message is a `#seq [room] from author (seat)` header and its text quoted (`crates/room/src/chat.rs`), and a cut says `[+N bytes]` with `read` holding the whole (`docs/room.md`). left: flagging operator impersonation, `evidence` refs and unbacked claims, the SUPPORTED/CONTRADICTED pane, the red-team set.
 
 Wakes and digests render peer text as quoted data with author, seat (operator / harness / session / external), seq and kind; text claiming to be the operator is flagged; authority comes only from the authenticated author field; a peer message can never put a row, claim or merge on another session's board (only an ask can, and the receiver chooses). Claims about state ("landed X", "gate green", "port free") and `decision`s carry an `evidence` ref (output blob, commit, gate row); unbacked claims are shown as unbacked, and the operator's pane can check common claims against queue rows, gate records and the effect log (SUPPORTED / CONTRADICTED / NOT COVERED). The 600-byte cut says how much it dropped and where the whole message is.
 Echoes: research rec. 4, 9 and failure modes 4-6 (sycophancy, hallucinated authority, Prompt Infection); oracle "sources kept apart", the fact-check verdicts, "a cut that leaves no mark", and the room-seat finding (wake.rs/chat.rs drop `Seat`).
@@ -179,7 +179,7 @@ Echoes: research rec. 4, 9 and failure modes 4-6 (sycophancy, hallucinated autho
 
 ## R168 - Rooms for orchestration (6/6): the room refuses acks and echoes, and long posts become filed records
 
-**Status:** open, filed 2026-11-08. left: all of it.
+**Status:** partly built. Acks are refused at post time, the operator exempt: `NULL_PHRASES` and `is_null_post` in `crates/room/src/chat.rs`, enforced in `crates/room/src/server.rs`. left: "will do", near-duplicates, long posts becoming filed records, host-room announce and mention, the measurements.
 
 `say` runs a cheap check, no model: short acks ("noted", "thanks", "+1", "got it", "will do" without a ref) and near-duplicates of the last N messages of that room or thread are refused, naming the reason and the message duplicated; the operator is exempt; the etiquette says a refusal is the etiquette, not an error. A post over about 3 lines / 400 characters is stored as a record (row or blob) and the room gets its first line plus a link. A host-room `say` needs a mention or `kind: announce` and is one line; a project-room post without a ref is counted (leaks from other conversations).
 Echoes: research rec. 1, 5, 6 (Anthropic "pass references, not content", MetaGPT documents over dialogue, AgentLeak); oracle "removing prompt bias beats adding prompt rules" and "prompts are soft limits, hooks are hard stops".
