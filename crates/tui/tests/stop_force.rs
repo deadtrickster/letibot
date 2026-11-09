@@ -413,3 +413,34 @@ fn an_older_daemon_is_forced_directly() {
     let _ = child.wait();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The operator's night: exit with the stop, then open the session again from another folder,
+/// which starts a new daemon on the same socket, then exit with the stop again. The second stop
+/// reaches the second daemon.
+#[test]
+fn a_second_stop_reaches_the_daemon_started_after_the_first() {
+    let dir = scratch("again");
+    let (mut first, socket) = spawn_daemon("orderly", &dir);
+    let (mut link, mut a) = attach(&socket);
+    choose_stop(&mut link, &mut a);
+    run_to_quit(&mut link, &mut a, PATIENCE);
+    assert!(a.stopping().is_some_and(|s| s.gone), "{:?}", a.stopping());
+    let _ = first.wait();
+
+    let (mut second, again) = spawn_daemon("orderly", &dir);
+    assert_eq!(again, socket, "the folder's socket, again");
+    let pid = second.id() as i32;
+    let (mut link, mut a) = attach(&socket);
+    assert_eq!(
+        a.daemon_pid(),
+        Some(pid),
+        "the new head names the new daemon"
+    );
+    choose_stop(&mut link, &mut a);
+    run_to_quit(&mut link, &mut a, PATIENCE);
+    let s = a.stopping().expect("a stop was asked for");
+    assert!(s.sent && s.gone, "the second daemon went: {s:?}");
+    assert!(is_gone(pid));
+    let _ = second.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+}
