@@ -391,8 +391,11 @@ fn a_read_can_check_the_rooms_claims_against_the_queues_rows() {
     .expect("s-a connects");
     me.set_store(Some(db.clone()));
     for text in ["landed in 2b97a092", "landed as m-9, the gate is green"] {
-        me.call("say", &json!({"room": "host", "text": text}))
-            .expect("a say");
+        me.call(
+            "say",
+            &json!({"room": "host", "text": text, "kind": "announce"}),
+        )
+        .expect("a say");
     }
     let read = me
         .call("read", &json!({"room": "host", "check": true, "last": 10}))
@@ -424,7 +427,7 @@ fn a_read_can_check_the_rooms_claims_against_the_queues_rows() {
     blind
         .call(
             "say",
-            &json!({"room": "host", "text": "landed in 2b97a092"}),
+            &json!({"room": "host", "text": "m-3 is on main now", "kind": "announce"}),
         )
         .expect("a say");
     let read = blind

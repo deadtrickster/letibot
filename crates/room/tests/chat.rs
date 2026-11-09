@@ -1581,6 +1581,7 @@ fn a_say_may_carry_the_evidence_for_what_it_claims() {
             id: "m-7".into(),
         }],
         attachments: Vec::new(),
+        kind: letibot_room::SayKind::Announce,
     }));
     assert_eq!(said_now.evidence(), Some("m-7"));
     assert_eq!(said_now.unbacked(), None);
@@ -1605,6 +1606,7 @@ fn a_say_may_carry_the_evidence_for_what_it_claims() {
             id: "m-7".into(),
         }],
         attachments: Vec::new(),
+        kind: letibot_room::SayKind::Announce,
     }));
     assert_eq!(bad, Refused::BadRef);
     assert!(bad.to_string().contains("evidence"), "{bad}");
