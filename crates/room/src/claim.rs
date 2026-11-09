@@ -71,8 +71,9 @@ pub fn state_claim(text: &str) -> Option<StateClaim> {
             "gate" if next_is(&w, i, &["green"]) || next_is(&w, i, &["is", "green"]) => {
                 return Some(StateClaim::GateGreen);
             }
-            // `port 5433 free`, `port 5433 is free`: the number and the verdict are two words apart.
-            "port" if w[i + 1..].iter().take(3).any(|x| x == "free") => {
+            // `port 5433 free`, `port 5433 on lab2x1 is free`: the number and the verdict are a few
+            // words apart, and a host name in between is not a different claim.
+            "port" if w[i + 1..].iter().take(5).any(|x| x == "free") => {
                 return Some(StateClaim::PortFree);
             }
             _ => {}
@@ -298,6 +299,7 @@ mod tests {
             ("fixed in abc1234", StateClaim::FixedIn),
             ("port 5433 free", StateClaim::PortFree),
             ("port 5433 is free now", StateClaim::PortFree),
+            ("port 5433 on lab2x1 is free", StateClaim::PortFree),
             ("Gate-Green for the merge queue", StateClaim::GateGreen),
         ];
         for (text, want) in cases {
