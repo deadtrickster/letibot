@@ -164,6 +164,43 @@ impl Harness {
     /// A background job's retained output, for the operator and not the model: the same read
     /// `job_output` does, reached by a slash reply rather than a tool call, so it needs no new
     /// protocol frame and no version bump.
+    /// End a running job for the operator. Its completion reaches the model like any other kill,
+    /// with the operator named as who did it.
+    pub fn kill_job_for_operator(&self, job: &str) -> crate::slash::SlashReply {
+        let fail = |line: String| crate::slash::SlashReply {
+            lines: vec![line],
+            ok: false,
+        };
+        let Some(host) = self.runtime.backend.processes() else {
+            return fail("this session has no process host, so it has no jobs".into());
+        };
+        let jid = letibot_tools::exec::JobId(job.to_string());
+        let Some(view) = host.job(&jid) else {
+            return fail(format!("no job `{job}` here; `/job` lists them"));
+        };
+        if !matches!(view.state, letibot_tools::exec::JobState::Running) {
+            return fail(format!("`{job}` is not running: {}", view.state.word()));
+        }
+        let said = match host.kill_job_as(&jid, "the operator") {
+            Ok(r) if r.survivors.is_empty() => crate::slash::SlashReply {
+                lines: vec![format!(
+                    "killed `{job}` ({}, {} process(es))",
+                    r.mechanism,
+                    r.observed.len()
+                )],
+                ok: true,
+            },
+            Ok(r) => fail(format!(
+                "killed `{job}` but {} process(es) survived: {:?}",
+                r.survivors.len(),
+                r.survivors
+            )),
+            Err(e) => fail(format!("could not kill `{job}`: {e}")),
+        };
+        self.publish_jobs();
+        said
+    }
+
     pub fn job_output(&self, job: &str, offset: u64, limit: usize) -> Result<Vec<String>, String> {
         let Some(host) = self.runtime.backend.processes() else {
             return Err("this session has no process host, so it has no jobs".into());

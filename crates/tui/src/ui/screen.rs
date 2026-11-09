@@ -1023,7 +1023,7 @@ impl App {
                 rows
             }
             Drawn::Surface(Surface::JobOut) => {
-                let mut rows = self.job_out_lines(room);
+                let mut rows = self.job_out_lines(w, room);
                 rows.truncate(room);
                 rows
             }

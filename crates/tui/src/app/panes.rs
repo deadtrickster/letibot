@@ -338,6 +338,8 @@ pub(crate) const JOB_OUT_FOLLOW_MS: u64 = 1_000;
 #[derive(Debug, Clone)]
 pub(crate) struct JobOut {
     pub(crate) job: String,
+    /// The command, whole: the list row shortens it to fit.
+    pub(crate) command: String,
     /// The daemon's word for where the job is - `running`, `exited 0`, … Empty
     /// until the first answer arrives.
     pub(crate) state: String,

@@ -1467,6 +1467,13 @@ impl<'a> Sessions<'a> {
                     ok: false,
                 },
             },
+            Slash::JobKill(job) => match self.open.get(session_id) {
+                Some(h) => h.kill_job_for_operator(&job),
+                None => SlashReply {
+                    lines: vec![format!("session {session_id} is not open")],
+                    ok: false,
+                },
+            },
             Slash::Job { job, offset } => {
                 let Some(h) = self.open.get(session_id) else {
                     return SlashReply {

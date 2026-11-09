@@ -122,6 +122,8 @@ pub(crate) enum Act {
     WaitsOn,
     /// The monitors pane's `x`: retire the monitor under the cursor (`/monitor retire NAME`).
     Retire,
+    /// The jobs pane's and a job's output's `x`: kill the running job (`/job kill ID`).
+    KillJob,
     /// The queue's `o`: go into the session of the reviewer working the row.
     Reviewer,
     /// A key the VIEW names: a panel's key, `f`, `l`, or an action letter of the selected stop.
@@ -405,7 +407,18 @@ const SUB_OUT: &[Binding] = &[
     PAGE,
     WHEEL,
 ];
-const JOBS: &[Binding] = &[LIST, b(&[On::Enter], Always, Act::Open, Row), PAGE, WHEEL];
+const JOBS: &[Binding] = &[
+    LIST,
+    b(&[On::Enter], Always, Act::Open, Row),
+    b(
+        &[On::Char('x')],
+        Empty,
+        Act::KillJob,
+        Text("kills the running one under the cursor"),
+    ),
+    PAGE,
+    WHEEL,
+];
 const MONITORS: &[Binding] = &[
     LIST,
     b(
@@ -428,6 +441,7 @@ const JOB_OUT: &[Binding] = &[
     b(&[On::Right], Empty, Act::PageOut, Text("next page")),
     b(&[On::Left], Empty, Act::PageOut, Text("back")),
     b(&[On::Enter], Always, Act::PageOut, Text("reads on")),
+    b(&[On::Char('x')], Empty, Act::KillJob, Text("kills it")),
     PAGE,
     WHEEL,
 ];

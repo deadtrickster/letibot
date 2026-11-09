@@ -9,7 +9,7 @@ impl App {
     /// The job-output view: one job's retained window, with its own header because the daemon sent
     /// the offsets rather than a sentence. The tail shows by default and arrows walk back toward the
     /// beginning of the loaded window, so the footer must say how much further a reader can go.
-    pub(crate) fn job_out_lines(&mut self, room: usize) -> Vec<String> {
+    pub(crate) fn job_out_lines(&mut self, w: usize, room: usize) -> Vec<String> {
         let p = self.cfg.palette();
         let Some(v) = self.job_out.as_mut() else {
             return Vec::new();
@@ -30,13 +30,46 @@ impl App {
             has_next: v.next.is_some(),
             has_back: !v.back.is_empty(),
         };
-        let (lines, scroll) = view.lines(room);
+        // The whole command first, wrapped: the list row shortened it, and a reader deciding
+        // whether to kill a job needs to see what it runs. At most half the room.
+        let head = wrap_command(&v.command, w.max(8), (room / 2).max(1));
+        let (lines, scroll) = view.lines(room.saturating_sub(head.len()));
         // The scroll clamped against what was drawn, stored back: the arrows move it, and
         // only the draw knows how much of the window fits.
         if v.error.is_none() {
             v.scroll = scroll;
         }
-        row_strings(&lines, p)
+        let mut out = head;
+        out.extend(row_strings(&lines, p));
+        out
+    }
+
+    /// The jobs pane's or a job output's `x`: `/job kill ID` for the running job it is on.
+    pub(crate) fn kill_selected_job(&mut self, s: Surface) -> Option<Action> {
+        if self.session_id.is_empty() {
+            return None;
+        }
+        let id = match s {
+            Surface::JobOut => self.job_out.as_ref()?.job.clone(),
+            _ => {
+                let stops = self.job_stops();
+                let JobStop::Job(i) =
+                    *stops.get(self.jobs_sel.min(stops.len().saturating_sub(1)))?
+                else {
+                    return None;
+                };
+                let row = self.jobs.get(i)?;
+                if !row.running {
+                    self.say(&format!("`{}` is not running", row.id));
+                    return None;
+                }
+                row.id.clone()
+            }
+        };
+        self.say(&format!("killing job `{id}`"));
+        Some(Action::Slash {
+            line: format!("job kill {id}"),
+        })
     }
 
     /// How many jobs this session has running, for the composer's top edge.
@@ -108,5 +141,39 @@ impl App {
         // scroll by and a click is tested against.
         self.jobs_stop_rows = content.stop_rows;
         row_strings(&content.lines, self.cfg.palette())
+    }
+}
+
+/// `$ command`, cut into lines of `w` characters, at most `max` of them: the last one ends in `…`
+/// when the command is longer than that.
+fn wrap_command(command: &str, w: usize, max: usize) -> Vec<String> {
+    if command.is_empty() {
+        return Vec::new();
+    }
+    let flat = format!("$ {}", command.replace('\n', " ⏎ "));
+    let chars: Vec<char> = flat.chars().collect();
+    let mut out: Vec<String> = chars.chunks(w).map(|c| c.iter().collect()).collect();
+    if out.len() > max {
+        out.truncate(max);
+        if let Some(last) = out.last_mut() {
+            last.pop();
+            last.push('…');
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod wrap_command_tests {
+    use super::wrap_command;
+
+    #[test]
+    fn a_long_command_wraps_and_a_longer_one_is_cut_with_an_ellipsis() {
+        assert_eq!(wrap_command("", 10, 3), Vec::<String>::new());
+        assert_eq!(wrap_command("echo hi", 20, 3), vec!["$ echo hi"]);
+        assert_eq!(wrap_command("abcdefghij", 6, 3), vec!["$ abcd", "efghij"]);
+        let cut = wrap_command("abcdefghijklmnopqrstuvwxyz", 6, 2);
+        assert_eq!(cut, vec!["$ abcd", "efghi…"]);
+        assert_eq!(wrap_command("a\nb", 20, 3), vec!["$ a ⏎ b"]);
     }
 }

@@ -143,6 +143,10 @@ impl App {
             // whole.
             Act::Reviewer => ControlFlow::Break(self.go_to_reviewer()),
             // `x` retires the monitor under the cursor; with none live the letter is the composer's.
+            Act::KillJob => match self.kill_selected_job(s) {
+                Some(a) => ControlFlow::Break(Some(a)),
+                None => ControlFlow::Continue(()),
+            },
             Act::Retire => match self.retire_selected_monitor() {
                 Some(a) => ControlFlow::Break(Some(a)),
                 None => ControlFlow::Continue(()),
@@ -622,8 +626,10 @@ impl App {
         // Where its output went, when it did not come here: the window for a redirected job is
         // empty by construction, so the pane needs the file's name.
         let redirect = row.redirect.clone();
+        let command = row.command.clone();
         self.job_out = Some(JobOut {
             job: job.clone(),
+            command,
             state: String::new(),
             never_ran: false,
             redirect,

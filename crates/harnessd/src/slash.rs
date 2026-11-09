@@ -76,6 +76,9 @@ pub enum Slash {
         job: Option<String>,
         offset: u64,
     },
+    /// `/job kill ID`: end a running job - the jobs pane's `x`. Its completion tells the model the
+    /// operator killed it.
+    JobKill(String),
     /// `/monitor retire NAME`: end a monitor the model armed - the monitors pane's `x`. The
     /// model is told it was retired, and by whom, on its next turn.
     MonitorRetire(String),
@@ -284,6 +287,10 @@ impl Slash {
             Some("default-model") | Some("default_model") | Some("default") => {
                 Slash::DefaultModel(words.get(1).map(|w| w.to_string()))
             }
+            Some("job") | Some("jobs") if words.get(1) == Some(&"kill") => match words.get(2) {
+                Some(id) => Slash::JobKill((*id).to_string()),
+                None => Slash::Help("`/job kill ID` names the job to kill".into()),
+            },
             Some("job") | Some("jobs") => {
                 let job = words.get(1).filter(|w| !w.starts_with("--")).map(|w| w.to_string());
                 // `--offset N` continues a read the ring had more of; the reply
@@ -1223,6 +1230,16 @@ mod tests {
                 offset: 10
             }
         ));
+    }
+
+    /// `/job kill ID` is the pane's `x`, and a kill with no id is a refusal, not a listing.
+    #[test]
+    fn job_kill_names_its_job() {
+        match Slash::parse("job kill j58984") {
+            Slash::JobKill(j) => assert_eq!(j, "j58984"),
+            _ => panic!(),
+        }
+        assert!(matches!(Slash::parse("job kill"), Slash::Help(_)));
     }
 
     #[test]
