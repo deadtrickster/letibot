@@ -607,6 +607,39 @@ pub fn is_bare_ack(text: &str) -> bool {
     !has_ref(text) && is_null_post(text)
 }
 
+/// How a status line opens - what the roster's own `working` and `status` fields already show.
+const STATUS_OPENERS: &[&str] = &[
+    "starting",
+    "started on",
+    "now starting",
+    "working on",
+    "now working on",
+    "still working on",
+    "still on",
+    "done with",
+    "finished with",
+];
+
+/// The longest a status line may be. Past this it says something the roster cannot, which is a
+/// message worth sending.
+pub const STATUS_POST_WORDS: usize = 8;
+
+/// Is this post a status line the roster shows already - `starting X`, `still on it`, `done with X`?
+/// A post that points at a row (`#165`, a sha, a path) is about that row, and is not one.
+pub fn is_status_post(text: &str) -> bool {
+    if has_ref(text) {
+        return false;
+    }
+    let words = echo_words(text);
+    if words.is_empty() || words.len() > STATUS_POST_WORDS {
+        return false;
+    }
+    let said = words.join(" ");
+    STATUS_OPENERS
+        .iter()
+        .any(|opener| said == *opener || said.starts_with(&format!("{opener} ")))
+}
+
 /// Is this the one line an announcement may be? A `![alt](blob:<id>)` on a line of its own is not
 /// a second line: it is how a `say` names the file it carries, and one picture must not cost an
 /// announcement its announcement-ness.

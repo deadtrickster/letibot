@@ -383,6 +383,8 @@ pub enum Refused {
     AskBadScope {
         why: String,
     },
+    /// A post that is a status line the roster already shows.
+    StatusPost,
     /// A `Retire` for a session this connection does not speak for. B's daemon retires B.
     NotTheOwners {
         session: String,
@@ -484,6 +486,12 @@ impl fmt::Display for Refused {
                  for you needs no reply - end the turn and say nothing"
             ),
             Refused::AskBadScope { why } => write!(f, "{why}"),
+            Refused::StatusPost => write!(
+                f,
+                "not posted, and this is the room's etiquette rather than an error: the roster shows \
+                 this already - set it with `room status` (one line, 30 minutes by default) and spend \
+                 no message on it"
+            ),
             Refused::EchoPost { seq } => write!(
                 f,
                 "not posted, and this is the room's etiquette rather than an error: this repeats \

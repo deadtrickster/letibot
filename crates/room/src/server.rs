@@ -2653,6 +2653,12 @@ impl Server {
             self.note_null_post(name, seat);
             return refuse(crate::Refused::NullPost);
         }
+        // A status line is the roster's, not the room's: the same reason the ack is folded, and the
+        // same exemption - the operator may say what they like, in any words.
+        if seat != Seat::Operator && attachments.is_empty() && chat::is_status_post(text) {
+            self.note_count(crate::signal::Count::StatusFolded);
+            return refuse(crate::Refused::StatusPost);
+        }
         // The host room is an announcement channel, and an announcement is one line: a long one is
         // refused here rather than filed, because the room's first line would be the whole of it.
         if kind == crate::SayKind::Announce && !chat::one_line(text) {

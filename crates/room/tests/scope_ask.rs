@@ -449,3 +449,46 @@ fn only_an_unaddressed_question_of_a_project_room_is_nudged() {
     assert_eq!(note, "");
     assert_eq!(count(&server, "broadcast_question"), 0);
 }
+
+/// A status line is the roster's, so a post that is one is folded: refused with the verb that sets
+/// it, and counted. The operator is exempt, and a post that points at a row is about the row.
+#[test]
+fn a_status_post_is_folded_and_the_operator_is_exempt() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let a = seat(&server, "s-a", A, Seat::Session);
+    let op = seat(&server, OPERATOR, "", Seat::Operator);
+    for (id, text) in [
+        ("s1", "starting on the ask path"),
+        ("s2", "still on it"),
+        ("s3", "working on the scope resolver"),
+        ("s4", "done with the resolver"),
+    ] {
+        let why = refused(a.say(id, text));
+        assert!(matches!(why, Refused::StatusPost), "{text}: {why:?}");
+        assert!(why.to_string().contains("room status"), "{why}");
+    }
+    assert_eq!(count(&server, "status_folded"), 4);
+    // The operator says what they like, in the room and in its words.
+    assert!(matches!(
+        op.say_in(project_room(A), "o1", "starting on the ask path"),
+        Response::Said { .. }
+    ));
+    // A post that points at a row is about that row, and a longer one says what the roster cannot.
+    assert!(matches!(
+        a.say("s5", "still on the ask path, #165"),
+        Response::Said { .. }
+    ));
+    assert!(matches!(
+        a.say(
+            "s6",
+            "working on the resolver, and the lease rule needs a fall-through when the owner is the asker"
+        ),
+        Response::Said { .. }
+    ));
+    assert_eq!(
+        count(&server, "status_folded"),
+        4,
+        "nothing else was folded"
+    );
+}
