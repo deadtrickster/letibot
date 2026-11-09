@@ -1553,6 +1553,12 @@ fn a_null_post_is_refused_and_the_operator_is_exempt() {
         attachments: Vec::new(),
     }));
     assert_eq!(dm, Refused::NullPost);
+    server.flush_signals();
+    assert_eq!(
+        server.scorecard().counts.get("ack_refused"),
+        Some(&8),
+        "seven says and one dm, all acks"
+    );
     said(peer.say("long", "", "not for me, but the port is 5433 on lab2x1"));
     said(op.say("op", HOST_ROOM, "noted"));
 }
@@ -1732,6 +1738,7 @@ fn a_long_post_becomes_a_record_one_read_answers_whole() {
         Some(&1),
         "one read opened one record: {card:?}"
     );
+    assert_eq!(card.counts.get("record_made"), Some(&1), "{card:?}");
 }
 
 /// A post that repeats one of the last twenty messages of its room or thread is refused, naming the
@@ -1765,6 +1772,12 @@ fn a_repeat_of_a_recent_post_is_refused_and_names_it() {
     assert_eq!(
         refused(a2.call(thread)),
         Refused::EchoPost { seq: first.seq }
+    );
+    server.flush_signals();
+    assert_eq!(
+        server.scorecard().counts.get("echo_refused"),
+        Some(&2),
+        "the room's window and the thread's"
     );
     // New words are a message, and the operator may say a thing twice.
     said(a2.say(

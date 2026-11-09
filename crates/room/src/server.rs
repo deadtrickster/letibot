@@ -2896,6 +2896,7 @@ impl Server {
         now: u64,
     ) -> Response {
         if let Some(seq) = self.echo(kind, author, room, thread, id, text) {
+            self.note_count(crate::signal::Count::EchoRefused);
             return Response::Refused {
                 id: Some(id.to_string()),
                 why: crate::Refused::EchoPost { seq },
@@ -2956,6 +2957,15 @@ impl Server {
         // Pushed after the log lock is released, and a repeat of `id` pushes again. A reply answers
         // its root's author, who is the one the room names: the root may be in another room, so
         // nothing in the text says so.
+        let filed = self
+            .inner
+            .chat
+            .lock()
+            .expect("the chat lock")
+            .is_record(message.seq);
+        if filed {
+            self.note_count(crate::signal::Count::RecordMade);
+        }
         self.deliver(&message, now);
         Response::Said {
             id: id.to_string(),
@@ -2969,6 +2979,7 @@ impl Server {
             .lock()
             .expect("the signals lock")
             .refused(name, seat.word());
+        self.note_count(crate::signal::Count::AckRefused);
     }
 
     /// One of the room's named counters, up by one - what the `signals` frame's `counts` reads.

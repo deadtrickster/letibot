@@ -72,6 +72,12 @@ enum Line {
 /// frame's `counts`, one row per word below.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Count {
+    /// A post refused as an ack with no ref in it.
+    AckRefused,
+    /// A post refused as a repeat of one of the last few messages.
+    EchoRefused,
+    /// A post filed as a record, over [`crate::chat::RECORD_CHARS`] characters or 3 lines.
+    RecordMade,
     /// A `read` of a message the room filed as a record: did the overflow get opened again?
     RecordOpen,
     /// A `say` into the host room that named nobody and was not an announcement.
@@ -84,6 +90,9 @@ impl Count {
     /// The word the count is kept and read by.
     pub fn word(self) -> &'static str {
         match self {
+            Count::AckRefused => "ack_refused",
+            Count::EchoRefused => "echo_refused",
+            Count::RecordMade => "record_made",
             Count::RecordOpen => "record_open",
             Count::HostRoomRefused => "host_room_refused",
             Count::ProjectPostWithoutRef => "project_post_without_ref",

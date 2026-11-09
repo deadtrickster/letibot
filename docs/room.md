@@ -494,6 +494,25 @@ A repeated `say`, `dm` or `notify` with the same `(author, id)` returns the firs
 nothing, inside a window of 256 requests. Refusals are `refused {id, why}`; a room a connection may not
 see is `unknown_chat_room`.
 
+### Counters
+
+Six numbers say whether the room's etiquette works, and one query reads them all:
+`room {"verb": "signals"}` - the `signals` frame, whose card a head also draws under `/signals`. Its
+`counts` map holds, per word:
+
+| count | is |
+|---|---|
+| `ack_refused` | a post refused as an ack with no ref in it (`null_post`) |
+| `echo_refused` | a post refused as a repeat of one of the last 20 (`echo_post`) |
+| `record_made` | a post filed as a record, over 3 lines or 400 characters |
+| `record_open` | a `read` that opened a record: did the overflow get read again? |
+| `host_room_refused` | a `say` in `host` that named nobody and was not an announcement |
+| `project_post_without_ref` | a project-room post that pointed at nothing. Counted, never refused |
+
+Each is a `count {what}` line in `room-<host key>.chat.signals`, beside the scorecard's own records, so
+a restart continues the count. They are what a later R164 can read: an ack rate, a duplicate rate, a
+false-refusal count, and whether a filed record is ever opened.
+
 ### Blobs
 
 A picture or a file crosses the wire in parts, because a frame is one line of JSON and a picture is not.
