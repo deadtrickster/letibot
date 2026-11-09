@@ -727,7 +727,22 @@ fn a_daemon_nothing_needs_exits_after_its_window_and_a_head_holds_it_up() {
         Some(format!("{ROOT} has a head attached"))
     );
     assert!(!sessions.idle_exit_due(), "a head attached holds it up");
+    let registry = d.registry.clone();
+    let row = || {
+        registry
+            .settings(ROOT)
+            .into_iter()
+            .find(|r| r.key == letibot_sessionlog::registry::IDLE_EXIT_KEY)
+            .map(|r| r.value)
+    };
+    assert_eq!(
+        row(),
+        Some(format!("held: {ROOT} has a head attached")),
+        "a head's settings say what holds the daemon"
+    );
     hub.detach(&head.head_id);
+    let _ = sessions.idle_exit_due();
+    assert_eq!(row().as_deref(), Some("nothing holds it"));
     assert_eq!(sessions.idle_exit_refusal(), None, "nothing holds it now");
     // The look that found the head re-armed the window from itself, so the head going does not make
     // the daemon due at once: the window is counted again from that look.

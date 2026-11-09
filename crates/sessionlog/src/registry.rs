@@ -763,6 +763,9 @@ pub type BroadcastObserver = Arc<dyn Fn(&crate::event::SessionEvent) + Send + Sy
 
 pub type JobOutputSource = Arc<dyn Fn(&str, u64) -> Option<crate::SessionEvent> + Send + Sync>;
 
+/// The settings row that says what holds the daemon's idle exit.
+pub const IDLE_EXIT_KEY: &str = "idle exit";
+
 pub struct Registry {
     inner: Mutex<Inner>,
     bell: Arc<Bell>,
@@ -795,6 +798,9 @@ pub struct Registry {
     /// that never chatted is absent, which is what keeps a passing reader from being woken.
     chatting: Mutex<std::collections::BTreeMap<String, RoomChatSink>>,
     broadcast_observer: Mutex<Option<BroadcastObserver>>,
+    /// What keeps this daemon from its idle exit, as its last look found it: `None` before the
+    /// first look or on a daemon that never idles out, `Some("")` when nothing holds it.
+    idle_hold: Mutex<Option<String>>,
     /// The close runs ONCE and every other caller waits for it to finish: the `Stop` frame,
     /// `catch_signals` and a head's own exit all arrive here.
     close_once: std::sync::Once,
@@ -944,6 +950,7 @@ impl Registry {
             }),
             bell: Bell::new(),
             runs: Mutex::new(std::collections::HashMap::new()),
+            idle_hold: Mutex::new(None),
             run_names: Mutex::new(std::collections::HashMap::new()),
             announced: std::sync::atomic::AtomicBool::new(false),
             first_attach: std::sync::atomic::AtomicBool::new(false),
@@ -1878,10 +1885,40 @@ impl Registry {
     /// What a session's harness last published. Empty for a session whose
     /// harness has not opened, which the head says rather than hides.
     pub fn settings(&self, session_id: &str) -> Vec<crate::protocol::SettingRow> {
-        let g = self.lock();
-        g.entry(session_id)
-            .map(|e| e.settings.clone())
-            .unwrap_or_default()
+        let mut rows = {
+            let g = self.lock();
+            g.entry(session_id)
+                .map(|e| e.settings.clone())
+                .unwrap_or_default()
+        };
+        if let Some(why) = self.idle_hold() {
+            rows.push(crate::protocol::SettingRow {
+                key: IDLE_EXIT_KEY.into(),
+                value: if why.is_empty() {
+                    "nothing holds it".into()
+                } else {
+                    format!("held: {why}")
+                },
+                source: "daemon".into(),
+                editable: String::new(),
+                choices: Vec::new(),
+                tools: Vec::new(),
+            });
+        }
+        rows
+    }
+
+    /// Record what holds the idle exit, `""` for nothing. The daemon's idle look writes it.
+    pub fn set_idle_hold(&self, why: Option<String>) {
+        *self.idle_hold.lock().unwrap_or_else(|e| e.into_inner()) = Some(why.unwrap_or_default());
+    }
+
+    /// What holds the idle exit, as [`Registry::set_idle_hold`] last recorded it.
+    pub fn idle_hold(&self) -> Option<String> {
+        self.idle_hold
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Name a session. Empty is allowed and means "no name"; a head then shows the id, which is

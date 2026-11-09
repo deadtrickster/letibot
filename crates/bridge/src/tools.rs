@@ -30,6 +30,9 @@ pub const EVENTS_LIMIT: usize = 50;
 /// look hung. The daemon keeps the request open past this, so a late answer still applies.
 pub const MODE_PATIENCE: Duration = Duration::from_secs(120);
 
+/// How long `leticode_status` waits for the daemon's settings answer before it says null.
+const IDLE_EXIT_PATIENCE: Duration = Duration::from_millis(500);
+
 /// What the bridge holds: one attached head per session it started or joined, by session id.
 /// A `HashMap` behind a mutex rather than an actor: the tools are called one at a time, and the
 /// only concurrency here is each head's own collecting thread.
@@ -584,6 +587,9 @@ impl Bridge {
             "protocol_skew": s.skew,
             // Lines from the daemon this build could not read and skipped.
             "unreadable_frames": s.unreadable,
+            // What keeps the daemon from its idle exit, `nothing holds it`, or null for a daemon
+            // that never idles out or did not answer in time.
+            "idle_exit": h.idle_exit_within(IDLE_EXIT_PATIENCE),
         });
         // What the last ending measured, which is the question: `prefix_check` says whether
         // zero reuse was a slot that did not hold the history or a prompt that diverged, and the

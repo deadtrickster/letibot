@@ -557,6 +557,11 @@ pub struct State {
     /// This bridge itself asked the daemon to close this session (`leticode_stop`). The goodbye
     /// the daemon sends behind the ack is that close arriving, not a failure to report.
     pub stopped: bool,
+    /// What holds the daemon's idle exit, from its settings row: `None` until a settings answer
+    /// carried one. A daemon that never idles out sends no row.
+    pub idle_exit: Option<String>,
+    /// Settings answers folded, so a caller that asked can wait for the next one.
+    settings_seen: u64,
 }
 
 impl State {
@@ -907,6 +912,13 @@ impl State {
                 ..
             } if note == letibot_sessionlog::protocol::NOTE_SESSION_CLOSED => {
                 self.close_acks.push(client_request_id);
+            }
+            ServerFrame::Settings { rows } => {
+                self.idle_exit = rows
+                    .into_iter()
+                    .find(|r| r.key == letibot_sessionlog::registry::IDLE_EXIT_KEY)
+                    .map(|r| r.value);
+                self.settings_seen += 1;
             }
             ServerFrame::Bye { reason } => self.closed = Some(reason),
             _ => {}
@@ -1736,6 +1748,8 @@ impl Head {
             troubles: g.troubles,
             skew: g.skew.clone(),
             unreadable: g.unreadable,
+            idle_exit: g.idle_exit.clone(),
+            settings_seen: g.settings_seen,
             stopped: g.stopped,
         }
     }
@@ -2189,6 +2203,37 @@ impl Head {
     fn has_closed(&self) -> bool {
         let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         g.closed.is_some()
+    }
+
+    /// Ask the daemon for its settings and wait up to `patience` for the answer: what holds its idle
+    /// exit, or the last answer seen when none came in time.
+    pub fn idle_exit_within(&self, patience: Duration) -> Option<String> {
+        let before = {
+            let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            g.settings_seen
+        };
+        if self
+            .said_client()
+            .and_then(|mut c| c.settings().map_err(|e| e.to_string()))
+            .is_err()
+        {
+            return self.snapshot().idle_exit;
+        }
+        let deadline = Instant::now() + patience;
+        let mut g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        while g.settings_seen == before && g.closed.is_none() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            g = self
+                .shared
+                .bell
+                .wait_timeout(g, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        g.idle_exit.clone()
     }
 
     fn said_client(&self) -> Result<std::sync::MutexGuard<'_, HeadClient>, String> {

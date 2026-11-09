@@ -3069,6 +3069,17 @@ impl<'a> Sessions<'a> {
             return false;
         };
         let now = Instant::now();
+        // Read on every pass, so the settings row a head reads is no older than the last pass;
+        // only a look at the deadline counts it as busy.
+        let held = self.idle_exit_refusal();
+        if held != self.idle_held {
+            match &held {
+                Some(why) => eprintln!("  idle exit held: {why}"),
+                None => eprintln!("  idle exit no longer held"),
+            }
+            self.idle_held = held.clone();
+        }
+        self.registry.set_idle_hold(held.clone());
         match self.idle_exit_at {
             // The first look ARMS the window and counts as finding the daemon busy, which is the
             // truth of it: this call is the first moment anyone has said there is nothing to do.
@@ -3079,14 +3090,6 @@ impl<'a> Sessions<'a> {
             }
             Some(at) if at > now => return false,
             Some(_) => {}
-        }
-        let held = self.idle_exit_refusal();
-        if held != self.idle_held {
-            match &held {
-                Some(why) => eprintln!("  idle exit held: {why}"),
-                None => eprintln!("  idle exit no longer held"),
-            }
-            self.idle_held = held.clone();
         }
         if held.is_some() {
             self.busy_seen = now;
