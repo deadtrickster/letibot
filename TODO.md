@@ -48,7 +48,6 @@ One row per open entry. `left` is what is really left, checked against the tree.
 |---|---|---|---|
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Code work | the R164 before/after numbers; the output cap on the local llama path |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Code work | all of it |
-| R171 | A session's DM to a Claude Code seat is addressed to a different session | Code work | the room no longer re-addresses a dm (built and held by `crates/room/tests/dm.rs`); left: a live dm from a session to a `cc@<folder>` bridge on the box |
 | R174 | A Claude Code seat's todo check says false things about running packages | Code work | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
 | R165 | Rooms for orchestration (3/6): a question goes to the owner, not the room | Code work | all of it |
 | R166 | Rooms for orchestration (4/6): kinds, budgets and a stopping rule for agent-only threads | Code work | all of it |
@@ -200,19 +199,6 @@ Built: the popup's "Let <session> drive this tab" switch attaches `chrome.debugg
 **Done when**: on the operator's Chrome, a session's `screen tab` reads, screenshots, clicks a button, types into a React form field that keeps the text, presses Enter and navigates on the allowed tab only, and each of the three revokes makes the next call refuse with the popup sentence.
 
 ---
-
-## R171 - A session's DM to a Claude Code seat is addressed to a different session
-
-**Status:** the room no longer re-addresses a dm. left: a live dm between a session and a `cc@<folder>` bridge on the box, to read the four rows' shape off the real log.
-
-Seen 2026-11 on the room's own log: `s-1792687430252160872` (db-fuzz) sent four private messages whose text begins `cc@serenedb: ...` — `#1033`, `#1038`, `#1040`, `#1052` — and every one is stored with `"to": "s-1793479579380980357"`, an arango session, while `cc@serenedb` (an external seat, `kind: external`) was pushed none of them. The bridge's own four messages the other way (`#1039`, `#1051`) carry `"to": "s-1792687430252160872"` and arrived. Seat-to-seat dms between two bridges (`cc@letibot` -> `cc@serenedb`, `#1054`-`#1056`) arrived too, so it is a session's `to` that was re-addressed, and db-fuzz read the answer's own line and said the room "labelled them to arango".
-
-Two ways the room changed a name a session wrote, both in `crates/room/src/server.rs`. The log keeps the RESOLVED id, so which spelling db-fuzz sent is not in it; each of these produces the stored shape, and the second reproduces it whatever the first one was:
-
-- **`resolve_handle` answered for the host.** A name that is no member of the sender's project resolves to the one session on the host whose handle it is, so a session's `to` naming a bridge that is not connected — `serenedb`, the bare name of `cc@serenedb` — became the ARANGO session's id and was delivered to it as a dm. That is "labelled to arango", and it is silent: the only trace is the sentence the answer carries.
-- **A `say` with a `to` rode somebody else's dm thread.** Given a `thread` whose root is a dm between the sender and a third session, `route_say` computed the addressee from the root and threw the resolved `to` away, so a message written to `cc@serenedb` was stored — and pushed — against that third session.
-
-Built: `cc@<name>` resolves only to that connected external seat; a bridge-shaped name never falls through to a member handle. A name only another project's session answers to is refused (`HandleInAnotherProject`) with the ids that do go by it, so naming the id still reaches it; a wide seat (the operator, a bridge, an ask, an invite) may still reach across, where it is `Ambiguous` as before. `UnknownAddressee` now carries the names that would have reached somebody, as `AskUnknown` already did. A `say` naming a third party is refused (`ThreadIsAnotherDm`) rather than answered to the thread's other party. Held by `crates/room/tests/dm.rs`: the handle is what the log stores and the bridge is pushed; an away bridge is refused with the names that answer; the arango shape writes no row and the sender is told the id; the thread disagreement is refused and its own party is allowed.
 
 ## R172 - The extension is a head: a chat panel on the session's stream
 
