@@ -814,6 +814,28 @@ fn quoting_leaves_plain_words_and_wraps_the_rest() {
     assert_eq!(shell_quote(""), "''");
 }
 
+/// The perimeter's pairs are spelled in front of the guest's command, since `firecode in` has no
+/// env flag, and a value a file or a command gave is refused: the command string is an argv this
+/// box's `ps` reads, and a VM has no second channel.
+#[test]
+fn a_guest_command_is_spelled_with_the_perimeters_pairs_and_refuses_a_secret() {
+    let env = vec![("A_PAIR".to_string(), "a value".to_string())];
+    let own = vec![("OWN".to_string(), "its own".to_string())];
+    assert_eq!(
+        guest_env_prefix(&env, &own),
+        "A_PAIR='a value' OWN='its own' "
+    );
+    assert!(secret_names_in_a_guest(&[], &env).is_empty());
+    // A name the call calls a secret, and a value whose PROVENANCE makes it one.
+    assert_eq!(
+        secret_names_in_a_guest(
+            &[("PLAINLY_NAMED".to_string(), "v".to_string())],
+            &[("GH_TOKEN".to_string(), "v".to_string())]
+        ),
+        vec!["GH_TOKEN".to_string(), "PLAINLY_NAMED".to_string()]
+    );
+}
+
 /// One round trip for the whole tree, end to end, which is why [`ExecBackend::list_tree`]
 /// exists: the stub answers the one `find` with the guest's listing, and what comes back is
 /// what the per-directory loop would have produced. The `in` call log is the count.

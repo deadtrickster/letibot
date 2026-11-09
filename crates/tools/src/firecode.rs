@@ -259,6 +259,10 @@ pub struct FirecodeBackend {
     /// The wall clock on one control command in the guest, a field only so a test that measures
     /// the deadline can set it to a second instead of waiting out the constant.
     guest_timeout: Duration,
+    /// The perimeter's pairs: what a guest command is spelled with, and what it must be refused
+    /// over, because `firecode in` carries no stdin and no descriptor to hand a secret's value on.
+    env: Vec<(String, String)>,
+    env_secrets: Vec<(String, String)>,
 }
 
 impl std::fmt::Debug for FirecodeBackend {
@@ -583,6 +587,8 @@ impl FirecodeBackend {
             mount_rw: spec.mount_rw,
             joined: None,
             guest_timeout: GUEST_TIMEOUT,
+            env: Vec::new(),
+            env_secrets: Vec::new(),
         };
         // Prove the door works before handing the backend over: a VM that came
         // up and cannot take a command is a boot, not a backend.
@@ -636,6 +642,8 @@ impl FirecodeBackend {
             mount_rw: false,
             joined: None,
             guest_timeout: GUEST_TIMEOUT,
+            env: Vec::new(),
+            env_secrets: Vec::new(),
         };
         // The parent's VM has to be up and taking commands, or there is nothing to run in.
         b.guest("true").map_err(|e| {
@@ -656,6 +664,19 @@ impl FirecodeBackend {
     /// Whether this backend brought its VM up - `false` when attached to an ancestor's.
     pub fn owns_vm(&self) -> bool {
         self.owns
+    }
+
+    /// The perimeter's own pairs, for every command of this session. A pair whose value is a
+    /// secret is carried but cannot be spelled, so a foreground call that needs one is refused: see
+    /// [`ExecBackend::run`].
+    pub fn with_env(
+        mut self,
+        env: Vec<(String, String)>,
+        secrets: Vec<(String, String)>,
+    ) -> FirecodeBackend {
+        self.env = env;
+        self.env_secrets = secrets;
+        self
     }
 
     pub fn project(&self) -> &Path {
@@ -907,11 +928,18 @@ impl ExecBackend for FirecodeBackend {
             .map(|a| shell_quote(a))
             .collect::<Vec<_>>()
             .join(" ");
-        let env_prefix = cmd
-            .env
-            .iter()
-            .map(|(k, v)| format!("{}={} ", shell_quote(k), shell_quote(v)))
-            .collect::<String>();
+        // A secret's value cannot travel here: `firecode in` takes one command string, so the only
+        // way in is the argv this box's own `ps` reads. Refused with the variable named instead.
+        let secrets = secret_names_in_a_guest(&self.env_secrets, &cmd.env);
+        if !secrets.is_empty() {
+            return Err(BackendError::Io(format!(
+                "`{}` cannot reach a command in this firecode VM: `firecode in` carries one \
+                 command string and no descriptor, so the value would have to go on an argv this \
+                 box reads with `ps`. Nothing was run.",
+                secrets.join("`, `")
+            )));
+        }
+        let env_prefix = guest_env_prefix(&self.env, &cmd.env);
         let cwd = self.guest_path(&cmd.cwd);
         // A command the model asked for keeps its own deadline ([`GUEST_COMMAND_TIMEOUT`], the
         // `bash` tool's ceiling): this bound is a backstop for a lost reply, not a second opinion
@@ -1701,6 +1729,37 @@ fn shell_quote(s: &str) -> String {
         return s.to_string();
     }
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// The names a guest command cannot carry: a pair whose value a file or a command gave (a secret
+/// whatever it is called), and one the call itself calls a secret. Empty is the usual case.
+fn secret_names_in_a_guest(
+    given: &[(String, String)],
+    cmd_env: &[(String, String)],
+) -> Vec<String> {
+    let mut out: Vec<String> = given
+        .iter()
+        .map(|(k, _)| k.clone())
+        .chain(
+            cmd_env
+                .iter()
+                .filter(|(k, _)| crate::exec::boundary::is_secret_name(k))
+                .map(|(k, _)| k.clone()),
+        )
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The `K=V` words a guest command is spelled with: the perimeter's pairs, then the call's own,
+/// which win. A command prefix rather than an `export`, because `firecode in` runs the string it
+/// is given under `bash -lc` and has no env flag of its own.
+fn guest_env_prefix(env: &[(String, String)], cmd_env: &[(String, String)]) -> String {
+    env.iter()
+        .chain(cmd_env.iter())
+        .map(|(k, v)| format!("{}={} ", shell_quote(k), shell_quote(v)))
+        .collect()
 }
 
 /// Delegates to the one alphabet in the tree, `letibot_transcript::media::encode_base64`, because a

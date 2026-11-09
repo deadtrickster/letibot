@@ -556,6 +556,91 @@ fn a_guest_its_own_session_closed_is_not_brought_down_again() {
     assert_eq!(downs, 1, "down exactly once: {:?}", rig.asked());
 }
 
+/// The perimeter's pairs reach a command INSIDE the guest - `firecode in` has no env flag, so a
+/// pair is spelled in front of the command it wraps - and a loader variable is refused at the door.
+#[test]
+fn a_perimeters_env_reaches_the_guests_command() {
+    let _turn = turns();
+    let rig = Rig::new("env", true);
+    let mut spec = rig.spec(true);
+    spec.env = vec![
+        ("A_PERIMETER_PAIR".into(), "a value".into()),
+        ("BASH_ENV".into(), "/tmp/a-loader-nobody-meant".into()),
+    ];
+    let b = SshBackend::place(&spec).expect("the placement is arranged");
+    let out = b
+        .run(&Command {
+            argv: vec![
+                "sh".into(),
+                "-c".into(),
+                "printf %s \"$A_PERIMETER_PAIR\"".into(),
+            ],
+            cwd: String::new(),
+            env: Vec::new(),
+        })
+        .expect("the command runs in the guest");
+    assert_eq!(out.exit, 0, "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "a value",
+        "the pair did not reach the guest command's environment"
+    );
+    let asked = rig.asked().join("\n");
+    assert!(
+        asked.contains("A_PERIMETER_PAIR"),
+        "the pair is not in the guest command firecode was handed: {asked}"
+    );
+    assert!(
+        !asked.contains("a-loader-nobody-meant"),
+        "a refused pair reached the host's own argv: {asked}"
+    );
+    let notes = b.placement_notes().join("\n");
+    assert!(
+        notes.contains("BASH_ENV") && notes.contains("not passed"),
+        "the placement does not say it dropped the loader variable: {notes}"
+    );
+    // Off the process's guest list, which the last-act tests count.
+    drop(b);
+    letibot_tools::remote::guests_down();
+}
+
+/// A value whose provenance is a secret is refused rather than put in the guest's command string:
+/// `firecode in` carries no descriptor, so the only other way in is the HOST's argv, which `ps`
+/// there reads. Nothing is run, and both the sentence and the fake's record are checked.
+#[test]
+fn a_perimeters_secret_value_is_refused_inside_a_vm_and_never_reaches_an_argv() {
+    const GIVEN: &str = "r121fixtureVMSECRETvalue0123456789";
+    let _turn = turns();
+    let rig = Rig::new("envsecret", true);
+    let mut spec = rig.spec(true);
+    spec.env_secrets = vec![("A_PLAINLY_NAMED_PAIR".into(), GIVEN.into())];
+    let b = SshBackend::place(&spec).expect("the placement is arranged");
+    let refused = b
+        .run(&Command {
+            argv: vec!["sh".into(), "-c".into(), "true".into()],
+            cwd: String::new(),
+            env: Vec::new(),
+        })
+        .expect_err("a VM has no channel for a secret, so nothing runs");
+    let said = refused.to_string();
+    assert!(
+        said.contains("A_PLAINLY_NAMED_PAIR") && said.contains("Nothing was run"),
+        "the refusal names the variable and says nothing ran: {said}"
+    );
+    let asked = rig.asked();
+    assert!(
+        !asked.iter().any(|a| a.contains(GIVEN)),
+        "the secret is in what firecode was handed: {asked:?}"
+    );
+    assert_eq!(
+        asked.iter().filter(|a| a.starts_with("in ")).count(),
+        0,
+        "a refused call reached the guest anyway: {asked:?}"
+    );
+    drop(b);
+    letibot_tools::remote::guests_down();
+}
+
 /// One `firecode`-booting test at a time: the guests this process booted are one list, so a test
 /// that inspects it must not run beside one that has a live guest.
 fn turns() -> std::sync::MutexGuard<'static, ()> {

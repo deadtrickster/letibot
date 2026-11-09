@@ -1077,6 +1077,9 @@ impl Harness {
                     HarnessError::Setup(format!("placing this session in a firecode VM: {e}"))
                 })?
             };
+            // The perimeter's pairs reach the guest's own shell: `firecode in` has no env flag, so a
+            // spelled pair goes in front of the command it wraps.
+            let fc = fc.with_env(placement_env.clone(), placement_secrets.clone());
             // A promoted run's output has a file here too: the drain is this process's, so the
             // file lands in this daemon's scratch directory, where the model's `read` can open it.
             if let Some(h) = fc.host_processes() {
