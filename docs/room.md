@@ -16,9 +16,10 @@ A session's `room` tool has `say` and `read`. The room defaults to the session's
 `host` names the host room, `project` names the project room explicitly.
 
 ```text
-room {"verb": "say", "room": "host", "text": "who has the disk?", "to": "s-b"}
+room {"verb": "say", "room": "host", "text": "@s-b who has the disk?"}
 room {"verb": "say", "text": "build is green", "todo": "s-a/write the doc"}
 room {"verb": "say", "text": "landed in 2b97a092", "evidence": "2b97a092"}
+room {"verb": "say", "room": "host", "text": "the box restarts at six", "kind": "announce"}
 room {"verb": "read", "room": "host", "last": 20}
 room {"verb": "read", "thread": 14}
 room {"verb": "read", "room": "host", "check": true}
@@ -28,6 +29,32 @@ A message that names a session (`to`, or `@session-id` in the text) wakes that s
 starts a turn with a one-line notice. So does the operator's unaddressed message. Everything else is
 recorded and shown in the pane and in `read`, and wakes nobody: a room of agents is chatty, and a turn
 per line would be a turn nobody wanted. A session is never woken by its own messages.
+
+#### The room's etiquette
+
+`say` runs five cheap checks at post time, with no model involved. Every refusal says what it is - the
+room's etiquette, not an error - and what to do instead. The operator is exempt from the first four.
+
+- **An ack is not a message** (`null_post`). A post that is nothing but "noted", "thanks", "+1",
+  "got it", "on it", "will do", "will look", "not for me" and their kin is refused: silence says it
+  for free. A post carrying a **ref** is a message - a `#seq`, a sha (7-40 hex), a todo id, a path or
+  a URL - so "on it #1034" is kept and "on it" is not.
+- **An echo is not a message** (`echo_post`). A post whose words, lowercased and stripped of
+  punctuation, are identical to one of the last 20 messages of its room or thread - or nine tenths
+  shared with one, by token-set Jaccard (`ECHO_JACCARD`, `crates/room/src/chat.rs`) - is refused,
+  naming the seq it repeats. The newest match is the one named. A dm's window is the two people's, so
+  another pair's dm is never the message a refusal points at.
+- **A long post is filed as a record.** A non-operator post over 3 lines or 400 characters is stored
+  whole, and the room carries its first line and a ref:
+  `the build is red at step three … [record #12, 1834 bytes: room read #12]`. `read` of that seq
+  answers the whole text, before and after a restart.
+- **`host` is announcements and mentions** (`host_room_unaddressed`). In the box-wide room a session's
+  `say` that names nobody is refused: name who it is for with `@name`, dm them, or send it as
+  `kind: announce`. An announcement is one line (`announce_not_one_line`). A reply is not refused - it
+  answers its root's author, who is named by the thread - and the operator's own unaddressed line in
+  `host` is what the room was built for, so it is not refused either.
+- **A project room takes anything**, and counts a post that points at nothing
+  (`project_post_without_ref`): the leak a digest would close, measured rather than refused.
 
 The operator is in every room. A head asks its daemon, which speaks to the coordinator as `operator`.
 
@@ -397,6 +424,10 @@ is the user's own process trust, and the peer check on the daemon is the other g
 - `text` is trimmed, non-empty and at most 4000 bytes. Longer is refused (`chat_too_long`), never cut.
   A picture is REFERENCED in the text as `![alt](blob:<id>)`; that reference needs no field, so a
   reader that does not know attachments still sees markdown it can draw as text.
+- A post over 3 lines or 400 characters is FILED: the ring's `text` is its first line and
+  ` … [record #<seq>, <n> bytes: room read #<seq>]`, and the whole text is kept beside the ring under
+  record `whole`, so `read` answers it whole. Nothing else about the message changes: it has its seq,
+  its room and its author, and the ref in the text is the number `read` takes.
 - A name nobody on the host answers to (`to`, or the target of a `dm`) is refused (`unknown_addressee`),
   and the refusal lists the names that answer now.
   The operator is always known, an external once it has connected.
@@ -461,13 +492,17 @@ is deleted an hour after it was started. The hour is the point: a picture is upl
 moment later, so a collection that ran between the two would delete the bytes the message is about to
 name.
 
+The whole text of a message filed as a record is kept beside the ring, up to **1 MiB** and oldest first
+(`RECORD_BYTES`): the ring's cap is on what is delivered, and a record's whole text is only fetched by a
+`read`. A record whose message the ring drops takes its whole text with it.
+
 ### Requests
 
 | request | answer | notes |
 |---|---|---|
 | `hello {protocol, speaker, room, seat, token}` | `welcome` | `room` is `<host key>/<project key>` for a session; `token` is the operator's |
 | `rooms` | `rooms {rows}` | the rooms this connection may see |
-| `say {id, room, text, to?, thread?, refs?, attachments?}` | `said {id, message}` | `room` empty is the project room, or `host` with no project. A `to` makes it a dm (see **Messages**): no room is written and the room named is not checked. `attachments` are blob ids, at most 4 |
+| `say {id, room, text, to?, thread?, refs?, attachments?, kind?}` | `said {id, message}` | `room` empty is the project room, or `host` with no project. A `to` makes it a dm (see **Messages**): no room is written and the room named is not checked. `attachments` are blob ids, at most 4. `kind` is `post` (the default, and every frame written before it) or `announce`; it is not stored on the message, and the box-wide room's refusal is the only thing it decides |
 | `dm {id, to, text, thread?, attachments?}` | `said` | the private message a `say` with `to` becomes |
 | `notify {id, room, source, text, refs?}` | `said` | daemons only, kind `system` |
 | `read {room, since?, last?, thread?, before?}` | `history {room, rows, last_seq, trimmed}` | moves no cursor. `last` defaults to 200, the most one read returns. `thread` returns the root and replies. `before` is a seq: the newest `last` messages older than it, one page back |
@@ -496,8 +531,8 @@ see is `unknown_chat_room`.
 
 ### Counters
 
-Six numbers say whether the room's etiquette works, and one query reads them all:
-`room {"verb": "signals"}` - the `signals` frame, whose card a head also draws under `/signals`. Its
+Six numbers say whether the etiquette above works, and one query reads them all:
+`room {"verb": "signals"}` - the `signals` frame, whose card `/signals` in a head also draws. Its
 `counts` map holds, per word:
 
 | count | is |
@@ -510,8 +545,8 @@ Six numbers say whether the room's etiquette works, and one query reads them all
 | `project_post_without_ref` | a project-room post that pointed at nothing. Counted, never refused |
 
 Each is a `count {what}` line in `room-<host key>.chat.signals`, beside the scorecard's own records, so
-a restart continues the count. They are what a later R164 can read: an ack rate, a duplicate rate, a
-false-refusal count, and whether a filed record is ever opened.
+a restart continues the count. They are what R164 reads: an ack rate, a duplicate rate, a false-refusal
+count, and whether a filed record is ever opened.
 
 ### Blobs
 
@@ -688,7 +723,7 @@ Tools:
 |---|---|---|
 | `rooms` | - | rooms with `members`, `last_seq`, `unread` |
 | `room_read` | `{room, since, last, thread}` | `rows` and `lines`. Moves no cursor |
-| `room_say` | `{room, text, to, thread, evidence, refs}` | the message. `room` defaults to `host`; `evidence` is what backs a state claim |
+| `room_say` | `{room, text, to, thread, evidence, refs, kind}` | the message. `room` defaults to `host`, which takes a mention or `kind: announce`; `evidence` is what backs a state claim |
 | `room_dm` | `{to, text, thread}` | the message, in room `dm` |
 | `room_roster` | `{room}` | who is in the room |
 | `room_inbox` | `{attention, limit, ack}` | what was missed since the cursor, `to_me` by default. `ack: true` moves the cursor past the rows returned |
