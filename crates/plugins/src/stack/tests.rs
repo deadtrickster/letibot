@@ -35,9 +35,9 @@ fn script_layer(root: &Path, name: &str, module: &str, body: &[u8]) -> PathBuf {
 // `module`: the file a layer answers from, which is not always plugin.wasm
 // -----------------------------------------------------------------------------------------
 
-/// A script layer is on the ladder and answers nothing. It is pinned, hashed and polled
-/// like any other (`docs/plugins-plan.md` step 11's decision 2); what it cannot do is run,
-/// because no engine for it is built in. Saying so at load is what keeps fail-down true.
+/// A script layer is on the ladder and answers nothing. It is pinned, hashed and polled like any
+/// other; what it cannot do is run, because no engine for it is built in. Saying so at load is what
+/// keeps fail-down true.
 #[test]
 fn a_script_module_falls_down_and_says_no_engine_for_it_is_built_in() {
     let t = TempDir::new("script-module");
@@ -115,9 +115,9 @@ fn poll_changes_watches_the_module_the_manifest_names() {
     );
 }
 
-/// A script layer is pinnable, and the pin is about the script. the trust ladder admits it,
-/// which is the whole of this package: without the manifest field it would pin on an EMPTY
-/// module hash and an edit to the script would never un-pin the layer.
+/// A script layer is pinnable, and the pin is about the script: the trust ladder admits it, which is
+/// the whole of this package. Without the manifest field it would pin on an empty module hash, and
+/// an edit to the script would never un-pin the layer.
 #[test]
 fn a_script_layer_pins_on_its_script_and_an_edit_moves_the_bytes_the_pin_holds() {
     let t = TempDir::new("script-pin");
@@ -181,7 +181,7 @@ fn a_builtin_is_free_and_a_placed_layer_is_not_until_the_book_pins_its_bytes() {
     assert!(said.contains("`one`"), "{said}");
     assert!(said.contains("not pinned"), "{said}");
 
-    // Arm 2, the other half: pinning the bytes it has now makes it free.
+    // The other half: pinning the bytes it has now makes it free.
     let pin = book
         .pin("one", &t.path().join("project/.letibot/plugins/one"))
         .expect("a pin");
@@ -509,9 +509,9 @@ fn a_builtin_sits_below_every_scope_and_the_last_registered_is_on_top() {
     );
 }
 
-/// A built-in the binary carries as BYTES, at the bottom of the stack: no directory, a manifest
-/// that had to parse, a module that had to be admitted, and an id built from its name. The scope
-/// above it still wins, because a built-in is a default and not an exception.
+/// A built-in the binary carries as bytes, at the bottom of the stack: no directory, a manifest that
+/// had to parse, a module that had to be admitted, and an id built from its name. The scope above it
+/// still wins, because a built-in is a default and not an exception.
 #[test]
 fn a_builtin_from_bytes_sits_at_the_bottom_and_obeys_the_scopes_above_it() {
     let t = TempDir::new("builtin-bytes");
@@ -580,9 +580,9 @@ fn a_loader_that_cannot_load_bytes_answers_a_sentence_and_records_it() {
     assert_eq!(failure.scope, Scope::BuiltIn);
 }
 
-/// A built-in whose manifest does not admit its module is refused by NAME, not left on the
-/// stack half-registered - the same rule discovery follows, and the one the stack view draws
-/// as *installed and exploding* rather than as absent.
+/// A built-in whose manifest does not admit its module is refused by name, not left on the stack
+/// half-registered - the same rule discovery follows, and the one the stack view draws as *installed
+/// and exploding* rather than as absent.
 #[test]
 fn a_builtin_whose_exports_its_manifest_does_not_declare_is_refused() {
     let t = TempDir::new("builtin-admit");
@@ -755,9 +755,9 @@ fn an_ask_below_round_trips_the_lower_answer_into_the_layer_that_asked() {
     assert!(r.failures.is_empty());
 }
 
-/// A pane's `look` is an answer, not the stack's ask-below. A pane that asks the host to read a
-/// file answers a document with a top-level `look`; a stack that read that as *ask the layer
-/// below* drew nothing at all. `below` is the marker now, and `look` belongs to the pane.
+/// A pane's `look` is an answer, not the stack's ask-below. A pane that asks the host to read a file
+/// answers a document with a top-level `look`; a stack that read that as *ask the layer below* drew
+/// nothing at all. `below` is the marker, and `look` belongs to the pane.
 #[test]
 fn a_pane_answer_carrying_c3s_look_answers_without_asking_below() {
     let t = TempDir::new("pane-look");

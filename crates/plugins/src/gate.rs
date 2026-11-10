@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::manifest::Manifest;
 use crate::{Candidate, Module, Recorder, Stack, sha256_file};
 
-/// How the gate's step 1 is performed, so tests never run cargo.
+/// How a build is performed, so tests never run cargo.
 pub trait Builder: Send + Sync {
     /// Build `dir`'s source, install the result as `<dir>/plugin.wasm`, and return the build log.
     /// The log comes back whether the build worked or not: it is what the model fixes the source
@@ -103,8 +103,8 @@ fn artifact(dir: &Path) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// One input answered differently on the shadow than on the live stack: the *"these
-/// inputs now answer differently, like this"*.
+/// One input answered differently on the shadow than on the live stack: what these inputs now
+/// answer differently, and how.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReplayDiff {
     pub hook: String,

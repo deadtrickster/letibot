@@ -62,16 +62,16 @@ impl std::fmt::Display for Scope {
 pub enum Capability {
     /// Read files under the workspace.
     Read,
-    /// Read files under ONE tree outside the workspace, named as it was declared. `read` alone is
+    /// Read files under one tree outside the workspace, named as it was declared. `read` alone is
     /// the workspace, so this spelling exists rather than a widening of it: the manifest line is
-    /// the approval, and the string is the DECLARED spelling so `Display` prints back what was read.
+    /// the approval, and the string is the declared spelling so `Display` prints back what was read.
     ReadPath(String),
     /// Run `<program>`, with arguments the plugin chooses, through the gate.
     Exec(String),
     /// GET from `<host>`.
     Http(String),
-    /// Name blobs the host already holds, by id, without ever seeing their bytes (`X3`). One
-    /// spelling per store, and `room` is the only store this build serves.
+    /// Name blobs the host already holds, by id, without ever seeing their bytes. One spelling per
+    /// store, and `room` is the only store this build serves.
     Blobs(String),
 }
 
@@ -212,15 +212,15 @@ pub struct Manifest {
     /// what a layer written before the move says.
     pub contracts: std::collections::BTreeMap<String, u32>,
     /// The feeds a `pane` layer reads - data the host already has (`letibot_plugin::pane::Feed`).
-    /// A DECLARATION and not a capability: a feed is a read of something the host is already
+    /// A declaration and not a capability: a feed is a read of something the host is already
     /// showing, so declaring it grants it and no adjudication is skipped.
     pub feeds: Vec<letibot_plugin::pane::Feed>,
-    /// The acts a pane's rows may ask the HOST to perform (`letibot_plugin::pane::Act`). A view
+    /// The acts a pane's rows may ask the host to perform (`letibot_plugin::pane::Act`). A view
     /// whose rows carry an act this list does not name is refused, so a layer cannot reach a verb
     /// nobody reviewed; the next verb a pane needs is one more word here.
     pub actions: Vec<String>,
     /// The tools this layer offers the model - `[[tools]]`, one entry per tool: its name, the one
-    /// line the prompt carries, and the JSON Schema of its arguments. A declaration IS the prompt
+    /// line the prompt carries, and the JSON Schema of its arguments. A declaration is the prompt
     /// bytes, so it is reviewed as prompt bytes.
     pub tools: Vec<ToolDecl>,
 }
@@ -395,9 +395,9 @@ impl Manifest {
                 ));
             }
         }
-        // A layer may ADD a `/` verb and may never take one. A `command_<verb>` naming a verb the
+        // A layer may add a `/` verb and may never take one. A `command_<verb>` naming a verb the
         // head or the daemon already answers would be a hook that can never fire, so it is refused
-        // here rather than discovered as a layer that does nothing (X23).
+        // here rather than discovered as a layer that does nothing.
         for hook in &self.hooks {
             let Some(verb) = hook.strip_prefix(letibot_plugin::command::PREFIX) else {
                 continue;
@@ -428,7 +428,7 @@ impl Manifest {
             }
         }
         // The acts a manifest asks for: the operator's three are a person's act, and a plugin that
-        // could perform one would be a layer reseating, compacting or ruling on the queue (X24).
+        // could perform one would be a layer reseating, compacting or ruling on the queue.
         for act in &self.actions {
             if letibot_plugin::command::is_operator_act(act) {
                 return Err(format!(
@@ -458,7 +458,7 @@ impl Manifest {
                 ));
             }
         }
-        // A `steer_` or `compact_` export is the ONE name the host asks: the turn has one end and a
+        // A `steer_` or `compact_` export is the one name the host asks: the turn has one end and a
         // compaction one record, so a layer under another name would sit on the stack and never fire.
         for (prefix, asked) in [
             (letibot_plugin::steer::PREFIX, letibot_plugin::steer::HOOK),
@@ -479,7 +479,7 @@ impl Manifest {
                 ));
             }
         }
-        // The tool half first: its sentence names the tool AND the export, which is what a model
+        // The tool half first: its sentence names the tool and the export, which is what a model
         // about to fix the manifest needs.
         for tool in &self.tools {
             let hook = tool.hook();
@@ -522,9 +522,9 @@ impl Manifest {
         ))
     }
 
-    /// [`Manifest::admit`], and the rules about the LAYER rather than about its answers: only a
-    /// built-in or a PINNED layer may read the `chat` feed, and a session's own layer may not answer
-    /// the gate's floor or a review hook at all (the review's questions 9 and 4, on their defaults).
+    /// [`Manifest::admit`], and the rules about the layer rather than about its answers: only a
+    /// built-in or a pinned layer may read the `chat` feed, and a session's own layer may not answer
+    /// the gate's floor or a review hook at all.
     pub fn admit_for(&self, exports: &[String], scope: Scope, pinned: bool) -> Result<(), String> {
         self.admit(exports)?;
         if scope == Scope::Session
@@ -549,7 +549,7 @@ impl Manifest {
 
     /// The sentence a session's own layer reads when it answers a hook only a project, the operator
     /// or a built-in may: `None` when it answers none of them. Reviewed policy is not the governed
-    /// agent's to write — the gate's floor and the review of the agent's own branch are the two.
+    /// agent's to write, and the gate's floor and a review of that agent's branch are the two.
     fn answered_by_a_session(&self) -> Option<String> {
         let floor = self
             .hooks
@@ -1012,7 +1012,7 @@ type = "string"
     fn a_read_path_names_one_tree_and_says_so_when_it_names_everything() {
         let ok = Capability::parse("read:~/.claude/projects").expect("one tree");
         assert_eq!(ok, Capability::ReadPath("~/.claude/projects".into()));
-        // The DECLARED spelling round-trips, because it is what the stack view and a refusal print.
+        // The declared spelling round-trips, because it is what the stack view and a refusal print.
         assert_eq!(ok.to_string(), "read:~/.claude/projects");
         assert_eq!(
             Capability::parse("read:/var/log").unwrap(),
@@ -1047,9 +1047,9 @@ type = "string"
         assert!(!is_hook_kind(""));
     }
 
-    /// The chat layer's own manifest: the hooks X6 added, the acts X7 added, and the blob store
-    /// X3 added. Every one of them is a word this host now speaks, and a manifest is where a layer
-    /// says it means to use it.
+    /// The chat layer's own manifest: the hooks a chat pane needs, its acts, and the blob store it
+    /// reads. Every one of them is a word this host speaks, and a manifest is where a layer says it
+    /// means to use it.
     const A_CHAT_LAYER: &str = r#"
 name = "chat"
 purpose = "the room's messages, drawn the way this project reads them"
@@ -1172,7 +1172,7 @@ contract = 1
         }
     }
 
-    /// A layer ADDS a verb the host has not got and never takes one: `HOST_VERBS` is what
+    /// A layer adds a verb the host has not got and never takes one: `HOST_VERBS` is what
     /// `HOST_KEYS` is to a pane, and the sentence names the word that was already taken.
     #[test]
     fn a_layer_cannot_shadow_a_host_verb() {
@@ -1226,7 +1226,7 @@ contract = 1
             why.contains("lifecycle_open"),
             "the events are named: {why}"
         );
-        // And a turn-end or a compaction export is the ONE name the host asks: a second name would
+        // And a turn-end or a compaction export is the one name the host asks: a second name would
         // sit on the stack and never fire, which looks exactly like a layer that does nothing.
         for (declared, asked) in [
             ("steer_continue", letibot_plugin::steer::HOOK),
@@ -1244,7 +1244,7 @@ contract = 1
     }
 
     /// The operator's own acts are not a layer's to perform: `queue_op` is a person's verdict on the
-    /// merge queue, and the three self verbs are the model's own door (X24).
+    /// merge queue, and the three self verbs are the model's own door.
     #[test]
     fn a_manifest_asking_for_an_operator_verb_is_refused() {
         let with_acts = |act: &str| {
@@ -1261,7 +1261,7 @@ contract = 1
             assert!(why.contains(act), "the act is named: {why}");
             assert!(why.contains("operator"), "and whose it is: {why}");
         }
-        // The acts a layer DOES perform are untouched: a `/` verb writing a board row is the
+        // The acts a layer does perform are untouched: a `/` verb writing a board row is the
         // example the whole hook exists for.
         let mine = Manifest::parse(&with_acts("add_todo")).expect("it parses");
         mine.admit(&["pane_queue".to_string()])

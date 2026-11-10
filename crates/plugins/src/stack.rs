@@ -47,7 +47,7 @@ pub struct Layer {
     /// [`Layer::trusted`] is decided against beside `sha256`.
     pub manifest_sha256: String,
     pub disabled: bool,
-    /// Whether this layer may run freely: true for a built-in, and for a layer whose module AND
+    /// Whether this layer may run freely: true for a built-in, and for a layer whose module and
     /// manifest match a recorded pin. Where a file sits proves nothing, so the fact is the hash.
     /// An untrusted layer still answers, but every call it makes is adjudicated without a card.
     pub trusted: bool,
@@ -68,9 +68,9 @@ impl Layer {
     }
 }
 
-/// A pin whose bytes moved: the layer, what was pinned, and what is on disk now.
-/// Drained by the host, which says it once (`plugin_untrusted`): a layer that quietly stopped
-/// being yours is the state the ladder exists to make impossible to miss.
+/// A pin whose bytes moved: the layer, what was pinned, and what is on disk now. Drained by the
+/// host, which says it once (`plugin_untrusted`): a layer that quietly stopped being yours is what
+/// the ladder exists to make impossible to miss.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrokenPin {
     pub layer: String,
@@ -123,8 +123,7 @@ const FAIL_CLOSED: &[&str] = &["on_tool_call", letibot_plugin::adjudicate::HOOK]
 
 /// Hooks a session's own layer may not answer at all, whatever the manifest declared: reviewed
 /// policy about what may run is a project's, the operator's or a built-in's, never that of the agent
-/// it governs - and a review of that agent's own branch is the same kind of fact. A manifest is
-/// refused at its door by `Manifest::admit_for`; this catches one already on.
+/// it governs, and so is a review of that agent's own branch.
 const NOT_A_SESSIONS: &[&str] = &[
     letibot_plugin::adjudicate::HOOK,
     letibot_plugin::review::BRIEF,
@@ -384,7 +383,7 @@ impl Stack {
                     .iter()
                     .find(|l| !l.dir.as_os_str().is_empty() && l.dir == dir)
             })
-            // The name `declared_tools` carries is the layer's DIRECTORY name, not its path -
+            // The name `declared_tools` carries is the layer's directory name, not its path -
             // a tool's `DeclaredTool::layer` is what a refusal names, so this spelling has to
             // find the layer it came from.
             .or_else(|| {
@@ -535,9 +534,9 @@ impl Stack {
         );
     }
 
-    /// Register a built-in the binary carries as BYTES, read into the bottom of the stack. The
+    /// Register a built-in the binary carries as bytes, read into the bottom of the stack. The
     /// manifest is parsed from its text and the module comes from memory, so it goes through the
-    /// same doors a layer on disk does. A failure is answered AND recorded, as discovery does.
+    /// same doors a layer on disk does. A failure is answered and recorded, as discovery does.
     pub fn register_builtin_bytes(
         &mut self,
         name: &str,
@@ -898,7 +897,7 @@ impl Stack {
             let id = format!("{}{}", scope.prefix(), n + 1);
             let wasm = manifest.module_path(&path);
             // A manifest and no module is a declaration, not a failure: recording it would publish
-            // `plugin_layer` warnings for a CORRECT install of a built-in's tool, and there is
+            // `plugin_layer` warnings for a correct install of a built-in's tool, and there is
             // nothing to load. `poll_changes` picks a module up if one is ever written beside it.
             let (seen, module, hooks) = if !has_module(&wasm) {
                 (Fingerprint::absent(), None, Vec::new())

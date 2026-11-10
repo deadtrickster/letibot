@@ -493,7 +493,7 @@ impl Trust {
         }
     }
 
-    /// What a REBUILD of this layer did to its pin: a rebuild whose `plugin.toml` asks for the same
+    /// What a rebuild of this layer did to its pin: a rebuild whose `plugin.toml` asks for the same
     /// powers keeps the operator's pin over the new bytes, and one that asks for a new power drops
     /// it. `None` when this layer was never pinned, which is the ordinary case.
     pub fn rebuilt(&self, name: &str, dir: &Path) -> Result<Option<Rebuilt>, String> {
@@ -584,7 +584,7 @@ impl Trust {
         Some(taken)
     }
 
-    /// Every pin IN FORCE, newest last - a revoked one is not listed, because the question this
+    /// Every pin in force, newest last - a revoked one is not listed, because the question this
     /// answers is *what is pinned*.
     pub fn pins(&self) -> Vec<Pin> {
         let book = self.lock();
@@ -649,8 +649,9 @@ pub(crate) mod test_seam {
 
     pub type Hook = Box<dyn FnOnce() + Send>;
 
-    /// The installing THREAD, not just the hook. Libtest runs a file's tests in parallel, so a
-    /// process-wide hook would fire inside somebody else's save and fail a second test. A seam that only its own thread can trip is a seam that cannot.
+    /// The installing thread, not just the hook. Libtest runs a file's tests in parallel, so a
+    /// process-wide hook would fire inside somebody else's save and fail a second test. A seam that
+    /// only its own thread can trip is a seam that cannot.
     static HOOK: Mutex<Option<(ThreadId, Hook)>> = Mutex::new(None);
 
     /// Stand in the window on this thread's next save, once.
@@ -1008,7 +1009,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The direction that matters: a STALE peer must not undo the operator's own act.
+    /// The direction that matters: a stale peer must not undo the operator's own act.
     /// The operator pins and then revokes in the head, and a daemon whose book still holds the pin
     /// saves a write record afterwards. It is the timestamps that stop it putting the pin back.
     #[test]
@@ -1059,9 +1060,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The interleaving the merge alone cannot survive: a second writer lands INSIDE `save`'s own
+    /// The interleaving the merge alone cannot survive: a second writer lands inside `save`'s own
     /// window, between this process's read of the book and its rename over it. The first is paused
-    /// by [`test_seam`] there, and the peer then pins a DIFFERENT layer, which must survive.
+    /// by [`test_seam`] there, and the peer then pins a different layer, which must survive.
     #[test]
     fn a_write_that_lands_between_a_read_and_its_rename_is_not_lost() {
         use std::sync::mpsc;
@@ -1114,7 +1115,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The other direction: a stale peer must not undo a RE-PIN either. After a byte change the
+    /// The other direction: a stale peer must not undo a re-pin either. After a byte change the
     /// operator pins what is on disk now; a peer still holding the older pin saves and must not
     /// overwrite it, or `/plugin trust` would report a pin that is not in force.
     #[test]
