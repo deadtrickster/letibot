@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The groups under a project's `system` branch, in the order the list draws them - the words, and
-/// the sentence under each line. Which session is in which is NOT decided here: the rule needs the
+/// the sentence under each line. Which session is in which is not decided here: the rule needs the
 /// whole chain, so the head decides it and the feed carries it as `system`.
 const SYSTEM: [(&str, &str); 3] = [
     (
@@ -30,7 +30,7 @@ const MAX_DEPTH: usize = 64;
 const MAX_INDENT: usize = 3;
 
 /// The branch a walk is inside - the project, and the `system` group when the walk is under
-/// `system`. `None` is the FAMILY view and it holds every session: kinship is not a display
+/// `system`. `None` is the family view and it holds every session: kinship is not a display
 /// category, so a family is walked with no branch at all.
 type Branch<'a> = Option<(&'a str, Option<&'a str>)>;
 
@@ -260,7 +260,7 @@ impl<'a> Ctx<'a> {
     }
 
     /// Whether a node's rows are on the list - the person's answer, then whether this head is
-    /// standing in it. Every node's default is CLOSED, the project's line included, and that is why
+    /// standing in it. Every node's default is closed, the project's line included, and that is why
     /// there is no default parameter: what a closed list must still answer is *where am I*.
     fn node_open(&self, key: &str) -> bool {
         self.opened(key).unwrap_or_else(|| self.on_the_way(key))
@@ -360,8 +360,8 @@ impl<'a> Ctx<'a> {
 /// shape is the head's (`App::session_rows`), and the two are held together by
 /// `the_heads_list_and_the_plugins_list_draw_the_same_rows`.
 fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
-    // A head standing in a sub-session draws its FAMILY: the parent and its children, and no tree at
-    // all. The family is walked with NO BRANCH, because kinship is not a display category - filtered
+    // A head standing in a sub-session draws its family: the parent and its children, and no tree at
+    // all. The family is walked with no branch, because kinship is not a display category - filtered
     // by the parent's group, this walk dropped every child and drew the one row beside the head.
     if let Some(parent) = ctx
         .at(ctx.here)

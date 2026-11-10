@@ -7,7 +7,7 @@
 //! feeds = ["sessions"]
 //! ```
 
-/// The contract version every pane input carries. It moves when a field changes MEANING rather
+/// The contract version every pane input carries. It moves when a field changes meaning rather
 /// than appears: both session shapes are rows, so the wire cannot tell them apart and a layer has
 /// to say which one it draws (`letibot_plugins::MOVED`, the manifest's `[contracts]`).
 pub const V: u32 = 3;
@@ -67,7 +67,7 @@ pub enum Feed {
     Github,
     /// The operator's own conversations: the channels with their unread counts, the roster per
     /// room, the selected channel and the window of its messages (`Chat`). The one feed that is
-    /// not a view of the session's work, so only a built-in or a PINNED layer may declare it.
+    /// not a view of the session's work, so only a built-in or a pinned layer may declare it.
     Chat,
 }
 
@@ -148,8 +148,8 @@ pub enum Act {
     },
     /// Call the pane again with `{"item": <the row's id>, "action": <this word>}`.
     Event { event: String },
-    /// One of the person's verbs, on ONE row - `{"verb":"approve","id":"r-1f2…"}`. The keys act
-    /// on the entry the row NAMES, not on whatever the host's own cursor is over. The word is what
+    /// One of the person's verbs, on one row - `{"verb":"approve","id":"r-1f2…"}`. The keys act
+    /// on the entry the row names, not on whatever the host's own cursor is over. The word is what
     /// the manifest gates: `View::validate_for` refuses a verb the answering layer did not declare.
     Verb { verb: String, id: String },
 }
@@ -273,7 +273,7 @@ pub enum Role {
     Faint,
     /// A turn is running in it.
     Pending,
-    /// A colour by INDEX rather than by meaning: `hue:3` is the third of [`HUES`], and the theme
+    /// A colour by index rather than by meaning: `hue:3` is the third of [`HUES`], and the theme
     /// decides which colour that is. It exists because *this speaker is blue* is a decision a
     /// chat makes and a palette of meanings cannot hold.
     Hue(u8),
@@ -452,7 +452,7 @@ pub struct Input {
     /// The feeds this layer declared, and only those, by name (`Feed::name`).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub feeds: std::collections::BTreeMap<String, serde_json::Value>,
-    /// The host's fold state, by row id: `true` for a row the person has OPENED, which is what a
+    /// The host's fold state, by row id: `true` for a row the person has opened, which is what a
     /// row's `fold` act sets. The host keeps it so a fold is instant and survives the next answer,
     /// and a layer answers `Fold::Open`/`Fold::Closed` from it - not the other way round.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -485,7 +485,7 @@ pub struct Chat {
     pub selected: Option<String>,
     /// Who is in each room, by channel name and in the room's own order - what `@` completes
     /// from, and where a member's connectedness comes from. The handle is `name`; what it is
-    /// CALLED is [`Chat::names`], because the host resolves a name from more than the roster.
+    /// called is [`Chat::names`], because the host resolves a name from more than the roster.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub roster: std::collections::BTreeMap<String, Vec<ChatMember>>,
     /// What a handle is called, where the host knows a better name than the handle itself - the
@@ -719,7 +719,7 @@ mod tests {
     }
 
     /// A verb act names the entry it is about, and the word the manifest gates is the verb's.
-    /// The id is the whole reason the variant exists: a row draws ONE entry and the person's
+    /// The id is the whole reason the variant exists: a row draws one entry and the person's
     /// `a`/`v`/`r`/`d` must act on that one, whatever the host's own cursor is over.
     #[test]
     fn a_verb_act_carries_its_entry_and_its_own_word() {

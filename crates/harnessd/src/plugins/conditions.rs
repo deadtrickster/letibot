@@ -100,7 +100,7 @@ struct StackOver {
     host: Arc<PluginHost>,
     hub: Arc<Hub>,
     gate: Option<Arc<dyn Unasked>>,
-    /// Which layer ANSWERED each hook, by id - the last `ask`'s `Resolved::by`. The look belongs to
+    /// Which layer answered each hook, by id - the last `ask`'s `Resolved::by`. The look belongs to
     /// the answer that asked for it, which is not always the layer that declares the hook, so the
     /// answering layer is what the capability check and the trust decision read.
     answered: Mutex<BTreeMap<String, String>>,
@@ -188,7 +188,7 @@ impl StackOver {
         answered: Option<&letibot_plugins::Layer>,
     ) -> Option<Look> {
         // A built-in, or a layer whose bytes a person pinned, runs freely - `exec` included: the
-        // pin stands in for the judgement a card would otherwise be. The layer that ANSWERED and
+        // pin stands in for the judgement a card would otherwise be. The layer that answered and
         // not the one that declares the hook, and a look nobody attributed is adjudicated too.
         if answered.is_some_and(|layer| layer.trusted) {
             return None;

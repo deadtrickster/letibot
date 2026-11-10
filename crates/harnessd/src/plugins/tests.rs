@@ -164,7 +164,7 @@ fn a_read_look_outside_the_workspace_is_refused() {
     let elsewhere = tempdir("elsewhere");
     let secret = elsewhere.join("plan.json");
     std::fs::write(&secret, "{}").expect("a file outside the workspace");
-    // An ABSOLUTE path, which is the interesting case: `join` on one replaces the root, and
+    // An absolute path, which is the interesting case: `join` on one replaces the root, and
     // what refuses it is the containment check on the canonicalised path.
     let result = look::run(
         &LookSpec::Read {
@@ -241,7 +241,7 @@ fn a_read_look_inside_the_workspace_answers_the_text_and_a_missing_file_is_exit_
 }
 
 /// A pane in a worktree reads the project's files: a relative `read` resolves against the session's
-/// CHECKOUT first, so `.letibot/status.json` is the one the checkout holds - the wall was
+/// checkout first, so `.letibot/status.json` is the one the checkout holds - the wall was
 /// `look exit 1` on every dashboard a worktree session opened (R151).
 #[test]
 fn a_relative_read_in_a_worktree_resolves_against_the_checkout() {
@@ -443,7 +443,7 @@ fn a_read_path_tree_is_readable_from_a_pane_look_and_nothing_else_is() {
     );
     assert_eq!(allowed["exit"], json!(0), "{allowed}");
 
-    // A file OUTSIDE the declared tree, which exists - the check is on where a path resolves
+    // A file outside the declared tree, which exists - the check is on where a path resolves
     // to, and a path that is merely absent fails earlier and for a different reason.
     let other = tempdir("readpath-out");
     let outside = other.join("not-declared.json");
@@ -869,7 +869,7 @@ fn a_look_outside_the_declared_tree_is_refused_by_the_host_not_by_the_layer() {
             .contains("declares no `read` capability"),
         "{looked}"
     );
-    // And a tree it DID declare is readable, which is the other half of the same rule.
+    // And a tree it did declare is readable, which is the other half of the same rule.
     let tree = tempdir("tool-declared");
     let file = tree.join("a.jsonl");
     std::fs::write(&file, "one\ntwo\n").expect("a file");
@@ -887,7 +887,7 @@ fn a_look_outside_the_declared_tree_is_refused_by_the_host_not_by_the_layer() {
 #[test]
 fn a_symlink_inside_the_declared_tree_is_refused_for_where_it_points() {
     // `~/.claude/projects` really holds one of these (`memory` → a folder under `~/Projects`)
-    // and the check is on the RESOLVED path for exactly this reason.
+    // and the check is on the resolved path for exactly this reason.
     let tree = tempdir("tool-symlink");
     let outside = tempdir("tool-symlink-out");
     let secret = outside.join("secret.txt");
@@ -1098,7 +1098,7 @@ fn every_builtin_pane_is_listed_and_opens_with_no_tool_declared() {
             "`{pane}` is a built-in pane and no head lists it: {listed:?}"
         );
     }
-    // The two that were unreachable open by their names, and the LAYER answers: no feed is its own
+    // The two that were unreachable open by their names, and the layer answers: no feed is its own
     // sentence on the screen, not the host's refusal panel.
     for pane in ["irc/nicks", "github/github"] {
         host.open("s-panes", &hub, pane, (100, 30));
@@ -1508,7 +1508,7 @@ impl Table {
         self.layer_at(&root.join(".letibot/plugins").join(name), name, caps, hooks)
     }
 
-    /// One layer in the directory a test names. A SESSION-scope layer lives in its own session's
+    /// One layer in the directory a test names. A session-scope layer lives in its own session's
     /// directory rather than the project's, so what a child inherits has to be placed there.
     fn layer_at(
         self: &Table,
@@ -2377,7 +2377,7 @@ fn a_session_with_no_layers_passes_every_call_through() {
     assert!(hub.retained().is_empty());
 }
 
-// A CHILD GETS A STACK. The daemon's door is `PluginHost::for_child`; a test builds the child's host
+// A child gets a stack. The daemon's door is `PluginHost::for_child`; a test builds the child's host
 // over its own loader and inherits through the same `with_inherited`, so what is proved here is the
 // rule and not the engine.
 
@@ -2404,7 +2404,7 @@ fn child_host(
     .with_inherited(Inherited::of(parent))
 }
 
-/// A child's `on_tool_call` is answered by a PROJECT layer - the scope a child gets by existing,
+/// A child's `on_tool_call` is answered by a project layer - the scope a child gets by existing,
 /// since its workspace is its own. Before this a child had no stack at all, so every hook was a
 /// no-op in it and a reviewer's `review_verdict` could not be guarded.
 #[test]
@@ -2597,7 +2597,7 @@ fn a_session_layer_of_the_reviewed_branch_does_not_reach_its_reviewer() {
         head_sha: "9d1c2ab".into(),
         cwd: "/build/wt-reviewed".into(),
     };
-    // (1) The queue's stack is discovered in the QUEUE's directories, so the branch's layer is not
+    // (1) The queue's stack is discovered in the queue's directories, so the branch's layer is not
     // even loaded: what it says was never asked for.
     let queue_dir = root.join("sessions/s-gatekeeper/plugins");
     let queue = PluginHost::discover(
@@ -2625,7 +2625,7 @@ fn a_session_layer_of_the_reviewed_branch_does_not_reach_its_reviewer() {
             .is_none()
     );
 
-    // (2) And a COPY of it in the queue's own session directory - the worst case, a person having
+    // (2) And a copy of it in the queue's own session directory - the worst case, a person having
     // put it there and pinned it - still answers nothing: the stack skips a session layer for these
     // hooks before its module is called, so being pinned does not make it the queue's policy.
     let copied = table.layer_at(&queue_dir.join("self-review"), "self-review", &[], &answers);
@@ -2695,7 +2695,7 @@ fn a_session_layer_of_the_reviewed_branch_does_not_reach_its_reviewer() {
 fn a_brief_layer_cannot_add_a_tool_to_the_seat() {
     let root = tempdir("brief-seat");
     let table = Table::new();
-    // The layer that tries to SEAT a tool. The contract has no such field, and the answer is
+    // The layer that tries to seat a tool. The contract has no such field, and the answer is
     // refused rather than quietly read as silence.
     table.layer(
         &root,
@@ -2734,7 +2734,7 @@ fn a_brief_layer_cannot_add_a_tool_to_the_seat() {
         "the brief is the host's own: {input_native}"
     );
 
-    // The layer that NARROWS: a class named, dropped, and the same answer accepted.
+    // The layer that narrows: a class named, dropped, and the same answer accepted.
     let root = tempdir("brief-narrow");
     let table = Table::new();
     table.layer(
@@ -3196,7 +3196,7 @@ fn until_fired(condition: &Arc<dyn letibot_tools::exec::monitor::Condition>) -> 
 fn a_builtins_exec_look_runs_without_the_gate() {
     use letibot_tools::exec::plugin_condition::PluginConditions as _;
     let root = tempdir("look-builtin");
-    // No disk layer at all: the ONLY layer is the built-in below.
+    // No disk layer at all: the only layer is the built-in below.
     let table = Table::new();
     let host = Arc::new(table_host(&root, &table));
     let answers: BTreeMap<String, Script> = [(
@@ -3342,7 +3342,7 @@ fn a_pin_that_broke_before_the_host_existed_is_said_on_its_first_tick() {
     // The bytes move while nothing is running: a rebuild the daemon never saw.
     std::fs::write(dir.join("plugin.wasm"), b"a module, rebuilt and longer").expect("a rebuild");
 
-    // A host built NOW - the restart - is the first thing to see the broken pin.
+    // A host built now - the restart - is the first thing to see the broken pin.
     let host = Arc::new(table_host(&root, &table).with_trust(book.clone()));
     let hub = Hub::new("s-plugins");
     Arc::clone(&host).tick(hub.clone());
@@ -3355,7 +3355,7 @@ fn a_pin_that_broke_before_the_host_existed_is_said_on_its_first_tick() {
         "the pinned hash: {}",
         said[0]
     );
-    // And it is said ONCE: a tick every two seconds is not a wall.
+    // And it is said once: a tick every two seconds is not a wall.
     Arc::clone(&host).tick(hub.clone());
     assert_eq!(warned(&hub, "plugin_untrusted").len(), 1);
 }
@@ -3582,7 +3582,7 @@ impl letibot_tools::Gate for Admits {
     }
 }
 
-/// A look is DEFERRED while the session's gate is busy with somebody else's card - not blocked
+/// A look is deferred while the session's gate is busy with somebody else's card - not blocked
 /// and not refused. `ToolRuntime::run` holds that mutex for minutes, and a look that waited
 /// would park the session's monitor thread and every other watch on it, so it uses `try_lock`.
 #[test]
@@ -3596,7 +3596,7 @@ fn an_exec_look_is_deferred_while_the_gate_is_busy() {
     let host = Arc::new(table_host(&root, &table));
     let hub = Hub::new("s-plugins");
 
-    // The REAL runtime and the REAL `Unasked` impl: the deferral IS `try_lock` on this mutex
+    // The real runtime and the real `Unasked` impl: the deferral IS `try_lock` on this mutex
     // so a fixture gate would prove nothing about it.
     let backend = tempdir("look-busy-backend");
     let runtime = Arc::new(
@@ -3648,7 +3648,7 @@ fn an_exec_look_is_deferred_while_the_gate_is_busy() {
     );
 
     // And with the gate free the same look runs, which is what makes the assertions above
-    // about the LOCK rather than about a look that never works. A fresh host, because the
+    // about the lock rather than about a look that never works. A fresh host, because the
     // fixture's script is spent one answer per arming.
     drop(held);
     let table = shell_layer(&root, "sh", json!(["sh", "-c", script]));
@@ -3715,7 +3715,7 @@ fn until_the_room_is_read(link: &crate::room::link::SessionRoom, items: usize) {
 }
 
 /// A module that answers the same JSON every time, for a test that presses more keys than it
-/// scripted frames. [`Rounds`] is the right tool when the ANSWER is the subject; here the
+/// scripted frames. [`Rounds`] is the right tool when the answer is the subject; here the
 /// subject is what the host does with a row, and the row is the same every time.
 struct Same {
     hooks: Vec<String>,
@@ -3751,7 +3751,7 @@ impl Loader for SameLoader {
     }
 }
 
-/// A row's key is performed by the HOST, and the feed it was drawn from is the room's. The layer
+/// A row's key is performed by the host, and the feed it was drawn from is the room's. The layer
 /// answers a row carrying a verb and an id, and the daemon performs it: the room's own state
 /// machine moves, over the session's connection.
 #[test]
@@ -3863,7 +3863,7 @@ fn a_room_panes_key_is_performed_by_the_host() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The pane's restart is a FRAME to the supervisor, and its outcome is said. The control is not
+/// The pane's restart is a frame to the supervisor, and its outcome is said. The control is not
 /// a room verb: the layer names `restart` and the host asks the supervisor that starts
 /// coordinators, and the note it leaves is in the next frame's feed.
 #[test]
@@ -3892,7 +3892,7 @@ fn the_restart_control_asks_the_supervisor_and_its_outcome_is_said() {
     .expect("the session connects");
     until_the_room_is_read(&link, 0);
 
-    // The layer answers ONE row: the restart, which is the fifth verb and not a room act.
+    // The layer answers one row: the restart, which is the fifth verb and not a room act.
     let answer = r#"{"title":"the room","panels":[{"id":"server","key":"s",
         "title":"the server","summary":[{"tree":{"rows":[{"id":"restart","cells":["restart"],
         "enter":{"verb":"restart","id":"restart"}}]}}]}]}"#;
@@ -4084,7 +4084,7 @@ fn a_room_row_reaching_an_undeclared_verb_is_refused() {
 
 /// The committed `room` module runs, against a real room, through the daemon's own host. A guest
 /// that compiles is not a guest that has run - the example's committed `.wasm` had never been
-/// executed and trapped on its first call - so this asserts the answer is the LAYER's.
+/// executed and trapped on its first call - so this asserts the answer is the layer's.
 #[test]
 fn a_room_linked_after_the_host_was_built_gets_its_pane() {
     let (_dir, server) = a_room("room-late-pane");
@@ -4204,7 +4204,7 @@ fn the_builtin_room_layer_answers_its_pane_with_a_real_room_behind_it() {
 
 // ------------------------------------------------------- X23 and X21: command_ and lifecycle_
 
-/// A project with ONE layer that exports `hooks` and answers every one of them with `answer.json` -
+/// A project with one layer that exports `hooks` and answers every one of them with `answer.json` -
 /// and none when the file is not there, which is a layer that traps.
 fn layer_project(
     tag: &str,
@@ -4732,7 +4732,7 @@ fn a_tool_read_look_in_a_confined_session_reads_the_view_not_the_host() {
     );
 }
 
-/// A read look of a path OUTSIDE the session's root is refused the way the file tools refuse it: a
+/// A read look of a path outside the session's root is refused the way the file tools refuse it: a
 /// confined seat cannot read past its root, and the daemon's own view of the disk is not the
 /// session's (the bug X26 names).
 #[test]
@@ -4900,7 +4900,7 @@ fn a_nag_layer_cannot_name_a_row_outside_eligible() {
         .expect("the layer is told what it did");
     assert!(why.contains("open the branch"), "{why}");
 
-    // And a row it MAY name is honoured, so the refusal above is the rule and not a blanket no.
+    // And a row it may name is honoured, so the refusal above is the rule and not a blanket no.
     let ok = tempdir("nag-eligible-ok");
     let table = Table::new();
     table.layer(
@@ -4947,7 +4947,7 @@ fn quiet_is_overridden_at_the_repeat_cap() {
     );
 }
 
-/// R127 - one nag per free head instead of one row - closes as a LAYER: an answer naming every
+/// R127 - one nag per free head instead of one row - closes as a layer: an answer naming every
 /// eligible row is honoured, and the default (nothing answering) is still the harness's one row.
 #[test]
 fn a_layer_naming_every_free_head_is_r127() {
@@ -4975,8 +4975,8 @@ fn a_layer_naming_every_free_head_is_r127() {
     assert_eq!(decision.text, text, "and the layer's own words for them");
     assert_eq!(decision.next_ms, Some(60_000));
 
-    // R127 itself stays postponed: with nothing answering, the harness names the one row it always
-    // named, and a layer is how an operator asks for the other answer.
+    // The one-row nag stays postponed: with nothing answering, the harness names the one row it
+    // always named, and a layer is how an operator asks for the other answer.
     let bare = tempdir("nag-r127-bare");
     let bare = table_host(&bare, &Table::new());
     assert!(bare.nag(&hub, &input).is_none());

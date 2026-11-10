@@ -1,5 +1,5 @@
 //! The review layer's own words, tested natively: a copy of the host's policy is only worth having
-//! if it is the SAME words, and what a person can check here is the rendering - the two revisions in
+//! if it is the same words, and what a person can check here is the rendering - the two revisions in
 //! the diffs, the shapes one per line, and the answer for the queue's own prompt.
 
 use super::*;

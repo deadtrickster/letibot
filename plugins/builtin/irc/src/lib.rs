@@ -248,7 +248,7 @@ fn no_feed() -> Value {
 }
 
 /// The hidden pane: one strip instead of nothing. A pane that hides itself to zero height is a
-/// pane somebody has to guess their way back into, and the strip is a STOP with an `id` of its own,
+/// pane somebody has to guess their way back into, and the strip is a stop with an `id` of its own,
 /// so the `h` that brings the list back is still on a row the cursor can rest on.
 fn strip(feed: &Feed, st: &State, rect: usize) -> Value {
     let counts = counts(feed, st);
@@ -351,7 +351,7 @@ fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
     rows.push(json!({"cells": [
         Cell::role(header(scope, here, &Counts { shown, total, working }, width), Role::Strong),
     ]}));
-    // Only the first DRAWN rows are built: the order puts you, attached and working sessions
+    // Only the first drawn rows are built: the order puts you, attached and working sessions
     // first, and a row per session the daemon ever held would burn the hook's fuel for a screen
     // nobody scrolls.
     let mut budget = DRAWN;
@@ -427,7 +427,7 @@ const DRAWN: usize = 150;
 const EMPTY: &str = "·empty";
 
 /// One session's row: a mark, a name, and one fact pinned to the column's right edge.
-/// The fact is not a `facts` cell because the host right-aligns `facts` against the RECTANGLE, so on
+/// The fact is not a `facts` cell because the host right-aligns `facts` against the rectangle, so on
 /// a wide screen it would sit at column 100. It is the row's third cell and the name is padded there.
 fn session_row(s: &Session, width: usize, here: &str, now: u64, home: &str) -> Value {
     let (mark, mark_role) = mark_of(s, here);
@@ -560,7 +560,7 @@ fn repo_of(s: &Session) -> String {
 }
 
 /// The worktree convention, applied to a path. The longer marker is tried first: `.claude/worktrees`
-/// ENDS in `/worktrees/`, so the short one alone would answer `<repo>/.claude` for a head's own
+/// ends in `/worktrees/`, so the short one alone would answer `<repo>/.claude` for a head's own
 /// worktree.
 fn conventional_repo(path: &str) -> String {
     for marker in ["/.claude/worktrees/", "/worktrees/"] {

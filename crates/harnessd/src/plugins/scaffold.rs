@@ -204,7 +204,7 @@ pub fn hook_name(kind: &str, name: &str) -> String {
         // One hook for the kind. Every layer that wants to intercept a call exports the same
         // name, and they stack; a name per plugin would be a hook nothing ever asks for.
         "on_tool_call" | "on_tool_result" => kind.to_string(),
-        // A notice hook is named after the notice's KIND, not after the plugin, and the template
+        // A notice hook is named after the notice's kind, not after the plugin, and the template
         // starts with a monitor firing's wording: another kind is
         // a rename of the export and of `plugin.toml`'s `hooks`.
         "notice" => format!("notice_{}", letibot_plugin::notice::MONITOR),
@@ -231,13 +231,13 @@ pub struct Scaffolded {
     pub manifest: String,
     /// The export the template answers - what `plugin.toml` declares and the host asks for.
     pub hook: String,
-    /// The kind it was scaffolded for, so the sentence can say what the layer is FOR.
+    /// The kind it was scaffolded for, so the sentence can say what the layer is for.
     pub kind: String,
     /// The pane id, for a `pane`; empty for the kinds no head draws.
     pub pane: String,
     /// Where the typed contracts are on this box (`crates/plugin-sdk` in the tree this daemon was
     /// built from), and whether they were found. The four patch points' templates link it, so a
-    /// guest and the host parse ONE set of types.
+    /// guest and the host parse one set of types.
     pub types: Sdk,
 }
 
@@ -880,7 +880,7 @@ mod tests {
     fn the_templates_view_a_panel_with_a_view_has_one_unowned_key() {
         let body = lib_rs("deploy", "the deploy queue", "pane_deploy", "pane");
         // The template carries its own assertions, and they are compiled where the plugin lands;
-        // what is checked here is that it HAS them (a template without its test is a template
+        // what is checked here is that it has them (a template without its test is a template
         // teaching the loop without the step that catches the trap).
         assert!(body.contains("#[cfg(test)]"), "the template ships a test");
         assert!(body.contains("fn the_view_is_a_pane_the_host_can_drive"));

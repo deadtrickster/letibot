@@ -68,7 +68,7 @@ pub enum Capability {
     ReadPath(String),
     /// Run `<program>`, with arguments the plugin chooses, through the gate.
     Exec(String),
-    /// GET from `<host>`.
+    /// One `http` request to `<host>`, read for its answer and not kept.
     Http(String),
     /// Name blobs the host already holds, by id, without ever seeing their bytes. One spelling per
     /// store, and `room` is the only store this build serves.

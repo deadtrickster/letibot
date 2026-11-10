@@ -14,7 +14,7 @@ const FEED: &str = "github";
 /// than a gap.
 const NO_PULLS: &str = "no open pull requests in this scope";
 
-/// What a host that handed over nothing draws. The feed is ABSENT rather than empty, so this is a
+/// What a host that handed over nothing draws. The feed is absent rather than empty, so this is a
 /// fact about the host and not about GitHub.
 const NO_SCOPE: &str = "no scope is attached - nothing is being watched for review";
 

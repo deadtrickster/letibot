@@ -365,7 +365,7 @@ impl Trust {
     }
 
     /// Where this box's book is, before it is opened - and the one door an override goes through.
-    /// `LETIBOT_PLUGIN_TRUST` names a book explicitly, and an EMPTY value means *no book at all*.
+    /// `LETIBOT_PLUGIN_TRUST` names a book explicitly, and an empty value means *no book at all*.
     /// It exists so a test that drives the real desk never writes the operator's own config file.
     pub fn default_path() -> Option<PathBuf> {
         if let Some(named) = std::env::var_os("LETIBOT_PLUGIN_TRUST") {
@@ -396,7 +396,7 @@ impl Trust {
         *self.stamp.lock().unwrap_or_else(|e| e.into_inner()) = Some(stamp);
     }
 
-    /// Re-read the file when it moved on disk - a pin taken by the HEAD, or by another daemon,
+    /// Re-read the file when it moved on disk - a pin taken by the head, or by another daemon,
     /// reaching this process. `true` when the book changed, which is the caller's cue to re-decide
     /// every layer's [`Standing`].
     pub fn refresh(&self) -> bool {

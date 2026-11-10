@@ -46,14 +46,14 @@ pub struct Row {
 /// reason with, so no layer has to keep a clock of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Clock {
-    /// How long since the check was last DELIVERED, or absent before the first one.
+    /// How long since the check was last delivered, or absent before the first one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since_last_ms: Option<u64>,
     /// How many times in a row this plan has been checked - the ladder's exponent.
     pub repeats: u32,
     /// How long this session has been idle: no turn, no operator, no event.
     pub idle_ms: u64,
-    /// How long since the operator last ADDED a row to the board.
+    /// How long since the operator last added a row to the board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_added_ms: Option<u64>,
     /// The shortest interval a check may ask for - the idle window.

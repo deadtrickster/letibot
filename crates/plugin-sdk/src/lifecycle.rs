@@ -24,7 +24,7 @@ pub struct Input {
     /// One of [`EVENTS`], carried as well as being the export's name, so one function can answer all
     /// four exports.
     pub event: String,
-    /// The session this happened to. A layer acts on THIS session; there is no field naming another.
+    /// The session this happened to. A layer acts on this session; there is no field naming another.
     pub session: String,
     /// What moved under the conversation, which is the reason a reseat is asked for at all.
     #[serde(default)]

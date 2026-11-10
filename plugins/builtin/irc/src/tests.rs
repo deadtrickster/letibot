@@ -313,7 +313,7 @@ fn the_order_is_pinned_until_the_roster_changes() {
         "you first, then the idle ones by recency"
     );
     // `s-c` starts working. The rule would move it to the top of the working band - and it does
-    // NOT, because the set of sessions did not change.
+    // not, because the set of sessions did not change.
     let busy = feed_of(
         vec![
             with(s("s-a", "a"), json!({"heads": 1, "moved_ms": NOW - 10_000})),
@@ -423,7 +423,7 @@ fn wider_and_narrower_are_clamped_to_a_third_and_to_the_minimum() {
     // A narrow rectangle: the minimum, and `w` has nowhere to go.
     let narrow = press(&f, &Value::Null, 30, "s-a", "wider");
     assert_eq!(cells(&drawn(&sessions(&narrow)[0])), 20, "the minimum");
-    // And at the minimum the marks and the fact are still there: the NAME is what goes.
+    // And at the minimum the marks and the fact are still there: the name is what goes.
     let row = &sessions(&narrow)[0];
     assert_eq!(cell(row, 0), "»");
     assert!(!cell(row, 2).is_empty());
@@ -462,7 +462,7 @@ fn the_scope_narrows_to_the_project_and_says_what_it_hides() {
         vec!["s-a"],
         "nothing outside the workspace, and nothing is working outside it"
     );
-    // The project: the worktree's REPOSITORY, which is what a person means by "this project".
+    // The project: the worktree's repository, which is what a person means by "this project".
     let repo = press(&f, &kept(&path), 100, "s-a", "scope");
     assert_eq!(
         cell(&rows(&repo)[0], 0),

@@ -16,7 +16,7 @@ fn answer_of(r: &Resolved) -> Value {
     r.answer.clone().expect("an answer")
 }
 
-/// A layer whose manifest NAMES its module: a script, which this build cannot run.
+/// A layer whose manifest names its module: a script, which this build cannot run.
 fn script_layer(root: &Path, name: &str, module: &str, body: &[u8]) -> PathBuf {
     let dir = root.join(name);
     std::fs::create_dir_all(&dir).expect("a layer directory");

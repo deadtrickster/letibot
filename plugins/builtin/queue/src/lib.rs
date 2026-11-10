@@ -1020,7 +1020,7 @@ fn merge_detail(m: &Merge, feed: &Feed) -> String {
         l.push(field("push", &m.pushed));
     }
     l.push(field("why", &m.evidence));
-    // The gate in flight is this row's when it is `gating`, and its TARGET's when it is queued:
+    // The gate in flight is this row's when it is `gating`, and its target's when it is queued:
     // the other way a queue sits still with nothing failing.
     let gate = m.running_gate.as_ref().or_else(|| target_gate_of(feed, m));
     if let Some(g) = gate {
@@ -1063,7 +1063,7 @@ fn target_gate_of<'a>(feed: &'a Feed, m: &Merge) -> Option<&'a RunningGate> {
 
 /// A gate in flight, read whole: which step of how many, the step itself, whether its output has
 /// moved, and the end of what it has written - the answer to *is it stuck?*. `waiting` says the
-/// gate is the TARGET's rather than the row's, so the reader knows whose step they are reading.
+/// gate is the target's rather than the row's, so the reader knows whose step they are reading.
 fn gate_detail(g: &RunningGate, waiting: bool, feed: &Feed) -> Vec<String> {
     let head = if waiting {
         format!(

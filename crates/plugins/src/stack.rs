@@ -333,7 +333,7 @@ impl Stack {
 
     /// Re-decide every placed layer's `trusted` against the book, and answer the pins whose bytes
     /// have moved. Cheap enough for a two-second poll: a hash of each `plugin.toml` and the module's
-    /// hash the stack already holds. The answer is what is NEW, said once by the caller.
+    /// hash the stack already holds. The answer is what is new, said once by the caller.
     pub fn refresh_trust(&mut self) -> Vec<BrokenPin> {
         let Some(trust) = self.trust.clone() else {
             return Vec::new();
@@ -573,7 +573,7 @@ impl Stack {
         let id = layer.id.clone();
         let before = self.failures.len();
         self.register_builtin_shared(layer, module);
-        // `register_builtin` records its own refusals; answer the one that belongs to THIS call
+        // `register_builtin` records its own refusals; answer the one that belongs to this call
         // so a caller is not told *ok* about a layer that is not on the stack.
         match self.failures[before..].iter().find(|f| f.layer == id) {
             Some(f) => Err(f.why.clone()),

@@ -83,7 +83,7 @@ pub struct Moved {
     /// The export name, as `plugin.toml`'s `hooks` spells it.
     pub hook: &'static str,
     /// The version this host speaks for it, in the pane contract's own numbering
-    /// ([`letibot_plugin::pane::V`]). It moves only when THIS kind's shape moves.
+    /// ([`letibot_plugin::pane::V`]). It moves only when this kind's shape moves.
     pub version: u32,
     /// What changed, for the refusal a layer reads.
     pub why: &'static str,

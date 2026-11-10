@@ -13,7 +13,7 @@ pub trait RoomFeed: Send + Sync {
     /// The room as it stands, or the sentence saying why it could not be read.
     fn snapshot(&self) -> RoomSnapshot;
 
-    /// One of the person's four controls, on the entry a row names. The HOST performs it; the layer
+    /// One of the person's four controls, on the entry a row names. The host performs it; the layer
     /// only decided which row to draw. `Err` is the refusal, in the room's own words.
     fn act(&self, entry: &str, verb: &str) -> Result<String, String>;
 
@@ -210,7 +210,7 @@ impl Counts {
             letibot_room::State::Dropped { .. } => self.dropped += 1,
             letibot_room::State::Open => {}
         }
-        // Frozen is its own count, not a sixth state: a raised item is `abandoned` AND unclaimable
+        // Frozen is its own count, not a sixth state: a raised item is `abandoned` and unclaimable
         // and a reader counting states alone would say its tag has work in it.
         if item.question.is_some() {
             self.frozen += 1;

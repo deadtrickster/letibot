@@ -157,7 +157,7 @@ struct Row {
     #[serde(default)]
     waits_on: Option<String>,
     /// What the holder said it is doing with the row when it took it - the acknowledgement, which
-    /// is NOT a wait: `waits_on` is what it is blocked on, and this is what it is working on.
+    /// is not a wait: `waits_on` is what it is blocked on, and this is what it is working on.
     #[serde(default)]
     doing: Option<String>,
     #[serde(default)]

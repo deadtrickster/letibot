@@ -242,7 +242,7 @@ mod tests {
             tree.to_str().unwrap(),
         ]);
         assert!(made, "the worktree");
-        // git answers a RESOLVED path, and on some boxes `/var` is a symlink to `/private/var` - so
+        // git answers a resolved path, and on some boxes `/var` is a symlink to `/private/var` - so
         // the expectation is canonicalised rather than compared against the spelling this test made
         // the directory with.
         let want = std::fs::canonicalize(&repo)

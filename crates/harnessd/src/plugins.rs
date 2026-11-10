@@ -142,7 +142,7 @@ struct Inner {
     /// Pins whose bytes moved before this host existed, held for the first tick that can say them.
     broken_pins: Vec<letibot_plugins::BrokenPin>,
     /// The hooks the binary's own layers have already been offered for. A built-in that answers a hook
-    /// the DAEMON asks - a review's brief, a verdict's floor, a child's brief - is installed on the
+    /// the daemon asks - a review's brief, a verdict's floor, a child's brief - is installed on the
     /// first ask rather than at open, because a module costs seconds to compile.
     builtin_asked: BTreeSet<String>,
 }
@@ -356,7 +356,7 @@ impl PluginHost {
         host.install_builtin_tools(&crate::plugins::declared_tools(session, workspace));
         host.install_builtin_nags();
         // The third door's other half: a built-in whose hook is neither a pane nor a tool decides
-        // something on every session, and the harness's own decision is a LAYER only if it is on
+        // something on every session, and the harness's own decision is a layer only if it is on
         // the stack.
         host.install_builtin_deciders();
         host
@@ -395,7 +395,7 @@ impl PluginHost {
     }
 
     /// Put the binary's built-in layer for `hook` at the bottom of this stack, once. It is the third
-    /// door, after a declared tool's and a head's pane's: a hook the DAEMON asks on a session's behalf is
+    /// door, after a declared tool's and a head's pane's: a hook the daemon asks on a session's behalf is
     /// answered by a built-in where nobody has words, installed on the first ask because a compile costs.
     fn install_builtin_for(&self, hook: &str) {
         if !self.install_builtin_panes {
@@ -1388,7 +1388,7 @@ impl PluginHost {
 }
 
 // The `plugin` tool's half of this module: scaffold, build, load, stack, disable/enable, test.
-// Every one of them asks the LIVE stack, because a second stack would be a second answer to
+// Every one of them asks the live stack, because a second stack would be a second answer to
 // *what is in force*, and a layered design cannot afford two of those.
 
 /// A refusal the `plugin` tool hands a model: the sentence saying what did not happen, and the
@@ -1792,7 +1792,7 @@ impl PluginHost {
             let inner = self.lock();
             self.resolve_hook(&inner.stack, what)?
         };
-        // The synthetic input is of the HOOK's kind, not a pane's: a `condition` handed a pane's
+        // The synthetic input is of the hook's kind, not a pane's: a `condition` handed a pane's
         // first frame answers nothing and reads as a broken layer.
         let input = input
             .cloned()
@@ -1804,7 +1804,7 @@ impl PluginHost {
         let asked = match &only {
             None => stack,
             Some(id) => {
-                // Every other DISK layer off: a built-in is the floor and stays, because a layer
+                // Every other disk layer off: a built-in is the floor and stays, because a layer
                 // that asks below would otherwise be told the stack is empty.
                 let mut alone = stack.clone();
                 for layer in stack.layers() {
@@ -2225,7 +2225,7 @@ fn one_layer<'a>(stack: &'a Stack, what: &str) -> Result<&'a letibot_plugins::La
 }
 
 /// How an input reads in a sentence, whatever kind it is: a pane's frame, a notice, a call, a
-/// result, or a watch - the fields the reader needs to recognise WHICH input went wrong.
+/// result, or a watch - the fields the reader needs to recognise which input went wrong.
 fn describe_any_input(input: &Value) -> String {
     if input.get("size").is_some() || input.get("event").is_some() {
         return describe_input(input);
@@ -3057,7 +3057,7 @@ impl PluginHost {
         }
     }
 
-    /// The review queue's OWN prompt through the same hook (the entry is absent): what a project
+    /// The review queue's own prompt through the same hook (the entry is absent): what a project
     /// wants the session that runs its reviews to be told, in its words.
     pub fn review_queue_brief(&self, hub: &Arc<Hub>) -> Option<letibot_plugin::review::Brief> {
         let input = letibot_plugin::review::BriefIn::queue();
@@ -3115,7 +3115,7 @@ impl PluginHost {
         let resolved = self.ask(hub, letibot_plugin::review::VERDICT, &input)?;
         let by = resolved.by.clone().unwrap_or_default();
         let Some(answer) = resolved.answer else {
-            // Nothing answered. A layer that TRAPPED has not said the branch may land, so the row
+            // Nothing answered. A layer that trapped has not said the branch may land, so the row
             // goes to a person; a hook nobody exports is silence and the verdict stands.
             return (!resolved.failures.is_empty()).then_some(Floor::NeedsHuman);
         };
@@ -3187,7 +3187,7 @@ impl PluginHost {
 
 /// Where a write's provenance goes, on the daemon's side of `letibot_tools::provenance::Sink`. It
 /// filters to what is about a layer and appends to the trust book, so *who wrote these bytes* is a
-/// fact on disk. The book is its own `Arc<Trust>` and not the host's: they share the FILE.
+/// fact on disk. The book is its own `Arc<Trust>` and not the host's: they share the file.
 pub struct Provenance {
     trust: Arc<letibot_plugins::Trust>,
     session: String,

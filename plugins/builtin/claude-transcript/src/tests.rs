@@ -105,7 +105,7 @@ fn an_operators_line_is_an_ask_and_a_models_text_is_a_conclusion() {
         other => panic!("a user row is an ask: {other:?}", other = other.is_some()),
     }
     match row_of(&assistant_line("the build is green")) {
-        // The thinking block and the tool call are NOT in it: an outline is what was concluded,
+        // The thinking block and the tool call are not in it: an outline is what was concluded,
         // and a model's reasoning is not something the operator ever read.
         Some(Row::Conclusion { text }) => assert_eq!(text, "the build is green"),
         other => panic!("an assistant row is a conclusion: {}", other.is_some()),
@@ -197,7 +197,7 @@ fn a_project_path_becomes_the_directory_claude_code_gave_it() {
         slug("/Users/dead/Projects/stroppy-io", "/Users/dead"),
         "-Users-dead-Projects-stroppy-io"
     );
-    // `~/` expands against the home the HOST handed over, not this process's.
+    // `~/` expands against the home the host handed over, not this process's.
     assert_eq!(slug("~/x", "/home/dead"), "-home-dead-x");
 }
 
@@ -326,7 +326,7 @@ fn search_answers_line_numbers_byte_offsets_and_context() {
     assert!(said.contains("byte 4096"), "{said}");
     assert!(said.contains("a line before"), "{said}");
     assert!(said.contains("a line after"), "{said}");
-    // The count is of what was READ, so a miss and a failure cannot be confused.
+    // The count is of what was read, so a miss and a failure cannot be confused.
     assert!(said.contains("900 line(s)"), "{said}");
 }
 

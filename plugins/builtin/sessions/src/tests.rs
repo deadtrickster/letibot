@@ -260,8 +260,8 @@ fn the_family_view_has_no_tree() {
 const GATEKEEPER: &str = "s-gatekeeper-0123456789ab";
 
 /// A family is a family whatever group its members are drawn in: a reviewer's parent is the
-/// gatekeeper and the reviewer itself is a `reviewer`, so a family walked in the PARENT's branch
-/// dropped every child and drew one row. The group says where a row is DRAWN, not who is kin.
+/// gatekeeper and the reviewer itself is a `reviewer`, so a family walked in the parent's branch
+/// dropped every child and drew one row. The group says where a row is drawn, not who is kin.
 #[test]
 fn a_family_is_drawn_across_the_groups_its_members_are_in() {
     let reviewer = format!("{GATEKEEPER}-sub-1791759365511364772");

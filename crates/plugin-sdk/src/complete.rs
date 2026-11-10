@@ -71,7 +71,7 @@ pub struct Candidate {
 
 impl Completion {
     /// Refuse an answer the host cannot draw or apply, with the sentence the layer reads back. The
-    /// span is checked against the LINE, because a span outside it would edit text nobody typed.
+    /// span is checked against the line, because a span outside it would edit text nobody typed.
     pub fn validate(&self, text: &str) -> Result<(), String> {
         if self.from > self.to {
             return Err(format!(
