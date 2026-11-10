@@ -22,4 +22,10 @@ capabilities = []
 # §4.9, "the feeds a `command_` hook is handed") — the `feeds` key's vocabulary is a PANE's, and a
 # command's set is not that set. Nothing here reads them yet.
 actions = ["add_todo"]
+# **`nag_todo` is the host's own answer said back**: it names the row and the sentence it was handed
+# and moves neither the clock nor the filter, so the round trip through wasm would return exactly
+# what the daemon is about to compose. `native_copy` is the layer saying so, and the stack then
+# takes the native path instead of calling it (R175 item 5). `command_todo` is NOT here: parsing
+# `title:`/`body:` is the guest's own work and nothing native does it.
+native_copy = ["nag_todo"]
 contract = 1

@@ -1332,3 +1332,113 @@ fn a_trapping_floor_layer_is_a_refusal_and_not_a_pass() {
     assert_eq!(by, "p1");
     assert!(why.contains("fuel ran out"), "{why}");
 }
+
+// -----------------------------------------------------------------------------------------
+// `native_copy`: a built-in that only restates what the host does without it
+// -----------------------------------------------------------------------------------------
+
+/// A built-in whose export the host already produces is not called: the trap is what proves the
+/// module never ran, and the absent answer is what makes the caller take its native path. The
+/// control is the same bytes without the declaration - called, and the trap shows up as a failure.
+#[test]
+fn a_native_copy_builtin_alone_is_not_called() {
+    let hook = letibot_plugin::nag::HOOK;
+    let copied = "name = \"todo\"\npurpose = \"p\"\nhooks = [\"nag_todo\"]\ncapabilities = []\n\
+                  contract = 1\nnative_copy = [\"nag_todo\"]\n";
+    let plain = "name = \"todo\"\npurpose = \"p\"\nhooks = [\"nag_todo\"]\ncapabilities = []\n\
+                 contract = 1\n";
+    let bytes = script(&[(hook, Act::trap("the module was called"))]);
+
+    let t = TempDir::new("native-copy");
+    let mut s = stack(&t);
+    s.register_builtin_bytes("todo", copied, &bytes)
+        .expect("a built-in registers");
+    let r = s.call(hook, &json!({"v": 1}));
+    assert!(
+        r.failures.is_empty(),
+        "nothing called the module: {:?}",
+        r.failures
+    );
+    assert_eq!(r.answer, None, "no answer, so the host takes its own path");
+    assert_eq!(r.by, None);
+
+    let t = TempDir::new("native-copy-control");
+    let mut s = stack(&t);
+    s.register_builtin_bytes("todo", plain, &bytes)
+        .expect("a built-in registers");
+    let r = s.call(hook, &json!({"v": 1}));
+    assert_eq!(
+        r.failures.len(),
+        1,
+        "without the declaration the module runs - and traps: {r:?}"
+    );
+    assert!(r.failures[0].why.contains("the module was called"));
+}
+
+/// The key is the host's own decision about its own bytes: a manifest that declares it and the
+/// host would refuse is refused at the door every layer takes, and named.
+#[test]
+fn a_placed_layer_may_not_declare_that_it_copies_the_host() {
+    let dir = TempDir::new("native-copy-placed");
+    let path = dir.path().join("project");
+    std::fs::create_dir_all(&path).expect("a project scope");
+    let manifest = Manifest::parse(
+        "name = \"copier\"\npurpose = \"p\"\nhooks = [\"nag_todo\"]\ncapabilities = []\n\
+         contract = 1\nnative_copy = [\"nag_todo\"]\n",
+    )
+    .expect("it parses: the refusal is about the scope, not the spelling");
+    let why = manifest
+        .admit_for(&["nag_todo".to_string()], Scope::Project, false)
+        .expect_err("a placed layer may not claim to be the host");
+    assert!(why.contains("`copier`"), "{why}");
+    assert!(why.contains("only a built-in"), "{why}");
+    // And the same manifest is a built-in's to declare.
+    assert!(
+        manifest
+            .admit_for(&["nag_todo".to_string()], Scope::BuiltIn, false)
+            .is_ok()
+    );
+
+    // The same refusal at the DISCOVERY door, so a layer on disk cannot load at startup and be
+    // refused on its first rebuild: the layer is not placed, and the stack says why.
+    let layer = path.join(".letibot").join("plugins").join("copier");
+    std::fs::create_dir_all(&layer).expect("a layer directory");
+    std::fs::write(
+        layer.join(crate::MANIFEST),
+        "name = \"copier\"\npurpose = \"p\"\nhooks = [\"nag_todo\"]\ncapabilities = []\n\
+         contract = 1\nnative_copy = [\"nag_todo\"]\n",
+    )
+    .expect("plugin.toml");
+    std::fs::write(
+        layer.join(crate::WASM),
+        script(&[("nag_todo", Act::pass())]),
+    )
+    .expect("wasm");
+    let s = Stack::discover(
+        None,
+        Some(&path),
+        None,
+        std::sync::Arc::new(crate::testing::FakeLoader::new()),
+    );
+    assert!(s.layers().is_empty(), "nothing was placed");
+    let said = s
+        .failures()
+        .iter()
+        .map(|f| f.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(said.len(), 1, "one layer, one refusal: {said:?}");
+    assert!(said[0].contains("copier"), "{}", said[0]);
+}
+
+/// A name here that the layer does not answer is a typo where a declaration should be: nothing
+/// would ever be skipped for it.
+#[test]
+fn native_copy_naming_a_hook_the_layer_does_not_answer_is_refused() {
+    let why = Manifest::parse(
+        "name = \"todo\"\npurpose = \"p\"\nhooks = [\"nag_todo\"]\ncapabilities = []\n\
+         contract = 1\nnative_copy = [\"nag_other\"]\n",
+    )
+    .expect_err("refused at parse");
+    assert!(why.contains("native_copy"), "{why}");
+    assert!(why.contains("nag_other"), "{why}");
+}

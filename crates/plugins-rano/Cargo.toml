@@ -1,0 +1,23 @@
+[package]
+name = "letibot-plugins-rano"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The stack's seam, not the engine: this crate is the one implementation of `Loader` that a
+# production host uses, and `letibot-plugins` stays free of a JIT so its own tests never compile.
+letibot-plugins.workspace = true
+# A module is cached by the SHA-256 of its bytes - the same hash a pin is taken of - so the key
+# that saves a compile is the identity the trust book and the gate already speak.
+sha2 = "0.10"
+
+# The one reason a binary links a JIT, and the price of running a plugin at all.
+rano = { git = "https://github.com/deadtrickster/rano", rev = "c12f672b46f2cd3788f6f5307630e81b9575a512" }
+
+[dev-dependencies]
+# A test that proves the second host build compiles nothing has to install a real host's layers,
+# and those are the ones its `build.rs` compiles for the guest target.
+letibot-builtins.workspace = true

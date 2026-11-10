@@ -5,59 +5,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use letibot_plugins::{Capability, DeclaredTool, Loader, Module, Stack, ToolDecl};
+use letibot_plugins::{Capability, DeclaredTool, Stack, ToolDecl};
 use serde_json::{Value, json};
 
-/// The one `Loader` in this binary: rano compiles the module and this answers a hook. A copy of the
-/// head's and the daemon's, deliberately - `letibot_plugins` stays free of a wasm engine, and each
-/// binary that runs a layer brings its own rather than pulling a JIT into everything.
-pub struct RanoLoader;
-
-impl Loader for RanoLoader {
-    fn load(&self, wasm: &Path, _caps: &[Capability]) -> Result<Box<dyn Module>, String> {
-        let plugin = rano::plugin::Plugin::load_hooks(
-            wasm,
-            rano::plugin::Capabilities::default(),
-            letibot_plugins::HOOK_PREFIXES,
-        )
-        .map_err(|why| format!("{}: {why}", wasm.display()))?;
-        Ok(Box::new(RanoModule { plugin }))
-    }
-
-    fn load_bytes(
-        &self,
-        name: &str,
-        bytes: &[u8],
-        _caps: &[Capability],
-    ) -> Result<Box<dyn Module>, String> {
-        let plugin = rano::plugin::Plugin::from_bytes_hooks(
-            bytes,
-            PathBuf::from(format!("<built-in {name}>")),
-            rano::plugin::Capabilities::default(),
-            letibot_plugins::HOOK_PREFIXES,
-        )
-        .map_err(|why| format!("built-in `{name}`: {why}"))?;
-        Ok(Box::new(RanoModule { plugin }))
-    }
-}
-
-struct RanoModule {
-    plugin: rano::plugin::Plugin,
-}
-
-impl Module for RanoModule {
-    fn hooks(&self) -> Vec<String> {
-        self.plugin.hooks().to_vec()
-    }
-
-    fn call(&self, hook: &str, input: &str) -> Result<Option<String>, String> {
-        self.plugin.call(hook, input)
-    }
-
-    fn fuel(&self) -> u64 {
-        self.plugin.last_fuel()
-    }
-}
+/// The one `Loader` this binary uses, from `letibot-plugins-rano` - the daemon's and the head's too,
+/// because three copies of an engine is three places for a compile to be forgotten in. A module is
+/// kept per process, so the stack built here shares every one with anything else in this process.
+pub use letibot_plugins_rano::RanoLoader;
 
 /// What this bridge's layers came to: a stack built once, and the fact that it was tried, because a
 /// folder with nothing to load must not pay for the discovery on every call. `from_disk` is off unless
@@ -101,25 +55,20 @@ impl Layers {
 /// and this binary's own layers at the bottom. A layer that would not load and a pin whose bytes moved
 /// are said on stderr rather than swallowed, because a bridge has no head to draw them in.
 pub fn production(workspace: &Path) -> Option<Stack> {
-    let mut stack = Stack::discover(
-        None,
-        Some(workspace),
-        user_config_dir().as_deref(),
+    // The one admission path, shared with the daemon and the head: the same scopes, the same book,
+    // and the same sentences about a pin whose bytes moved.
+    let admitted = letibot_plugins::admit(
+        letibot_plugins::Scopes {
+            session: None,
+            workspace,
+            user: user_config_dir().as_deref(),
+        },
         Arc::new(RanoLoader),
+        Some(letibot_plugins::Trust::open_default()),
     );
-    let mut said: Vec<String> = stack
-        .set_trust(letibot_plugins::Trust::open_default())
-        .into_iter()
-        .map(|b| {
-            format!(
-                "the plugin layer `{}` is not pinned any more: its bytes changed after it was \
-                 pinned (module sha256 {}, on disk now {})",
-                b.name, b.pin.module, b.module
-            )
-        })
-        .collect();
+    let mut said = admitted.sentences();
+    let mut stack = admitted.stack;
     said.extend(letibot_builtins::install(&mut stack));
-    said.extend(stack.failures().iter().map(|f| format!("{f}")));
     if !said.is_empty() {
         eprintln!(
             "letibot-mcp: a plugin layer was not loaded, so what it answers is answered by what is \
@@ -272,6 +221,9 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    // The engine's seam, for the table-driven loaders below: production names `RanoLoader` only.
+    use letibot_plugins::{Capability, Loader, Module};
+
     use super::*;
     use crate::tools::Bridge;
 
@@ -508,6 +460,9 @@ mod tests {
 /// ask that cannot be silenced) without compiling wasm.
 #[cfg(test)]
 pub mod testing {
+    // The engine's seam for the fakes a bridge test stands in: `Answers` is a table, not a module.
+    use letibot_plugins::{Capability, Loader, Module};
+
     use super::*;
     use std::collections::BTreeMap;
 

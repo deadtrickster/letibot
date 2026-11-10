@@ -47,6 +47,11 @@ members = [
     # wasm engine — a `Loader` is the seam — so it is testable with fakes and its tests never
     # compile a module.
     "crates/plugins",
+    # **The one engine a production host uses**, beside the stack because it is that stack's
+    # `Loader` and nothing else: one process-wide compiled-module cache keyed by a module's
+    # sha256, so the daemon's sessions, the head's workspace switches and the bridge's single
+    # build share every module instead of compiling thirteen built-ins each.
+    "crates/plugins-rano",
     # **The hook contracts, for both sides of the wire.** Compiled into the daemon, which builds
     # every hook's input and reads its answer, and into a guest plugin, which does the opposite —
     # so a renamed field breaks a compilation rather than a sentence, the way
@@ -171,6 +176,7 @@ letibot-embeddings = { path = "crates/embeddings" }
 letibot-tools = { path = "crates/tools" }
 letibot-code = { path = "crates/code" }
 letibot-plugins = { path = "crates/plugins" }
+letibot-plugins-rano = { path = "crates/plugins-rano" }
 letibot-plugin = { path = "crates/plugin-sdk" }
 letibot-builtins = { path = "crates/builtins" }
 # The seat's config layer: `leticode.toml` and the instruction files a leticode reads.

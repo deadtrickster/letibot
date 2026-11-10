@@ -54,6 +54,9 @@ rano = { git = "https://github.com/deadtrickster/rano", rev = "c12f672b46f2cd378
 letibot-plugins.workspace = true
 letibot-plugin.workspace = true
 letibot-builtins.workspace = true
+# **The engine the stack's `Loader` seam is filled with**: one implementation for the daemon, the
+# head and the bridge, and a compiled module kept per process rather than per host build.
+letibot-plugins-rano.workspace = true
 
 [dev-dependencies]
 # **The real tool runtime, for the one test that has to drive one.** A change detected

@@ -876,10 +876,10 @@ Owns `bridge/src/tools.rs` (plugin tools listed after the 23), `bridge/src/push.
 What landed:
 
 - **One stack per folder**, `crates/bridge/src/plugins.rs`: the user's `~/.config/letibot/plugins`, the
-  project's `.letibot/plugins` and the binary's own layers at the bottom, on a rano loader of the
-  bridge's own as the head has. Built on first use, and only by the process that serves
-  (`Bridge::with_layers_from_disk`, whose one caller is `letibot-mcp`'s `serve`), so no test reads
-  this box's config directory and a bridge nobody asked pays for no JIT.
+  project's `.letibot/plugins` and the binary's own layers at the bottom, through the one loader and
+  the one admission path every host uses (`crates/plugins-rano`, `letibot_plugins::admit`). Built on
+  first use, and only by the process that serves (`Bridge::with_layers_from_disk`, whose one caller
+  is `letibot-mcp`'s `serve`), so no test reads this box's config directory.
 - **A `tool_` layer is an MCP tool.** Listed after the native ones from the manifest alone
   (`Stack::declared_tools`), so `tools/list` compiles nothing; the description names the layer, its
   scope and what its capabilities reach; a name that would shadow a native tool is dropped and said

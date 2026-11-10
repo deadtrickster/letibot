@@ -214,12 +214,18 @@ impl PluginHost {
     ) -> PluginHost {
         let workspace = workspace.into();
         let checkout = feed::checkout_of(&workspace);
-        let mut stack = Stack::discover(
-            session_dir.as_deref(),
-            Some(&workspace),
-            user_dir.as_deref(),
+        // The same admission path the head and the bridge take. No book here: the daemon opens it
+        // with the session, so `with_trust` decides the placed layers a moment later.
+        let mut stack = letibot_plugins::admit(
+            letibot_plugins::Scopes {
+                session: session_dir.as_deref(),
+                workspace: &workspace,
+                user: user_dir.as_deref(),
+            },
             loader,
-        );
+            None,
+        )
+        .stack;
         // Beside the session's layers, not in one: the dir scan only takes subdirectories.
         if let Some(dir) = session_dir.as_deref() {
             stack.keep_builtin_state(dir.join(".disabled-builtins"));

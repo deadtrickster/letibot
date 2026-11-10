@@ -230,6 +230,15 @@ pub struct App {
     /// the first draw of the session list or the first `/todo`, whichever asks first, and kept
     /// because discovering layers reads the disk and the modules compile.
     pub(crate) sessions_host: std::cell::RefCell<Option<crate::app::sessions_pane::Host>>,
+    /// A stack being built on a thread of its own. Discovery reads the disk and the binary's own
+    /// thirteen built-ins compile, which on the drawing thread freezes the first picture; the
+    /// frame that asks draws the head's own list and a later one draws the layer's.
+    pub(crate) host_build: std::cell::RefCell<Option<crate::app::sessions_pane::HostBuild>>,
+    /// Build the stack where the frame stands instead of on a thread. A head never does - that wait
+    /// is the freeze this field exists to keep out - and a test sets it, because a test has no
+    /// second frame: the two in `tests::host_build` leave it alone and drive the thread instead.
+    #[cfg(test)]
+    pub(crate) host_inline: std::cell::Cell<bool>,
     /// Which rows the person has folded or opened, by row id: the session list's fold state,
     /// which belongs to the host and not to the layer. A fold survives a re-answer because it
     /// travels back in the pane's input.
@@ -1262,6 +1271,9 @@ impl App {
             picker_seat_pending: false,
             home: std::env::var("HOME").unwrap_or_default(),
             sessions_host: std::cell::RefCell::new(None),
+            host_build: std::cell::RefCell::new(None),
+            #[cfg(test)]
+            host_inline: std::cell::Cell::new(false),
             picker_folds: std::collections::BTreeMap::new(),
             removed: Vec::new(),
             removal_armed: None,

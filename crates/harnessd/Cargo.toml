@@ -73,7 +73,9 @@ letibot-github.workspace = true
 letibot-plugin.workspace = true
 # The engine behind `letibot_plugins::Loader`: a plugin is a wasm module that answers text hooks,
 # and rano is the host that loads one. This is the only reason the daemon links a JIT, and it is
-# the price of running a plugin at all — see `crates/harnessd/src/plugins/rano.rs`.
+# the price of running a plugin at all — see `crates/plugins-rano`, which the head and the bridge
+# now load their layers with too.
+letibot-plugins-rano.workspace = true
 rano = { git = "https://github.com/deadtrickster/rano", rev = "c12f672b46f2cd3788f6f5307630e81b9575a512" }
 # The metrics writer thread and metrics.db (TODO R81): the daemon is the one that writes it.
 letibot-metrics = { workspace = true, features = ["store"] }

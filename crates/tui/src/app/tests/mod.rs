@@ -45,6 +45,9 @@ pub(crate) fn app() -> App {
     // The closed room-list poll is the rooms tests' business: it would answer every clock
     // tick a test asserts is quiet.
     a.rooms.next_poll_ms = u64::MAX;
+    // A test has one frame, not a loop: the stack is built where the frame stands. The two tests
+    // in `tests::host_build` turn this off, because the thread is what they are about.
+    a.host_inline.set(true);
     a
 }
 
@@ -1343,6 +1346,7 @@ mod editor;
 mod feedback;
 mod ghlinks;
 mod hits;
+mod host_build;
 mod jobcard;
 mod jobs;
 mod linkclick;

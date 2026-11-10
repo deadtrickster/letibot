@@ -60,8 +60,10 @@ letibot-plugin.workspace = true
 # **The binary's own layers**: `b-push` is what this bridge does with no project layer, and a scope
 # with no bottom is a stack a project's layer has nothing to sit on.
 letibot-builtins.workspace = true
-# The engine. `letibot_plugins` stays free of a wasm host on purpose, so each binary that runs a layer
-# brings its own - the same deliberation `crates/tui` records for the head.
+# **The engine.** `letibot_plugins` stays free of a wasm host on purpose, and the one implementation
+# every host uses now lives in `letibot-plugins-rano` - a copy per binary is what made this bridge
+# and the head compile all thirteen built-ins on every host build.
+letibot-plugins-rano.workspace = true
 rano = { git = "https://github.com/deadtrickster/rano", rev = "c12f672b46f2cd3788f6f5307630e81b9575a512" }
 
 [dev-dependencies]

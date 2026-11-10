@@ -1443,6 +1443,7 @@ dependencies = [
  "letibot-harnessd",
  "letibot-plugin",
  "letibot-plugins",
+ "letibot-plugins-rano",
  "letibot-room",
  "letibot-sessionlog",
  "letibot-tokencore",
@@ -1562,6 +1563,7 @@ dependencies = [
  "letibot-opencode",
  "letibot-plugin",
  "letibot-plugins",
+ "letibot-plugins-rano",
  "letibot-provider",
  "letibot-room",
  "letibot-sessionlog",
@@ -1629,6 +1631,16 @@ dependencies = [
  "serde_json",
  "sha2",
  "toml",
+]
+
+[[package]]
+name = "letibot-plugins-rano"
+version = "0.6.0"
+dependencies = [
+ "letibot-builtins",
+ "letibot-plugins",
+ "rano",
+ "sha2",
 ]
 
 [[package]]
@@ -1728,6 +1740,7 @@ dependencies = [
  "letibot-metrics",
  "letibot-plugin",
  "letibot-plugins",
+ "letibot-plugins-rano",
  "letibot-sessionlog",
  "letibot-tokencore",
  "letibot-tools",

@@ -223,6 +223,11 @@ pub struct Manifest {
     /// line the prompt carries, and the JSON Schema of its arguments. A declaration is the prompt
     /// bytes, so it is reviewed as prompt bytes.
     pub tools: Vec<ToolDecl>,
+    /// The exports that only restate what this host does without any layer - `native_copy`. A
+    /// built-in that names a hook here is not called for it: the round trip through wasm would
+    /// produce the answer the host is about to produce anyway. Honoured for the `built-in` scope
+    /// alone; a placed layer declaring it is refused at [`Manifest::admit_for`].
+    pub native_copy: Vec<String>,
 }
 
 /// One tool a layer declares: what the model is offered, and - through [`Manifest::admit`] - the
@@ -346,6 +351,15 @@ impl Manifest {
         let actions = strings_opt(&table, "actions")?;
         let tools = tools_opt(&table)?;
         let contracts = contracts_opt(&table, &hooks)?;
+        let native_copy = strings_opt(&table, "native_copy")?;
+        // A hook named here that the layer does not answer is a typo where a declaration should
+        // be: nothing would ever be skipped for it.
+        if let Some(hook) = native_copy.iter().find(|h| !hooks.contains(h)) {
+            return Err(format!(
+                "native_copy: `{hook}` is not one of this layer's hooks, so the host would skip a \
+                 call nothing makes"
+            ));
+        }
 
         Ok(Manifest {
             name,
@@ -358,6 +372,7 @@ impl Manifest {
             feeds,
             actions,
             tools,
+            native_copy,
         })
     }
 
@@ -532,6 +547,9 @@ impl Manifest {
         {
             return Err(why);
         }
+        // Skipping a call is the host's own cost decision, and it is only ever about bytes this
+        // binary carries: a placed layer that declared it would be a layer asking not to be asked.
+        self.admit_native_copy(scope)?;
         if self.feeds.contains(&letibot_plugin::pane::Feed::Chat)
             && scope != Scope::BuiltIn
             && !pinned
@@ -545,6 +563,21 @@ impl Manifest {
             ));
         }
         Ok(())
+    }
+
+    /// The rule about `native_copy` rather than about the answers: the key says these bytes restate
+    /// what the host already does, which only the host can know. Discovery asks it too - a layer
+    /// refused on its first rebuild and loaded at startup would be a divergence, not a rule.
+    pub(crate) fn admit_native_copy(&self, scope: Scope) -> Result<(), String> {
+        if scope == Scope::BuiltIn || self.native_copy.is_empty() {
+            return Ok(());
+        }
+        Err(format!(
+            "the layer `{}` declares `native_copy = {:?}`, and only a built-in may: that key says \
+             the export restates what this host already does, which a layer on disk cannot know. \
+             Drop the key and answer the hook",
+            self.name, self.native_copy
+        ))
     }
 
     /// The sentence a session's own layer reads when it answers a hook only a project, the operator

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use letibot_plugin::pane::{Act as RowAct, Feed, Input};
-use letibot_plugins::{Capability, Loader, Module, Stack};
+use letibot_plugins::Stack;
 use letibot_sessionlog::pane as pv;
 use rano::agent::pane::PaneLines;
 use rano::agent::tree_list::{
@@ -337,37 +337,27 @@ impl Host {
 
     /// A host for this session's folder, with the binary's own layers at the bottom. One door for
     /// the head, and crate-visible because a test stands the real build in for a folder it cannot
-    /// create.
+    /// create. Admission is `letibot_plugins::admit`'s - the daemon's and the bridge's path too -
+    /// and the trust book's pin is the head's to TAKE: the daemon's stack reads the same file at
+    /// its next poll, so one answer is in force in both processes.
     pub(crate) fn build(session: &str, workspace: &Path) -> Host {
-        let mut stack = Stack::discover(
-            session_plugins_dir(session).as_deref(),
-            Some(workspace),
-            user_config_dir().as_deref(),
+        let session_dir = session_plugins_dir(session);
+        let admitted = letibot_plugins::admit(
+            letibot_plugins::Scopes {
+                session: session_dir.as_deref(),
+                workspace,
+                user: user_config_dir().as_deref(),
+            },
             Arc::new(RanoLoader),
+            Some(letibot_plugins::Trust::open_default()),
         );
-        // The trust book, and the head is where a pin is TAKEN: the daemon's stack reads the same
-        // file at its next poll, so one answer is in force in both processes. `set_trust`
-        // re-decides every placed layer, and a pin whose bytes moved is SAID once.
-        let mut broke: Vec<String> = stack
-            .set_trust(letibot_plugins::Trust::open_default())
-            .into_iter()
-            .map(|b| {
-                format!(
-                    "the plugin layer `{}` is not pinned any more: its bytes changed after it was \
-                     pinned — what was pinned is module sha256 {}, and on disk now {}; \
-                     `/plugin trust {}` pins what is there now",
-                    b.name, b.pin.module, b.module, b.name
-                )
-            })
-            .collect();
+        let mut broke = admitted.sentences();
+        let mut stack = admitted.stack;
         // The built-in scope at the bottom of the stack, and a failure here is SAYABLE: the head
         // still falls back to its own list, but a binary whose own layer is broken is a defect and
         // the person is owed the sentence. Recorded once, at build time - it is never asked.
         if let Some(builtin) = install_builtins(&mut stack) {
             broke.push(builtin);
-        }
-        if let Some(refused) = would_not_load(&stack) {
-            broke.push(refused);
         }
         let problem = (!broke.is_empty()).then(|| broke.join("; "));
         Host {
@@ -667,7 +657,9 @@ fn install_builtins(stack: &mut Stack) -> Option<String> {
 
 /// The layers that never got as far as a call, in one sentence. A manifest this host refuses
 /// at load has no call to fail in, so the host that built the stack is the only one that can say
-/// it. A built-in is left out: [`install_builtins`] already said that one.
+/// it. A built-in is left out: [`install_builtins`] already said that one. `admit` says this for
+/// the host the head builds; this is the door a test's hand-made stack comes through.
+#[cfg(test)]
 fn would_not_load(stack: &Stack) -> Option<String> {
     let said: Vec<String> = stack
         .failures()
@@ -691,27 +683,132 @@ fn user_config_dir() -> Option<PathBuf> {
     letibot_plugins::paths::config_dir()
 }
 
+/// A stack being built on a thread of its own. Discovery reads three directories and the binary's
+/// own thirteen built-ins compile, which is seconds on the drawing thread and a freeze on the first
+/// picture; the frame that asks for a host draws the head's own list and a later frame draws the
+/// layer's, when this has something on it.
+pub(crate) struct HostBuild {
+    /// The folder the build is for. A head that has moved on since discards the answer.
+    pub(crate) workspace: PathBuf,
+    pub(crate) settled: std::sync::mpsc::Receiver<Host>,
+}
+
 impl App {
-    /// The head's plugin stack, built for this session's folder if it is not there yet - one door,
-    /// so the picker and a slash command ask the SAME stack, and a layer installed is a layer
-    /// asked. A head that moves to another folder gets another stack: layers belong to a project.
+    /// The head's plugin stack, for this session's folder - one door, so the picker and a slash
+    /// command ask the SAME stack, and a layer installed is a layer asked. A head that moves to
+    /// another folder gets another stack: layers belong to a project.
+    ///
+    /// A stack the head has not got yet is built OFF the drawing thread: the answer is `None` for
+    /// the frames it takes, which is the head's own list, and the layer's answer arrives with the
+    /// next frame after the thread is done. See [`HostBuild`].
     pub(crate) fn plugin_host(&self) -> std::cell::Ref<'_, Option<Host>> {
+        self.collect_host_build();
         let workspace = self.workspace_path();
-        {
-            let mut slot = self.sessions_host.borrow_mut();
-            let stale = slot
-                .as_ref()
-                .map(|h| h.workspace != workspace)
-                .unwrap_or(true);
-            if stale {
-                *slot = Some(Host::build(&self.session_id, &workspace));
-            } else if let Some(host) = slot.as_mut() {
-                // A layer rebuilt on disk is a pane that redraws - the live loop, and the
-                // reason this pane is a plugin at all. See [`Host::reload_if_due`].
-                host.reload_if_due(self.now_ms);
+        let stale = self
+            .sessions_host
+            .borrow()
+            .as_ref()
+            .map(|h| h.workspace != workspace)
+            .unwrap_or(true);
+        if stale {
+            // A host for another folder is not this folder's, and a build for one is left to land
+            // and be dropped: its workspace is in the answer, so nothing stale can be seated.
+            *self.sessions_host.borrow_mut() = None;
+            // A test has no second frame, so it asks for the stack where it stands. A head never
+            // does: the frame that waited on thirteen compiles is the freeze this is here to end.
+            #[cfg(test)]
+            {
+                if self.host_inline.get() {
+                    *self.sessions_host.borrow_mut() =
+                        Some(Host::build(&self.session_id, &workspace));
+                    return self.sessions_host.borrow();
+                }
             }
+            let building = self
+                .host_build
+                .borrow()
+                .as_ref()
+                .is_some_and(|b| b.workspace == workspace);
+            if !building && self.host_build.borrow().is_none() {
+                self.start_host_build(&workspace);
+            }
+        } else if let Some(host) = self.sessions_host.borrow_mut().as_mut() {
+            // A layer rebuilt on disk is a pane that redraws - the live loop, and the
+            // reason this pane is a plugin at all. See [`Host::reload_if_due`].
+            host.reload_if_due(self.now_ms);
         }
         self.sessions_host.borrow()
+    }
+
+    /// Start this folder's stack on a thread of its own. A thread this process cannot start is not
+    /// a reason to lose the layer: the frame builds it where it stands and pays what the thread
+    /// would have taken.
+    fn start_host_build(&self, workspace: &Path) {
+        let session = self.session_id.clone();
+        let folder = workspace.to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("plugin-host".into())
+            .spawn(move || {
+                let _ = tx.send(Host::build(&session, &folder));
+            });
+        match spawned {
+            Ok(_) => {
+                *self.host_build.borrow_mut() = Some(HostBuild {
+                    workspace: workspace.to_path_buf(),
+                    settled: rx,
+                });
+            }
+            Err(_) => {
+                *self.sessions_host.borrow_mut() = Some(Host::build(&self.session_id, workspace));
+            }
+        }
+    }
+
+    /// Take the stack a thread finished, if it has: one whose folder is still this head's becomes
+    /// the host, and one built for a folder the head has left is dropped. A thread that died
+    /// without answering lets the build go, so the next frame asks again rather than leaving the
+    /// pane on the head's list for the rest of the session.
+    fn collect_host_build(&self) {
+        let seen = {
+            let held = self.host_build.borrow();
+            match held.as_ref().map(|b| b.settled.try_recv()) {
+                None | Some(Err(std::sync::mpsc::TryRecvError::Empty)) => return,
+                Some(Ok(host)) => Some(host),
+                Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => None,
+            }
+        };
+        match seen {
+            Some(host) => self.seat_host_build(host),
+            None => {
+                self.host_build.borrow_mut().take();
+            }
+        }
+    }
+
+    /// Seat a finished build, and let go of the build: the two are one act, because a stack whose
+    /// folder the head has left is dropped here rather than seated as this one's.
+    fn seat_host_build(&self, host: Host) {
+        let built = self.host_build.borrow_mut().take();
+        if built.is_some_and(|b| b.workspace == host.workspace) {
+            *self.sessions_host.borrow_mut() = Some(host);
+        }
+    }
+
+    /// Wait for the build in flight, and seat it. A test's door: the drawing path never waits, and
+    /// a test that has to see what the layer draws cannot spin frames until a compile finishes.
+    #[cfg(test)]
+    pub(crate) fn wait_for_host_build(&self, timeout: std::time::Duration) -> bool {
+        let arrived = self
+            .host_build
+            .borrow()
+            .as_ref()
+            .and_then(|b| b.settled.recv_timeout(timeout).ok());
+        let Some(host) = arrived else {
+            return false;
+        };
+        self.seat_host_build(host);
+        true
     }
 
     /// The session list, from the plugin - `None` when there is no layer to ask, when its
@@ -1474,59 +1571,17 @@ fn listed(view: &pv::View, app: &App) -> Vec<Listed> {
     out
 }
 
-/// The one `Loader` in this binary: rano compiles the module, this answers a hook. The duplication
-/// with the daemon's copy is deliberate - `letibot_plugins` stays free of a wasm engine, and each
-/// binary that runs a layer brings its own rather than pulling a JIT into everything.
-pub(crate) struct RanoLoader;
-
-impl Loader for RanoLoader {
-    fn load(&self, wasm: &Path, _caps: &[Capability]) -> Result<Box<dyn Module>, String> {
-        let plugin = rano::plugin::Plugin::load_hooks(
-            wasm,
-            rano::plugin::Capabilities::default(),
-            letibot_plugins::HOOK_PREFIXES,
-        )
-        .map_err(|why| format!("{}: {why}", wasm.display()))?;
-        Ok(Box::new(RanoModule { plugin }))
-    }
-
-    fn load_bytes(
-        &self,
-        name: &str,
-        bytes: &[u8],
-        _caps: &[Capability],
-    ) -> Result<Box<dyn Module>, String> {
-        let plugin = rano::plugin::Plugin::from_bytes_hooks(
-            bytes,
-            PathBuf::from(format!("<built-in {name}>")),
-            rano::plugin::Capabilities::default(),
-            letibot_plugins::HOOK_PREFIXES,
-        )
-        .map_err(|why| format!("built-in `{name}`: {why}"))?;
-        Ok(Box::new(RanoModule { plugin }))
-    }
-}
-
-struct RanoModule {
-    plugin: rano::plugin::Plugin,
-}
-
-impl Module for RanoModule {
-    fn hooks(&self) -> Vec<String> {
-        self.plugin.hooks().to_vec()
-    }
-
-    fn call(&self, hook: &str, input: &str) -> Result<Option<String>, String> {
-        self.plugin.call(hook, input)
-    }
-
-    fn fuel(&self) -> u64 {
-        self.plugin.last_fuel()
-    }
-}
+/// The one `Loader` this binary uses, from `letibot-plugins-rano` - the daemon's and the bridge's
+/// too: a compiled module is kept per process, so a workspace switch or a second session's stack
+/// compiles nothing that has been compiled before. The type is a unit; there is nothing to build.
+pub(crate) use letibot_plugins_rano::RanoLoader;
 
 #[cfg(test)]
 mod tests {
+    // The engine's seam, for the one test that stands a refusing loader in: `RanoLoader` is the
+    // only other `Loader` this crate names.
+    use letibot_plugins::{Capability, Loader, Module};
+
     use super::*;
 
     /// The head's own reading of `XDG_CONFIG_HOME=`, which used to be its own answer: the variable

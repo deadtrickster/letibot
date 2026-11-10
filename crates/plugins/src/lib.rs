@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
+mod admit;
 mod gate;
 mod manifest;
 pub mod paths;
@@ -17,6 +18,7 @@ mod trust;
 #[cfg(test)]
 mod testing;
 
+pub use admit::{Admission, Scopes, admit};
 pub use gate::{BuildError, Builder, CargoBuilder, GateReport, ReplayDiff, gate};
 pub use manifest::{Capability, Manifest, Scope, ToolDecl};
 pub use recorder::Recorder;

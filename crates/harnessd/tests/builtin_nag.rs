@@ -6,6 +6,12 @@
 //! Every expected line here is read off the harness's own function, `unfinished_plan_for`, and the
 //! input is the one `the_nag_input` builds for the daemon: there is no copy of a sentence in this
 //! file, which is what makes it a proof rather than a fixture agreeing with itself.
+//!
+//! The agreement is asked of a PLACED copy of the layer's own bytes, because the built-in itself is
+//! not called any more: `nag_todo` is declared `native_copy` (R175 item 5), so a stack whose only
+//! answerer is the binary's layer takes the daemon's path instead of spending a wasm call on the
+//! sentence it is about to write. Both halves are below, and the second is the reason the first is
+//! still worth having.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -25,6 +31,26 @@ fn builtin_stack(root: &Path) -> Stack {
     let failed = letibot_builtins::install(&mut stack);
     assert!(failed.is_empty(), "every built-in loads: {failed:?}");
     stack
+}
+
+/// The binary's `todo` layer written out as a PROJECT layer: the same `plugin.wasm` and the same
+/// `plugin.toml`, minus `native_copy`, which is a built-in's to declare and a placed layer's to be
+/// refused for. A placed layer is called, so this is how the module's words are still asked.
+fn copied_todo_layer(root: &Path) {
+    let builtin = letibot_builtins::table()
+        .iter()
+        .find(|b| b.name == "todo")
+        .expect("the binary carries the todo layer");
+    let dir = root.join(".letibot").join("plugins").join("todo");
+    std::fs::create_dir_all(&dir).expect("a project layer directory");
+    let manifest = builtin
+        .manifest
+        .lines()
+        .filter(|l| !l.starts_with("native_copy"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(dir.join("plugin.toml"), manifest).expect("plugin.toml");
+    std::fs::write(dir.join("plugin.wasm"), builtin.wasm).expect("plugin.wasm");
 }
 
 fn tempdir(tag: &str) -> PathBuf {
@@ -80,12 +106,14 @@ fn plans() -> Vec<Vec<TodoItem>> {
 }
 
 /// What the store keeps for a delivered check is `nag_turn`'s sentence, and `nag_turn` says
-/// `unfinished_plan_for`'s words: so the layer's answer and the recorded line are the same string,
-/// for every shape a plan comes in.
+/// `unfinished_plan_for`'s words: so the module's answer and the recorded line are the same string,
+/// for every shape a plan comes in. Asked of a placed copy of the layer's bytes, because the
+/// built-in itself is not called (see [`the_builtins_nag_is_not_called`]).
 #[test]
 fn the_builtin_nag_says_what_the_native_nag_said() {
     let tmp = tempdir("nag");
-    let stack = builtin_stack(&tmp);
+    copied_todo_layer(&tmp);
+    let stack = Stack::discover(None, Some(&tmp), None, Arc::new(RanoLoader));
     let children = ChildSessions::none();
     let jobs = RunningJobs::none();
     let clock = nag::Clock {
@@ -118,11 +146,11 @@ fn the_builtin_nag_says_what_the_native_nag_said() {
         assert!(resolved.failures.is_empty(), "{:?}", resolved.failures);
         assert_eq!(
             resolved.by.as_deref(),
-            Some("b-todo"),
-            "the binary's own todo layer answers"
+            Some("p1"),
+            "the project's copy of the layer answers"
         );
         let answer = resolved.answer.expect("the layer answers");
-        let out = nag::read(&answer).unwrap_or_else(|why| panic!("{}: {answer}", why));
+        let out = nag::read(&answer).unwrap_or_else(|why| panic!("{answer}: {why}"));
         let decision = out
             .decide(&input)
             .unwrap_or_else(|why| panic!("the host takes the built-in's answer: {why}"));
@@ -139,5 +167,26 @@ fn the_builtin_nag_says_what_the_native_nag_said() {
         checked, 4,
         "every fixture must be a plan the check speaks about"
     );
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// And the built-in itself answers nothing at all: `nag_todo` is declared `native_copy`, so the
+/// stack leaves it alone and the daemon's own check stands - which is the same sentence, for free.
+#[test]
+fn the_builtins_nag_is_not_called() {
+    let tmp = tempdir("nag-skip");
+    let stack = builtin_stack(&tmp);
+    let asked = serde_json::json!({"text": "a sentence", "name": "a row"});
+    let resolved = stack.call(nag::HOOK, &asked);
+    assert!(
+        resolved.failures.is_empty(),
+        "a skipped call is not a failure: {:?}",
+        resolved.failures
+    );
+    assert_eq!(
+        resolved.answer, None,
+        "the daemon's own path, not a layer's"
+    );
+    assert_eq!(resolved.by, None);
     std::fs::remove_dir_all(&tmp).ok();
 }

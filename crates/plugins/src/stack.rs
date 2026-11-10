@@ -81,6 +81,19 @@ pub struct BrokenPin {
     pub manifest: String,
 }
 
+impl BrokenPin {
+    /// The sentence a moved pin is said with. One spelling, so a head's picker and a bridge's
+    /// stderr say the same thing about the same file, and it is [`crate::Standing`]'s sentence -
+    /// the same one a refusal of this layer carries, hint included.
+    pub fn sentence(&self) -> String {
+        crate::Standing {
+            free: false,
+            pin: Some(self.pin.clone()),
+        }
+        .sentence(&self.name, &self.module, &self.manifest)
+    }
+}
+
 /// One layer's refusal to answer, and why. Rendered for the model and for the stack pane, so the
 /// display is part of the type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -881,7 +894,20 @@ impl Stack {
         let mut found = Vec::new();
         for path in dirs {
             match Manifest::read(&path) {
-                Ok(manifest) => found.push((path, manifest)),
+                // The scope's own rules that need no answers are decided here, so a layer this
+                // host would refuse is a failure at startup and not one at its first rebuild.
+                Ok(manifest) => match manifest.admit_native_copy(scope) {
+                    Ok(()) => found.push((path, manifest)),
+                    Err(why) => self.failures.push(Failure {
+                        layer: path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string()),
+                        scope,
+                        hook: None,
+                        why,
+                    }),
+                },
                 Err(why) => self.failures.push(Failure {
                     layer: path
                         .file_name()
@@ -996,6 +1022,13 @@ impl Stack {
             // Reviewed policy is nobody's own layer: a session that could answer this hook could
             // raise its own floor to `auto`, so it never reaches a module at all.
             if layer.scope == Scope::Session && NOT_A_SESSIONS.contains(&walk.hook) {
+                continue;
+            }
+            // A built-in saying its export only restates what the host does without it: the answer
+            // is the host's own, and a wasm round trip for an identity is cost with no reader.
+            if layer.scope == Scope::BuiltIn
+                && layer.manifest.native_copy.iter().any(|h| h == walk.hook)
+            {
                 continue;
             }
             let Some(wired) = self.wired.get(&layer.id) else {
