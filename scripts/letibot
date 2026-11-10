@@ -366,6 +366,15 @@ STORE="${LETIBOT_STORE:-$HOME/.local/share/letibot}"
 # The one file a caller that still takes a single store path wants: `letibot migrate` moves a
 # session's project file, and the key is the one this folder's socket already wears.
 STORE_FILE="$STORE/projects/$KEY.db"
+STORE_DIR="$STORE"
+# A single file (LETIBOT_STORE=.../sessions.db, a pre-split box) lives in its directory.
+[ -f "$STORE" ] && STORE_DIR="$(dirname "$STORE")"
+# A data directory not yet split still holds sessions.db: hand that file over, which every
+# daemon opens, until `letibot-migrate-split` has run. The split build refuses the bare dir.
+if [ -z "${LETIBOT_STORE:-}" ] && [ -f "$STORE/sessions.db" ] && [ ! -e "$STORE/shared.db" ]; then
+  STORE="$STORE/sessions.db"
+  STORE_FILE="$STORE"
+fi
 
 # **Each folder's daemon logs to its own file** (TODO R92.3), keyed like its socket. One file
 # shared by every folder's daemon meant a boot failure's reason sat among other daemons' lines,
@@ -3125,7 +3134,7 @@ if live && [ -n "$ENDPOINT" ]; then
   fi
 fi
 
-mkdir -p "$STORE" "$(dirname "$LOG")" "$(dirname "$SHARED_LOG")"
+mkdir -p "$STORE_DIR" "$(dirname "$LOG")" "$(dirname "$SHARED_LOG")"
 
 # **THE BOX'S ROOM, BEFORE ANY SESSION CAN LOOK FOR IT** (`docs/room.md` § *Still owed* item 4).
 #
