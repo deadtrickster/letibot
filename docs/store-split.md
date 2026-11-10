@@ -1,11 +1,11 @@
 # Store split: one file per project, one shared file
 
-Status: proposal, design settled, P0, P1, P2, P3 and P4 built (their own paragraphs in § Build plan
-say what landed). Left: the live migration of the real store on this box, which is the operator's
-to run. The corpus question is decided: decisions live
-in project files and there is no shared copy (§ The corpus). The stalls the split is meant to
-remove were measured on lab2x1 on 2026-11-07 (§ What the daemons logged), and the build is in
-five packages with their done-tests at the end.
+Status: proposal, design settled, P0, P1, P2, P3, P4 and the carve (P5) built (their own paragraphs
+in § Build plan say what landed). Left: the operator running it on the real store, one project at a
+time (§ Carving one project), which does not need every daemon on the box stopped. The corpus
+question is decided: decisions live in project files and there is no shared copy (§ The corpus).
+The stalls the split is meant to remove were measured on lab2x1 on 2026-11-07 (§ What the daemons
+logged), and the build is in six packages with their done-tests at the end.
 
 ## Why
 
@@ -37,6 +37,10 @@ daemon of one folder.
 
 A daemon opens its project file and the shared file. A head or CLI that lists sessions reads the
 shared file and opens a project file only to load a transcript.
+
+While the box is being carved (§ Carving one project) the shared file is still called
+`sessions.db`: it holds the shared tables and the project tables of every project not carved yet,
+and a project's own file appears beside it as that project is taken out.
 
 Inside one daemon the project file has one writer thread. Callers hand it work and never hold
 their own lock across a write, so `database is locked` between daemons cannot happen and inside a
@@ -101,7 +105,9 @@ What reads the corpus, as the tree has it today (paths in this repo):
   migrating a file somebody else's daemon is writing is the one write a question may not make.
 
 The sweep is the accepted cost: 29 read-only opens on lab2x1, ordered by project key so that a
-listing cut short is still a stable prefix. It takes no write lock on any file, so it cannot
+listing cut short is still a stable prefix. While the box is mid-transition it also opens
+`sessions.db`, where the decisions of every project not carved yet still are, so a sweep sees the
+carved and the uncarved alike (§ Carving one project). It takes no write lock on any file, so it cannot
 stall a project's daemon the way a shared writer does; a file that has gone missing or is half
 migrated is named in the answer and the sweep goes on with the rest — the count of the files it
 could not read rides the answer beside the count of the rows it found, because a total that
@@ -110,7 +116,8 @@ the start-up path: a daemon must not wait on 29 files to say hello.
 
 ## Migration
 
-One offline pass, run with every daemon stopped:
+Two roads, and the second one is the operator's (§ Carving one project): this is the first, the
+whole file in one offline pass, for a box whose daemons can all be stopped at once:
 
 1. Map every session to its tree's root by `parent_session_id`, and the root's
    `workspace_root` to a project key. A child's own `workspace_root` is its worktree and must not
@@ -127,6 +134,108 @@ One offline pass, run with every daemon stopped:
 A session whose workspace no longer exists still gets a project file under its recorded key.
 `--migrate` moves a daemon to another host; its project file goes with it instead of rows being
 copied out of the shared store.
+
+## Carving one project
+
+The pass above is the quick road, and it needs every daemon on the box stopped — 76 of them here,
+with the queues and the room down beside them. The road the operator takes is the slow one: one
+project key at a time, so only that project's daemon stops. Carve a key, restart that folder's
+daemon, and the rest of the box goes on writing.
+
+**During the transition `sessions.db` IS the shared file.** It keeps the shared tables — the
+session index, boards, queues, rooms, writer leases — and the project tables of every project not
+carved yet. A carve never writes a `session` row, so there is never a second index: a listing, the
+picker, `--continue NAME` and the fleet view read one file in either shape.
+
+**The record.** A carve is recorded in `sessions.db`'s `carved_project(key, at_ms)` — a table no
+schema here creates, in `sessions.db` only. Its presence is what tells a data directory
+mid-transition from one nothing has been carved out of, and a finished store does not have it at
+all.
+
+**`--project KEY`.** `letibot-migrate-split --project KEY STORE DATA-DIR`:
+
+1. Map every session to its key as the whole pass does (§ Migration step 1), and refuse a key the
+   index does not hold — naming the keys it does hold, a key being a hash.
+2. Refuse while a live `session_writer` claim covers a session of THAT key: this host's pid
+   running, or any claim naming another host, which this box cannot ask about pids for. Another
+   project's claim is not a reason to stop — that daemon keeps writing `sessions.db`, and the rows
+   the carve touches are not its.
+3. Create `DATA-DIR/projects/<KEY>.db` from the same per-file DDL and copy that key's rows of
+   every project table in one transaction, by the same row filters the whole pass uses: the key's
+   sessions, their transcripts and items, the prefixes those name, the runs whose parent it is.
+4. Run the whole pass's checks for that key only: per table, the row count and the hash of the
+   primary keys against the old store's rows for that key, and every transcript of the new file
+   replayed through `TokenLedger::restore`, the read a resume does. `stable_prefix` has no sum rule
+   (§ Table assignment duplicates it per project), and the cross-file `adjudication` rule is the
+   next carve's problem: one key's file can only hold its own.
+5. In one transaction on `sessions.db`: insert the `carved_project` row, write the key onto its own
+   `session` rows (`session.project` — the column a migrated store has and a fresh one does not, so
+   a `--handover` for a session of another folder resolves to the file its rows are in), and delete
+   that key's rows of every project table.
+6. Any refusal before that transaction commits removes the new file, so a failed check leaves no
+   file and no record, and `sessions.db` is untouched apart from the rollback.
+
+The delete is the part that needed care. `transcript_item` has an append-only trigger that refuses
+a DELETE, so the triggers on the project tables are dropped and re-created from their own
+`sqlite_master` text around it. `stable_prefix` keeps every row a project not carved yet still
+names: one prefix can be two projects' rows and a whole pass copies it into both files, so only the
+prefixes nothing else names are deleted. A transcript of another project that forks one of this
+key's stops the carve before anything is deleted — that reference is one no file of the layout can
+carry, and the whole pass refuses the same shape at its own step 4.
+
+**What a daemon opens.** `Config::store_at` and `split::open_handle` decide by the directory:
+
+- `shared.db` is there: the finished set (P3), unchanged.
+- `sessions.db` is there with no `shared.db`: the transition, and `sessions.db` is the shared file.
+  A key `carved_project` records opens `projects/<key>.db` beside it and routes by `place_of`
+  exactly as a finished set does. A key it does not record opens `sessions.db` as its ONLY file,
+  with its project rows still in it — as a set's handle, so the listing reads the index alone
+  rather than joining a history one of whose projects now lives in another file.
+- `--store` handed the `sessions.db` path — the shape the bridge and the launcher give a daemon on
+  a box nobody has carved — is that same directory as soon as a project file sits beside it. On a
+  box already finished it stays the refusal it was (§ Build plan, P3).
+- Neither file: a fresh set, created as before.
+
+`split::shared_path` and `split::file_of` answer which file a table's rows are in, in either shape,
+and `StoreAt::path` — the file a line names, a lease's release, `/gate`'s own write — reads them
+rather than assuming `shared.db`.
+
+**Reads that span projects** see both kinds. The listing is the index's, so it answers for a carved
+project and an uncarved one alike. The corpus sweep adds `sessions.db` to the files it opens while
+it is there, because the decisions of every uncarved key are still in it, and a scoped read
+resolves the key through the index and lands on `sessions.db` for a key no carve has taken.
+
+**`--finish`** is the last step and the only one that needs the box quiet.
+`letibot-migrate-split --finish STORE DATA-DIR` refuses while a live `session_writer` claim exists
+at all, refuses while a key the index names is not in `carved_project` (naming up to eight of them),
+and refuses while any project table in `sessions.db` still holds a row — a row whose session the
+index does not name belongs to no project file, and no carve can take it. Then, in one transaction,
+it drops the empty project tables and `carved_project`, checkpoints the journal, and renames
+`sessions.db` to `shared.db`. What is left is exactly P3's layout: the index and the shared tables,
+one file per project, and no project table in the shared file at all — the shape the whole pass
+leaves, and the one P3 has always opened.
+
+**Crash windows.** A carve that dies between writing its file and committing its transaction leaves
+the file and no record: the next `--project KEY` refuses `projects/<key>.db` already there, by
+name, and the operator deletes it and carves again (nothing was deleted). A `--finish` that dies
+between its drops and its rename leaves a `sessions.db` with no `carved_project` and project files
+beside it: it finishes from there, because the drops are idempotent and the rename is all that is
+left.
+
+**Done-tests** (`crates/harnessd/tests/store_split_carve.rs`):
+`a_live_claim_on_one_project_stops_that_project_only` (a claim on B while A is carved, A's carve
+running through it, then B's refused by name with no file and no record);
+`a_carved_key_opens_its_own_file_and_an_uncarved_key_opens_sessions_db` (the carved key's daemon
+writes its transcript into its own file and its index rows into `sessions.db`, the uncarved key's
+stay in `sessions.db`, `--store .../sessions.db` is the directory, and a path question names the
+file the rows are in); `a_refused_check_leaves_no_file_and_no_carved_row` (a fork across the two
+projects, the one shape refused AFTER the copy: no file, no row, every transcript still in
+`sessions.db`);
+`finish_refuses_until_every_key_is_carved_and_then_makes_the_split_layout` (the refusal names the
+key that is left; then `shared.db`, no project table in it, the history in the project files, a
+daemon opening it as P3 always did, and a second `--finish` refused); and
+`the_listing_sees_a_carved_project_and_an_uncarved_one` (the real binary's `--list-sessions`
+answers for both, mid-carve and after the rename).
 
 ## What the daemons logged
 
@@ -253,7 +362,7 @@ saturated disk stalls a project's file and the shared file alike — which is wh
 
 ## Build plan
 
-Five packages, in this order, each with paths no other package touches and each with the test
+Six packages, in this order, each with paths no other package touches and each with the test
 that says it is done. Every test is a new file, so no two packages edit one path. Each ends with
 `sh scripts/check-fmt.sh main`. On this box every build uses
 `CARGO_TARGET_DIR=/build/letibot-r129-target`: the root disk holds the live store.
@@ -407,10 +516,30 @@ recorded" with the unreadable file named, `/gate recent` lists neither);
 its journal holds no frames after a sweep; and `a_sweep_of_twenty_nine_project_files_is_measured`,
 which is where the open question below got its number.
 
-Left of P4: nothing. Left of R129: the live migration of the real store on this box —
-`letibot-migrate-split ~/.local/share/letibot/sessions.db ~/.local/share/letibot`, with every
-daemon stopped — which is the operator's to run, and the daemons go back on the split store after
-it.
+Left of P4: nothing.
+
+**P5 — the carve, one project at a time.** Built. `crates/tokencore/src/migrate_split.rs`
+(`carve`, `finish`, `blocking_claims`), `crates/tokencore/src/store/split.rs`
+(`carved_keys`, CARVED_TABLE and its DDL, `shared_path`, `file_of`, the transition branch of
+`open_handle`), `crates/harnessd/src/config.rs` (`Config::store_at` naming the data directory a
+`sessions.db` path stands for, `StoreAt::path` through `file_of`),
+`crates/harnessd/src/corpus.rs` (the sweep and the scoped read over the transition file),
+`crates/harnessd/src/bin/letibot-migrate-split.rs` (`--project KEY`, `--finish`) and
+`crates/harnessd/tests/store_split_carve.rs` (new); the design is § Carving one project. One binary
+rather than a sibling, because the carve IS this pass one key at a time: it reuses the same row
+filters, the same per-table and chain checks and the same `create`, and a second binary would be a
+second copy of them. Three things the design left open, decided here: the index learns its key on
+the carved `session` rows (`session.project`), so a `--handover` asked from another folder resolves
+to the file the rows are in; an uncarved key's handle is a SET's whose project file is absent, so a
+listing reads the index alone instead of joining a history that is now split across files; and
+`--finish` refuses under any live claim and while any project table still holds a row, because the
+rename moves the file every daemon holds and a row whose session the index does not name belongs to
+no project file. Done-tests, all on temp directories, are listed at the end of § Carving one
+project.
+
+Left of R129: the operator running the carve on the real store —
+`letibot-migrate-split --project KEY ~/.local/share/letibot/sessions.db ~/.local/share/letibot` once
+per key, a restart of that folder's daemon after each, and `--finish` with the box quiet at the end.
 
 ## Open questions
 
