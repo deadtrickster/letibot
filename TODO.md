@@ -49,7 +49,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
-| R175 | The plugin extension points' review findings: a session layer can answer a tool call past the gate, and the hosts cost and diverge | Code work | all of it: the eight items in order, `docs/review/2026-11-10-plugin-extension-points.md` |
+| R175 | The plugin extension points' review findings: a session layer can answer a tool call past the gate, and the hosts cost and diverge | Code work | items 1-2 built (`523971c3`): an `answer` is a pinned layer's or a built-in's, `admit_for` at the door every layer takes, the load card names hooks and capabilities, and an `on_tool_result` answer is cut at the spill's budget; left: items 3-8, `docs/review/2026-11-10-plugin-extension-points.md` |
 | R165 | Rooms for orchestration (3/6): a question goes to the owner, not the room | Needs the operator | built (scope asks to the owner, status posts folded); left: the counters read over real traffic, and a live run against a coordinator older than protocol 11 |
 | R166 | Rooms for orchestration (4/6): kinds, budgets and a stopping rule for agent-only threads | Needs the operator | built (say kinds, per-sender budget, depth cap, ranked digest); left: the numbers over real traffic, and no pane groups lines by kind |
 | R167 | Rooms for orchestration (5/6): peer text is a claim with a source, never an instruction | Needs the operator | built (impersonation flag, evidence refs, claim checker, red-team set); left: the `/rooms` pane does not draw the two flags, and a `decision` claim is not checked against an effect log |
@@ -270,7 +270,7 @@ Item 5, its own commit. The channel pushed a `job_ended` for EVERY job of every 
 
 ## R175 - The plugin extension points' review findings: a session layer can answer a tool call past the gate, and the hosts cost and diverge
 
-**Status:** open, filed 2026-11-10 from the adversarial review of R150 at `5ff5707e`. left: all of it. The record, with every report verbatim and the decisions, is `docs/review/2026-11-10-plugin-extension-points.md`.
+**Status:** items 1-2 built (`523971c3`). left: items 3-8 of the list below. The record, with every report verbatim and the decisions, is `docs/review/2026-11-10-plugin-extension-points.md`.
 
 In order:
 
@@ -284,6 +284,36 @@ In order:
 8. Split `PluginHost`; one `install_where` for the five install loops.
 
 Deferred: `command_` verbs beyond `say` and `add_todo`; the design doc stops promising them meanwhile.
+
+**Items 1-2 built, `523971c3`.**
+
+Item 1, the bypass. An `answer` stands in for the tool's result and the gate never sees the call, so
+`PluginHost::on_tool_call` takes one only from a layer the operator vouched for: a built-in, or a
+placed layer whose module and manifest hashes match a pin. From a session's own or an unpinned layer
+the `answer` is cleared, the rest of the answer stands, and the call goes on to the gate as though the
+layer had passed; `complain` says why once, like every other plugin refusal. The deciding fact is the
+pin and not the scope, so a PINNED user or project layer may still answer a call for any tool `bash`
+included, and that is policy rather than a hole left open. `Manifest::admit_for` has a production
+caller now: `Stack::apply` — the door every new or rebuilt layer takes, which is the daemon's `plugin
+load`, the head's poll reload and a child's `with_inherited` — calls it with the layer's scope and
+standing, so a session layer answering the gate's floor or a review of its own branch fails to LOAD
+rather than loading and being skipped at resolution. Discovery still calls `admit`: `PluginHost::discover`
+reads no trust book until `.with_trust`, so `admit_for`'s chat-feed rule cannot be decided there.
+`plugin load`'s card names the layer's hooks and every capability it declared, `plugin test`'s line
+says what an `answer` costs, and `plugin-sdk/src/tool_call.rs`'s header no longer claims a layer
+cannot answer a call past the gate.
+
+Item 2, the bound. `on_tool_result` runs after the spill, so a layer could grow a result past the
+budget the spill had already applied. `ToolRuntime::inline_cap` asks the same `InlineBudget` the spill
+asks, `Harness::plugin_result` passes the layer's words through `plugins::bounded_result`, and an
+answer over the cap is cut at a char boundary with a line saying so (a cap too small to carry that
+line is cut silently: the bound is the promise, the line is the courtesy).
+
+Tests: `a_session_layer_answering_bash_is_refused_and_the_gate_sees_it` (a session layer answers
+`bash`, the call reaches the tool, and the gate is asked with the model's own arguments),
+`a_session_layer_answering_a_review_hook_is_refused_where_it_is_applied` (refused by name at
+`apply`, and the project's copy admitted) and
+`an_on_tool_result_answer_over_the_spill_budget_is_cut`.
 
 **Done when**: a session layer answering `on_tool_call` for `bash` is refused and the gate sees the call; an `on_tool_result` answer over the spill budget is cut; the head with `XDG_CONFIG_HOME=` reads the same plugin dir as the daemon; a head's second host build compiles no built-in.
 
