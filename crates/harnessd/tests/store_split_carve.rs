@@ -186,13 +186,19 @@ fn seed(path: &Path) -> String {
     append(&store, "a#t0", S_A, &prefix_id, &prefix_tokens, 2);
     append(&store, "ac#t0", S_CHILD, &prefix_id, &prefix_tokens, 1);
     append(&store, "b#t0", S_B, &prefix_id, &prefix_tokens, 1);
-    let conn = store.connection();
+    // The guard is dropped before the next store call: `connection()` holds the connection's own
+    // mutex, and every store method takes it again - so a call inside this scope deadlocks.
+    {
+        let conn = store.connection();
+        for session in [S_A, S_B] {
+            conn.execute(
+                "INSERT INTO todo (session_id, todos_json, updated_ms) VALUES (?1, '[]', 1)",
+                params![session],
+            )
+            .expect("a todo row");
+        }
+    }
     for session in [S_A, S_B] {
-        conn.execute(
-            "INSERT INTO todo (session_id, todos_json, updated_ms) VALUES (?1, '[]', 1)",
-            params![session],
-        )
-        .expect("a todo row");
         store
             .record_adjudication(&decision(session))
             .expect("a decision");
@@ -442,14 +448,34 @@ fn a_refused_check_leaves_no_file_and_no_carved_row() {
         0,
         "and no lease was taken or left behind"
     );
-    // The store is still a whole store: a daemon of either folder opens it.
-    for root in [ROOT_A, ROOT_B] {
-        fixture
-            .config(root)
+    // The store is still a whole store, in the shape it had before the carve began: a daemon handed
+    // the FILE opens the one store and reads its own history. A DIRECTORY is still the refusal P3
+    // gives, because nothing has been carved out of it - which is the discriminator `store_at`
+    // reads, so both halves are asserted rather than the one the test happens to want.
+    let refused = fixture
+        .config(ROOT_A)
+        .store_at()
+        .expect("a store")
+        .open()
+        .err()
+        .expect("a directory holding only sessions.db is not a store yet");
+    assert!(refused.to_string().contains("not split yet"), "{refused}");
+    for (root, transcript, items) in [(ROOT_A, "a#t0", 2), (ROOT_B, "b#t0", 1)] {
+        let mut cfg = fixture.config(root);
+        cfg.store = Some(fixture.store());
+        let store = cfg
             .store_at()
             .expect("a store")
             .open()
-            .expect("a daemon still opens the one file");
+            .expect("the one file still opens");
+        assert_eq!(
+            store
+                .load_transcript(transcript)
+                .ok()
+                .map(|t| t.items.len()),
+            Some(items),
+            "{root} reads its own history out of the one file"
+        );
     }
 }
 

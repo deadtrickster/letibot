@@ -407,10 +407,15 @@ fn refuse_cross_key_forks(conn: &Connection) -> Result<()> {
 }
 
 /// A carve's own debris: the file, and the journal beside it, because a half-written project file
-/// is worse than none and the next attempt would refuse it as a carved project.
+/// is worse than none and the next attempt would refuse it as a carved project. The directory goes
+/// too when this carve was the one that made it - an empty `projects/` is a line in a listing that
+/// says a carve happened.
 fn remove_written_file(path: &Path) {
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(appended(path, suffix));
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::remove_dir(dir);
     }
 }
 
