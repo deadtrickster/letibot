@@ -5,9 +5,9 @@ description: Fix the harness's own behaviour from inside a session — pick the 
 
 # Patch the harness from inside this session
 
-The operator's complaint is usually one of five shapes, and each is a hook. When it is not, it is
-one of three things a layer can **add**: a pane, a `/` verb, or a tool. Eight kinds, and finding the
-right one is most of the work; after that it is a small wasm module and no release.
+The operator's complaint is usually one of fifteen shapes, and each is a hook. When it is not, it is
+one of three things a layer can **add**: a pane, a `/` verb, or a tool. Eighteen kinds in all, and
+finding the right one is most of the work; after that it is a small wasm module and no release.
 
 ## The patch points
 
@@ -32,8 +32,8 @@ right one is most of the work; after that it is a small wasm module and no relea
 The contract for some of these and for a pane is the `plugin_hooks` tool, **read from the host's
 own types**: read it before writing anything, and read it again after a refusal.
 `plugin_hooks {"hook":"condition"}` is one kind; no argument is all of them. `adjudicate_floor`,
-`digest_`, `link_`, `nag_`, `tool_`, `command_`, `steer_`, `compact_` and `push_` are written out below: the
-host has no page for them yet.
+`digest_`, `link_`, `nag_`, `tool_`, `command_`, `steer_`, `compact_`, `push_` and `card_` are
+written out below: the host has no page for them yet.
 
 ### `adjudicate_floor` — the gate's floor
 
@@ -51,8 +51,8 @@ require: `{"intents": ["prod-host"], "floor": "ask"}`, where a floor is `auto`, 
 
 **It can only raise.** Your floor is merged through the strictest tier, so `auto` over a call layer A
 already found disclosing changes nothing, and no field admits a call. A `deny` refuses it before the
-point is even consulted; an `ask` is an ordinary always-ask card. A trap, a timeout or an answer the
-host cannot parse is the **strictest** tier, not a skip — a floor that cannot answer has not said
+point is even consulted; an `ask` is an ordinary always-ask card. A trap, exhausted fuel or an answer
+the host cannot read is the **strictest** tier, not a skip — a floor that cannot answer has not said
 the call is fine. The names you give (`prod-host`) reach the card and the audit row and decide
 nothing; the floor does.
 
@@ -69,8 +69,8 @@ in the layer of the session it governs.
 | a `/` verb the head asks before it answers the line itself | **`command_`** | `command_<verb>`, as in `command_todo` | the verb, as in `/todo …` |
 | a tool in the model's own tool list | **`tool_`** | `tool_<name>`, as in `tool_claude_transcript` | the `tool` list the model is sent |
 
-`plugin_hooks` has no page for `tool_`, `command_`, `complete_`, `digest_`, `link_`, `nag_`, `steer_`
-or `compact_`: their shapes are below, and they are the whole contract.
+`plugin_hooks` has no page for `tool_`, `command_`, `complete_`, `digest_`, `link_`, `nag_`, `steer_`,
+`compact_`, `push_` or `card_`: their shapes are below, and they are the whole contract.
 
 ### `pane_<name>` — a screen
 
@@ -407,10 +407,11 @@ call that went wrong.
 A `tool_` layer is the one kind that also needs `plugin {"action":"load"}`, because the tool is
 seated when the layer applies: a tool a session has not loaded is not in the model's tool list.
 
-`scaffold` has a template for `pane`, `notice`, `on_tool_call`, `on_tool_result` and `condition`. For
-`digest_`, `link_`, `nag_`, `steer_`, `compact_`, `command_`, `push_` or `tool_`, scaffold the nearest one and
-rename the export in `plugin.toml` and in `src/lib.rs` - the shape above is the whole of what you are
-writing.
+`scaffold` has a template for `pane`, `notice`, `on_tool_call`, `on_tool_result`, `condition`, `push`
+and `card`. For `digest_`, `link_`, `nag_`, `steer_`, `compact_`, `command_`, `complete_` or `tool_`,
+scaffold the nearest one and rename the export in `plugin.toml` and in `src/lib.rs` - the shape
+above is the whole of what you are writing. A `push` template exports `push_channel` and a `card` one
+`card_item`, whatever the plugin is called: those are the names the bridge and the head ask.
 
 ## The rules that catch people
 

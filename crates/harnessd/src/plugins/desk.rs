@@ -81,8 +81,8 @@ impl PluginDesk for SessionPlugins {
             kind,
             pane,
         } = scaffold::write(dir, name, purpose, hook).map_err(Refusal::only)?;
-        // What the layer is for, in the words of the kind it answers: a pane is drawn, the four
-        // patch points are not.
+        // What the layer is for, in the words of the kind it answers: a pane is drawn, the patch
+        // points are not.
         let drawn = if kind == "pane" {
             format!("its pane will be drawn as `{pane}`")
         } else {
@@ -92,6 +92,8 @@ impl PluginDesk for SessionPlugins {
                     "notice" => "notice of that kind",
                     "on_tool_call" => "tool call, before the gate",
                     "on_tool_result" => "successful tool result",
+                    "push" => "notification the bridge would push to a client",
+                    "card" => "row the head draws",
                     _ => "poll of a monitor it was armed for",
                 }
             )

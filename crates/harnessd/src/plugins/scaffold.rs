@@ -11,14 +11,16 @@ use letibot_plugins::MANIFEST;
 const MAX_NAME: usize = 48;
 
 /// The hook kinds this host runs, as `scaffold` names them: the word without the name after its prefix.
-/// `pane` is drawn by a head; the other four are the patch points a hook is called at, each wired where
-/// the host does that thing.
+/// `pane` is drawn by a head; the rest are the patch points a hook is called at, each wired where the
+/// host does that thing.
 pub const HOOK_KINDS: &[&str] = &[
     "pane",
     "notice",
     "on_tool_call",
     "on_tool_result",
     "condition",
+    "push",
+    "card",
 ];
 
 /// Where the slice-1 Rust SDK lives on a box that has a rano checkout beside its projects - the
@@ -208,6 +210,11 @@ pub fn hook_name(kind: &str, name: &str) -> String {
         // starts with a monitor firing's wording: another kind is
         // a rename of the export and of `plugin.toml`'s `hooks`.
         "notice" => format!("notice_{}", letibot_plugin::notice::MONITOR),
+        // A card's two exports are the row kinds a head asks, so the template answers the first
+        // (`card_item`) and `card_call` is the second export of the same module.
+        "card" => letibot_plugin::card::ITEM.to_string(),
+        // One channel, one export: the bridge asks `push_channel` of every layer that answers it.
+        "push" => letibot_plugin::push::HOOK.to_string(),
         // Per subject, like a pane: the name says which one.
         _ => format!("{kind}_{}", ident(name)),
     }
@@ -236,8 +243,8 @@ pub struct Scaffolded {
     /// The pane id, for a `pane`; empty for the kinds no head draws.
     pub pane: String,
     /// Where the typed contracts are on this box (`crates/plugin-sdk` in the tree this daemon was
-    /// built from), and whether they were found. The four patch points' templates link it, so a
-    /// guest and the host parse one set of types.
+    /// built from), and whether they were found. The typed kinds' templates link it, so a guest
+    /// and the host parse one set of types.
     pub types: Sdk,
 }
 
@@ -316,7 +323,7 @@ fn manifest(name: &str, purpose: &str, hook: &str) -> String {
 }
 
 fn cargo_toml(name: &str, kind: &str, sdk: &str, types: &str) -> String {
-    // The four patch points link the tree's own contract crate. A guest that parses its input
+    // The typed kinds link the tree's own contract crate. A guest that parses its input
     // into the host's types cannot drift from the host: a renamed field is a compile error in the
     // plugin, in the session, at the moment the build runs - which is the whole point of the SDK.
     let typed = if kind == "pane" {
@@ -364,7 +371,8 @@ fn cargo_toml(name: &str, kind: &str, sdk: &str, types: &str) -> String {
 }
 
 /// The guest's source, a `format!` so the name, purpose and hook cannot drift across the three files.
-/// `pane` has its own template (pure `view`, no typed dependency). The four patch points share one shape: contract crate, one pure function, a native test.
+/// `pane` has its own template (pure `view`, no typed dependency). The typed kinds share one
+/// shape: contract crate, one pure function, a native test.
 fn lib_rs(name: &str, purpose: &str, hook: &str, kind: &str) -> String {
     if kind == "pane" {
         return pane_lib_rs(name, purpose, hook, kind);
@@ -461,6 +469,72 @@ fn lib_rs(name: &str, purpose: &str, hook: &str, kind: &str) -> String {
              a firing and a nudge, and refused (with the reason said to the model) for everything\n\
              else.",
         ),
+        "push" => (
+            "Input",
+            "Out",
+            "/// **What this layer says about one push.** §4's bridge door: one event the bridge would\n\
+             /// wake a Claude Code session with, and the sentence it would carry.\n\
+             pub fn answer(input: &Input) -> Out {\n\
+             \x20   // **`None` is *the bridge's own decision*.** A layer that answered `push: true`\n\
+             \x20   // would push the lines the bridge drops, and one that answered `false` could\n\
+             \x20   // silence an event it may not: an `ask` and a `failed` are never taken away.\n\
+             \x20   Out {\n\
+             \x20       push: None,\n\
+             \x20       text: Some(format!(\"[channel] {}\", input.text)),\n\
+             \x20   }\n\
+             }",
+            "    #[test]\n\
+             \x20   fn the_words_are_reworded_and_the_decision_is_the_bridges() {\n\
+             \x20       let input = Input::synthetic();\n\
+             \x20       let decision = answer(&input).decide(&input).expect(\"the host accepts it\");\n\
+             \x20       assert!(decision.push, \"the bridge pushed it, and this layer did not unpush it\");\n\
+             \x20       assert!(decision.text.starts_with(\"[channel] \"), \"{}\", decision.text);\n\
+             \x20   }",
+            "**The words, not the decision.** `push: None` follows the bridge's own rule; an `ask`\n\
+             and a `failed` may be reworded and never silenced, so a rule that took one away is\n\
+             refused and the notification goes out in the bridge's words.",
+        ),
+        "card" => (
+            "Input",
+            "Out",
+            "/// **What this layer draws for one row.** §4's head door: the row's kind and typed facts\n\
+             /// in, one block per part out - and the verb, when the row is a tool call.\n\
+             pub fn answer(input: &Input) -> Out {\n\
+             \x20   // **One block per part, in the host's order.** A card is positional, so a\n\
+             \x20   // shifted answer draws one notice's facts under another's words; the host\n\
+             \x20   // refuses the whole of it.\n\
+             \x20   let blocks = input\n\
+             \x20       .parts\n\
+             \x20       .iter()\n\
+             \x20       .map(|part| {\n\
+             \x20           let lines = letibot_plugin::card::Lines {\n\
+             \x20               parts: vec![part.trim().to_string()],\n\
+             \x20               accent: 0,\n\
+             \x20               role: None,\n\
+             \x20               title: input.item.kind.clone(),\n\
+             \x20           };\n\
+             \x20           serde_json::to_value(letibot_plugin::card::Block::Lines(lines))\n\
+             \x20               .unwrap_or_default()\n\
+             \x20       })\n\
+             \x20       .collect();\n\
+             \x20   // **`verb` is a tool row's.** Absent leaves the head's own rule, and a word\n\
+             \x20   // outside `card::VERBS` is refused rather than drawn as itself.\n\
+             \x20   Out { blocks, verb: None }\n\
+             }",
+            "    #[test]\n\
+             \x20   fn one_block_per_part_and_the_host_draws_it() {\n\
+             \x20       let input = Input::synthetic();\n\
+             \x20       let out = answer(&input);\n\
+             \x20       let cards = out\n\
+             \x20           .cards(input.parts.len())\n\
+             \x20           .expect(\"one block per part is what the host draws\");\n\
+             \x20       assert_eq!(cards.cards.len(), input.parts.len());\n\
+             \x20       assert!(cards.verb.is_none(), \"a notice row is not drawn as a tool\");\n\
+             \x20   }",
+            "**The facts are why the hook exists.** A notice's card is drawn from what the row was\n\
+             composed from, so a `notice_` layer that reworded the sentence cannot take the card with\n\
+             it; the width, the cut and the palette stay the head's.",
+        ),
         _ => (
             "ConditionIn",
             "ConditionOut",
@@ -522,6 +596,8 @@ fn lib_rs(name: &str, purpose: &str, hook: &str, kind: &str) -> String {
         "condition" => "condition",
         "notice" => "notice",
         "on_tool_call" => "tool_call",
+        "push" => "push",
+        "card" => "card",
         _ => "tool_result",
     };
     let contract = if kind == "condition" {
@@ -537,6 +613,22 @@ fn lib_rs(name: &str, purpose: &str, hook: &str, kind: &str) -> String {
              //!   → plugin test  {name}\n\
              //!   → plugin load  {name}      (the shadow gate, then hot — no restart)\n\
              //!   → `monitor {{{{}}}}` with `{{\"plugin\": \"{name}\"}}` arms it\n\
+             //! ```"
+        )
+    } else if kind == "push" || kind == "card" {
+        // No `plugin_hooks` page for these two: the skill is where the contract is written.
+        format!(
+            "docs/plugins-plan.md §4, and the `plugin-hooks` skill has the whole of it - the host \
+             has no `plugin_hooks` page for this kind yet.\n\
+             //!\n\
+             //! # The loop this file is the start of\n\
+             //!\n\
+             //! ```text\n\
+             //! plugin scaffold {name}   (done)\n\
+             //!   → edit `answer` below\n\
+             //!   → plugin build {name}\n\
+             //!   → plugin test  {name}\n\
+             //!   → plugin load  {name}      (the shadow gate, then hot — no restart)\n\
              //! ```"
         )
     } else {
@@ -781,7 +873,7 @@ mod tests {
     /// `//!`, or the scaffolded crate fails to build before the session writes a line.
     #[test]
     fn every_hook_template_header_line_is_a_doc_comment() {
-        for kind in ["on_tool_call", "on_tool_result", "notice", "condition"] {
+        for kind in super::HOOK_KINDS.iter().filter(|k| **k != "pane") {
             let body = super::lib_rs("probe", "a probe", "hook", kind);
             let header: Vec<&str> = body
                 .lines()
@@ -930,6 +1022,42 @@ mod tests {
         let e = write(&root, "x", "p", "digest").expect_err("no such kind yet");
         assert!(e.contains("`digest` is not a hook kind"), "{e}");
         assert!(e.contains("on_tool_call"), "{e}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The two kinds R175 added a template for. Their export names are the HOST's - one channel, and
+    /// a row asked about once - so a plugin's own name is not in the hook, unlike a pane's or a nag's.
+    #[test]
+    fn the_push_and_card_templates_export_the_hooks_the_host_asks() {
+        let root = temp("push-card");
+        let pushed = write(&root, "room-lines", "only what is addressed", "push").expect("push");
+        assert_eq!(pushed.hook, "push_channel");
+        let carded = write(&root, "no-monitor", "a firing as one line", "card").expect("card");
+        assert_eq!(carded.hook, "card_item");
+        assert!(carded.pane.is_empty(), "no head draws a card as a pane");
+        for done in [&pushed, &carded] {
+            // A manifest the host's own parser admits, declaring the export the module defines.
+            let manifest = letibot_plugins::Manifest::read(&done.dir).expect("the manifest parses");
+            assert_eq!(manifest.hooks, vec![done.hook.clone()]);
+            let lib = std::fs::read_to_string(done.dir.join("src/lib.rs")).expect("the source");
+            assert!(
+                lib.contains(&format!("pub extern \"C\" fn {}(", done.hook)),
+                "{}: {lib}",
+                done.kind
+            );
+            // The template ships its own native test, which is what the kind's answer is checked
+            // by once the session edits it - and what `plugin test` then asks with real input.
+            assert!(lib.contains("fn answer("), "{}: {lib}", done.kind);
+            assert!(lib.contains("#[cfg(test)]"), "{}: {lib}", done.kind);
+        }
+        // The card template answers the row's own shape: one block per part the host named.
+        let card = std::fs::read_to_string(carded.dir.join("src/lib.rs")).expect("the source");
+        assert!(card.contains("Block::Lines"), "{card}");
+        assert!(card.contains(".cards(input.parts.len())"), "{card}");
+        // And the push template answers words while leaving the decision to the bridge.
+        let push = std::fs::read_to_string(pushed.dir.join("src/lib.rs")).expect("the source");
+        assert!(push.contains("push: None"), "{push}");
+        assert!(push.contains(".decide(&input)"), "{push}");
         std::fs::remove_dir_all(&root).ok();
     }
 }

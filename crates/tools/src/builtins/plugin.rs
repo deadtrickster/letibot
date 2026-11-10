@@ -178,8 +178,8 @@ impl Tool for PluginTool {
                     },
                     "hook": {
                         "type": "string",
-                        "enum": ["pane", "notice", "on_tool_call", "on_tool_result", "condition"],
-                        "description": "scaffold: the hook kind to answer. `pane` is drawn by a head; the other four patch what the host does at a call, at a result, at a notice it says, and at a watch's firing. `plugin_hooks` has the contract for each, and a layer can also ADD a `tool_<name>` or a `command_<verb>` — the `plugin-hooks` skill has both shapes."
+                        "enum": ["pane", "notice", "on_tool_call", "on_tool_result", "condition", "push", "card"],
+                        "description": "scaffold: the hook kind to answer. `pane` is drawn by a head; the others patch what the host does at a call, at a result, at a notice it says, at a watch's firing, at a push to a Claude Code client and at a card the head draws. `plugin_hooks` has the contract for each, and a layer can also ADD a `tool_<name>` or a `command_<verb>` — the `plugin-hooks` skill has both shapes."
                     },
                     "input": {
                         "type": "object",
