@@ -15,9 +15,9 @@ pub const CAP: usize = 1 << 20;
 /// may echo into a panel.
 pub const EXEC_REFUSED: &str = "exec looks are not in slice 1";
 
-/// The trees a look reads in, the checkout first: the repository the session's tree belongs to,
-/// which for a worktree is the checkout it was cut from - where a project's `.letibot` files live.
-/// The tree the session stands in is read too, so a worktree's own file is still an answer (R151).
+/// The trees a look reads in, the checkout first: the repository the session's tree belongs to, which
+/// for a worktree is the checkout it was cut from - where a project's `.letibot` files live. The tree
+/// the session stands in is read too, so a worktree's own file is still an answer.
 #[derive(Debug, Clone, Copy)]
 pub struct Trees<'a> {
     /// The session's checkout: where a relative path is looked for first.

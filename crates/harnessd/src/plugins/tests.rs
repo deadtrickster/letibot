@@ -2377,9 +2377,9 @@ fn a_session_with_no_layers_passes_every_call_through() {
     assert!(hub.retained().is_empty());
 }
 
-// A CHILD GETS A STACK (K1, `docs/plugin-extension-points-wide.md` §3 X11). The daemon's door is
-// `PluginHost::for_child`; a test builds the child's host over its own loader and inherits through
-// the same `with_inherited`, so what is proved here is the rule and not the engine.
+// A CHILD GETS A STACK. The daemon's door is `PluginHost::for_child`; a test builds the child's host
+// over its own loader and inherits through the same `with_inherited`, so what is proved here is the
+// rule and not the engine.
 
 /// The host a spawned child gets, as a test can build it: the child's own directories and
 /// workspace, the trust book its parent decided against, and what it inherits from `parent`.
@@ -2446,8 +2446,8 @@ fn a_child_answers_the_parents_project_on_tool_call_layer() {
     );
 }
 
-/// The parent's PINNED session layers reach its child and its unpinned ones do not: a child's work
-/// goes to review, and an unpinned layer is the parent's experiment (§7 question 1, on its default).
+/// The parent's pinned session layers reach its child and its unpinned ones do not: a child's work goes
+/// to review, and an unpinned layer is the parent's experiment.
 #[test]
 fn a_child_inherits_a_pinned_session_layer_and_not_an_unpinned_one() {
     let root = tempdir("child-inherit");
@@ -2567,9 +2567,8 @@ fn a_reviewer_child_runs_the_gatekeepers_layers() {
 // ===== K5: the reviewer's brief and the verdict's floor (`review_`), and a child's brief (`brief_`)
 
 /// A review is somebody else's judgement of a branch, so the layer of the session whose branch it is
-/// answers neither the brief nor the floor. Three ways it could, and none of them works: the queue's
-/// stack never discovers another session's plugin directory; a SESSION-scope layer is skipped by the
-/// stack even when it is on it and pinned; and its manifest is refused at the door `admit_for` is.
+/// answers neither the brief nor the floor: the queue's stack never discovers that session's plugin
+/// directory, a session-scope layer is skipped, and its manifest is refused at `admit_for`.
 #[test]
 fn a_session_layer_of_the_reviewed_branch_does_not_reach_its_reviewer() {
     let root = tempdir("review-session-layer");
@@ -2879,9 +2878,7 @@ fn a_childs_trap_is_reported_to_the_childs_own_session() {
 }
 
 /// Nothing changes for a top-level session: it inherits nothing, because a session the daemon starts
-/// itself is opened with `Inherited::none()`, and the rule takes only an ENABLED, PINNED SESSION
-/// layer - a project layer is found again by the child's own discovery rather than copied down, and a
-/// layer switched off in the parent is off in its children.
+/// itself is opened with `Inherited::none()`, and the rule takes only an enabled, pinned session layer.
 #[test]
 fn a_top_level_session_hands_nothing_down() {
     let root = tempdir("child-top-level");
@@ -4302,10 +4299,9 @@ fn a_trapping_command_layer_leaves_the_unknown_sentence() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// A lifecycle layer cannot block a re-seat (X21). Every shape a hostile layer can answer with is
-/// read as acts to perform or as nothing at all: the answer type has no field for a veto, and the
-/// host's answer for the event carries none either - so a caller that has already re-seated has
-/// nothing to check before deciding it happened.
+/// A lifecycle layer cannot block a re-seat. Every shape a hostile layer can answer with is read as acts
+/// to perform or as nothing at all: the answer type has no field for a veto, and the host's answer for
+/// the event carries none either.
 #[test]
 fn a_lifecycle_layer_cannot_block_a_reseat() {
     let input = letibot_plugin::lifecycle::Input {
@@ -4493,8 +4489,8 @@ fn loud_call() -> letibot_transcript::ToolCall {
     }
 }
 
-/// The digest runs BEFORE the spill, so the bytes the budget is spent on are the digest's: a
-/// 4000-byte output a layer shortens to one line does not spill at all (§4.5, X26).
+/// The digest runs before the spill, so the bytes the budget is spent on are the digest's: a 4000-byte
+/// output a layer shortens to one line does not spill at all.
 #[test]
 fn a_digest_layer_shortens_before_the_spill_budgets() {
     let (root, hub) = hook_project(
@@ -4568,8 +4564,8 @@ fn a_trapping_digest_layer_leaves_the_output_as_it_was() {
     assert!(said.contains("trapped"), "{said}");
 }
 
-/// A pinned tool layer's `exec` look runs: the capability first, then `admit_unasked` - a look
-/// runs inside a model's call and cannot park it behind a card (X26, §7.11).
+/// A pinned tool layer's `exec` look runs: the capability first, then `admit_unasked`, because a look
+/// runs inside a model's call and cannot park it behind a card.
 #[test]
 fn a_pinned_tool_layer_runs_an_exec_look_through_admit_unasked() {
     struct Asked(std::sync::Mutex<Vec<String>>);

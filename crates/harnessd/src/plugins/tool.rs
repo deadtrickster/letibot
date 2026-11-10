@@ -581,10 +581,8 @@ fn look_error(why: impl std::fmt::Display) -> Value {
 }
 
 /// Resolve a path a layer asked for, or say why it may not have it. The rule is the manifest's: the
-/// workspace if the layer declared `read`, and each tree it named as `read:<path>`, nothing else.
-/// Both sides are canonicalised, so a symlink pointing out of a tree is refused for where it points.
-/// What the SESSION's view says about the path is the next question, and a look's answer comes from
-/// the view rather than from this process's own disk - see [`Decides::read`].
+/// workspace if the layer declared `read`, and each tree it named as `read:<path>`, nothing else. Both
+/// sides are canonicalised, so a symlink out of a tree is refused where it points.
 fn resolve(path: &str, caps: &[Capability], workspace: &Path) -> Result<PathBuf, String> {
     if path.trim().is_empty() {
         return Err("a look named an empty path".to_string());
@@ -670,10 +668,9 @@ fn line_value(n: usize, bytes: &[u8], cap: usize) -> Value {
     })
 }
 
-/// The bytes a look reads, through the session's view when there is one: a path its boundary
-/// denies is refused in the boundary's words, and a path outside its root is not read off the
-/// daemon's disk (R121 item 8's family, X26). `None` is a caller with no session - a test's own
-/// tool, `PluginTool::run` - and then the file is this process's, as it was before there were views.
+/// The bytes a look reads, through the session's view when there is one: a path its boundary denies is
+/// refused in the boundary's words, and a path outside its root is not read off the daemon's disk.
+/// `None` is a caller with no session, and then the file is this process's.
 fn open_for_read(real: &Path, view: Option<&dyn Decides>) -> Result<Box<dyn BufRead>, Value> {
     let Some(view) = view else {
         return match std::fs::File::open(real) {

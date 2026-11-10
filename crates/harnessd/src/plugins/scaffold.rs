@@ -10,9 +10,9 @@ use letibot_plugins::MANIFEST;
 /// so the bound is about a title that fits rather than about a filesystem.
 const MAX_NAME: usize = 48;
 
-/// The hook kinds this host runs, as `scaffold` names them: the word without the name after
-/// its prefix. `pane` is drawn by a head; the other four are the patch points of
-/// `docs/plugins-plan.md` §4.1–4.4, each wired where the host does that thing.
+/// The hook kinds this host runs, as `scaffold` names them: the word without the name after its prefix.
+/// `pane` is drawn by a head; the other four are the patch points a hook is called at, each wired where
+/// the host does that thing.
 pub const HOOK_KINDS: &[&str] = &[
     "pane",
     "notice",
@@ -204,8 +204,8 @@ pub fn hook_name(kind: &str, name: &str) -> String {
         // One hook for the kind. Every layer that wants to intercept a call exports the same
         // name, and they stack; a name per plugin would be a hook nothing ever asks for.
         "on_tool_call" | "on_tool_result" => kind.to_string(),
-        // A notice hook is named after the notice's KIND, not after the plugin (§4.3), and the
-        // template starts with the plan's own example: a monitor firing's wording. Another kind is
+        // A notice hook is named after the notice's KIND, not after the plugin, and the template
+        // starts with a monitor firing's wording: another kind is
         // a rename of the export and of `plugin.toml`'s `hooks`.
         "notice" => format!("notice_{}", letibot_plugin::notice::MONITOR),
         // Per subject, like a pane: the name says which one.
@@ -775,8 +775,8 @@ fn escape(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    /// **Every line of a hook's header is a doc comment**: a template sentence that wraps must
-    /// keep its `//!`, or the scaffolded crate fails to build before the session writes a line.
+    /// Every line of a hook's header is a doc comment: a template sentence that wraps must keep its
+    /// `//!`, or the scaffolded crate fails to build before the session writes a line.
     #[test]
     fn every_hook_template_header_line_is_a_doc_comment() {
         for kind in ["on_tool_call", "on_tool_result", "notice", "condition"] {
@@ -827,8 +827,8 @@ mod tests {
         assert!(check_name(&"x".repeat(MAX_NAME + 1)).is_err());
     }
 
-    /// **The template parses with the host's own manifest parser** — a scaffold whose every
-    /// plugin failed at discovery would be a loop that never gets past its first step.
+    /// The template parses with the host's own manifest parser - a scaffold whose every plugin failed
+    /// at discovery would be a loop that never gets past its first step.
     #[test]
     fn the_written_manifest_is_one_the_host_admits() {
         let root = temp("manifest");
@@ -852,9 +852,9 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A purpose with a quote in it is still a TOML string — the manifest is prose in a value
-    /// position, and a plugin whose purpose broke the file would be one whose scaffold wrote a
-    /// syntax error.
+    /// A purpose with a quote in it is still a TOML string - the manifest is prose in a value
+    /// position, and a plugin whose purpose broke the file would be one whose scaffold wrote a syntax
+    /// error.
     #[test]
     fn a_purpose_with_quotes_and_backslashes_survives_the_manifest() {
         let root = temp("purpose");
@@ -873,9 +873,9 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// **The template's own view, as JSON** — the rules the host would refuse it for, checked
-    /// where the template is written rather than only inside the guest. This is the half that
-    /// keeps the template honest on a box with no wasm toolchain.
+    /// The template's own view, as JSON - the rules the host would refuse it for, checked where the
+    /// template is written rather than only inside the guest. This is the half that keeps the template
+    /// honest on a box with no wasm toolchain.
     #[test]
     fn the_templates_view_a_panel_with_a_view_has_one_unowned_key() {
         let body = lib_rs("deploy", "the deploy queue", "pane_deploy", "pane");
@@ -899,8 +899,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// **Every kind scaffolds, and a kind this host does not run is refused with the ones it does**
-    /// — the four patch points share the typed template, the pane keeps slice 1's.
+    /// Every kind scaffolds, and a kind this host does not run is refused with the ones it does: the
+    /// four patch points share the typed template, and the pane keeps slice 1's.
     #[test]
     fn every_kind_scaffolds_and_a_stranger_is_refused_with_the_ones_there_are() {
         let root = temp("kind");

@@ -85,9 +85,8 @@ pub struct PluginHost {
 }
 
 /// What a spawned child takes from the session that spawned it: the directories of the parent's
-/// SESSION-scope layers whose bytes a person pinned, re-read on the child's own stack. Unpinned
-/// session layers stay the parent's, because a child's work goes to review and an unpinned layer is
-/// the parent's experiment (`docs/plugin-extension-points-wide.md` §7 question 1, on its default).
+/// session-scope layers whose bytes a person pinned, re-read on the child's own stack. Unpinned session
+/// layers stay the parent's, because a child's work goes to review and an unpinned layer is an experiment.
 #[derive(Clone, Debug, Default)]
 pub struct Inherited {
     dirs: Vec<PathBuf>,
@@ -142,10 +141,9 @@ struct Inner {
     poll_at: Instant,
     /// Pins whose bytes moved before this host existed, held for the first tick that can say them.
     broken_pins: Vec<letibot_plugins::BrokenPin>,
-    /// The hooks the binary's own layers have already been offered for. A built-in that answers a
-    /// hook the DAEMON asks - a review's brief, a verdict's floor, a child's brief - is installed on
-    /// the first ask rather than at open: a module costs seconds to compile, and a session that is
-    /// never reviewed must not pay for one.
+    /// The hooks the binary's own layers have already been offered for. A built-in that answers a hook
+    /// the DAEMON asks - a review's brief, a verdict's floor, a child's brief - is installed on the
+    /// first ask rather than at open, because a module costs seconds to compile.
     builtin_asked: BTreeSet<String>,
 }
 
@@ -364,10 +362,9 @@ impl PluginHost {
         host
     }
 
-    /// The host a spawned child gets: [`PluginHost::production`] for the child's own dirs and
-    /// workspace, with what [`Inherited::of`] says it takes from its parent. Every hook in a child
-    /// was a no-op before this, so a reviewer's `review_verdict` could not be guarded
-    /// (`docs/plugin-extension-points-wide.md` §1.1, X11).
+    /// The host a spawned child gets: [`PluginHost::production`] for the child's own dirs and workspace,
+    /// with what [`Inherited::of`] says it takes from its parent. Without it a reviewer's
+    /// `review_verdict` cannot be guarded, because the child's stack has nothing to ask.
     pub fn for_child(session: &str, workspace: &Path, inherited: Inherited) -> PluginHost {
         PluginHost::production(session, workspace).with_inherited(inherited)
     }
@@ -397,12 +394,9 @@ impl PluginHost {
         self
     }
 
-    /// Put the binary's built-in layer for `hook` at the bottom of this stack, once.
-    ///
-    /// The third door, after a declared tool's and a head's pane's: a hook the DAEMON asks on a
-    /// session's behalf is answered by a built-in where nobody above it has words, installed on the
-    /// first ask because a module costs seconds to compile. A built-in with a tool or a pane is left
-    /// to that door - seated for a session that asked, not for a hook nobody called.
+    /// Put the binary's built-in layer for `hook` at the bottom of this stack, once. It is the third
+    /// door, after a declared tool's and a head's pane's: a hook the DAEMON asks on a session's behalf is
+    /// answered by a built-in where nobody has words, installed on the first ask because a compile costs.
     fn install_builtin_for(&self, hook: &str) {
         if !self.install_builtin_panes {
             return;
@@ -470,10 +464,8 @@ impl PluginHost {
     }
 
     /// Put the binary's built-in layers that answer `nag_` at the bottom of this stack, so the
-    /// plan-check's default is a LAYER rather than a branch: today's answer is `b-todo`'s, and an
-    /// operator's layer above it is R127's every-free-head answer (`docs/plugin-extension-points-wide.md`
-    /// X13). Without this the hook would have nothing to ask and the whole door would be the
-    /// harness's own code wearing a hook's name.
+    /// plan-check's default is a layer rather than a branch: the answer is `b-todo`'s, and an operator's
+    /// layer above it is the project's own. Without this the hook would have nothing to ask.
     fn install_builtin_nags(&self) {
         let mut inner = self.lock();
         for builtin in letibot_builtins::table() {
@@ -498,10 +490,9 @@ impl PluginHost {
         }
     }
 
-    /// Put the binary's OWN `steer_`/`compact_` decisions on this stack: the built-in layers whose
-    /// hooks are neither a pane (a head's door) nor a tool (a project's declaration), so they were
-    /// installed at no door at all. A `nag_` built-in comes through
-    /// [`PluginHost::install_builtin_nags`].
+    /// Put the binary's own `steer_`/`compact_` decisions on this stack: the built-in layers whose hooks
+    /// are neither a pane (a head's door) nor a tool (a project's declaration), so they would otherwise
+    /// be installed at no door at all. A `nag_` built-in comes through [`PluginHost::install_builtin_nags`].
     fn install_builtin_deciders(&self) {
         for builtin in letibot_builtins::table() {
             let Ok(manifest) = Manifest::parse(builtin.manifest) else {
@@ -546,10 +537,8 @@ impl PluginHost {
         PaneDriver::attach(self, "", hub);
     }
 
-    /// Install the binary's built-in pane layers the first time a head comes through a door that
-    /// needs them - a module costs seconds to compile, and a session nobody attached to must not pay
-    /// for one. Every built-in pane is then listed by `/pane`, tool declared or not.
-    /// Whether a head asked for the built-in panes and their compile has not started yet.
+    /// Install the binary's built-in pane layers the first time a head comes through a door that needs
+    /// them: a module costs seconds to compile, and a session nobody attached to must not pay for one.
     fn builtins_due(&self) -> bool {
         self.install_builtin_panes
             && self
@@ -638,10 +627,9 @@ impl PluginHost {
         Some(resolved)
     }
 
-    /// One lifecycle event through this session's stack (X21): the acts a layer asked for, checked
-    /// against its manifest's `actions`, for the caller to perform. Nothing here can stop the event -
-    /// there is no field for it in a [`letibot_plugin::lifecycle::Answer`] - and the event has already
-    /// happened by the time anybody asks.
+    /// One lifecycle event through this session's stack: the acts a layer asked for, checked against its
+    /// manifest's `actions`, for the caller to perform. Nothing here can stop the event - there is no
+    /// field for it in a [`letibot_plugin::lifecycle::Answer`] - and the event has already happened.
     pub fn lifecycle(&self, hub: &Arc<Hub>, event: &str, input: &Value) -> Lifecycle {
         let mut out = Lifecycle::default();
         let Some(resolved) = self.ask(hub, &letibot_plugin::lifecycle::hook(event), input) else {
@@ -739,14 +727,9 @@ impl PluginHost {
         }
     }
 
-    /// One nag decision through the `nag_` hook: which eligible row the plan-check names, in what
-    /// words, and when it may come due again. `None` when nothing here answers the hook, the layer
-    /// trapped, or its answer was one the host refuses - and the harness's own check stands, because
-    /// a plan that stalled behind a broken layer is the failure this door must not have.
-    ///
-    /// The rules the answer is held to live in `letibot_plugin::nag::Out::decide`: a name outside
-    /// `eligible` refuses the whole answer, quiet is overridden at the repeat cap and while a queue
-    /// row is open, and `next_ms`'s bounds are the clock's to apply.
+    /// One nag decision through the `nag_` hook: which eligible row the plan-check names, in what words,
+    /// and when it may come due again. `None` when nothing answers or the answer is refused, and then the
+    /// harness's own check stands. The rules live in `letibot_plugin::nag::Out::decide`.
     pub fn nag(
         &self,
         hub: &Arc<Hub>,
@@ -785,9 +768,9 @@ impl PluginHost {
         }
     }
 
-    /// The turn-end decision through `steer_turn` (X14), with the host's two rules applied: the
-    /// continuation budget and an interrupted turn are refused here rather than trusted to the
-    /// layer, and a refusal says so. `None` is the harness's own decision.
+    /// The turn-end decision through `steer_turn`, with the host's two rules applied: the continuation
+    /// budget and an interrupted turn are refused here rather than trusted to the layer, and a refusal
+    /// says so. `None` is the harness's own decision.
     pub fn steer(
         &self,
         hub: &Arc<Hub>,
@@ -823,9 +806,9 @@ impl PluginHost {
         }
     }
 
-    /// One compaction's template through `compact_summary` (X15): the sections the record keeps, a
-    /// layer's own sentence, and what it pins. `None` is the harness's own record - no layer, a
-    /// trap, or an answer naming something this compaction did not offer.
+    /// One compaction's template through `compact_summary`: the sections the record keeps, a layer's
+    /// own sentence, and what it pins. `None` is the harness's own record - no layer, a trap, or an
+    /// answer naming something this compaction did not offer.
     pub fn compact(
         &self,
         hub: &Arc<Hub>,
@@ -2912,9 +2895,9 @@ impl letibot_tools::adjudicate::FloorHook for FloorHooks {
     }
 }
 
-/// The GitHub panel's `review_verdict` floor (K5), over one session's plugin host: a pull request
-/// is judged by the same policy a branch is. A word in and a word out because the registry holds the
-/// door and knows neither the tools nor the SDK - and this is the one impl the daemon installs.
+/// The GitHub panel's `review_verdict` floor, over one session's plugin host: a pull request is judged
+/// by the same policy a branch is. A word in and a word out because the registry holds the door and
+/// knows neither the tools nor the SDK, and this is the one impl the daemon installs.
 pub struct ReviewFloorHooks {
     slot: Arc<Mutex<Option<Arc<PluginHost>>>>,
     hub: Arc<Hub>,
@@ -2990,10 +2973,9 @@ impl PluginHost {
         out
     }
 
-    /// One output through this stack's `digest_` hooks: the first layer that answers, in the same
-    /// shape [`crate::plugins::DigestHooks`] hands the runtime. `None` when nothing answers, and
-    /// then the bytes budgeted are the tool's own - a layer that traps or answers a digest the
-    /// contract refuses is said once and falls to the layer below it.
+    /// One output through this stack's `digest_` hooks: the first layer that answers, in the shape
+    /// [`crate::plugins::DigestHooks`] hands the runtime. `None` when nothing answers, and then the
+    /// bytes budgeted are the tool's own; a layer that traps is said once and falls to the one below.
     pub fn digest(
         &self,
         hub: &Arc<Hub>,
@@ -3050,11 +3032,9 @@ impl PluginHost {
         None
     }
 
-    /// One reviewer's brief through this stack's `review_brief` layer (X18), or `None` when no layer
-    /// here answers it - and then the host's own text stands, which is the whole of the fallback.
-    ///
-    /// A trap or an answer outside the contract is said once and falls to the native text: a review
-    /// whose brief could not be composed would be a review that never starts.
+    /// One reviewer's brief through this stack's `review_brief` layer, or `None` when no layer here
+    /// answers it, and then the host's own text stands. A trap or an answer outside the contract is said
+    /// once and falls to the native text: a review with no brief would be a review that never starts.
     pub fn review_brief(
         &self,
         hub: &Arc<Hub>,
@@ -3118,9 +3098,9 @@ impl PluginHost {
         }
     }
 
-    /// The rung a `review_verdict` layer requires of a verdict (X18), or `None` when nothing here
-    /// answers. A trap or an answer the contract refuses is `NeedsHuman`: a policy that cannot
-    /// answer has not said the branch may land, and a person is exactly who a broken floor means.
+    /// The rung a `review_verdict` layer requires of a verdict, or `None` when nothing here answers. A
+    /// trap or an answer the contract refuses is `NeedsHuman`: a policy that cannot answer has not said
+    /// the branch may land, and a person is exactly who a broken floor means.
     pub fn review_floor(
         &self,
         hub: &Arc<Hub>,
@@ -3156,10 +3136,9 @@ impl PluginHost {
         }
     }
 
-    /// A worktree child's brief through this stack's `brief_worktree` layer (X19). The answer is
-    /// checked against the seat words the host can narrow: a class it cannot place is said once and
-    /// the seat stands as it was asked, because a dropped word nobody noticed is a seat nobody can
-    /// say the shape of.
+    /// A worktree child's brief through this stack's `brief_worktree` layer. The answer is checked
+    /// against the seat words the host can narrow: a class it cannot place is said once and the seat
+    /// stands as it was asked, because a dropped word nobody noticed is a seat nobody can describe.
     pub fn child_brief(
         &self,
         hub: &Arc<Hub>,
@@ -3194,8 +3173,8 @@ impl PluginHost {
     }
 }
 
-/// Whether `hook` is one the DAEMON asks a session's stack for, which is what makes a built-in
-/// layer its fallback. The hooks themselves say it, so this cannot drift from the plugins' work.
+/// Whether `hook` is one the daemon asks a session's stack for, which is what makes a built-in layer
+/// its fallback. The hooks themselves say it, so this cannot drift from the plugins' work.
 fn daemon_asks(hook: &str) -> bool {
     letibot_plugin::review::is_review_hook(hook) || hook == letibot_plugin::brief::WORKTREE
 }
