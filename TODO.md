@@ -49,6 +49,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
+| R175 | The plugin extension points' review findings: a session layer can answer a tool call past the gate, and the hosts cost and diverge | Code work | all of it: the eight items in order, `docs/review/2026-11-10-plugin-extension-points.md` |
 | R165 | Rooms for orchestration (3/6): a question goes to the owner, not the room | Needs the operator | built (scope asks to the owner, status posts folded); left: the counters read over real traffic, and a live run against a coordinator older than protocol 11 |
 | R166 | Rooms for orchestration (4/6): kinds, budgets and a stopping rule for agent-only threads | Needs the operator | built (say kinds, per-sender budget, depth cap, ranked digest); left: the numbers over real traffic, and no pane groups lines by kind |
 | R167 | Rooms for orchestration (5/6): peer text is a claim with a source, never an instruction | Needs the operator | built (impersonation flag, evidence refs, claim checker, red-team set); left: the `/rooms` pane does not draw the two flags, and a `decision` claim is not checked against an effect log |
@@ -266,6 +267,25 @@ Is that empty `jobs_open` itself a daemon bug? **Not in that shape.** The two fa
 Item 5, its own commit. The channel pushed a `job_ended` for EVERY job of every held package, which is noise: a package reads its own job results. It now pushes one only when the daemon says the session is PARKED on that job - idle (`Head::word`), and the handle in `Head::parked_on_jobs` (`State::activity`'s `Waiting::Job`s) - which is R154's case, a package whose turn ended waiting on a job that then stuck (`crates/bridge/src/push.rs`). Its turn ends, asks, failures and provider trouble push exactly as before, and the seat's OWN jobs are another door (`SeatJobs::settle` → `push::seat_job_event`, `meta.source: seat`) that always pushes its end. Tests: `crates/bridge/tests/push_job_ends.rs` - `a_package_job_ending_under_a_running_turn_is_not_pushed`; `crates/bridge/tests/push_work.rs` - `an_idle_session_with_an_open_job_is_one_event_and_the_jobs_exit_is_another`, which now parks the session on the job before it settles; and `crates/bridge/tests/seat_todo.rs` - `a_seat_jobs_end_settles_its_row_and_pushes_one_job_ended` holds the seat's own job.
 
 ---
+
+## R175 - The plugin extension points' review findings: a session layer can answer a tool call past the gate, and the hosts cost and diverge
+
+**Status:** open, filed 2026-11-10 from the adversarial review of R150 at `5ff5707e`. left: all of it. The record, with every report verbatim and the decisions, is `docs/review/2026-11-10-plugin-extension-points.md`.
+
+In order:
+
+1. Security. A session-scope layer can answer `on_tool_call` and the gate never sees the call: `NOT_A_SESSIONS` (`crates/plugins/src/stack.rs:127`) omits it and `Patch::Done` returns before the gate (`crates/tools/src/runtime.rs:2039`). Make a session layer's `answer` a refusal, call `Manifest::admit_for` at the admit sites (it has no production caller), list the layer's hooks and capabilities on the load card, and fix the `plugin-sdk/src/tool_call.rs:2` header with a test of the effect.
+2. Bound `on_tool_result`'s payload after the spill (`digest_`'s `checked`, or re-spill).
+3. One shared `paths` module; an empty `XDG_CONFIG_HOME` must resolve the same in the head and the trust book as in the daemon and the bridge.
+4. `skills/plugin-hooks/SKILL.md`: the kind count, fuel instead of timeout, `push_`/`card_` scaffold templates.
+5. One shared rano loader crate: a process-wide compiled-module cache keyed by sha256, one `Engine` per process, one admission path for daemon, head and bridge. Build the head's host off the UI thread. Skip the call when only a native-copy built-in answers.
+6. Refusals go to a queue the head drains into its notice line; the bridge dedupes per message.
+7. Call modules outside the session lock; key cards by row id plus a content hash, evict LRU.
+8. Split `PluginHost`; one `install_where` for the five install loops.
+
+Deferred: `command_` verbs beyond `say` and `add_todo`; the design doc stops promising them meanwhile.
+
+**Done when**: a session layer answering `on_tool_call` for `bash` is refused and the gate sees the call; an `on_tool_result` answer over the spill budget is cut; the head with `XDG_CONFIG_HOME=` reads the same plugin dir as the daemon; a head's second host build compiles no built-in.
 
 ## R162 - A granted directory does not cover what is under it, and every subagent asks again
 
