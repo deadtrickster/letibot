@@ -1,15 +1,6 @@
-//! A held session's events as channel notifications: what `leticode-wait` told an orchestrator,
-//! pushed, so a Claude Code session needs no waiter of its own.
-//!
-//! A notification is recorded in a per-session outbox and leaves it only when a client takes it,
-//! so an event that happens while nobody is reading - a client between connections, a bridge
-//! restarted - is said once when the channel comes back, and never twice.
-//!
-//! Every notification is offered to the `push_channel` layer first (X25): the bridge's own answer is
-//! the fallback, a layer may silence or reword one, and an `ask` and a `failed` are never silenced.
-//! The room's own lines go through the same door ([`room_push`]), which is where R117's *every room
-//! message or only addressed* became a rule a project writes. The queue follower's moves and the
-//! seat's own nag are not a package's events and are pushed as they always were.
+//! A held session's events as channel notifications, so a Claude Code session needs no waiter of its
+//! own. A notification is recorded in a per-session outbox and leaves it only when a client takes it,
+//! and each is offered to the `push_channel` layer first - an `ask` and a `failed` are never silenced.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -26,9 +17,8 @@ use letibot_plugins::Stack;
 use crate::head::{Attention, Entry, Head, LimitNews};
 
 /// How long one `wait` blocks before the watcher looks again. It must outlast
-/// [`crate::head::START_GRACE`]: a `wait` that starts on a session which is ALREADY quiet answers
-/// `Timeout` until that grace is over, so a shorter tick would never report a turn end that did not
-/// begin during the wait. Three seconds of wait plus a second's sleep was the old loop's cadence.
+/// [`crate::head::START_GRACE`]: a `wait` that starts on a session which is already quiet answers
+/// `Timeout` until that grace is over, so a shorter tick would never report a turn end at all.
 const TICK: Duration = Duration::from_secs(4);
 
 /// How many keys the outbox remembers as said. A key is what stops the same fact being said
@@ -63,11 +53,9 @@ struct Kept {
     pending: VecDeque<Record>,
 }
 
-/// A held session's channel: the records, the client they go to, and the place they are kept.
-///
-/// One per session and not one per client. A watcher records whether or not anybody is reading,
-/// which is the whole of how an event that happens during a reconnect survives it - the record
-/// waits, and [`Outbox::attach`] is what a client that comes back is handed.
+/// A held session's channel: the records, the client they go to, and the place they are kept. One per
+/// session and not one per client: a watcher records whether or not anybody is reading, which is how an
+/// event that happens during a reconnect survives - the record waits, and a client is handed it.
 #[derive(Debug)]
 pub struct Outbox {
     path: PathBuf,
@@ -181,12 +169,9 @@ pub fn watch(head: &Arc<Head>, rules: Arc<Rules>) -> Arc<Outbox> {
     outbox
 }
 
-/// The push rule (X25): the `push_channel` layer of this folder's stack, and the bridge's own answer
-/// when there is nobody to ask.
-///
-/// A layer that traps, answers something unreadable or passes is the bridge's own rule, said once on
-/// stderr - a channel that goes quiet because a layer broke is a session nobody hears, which is the
-/// one failure this hook must not have.
+/// The push rule: the `push_channel` layer of this folder's stack, and the bridge's own answer when
+/// there is nobody to ask. A layer that traps, answers something unreadable or passes is the bridge's
+/// rule, said once on stderr - a channel that goes quiet because a layer broke is a session nobody hears.
 pub struct Rules {
     stack: Option<Arc<Stack>>,
     /// A layer's refusal said once, so a broken layer is not a line per event.
@@ -348,7 +333,7 @@ fn run(weak: Weak<Head>, outbox: Arc<Outbox>, rules: Arc<Rules>) {
             .map(|n| limit_event(&head, &n));
         last_limit = limits;
         let event = event(&head, &attention);
-        // What this session is PARKED on, read before the head is dropped: a job's end is news to
+        // What this session is parked on, read before the head is dropped: a job's end is news to
         // a package sitting on it, and to nobody else (see the ring loop below).
         let parked = head.parked_on_jobs();
         let who = format!("leticode `{}` ({})", head.session, head.worktree.display());
@@ -372,9 +357,9 @@ fn run(weak: Weak<Head>, outbox: Arc<Outbox>, rules: Arc<Rules>) {
             .iter()
             .filter(|e| e.kind == "job" && e.state == "ended")
         {
-            // A package reads its own job results, so one `job_ended` per job of every held
-            // package is the seat's noise: it is pushed only to a package parked on that job -
-            // R154's case, a session whose turn ended waiting on a job that then stuck.
+            // A package reads its own job results, so one `job_ended` per job of every held package
+            // is the seat's noise: it is pushed only to a package parked on that job - a session whose
+            // turn ended waiting on a job that then stuck.
             if word != "idle" || !parked.iter().any(|handle| handle == &e.name) {
                 continue;
             }
@@ -491,7 +476,7 @@ pub fn job_event(who: &str, session: &str, e: &Entry) -> (String, Value) {
     )
 }
 
-/// A SEAT's own job ending (`seat_job_start`): the same frame a held session's job change uses,
+/// A seat's own job ending (`seat_job_start`): the same frame a held session's job change uses,
 /// with `source: seat` so one client reads one kind of event and `meta.event` says which. Keyed by
 /// the job and its state, so one settlement is one message.
 pub fn seat_job_event(seat: &str, job: &letibot_tokencore::store::SeatJob) -> (String, Value) {
@@ -826,7 +811,7 @@ mod rules_tests {
         Arc::new(stack)
     }
 
-    /// R117's *only the addressed ones*, as the rule it became: the built-in layer says today's
+    /// Only the addressed ones, as the rule it became: the built-in layer says the bridge's own
     /// answer, and a bridge with no layer at all says the same two things.
     #[test]
     fn addressed_only_is_a_push_rule() {
@@ -1031,8 +1016,8 @@ mod tests {
         );
     }
 
-    /// A held job that was killed did not finish. The channel's notice says so, because a reader of
-    /// the channel reads `killed by …` the way the model read it — as an ending (R160).
+    /// A held job that was killed did not finish. The channel's notice says so, because a reader of the
+    /// channel reads `killed by …` the way the model read it: as an ending.
     #[test]
     fn a_killed_jobs_channel_notice_says_its_output_is_partial() {
         let with = |state: &str| Entry {

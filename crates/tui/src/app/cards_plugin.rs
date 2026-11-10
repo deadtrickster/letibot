@@ -1,10 +1,6 @@
 //! The head's cards, asked of the `cards` layer when a layer on disk answers `card_`, and drawn from
-//! the row's facts and the shared readers otherwise: one ask per transcript row, kept by its id.
-//!
-//! A row's card is drawn from the facts it was delivered with when it has them - so a `notice_`
-//! layer that rewords the sentence cannot take the card with it (X22) - and from the readers
-//! otherwise. Both are `letibot_plugin::card`'s, the same functions the built-in `cards` layer
-//! answers with: which of the three drew a line is invisible on the screen, which is the point.
+//! the row's facts and the shared readers otherwise: one ask per transcript row, kept by its id. Both
+//! are `letibot_plugin::card`'s own functions, so which of the two drew a line is invisible.
 
 use super::sessions_pane::Host;
 use super::*;
@@ -60,10 +56,9 @@ impl<'a> Cards<'a> {
         }
     }
 
-    /// The card for each part of the row, in the order the head draws them: the layer's answer where
-    /// it gives one, the row's typed facts for the part they are about, and the readers - the same
-    /// functions the built-in layer is built from - for everything else. Never empty for a part: a
-    /// notice no reader knows draws the generic line.
+    /// The card for each part of the row, in the order the head draws them: the layer's answer where it
+    /// gives one, the row's typed facts for the part they are about, and the readers for everything
+    /// else. Never empty for a part: a notice no reader knows draws the generic line.
     pub(crate) fn lines(&self, parts: &[&str]) -> Vec<Card> {
         let answered = self.answered(parts);
         parts
@@ -71,7 +66,7 @@ impl<'a> Cards<'a> {
             .enumerate()
             .map(|(k, part)| match answered.as_ref().and_then(|a| a.get(k)) {
                 Some(Some(lines)) => card_of(lines),
-                // The facts describe the delivery the row OPENS with, so they are the first part's.
+                // The facts describe the delivery the row opens with, so they are the first part's.
                 _ if k == 0 => self.facts().unwrap_or_else(|| self.readers(part)),
                 _ => self.readers(part),
             })

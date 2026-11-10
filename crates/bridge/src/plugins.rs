@@ -1,11 +1,6 @@
-//! The bridge's plugin stack (`docs/plugin-extension-points-wide.md` X25): the layers this folder
-//! carries in its user and project scopes, the binary's own at the bottom, and the two hooks they
-//! answer here.
-//!
-//! A layer that declares a `[[tools]]` is listed as an MCP tool beside the native ones - from its
-//! manifest, so the list costs no engine - and called through `tool_<name>`. `push_channel` is the
-//! other half and lives in [`crate::push`]. The stack is built once, on the first call that needs
-//! it: a bridge whose folder has no layer and whose client wants none pays for no JIT.
+//! The bridge's plugin stack: the layers this folder carries in its user and project scopes, the
+//! binary's own at the bottom, and the two hooks they answer here. A declared `[[tools]]` is listed as
+//! an MCP tool from its manifest alone and called through `tool_<name>`, and the stack is built once.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -64,12 +59,9 @@ impl Module for RanoModule {
     }
 }
 
-/// What this bridge's layers came to: a stack built once, and the fact that it was tried - a folder
-/// with nothing to load must not pay for the discovery on every call.
-///
-/// `from_disk` is off unless the server was started as one ([`crate::plugins::Layers::of_disk`]): a
-/// test's bridge answers with the native rule and builds no engine, so no suite reads the operator's
-/// `~/.config/letibot/plugins` by accident.
+/// What this bridge's layers came to: a stack built once, and the fact that it was tried, because a
+/// folder with nothing to load must not pay for the discovery on every call. `from_disk` is off unless
+/// the server was started as one, so a test's bridge builds no engine and reads no operator config.
 #[derive(Default)]
 pub struct Layers {
     from_disk: bool,
@@ -105,10 +97,9 @@ impl Layers {
     }
 }
 
-/// The stack for one folder: the user's `~/.config/letibot/plugins`, the project's
-/// `.letibot/plugins`, and this binary's own layers at the bottom. The two refusals a person is owed
-/// (a layer that would not load, a pin whose bytes moved) are said on stderr rather than swallowed,
-/// because a bridge has no head to draw them in.
+/// The stack for one folder: the user's `~/.config/letibot/plugins`, the project's `.letibot/plugins`,
+/// and this binary's own layers at the bottom. A layer that would not load and a pin whose bytes moved
+/// are said on stderr rather than swallowed, because a bridge has no head to draw them in.
 pub fn production(workspace: &Path) -> Option<Stack> {
     let mut stack = Stack::discover(
         None,
@@ -149,12 +140,8 @@ fn user_config_dir() -> Option<PathBuf> {
 }
 
 /// The `tool_` layers of the user and project scopes, as MCP tools, in the order the stack resolves
-/// them: a name two layers declare is the higher one's. Read from the manifests alone - the same
-/// door the daemon composes a session's prompt through - so `tools/list` never compiles a module.
-///
-/// A tool may not take a native tool's name: the daemon's tools are how a client is driven and the
-/// bridge's list is one namespace, so a layer that asks for `leticode_start` is dropped here and
-/// said once rather than shadowing what the client already has.
+/// them: a name two layers declare is the higher one's. Read from the manifests alone, so `tools/list`
+/// never compiles a module, and a layer taking a native tool's name is dropped here and said once.
 pub fn tools(workspace: &Path, native: &[String]) -> Vec<Value> {
     tools_in(workspace, user_config_dir().as_deref(), native)
 }
@@ -216,10 +203,8 @@ pub fn names(workspace: &Path, native: &[String]) -> Vec<String> {
 }
 
 /// Run one declared tool through the stack: the same `tool_` input the daemon builds, with no looks.
-///
-/// The bridge has no session view - no backend, no boundary of its own - so a layer that asks for a
-/// look is refused in words rather than answered off this process's disk. A tool that needs one
-/// works in the daemon, and the refusal says so.
+/// The bridge has no session view of its own, so a layer that asks for a look is refused in words
+/// rather than answered off this process's disk.
 pub fn call(stack: &Stack, name: &str, args: &Value, workspace: &Path) -> Result<Value, String> {
     let hook = format!("tool_{name}");
     let input = json!({
@@ -369,7 +354,7 @@ mod tests {
         assert!(tools.iter().any(|t| t["name"] == "leticode_start"));
     }
 
-    /// A user-scope layer is read through the same door - the OTHER root a person writes a layer in.
+    /// A user-scope layer is read through the same door - the other root a person writes a layer in.
     #[test]
     fn a_user_scope_layer_is_listed_too() {
         let dir = Dir::new("user");
@@ -402,7 +387,7 @@ mod tests {
         );
     }
 
-    /// A declared tool is CALLED through the stack, in the input shape the daemon builds.
+    /// A declared tool is called through the stack, in the input shape the daemon builds.
     #[test]
     fn a_listed_tool_is_called_through_the_stack() {
         let dir = Dir::new("called");
