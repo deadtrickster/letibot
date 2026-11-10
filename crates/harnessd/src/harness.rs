@@ -1470,7 +1470,10 @@ impl Harness {
             }
         };
         if let Some(text) = text {
-            *payload = text;
+            // A layer's words are held to the budget the spill spent on this call: the payload it
+            // saw was already bounded, so an answer that grows it is a plugin spending context.
+            let cap = self.runtime.inline_cap(&call.name, &asked.arguments);
+            *payload = crate::plugins::bounded_result(text, cap);
         }
         for arm in &out.arm {
             let said = self.arm_plugin_monitor(arm);

@@ -1772,6 +1772,21 @@ impl ToolRuntime {
         self
     }
 
+    /// The most bytes this call's output may occupy inline — the same policy [`Spiller::apply`]
+    /// spends at the spill, asked again by a caller that amends the payload AFTER it has been
+    /// spilled (`on_tool_result`), so a layer cannot grow what the budget had already bounded.
+    pub fn inline_cap(&self, name: &str, args: &Value) -> Option<usize> {
+        self.spiller
+            .budget
+            .max_inline_bytes(&crate::spill::SpillContext {
+                tool: name,
+                args,
+                // The spilled payload is what a layer sees, so the budget is asked with the size it
+                // already had rather than with what the layer wants to add to it.
+                bytes: 0,
+            })
+    }
+
     pub fn with_gate(mut self, gate: Box<dyn Gate>) -> Self {
         self.gate = std::sync::Mutex::new(gate);
         self

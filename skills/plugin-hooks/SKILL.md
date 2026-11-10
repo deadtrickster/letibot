@@ -417,6 +417,10 @@ writing.
 - **`on_tool_call` can never admit anything.** It runs before the gate: a rewritten call is what the
   gate then adjudicates, the tool's name is not yours to change, and there is no field that says
   *allow*. Narrow, rewrite, refuse, answer — that is the whole vocabulary.
+- **An `answer` stands in for the tool's result, so the gate never sees the call** — which is why
+  only a layer the operator vouched for may give one: a built-in, or a layer whose bytes are pinned.
+  From a session's own or an unpinned layer it is refused, and the call goes to the gate as though
+  the layer had passed.
 - **`adjudicate_floor` can never admit either, and a session cannot write one.** It tightens only,
   and a session layer that declares it is refused — reviewed policy is the project's or the
   operator's.

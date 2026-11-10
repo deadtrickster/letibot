@@ -1601,6 +1601,15 @@ impl PluginHost {
             }
         }
 
+        // What a person is being asked to trust. The hooks are what the layer then answers, and the
+        // capabilities are what it may reach, so the card names both rather than a count.
+        let answers: Vec<String> = cand.manifest.hooks.clone();
+        let wants: Vec<String> = cand
+            .manifest
+            .capabilities
+            .iter()
+            .map(|c| c.to_string())
+            .collect();
         // A pass: the live stack gets the candidate, and every screen is brought into line.
         self.lock().stack.apply(cand).map_err(|why| {
             Refused::new(
@@ -1627,12 +1636,22 @@ impl PluginHost {
         let pin_note = self.settle_pin(hub, name, &dir);
         Ok(format!(
             "loaded `{name}` as layer `{id}` — the shadow gate passed and it is answering now, with \
-             no restart.\n\n{}\n\npanes it draws: {}{}",
+             no restart.\n\n{}\n\npanes it draws: {}\n\nit answers: {}\n\nit may: {}{}",
             said.join("\n"),
             if mine.is_empty() {
                 "none (a layer that answers no pane hook)".to_string()
             } else {
                 mine.join(", ")
+            },
+            if answers.is_empty() {
+                "nothing".to_string()
+            } else {
+                format!("`{}`", answers.join("`, `"))
+            },
+            if wants.is_empty() {
+                "nothing (no capability declared)".to_string()
+            } else {
+                wants.join(", ")
             },
             match &pin_note {
                 Some(note) => format!("\n\n{note}"),
@@ -2042,7 +2061,10 @@ fn accepted(
             }
             tool_call::Verdict::Refuse(why) => format!("it refuses the call: {why}"),
             tool_call::Verdict::Answer(text) => {
-                format!("it answers the call without running it: {text}")
+                format!(
+                    "it answers the call without running it: {text} — the gate never sees that \
+                     call, so this host takes the answer from a pinned layer or a built-in only"
+                )
             }
         });
     }
@@ -2626,6 +2648,12 @@ impl PluginHost {
         }
     }
 
+    /// Whether a person vouched for this layer's bytes: a built-in, or a placed layer matching a
+    /// recorded pin. Everything else - a session's own layer above all - is the governed agent's.
+    fn vouched(&self, id: &str) -> bool {
+        self.layer(id).is_some_and(|l| l.trusted)
+    }
+
     /// A look the gate would not run, said once - per layer, program and reason, since the sentence
     /// names all three and is its own dedup key. A refusal repeated on every firing is how a model
     /// learns to skip them; one that changes is news again.
@@ -2731,11 +2759,27 @@ impl PluginHost {
             })
         };
         match serde_json::from_value::<ToolCallOut>(answer.clone()) {
-            Ok(out) => {
+            Ok(mut out) => {
                 if let letibot_plugin::tool_call::Verdict::Rewrite(args) = out.verdict()
                     && let Err(why) = only_smaller(&call.arguments, args)
                 {
                     return refuse(self, why);
+                }
+                // An `answer` stands in for the tool's result and the gate never sees the call, so
+                // only a layer the operator vouched for may give one: dropping it sends the call
+                // on to the gate as though the layer had passed, and says why once.
+                if matches!(out.verdict(), letibot_plugin::tool_call::Verdict::Answer(_))
+                    && !self.vouched(&by)
+                {
+                    out.answer = None;
+                    let said = format!(
+                        "plugin layer `{by}` answered this call, and an answer stands in for a \
+                         tool's result with the gate never seeing the call: that is a pinned \
+                         layer's or a built-in's to do, so `{}` runs and meets the gate. Pin the \
+                         layer's bytes and load it again if the answer was meant to stand",
+                        call.name
+                    );
+                    self.complain(hub, &by, &said);
                 }
                 Some(Answered { out, by })
             }
@@ -2820,6 +2864,32 @@ fn only_smaller(was: &serde_json::Value, now: &serde_json::Value) -> Result<(), 
         }
         _ => Err("its rewrite changes the shape of the arguments, and a layer can only make a call smaller".into()),
     }
+}
+
+/// A layer's amended result, held to the budget the spill already spent on the call: the payload
+/// the layer saw was bounded, so an `append` or a rewrite that grows it is a plugin spending the
+/// session's context. `None` is a runtime with no budget, which is no opinion and no cut.
+pub fn bounded_result(text: String, cap: Option<usize>) -> String {
+    let Some(cap) = cap else { return text };
+    if text.len() <= cap {
+        return text;
+    }
+    let note = format!(
+        "\n\n[harness] a plugin layer's answer was cut here: it ran past the {cap} bytes a tool's \
+         output is given inline, and a layer does not get to spend more of this session's context \
+         than the call it answered"
+    );
+    // A budget too small to say why is still a budget: the bound is the promise and the line is
+    // the courtesy, so a note longer than the cap loses to the bound.
+    let room = cap.saturating_sub(note.len());
+    let mut head = if cap <= note.len() { cap } else { room };
+    while head > 0 && !text.is_char_boundary(head) {
+        head -= 1;
+    }
+    if cap <= note.len() {
+        return text[..head].to_string();
+    }
+    format!("{}{note}", &text[..head])
 }
 
 /// The runtime's `on_tool_call`, backed by one session's plugin host. A slot and not the host

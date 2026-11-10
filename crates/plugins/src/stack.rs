@@ -778,6 +778,8 @@ impl Stack {
         crate::engine_for(&manifest.module)?;
         let seen =
             fingerprint(&wasm).map_err(|why| format!("{why} — apply needs the built module"))?;
+        // The module first, because `admit_for` compares the exports to the declared hooks, and the
+        // standing at the same time because its chat-feed rule is decided by the pin.
         let module = match c.replayed(&seen.sha256) {
             Some(module) => module,
             None if c.was_replayed() => {
@@ -789,8 +791,15 @@ impl Stack {
             None => Arc::from(self.loader.load(&wasm, &manifest.capabilities)?),
         };
         let hooks = module.hooks();
+        let manifest_sha256 = sha256_file(&dir.join(MANIFEST)).unwrap_or_else(|_| String::new());
+        // Decided against the bytes that are there NOW: a rebuild is a different layer to the pin
+        // book, and this is the standing the scope rules and `Layer::trusted` are both decided by.
+        let (trusted, pin) = self.standing_of(&dir, &seen.sha256, &manifest_sha256);
+        // `admit` is the contract and the exports; `admit_for` adds the rules about the LAYER - a
+        // session may not answer the gate's floor or a review of its own branch, and the `chat` feed
+        // is a pinned layer's or a built-in's. This is the door every new or rebuilt layer takes.
         manifest
-            .admit(&hooks)
+            .admit_for(&hooks, c.scope, trusted)
             .map_err(|why| format!("{}: {why}", dir.display()))?;
         let wired = Wired {
             module: Some(module),
@@ -805,10 +814,6 @@ impl Stack {
                 // A rebuild is a different layer to the pin book: the pin was about the old
                 // bytes, so this one is decided again - and if it was pinned, the fact that the
                 // pin no longer holds is news the next `refresh_trust` says.
-                let manifest_sha256 =
-                    sha256_file(&dir.join(MANIFEST)).unwrap_or_else(|_| String::new());
-                let (trusted, pin) =
-                    self.standing_of(&dir, &self.layers[i].sha256, &manifest_sha256);
                 self.layers[i].manifest_sha256 = manifest_sha256;
                 self.layers[i].trusted = trusted;
                 self.layers[i].pin = pin;
@@ -816,9 +821,6 @@ impl Stack {
             }
             None => {
                 let id = self.next_id(c.scope);
-                let manifest_sha256 =
-                    sha256_file(&dir.join(MANIFEST)).unwrap_or_else(|_| String::new());
-                let (trusted, pin) = self.standing_of(&dir, &seen.sha256, &manifest_sha256);
                 let disabled = dir.join(DISABLED_MARK).is_file();
                 let layer = Layer {
                     id: id.clone(),

@@ -403,7 +403,9 @@ fn lib_rs(name: &str, purpose: &str, hook: &str, kind: &str) -> String {
              \x20   }",
             "**It runs before the gate and can never admit anything.** A rewrite is what the gate then\n\
              adjudicates, the tool's name is not something this answer can change, and there is no\n\
-             \x20field by which a layer says *allow*.",
+             \x20field by which a layer says *allow*. An `answer` skips the gate because it stands in for\n\
+             \x20the result, so this host takes one only from a PINNED layer: pin it (`/plugin trust`)\n\
+             \x20or the call goes to the gate and runs.",
         ),
         "on_tool_result" => (
             "ToolResultIn",

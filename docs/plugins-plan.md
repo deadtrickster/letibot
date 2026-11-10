@@ -215,7 +215,9 @@ read.
 Runs after the model proposes a call and before the gate, so a rewritten call is still adjudicated. The
 tool's NAME is not a field of the answer, and no verdict says *allow*. An `answer` carries one line above its
 payload, `[note] answered by plugin <name> (<scope>); the tool did not run`, because a model that cannot tell
-a layer's answer from a tool's has been told something untrue.
+a layer's answer from a tool's has been told something untrue. An `answer` is also the one verdict that skips
+the gate, so only a built-in or a PINNED layer's is taken: from a session's own or an unpinned layer it is
+refused and the call goes on to the gate as though the layer had passed.
 
 ### 4.2 `on_tool_result`: what happens after a call
 

@@ -28,14 +28,21 @@ fn host(tmp: &Path) -> Arc<PluginHost> {
     }
     // The builder is never reached: `discover` loads the module that is already there, and the
     // gate's step 1 - the only caller of a `Builder` - needs `plugin build` or `plugin load`.
-    Arc::new(PluginHost::discover(
-        "s-plugin-engine",
-        tmp.join("workspace"),
-        Some(scope),
-        None,
-        Arc::new(RanoLoader),
-        Arc::new(CargoBuilder),
-    ))
+    // Pinned, because an `answer` stands in for a tool's result without the gate seeing the call:
+    // that is a layer the operator vouched for, and this fixture is about the ABI, not the policy.
+    let trust = letibot_plugins::Trust::in_memory();
+    trust.pin("engine", &dest).expect("a pin on the fixture");
+    Arc::new(
+        PluginHost::discover(
+            "s-plugin-engine",
+            tmp.join("workspace"),
+            Some(scope),
+            None,
+            Arc::new(RanoLoader),
+            Arc::new(CargoBuilder),
+        )
+        .with_trust(trust),
+    )
 }
 
 fn tempdir(what: &str) -> PathBuf {

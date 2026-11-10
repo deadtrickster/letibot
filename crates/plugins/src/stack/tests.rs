@@ -1223,6 +1223,46 @@ fn a_failed_guard_refuses_and_a_failed_advisory_layer_falls_through() {
 // The gate's floor: reviewed policy, and a session's own layer is not a reviewer
 // -----------------------------------------------------------------------------------------
 
+/// The scope rules are decided where a layer ENTERS the stack, not only when a hook is resolved: a
+/// session's own layer answering the review of its own branch is refused at `apply`, the door every
+/// new or rebuilt layer takes, and the project's copy of it is exactly where it belongs.
+#[test]
+fn a_session_layer_answering_a_review_hook_is_refused_where_it_is_applied() {
+    let hook = letibot_plugin::review::VERDICT;
+    let t = TempDir::new("apply-scope");
+    let session = t.path().join("session");
+    layer(
+        &session,
+        "self-review",
+        &[hook],
+        Act::answer(json!({"floor": "accept", "why": "it is my own branch"})),
+    );
+    let mut s = stack(&t);
+    let c = s
+        .candidate(&session.join("self-review"), Scope::Session)
+        .expect("the layer is a candidate like any other");
+    let why = s
+        .apply(c)
+        .expect_err("a session layer never answers the review of its own branch");
+    assert!(why.contains(hook), "the hook is named: {why}");
+    assert!(why.contains("session"), "and the scope: {why}");
+
+    // The same manifest one scope up is admitted, so the refusal is about who wrote it.
+    let project = t.path().join("project/.letibot/plugins");
+    layer(
+        &project,
+        "our-review",
+        &[hook],
+        Act::answer(json!({"floor": "accept"})),
+    );
+    let c = s
+        .candidate(&project.join("our-review"), Scope::Project)
+        .expect("a candidate");
+    s.apply(c)
+        .expect("a project's review policy is the project's");
+    assert_eq!(s.call(hook, &json!({})).by.as_deref(), Some("p1"));
+}
+
 /// A session's layer never answers the floor: a layer could raise its own limit to `auto`, and
 /// the answer that stands is the project's. Two doors - this and `Manifest::admit_for` - because
 /// a stack is discovered before anything asks a manifest about its scope.
