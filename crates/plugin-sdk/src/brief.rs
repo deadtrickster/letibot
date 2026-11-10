@@ -1,7 +1,6 @@
-//! `brief_` - what a child is told and how narrowly it is seated (`docs/plugin-extension-points-wide.md`
-//! X19). The hook shapes the brief a worktree child starts from, and may only NARROW what that
-//! child holds: a layer can drop a class of its tools and cannot add one, name a role, or move the
-//! child. Placement, depth and the perimeter are the host's, and there is no field for any of them.
+//! `brief_` - what a child is told, and how narrowly it is seated. The hook shapes the brief a
+//! worktree child starts from and may only narrow what that child holds: a class of its tools can
+//! be dropped and never added, while placement, depth and the perimeter stay the host's.
 
 /// The family. A hook is exported as `<family><name>`, as `digest_` and `link_` are.
 pub const PREFIX: &str = "brief_";
@@ -144,7 +143,7 @@ mod tests {
         );
     }
 
-    /// The plan's own shape: words added to the brief and a tool dropped from the seat by class.
+    /// Words are added to the brief, and a tool is dropped from the seat by class.
     #[test]
     fn the_plans_example_is_this_type() {
         let out: Answer =

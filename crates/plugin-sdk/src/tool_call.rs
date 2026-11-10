@@ -47,8 +47,7 @@ impl ToolCallIn {
     }
 
     /// The synthetic input `plugin test` and the shadow gate use when a session has none
-    /// recorded: the plan's own example, the third monitor on a pull request that is already
-    /// watched.
+    /// recorded: a third monitor on a pull request that is already watched.
     pub fn synthetic() -> ToolCallIn {
         ToolCallIn::new(
             crate::Call::new(
@@ -85,8 +84,8 @@ pub enum Verdict<'a> {
 /// said nothing with these fields* are one thing and the stack's `pass` marker is another.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ToolCallOut {
-    /// Run it as it is. The plainest way to say *not my business*, and the same meaning as
-    /// answering `None` through the ABI.
+    /// Run it as it is. The plainest way to say not my business, and the same meaning as answering
+    /// `None` through the ABI.
     #[serde(default, skip_serializing_if = "is_false")]
     pub pass: bool,
     /// The arguments to run it with instead.

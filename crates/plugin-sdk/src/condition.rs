@@ -212,7 +212,7 @@ mod tests {
         let as_json = serde_json::to_value(&out).expect("serialises");
         assert_eq!(as_json["look"]["read"], json!(".letibot/x.json"));
         assert!(as_json["look"].get("exit").is_none());
-        // A refused look is a RESULT the plugin reads, with the same 126 a refused read uses.
+        // A refused look is a result the plugin reads, with the same 126 a refused read uses.
         assert_eq!(LookResult::refused("no capability").exit, 126);
     }
 

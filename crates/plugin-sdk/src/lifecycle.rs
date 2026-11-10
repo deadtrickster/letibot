@@ -1,10 +1,6 @@
-//! The `lifecycle_<event>` hook (X21): a session's own boundaries - open, reseat, restart, close -
-//! handed over as facts, and answered with acts only.
-//!
-//! A layer can never block one. The answer type has no field for it ([`Answer`] is acts and a refusal
-//! sentence), and the host performs the event whatever comes back: what a layer adds is a sentence
-//! the model must see, a board row, a monitor or a room message - the wording a release used to carry
-//! (`WAKE_TAIL`, `RESTART_PROMISES`) and the *what exactly changed* of G4.
+//! The `lifecycle_<event>` hook: a session's own boundaries - open, reseat, restart, close - handed
+//! over as facts, and answered with acts only. A layer can never block one: the answer type has no
+//! field for it, and what a layer adds is a sentence, a board row, a monitor or a room message.
 
 /// The export name a lifecycle answer comes from: `lifecycle_<event>`, beside `notice_<kind>`.
 pub const PREFIX: &str = "lifecycle_";
@@ -45,8 +41,8 @@ pub struct Input {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Stale {
     /// Why the prompt this conversation speaks is no longer the one the daemon seats, or `None`
-    /// when nothing moved. A sentence rather than a bool: *what exactly changed* is the fact G4
-    /// asked for, and a layer that rewords it needs it.
+    /// when nothing moved. A sentence rather than a bool, because a layer that rewords it needs to
+    /// say what changed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
     /// The tools whose seat changed: `command_and_read` style names, sorted, empty when none did.
@@ -69,9 +65,8 @@ pub struct Row {
 }
 
 /// One act an answer carries: the verb `plugin.toml`'s `actions` declares, and the arguments the host
-/// performs it with. The wire shape is a pane's (`letibot_sessionlog::pane::Acted`) because one
-/// vocabulary is what a person reads in two places; it is written out here because this crate is
-/// compiled into a guest too, and the daemon's crate is not.
+/// performs it with. The shape is a pane's (`letibot_sessionlog::pane::Acted`) so a person reads one
+/// vocabulary in two places, and it is written out here because this crate is compiled into a guest.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Act {
     pub verb: String,

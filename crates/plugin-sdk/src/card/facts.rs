@@ -1,20 +1,15 @@
 //! The cards a row's typed facts draw, with no text read at all: what survives a `notice_` layer
-//! rewording the sentence the model reads (X22).
-//!
-//! One source, like the readers beside it: the built-in `cards` layer answers from these, and the
-//! head falls back to them when no layer answers - a card drawn from a row's facts and one drawn
-//! from its words are the same function, so which of the two drew a line is invisible.
+//! rewording the sentence the model reads. One source, like the readers beside it - the built-in
+//! `cards` layer answers from these and the head falls back to them, so both draw the same line.
 
 use serde_json::Value;
 
 use super::Lines;
 use super::readers;
 
-/// The card a row's facts draw, or `None` for facts this build has no card for.
-///
-/// A monitor firing is the one kind a row carries today (`TranscriptItem::Notice`'s `facts`); a kind
-/// added here is a kind the daemon's own row must start carrying, which is why the list is short:
-/// most kinds' facts never leave the daemon, which joins its sentences into one row.
+/// The card a row's facts draw, or `None` for facts this build has no card for. A monitor firing
+/// is the one kind a row carries (`TranscriptItem::Notice`'s `facts`), because most kinds' facts
+/// never leave the daemon: it joins its sentences into one row, which cannot say which was which.
 pub fn read(facts: &Value) -> Option<Lines> {
     match facts.get("kind")?.as_str()? {
         "monitor" => {

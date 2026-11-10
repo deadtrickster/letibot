@@ -1,13 +1,13 @@
 //! `notice` - what the harness is about to say to the model, and how a layer may say it better.
-//! Every injected sentence is offered to this hook before it becomes a row. It changes wording, never a decision.
-//! The name after `notice_` is the kind. [`MUST_SEE`] hooks may reword but not delete.
+//! Every injected sentence is offered to this hook before it becomes a row; it changes wording and
+//! never a decision. The name after `notice_` is the kind, and a [`MUST_SEE`] kind may not be deleted.
 
 use serde_json::Value;
 
 /// The name a notice hook is exported under: `notice_<kind>`.
 pub const PREFIX: &str = "notice_";
 
-/// A monitor firing or expiry - the plan's own example of a sentence worth patching.
+/// A monitor firing or expiry - the example of a sentence worth patching.
 pub const MONITOR: &str = "monitor";
 /// A background job settling.
 pub const JOB: &str = "job";
@@ -34,11 +34,11 @@ pub const SALVAGE: &str = "salvage";
 /// other sessions on this box, and a layer that rewords one is rewording a disclosure about them.
 pub const ROOM: &str = "room";
 /// The idle plan-check: the turn the harness opens to ask a session with an unfinished plan to go
-/// on. Its own kind because K3 gives a layer the decision behind it (`nag_`), and a layer that
-/// answers this one is answering that sentence.
+/// on. Its own kind because a layer is handed the decision behind it (`nag_`), and one that answers
+/// this is answering that sentence.
 pub const NAG: &str = "nag";
 /// The merge queue's census: how many of a project's rows have been stuck longer than the clock
-/// allows. A TURN of its own, so it reaches a session nobody is typing to.
+/// allows. A turn of its own, so it reaches a session nobody is typing to.
 pub const CENSUS: &str = "census";
 /// A daemon restart: what was restored, what could not be, and the turn that says so.
 pub const RESTART: &str = "restart";
@@ -82,9 +82,9 @@ pub const KINDS: &[&str] = &[
     ANSWER,
 ];
 
-/// The kinds whose notice may not be dropped, only reworded - the host's set, not the
-/// plugin's. A census and an ask are the plan's own two examples: a session never told its rows are
-/// stuck, or that the operator answered, has been lied to by silence.
+/// The kinds whose notice may not be dropped, only reworded - the host's set, not the plugin's.
+/// A session never told its rows are stuck, or that the operator answered, has been lied to by
+/// silence, so a census and an answer are here beside the assertions about the work.
 pub const MUST_SEE: &[&str] = &[
     JOB,
     TODO,
@@ -131,10 +131,10 @@ pub struct Firing {
     pub ended: Option<String>,
     /// The sentence this firing itself said.
     pub said: String,
-    /// Firings this row stands for BESIDES the one it carries.
+    /// Firings this row stands for besides the one it carries.
     #[serde(default)]
     pub folded: usize,
-    /// Whether the line is the watch's ENDING rather than something it saw.
+    /// Whether the line is the watch's ending rather than something it saw.
     #[serde(default)]
     pub ending: bool,
 }
@@ -149,9 +149,8 @@ pub struct Stuck {
 }
 
 /// What a notice was composed from, typed per kind so a reader of the facts does not have to parse
-/// the sentence - and so a field added here moves the `plugin_hooks` page rather than drifting from
-/// it. One variant per [`KINDS`] entry; a kind whose site has nothing to hand carries no fields,
-/// which is a fact about the site and not a hole in the contract.
+/// the sentence, and so a field added here moves the `plugin_hooks` page rather than drifting from
+/// it. A kind whose site has nothing to hand carries no fields, which is not a hole in the contract.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Facts {
@@ -340,7 +339,7 @@ impl Notice {
     }
 
     /// The synthetic input `plugin test` and the shadow gate use when a session has none
-    /// recorded: the plan's own example, a monitor firing.
+    /// recorded: one monitor firing.
     pub fn synthetic() -> Notice {
         Notice::of(
             "[monitor] `pr-24` fired: its checks finished.",
@@ -478,8 +477,8 @@ mod tests {
     }
 
     /// Every kind's facts survive the wire they reach a layer on: what a layer reads and what a head
-    /// card (X22) renders are the same fields, and the kind rides on them so a site cannot say one
-    /// kind and hand over another's.
+    /// card renders are the same fields, and the kind rides on them so a site cannot say one kind
+    /// and hand over another's.
     #[test]
     fn facts_round_trip_per_kind() {
         let fixtures = Facts::one_of_each();

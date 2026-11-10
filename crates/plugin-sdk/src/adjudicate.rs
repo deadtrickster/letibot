@@ -1,7 +1,6 @@
 //! `adjudicate_` - the permission gate's floor. A layer may make a call stricter and never looser:
-//! the gate's own tables stay, the answer is merged through the strictest tier, and a trap or an
-//! answer outside this contract is read as the strictest tier rather than skipped.
-//! Nothing here can admit a call, lower a tier, or answer one.
+//! the answer merges through the strictest tier, and a trap or a malformed answer is read as the
+//! strictest tier rather than skipped, so nothing here can admit a call or lower one.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -61,8 +60,8 @@ impl AdjudicateIn {
         }
     }
 
-    /// The synthetic input the shadow gate and `plugin test` use when a session has none recorded:
-    /// the plan's own example, a production host reached from a project that named it.
+    /// The input the shadow gate and `plugin test` use when a session has none recorded: a
+    /// production host reached from a project that named it.
     pub fn synthetic() -> AdjudicateIn {
         AdjudicateIn::new(Action {
             tool: "bash".into(),

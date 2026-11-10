@@ -43,7 +43,7 @@ pub fn hook(name: &str) -> String {
 /// A fact the host already has and can hand a pane, by the name the manifest spells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Feed {
-    /// The daemon's sessions: what the session picker is drawn from. Fed today.
+    /// The daemon's sessions: what the session picker is drawn from. Fed.
     Sessions,
     /// This session's monitors - armed, waiting, fired. Planned.
     Monitors,
@@ -472,11 +472,9 @@ pub struct Input {
     pub utc_offset_s: Option<i32>,
 }
 
-/// The `chat` feed's shape (X1): the head's own room view, cut down to what a pane draws.
-///
-/// It is the operator's conversations, so it is the one feed whose declaration is checked against
-/// the LAYER and not only against the manifest: a built-in or a pinned layer may read it, and a
-/// session's own unpinned layer may not (`letibot_plugins::Manifest::admit_for`).
+/// The `chat` feed's shape: the head's own room view, cut down to what a pane draws. It is the
+/// operator's conversations, so it is the one feed whose declaration is checked against the layer
+/// and not only the manifest: a built-in or pinned layer may read it, a session's own may not.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Chat {
     /// Every channel the person can see, in the host's order - the switcher's list.
@@ -495,23 +493,22 @@ pub struct Chat {
     /// the host holds the session list, and a layer that resolved it would draw its own words.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub names: std::collections::BTreeMap<String, String>,
-    /// The `/` verbs this head's composer offers while a chat pane owns it, the room's own first
-    /// and its own after (`X6`). A `complete_` hook ranks them; the list is the head's because
-    /// the verbs are the head's, and a layer that guessed them would offer a verb nobody answers.
+    /// The `/` verbs this head's composer offers while a chat pane owns it, the room's own first and
+    /// its own after. A `complete_` hook ranks them; the list is the head's because a layer that
+    /// guessed the verbs would offer one nobody answers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verbs: Vec<ChatVerb>,
-    /// The bridge's aliases the composer offers - `@cc` and one word per project (`X6`). Here for
-    /// the reason [`Chat::verbs`] is: which folders a `@cc@…` reaches is the head's to know, and a
-    /// layer that spelled one from a channel's label would offer an address nobody resolves.
+    /// The bridge's aliases the composer offers - `@cc` and one word per project. Here for the
+    /// reason [`Chat::verbs`] is: a layer spelling one from a channel's label would offer an address
+    /// nobody resolves.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<ChatAlias>,
     /// The newest `seq` the person has been shown.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub seen: u64,
     /// The newest `seq` that was on screen when the channel was opened: the unread divider sits
-    /// between the two, and it survives the next answer. `None` is *this head has not opened the
-    /// channel*, which is not `0`: opened with nothing read puts the divider above the first
-    /// message, and never opened puts none at all.
+    /// between the two, and it survives the next answer. `None` is this head has not opened the
+    /// channel, which is not `0` - opened and unread puts the divider above the first message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opened_seen: Option<u64>,
     /// Whether any answer has arrived since the view opened. It decides one sentence, and only
@@ -656,11 +653,11 @@ mod tests {
     fn a_feed_is_the_word_its_manifest_spells() {
         assert_eq!(Feed::parse("sessions"), Ok(Feed::Sessions));
         assert_eq!(Feed::Sessions.name(), "sessions");
-        // A word this build does not know is refused BY NAME, with the list.
+        // A word this build does not know is refused by name, with the list.
         let why = Feed::parse("watchers").expect_err("no such feed");
         assert!(why.contains("watchers"), "{why}");
         assert!(why.contains("monitors"), "and the ones it does know: {why}");
-        // Every feed the plan names is here, so a later pane adds no mechanism.
+        // Every feed is here, so a later pane adds no mechanism.
         for name in [
             "sessions", "monitors", "jobs", "todos", "git", "queue", "room", "github", "chat",
         ] {
@@ -831,8 +828,7 @@ mod tests {
 
     /// The `chat` feed's shape: the wire's own fields, a window of messages, the roster with what
     /// each member is called, the verbs a completion ranks, and the two marks the unread divider
-    /// sits between. Round-tripped as a whole, because a field that only appears inside one message
-    /// is a field a layer cannot ask for.
+    /// sits between. A field that only appeared inside one message is one a layer could not ask for.
     #[test]
     fn the_chat_feed_carries_what_the_wire_has() {
         let doc = json!({

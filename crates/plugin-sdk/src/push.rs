@@ -1,10 +1,6 @@
-//! `push_<name>` - what reaches Claude Code, and in what words
-//! (`docs/plugin-extension-points-wide.md` X25). One subject today, [`CHANNEL`]: the channel a
-//! Claude Code bridge wakes its session on.
-//!
-//! The host computes the facts - a room message's reach, the package events it watches - and a layer
-//! decides whether the push happens and how it reads. Two events are never silenced: an `ask` and a
-//! `failed` are a session needing somebody, and a layer that hides one has hidden the work.
+//! `push_<name>` - what reaches Claude Code, and in what words. One subject, [`CHANNEL`]: the
+//! channel a Claude Code bridge wakes its session on. The host computes the facts and a layer decides
+//! whether the push happens and how it reads, but an `ask` and a `failed` are never silenced.
 
 use serde_json::Value;
 
@@ -26,9 +22,8 @@ pub fn hook(name: &str) -> String {
 /// session saying it needs a person; silencing one is a channel that looks quiet while work is stuck.
 pub const MUST_SAY: [&str; 2] = ["ask", "failed"];
 
-/// What a room message asks of its readers, in the room's own words (`letibot_room::Reach`). This is
-/// the whole of R117's open choice - *every room message or only addressed* - as a rule a layer
-/// writes: push the `addressed` ones, or all four.
+/// What a room message asks of its readers, in the room's own words (`letibot_room::Reach`): the
+/// choice a layer writes as a rule - push the `addressed` ones, or all four.
 pub const ROOM_EVENTS: [&str; 4] = ["operator", "dm", "addressed", "passing"];
 
 /// The package events the bridge pushes, so a layer's rule can name one. The list is documentation
@@ -45,7 +40,7 @@ pub const PACKAGE_EVENTS: [&str; 8] = [
 ];
 
 /// What the host would do with no layer answering. A built-in layer says this back, which is how a
-/// stack has a bottom that is today's behaviour.
+/// stack has a bottom that is the bridge's own behaviour.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Native {
     /// Whether the bridge would push this one on its own.
@@ -131,11 +126,9 @@ impl Decision {
 }
 
 impl Out {
-    /// This answer applied to the input it was given, or why the host refuses it.
-    ///
-    /// Three rules and no others: an `ask` or a `failed` may be reworded and never silenced; an answer
-    /// that says neither `push` nor `text` is not an answer; and a `push` the layer leaves out follows
-    /// the bridge's own decision, so a layer that only rewords cannot widen one by accident.
+    /// This answer applied to the input it was given, or why the host refuses it. An `ask` or a
+    /// `failed` may be reworded and never silenced, an answer that says neither `push` nor `text` is
+    /// not an answer, and a `push` left out follows the bridge's own decision.
     pub fn decide(&self, input: &Input) -> Result<Decision, String> {
         if self.push.is_none() && self.text.as_deref().is_none_or(|t| t.trim().is_empty()) {
             return Err(format!(

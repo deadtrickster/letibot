@@ -1,10 +1,6 @@
-//! The `command_<verb>` hook (X23) and the two verb lists a layer may not reach across.
-//!
-//! A `/` verb the host has not got is offered to `command_<verb>` first - at the head, and at the
-//! daemon - so a project can add a verb without a release. What it can never do is SHADOW one: the
-//! verbs in [`HOST_VERBS`] are the host's own, refused at admit rather than discovered as a hook that
-//! never fires, and the operator's verbs and acts ([`OPERATOR_VERBS`], [`OPERATOR_ACTS`]) are a
-//! person's: a model gets a self-scoped verb instead ([`SELF_VERBS`], X24).
+//! The `command_<verb>` hook and the two verb lists a layer may not reach across. A `/` verb the
+//! host has not got is offered here first, at the head and at the daemon; the host's own verbs and
+//! a person's own verbs are refused at admit, and a model gets a self-scoped verb in their place.
 
 /// The export-name prefix: `command_<verb>`.
 pub const PREFIX: &str = "command_";
@@ -56,10 +52,9 @@ pub struct Act {
     pub args: Option<serde_json::Value>,
 }
 
-/// The `/` verbs the host answers itself: the head's arm and the daemon's `Slash::parse`, plus the
-/// door tools a head offers as verbs. A `command_<verb>` layer naming one of these is refused at
-/// admit, as a pane's row is refused a `HOST_KEYS` key: a hook that can never fire is a layer its
-/// author has been lied to about.
+/// The `/` verbs the host answers itself: the head's arms, the daemon's `Slash::parse`, and the door
+/// tools a head offers as verbs. A layer naming one is refused at admit, as a pane is refused a
+/// `HOST_KEYS` key: a hook that can never fire is a layer its author has been lied to about.
 pub const HOST_VERBS: &[&str] = &[
     // The head's own dispatcher (`crates/tui/src/app/commands.rs`), aliases included: an alias is a
     // spelling of a verb the head answers, so it shadows just as surely.
@@ -148,7 +143,7 @@ pub fn is_host_verb(verb: &str) -> bool {
     HOST_VERBS.contains(&verb)
 }
 
-/// The verbs the BINARY's own layers answer: `command_todo` is the built-in `todo` layer, and a
+/// The verbs this build's own layers answer: `command_todo` is the built-in `todo` layer, and a
 /// project's layer above it refines what a new row may look like - which is the hook's whole design,
 /// not a shadow. Outside this list a verb a layer answers is one the host has not got.
 pub const BUILTIN_VERBS: &[&str] = &["todo"];
@@ -159,9 +154,8 @@ pub fn is_builtin_verb(verb: &str) -> bool {
 }
 
 /// The verbs only a person may cause, with the self-scoped verb a model gets in their place
-/// ([`SELF_VERBS`]): `/reseat` typed in a head, and `reseat_self` called by the session itself.
-/// A layer asking for one of these is refused at admit, and a model reaching for the operator's
-/// spelling is told which self verb exists.
+/// ([`SELF_VERBS`]): `/reseat` typed in a head, `reseat_self` called by the session itself. A layer
+/// asking for one is refused at admit, and a model reaching for one is told which self verb exists.
 pub const OPERATOR_VERBS: &[(&str, Option<&str>)] = &[
     ("reseat", Some(RESEAT_SELF)),
     ("compact", Some(COMPACT_SELF)),
@@ -179,7 +173,7 @@ pub const OPERATOR_VERBS: &[(&str, Option<&str>)] = &[
     ("mode", None),
 ];
 
-/// The model's own verbs, one session deep: the name is the whole scope (X24).
+/// The model's own verbs, one session deep: the name is the whole scope.
 pub const RESEAT_SELF: &str = "reseat_self";
 pub const COMPACT_SELF: &str = "compact_self";
 pub const NAG_PAUSE_SELF: &str = "nag_pause_self";
@@ -206,8 +200,8 @@ pub fn is_operator_verb(verb: &str) -> bool {
 }
 
 /// The acts only a person's own head may perform; a manifest naming one in `actions` is refused at
-/// admit. `queue_op` is the one X23 keeps for the operator, and the three self verbs are the model's
-/// own door and nobody else's - a layer that could act them would be a plugin reseating a session.
+/// admit. `queue_op` is the operator's, and the three self verbs are the model's own door and nobody
+/// else's - a layer that could act them would be a plugin reseating a session.
 pub const OPERATOR_ACTS: &[&str] = &["queue_op", "gate_rule", "reseat", "compact", "nag_pause"];
 
 /// Whether an act name is one only the operator's own head may perform.

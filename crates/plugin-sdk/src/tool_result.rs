@@ -18,7 +18,7 @@ pub struct ToolResultIn {
     /// [`V`](crate::V).
     pub v: u32,
     pub call: crate::Call,
-    /// [`OK`] or [`BACKGROUNDED`] - the two outcomes a hook is asked about.
+    /// [`OK`] or [`BACKGROUNDED`]: the two outcomes a hook is asked about.
     pub outcome: String,
     /// What the call produced: the text the model is about to read.
     pub payload: String,

@@ -1,9 +1,6 @@
-//! The `complete_<name>` hook (X6): what a pane's own input asks for, and the row of candidates it
-//! gets back.
-//!
-//! Text never reaches the layer per keystroke: the host owns the editor, and asks this hook on Tab
-//! and on `@` or `/` at a word start, debounced. A layer therefore sees a line, a caret and the
-//! feeds it declared - never a key.
+//! The `complete_<name>` hook: what a pane's own input asks for, and the row of candidates it gets
+//! back. Text never reaches the layer per keystroke: the host owns the editor and asks on Tab and on
+//! `@` or `/` at a word start, debounced, so a layer sees a line, a caret and its feeds, never a key.
 
 /// The export name a completion answers under: `complete_<name>`.
 pub const PREFIX: &str = "complete_";

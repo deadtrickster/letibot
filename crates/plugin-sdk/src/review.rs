@@ -1,7 +1,6 @@
-//! `review_` - the reviewer's brief and the verdict's floor (X18 of the wide review): the words a
-//! reviewer is started with, and the rung its verdict must reach. A layer may require a stricter
-//! verdict and may never raise one: the floor merges through [`Floor::strictest`], and nothing here
-//! can admit a branch or skip the gate.
+//! `review_` - the reviewer's brief and the verdict's floor: the words a reviewer is started with,
+//! and the rung its verdict must reach. A layer may require a stricter verdict and may never raise
+//! one - the floor merges through [`Floor::strictest`] - and nothing here admits a branch.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -57,9 +56,8 @@ impl Entry {
     }
 }
 
-/// What `review_brief` is handed. `entry` is `None` for the review queue's OWN session prompt:
-/// the queue is told what its reviewers are for, and a project's policy paragraph belongs there
-/// as much as in a reviewer's brief.
+/// What `review_brief` is handed. `entry` is `None` for the queue's own session prompt: the queue
+/// is told what its reviewers are for, which belongs in a project's policy as much as in a brief.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BriefIn {
     /// [`V`](crate::V).
@@ -98,9 +96,8 @@ impl BriefIn {
 }
 
 /// What `review_brief` answers: the words for the reviewer, in this layer's own voice. `brief`
-/// REPLACES the host's policy body (kept as the fallback a layer that traps or stays silent falls
-/// to), `brief_add` is appended after it, and `require` becomes rules of its own - so a layer that
-/// adds a rule does not have to restate the host's.
+/// replaces the host's policy body (kept as the fallback a layer that traps or stays silent falls
+/// to), `brief_add` is appended after it, and `require` becomes rules of its own.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Brief {
@@ -110,7 +107,7 @@ pub struct Brief {
     /// Words added after the body: one rule this project adds to the host's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brief_add: Option<String>,
-    /// What the reviewer MUST do, one item per line, rendered as rules of their own.
+    /// What the reviewer must do, one item per line, rendered as rules of their own.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub require: Vec<String>,
 }
@@ -278,7 +275,7 @@ mod tests {
         assert!(!is_review_hook("review_"));
     }
 
-    /// The plan's own shape: the brief's answer adds to the host's, and its requirements are a list.
+    /// The brief's answer adds to the host's, and its requirements are a list.
     #[test]
     fn the_briefs_answer_is_the_plans_shape() {
         let out: Brief = serde_json::from_str(

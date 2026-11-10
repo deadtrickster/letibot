@@ -1,9 +1,6 @@
-//! The `steer_` hook (X14): the turn's end - continue it with a sentence, or stop there.
-//!
-//! The harness's own detectors are the input and the fallback: a session with no layer decides as it
-//! always did. Two rules are not a layer's to keep, and both are enforced by the host before the
-//! answer is used: a continuation the budget has not got, and an interrupted turn. A layer that asks
-//! for either is refused in words a person can act on, and the turn ends.
+//! The `steer_` hook: the turn's end - continue it with a sentence, or stop there. The harness's
+//! own detectors are the input and the fallback, and two rules stay the host's, both checked before
+//! the answer is used: a continuation the budget has not got, and an interrupted turn.
 
 /// The export-name prefix: `steer_<name>`, because a kind with no name after its prefix names no hook.
 pub const PREFIX: &str = "steer_";
@@ -16,9 +13,9 @@ pub fn hook(name: &str) -> String {
     format!("steer_{name}")
 }
 
-/// Why a turn is at its end, which is what a project's own continue rule reads: an ordinary turn,
-/// or one that began on a compaction's record (G2's *continue after compaction*, off unless a
-/// project turns it on).
+/// Why a turn is at its end, which is what a project's own continue rule reads: an ordinary turn, or
+/// one that began on a compaction's record (continue after compaction, off unless a project turns it
+/// on).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum After {
@@ -74,7 +71,7 @@ pub struct Input {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native: Option<String>,
     /// The intent detector's finding on its own: a promise this turn made and did not start, in the
-    /// harness's words - X14's `intent_diff`, as the detector words it. `None` when it made none.
+    /// harness's words, as the detector words it. `None` when it made none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intent: Option<String>,
     /// What the deliverable check sees, or `None` for a session that has no branch.
@@ -207,7 +204,7 @@ mod tests {
         }
     }
 
-    /// K4's rule: the budget is the host's, and a layer that spends what it has not got is refused.
+    /// The budget is the host's, and a layer that spends what it has not got is refused.
     #[test]
     fn a_continue_past_the_budget_is_refused() {
         let answer = Answer::Continue("go on".into());
@@ -221,8 +218,8 @@ mod tests {
         );
     }
 
-    /// K4's other rule: an interrupted turn is the operator's stop, not a turn waiting for another
-    /// round - so the budget being left is not the question.
+    /// An interrupted turn is the operator's stop, not a turn waiting for another round - so the
+    /// budget being left is not the question.
     #[test]
     fn an_interrupted_turn_is_never_continued() {
         let answer = Answer::Continue("go on".into());

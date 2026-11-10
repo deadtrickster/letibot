@@ -1,8 +1,6 @@
-//! `card` - a head's card for one transcript row: what the row says, in the shape a card is.
-//! The host hands over the row's kind, its words and the typed facts it holds; the layer answers
-//! the parts of each card's line, which part is accented, and - for a tool row - the verb it is
-//! drawn as. It never paints cells: the width, the cut and the palette are the host's, because a
-//! card's line is cut to a terminal the layer cannot see.
+//! `card` - a head's card for one transcript row: the row's kind, its words and its typed facts in,
+//! the parts of each line and the verb it is drawn as out. It never paints cells: the width, the cut
+//! and the palette are the host's, because a card is cut to a terminal the layer cannot see.
 
 use serde_json::Value;
 
@@ -82,8 +80,8 @@ pub struct Item {
     pub id: String,
     /// What the row is - [`KINDS`].
     pub kind: String,
-    /// The row's words WHOLE, already carrying any rewording the `notice_` door applied. A layer
-    /// that reads facts never parses this; one that has no facts for a shape reads it here.
+    /// The row's words, already carrying any rewording the `notice_` door applied. A layer that
+    /// reads facts never parses this; one with no facts for a shape reads it here.
     pub text: String,
     /// The typed facts the host holds for this row (`notice::Facts`, as one document), when it
     /// holds any. `None` is a row the daemon composed from nothing it kept - not an empty fact.
@@ -136,8 +134,8 @@ impl Input {
         Input::new(item, vec![text])
     }
 
-    /// The input `plugin test` and the shadow gate use when a session has none recorded: the plan's
-    /// own monitor firing, as the daemon delivers one.
+    /// The input `plugin test` and the shadow gate use when a session has none recorded: one
+    /// monitor firing, as the daemon delivers one.
     pub fn synthetic() -> Input {
         let mut item = Item::new(
             "s#t1#1",
@@ -265,12 +263,9 @@ pub struct Cards {
 }
 
 impl Out {
-    /// This answer applied to the ask it answered, or why the host refuses it.
-    ///
-    /// Three rules and no others: an answer with more or fewer blocks than the host named parts is
-    /// refused WHOLE (a card per part is positional, and a shifted row draws one notice's facts
-    /// under another's), a block this host does not draw is `None` for that part - which is the
-    /// readers' cue, not a refusal - and a verb outside [`VERBS`] is refused.
+    /// This answer applied to the ask it answered, or why the host refuses it. A block count that
+    /// is not the host's parts is refused whole - a card per part is positional, so a shift draws
+    /// one notice's facts under another's - and a kind the host does not draw is `None`.
     pub fn cards(&self, parts: usize) -> Result<Cards, String> {
         if self.blocks.len() != parts {
             return Err(format!(

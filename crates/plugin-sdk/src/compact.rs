@@ -1,10 +1,6 @@
-//! The `compact_` hook (X15): what a compaction carries - the record's sections, a layer's own
-//! instruction, the facts it pins, and whether the session goes on after it.
-//!
-//! Two things stay the host's: when to compact and which fold (that is `Fold::next`), and the size
-//! of the record. A layer may choose what is in it. A pin past `pinned_tokens` is cut in the order
-//! the answer asked for them, and the cut is said rather than silently dropped: a record that does
-//! not carry `AGENTS.md` is a fact the operator reads.
+//! The `compact_` hook: what a compaction carries. When to compact and what the record may cost are
+//! the host's, and a layer chooses only what is in it; a pin past `pinned_tokens` is cut in the
+//! order asked for and said by name, because a record that silently drops `AGENTS.md` is a fact.
 
 /// The export-name prefix: `compact_<name>`, because a kind with no name after its prefix names no hook.
 pub const PREFIX: &str = "compact_";
@@ -285,8 +281,8 @@ mod tests {
         }
     }
 
-    /// K4's rule: the pins are spent in order, the one that does not fit is cut, and the cut is
-    /// said by name - and so is everything after it, because order is the layer's statement.
+    /// The pins are spent in order, the one that does not fit is cut, and the cut is said by name -
+    /// and so is everything after it, because order is the layer's statement.
     #[test]
     fn a_pin_past_the_budget_is_cut_and_said() {
         let input = input();
@@ -337,7 +333,7 @@ mod tests {
         assert_eq!(quiet.after, After::Continue);
     }
 
-    /// The wire is the plan's shape, and the synthetic input is the host's.
+    /// The wire is this type's shape, and the synthetic input is the host's.
     #[test]
     fn the_plans_example_is_this_type() {
         let answer: Answer = serde_json::from_value(json!({

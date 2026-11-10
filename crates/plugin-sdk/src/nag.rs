@@ -1,18 +1,13 @@
-//! `nag_<name>` - the plan-check's decision: which eligible row it names, in what words, and when
-//! it may come due again. One subject today, [`TODO`] - the board (`docs/plugin-extension-points-wide.md`
-//! X13).
-//!
-//! The decision is handed over; the clock and the eligibility filter stay native. A layer may
-//! choose, word or stay quiet, and it may never name a row outside [`Input::eligible`], never go
-//! quiet past the repeat cap while a row is open, and never move a queue row's nag. `next_ms` is
-//! clamped to [`Clock::floor_ms`]..[`Clock::cap_ms`] by the clock, not here.
+//! `nag_<name>` - the plan-check's decision: which eligible row it names, in what words, and when it
+//! may come due again, over one subject ([`TODO`], the board). The clock and the eligibility filter
+//! are native: a layer may never name a row outside `eligible`, or go quiet past the repeat cap.
 
 use serde_json::Value;
 
 /// The export-name prefix a nag answers under: `nag_<name>`.
 pub const PREFIX: &str = "nag_";
 
-/// The one subject the host asks about today: the operator's and the model's own board.
+/// The one subject the host asks about: the operator's and the model's own board.
 pub const TODO: &str = "todo";
 
 /// The export name for one nag subject.
@@ -208,11 +203,9 @@ impl Decision {
 }
 
 impl Out {
-    /// This answer applied to the input it was given, or why the host refuses it.
-    ///
-    /// Three rules and no others: a name outside `eligible` refuses the whole answer (half of an
-    /// answer is a sentence nobody wrote); quiet is overridden at the repeat cap and while a queue
-    /// row is open; and a layer that says nothing about the text leaves the harness's own.
+    /// This answer applied to the input it was given, or why the host refuses it. A name outside
+    /// `eligible` refuses the whole answer (half an answer is a sentence nobody wrote); quiet is
+    /// overridden at the repeat cap and while a queue row is open; and no text leaves the host's own.
     pub fn decide(&self, input: &Input) -> Result<Decision, String> {
         let mut name: Vec<String> = self.name.clone().unwrap_or_default();
         if let Some(unknown) = name.iter().find(|n| !input.names_a_row(n)) {

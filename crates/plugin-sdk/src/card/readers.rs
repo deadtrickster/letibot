@@ -1,10 +1,6 @@
 //! The card readers every notice in the tree is drawn by: the text-prefix shapes a notice takes,
-//! read into a [`Lines`].
-//!
-//! They live here, and not in the head, because they are compiled TWICE from one source: the head
-//! asks them when no layer answers a row (the fallback), and the built-in `cards` layer answers
-//! `card_item` by asking the very same ones. Two copies would be two drawings of one notice, which
-//! is what "a reworded notice keeps its card" exists to stop.
+//! read into a [`Lines`]. The head and the built-in `cards` layer compile them from one source,
+//! because two copies would be two drawings of one notice.
 
 use super::Lines;
 use crate::pane::Role;
@@ -94,9 +90,7 @@ pub fn gist(text: &str) -> String {
 }
 
 /// The one line for a notice, read from its opening words - `None` for a shape no reader knows,
-/// which is the host's cue to draw its generic line.
-///
-/// The order is the readers': a text is one notice's, and the first reader that recognises it is
+/// which is the host's cue to draw its generic line. The first reader that recognises a text is
 /// the one that says what it is.
 pub fn read(text: &str) -> Option<Lines> {
     const READERS: &[fn(&str) -> Option<Lines>] = &[
@@ -118,8 +112,8 @@ pub fn read(text: &str) -> Option<Lines> {
     READERS.iter().find_map(|r| r(text))
 }
 
-/// `Tool call X was cut off and not run. …`, once a call - the length cap's salvage. The words
-/// once opened with `was not executed` and are still in every stored transcript.
+/// `Tool call X was cut off and not run. …`, once a call - the length cap's salvage. Both wordings
+/// are read because stored transcripts still carry the older one.
 fn length_cap(text: &str) -> Option<Lines> {
     const AFTER: &[&str] = &[" was cut off and not run", " was not executed"];
     let mut by: Vec<(String, usize)> = Vec::new();
@@ -154,7 +148,7 @@ fn length_cap(text: &str) -> Option<Lines> {
     ))
 }
 
-/// `[todo check] …` - the plan check, as ONE line whatever it carries: the first row of the plan,
+/// `[todo check] …` - the plan check, as one line whatever it carries: the first row of the plan,
 /// whose row it is, and how many more are open. The whole check is the popup.
 fn todo_check(text: &str) -> Option<Lines> {
     let rest = text.strip_prefix("[todo check] ")?;
@@ -203,9 +197,8 @@ fn todo_check(text: &str) -> Option<Lines> {
         if in_progress {
             parts.push("in progress".to_string());
         }
-        // An older notice carries the count in its head and still says it. The daemon writes none
-        // now, so a later one is counted by the rows it names - which is what the card is drawn
-        // from, and the only count that notice really has.
+        // A notice that carries the count in its head says it; one that does not is counted by
+        // the rows it names, which is what the card is drawn from.
         match head.rsplit_once('(').and_then(|(_, m)| {
             m.strip_suffix("more open):")
                 .or(m.strip_suffix("more open)"))
@@ -382,10 +375,9 @@ pub fn monitor_said(bullet: &str) -> Option<(String, String)> {
     Some((name.to_string(), said.trim().to_string()))
 }
 
-/// One watch's news, as a card draws it: the sentence the daemon composed for a firing read down to
-/// its own words - `[monitor] `ci` fired: the run exited 0.` → `the run exited 0`. The typed facts
-/// carry the composed sentence too, so this is what makes a row drawn from facts and the same row
-/// drawn from its text one line.
+/// One watch's news, as a card draws it: the composed firing sentence read down to its own words -
+/// `[monitor] `ci` fired: the run exited 0.` -> `the run exited 0`. The facts carry the sentence
+/// too, which is what makes the facts-drawn row and the text-drawn one the same line.
 pub fn firing_said(said: &str) -> String {
     let said = said.strip_prefix("[monitor] ").unwrap_or(said);
     let said = match said.split_once("` ") {

@@ -1,8 +1,6 @@
-//! The `link_<name>` hook (X26, `docs/plugins-plan.md` §4.6): what a word on the screen links to.
-//!
-//! Asked once per frame, for the words the head's own references did not know, and cached by
-//! word - a word answered *no* is not asked again either. The head owns the answers a terminal
-//! is handed: an answer aligned with the words it was asked about, and only an `http(s)` target.
+//! The `link_<name>` hook: what a word on the screen links to. Asked once per frame, for the words
+//! the head's own references did not know, and cached by word - a word answered no is not asked
+//! again either. The head keeps the answers a terminal is handed, so only an `http(s)` target lands.
 
 /// The export-name prefix a link answers under: `link_<name>`.
 pub const PREFIX: &str = "link_";
@@ -108,7 +106,7 @@ mod tests {
         vec!["#212".to_string(), "a/fix".to_string(), "prose".to_string()]
     }
 
-    /// The batched shape the plan names: `{"words":[…]} → {"urls":[…]}`.
+    /// The batched shape: `{"words":[…]} → {"urls":[…]}`.
     #[test]
     fn the_plans_batched_shape_is_this_type() {
         let input = Input::new(words(), Repo::default());

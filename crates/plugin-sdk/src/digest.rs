@@ -1,10 +1,6 @@
-//! The `digest_<name>` hook: a call's output, before the spill policy budgets it
-//! (`docs/plugins-plan.md` §4.5, X26). The digest is what is budgeted, so a layer that shortens
-//! a transcript is shortening what the model has to hold rather than what the store keeps.
-//!
-//! A digest may shorten or reshape what it was handed. It may not grow it and may not erase it:
-//! both are ways to spend the model's context by accident, and the hook's whole purpose is the
-//! opposite. Either is refused and the call's own output stands.
+//! The `digest_<name>` hook: a call's output, before the spill policy budgets it, so a layer that
+//! shortens a transcript shortens what the model holds, not what the store keeps. It may shorten or
+//! reshape what it was handed, never grow or erase it, and either is refused.
 
 /// The export-name prefix a digest answers under: `digest_<name>`.
 pub const PREFIX: &str = "digest_";
