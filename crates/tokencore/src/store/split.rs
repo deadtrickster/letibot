@@ -4,8 +4,14 @@
 //! rows are in, so a table's NAME decides its file and nothing has to remember the list. Each file
 //! is created from the tree's own DDL filtered by that assignment, so neither file can drift from
 //! what `Store::migrate` builds on a single-file store.
+//!
+//! A box reaches that layout one project at a time (§ Carving one project), and the state in
+//! between is this module's too: `sessions.db` is then the shared file, holding the shared tables
+//! and the project tables of every key not carved out of it yet, `projects/<key>.db` exists for the
+//! keys a carve recorded, and [`carved_keys`] is the record. [`shared_path`] and [`file_of`] answer
+//! where a table's rows are in either shape, so no caller has to know which one it is reading.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak, mpsc};
 
@@ -23,9 +29,19 @@ pub const SHARED_FILE: &str = "shared.db";
 /// One file per folder's daemon, under the data directory: `projects/<key>.db`.
 pub const PROJECTS_DIR: &str = "projects";
 
-/// The single file a daemon wrote before the split. This build opens it only through P2's
-/// migration, so a data directory still holding it is a refusal that names the command.
+/// The single file a daemon wrote before the split. While projects are carved out of it one at a
+/// time it IS the shared file (§ Carving one project), so this build reads it in both shapes.
 pub const LEGACY_FILE: &str = "sessions.db";
+
+/// The transition's one record, in `sessions.db` and nowhere else: which project keys have their
+/// own file already. Created by a carve and by no schema at all, so a fresh set never holds it and
+/// `--finish` drops it with the rest of the old layout.
+pub const CARVED_TABLE: &str = "carved_project";
+
+/// The table's DDL. Not one of [`batches`]: it belongs to the transition, not to either file of
+/// the finished set, which is why the assignment has no line for it.
+pub const CARVED_SQL: &str = "CREATE TABLE IF NOT EXISTS carved_project (key TEXT PRIMARY KEY, \
+     at_ms INTEGER NOT NULL)";
 
 /// Which file a table lives in, as § Table assignment lists it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,6 +228,55 @@ pub(super) fn table_of(statement: &str) -> Option<String> {
 
 fn clean_word(word: &str) -> &str {
     word.trim_matches(|c: char| matches!(c, '(' | ')' | ';' | ','))
+}
+
+/// The file holding the shared tables: `shared.db` once `--finish` renamed it, and `sessions.db`
+/// while some project's rows are still in it. Asked as a question about the directory, so a
+/// caller never has to know which state the box is in.
+pub fn shared_path(dir: &Path) -> PathBuf {
+    let finished = dir.join(SHARED_FILE);
+    let legacy = dir.join(LEGACY_FILE);
+    if !finished.is_file() && legacy.is_file() {
+        legacy
+    } else {
+        finished
+    }
+}
+
+/// Where `table`'s rows for `key` are, in the shape the directory is in: a project table of a key
+/// no carve has taken yet is still in `sessions.db`, which is the answer
+/// `Config::store_at().path(table)` needs - a path to a project file that does not exist is a
+/// create waiting to happen.
+pub fn file_of(dir: &Path, key: &str, table: &str) -> PathBuf {
+    let shared = shared_path(dir);
+    let project = dir.join(PROJECTS_DIR).join(format!("{key}.db"));
+    match place_of(table) {
+        Some(Place::Project)
+            if shared.file_name().is_some_and(|name| name == LEGACY_FILE) && !project.is_file() =>
+        {
+            shared
+        }
+        Some(Place::Project) => project,
+        _ => shared,
+    }
+}
+
+/// The keys a store file records as carved, or `None` for a file nothing has been carved out of
+/// (it has the transition's table or it does not) - which is how an untouched `sessions.db` is
+/// told from one mid-transition.
+pub fn carved_keys(store: &Store) -> Result<Option<BTreeSet<String>>> {
+    let conn = store.connection();
+    let has: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [CARVED_TABLE],
+        |r| r.get(0),
+    )?;
+    if has == 0 {
+        return Ok(None);
+    }
+    let mut st = conn.prepare(&format!("SELECT key FROM {CARVED_TABLE} ORDER BY key"))?;
+    let rows = st.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(Some(rows.collect::<std::result::Result<_, _>>()?))
 }
 
 /// The DDL one file is built from: the statements whose table it holds, in `migrate`'s own order.
@@ -443,6 +508,12 @@ pub fn open_handle(dir: &Path, key: &str, create: bool) -> Result<Store> {
     let projects = dir.join(PROJECTS_DIR);
     let shared_path = dir.join(SHARED_FILE);
     let project_path = projects.join(format!("{key}.db"));
+    // Mid-transition (§ Carving one project): a `sessions.db` and no `shared.db` yet. Read before
+    // `refuse_unsplit`, which is the answer for a file nothing has been carved out of - the same
+    // files, and only the transition's record tells them apart.
+    if !shared_path.is_file() && dir.join(LEGACY_FILE).is_file() {
+        return open_transition(dir, key);
+    }
     if create {
         // A daemon is the first to touch a fresh directory, so its door refuses an un-split one
         // too: creating a set beside `sessions.db` hides every session that file holds.
@@ -479,6 +550,37 @@ pub fn open_handle(dir: &Path, key: &str, create: bool) -> Result<Store> {
     Ok(Store::of_set(shared.shared.clone(), project))
 }
 
+/// A data directory mid-transition: `sessions.db` is the shared file, and a key has a project file
+/// of its own only once a carve recorded it. An uncarved key opens that file as its ONLY one - its
+/// project rows are still in it - but as a set's handle: the listing must not fall back to the
+/// single-file query, which reads the history this file no longer holds whole (a carved project's
+/// transcripts are in its own file), and would answer a cut-down session list.
+fn open_transition(dir: &Path, key: &str) -> Result<Store> {
+    let legacy = dir.join(LEGACY_FILE);
+    let shared = Store::open(&legacy)?;
+    let Some(carved) = carved_keys(&shared)? else {
+        return Err(unsplit(dir));
+    };
+    let project_path = dir.join(PROJECTS_DIR).join(format!("{key}.db"));
+    if !carved.contains(key) {
+        return Ok(Store::of_set(shared.shared.clone(), None));
+    }
+    if !project_path.is_file() {
+        return Err(StoreError::Refused(format!(
+            "{} records project {key} as carved and {} is not there, so that key's rows are in \
+             neither file. Put the file back, or delete its {CARVED_TABLE} row and carve the key \
+             again - this daemon writes nothing until one of those is true.",
+            legacy.display(),
+            project_path.display()
+        )));
+    }
+    let project = Store::open(&project_path)?;
+    Ok(Store::of_set(
+        shared.shared.clone(),
+        Some(project.shared.clone()),
+    ))
+}
+
 /// A set's file that is not there yet, in a data directory that still holds `sessions.db`, is
 /// refused rather than created: any door that made one would hide every session the old file
 /// holds. A file already there opens, which is what the migration's own checks need.
@@ -501,8 +603,9 @@ pub(crate) fn refuse_creating_beside_legacy(path: &Path) -> Result<()> {
     let old = dir.join(LEGACY_FILE);
     if old.is_file() {
         return Err(StoreError::Refused(format!(
-            "{} is not split yet: it holds {LEGACY_FILE}, so {} is not created beside it. Stop \
-             every daemon and run `letibot-migrate-split {} {}`.",
+            "{} is not split yet: it holds {LEGACY_FILE}, so {} is not created beside it. Carve \
+             one project at a time with `letibot-migrate-split --project KEY {} {}`, or split the \
+             whole file with every daemon stopped.",
             dir.display(),
             path.display(),
             old.display(),
@@ -512,20 +615,25 @@ pub(crate) fn refuse_creating_beside_legacy(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The single file a daemon used to write and the pass that splits it are the operator's: a
-/// daemon that started by migrating would be copying a store nobody had stopped writing to.
+/// The single file a daemon used to write, with nothing carved out of it yet: splitting it is the
+/// operator's, because a daemon that started by copying would be copying a store nobody had
+/// stopped writing to.
 pub fn refuse_unsplit(dir: &Path) -> Result<()> {
-    let old = dir.join(LEGACY_FILE);
-    if old.is_file() && !dir.join(SHARED_FILE).is_file() {
-        return Err(StoreError::Refused(format!(
-            "{} is not split yet: it holds {LEGACY_FILE} and no {SHARED_FILE}. Stop every daemon \
-             and run `letibot-migrate-split {} {}` - this daemon never migrates on its own.",
-            dir.display(),
-            old.display(),
-            dir.display()
-        )));
+    if dir.join(LEGACY_FILE).is_file() && !dir.join(SHARED_FILE).is_file() {
+        return Err(unsplit(dir));
     }
     Ok(())
+}
+
+fn unsplit(dir: &Path) -> StoreError {
+    StoreError::Refused(format!(
+        "{} is not split yet: it holds {LEGACY_FILE} and no {SHARED_FILE}. Carve one project at a \
+         time with `letibot-migrate-split --project KEY {} {}`, or split the whole file with \
+         every daemon stopped - this daemon never migrates on its own.",
+        dir.display(),
+        dir.join(LEGACY_FILE).display(),
+        dir.display()
+    ))
 }
 
 /// Every set this process has open, by data directory and project key. A `Weak`, like [`Store`]'s

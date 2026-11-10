@@ -1,5 +1,10 @@
-//! The offline migration from one `sessions.db` to the split store (`docs/store-split.md`
-//! § Migration): `shared.db` and `projects/<key>.db` out, `sessions.db.pre-split` left behind.
+//! The migration from one `sessions.db` to the split store (`docs/store-split.md`): `shared.db`
+//! and `projects/<key>.db` out, `sessions.db.pre-split` left behind.
+//!
+//! Two doors: [`migrate`] is the whole file in one offline pass, and [`carve`] takes one project key
+//! out at a time so every other project's daemon keeps running (§ Carving one project). [`finish`]
+//! is the last step of the second road, which renames the file every daemon has written since R92
+//! once nothing is left in it.
 //!
 //! The project key comes from a session's ROOT, never from its own `workspace_root`: a child's is
 //! the worktree it works in, and hashing that is what gives 570 folders where the roots give 29.
@@ -55,6 +60,25 @@ pub struct Report {
     pub unreplayed: Vec<String>,
 }
 
+/// What one carve did, for the command that prints it (§ Carving one project).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Carved {
+    pub key: String,
+    pub path: PathBuf,
+    pub sessions: usize,
+    /// Transcripts that did not replay in the old store either, copied as they were stored.
+    pub unreplayed: Vec<String>,
+    /// The keys still holding project rows in `sessions.db`, so the command can say what is left.
+    pub uncarved: Vec<String>,
+}
+
+/// What `--finish` did: the renamed file, and the keys it took with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finished {
+    pub shared: PathBuf,
+    pub carved: Vec<String>,
+}
+
 /// One daemon's claim on a session's transcript, as the `session_writer` rows put it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claim {
@@ -104,6 +128,14 @@ pub fn migrate(store: &Path, data_dir: &Path) -> Result<Report> {
     // Opened by a `Store` for what that door already does: an older file is carried forward to
     // the schema the copy is written against, and a newer one is refused by name.
     let old = Store::open(store)?;
+    if split::carved_keys(&old)?.is_some() {
+        return Err(StoreError::Refused(format!(
+            "{} is being carved one project at a time - a key is already out of it. Carve the \
+             rest with `--project KEY` and finish with `--finish`; the whole pass is for a store \
+             nothing has been taken out of. Nothing was renamed",
+            store.display()
+        )));
+    }
     let plan = plan(&old)?;
     let from = Connection::open(store)?;
     match split_into(&from, data_dir, &plan) {
@@ -129,6 +161,423 @@ pub fn migrate(store: &Path, data_dir: &Path) -> Result<Report> {
             Err(refused)
         }
     }
+}
+
+/// The live claims a carve of `key` may not run under: the sessions of THIS project only. Every
+/// other project's daemon keeps running, which is the whole reason to carve one key at a time.
+pub fn blocking_claims(
+    key_of: &BTreeMap<String, String>,
+    key: &str,
+    claims: &[Claim],
+    host: &str,
+    alive: impl Fn(u32) -> bool,
+) -> Vec<Claim> {
+    let mine: Vec<Claim> = claims
+        .iter()
+        .filter(|claim| key_of.get(&claim.session).is_some_and(|k| k == key))
+        .cloned()
+        .collect();
+    live_claims(&mine, host, alive)
+}
+
+/// Carve `key` out of `store` (`docs/store-split.md` § Carving one project): one project file, the
+/// same per-table and chain checks a whole pass makes, the key recorded in `sessions.db`, and only
+/// then that key's rows deleted from it. The refusal under a live writer claim is this function's
+/// and not a command's, so a caller cannot copy out a session a daemon is writing.
+pub fn carve(
+    store: &Path,
+    data_dir: &Path,
+    key: &str,
+    host: &str,
+    alive: impl Fn(u32) -> bool + Copy,
+) -> Result<Carved> {
+    if data_dir.join(split::SHARED_FILE).is_file() {
+        return Err(StoreError::Refused(format!(
+            "{} is already split: {} is there, so there is nothing left to carve out of {}. \
+             Nothing was written",
+            data_dir.display(),
+            split::SHARED_FILE,
+            split::LEGACY_FILE
+        )));
+    }
+    if !store.is_file() {
+        return Err(StoreError::Refused(format!(
+            "{} is not a store file - point this at the {} to carve",
+            store.display(),
+            split::LEGACY_FILE
+        )));
+    }
+    same_dir(store, data_dir)?;
+    // Opened by a `Store` for what that door already does, as the whole pass does: an older file is
+    // carried to the schema the copy is written against, a newer one is refused by name.
+    let old = Store::open(store)?;
+    let plan = plan(&old)?;
+    let Some(sessions) = plan.by_key.get(key) else {
+        return Err(StoreError::Refused(format!(
+            "{key} is not a project key in this store: no session's tree has a root folder that \
+             hashes to it. The keys here are {}; nothing was written",
+            or_keys(&plan)
+        )));
+    };
+    let carved = split::carved_keys(&old)?;
+    if carved.as_ref().is_some_and(|keys| keys.contains(key)) {
+        return Err(StoreError::Refused(format!(
+            "project {key} is recorded as carved already - a key is carved once, and its rows in \
+             {} are gone. Nothing was written",
+            split::LEGACY_FILE
+        )));
+    }
+    let path = data_dir.join(split::PROJECTS_DIR).join(format!("{key}.db"));
+    if path.exists() {
+        return Err(StoreError::Refused(format!(
+            "{} is already there and {key} is not recorded as carved: an earlier carve stopped \
+             after writing it. Check the file, then delete it and run this again - nothing was \
+             written",
+            path.display()
+        )));
+    }
+    let claims = writer_claims(&old)?;
+    let blocked = blocking_claims(&plan.key_of, key, &claims, host, alive);
+    if let Some(first) = blocked.first() {
+        let more = match blocked.len() - 1 {
+            0 => String::new(),
+            n => format!(", and {n} more session(s) of this project"),
+        };
+        return Err(StoreError::Refused(format!(
+            "a daemon is writing this project: session {} is claimed by {} (pid {} on {}){more}. \
+             Stop that project's daemon - `letibot --stop` in its folder - and carve it again. \
+             Other projects' daemons are not a reason to stop, and nothing was written",
+            first.session, first.owner, first.pid, first.host
+        )));
+    }
+    let from = Connection::open(store)?;
+    let file = write_project(&from, data_dir, key, sessions)?;
+    match carve_into(&from, &old, &file, key) {
+        Ok(unreplayed) => {
+            let carved = split::carved_keys(&old)?.unwrap_or_default();
+            Ok(Carved {
+                key: key.to_string(),
+                path: file.path,
+                sessions: sessions.len(),
+                unreplayed,
+                uncarved: uncarved(&plan, &carved),
+            })
+        }
+        // The file is this carve's own debris, and a second attempt would refuse it as a carved
+        // project: a check that failed leaves no file behind, as it leaves `sessions.db` untouched.
+        Err(refused) => {
+            remove_written_file(&file.path);
+            Err(refused)
+        }
+    }
+}
+
+/// The half of a carve that can fail after its file is written - the chain replay, the record and
+/// the delete - in the order the doc states: no row leaves `sessions.db` before the copy it is
+/// leaving for has been verified and recorded as carved.
+fn carve_into(
+    from: &Connection,
+    old: &Store,
+    file: &ProjectFile,
+    key: &str,
+) -> Result<Vec<String>> {
+    let unreplayed = verify_chains(&file.path, Some(old))?;
+    refuse_cross_key_forks(from)?;
+    let tx = from.unchecked_transaction()?;
+    // The delete names rows across the project tables, so the keys between them are checked at
+    // COMMIT rather than per statement.
+    tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
+    // The index learns this key on the row itself, so a question asked from another folder - a
+    // `--handover` for a session of a project that is not the caller's - resolves to the file the
+    // rows are in. A whole pass writes the same column for the same reason.
+    if !columns(&tx, "session")?
+        .iter()
+        .any(|column| column == "project")
+    {
+        tx.execute_batch("ALTER TABLE session ADD COLUMN project TEXT")?;
+    }
+    tx.execute(
+        "UPDATE session SET project = ?1 WHERE id IN (SELECT id FROM temp.mine)",
+        params![key],
+    )?;
+    tx.execute_batch(split::CARVED_SQL)?;
+    tx.execute(
+        &format!(
+            "INSERT INTO {} (key, at_ms) VALUES (?1, ?2)",
+            split::CARVED_TABLE
+        ),
+        params![key, now_ms()],
+    )?;
+    delete_key_rows(&tx)?;
+    tx.commit().map_err(|e| {
+        StoreError::Refused(format!(
+            "project {key}'s rows could not be removed from {}: {e}. Nothing was deleted, and the \
+             file this pass wrote was taken back",
+            split::LEGACY_FILE
+        ))
+    })?;
+    Ok(unreplayed)
+}
+
+/// One key's rows of every project table, out of the shared file. The `transcript_item` triggers
+/// refuse a DELETE, so they are dropped and put back from their own `sqlite_master` text; and
+/// `stable_prefix` keeps every row a project not carved yet still names (§ Table assignment
+/// duplicates it per file, so one prefix can be two projects').
+fn delete_key_rows(conn: &Connection) -> Result<()> {
+    let triggers = triggers_on(conn, split::PROJECT_TABLES)?;
+    for (name, _) in &triggers {
+        conn.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}"))?;
+    }
+    // Before the transcripts go, while the remaining projects' rows still say which prefixes they
+    // name: one another project's transcript holds is not this key's to delete.
+    conn.execute_batch(
+        "DELETE FROM stable_prefix
+          WHERE id IN (SELECT stable_prefix_id FROM transcript
+                        WHERE id IN (SELECT id FROM temp.mine_transcript))
+            AND NOT EXISTS (SELECT 1 FROM transcript t
+                             WHERE t.stable_prefix_id = stable_prefix.id
+                               AND t.id NOT IN (SELECT id FROM temp.mine_transcript))",
+    )?;
+    for table in split::PROJECT_TABLES {
+        // The prefix is done above, and a transcript's rows go before the transcript itself.
+        if matches!(*table, "stable_prefix" | "transcript") {
+            continue;
+        }
+        let Some(filter) = rows_of(table) else {
+            return Err(StoreError::Refused(format!(
+                "{table} is a project table by the table assignment and this pass has no way to \
+                 find its rows - nothing was deleted"
+            )));
+        };
+        conn.execute_batch(&format!("DELETE FROM {table}{}", filter.where_clause()))?;
+    }
+    // The transcript rows go after their items, and the prefixes above are already decided.
+    let transcript = rows_of("transcript").ok_or_else(|| {
+        StoreError::Refused("transcript: no row filter - nothing was deleted".to_string())
+    })?;
+    conn.execute_batch(&format!(
+        "DELETE FROM transcript{}",
+        transcript.where_clause()
+    ))?;
+    for (_, sql) in &triggers {
+        conn.execute_batch(sql)?;
+    }
+    Ok(())
+}
+
+/// Every trigger on one of these tables, with the text that recreates it: the delete above has to
+/// take them out of the way and put them back exactly as the file had them.
+fn triggers_on(conn: &Connection, tables: &[&str]) -> Result<Vec<(String, String)>> {
+    let list = tables
+        .iter()
+        .map(|table| format!("'{table}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut st = conn.prepare(&format!(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND sql IS NOT NULL \
+         AND tbl_name IN ({list}) ORDER BY name"
+    ))?;
+    let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+/// A transcript of a project not carved yet that is a fork of one of this key's: the delete would
+/// break a reference no file of the split layout can hold, so this is refused before anything
+/// leaves the shared file. A whole pass refuses the same shape at its own step 4.
+fn refuse_cross_key_forks(conn: &Connection) -> Result<()> {
+    let stray: Option<String> = conn
+        .query_row(
+            "SELECT id FROM transcript
+              WHERE id NOT IN (SELECT id FROM temp.mine_transcript)
+                AND parent_transcript_id IN (SELECT id FROM temp.mine_transcript)
+              LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match stray {
+        None => Ok(()),
+        Some(id) => Err(StoreError::Refused(format!(
+            "transcript {id} belongs to another project and forks this one's parent transcript, a \
+             reference two files cannot carry - neither project can be carved while it is there, \
+             and a whole pass refuses the same shape. Nothing was deleted from {}",
+            split::LEGACY_FILE
+        ))),
+    }
+}
+
+/// A carve's own debris: the file, and the journal beside it, because a half-written project file
+/// is worse than none and the next attempt would refuse it as a carved project.
+fn remove_written_file(path: &Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(appended(path, suffix));
+    }
+}
+
+/// `--finish` (`docs/store-split.md` § Carving one project, the last step): once every key is
+/// carved, `sessions.db` holds no project row and is renamed to the shared file P3 opens. The
+/// project tables go with the rename: the finished layout has them in the project files alone, and
+/// an empty `adjudication` table in `shared.db` is the thing the whole pass refuses by name.
+pub fn finish(
+    store: &Path,
+    data_dir: &Path,
+    host: &str,
+    alive: impl Fn(u32) -> bool,
+) -> Result<Finished> {
+    let shared = data_dir.join(split::SHARED_FILE);
+    if shared.is_file() {
+        return Err(StoreError::Refused(format!(
+            "{} is already there: this store has been finished, and a second rename would be a \
+             second shared file. Nothing was renamed",
+            shared.display()
+        )));
+    }
+    if !store.is_file() {
+        return Err(StoreError::Refused(format!(
+            "{} is not a store file - point this at the {} to finish",
+            store.display(),
+            split::LEGACY_FILE
+        )));
+    }
+    same_dir(store, data_dir)?;
+    let old = Store::open(store)?;
+    // The rename moves the file every daemon holds open, so this one step is the box's and runs
+    // with nothing writing. Every carve before it stopped one daemon.
+    let claims = writer_claims(&old)?;
+    let live = live_claims(&claims, host, alive);
+    if let Some(first) = live.first() {
+        let more = match live.len() - 1 {
+            0 => String::new(),
+            n => format!(", and {n} other claim(s)"),
+        };
+        return Err(StoreError::Refused(format!(
+            "session {} is still claimed by {} (pid {} on {}){more}: stop every daemon before the \
+             last step, which renames the file they all hold. Nothing was renamed",
+            first.session, first.owner, first.pid, first.host
+        )));
+    }
+    let carved = split::carved_keys(&old)?;
+    let plan = plan(&old)?;
+    let files = files_in(&data_dir.join(split::PROJECTS_DIR));
+    if carved.is_none() && files.is_empty() {
+        return Err(StoreError::Refused(format!(
+            "nothing has been carved out of {}: there is no project file under {} and no {} row. \
+             Carve a key first with `--project KEY`, and finish once every key is out",
+            store.display(),
+            data_dir.join(split::PROJECTS_DIR).display(),
+            split::CARVED_TABLE
+        )));
+    }
+    // A `carved_project` that is not there with project files on disk is a finish that stopped
+    // between its two halves: the drops are done and the rename is all that is left.
+    if let Some(carved) = &carved {
+        let left = uncarved(&plan, carved);
+        if !left.is_empty() {
+            let mut named = left.iter().take(8).cloned().collect::<Vec<_>>().join(", ");
+            if left.len() > 8 {
+                named.push_str(&format!(", and {} more", left.len() - 8));
+            }
+            return Err(StoreError::Refused(format!(
+                "{} project(s) are not carved yet: {named}. Carve each one with `--project KEY` \
+                 first - the shared file may hold no project's rows. Nothing was renamed",
+                left.len()
+            )));
+        }
+    }
+    drop(old);
+    let conn = Connection::open(store)?;
+    // The tables are empty and about to disappear, so this is the one connection in the crate
+    // that writes a store with `foreign_keys` off: dropping a parent first would otherwise be a
+    // constraint failure rather than a shorter file.
+    conn.pragma_update(None, "foreign_keys", false)?;
+    if carved.is_some() {
+        for table in split::PROJECT_TABLES {
+            let rows = count(&conn, table)?;
+            if rows > 0 {
+                return Err(StoreError::Refused(format!(
+                    "{table} still holds {rows} row(s) in {} and every key the index names is \
+                     carved: a project row belongs in a project file, so this store is not clean \
+                     enough to rename. Nothing was renamed",
+                    store.display()
+                )));
+            }
+        }
+    }
+    let tx = conn.unchecked_transaction()?;
+    for table in split::PROJECT_TABLES {
+        tx.execute_batch(&format!("DROP TABLE IF EXISTS {table}"))?;
+    }
+    tx.execute_batch(&format!("DROP TABLE IF EXISTS {}", split::CARVED_TABLE))?;
+    tx.commit()?;
+    // The journal travels with the file or the rename loses the last commits: a full checkpoint
+    // leaves nothing in it, and the two side files are then the file's to recreate.
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
+    drop(conn);
+    for suffix in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(appended(store, suffix));
+    }
+    std::fs::rename(store, &shared).map_err(|e| {
+        StoreError::Refused(format!(
+            "every key is carved and the project tables are dropped, but {} could not be renamed \
+             to {}: {e}. Run this again once that is fixed",
+            store.display(),
+            shared.display()
+        ))
+    })?;
+    Ok(Finished {
+        shared,
+        carved: carved
+            .map(|keys| keys.into_iter().collect())
+            .unwrap_or_default(),
+    })
+}
+
+/// A carve's data directory is the store's own: the record of a carve is a table in `sessions.db`,
+/// so a project file somewhere else is one no daemon of that folder would ever open.
+fn same_dir(store: &Path, data_dir: &Path) -> Result<()> {
+    let parent = store.parent().unwrap_or(Path::new("."));
+    match (
+        std::fs::canonicalize(parent),
+        std::fs::canonicalize(data_dir),
+    ) {
+        (Ok(here), Ok(that)) if here == that => Ok(()),
+        _ => Err(StoreError::Refused(format!(
+            "{} is not in {}: the carve keeps its record in {} and its project files in \
+             {}/{}, which must be one directory. Nothing was written",
+            store.display(),
+            data_dir.display(),
+            split::LEGACY_FILE,
+            data_dir.display(),
+            split::PROJECTS_DIR
+        ))),
+    }
+}
+
+/// The keys that still have project rows in the shared file: every key the index names that no
+/// carve recorded. A key whose sessions are all gone is not one - it has no rows to copy.
+fn uncarved(plan: &Plan, carved: &BTreeSet<String>) -> Vec<String> {
+    plan.by_key
+        .keys()
+        .filter(|key| !carved.contains(*key))
+        .cloned()
+        .collect()
+}
+
+/// The keys a store does hold, for a refusal that names them: a key is a hash, and a caller who
+/// typed one from memory deserves the list.
+fn or_keys(plan: &Plan) -> String {
+    let keys: Vec<&str> = plan.by_key.keys().map(String::as_str).collect();
+    match keys.is_empty() {
+        true => "none - the index holds no session".to_string(),
+        false => keys.join(", "),
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Sessions to keys (§ Migration, steps 1-2).
