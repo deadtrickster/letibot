@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use letibot_sessionlog::registry::Registry;
 use letibot_tokencore::store::{
@@ -109,12 +109,21 @@ struct Fixture {
 
 impl Fixture {
     fn new(tag: &str) -> Option<Self> {
-        let gguf = crate::vocab_gguf()?;
+        Self::with_vocab(tag, Some(crate::vocab_gguf()?))
+    }
+
+    /// A fixture for a test that asks no model for a token: the byte vocabulary, so what it
+    /// measures - a board, a clock, a pass - can be measured on a box with no GGUF.
+    fn unlettered(tag: &str) -> Option<Self> {
+        Self::with_vocab(tag, None)
+    }
+
+    fn with_vocab(tag: &str, gguf: Option<PathBuf>) -> Option<Self> {
         let dir = TempDir::new(tag);
         let repo = crate::mergequeue::serve::tests::repo(dir.path());
         let db = dir.path().join("sessions.db");
         let mut cfg = Config::for_this_box(dir.path());
-        cfg.vocab_gguf = Some(gguf);
+        cfg.vocab_gguf = gguf;
         // A temp store, never the daemon's own.
         cfg.store = Some(db.clone());
         cfg.session_id = "s-host".into();
@@ -460,4 +469,87 @@ fn the_daemon_has_a_clock_for_the_store_it_reads() {
     assert!(sessions.reviews_due(), "armed at open to now");
     assert!(!sessions.reviews_due(), "spending it arms the next");
     assert!(sessions.next_idle_at().is_some());
+}
+
+/// What a pass can be seen to leave behind: the board's own version, the events on the queue
+/// session's log, and the deadline its plan check is armed for.
+fn readings(sessions: &Sessions<'_>, f: &Fixture, queue: &str) -> (u64, usize, Option<Instant>) {
+    let version = sessions
+        .open
+        .get(queue)
+        .expect("the queue's session is open")
+        .board_version();
+    let events = f
+        .registry
+        .get(queue)
+        .expect("the queue's session has a hub")
+        .census()
+        .log_events;
+    (version, events, sessions.next_nag_at())
+}
+
+/// The pass runs every thirty seconds over a queue that is not moving, and a board that came out
+/// the same is neither a write on the session's log nor a reason to arm its check again. The row
+/// ARRIVING is the control: that is a write, so "nothing" below is a measurement.
+#[test]
+fn a_pass_over_a_board_that_did_not_move_writes_nothing() {
+    let Some(f) = Fixture::unlettered("unchanged") else {
+        return;
+    };
+    let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
+    f.claimed("m-mine", "keep the last record", &f.me());
+    let mut sessions = f.sessions(&parts, Ending::Running);
+    assert_eq!(
+        sessions.fill_gatekeeper_board(),
+        1,
+        "the control: a row that arrived IS a write"
+    );
+    let settled = readings(&sessions, &f, &f.host);
+    assert_eq!(
+        sessions.fill_gatekeeper_board(),
+        1,
+        "the row is still on the board"
+    );
+    assert_eq!(
+        readings(&sessions, &f, &f.host),
+        settled,
+        "a pass over a board that did not move wrote to the session's log, or re-armed its check"
+    );
+}
+
+/// `--no-queue`: a daemon with no queue to serve runs no review pass - no clock to spend, no
+/// queue session to open, and no board to rewrite. The control is the same fixture with the flag
+/// on, which does all three: without it these assertions would be about the fixture.
+#[test]
+fn a_no_queue_daemon_runs_no_review_pass() {
+    let Some(f) = Fixture::unlettered("no-queue") else {
+        return;
+    };
+    let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
+    let mut package = f.cfg.clone();
+    package.serve_queues = false;
+    let mut sessions = Sessions::open_first(&parts, package, f.registry.clone())
+        .expect("the daemon's own session opens");
+    assert!(
+        !sessions.reviews_due(),
+        "the review pass is not a no-queue daemon's to run"
+    );
+    assert!(
+        !sessions.ensure_gatekeeper().expect("nothing to open"),
+        "no queue, so no queue session"
+    );
+    assert!(
+        f.registry.get(&f.host).is_none(),
+        "and nothing else made one"
+    );
+    assert_eq!(sessions.fill_gatekeeper_board(), 0, "no board to fill");
+    assert_eq!(sessions.serve_reviews(), 0, "and no reviewer to start");
+    drop(sessions);
+    // The control: the same fixture serving the queue opens the session and is due at once.
+    let mut serving = f.sessions(&parts, Ending::Running);
+    assert!(
+        serving.reviews_due(),
+        "a daemon that serves the queue looks at its first pass"
+    );
+    assert!(f.registry.get(&f.host).is_some(), "and has the session");
 }

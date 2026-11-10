@@ -1087,6 +1087,13 @@ impl Harness {
         self.todos.snapshot()
     }
 
+    /// The board's version, which [`Harness::flush_todos`] compares: a caller outside the harness
+    /// can tell a pass that moved the board from one that wrote the same rows back over it. The
+    /// review pass is the caller - it runs every thirty seconds and must not arm a clock on nothing.
+    pub(crate) fn board_version(&self) -> u64 {
+        self.todos.version()
+    }
+
     /// This session's watcher set: what queues a background job's or a subagent's settlement for THIS
     /// session, whichever transcript it is speaking by then. A turn arms it through its own sink; this
     /// is for a caller that invokes a tool outside a turn and still wants it watched.

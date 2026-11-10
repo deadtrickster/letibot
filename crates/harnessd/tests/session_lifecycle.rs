@@ -417,6 +417,33 @@ fn a_daemon(tag: &str, park: Option<Duration>) -> Daemon {
     }
 }
 
+/// [`a_daemon`] with no model behind it: its canned answer is built out of real token ids, so it
+/// needs the box's GGUF, and a test that never asks a model does not. The byte vocabulary is then
+/// the whole apparatus, which is what lets the idle exit be measured where there is no GGUF.
+fn a_daemon_with_no_model(tag: &str) -> Daemon {
+    let dir = TempDir::new(tag);
+    let path = dir.path.join("sessions.db");
+    let mut cfg = config(ROOT, Endpoint::new("127.0.0.1", 1), &path);
+    cfg.vocab_gguf = None;
+    let parts = parts_for(&cfg);
+    let registry = Registry::new();
+    registry.set_source(
+        letibot_harnessd::sessions::StoreSessions::open(&cfg).expect("the store opens"),
+    );
+    registry
+        .create(ROOT, "the root", wiring(&cfg))
+        .expect("the root is created");
+    Daemon {
+        _dir: dir,
+        // Never asked: nothing in the test below starts a turn, and an empty script would be a
+        // panic only on the request that never comes.
+        stub: Stub::answering(vec![vec![]]),
+        parts,
+        cfg,
+        registry,
+    }
+}
+
 fn answered(sessions: &Sessions<'_>, handle: &str) -> bool {
     call(
         sessions,
@@ -777,5 +804,65 @@ fn a_daemon_with_no_idle_window_never_exits_on_its_own() {
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(sessions.idle_exit_refusal(), None, "nothing holds it");
     assert!(!sessions.idle_exit_due(), "and still it stays");
+    d.registry.close();
+}
+
+/// A package daemon's review pass runs whether or not its queue moves, and the gatekeeper's own
+/// board is not the daemon's activity: with nothing else on the box it still leaves after its
+/// window - `harnessd-c58394f21491.log`'s `grew s-gatekeeper-<key> events +4`, up for days.
+#[test]
+fn a_package_daemon_with_only_its_gatekeeper_idles_out() {
+    let _one = serial();
+    let window = Duration::from_millis(600);
+    let mut d = a_daemon_with_no_model("harnessd-idle-gatekeeper");
+    d.cfg.idle_exit_after = Some(window);
+    // The reviewers' tree is this fixture's own, and not named `CLONES_DIR`: the pass then sweeps
+    // nothing, and can never sweep a sibling's or the box's own.
+    let scratch = d._dir.path.clone();
+    d.cfg.review_clones = Some(scratch.join("review-clones"));
+    let mut sessions = Sessions::open_first(&d.parts, d.cfg.clone(), d.registry.clone())
+        .expect("the daemon opens");
+    assert!(
+        sessions
+            .ensure_gatekeeper()
+            .expect("the review queue's session opens"),
+        "the queue's session has to be there: its own bookkeeping is what this test is about"
+    );
+    let queue = sessions.review_session().to_string();
+    let hub = d.registry.get(&queue).expect("the queue's own hub");
+    let began = Instant::now();
+    let mut passes = 0;
+    let mut due = false;
+    while began.elapsed() < PATIENCE {
+        // The daemon's idle pass in its own order: the review pass on its clock, and then the look
+        // that decides whether anything still needs the daemon.
+        if sessions.reviews_due() {
+            sessions
+                .ensure_gatekeeper()
+                .expect("the queue's session stays open");
+            sessions.fill_gatekeeper_board();
+            sessions.serve_reviews();
+            passes += 1;
+        }
+        // And a write on the queue session's own log, which is what a pass over a queue that is
+        // not moving makes - said here rather than counted, so the test measures the idle clock
+        // and not whether this fixture's pass happened to write anything.
+        hub.publish(SessionEvent::TodosUpdated { todos: Vec::new() });
+        if sessions.idle_exit_due() {
+            due = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(passes > 0, "the review pass has to have run: {passes}");
+    assert!(
+        due,
+        "a daemon whose only company is its gatekeeper's own board never idled out of its \
+         {window:?} window"
+    );
+    assert!(
+        d.registry.get(&queue).is_some(),
+        "the queue's session is a session, not a reason to keep the daemon up"
+    );
     d.registry.close();
 }

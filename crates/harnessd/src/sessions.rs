@@ -709,9 +709,10 @@ impl<'a> Sessions<'a> {
             nag: cfg.leticode.nag_timings(),
             sweep_at: None,
             park_at: None,
-            // Due at once: the first idle pass looks. A daemon that started between a review's
-            // ask and its wake has the row and nothing else, and this is what finds it.
-            reviews_at: Some(Instant::now()),
+            // Due at once: the first idle pass looks, because a daemon that started between a
+            // review's ask and its wake has the row and nothing else. Never armed by one that
+            // serves no queue - a clock there would wake it twice a minute for nothing.
+            reviews_at: cfg.serve_queues.then(Instant::now),
             // Due at once, for the same reason one fact over: a session that comes up holding a
             // room item has it in the room's memory and nowhere else, so the first pass is what
             // puts the reminder on its board.
@@ -2609,6 +2610,12 @@ impl<'a> Sessions<'a> {
     /// `TodoNagClock::due_now`'s shape and for its reason: the disarm is before the work, so a pass
     /// that took longer than the interval does not fire again at once.
     pub fn reviews_due(&mut self) -> bool {
+        // A daemon that serves no queue has nothing to read: `--no-queue`, a one-shot and the room
+        // all arrive here, and none of them may open a gatekeeper or rewrite a board thirty
+        // seconds at a time. Every caller of the pass comes through this door.
+        if !self.base.serve_queues {
+            return false;
+        }
         let now = Instant::now();
         if self.reviews_at.is_some_and(|at| at > now) {
             return false;
@@ -2680,7 +2687,10 @@ impl<'a> Sessions<'a> {
     /// The body of [`Sessions::ensure_gatekeeper`], whose doc is this function's.
     fn open_the_gatekeeper(&mut self) -> Result<bool, HarnessError> {
         let queue = self.gatekeeper.clone();
-        if self.base.store.is_none()
+        // A daemon that serves no queue (`--no-queue`, a one-shot, the room) has nothing to
+        // review: a queue session there would only be a board for a pass it never runs.
+        if !self.base.serve_queues
+            || self.base.store.is_none()
             || self.open.contains_key(&queue)
             || self.courts.contains_key(&queue)
         {
@@ -2754,13 +2764,21 @@ impl<'a> Sessions<'a> {
             });
             return 0;
         }
-        let rows = match self.open.get_mut(&queue) {
-            Some(h) => h.fill_queue_board(),
+        let (rows, moved) = match self.open.get_mut(&queue) {
+            Some(h) => {
+                let was = h.board_version();
+                let rows = h.fill_queue_board();
+                (rows, h.board_version() != was)
+            }
             // The session did not open - said on the daemon's log by the caller of
             // `ensure_gatekeeper`. Nothing is lost: the next pass fills the board.
             None => return 0,
         };
-        self.rearm_todo_nag(&queue);
+        // A pass every thirty seconds over a queue that is not moving: a board that came out the
+        // same is not news, and arming the check on it is what made the session look busy for ever.
+        if moved {
+            self.rearm_todo_nag(&queue);
+        }
         rows
     }
 
@@ -3104,10 +3122,15 @@ impl<'a> Sessions<'a> {
             return false;
         }
         let now_ms = letibot_sessionlog::registry::now_ms();
+        // The review queue's own session does not count: the pass rewrites its board on every
+        // turn of its clock, and reading that as the daemon's newest event is what kept 71 package
+        // daemons up for days. A child's turn and `busy_here` still hold it, above.
+        let queue = self.gatekeeper.as_str();
         let newest_ms = self
             .registry
             .ids()
             .iter()
+            .filter(|id| id.as_str() != queue)
             .filter_map(|id| self.registry.get(id))
             .map(|h| h.status().last_ms)
             .max()
