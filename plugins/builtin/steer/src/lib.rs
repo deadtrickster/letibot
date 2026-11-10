@@ -1,4 +1,4 @@
-//! The harness's own turn-end decision, as the built-in `steer` layer (X14).
+//! The harness's own turn-end decision, as the built-in `steer` layer.
 //!
 //! ```jsonc
 //! // in

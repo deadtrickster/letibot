@@ -1,9 +1,6 @@
-//! The queue layer's policy, tested natively - no engine, no wasm, no store.
-//!
-//! Every test here is a claim the operator made about the pane it replaces: live work fills the
-//! frame and the past tense does not, a row says the one verb that would do something, the id is
-//! under the cursor and nowhere else, a row's act names the entry it is about, and the bar and the
-//! row agree about what `d` is called.
+//! The queue layer's policy, tested natively - no engine, no wasm, no store. Every test here is a
+//! claim the operator made about the pane it replaces: live work fills the frame and the past tense
+//! does not, a row says the one verb that would do something, and a row's act names its own entry.
 
 use super::*;
 use serde_json::json;
@@ -63,8 +60,8 @@ fn a_merge(id: &str, state: &str, live: bool) -> Value {
     })
 }
 
-/// **The fixture the operator's screenshot is about**: two rows the queue is working on and twelve
-/// it has finished with.
+/// The fixture the operator's screenshot is about: two rows the queue is working on and twelve it has
+/// finished with.
 fn a_queue() -> Value {
     let mut reviews = vec![
         a_review("r-live-1", "reviewing", true),
@@ -96,7 +93,7 @@ fn a_queue() -> Value {
     })
 }
 
-/// **One line of the chrome**, by its label - the `lines` block a panel draws above the rows.
+/// One line of the chrome, by its label - the `lines` block a panel draws above the rows.
 fn chrome_line<'a>(view: &'a Value, label: &str) -> Option<&'a Value> {
     view["panels"].as_array()?.iter().find_map(|p| {
         p["summary"].as_array()?.iter().find_map(|b| {
@@ -121,7 +118,7 @@ fn view_of(feed: &Value, folded: &[(&str, bool)]) -> Value {
     serde_json::from_str(&text).expect("and it is JSON")
 }
 
-/// **One cell's text**, whether it is the plain string spelling or `{"text","role"}` - a cell that
+/// One cell's text, whether it is the plain string spelling or `{"text","role"}` - a cell that
 /// carries a role is an object, and reading it as a string would make every assertion here vacuous.
 fn text_of(cell: &Value) -> String {
     match cell {
@@ -153,8 +150,8 @@ fn rows(view: &Value) -> Vec<&Value> {
     out
 }
 
-/// **The operator's screenshot, fixed**: the frame is the live rows and ONE folded line saying how
-/// many finished rows there are. Twelve history rows are not free rows competing with two live ones.
+/// The operator's screenshot, fixed: the frame is the live rows and one folded line saying how many
+/// finished rows there are. Twelve history rows are not free rows competing with two live ones.
 #[test]
 fn live_rows_fill_the_frame_and_history_is_one_folded_line() {
     let feed = a_queue();
@@ -179,7 +176,7 @@ fn live_rows_fill_the_frame_and_history_is_one_folded_line() {
         json!({"fold": true}),
         "and Enter folds it, which the host's `folded` map keeps"
     );
-    // **And nothing of the twelve is drawn** - this is the assertion the screenshot was about.
+    // And nothing of the twelve is drawn - this is the assertion the screenshot was about.
     assert!(
         !view.to_string().contains("r-done-"),
         "a finished row is behind the fold, not on the frame"
@@ -195,8 +192,8 @@ fn live_rows_fill_the_frame_and_history_is_one_folded_line() {
     assert!(titles.contains(&"2 in review · 1 to land"), "{titles:?}");
 }
 
-/// **The strip follows the view**: `tab` puts the merge queue first, so the header and the rows
-/// agree about which half is drawn.
+/// The strip follows the view: `tab` puts the merge queue first, so the header and the rows agree
+/// about which half is drawn.
 #[test]
 fn the_strip_names_the_drawn_view_first() {
     let mut feed = a_queue();
@@ -211,8 +208,8 @@ fn the_strip_names_the_drawn_view_first() {
     assert!(titles.contains(&"1 to land · 2 in review"), "{titles:?}");
 }
 
-/// **The empty sentence belongs to the view** - the two queues arrive differently, and one
-/// sentence for both said nothing about which half was empty.
+/// The empty sentence belongs to the view - the two queues arrive differently, and one sentence for
+/// both said nothing about which half was empty.
 #[test]
 fn the_empty_sentence_is_the_views_own() {
     for (view, want) in [
@@ -232,7 +229,7 @@ fn the_empty_sentence_is_the_views_own() {
     }
 }
 
-/// **The fold, opened**: the history rows appear, and the same line says how to close it.
+/// The fold, opened: the history rows appear, and the same line says how to close it.
 #[test]
 fn opening_the_fold_draws_the_history_and_says_how_to_close_it() {
     let feed = a_queue();
@@ -274,7 +271,7 @@ fn a_row_says_the_verb_that_would_move_it_and_why_when_none_would() {
         "the actions that WOULD move it, and `restart` left out because it would not"
     );
 
-    // **A row nothing would move** says why, in the same one phrase.
+    // A row nothing would move says why, in the same one phrase.
     let mut done = a_review("r-old", "landed", false);
     done["verbs"] = json!([
         {"verb": "approve", "why": "it has landed"},
@@ -311,7 +308,7 @@ fn facts_of(row: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// **The address is under the cursor and on no other row** - the id exists so it can be typed into
+/// The address is under the cursor and on no other row - the id exists so it can be typed into
 /// `/queue approve`, and repeating it on every row was half of what made the pane illegible.
 #[test]
 fn the_address_is_under_the_cursor_and_on_no_other_row() {
@@ -332,7 +329,7 @@ fn the_address_is_under_the_cursor_and_on_no_other_row() {
             .any(|u| u.starts_with("row r-live-2 · the head it judged 1f2a3b4c5d")),
         "the id and sha are under the cursor: {under:?}"
     );
-    // **No other row carries its id.**
+    // No other row carries its id.
     for row in drawn.iter().filter(|r| r["id"] != "r-live-2") {
         let text = row.to_string();
         let id = row["id"].as_str().unwrap();
@@ -349,8 +346,8 @@ fn the_address_is_under_the_cursor_and_on_no_other_row() {
     );
 }
 
-/// **Every live row's act names ITS OWN entry** - the whole of `Act::Verb`, and the reason a plugin
-/// row can now say which entry the person's `a`/`v`/`r`/`d` mean.
+/// Every live row's act names its own entry - the whole of `Act::Verb`, and the reason a plugin row
+/// can now say which entry the person's `a`/`v`/`r`/`d` mean.
 #[test]
 fn every_live_row_names_its_own_entry() {
     let view = view_of(&a_queue(), &[]);
@@ -379,7 +376,7 @@ fn every_live_row_names_its_own_entry() {
     }
 }
 
-/// **The verbs are the daemon's words**, so the row and the key bar cannot disagree - the operator's
+/// The verbs are the daemon's words, so the row and the key bar cannot disagree - the operator's
 /// `d drop` against `d rm` was two names for one key on one screen.
 #[test]
 fn the_verbs_are_the_daemons_words() {
@@ -387,13 +384,13 @@ fn the_verbs_are_the_daemons_words() {
     let text = view.to_string();
     assert!(!text.contains("\"drop\""), "the pane never says `drop`");
     assert!(text.contains("approve"), "and it says the daemon's words");
-    // **The legend is where the meaning lives**, once, instead of on every row, and it names the
-    // action a person would use - `withdraw`, the row's word, not the head's `rm`.
+    // The legend is where the meaning lives, once, instead of on every row, and it names the action
+    // a person would use - `withdraw`, the row's word, not the head's `rm`.
     let legend = view["legend"].as_object().expect("a legend");
     for verb in ["approve", "veto", "restart", "withdraw"] {
         assert!(legend.contains_key(verb), "the legend documents `{verb}`");
     }
-    // **No row carries the legend's prose.** A row says `approve`; the sentence is the legend's.
+    // No row carries the legend's prose. A row says `approve`; the sentence is the legend's.
     for row in rows(&view) {
         let text = row.to_string();
         assert!(
@@ -403,9 +400,8 @@ fn the_verbs_are_the_daemons_words() {
     }
 }
 
-/// **A red target is an alarm and its own review is history** - the parent's correction: a
-/// `RED TARGET` row that was withdrawn or superseded is not an alarm, and the alarm is the TARGET's
-/// health, on its own line.
+/// A red target is an alarm and its own review is history - a `RED TARGET` row that was withdrawn or
+/// superseded is not an alarm, and the alarm is the target's health, on its own line.
 #[test]
 fn a_red_target_is_a_line_of_its_own_and_its_old_review_is_history() {
     let mut feed = a_queue();
@@ -426,7 +422,8 @@ fn a_red_target_is_a_line_of_its_own_and_its_old_review_is_history() {
     assert!(text.contains("the gate's step 2 failed"), "{text}");
 }
 
-/// **A stale lease is the alarm the operator asked for** - `STALE` and how long it has been silent.
+/// A stale lease is the alarm the operator asked for - the word `stale`, and how long it has been
+/// silent.
 #[test]
 fn a_stale_lease_says_so_and_names_the_lifetime_it_passed() {
     let mut feed = a_queue();
@@ -442,9 +439,9 @@ fn a_stale_lease_says_so_and_names_the_lifetime_it_passed() {
     assert_eq!(stale["role"], "attention");
 }
 
-/// **A healthy lease is drawn too, with its owner and a fresh heartbeat** - the half the first cut
-/// dropped: the pane spoke only when a lease was STALE, so *nobody is serving this* and *it is
-/// served and well* looked the same, and the host pane this replaces said both.
+/// A healthy lease is drawn too, with its owner and a fresh heartbeat - the half the first cut
+/// dropped: the pane spoke only when a lease was stale, so *nobody is serving this* and *it is served
+/// and well* looked the same, and the host pane this replaces said both.
 #[test]
 fn a_healthy_lease_names_its_owner_and_its_heartbeat() {
     let view = view_of(&a_queue(), &[]);
@@ -459,15 +456,15 @@ fn a_healthy_lease_names_its_owner_and_its_heartbeat() {
         lease["tail"], "beat 4s ago",
         "and how long since it last said so"
     );
-    // **And no stale line** - the legend names the word, so the chrome is what is asked.
+    // And no stale line - the legend names the word, so the chrome is what is asked.
     assert!(
         chrome_line(&view, "nobody is serving letibot").is_none(),
         "a fresh lease is not an alarm"
     );
 }
 
-/// **No lease at all is a sentence, not an absence** - *nothing is serving the queues* is the fact
-/// a person needs, and a chrome that draws nothing when it has nothing says neither.
+/// No lease at all is a sentence, not an absence - *nothing is serving the queues* is the fact a
+/// person needs, and a chrome that draws nothing when it has nothing says neither.
 #[test]
 fn no_lease_says_nothing_is_serving_the_queues() {
     let mut feed = a_queue();
@@ -481,7 +478,7 @@ fn no_lease_says_nothing_is_serving_the_queues() {
 }
 
 /// The synthetic first frame a daemon asks every built-in pane at a session's door
-/// (`PluginHost::ensure_builtin_panes`). Nothing to draw is a pane that SAYS so: passing here is a
+/// (`PluginHost::ensure_builtin_panes`). Nothing to draw is a pane that says so: passing here is a
 /// pane that vanishes, and a vanished pane reads as one somebody closed.
 #[test]
 fn a_host_with_no_feed_is_a_pane_that_says_so() {
@@ -501,8 +498,8 @@ fn a_host_with_no_feed_is_a_pane_that_says_so() {
     );
 }
 
-/// **A row names its repository when the scope holds more than one** - and only then. The answer is
-/// the host's (`scope.several`), never a reading of the scope's prose.
+/// A row names its repository when the scope holds more than one - and only then. The answer is the
+/// host's (`scope.several`), never a reading of the scope's prose.
 #[test]
 fn a_row_names_its_repository_only_when_several_are_in_scope() {
     let mut feed = a_queue();
@@ -519,8 +516,8 @@ fn a_row_names_its_repository_only_when_several_are_in_scope() {
         "the repository is on the row: {:?}",
         facts_of(live)
     );
-    // **And with one repository in scope it is not repeated** - even when the words contain a
-    // separator, which is exactly what the prose-reading cut got wrong.
+    // And with one repository in scope it is not repeated - even when the words contain a separator,
+    // which is exactly what the prose-reading cut got wrong.
     let mut one = a_queue();
     one["scope"]["several"] = json!(false);
     one["scope"]["words"] = json!("this session's repositories, one project — letibot");
@@ -537,7 +534,7 @@ fn a_row_names_its_repository_only_when_several_are_in_scope() {
     );
 }
 
-/// **A queued landing says what it is waiting for**, in the pane's own words.
+/// A queued landing says what it is waiting for, in the pane's own words.
 #[test]
 fn a_queued_landing_says_what_it_waits_for() {
     let mut feed = a_queue();
@@ -560,8 +557,8 @@ fn a_queued_landing_says_what_it_waits_for() {
     );
 }
 
-/// **No queue is a sentence, not an empty frame** - *nothing is in flight* and *the head has not
-/// asked yet* are different facts, and only the layer knows which its list is.
+/// No queue is a sentence, not an empty frame - *nothing is in flight* and *the head has not asked
+/// yet* are different facts, and only the layer knows which its list is.
 #[test]
 fn an_idle_queue_says_so_rather_than_drawing_nothing() {
     let mut feed = a_queue();
@@ -584,8 +581,8 @@ fn an_idle_queue_says_so_rather_than_drawing_nothing() {
     );
 }
 
-/// **A row is one line**: the cells are the state, what it is about, and the state's words - and
-/// the reason is the faint line under it, which is the shape the declutter branch established.
+/// A row is one line: the cells are the state, what it is about, and the state's words - and the
+/// reason is the faint line under it.
 #[test]
 fn a_row_is_one_line_with_the_reason_under_it() {
     let view = view_of(&a_queue(), &[]);
@@ -610,8 +607,8 @@ fn a_row_is_one_line_with_the_reason_under_it() {
     );
 }
 
-/// **A target's own review reads as a target**, never as a branch - `main's own tip`, in words,
-/// because `RED TARGET main` was a code a newcomer had to be told.
+/// A target's own review reads as a target, never as a branch - `main's own tip`, in words, because
+/// `RED TARGET main` was a code a newcomer had to be told.
 #[test]
 fn a_target_review_says_red_target() {
     let mut feed = a_queue();
@@ -663,9 +660,9 @@ fn a_gating_row_says_which_step_its_gate_is_on() {
     );
 }
 
-/// **A `gating` row's `rm` is the verb that acts**, now that the queue lets a running landing be
-/// taken out of line - a row that offered only `restart (the queue is gating it right now)` had no
-/// way out of the one state a queue gets stuck in.
+/// A `gating` row's `rm` is the verb that acts, now that the queue lets a running landing be taken
+/// out of line - a row that offered only `restart (the queue is gating it right now)` had no way out
+/// of the one state a queue gets stuck in.
 #[test]
 fn a_gating_rows_verb_is_withdraw() {
     let mut feed = a_queue();
@@ -704,8 +701,8 @@ fn a_target(state: &str) -> Value {
     })
 }
 
-/// **A gating target is a line of its own** - the fact every queued landing of that repository
-/// waits for, which no row of either queue carries.
+/// A gating target is a line of its own - the fact every queued landing of that repository waits for,
+/// which no row of either queue carries.
 #[test]
 fn a_gating_target_says_its_gate_is_running() {
     let mut feed = a_queue();
@@ -717,8 +714,8 @@ fn a_gating_target_says_its_gate_is_running() {
     assert_eq!(line["role"], "pending");
 }
 
-/// **A green target is drawn, quietly** - where the target stands. A pane that never said it
-/// left the reader to infer health from the absence of a line.
+/// A green target is drawn, quietly - where the target stands. A pane that never said it left the
+/// reader to infer health from the absence of a line.
 #[test]
 fn a_green_target_says_where_it_stands() {
     let mut feed = a_queue();
@@ -729,8 +726,8 @@ fn a_green_target_says_where_it_stands() {
     assert_eq!(line["role"], "faint");
 }
 
-/// **A gating landing between two steps still says the gate is on it** - the sha it was rebased
-/// to and how long the state has stood, which is all the snapshot holds between steps.
+/// A gating landing between two steps still says the gate is on it - the sha it was rebased to and
+/// how long the state has stood, which is all the snapshot holds between steps.
 #[test]
 fn a_gating_landing_between_steps_says_the_gate_is_on_it() {
     let mut feed = a_queue();
@@ -791,8 +788,8 @@ fn under_of(feed: &Value, id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// **The picked row carries its last three moves**, newest last - the recent history a person
-/// reads to know the row has not always been where it is.
+/// The picked row carries its last three moves, newest last - the recent history a person reads to
+/// know the row has not always been where it is.
 #[test]
 fn the_picked_row_carries_its_last_three_moves() {
     let mut feed = a_queue();
@@ -819,8 +816,8 @@ fn the_picked_row_carries_its_last_three_moves() {
     assert!(moves.iter().all(|m| !m.contains("r-live-2")), "{under:?}");
 }
 
-/// **A review read whole**: every field, the failure with no attempt to its name, the verdict
-/// with its sha and author, and the ask the row was produced under.
+/// A review read whole: every field, the failure with no attempt to its name, the verdict with its
+/// sha and author, and the ask the row was produced under.
 #[test]
 fn a_review_detail_carries_every_field() {
     let mut feed = a_queue();
@@ -850,8 +847,8 @@ fn a_review_detail_carries_every_field() {
     assert!(!detail.contains("attempts"), "zero is not a fact: {detail}");
 }
 
-/// **A landing read whole**: the approval with its author and review, the gate's steps with the
-/// whole output of the one that failed, and every move.
+/// A landing read whole: the approval with its author and review, the gate's steps with the whole
+/// output of the one that failed, and every move.
 #[test]
 fn a_merge_detail_carries_the_gate_and_its_steps() {
     let mut feed = a_queue();
@@ -896,8 +893,8 @@ fn a_running_gate(step: usize, of: usize, still_ms: u64, tail: &str) -> Value {
     })
 }
 
-/// **The three verdicts about a tail**: it moved, it has not moved in ten minutes, and there is
-/// no snapshot new enough to say either. The last must not be dressed up as *stuck*.
+/// The three verdicts about a tail: it moved, it has not moved in ten minutes, and there is no
+/// snapshot new enough to say either. The last must not be dressed up as stuck.
 #[test]
 fn the_detail_of_a_running_gate_says_whether_it_moved() {
     let mut feed = a_queue();
@@ -906,7 +903,7 @@ fn the_detail_of_a_running_gate_says_whether_it_moved() {
     row["running_gate"] = a_running_gate(2, 4, 5_000, "building\nlinking");
     feed["merges"] = json!([row]);
     feed["reviews"] = json!([]);
-    // **The snapshot is fresh**: the tail moved five seconds ago.
+    // The snapshot is fresh: the tail moved five seconds ago.
     let moved = detail_of(&feed, "m-gating");
     assert!(
         moved.contains("gate       step 2 of 4 · running 6m"),
@@ -926,7 +923,7 @@ fn the_detail_of_a_running_gate_says_whether_it_moved() {
     );
     assert!(moved.contains("  linking"), "{moved}");
 
-    // **Ten minutes of the same bytes**: it may be stuck.
+    // Ten minutes of the same bytes: it may be stuck.
     feed["merges"][0]["running_gate"] = a_running_gate(2, 4, 20 * 60_000, "building");
     let stuck = detail_of(&feed, "m-gating");
     assert!(
@@ -934,14 +931,14 @@ fn the_detail_of_a_running_gate_says_whether_it_moved() {
         "{stuck}"
     );
 
-    // **No snapshot for half a minute**: the daemon has not replied, and the head's own silence
-    // is not a fact about the gate.
+    // No snapshot for half a minute: the daemon has not replied, and the head's own silence is not
+    // a fact about the gate.
     feed["at_ms"] = json!(0u64);
     let silent = detail_of(&feed, "m-gating");
     assert!(silent.contains("no snapshot for 28m"), "{silent}");
     assert!(!silent.contains("may be stuck"), "{silent}");
 
-    // **Nothing written yet** is said as itself.
+    // Nothing written yet is said as itself.
     feed["merges"][0]["running_gate"] = a_running_gate(1, 4, 0, "");
     feed["at_ms"] = json!(1_700_000u64);
     let empty = detail_of(&feed, "m-gating");
@@ -952,8 +949,8 @@ fn the_detail_of_a_running_gate_says_whether_it_moved() {
     );
 }
 
-/// **A queued landing's detail reads the TARGET's gate**, named as whose step it is - the other
-/// way a queue sits still with nothing failing.
+/// A queued landing's detail reads the target's gate, named as whose step it is - the other way a
+/// queue sits still with nothing failing.
 #[test]
 fn a_queued_landings_detail_waits_on_the_targets_gate() {
     let mut feed = a_queue();
@@ -972,8 +969,8 @@ fn a_queued_landings_detail_waits_on_the_targets_gate() {
     assert!(detail.contains("  test result: ok. 18 passed"), "{detail}");
 }
 
-/// **The row whose detail is open is drawn even when it is history**, so the overlay the host
-/// holds outlives the row landing or being withdrawn under it.
+/// The row whose detail is open is drawn even when it is history, so the overlay the host holds
+/// outlives the row landing or being withdrawn under it.
 #[test]
 fn the_open_row_is_drawn_even_when_it_is_history() {
     let mut feed = a_queue();

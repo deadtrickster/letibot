@@ -1,11 +1,6 @@
-//! Claude Code's own transcripts, as a tool the model can call - the first user of the `tool_`
-//! seam and of `read:<path>`.
-//!
-//! Claude Code keeps every conversation as `~/.claude/projects/<project>/<session>.jsonl`, one
-//! JSON object per line, no index. A model asked what was decided yesterday can guess or ask the
-//! operator; `bash` is not an option, since a `grep` over a 116 MB file is what this tool exists
-//! to prevent. Four operations - `sessions`, `search`, `read`, `outline` - each bounded, and each
-//! saying when it truncated: a partial answer read as a complete one is the failure this avoids.
+//! Claude Code's own transcripts, as a tool the model can call - the first user of the `tool_` seam
+//! and of `read:<path>`. Every conversation is one `.jsonl` with no index, so four bounded
+//! operations (`sessions`, `search`, `read`, `outline`) each say when they truncated.
 
 use letibot_guest_abi as abi;
 use serde::Deserialize;
@@ -39,7 +34,7 @@ struct In {
     #[serde(default)]
     looks: Vec<Value>,
     /// What this layer carried over from the previous round - the host keeps it and hands it back
-    /// unchanged (§1, principle 5: a plugin is stateless between calls).
+    /// unchanged, because a plugin is stateless between calls.
     #[serde(default)]
     state: Value,
 }
@@ -924,7 +919,7 @@ struct File {
     mtime: u64,
 }
 
-/// **The directory one call lists first**: a project's, or - with `all_projects` - the root that
+/// The directory one call lists first: a project's, or - with `all_projects` - the root that
 /// holds every project.
 fn listing_root(args: &Args, feeds: &Feeds) -> Result<String, (String, String)> {
     if args.all_projects {

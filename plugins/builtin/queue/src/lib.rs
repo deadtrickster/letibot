@@ -1,11 +1,6 @@
-//! The queue, as a built-in plugin - what the merge queue is DOING, then what it has finished.
-//!
-//! This is the queue's one renderer: the head hosts this layer's answer and draws nothing of its
-//! own. Two things, never mixed: the `live` rows the queue is working on now, one line each with
-//! the reason it is where it is, and `finished` behind one folded line that says how many there are.
-//! A row says one thing, and it is the verb that would DO something - the feed carries the answer,
-//! so this layer does not re-derive `mergequeue::verbs`' rule. A second copy of it drifts.
-//! One feed, `queue`, and no clock: `SystemTime::now()` is a panic on `wasm32-unknown-unknown`.
+//! The queue, as a built-in plugin: the rows the merge queue is working on now, one line each with the
+//! reason it is where it is, then what it has finished behind one folded line. This is the queue's one
+//! renderer, and a row says the verb that would do something rather than a second copy of the feed's rule.
 
 use letibot_guest_abi as abi;
 use letibot_plugin::pane::{Act, Cell, Fold, Input, Role};
@@ -25,7 +20,7 @@ const GATE_QUIET_MS: u64 = 10 * 60 * 1000;
 /// head is reading its own clock and not the daemon's, and a verdict would be invented.
 const GATE_SNAPSHOT_STALE_MS: u64 = 30_000;
 
-/// **The feed, as this layer reads it.**
+/// The feed, as this layer reads it.
 #[derive(Debug, Default, Deserialize)]
 struct Feed {
     #[serde(default)]
@@ -190,7 +185,7 @@ struct Merge {
     fixes: Option<String>,
     #[serde(default)]
     waits_on: Option<String>,
-    /// **The step its gate is running now** - `Some` only while the row is `gating`.
+    /// The step its gate is running now - `Some` only while the row is `gating`.
     #[serde(default)]
     running_gate: Option<RunningGate>,
     #[serde(default)]
@@ -258,9 +253,9 @@ struct Target {
 struct Lease {
     #[serde(default)]
     repository: String,
-    /// **Who holds it**, as the pane names the holder: `lab (pid 4242, harnessd 0.3.0)`. The
-    /// claim's opaque owner string is in the feed too and this layer does not read it - the two
-    /// halves a person recognises are the host and the pid.
+    /// Who holds it, as the pane names the holder: `lab (pid 4242, harnessd 0.3.0)`. The claim's
+    /// opaque owner string is in the feed too and this layer does not read it - the two halves a
+    /// person recognises are the host and the pid.
     #[serde(default)]
     pid: u64,
     #[serde(default)]
@@ -297,7 +292,7 @@ struct Move {
     why: String,
 }
 
-/// **One row this layer is about to draw.**
+/// One row this layer is about to draw.
 struct Out {
     id: String,
     cells: Vec<Cell>,
@@ -308,10 +303,9 @@ struct Out {
     detail: String,
 }
 
-/// The phrase a person can act on, from the feed's own answer - what they could DO about the row.
-/// One phrase per row is the whole design: four verbs of prose per row made the pane this replaced
-/// illegible. The words are the action's own (`withdraw`, not `rm`), because the row is read by
-/// somebody who has never been told what the head's letters mean.
+/// The phrase a person can act on, from the feed's own answer - what they could do about the row. One
+/// phrase per row is the whole design: the words are the action's own (`withdraw`, not `rm`), because
+/// the row is read by somebody who has never been told what the head's letters mean.
 fn what_you_can_do(verbs: &[VerbWhy]) -> Option<String> {
     let mut acts: Vec<&str> = verbs
         .iter()
@@ -334,8 +328,8 @@ fn what_you_can_do(verbs: &[VerbWhy]) -> Option<String> {
         };
         return Some(format!("you can {phrase} it"));
     }
-    // **Nothing would move it** - say why, in the words of the verb a stuck row is stuck ON:
-    // `restart` is the one a person reaches for first.
+    // Nothing would move it - say why, in the words of the verb a stuck row is stuck on: `restart`
+    // is the one a person reaches for first.
     let restart = verbs
         .iter()
         .find(|v| v.verb == "restart" && !v.why.is_empty());
@@ -343,7 +337,7 @@ fn what_you_can_do(verbs: &[VerbWhy]) -> Option<String> {
     any.map(|v| format!("nothing to do: {}", v.why))
 }
 
-/// **`4m`** - an age, from the milliseconds the feed carries. The guest has no clock, so this is
+/// `4m` - an age, from the milliseconds the feed carries. The guest has no clock, so this is
 /// arithmetic and nothing else.
 fn age(ms: u64) -> String {
     if ms < 60_000 {
@@ -355,11 +349,9 @@ fn age(ms: u64) -> String {
     }
 }
 
-/// **A state as a sentence a person reads.** The pane's rows are read by somebody who has never
-/// been told what `rejected` or `cannot_decide` mean, so every state the two queues have says what
-/// it is about the branch and not which column of the store it is in. A state this layer does not
-/// know falls back to the daemon's own word (`given`) rather than to a guess - a newer daemon's
-/// states arrive in the feed, and a feed without one reads the underscore out of the state.
+/// A state as a sentence a person reads. The pane's rows are read by somebody who has never been
+/// told what `rejected` or `cannot_decide` mean, so every state says what it is about the branch
+/// rather than which column of the store it is in; an unknown state falls back to the daemon's word.
 fn state_words(state: &str, given: &str) -> String {
     match state {
         // The review queue.
@@ -403,8 +395,8 @@ fn one_line(text: &str) -> String {
         .to_string()
 }
 
-/// **What the row is about** - the branch, or the target whose own tip is red. A target's own
-/// review is not a branch and never reads like one.
+/// What the row is about - the branch, or the target whose own tip is red. A target's own review is
+/// not a branch and never reads like one.
 fn what_of(kind: &str, branch: &str, target: &str) -> String {
     if kind == "target" {
         format!("{target}'s own tip")
@@ -413,8 +405,8 @@ fn what_of(kind: &str, branch: &str, target: &str) -> String {
     }
 }
 
-/// **The reason the row is where it is**, in the order a person reads it: a fix the queue asked
-/// for, then the words it was given, then the state's own verdict.
+/// The reason the row is where it is, in the order a person reads it: a fix the queue asked for,
+/// then the words it was given, then the state's own verdict.
 fn reason_of(
     fixes: Option<&str>,
     verdict: Option<&str>,
@@ -433,12 +425,12 @@ fn reason_of(
     one_line(evidence)
 }
 
-/// **One live review, one line.** The cells are what it is and what state it is in; the facts
-/// under them are how long it has been there, whose repository it is, and what a person could do.
+/// One live review, one line. The cells are what it is and what state it is in; the facts under them
+/// are how long it has been there, whose repository it is, and what a person could do.
 fn review_row(r: &Review, feed: &Feed, show_repo: bool, picked: bool) -> Out {
     let mut facts: Vec<Cell> = Vec::new();
-    // **The owner only when the claim is not the serving daemon's** - the serving daemon's name on
-    // every row says nothing.
+    // The owner only when the claim is not the serving daemon's - the serving daemon's name on every
+    // row says nothing.
     if !r.owner.is_empty() && !r.owner_is_serving {
         facts.push(Cell::role(format!("served by {}", r.owner), Role::Faint));
     }
@@ -458,8 +450,8 @@ fn review_row(r: &Review, feed: &Feed, show_repo: bool, picked: bool) -> Out {
         &r.reasons,
         &r.evidence,
     )];
-    // **The address is only under the cursor.** The id exists so it can be typed into
-    // `/queue approve`; repeating it on every row was half of what made the pane illegible.
+    // The address is only under the cursor. The id exists so it can be typed into `/queue approve`;
+    // repeating it on every row was half of what made the pane illegible.
     if picked {
         under.push(format!("row {} · the head it judged {}", r.id, r.short_sha));
         under.extend(moves_under(feed, &r.id, 3));
@@ -473,14 +465,14 @@ fn review_row(r: &Review, feed: &Feed, show_repo: bool, picked: bool) -> Out {
         facts,
         under,
         open: None,
-        // **The act that names this entry** - `a`/`v`/`r`/`d` act on it, whatever the host's own
-        // cursor is over. The verb word is what the manifest gates.
+        // The act that names this entry - `a`/`v`/`r`/`d` act on it, whatever the host's own cursor is
+        // over. The verb word is what the manifest gates.
         enter: Some(Act::verb_on(primary_verb(&r.verbs), &r.id)),
         detail: review_detail(r, feed),
     }
 }
 
-/// **One live landing, one line.**
+/// One live landing, one line.
 fn merge_row(m: &Merge, feed: &Feed, show_repo: bool, picked: bool) -> Out {
     let mut facts: Vec<Cell> = Vec::new();
     if !m.owner.is_empty() && !m.owner_is_serving {
@@ -497,9 +489,9 @@ fn merge_row(m: &Merge, feed: &Feed, show_repo: bool, picked: bool) -> Out {
         facts.push(Cell::role(v, Role::Pending));
     }
     let mut under = vec![match &m.waits_on {
-        // **What it is waiting for**, in the pane's own words (`gate running on 1f2a3b4 for 2m`).
+        // What it is waiting for, in the pane's own words (`gate running on 1f2a3b4 for 2m`).
         Some(w) => format!("waits for the gate: {w}"),
-        // **Or what its own gate is doing**, when the row is the one gating.
+        // Or what its own gate is doing, when the row is the one gating.
         None => match &m.running_gate {
             Some(g) => format!(
                 "the gate is on step {} of {}{}",
@@ -555,8 +547,8 @@ fn moves_under(feed: &Feed, id: &str, n: usize) -> Vec<String> {
     mine[from..].iter().map(|m| move_line(m)).collect()
 }
 
-/// **One move of one row**, in the words a reader needs: from where, to where, when, and who did
-/// it - the actor's id stripped of the `reviewer:` prefix the store keys it by.
+/// One move of one row, in the words a reader needs: from where, to where, when, and who did it -
+/// the actor's id stripped of the `reviewer:` prefix the store keys it by.
 fn move_line(m: &Move) -> String {
     format!(
         "{} → {} · {} ago · {} said: {}",
@@ -572,8 +564,8 @@ fn move_line(m: &Move) -> String {
     )
 }
 
-/// **The verb a row leads with** - the first that would move it, else the one a stuck row is stuck
-/// on. The act's `verb` is what the manifest gates; the keys the person presses are their own.
+/// The verb a row leads with - the first that would move it, else the one a stuck row is stuck on.
+/// The act's `verb` is what the manifest gates; the keys the person presses are their own.
 fn primary_verb(verbs: &[VerbWhy]) -> String {
     verbs
         .iter()
@@ -646,7 +638,7 @@ fn chrome(feed: &Feed) -> Vec<Value> {
     for t in &feed.targets {
         let where_ = format!("{} in {}", t.target, t.repository);
         match t.state.as_str() {
-            // **The alarm the pane leads with**, in words: the target's own tip failed its gate, so
+            // The alarm the pane leads with, in words: the target's own tip failed its gate, so
             // nothing lands until it is green again.
             "red" => lines.push(json!({
                 "label": format!("{where_} is red"),
@@ -654,7 +646,7 @@ fn chrome(feed: &Feed) -> Vec<Value> {
                 "tail": format!("{} ago", age(t.since_ms)),
                 "role": "failure",
             })),
-            // **A tip nobody could judge**: not red, and nothing lands on it either.
+            // A tip nobody could judge: not red, and nothing lands on it either.
             "timed_out" | "blocked" => lines.push(json!({
                 "label": format!("{where_} could not be gated"),
                 "value": one_line(&t.evidence),
@@ -679,7 +671,7 @@ fn chrome(feed: &Feed) -> Vec<Value> {
                 "value": format!("green at {} - branches land on it", t.short_sha),
                 "role": "faint",
             })),
-            // **A state this layer does not know** - the daemon's own word, never silence: a target
+            // A state this layer does not know - the daemon's own word, never silence: a target
             // branch whose health arrived from a newer daemon is still where the queue leads.
             _ => lines.push(json!({
                 "label": format!("{where_} {}", t.state_words),
@@ -689,9 +681,9 @@ fn chrome(feed: &Feed) -> Vec<Value> {
             })),
         }
     }
-    // ---- Who serves each repository, and how alive it is. **Every lease, healthy or not**: a
-    // pane that only spoke when one was stale left a person unable to tell *nobody is serving
-    // this* from *it is being served and nobody said so*.
+    // ---- Who serves each repository, and how alive it is. Every lease, healthy or not: a pane that
+    // only spoke when one was stale left a person unable to tell *nobody is serving this* from *it
+    // is being served and nobody said so*.
     for l in &feed.leases {
         let who = format!("{} (pid {}, {})", l.host, l.pid, l.build);
         if l.stale {
@@ -747,7 +739,7 @@ fn minutes(ms: u64) -> String {
     format!("{}m", ms / 60_000)
 }
 
-/// **How much a step has written**, in the unit a person reads - `4 KB`, not `4096 byte(s)`.
+/// How much a step has written, in the unit a person reads - `4 KB`, not `4096 byte(s)`.
 fn written(bytes: u64) -> String {
     if bytes < 1024 {
         format!(" · {bytes} bytes written")
@@ -769,10 +761,9 @@ fn empty_of(view: &str) -> &'static str {
     }
 }
 
-/// **The pane a host hands no `queue` feed**: one sentence naming the missing half, because an
-/// empty queue and a broken host look identical on a screen and mean opposite things. A layer that
-/// passed instead would draw nothing at all, and a pane that vanishes is a pane somebody thinks
-/// they closed - the shape `pane_nicks` already answers with.
+/// The pane a host hands no `queue` feed: one sentence naming the missing half, because an empty
+/// queue and a broken host look identical on a screen and mean opposite things. A layer that passed
+/// instead would draw nothing at all, and a pane that vanishes is a pane somebody thinks they closed.
 fn no_feed() -> Value {
     json!({
         "title": "the merge queue: branches in review, and landings gated onto main",
@@ -796,14 +787,14 @@ fn answer(bytes: &[u8]) -> Option<String> {
     };
     let feed: Feed = serde_json::from_value(value.clone()).ok()?;
     let folded = input.folded.get("finished").copied().unwrap_or(false);
-    // **One repository in scope, or several?** A row names its repository only when there is more
-    // than one to tell apart. The answer is the host's (`scope.several`), because the host is what
+    // One repository in scope, or several? A row names its repository only when there is more than
+    // one to tell apart. The answer is the host's (`scope.several`), because the host is what
     // resolved the scope.
     let show_repo = feed.scope.several;
 
     let mut rows: Vec<Value> = Vec::new();
-    // **The queue the person is looking at goes first.** `tab` is the head's, and a pane whose
-    // header did not say which half was drawn would be a pane the strip lied about.
+    // The queue the person is looking at goes first. `tab` is the head's, and a pane whose header
+    // did not say which half was drawn would be a pane the strip lied about.
     let reviews_first = feed.view != "merge";
     let live_review = || feed.reviews.iter().filter(|r| r.live);
     let live_merge = || feed.merges.iter().filter(|m| m.live);
@@ -828,8 +819,8 @@ fn answer(bytes: &[u8]) -> Option<String> {
         }
     }
     let live = rows.len();
-    // **The entry whose detail is being read is drawn even when it is history**, so the overlay
-    // the host holds over the pane outlives the row landing or being withdrawn under it.
+    // The entry whose detail is being read is drawn even when it is history, so the overlay the host
+    // holds over the pane outlives the row landing or being withdrawn under it.
     if !feed.open.is_empty() && !folded {
         if let Some(r) = feed.reviews.iter().find(|r| r.id == feed.open && !r.live) {
             push_review(&mut rows, r);
@@ -838,8 +829,8 @@ fn answer(bytes: &[u8]) -> Option<String> {
             push_merge(&mut rows, m);
         }
     }
-    // **The history, only when it is open.** The folded row is always drawn; its rows are not,
-    // which is what keeps twelve finished landings from burying two live ones.
+    // The history, only when it is open. The folded row is always drawn; its rows are not, which is
+    // what keeps twelve finished landings from burying two live ones.
     if folded {
         let mut done: Vec<Value> = Vec::new();
         for r in feed.reviews.iter().filter(|r| !r.live).take(HISTORY_MAX) {
@@ -860,9 +851,9 @@ fn answer(bytes: &[u8]) -> Option<String> {
             "summary": [{"lines": lines}],
         }));
     }
-    // **Both queues' counts, the drawn view first** - the strip that says which half `tab` is on.
-    // The words are what the halves ARE: a branch in review is waiting for a reviewer, a landing
-    // is on its way through the gate.
+    // Both queues' counts, the drawn view first - the strip that says which half `tab` is on. The
+    // words are what the halves are: a branch in review is waiting for a reviewer, a landing is on
+    // its way through the gate.
     let strip = |first: &str, n: usize, other: &str, m: usize| format!("{n} {first} · {m} {other}");
     panels.push(json!({
         "id": "rows",
@@ -885,8 +876,8 @@ fn answer(bytes: &[u8]) -> Option<String> {
             "summary": [{"tree": {"rows": [row_value(&history_row(&feed, folded))]}}],
         }));
     }
-    // **The one bar that is not a row's.** A row says what a person could do about IT; the legend
-    // says what each verb means in general, which is where the prose belongs.
+    // The one bar that is not a row's. A row says what a person could do about it; the legend says
+    // what each verb means in general, which is where the prose belongs.
     let view = json!({
         "title": "the merge queue: branches in review, and landings gated onto main",
         "panels": panels,
@@ -911,8 +902,8 @@ fn field(k: &str, v: &str) -> String {
     }
 }
 
-/// **A review read whole** - what it is, every field the feed carries in the words a person reads,
-/// then its moves.
+/// A review read whole - what it is, every field the feed carries in the words a person reads, then
+/// its moves.
 fn review_detail(r: &Review, feed: &Feed) -> String {
     let mut l: Vec<String> = Vec::new();
     l.push(field(
@@ -954,8 +945,8 @@ fn review_detail(r: &Review, feed: &Feed) -> String {
             .filter(|s| !s.is_empty())
             .map(|s| s.chars().take(10).collect())
             .unwrap_or_else(|| "?".to_string());
-        // **Who reviewed what, and what came of it** - the one sentence a verdict owes a reader
-        // who was not there.
+        // Who reviewed what, and what came of it - the one sentence a verdict owes a reader who was
+        // not there.
         let by = r
             .verdict_by
             .as_deref()
@@ -988,8 +979,8 @@ fn review_detail(r: &Review, feed: &Feed) -> String {
     l.join("\n")
 }
 
-/// **A landing read whole** - its fields, the gate it runs or waits on, its steps with their
-/// output, and its moves.
+/// A landing read whole - its fields, the gate it runs or waits on, its steps with their output, and
+/// its moves.
 fn merge_detail(m: &Merge, feed: &Feed) -> String {
     let mut l: Vec<String> = Vec::new();
     l.push(field(

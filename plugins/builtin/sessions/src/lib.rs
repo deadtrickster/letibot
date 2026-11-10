@@ -1,11 +1,6 @@
-//! The session list, as a built-in plugin.
-//!
-//! The head that draws this pane has a list of its own, and the point of this module is that it
-//! should not have to: what each row says, what `WAITING ON YOU` means, which rows fold and what
-//! Enter does are policy, so a project says so in one small layer that edits what this one answers.
-//! One feed, `sessions`, and the tree's two facts (`project`, `system`) are the feed's: which
-//! project a workspace belongs to needs the whole list, which the head has and a guest does not.
-//! Every line starts CLOSED, except the chain to where this head is standing.
+//! The session list, as a built-in plugin. What each row says, which rows fold and what Enter does are
+//! policy, so a project says so in one small layer rather than in the head. Every line starts closed,
+//! except the chain to where this head is standing.
 
 use letibot_guest_abi as abi;
 use letibot_plugin::pane::{Act, Cell, Fold, Role};
@@ -30,9 +25,8 @@ const SYSTEM: [(&str, &str); 3] = [
 /// How far up a parent chain this list walks before it decides the chain loops.
 const MAX_DEPTH: usize = 64;
 
-/// **How far in a row is drawn** - the renderer caps the indent at three steps (`rano`'s tree
-/// list, and a name pushed four steps in is off the right edge), and the head's own copy of this
-/// tree caps at the same number, so the two pictures are one.
+/// How far in a row is drawn - the renderer caps the indent at three steps, and the head's own copy
+/// of this tree caps at the same number, so the two pictures are one.
 const MAX_INDENT: usize = 3;
 
 /// The branch a walk is inside - the project, and the `system` group when the walk is under
@@ -125,8 +119,8 @@ struct Session {
     /// The operator has paused its idle plan-check.
     #[serde(default)]
     nags_paused: bool,
-    /// **The project this session is drawn under** - the key its row's project line is folded by,
-    /// and the name that line says. Both come from the head, which is where the rule lives.
+    /// The project this session is drawn under - the key its row's project line is folded by, and the
+    /// name that line says. Both come from the head, which is where the rule lives.
     #[serde(default)]
     project: String,
     #[serde(default)]
@@ -134,16 +128,15 @@ struct Session {
     /// `own`, `recent` or `older`: the top-level group the head put the project in.
     #[serde(default)]
     bucket: String,
-    /// **Which group under `system` this row belongs to** (`gatekeepers`, `reviewers`,
-    /// `keepers`), or `None` for a session of the project's own tree.
+    /// Which group under `system` this row belongs to (`gatekeepers`, `reviewers`, `keepers`), or
+    /// `None` for a session of the project's own tree.
     #[serde(default)]
     system: Option<String>,
 }
 
-/// One row this layer is about to draw - and the row as the wire spells it: this struct is what
-/// `serde_json` writes, so a row is built once instead of into a `Value` tree and then serialized
-/// out of it. A row costs a handful of allocations; the tree cost twenty more per row of them, and
-/// that is the fuel a few hundred rows do not have.
+/// One row this layer is about to draw - and the row as the wire spells it, so a row is built once
+/// instead of into a `Value` tree and then serialized out of it. The tree cost twenty allocations a
+/// row, and that is the fuel a few hundred rows do not have.
 #[derive(Serialize)]
 struct Out {
     id: String,
@@ -188,8 +181,8 @@ struct Summary {
 #[derive(Serialize)]
 struct Tree {
     rows: Vec<Out>,
-    /// **The plugin's own sentence for an empty list**, because *the daemon has not answered yet*
-    /// and *this project keeps no such rows* are two different facts.
+    /// The plugin's own sentence for an empty list, because *the daemon has not answered yet* and
+    /// *this project keeps no such rows* are two different facts.
     empty: &'static str,
 }
 
@@ -197,10 +190,9 @@ struct Tree {
 const EMPTY: &str = "none listed yet — the daemon has not answered, or this head is replaying a \
                     recorded log and has no daemon to ask.";
 
-/// What one call needs besides the feed itself - and, beside the feed, the three indexes a walk
-/// reads once per row. Every one of them was a scan of the whole list when this pane trapped on a
-/// daemon's own session list: a few hundred rows is a few hundred scans per call, and a call's
-/// fuel is what a trap is made of.
+/// What one call needs besides the feed itself: the three indexes a walk reads once per row. Every one
+/// of them was a scan of the whole list when this pane trapped on a daemon's own session list, and a
+/// call's fuel is what a trap is made of.
 struct Ctx<'a> {
     sessions: &'a [Session],
     fleet: &'a [Fleet],
@@ -292,8 +284,8 @@ impl<'a> Ctx<'a> {
         key == format!("{project}/system") || key == format!("{project}/system/{group}")
     }
 
-    /// Whether session `i`'s parent is on this feed **and drawn in this branch** - the rule that
-    /// decides whether a row is a root of the branch or a child inside it.
+    /// Whether session `i`'s parent is on this feed and drawn in this branch - the rule that decides
+    /// whether a row is a root of the branch or a child inside it.
     fn parent_in(&self, i: usize, project: &str, system: Option<&str>) -> bool {
         self.sessions[i]
             .parent
@@ -302,7 +294,7 @@ impl<'a> Ctx<'a> {
             .is_some_and(|p| self.in_branch(p, Some((project, system))))
     }
 
-    /// **The projects this feed holds, in the order it lists them** - the key and the name to draw.
+    /// The projects this feed holds, in the order it lists them - the key and the name to draw.
     fn projects(&self, bucket: &str) -> Vec<(&str, &str)> {
         let mut out: Vec<(&str, &str)> = Vec::new();
         let mut seen: HashSet<&str> = HashSet::new();
@@ -331,8 +323,8 @@ impl<'a> Ctx<'a> {
             .is_some_and(|s| s.project == project && s.system.as_deref() == system)
     }
 
-    /// Whether session `i` is drawn under `parent` **in this branch** - the fold glyph is about the
-    /// tree inside a row, so a child in another branch is not a reason for a `+`.
+    /// Whether session `i` is drawn under `parent` in this branch - the fold glyph is about the tree
+    /// inside a row, so a child in another branch is not a reason for a `+`.
     fn kids_in(&self, parent: &str, branch: Branch<'_>) -> bool {
         self.kids
             .get(parent)
@@ -494,7 +486,7 @@ fn push_project(
     if !open {
         return;
     }
-    // **The project's own tree** - the sessions nobody spawned, and their children.
+    // The project's own tree - the sessions nobody spawned, and their children.
     for &i in members {
         if ctx.sessions[i].system.is_some() || ctx.parent_in(i, project, None) {
             continue;
@@ -512,7 +504,7 @@ fn push_project(
             Some((project, None)),
         );
     }
-    // **The `system` branch**, when this project has one - and no line at all when it has not.
+    // The `system` branch, when this project has one - and no line at all when it has not.
     let system: Vec<usize> = members
         .iter()
         .copied()
@@ -555,8 +547,8 @@ fn push_project(
             continue;
         }
         for &i in &group_members {
-            // **A row is drawn once**, under its parent when that parent is in this same
-            // group; anything else is a root of the group's tree.
+            // A row is drawn once, under its parent when that parent is in this same group;
+            // anything else is a root of the group's tree.
             if ctx.parent_in(i, project, Some(group)) {
                 continue;
             }
@@ -582,7 +574,7 @@ fn node_row(key: String, depth: usize, title: String, legend: &str, open: bool) 
         id: key,
         depth: depth.min(MAX_INDENT),
         number: None,
-        // **A project's line is a PATH**, which is somebody's too - the same rule as a row's words.
+        // A project's line is a path, which is somebody's too - the same rule as a row's words.
         cells: vec![Cell::role(clean(&title), Role::Strong)],
         facts: Vec::new(),
         under: if legend.is_empty() {
@@ -617,8 +609,8 @@ fn session_row(ctx: &Ctx<'_>, at: usize, depth: usize, number: usize, open: Opti
     }
 }
 
-/// **Whether this row has a fold, and which way** - about the tree *inside the branch it is drawn
-/// in*: a `-` over a row would promise rows this list does not hold.
+/// Whether this row has a fold, and which way - about the tree *inside the branch it is drawn in*:
+/// a `-` over a row would promise rows this list does not hold.
 fn has_fold(ctx: &Ctx<'_>, at: usize, branch: Branch<'_>) -> Option<Fold> {
     let id = ctx.sessions[at].id.as_str();
     ctx.kids_in(id, branch).then(|| ctx.fold_state(id))
@@ -637,9 +629,8 @@ fn children(
     force: bool,
     branch: Branch<'_>,
 ) {
-    // **A row's children are drawn when it is OPENED, and not before** - the head's own rule:
-    // a collapsed default is what keeps thirty subagents from burying four conversations, and
-    // `None` (nobody has said) is closed.
+    // A row's children are drawn when it is opened, and not before - a collapsed default is what
+    // keeps thirty subagents from burying four conversations, and `None` is closed.
     let depth = depth.min(MAX_INDENT);
     let open = force || ctx.opened(parent) == Some(true);
     let Some(kids) = ctx.kids.get(parent) else {
@@ -654,7 +645,7 @@ fn children(
         if !open && !ctx.path.contains(&s.id) {
             continue;
         }
-        // **The number is the n-th SESSION DRAWN**, carried through the whole walk: a subtree that
+        // The number is the n-th session drawn, carried through the whole walk: a subtree that
         // numbered itself would hand two rows the same number.
         *number += 1;
         let n = *number;
@@ -678,8 +669,8 @@ fn name_of(s: &Session) -> String {
     } else {
         format!("{} · {name}", s.slug)
     };
-    // **A session waiting on YOU says so, louder and first**: a person who is being waited on has
-    // to see it from the list rather than by attaching to every session to find out.
+    // A session waiting on you says so, louder and first: a person who is being waited on has to see
+    // it from the list rather than by attaching to every session to find out.
     let name = match s.waits_on {
         0 => name,
         1 => format!("{name} · WAITING ON YOU"),
@@ -690,9 +681,9 @@ fn name_of(s: &Session) -> String {
     } else {
         name
     };
-    // **A title is somebody's, and a control character in it would be measured one way and drawn
-    // another** - the same rule the under line is drawn with, and the head's `row_name` is the
-    // same sentence.
+    // A title is somebody's, and a control character in it would be measured one way and drawn
+    // another - the same rule the under line is drawn with, and the head's `row_name` is the same
+    // sentence.
     clean(&name)
 }
 
@@ -781,11 +772,9 @@ fn short_id(id: &str) -> &str {
     if tail.len() >= 6 { tail } else { id }
 }
 
-/// **The input this layer reads**: the envelope's own fields, and the `sessions` feed TYPED on the
-/// way in. `letibot_plugin::pane::Input` holds `feeds` as a `Value` tree, so reading the feed from it
-/// parses a daemon's whole session list twice - the second of the two costs is what made this pane
-/// exhaust a call's fuel and trap (`docs/plugin-extension-points.md` §5, the lesson P6 learned on
-/// the chat window). A field this layer does not read is not named here, and serde skips it.
+/// The input this layer reads: the envelope's own fields, and the `sessions` feed typed on the way
+/// in. The SDK's `pane::Input` holds `feeds` as a `Value` tree, so reading the feed from it parses a
+/// daemon's whole session list twice, and the second pass is what made this pane exhaust its fuel.
 #[derive(Deserialize)]
 struct Ask {
     #[serde(default)]
@@ -800,8 +789,8 @@ struct Feeds {
     sessions: Option<Feed>,
 }
 
-/// **The pane a host hands no `sessions` feed**: one line naming the missing half, because an empty
-/// list and a broken host look identical on a screen and mean opposite things.
+/// The pane a host hands no `sessions` feed: one line naming the missing half, because an empty list
+/// and a broken host look identical on a screen and mean opposite things.
 fn no_feed() -> View {
     View {
         title: TITLE,
@@ -827,8 +816,8 @@ const TITLE: &str = "sessions in this daemon";
 /// below it (or the head's own list) answers.
 fn answer(bytes: &[u8]) -> Option<String> {
     let ask: Ask = serde_json::from_slice(bytes).ok()?;
-    // **A feed the host did not hand is a screen that says so.** Passing would draw nothing at all,
-    // and a pane that vanishes is a pane somebody thinks they closed.
+    // A feed the host did not hand is a screen that says so. Passing would draw nothing at all, and
+    // a pane that vanishes is a pane somebody thinks they closed.
     let Some(feed) = ask.feeds.sessions else {
         return serde_json::to_string(&no_feed()).ok();
     };

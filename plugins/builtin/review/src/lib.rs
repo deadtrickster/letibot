@@ -1,8 +1,6 @@
 //! The reviewer's brief, as a built-in layer: what a `gatekeeper` child is told before it judges a
-//! branch (X18 of the wide review, rank 6 of §4.1). It says exactly what
-//! `letibot_tools::gatekeeper::native_policy` says — that copy is the fallback a project's layer or a
-//! trap falls to — so a project's review policy is a file now. No capabilities: the words come from
-//! the input.
+//! branch. It says exactly what `letibot_tools::gatekeeper::native_policy` says, and that copy is the
+//! fallback a project's layer or a trap falls to, so a project's review policy is a file.
 
 use letibot_guest_abi as abi;
 use letibot_plugin::review::{Brief, BriefIn, Entry};

@@ -1,11 +1,6 @@
-//! The room's pane, tested where the policy lives.
-//!
-//! The rows, the marks, the words and the four verbs are what a project overrides and what the
-//! operator reads, so they are tested here rather than through an engine: this module is a
-//! `cdylib` for the host and an `rlib` for these, and nothing below knows a wasm ABI exists.
-//! The verb on a row is the assertion that matters: the host performs `claim`, `release`, `abandon`
-//! and `rule` on the entry a row names, and `View::validate_for` refuses an undeclared verb - so a
-//! row carrying the wrong verb would be a pane whose keys act on the wrong thing.
+//! The room's pane, tested where the policy lives: the rows, the marks, the words and the four verbs.
+//! The verb on a row is the assertion that matters, because the host performs `claim`, `release`,
+//! `abandon` and `rule` on the entry a row names, and a wrong verb would act on the wrong thing.
 
 use super::*;
 use serde_json::json;
@@ -30,8 +25,8 @@ fn feed(rows: Value, questions: Value) -> Feed {
         "lease_ms": 90_000,
         "threshold": 3,
         "unreadable": null,
-        // **A host that may restart the room, and has not restarted it yet** - the fixture every
-        // other test reads, so a row that grows a key nobody asked for shows up here.
+        // A host that may restart the room, and has not restarted it yet - the fixture every other
+        // test reads, so a row that grows a key nobody asked for shows up here.
         "restart": {"available": true, "why": null, "marker": null},
         "tags": rows,
         "questions": questions,
@@ -68,7 +63,7 @@ fn item(id: u64, body: &str, state: &str, more: Value) -> Value {
     row
 }
 
-/// **Every row of every panel, by id** - what the assertions below walk.
+/// Every row of every panel, by id - what the assertions below walk.
 fn rows(view: &Value) -> Vec<Value> {
     fn walk(rows: &[Value], out: &mut Vec<Value>) {
         for row in rows {
@@ -89,7 +84,7 @@ fn rows(view: &Value) -> Vec<Value> {
     out
 }
 
-/// **A cell's words**, whichever spelling it took: a plain string, or `{"text", "role"}` when it
+/// A cell's words, whichever spelling it took: a plain string, or `{"text", "role"}` when it
 /// carries a role. A test that read `as_str` only would compare against empty strings and pass.
 fn cells_of(row: &Value, which: &str) -> Vec<String> {
     row[which]
@@ -117,8 +112,8 @@ fn row_with(view: &Value, id: &str) -> Value {
         })
 }
 
-/// **The pane's rows, on the three items a queue is read for**: a tag with two of them, one claimed
-/// with the age of its beat, and an abandoned one with its count.
+/// The pane's rows, on the three items a queue is read for: a tag with two of them, one claimed with
+/// the age of its beat, and an abandoned one with its count.
 #[test]
 fn a_tag_draws_its_items_with_the_beat_age_and_the_count() {
     let feed = feed(
@@ -143,7 +138,7 @@ fn a_tag_draws_its_items_with_the_beat_age_and_the_count() {
     );
     let view = view(&feed);
 
-    // **A tag row, then its items** - the queue per tag, which is the shape of the whole thing.
+    // A tag row, then its items - the queue per tag, which is the shape of the whole thing.
     let ram = row_with(&view, "t:ram");
     assert_eq!(ram["children"].as_array().unwrap().len(), 2);
     assert_eq!(ram["cells"][0], json!({"text": "`ram`", "role": "strong"}));
@@ -154,18 +149,18 @@ fn a_tag_draws_its_items_with_the_beat_age_and_the_count() {
         "an item is drawn once, under its own tag"
     );
 
-    // **The claimed one**: who holds it, how long, and the age of the beat.
+    // The claimed one: who holds it, how long, and the age of the beat.
     let claimed = row_with(&view, "i2");
     let facts = cells_of(&claimed, "facts");
     assert!(facts.contains(&"held by s-b".to_string()), "{facts:?}");
     assert!(facts.contains(&"30s".to_string()), "held for: {facts:?}");
     assert!(facts.contains(&"beat 2s".to_string()), "{facts:?}");
-    // **A claim somebody else holds offers no key**: `claim` would be refused `Busy` and `release`
-    // would be refused `NotHeld`, so the row carries neither.
+    // A claim somebody else holds offers no key: `claim` would be refused `Busy` and `release` would
+    // be refused `NotHeld`, so the row carries neither.
     assert_eq!(claimed["enter"], json!(null));
     assert_eq!(claimed["actions"], json!([]));
 
-    // **The abandoned one says how many it has lost**, and it is claimable again.
+    // The abandoned one says how many it has lost, and it is claimable again.
     let abandoned = row_with(&view, "i3");
     let facts = cells_of(&abandoned, "facts");
     assert!(facts.contains(&"2 lost".to_string()), "{facts:?}");
@@ -183,14 +178,14 @@ fn a_tag_draws_its_items_with_the_beat_age_and_the_count() {
         abandoned["under"]
     );
 
-    // **The open one leads with `claim`**, and offers nothing else.
+    // The open one leads with `claim`, and offers nothing else.
     let open = row_with(&view, "i1");
     assert_eq!(open["enter"], json!({"verb": "claim", "id": "i1"}));
     assert_eq!(open["actions"], json!([]));
 }
 
-/// **A row this session holds leads with `release` and offers `x` for an abandonment** - two
-/// intentions on one room verb, which is the only place two of the four controls share a row.
+/// A row this session holds leads with `release` and offers `x` for an abandonment - two intentions
+/// on one room verb, which is the only place two of the four controls share a row.
 #[test]
 fn a_row_this_session_holds_leads_with_release_and_offers_abandon() {
     let feed = feed(
@@ -220,7 +215,7 @@ fn a_row_this_session_holds_leads_with_release_and_offers_abandon() {
     );
 }
 
-/// **A frozen item offers nothing** - it is not claimable, and its question is the `a` panel.
+/// A frozen item offers nothing - it is not claimable, and its question is the `a` panel.
 #[test]
 fn a_frozen_item_says_so_and_offers_no_key() {
     let feed = feed(
@@ -243,8 +238,8 @@ fn a_frozen_item_says_so_and_offers_no_key() {
     );
 }
 
-/// **The badge is the room's counts, in the role that makes a person open the pane** - a frozen item
-/// or an open question is attention; a held one is pending; an idle room is faint.
+/// The badge is the room's counts, in the role that makes a person open the pane - a frozen item or
+/// an open question is attention; a held one is pending; an idle room is faint.
 #[test]
 fn the_badge_counts_what_the_room_is_waiting_on() {
     let mut frozen = feed(json!([]), json!([]));
@@ -274,8 +269,8 @@ fn the_badge_counts_what_the_room_is_waiting_on() {
     );
 }
 
-/// **Each of the four verbs appears on the row that would do something**, which is this layer's
-/// half of the round trip: the host performs them, the layer names them.
+/// Each of the four verbs appears on the row that would do something, which is this layer's half of
+/// the round trip: the host performs them, the layer names them.
 #[test]
 fn the_four_controls_are_each_on_the_row_that_would_move() {
     let feed = feed(
@@ -322,8 +317,8 @@ fn the_four_controls_are_each_on_the_row_that_would_move() {
         decisions.contains(&("q4:drop".into(), "q4:drop".into())),
         "{decisions:?}"
     );
-    // **One `hand` row per session the room has met**, because a hand names one and the room
-    // refuses a name it has never seen.
+    // One `hand` row per session the room has met, because a hand names one and the room refuses a
+    // name it has never seen.
     for session in ["s-a", "s-b", "s-room-abc"] {
         let want = format!("q4:hand:{session}");
         assert!(
@@ -342,8 +337,8 @@ fn the_four_controls_are_each_on_the_row_that_would_move() {
     }
 }
 
-/// **The identity is drawn, verbatim** - the sentence that keeps *restarted clean* and *restarted
-/// empty* apart, and the reason a pane is trusted at all.
+/// The identity is drawn, verbatim - the sentence that keeps *restarted clean* and *restarted empty*
+/// apart, and the reason a pane is trusted at all.
 #[test]
 fn the_room_says_what_it_is_and_who_arbitrates_it() {
     let feed = feed(json!([]), json!([]));
@@ -353,7 +348,7 @@ fn the_room_says_what_it_is_and_who_arbitrates_it() {
     assert!(drawn.contains("no item store"), "{drawn}");
     assert!(drawn.contains("s-room-abc"), "{drawn}");
     assert!(drawn.contains("connected"), "the arbiter is up: {drawn}");
-    // **An arbiter that is not connected is the one thing a person must see** - its questions wait.
+    // An arbiter that is not connected is the one thing a person must see - its questions wait.
     let mut down = feed_of(json!({
         "identity": "the room on /tmp/room.sock — started 4s ago",
         "arbiter": {"session": "s-room-abc", "up": false},
@@ -365,8 +360,8 @@ fn the_room_says_what_it_is_and_who_arbitrates_it() {
     assert!(drawn.contains("\"attention\""), "{drawn}");
 }
 
-/// **An empty room is not a silent one**: the tree says what an empty queue means here, and the
-/// identity above it says how long the room has been up.
+/// An empty room is not a silent one: the tree says what an empty queue means here, and the identity
+/// above it says how long the room has been up.
 #[test]
 fn an_empty_room_says_that_emptiness_is_what_a_start_looks_like() {
     let mut empty = feed(json!([]), json!([]));
@@ -450,8 +445,8 @@ fn the_restart_control_is_a_declared_row_and_is_not_offered_without_a_supervisor
     assert_eq!(offered["panels"][2]["key"], json!("s"));
     assert_eq!(offered["panels"][2]["id"], json!("server"));
 
-    // **A host that may not restart the room offers no key** - the coordinator's own daemon is
-    // the case: a restart from its pane would kill the feed that reports it.
+    // A host that may not restart the room offers no key - the coordinator's own daemon is the case:
+    // a restart from its pane would kill the feed that reports it.
     let mut none = feed(json!([]), json!([]));
     none.restart.available = false;
     none.restart.why = Some(
@@ -473,8 +468,8 @@ fn the_restart_control_is_a_declared_row_and_is_not_offered_without_a_supervisor
     );
 }
 
-/// **A room that could not be read draws one panel saying why**, not an empty queue - and the
-/// restart stays on the pane, because a room nobody can read is the one most likely to be dead.
+/// A room that could not be read draws one panel saying why, not an empty queue - and the restart
+/// stays on the pane, because a room nobody can read is the one most likely to be dead.
 #[test]
 fn an_unreadable_room_says_so_instead_of_drawing_an_empty_queue() {
     let mut broken = feed(json!([]), json!([]));
@@ -492,8 +487,8 @@ fn an_unreadable_room_says_so_instead_of_drawing_an_empty_queue() {
             .unwrap()
             .contains("harnessd --room")
     );
-    // **The control is still there**, on the panel that needs nothing from the room: an unreadable
-    // room is the one a person restarts.
+    // The control is still there, on the panel that needs nothing from the room: an unreadable room
+    // is the one a person restarts.
     assert_eq!(view["panels"][1]["id"], json!("server"));
     assert_eq!(
         row_with(&view, "restart")["enter"],
@@ -502,7 +497,7 @@ fn an_unreadable_room_says_so_instead_of_drawing_an_empty_queue() {
     );
 }
 
-/// **A host that hands no feed is told apart from a room with nothing in it.**
+/// A host that hands no feed is told apart from a room with nothing in it.
 #[test]
 fn no_feed_is_its_own_sentence() {
     let view = no_feed();
@@ -557,9 +552,8 @@ fn every_act_names_one_of_the_five_controls() {
     }
 }
 
-/// **A tag with an agent says who it is, and a tag with none says that** - the operator's
-/// requirement, drawn: *"a tag with an agent says so (who it is, whether it is up, its re-seat
-/// count), and a tag with none says that too rather than looking the same"*.
+/// A tag with an agent says who it is, and a tag with none says that too - a tag row with no owner
+/// must not look the same as one whose agent is known.
 #[test]
 fn a_tag_row_says_who_owns_it_or_that_nobody_does() {
     let feed = feed(
@@ -588,14 +582,14 @@ fn a_tag_row_says_who_owns_it_or_that_nobody_does() {
         "and how many times it had to come back: {said}"
     );
 
-    // **A tag nobody owns says so**, in its own words - not a blank column, which would read as
-    // *an agent, details unknown*.
+    // A tag nobody owns says so, in its own words - not a blank column, which would read as *an
+    // agent, details unknown*.
     let disk = cells_of(&row_with(&first, "t:disk"), "facts").join(" · ");
     assert!(disk.contains("no agent"), "{disk}");
     assert!(!disk.contains("re-seated"), "{disk}");
 
-    // **And an agent that is not connected is drawn as down**, in the role that makes a person
-    // look: a tag whose agent died is a queue nobody is ruling on.
+    // And an agent that is not connected is drawn as down, in the role that makes a person look: a
+    // tag whose agent died is a queue nobody is ruling on.
     let down = feed_of(json!({
         "now_ms": NOW, "here": "s-a", "identity": "the room", "lease_ms": 90_000,
         "threshold": 3, "connected": ["s-a"], "unreadable": null,

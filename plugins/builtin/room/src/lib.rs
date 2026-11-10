@@ -1,18 +1,13 @@
-//! The room's pane: one host's agents' queues per tag, the four keys that move them, and the key
-//! that restarts the server they live in.
-//!
-//! This layer draws the queues and the questions; the four controls are the HOST's verbs, performed
-//! by the daemon over the session's connection, and nothing here decides what a claim does. The
-//! fifth key is a daemon lifetime rather than a room act, asked of the supervisor that starts
-//! coordinators - the pane is fed by the instance a restart would kill, so the coordinator must not
-//! do it on itself. No clock either: every age arrives against the host's.
+//! The room's pane: one host's agents' queues per tag, the four keys that move them, and the key that
+//! restarts the server they live in. The controls are the host's verbs, and the restart is asked of
+//! the supervisor because the pane is fed by the coordinator a restart would kill.
 
 use letibot_guest_abi as abi;
 use letibot_plugin::pane::{Act, Cell, Input, Role};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-/// **How long a claim may be silent before the room takes it back** - the feed carries the number
+/// How long a claim may be silent before the room takes it back - the feed carries the number
 /// (`lease_ms`), so this is only the fallback for a feed that did not say.
 const DEFAULT_LEASE_MS: u64 = 90_000;
 
@@ -35,7 +30,7 @@ struct Feed {
     /// Why the room could not be read, when it could not.
     #[serde(default)]
     unreadable: Option<String>,
-    /// **The restart**: whether this host may ask for one, and the note the last one left.
+    /// The restart: whether this host may ask for one, and the note the last one left.
     #[serde(default)]
     restart: Restart,
     #[serde(default)]
@@ -46,8 +41,8 @@ struct Feed {
     counts: Counts,
 }
 
-/// **What the pane is told about restarting the box's room** - the fifth control, and the note the
-/// last restart left.
+/// What the pane is told about restarting the box's room - the fifth control, and the note the last
+/// restart left.
 #[derive(Debug, Default, Deserialize)]
 struct Restart {
     /// May this host ask a supervisor to restart the room? A host that may not offers no key.
@@ -61,9 +56,9 @@ struct Restart {
     marker: Option<Marker>,
 }
 
-/// **The note a restart left** - when, and why. The host composed `sentence` because a guest has no
-/// clock; `cause` is here so the pane can put the note in the role it deserves - a crash is a
-/// failure and a pressed key is not.
+/// The note a restart left - when, and why. The host composed `sentence` because a guest has no
+/// clock; `cause` is here so the pane can put the note in the role it deserves - a crash is a failure
+/// and a pressed key is not.
 #[derive(Debug, Default, Deserialize)]
 struct Marker {
     #[serde(default)]
@@ -83,23 +78,23 @@ struct Arbiter {
     up: bool,
 }
 
-/// **One tag's queue** - a tag is a LOCK, so this is the unit a person reads in.
+/// One tag's queue - a tag is a lock, so this is the unit a person reads in.
 #[derive(Debug, Default, Deserialize)]
 struct Tag {
     #[serde(default)]
     tag: String,
     #[serde(default)]
     counts: Counts,
-    /// **The tag's agent** - who it is, whether it is up, and how many times it had to be
-    /// re-seated. Absent (JSON `null`) for a tag nobody owns, which is a fact the pane says rather
-    /// than a column it leaves out.
+    /// The tag's agent - who it is, whether it is up, and how many times it had to be re-seated.
+    /// Absent (JSON `null`) for a tag nobody owns, which is a fact the pane says rather than a column
+    /// it leaves out.
     #[serde(default)]
     agent: Option<Agent>,
     #[serde(default)]
     rows: Vec<Row>,
 }
 
-/// **One tag's agent**, as the host measured it - every age already subtracted, because a guest
+/// One tag's agent, as the host measured it - every age already subtracted, because a guest
 /// compiled for `wasm32-unknown-unknown` has no clock.
 #[derive(Debug, Default, Deserialize)]
 struct Agent {
@@ -135,7 +130,7 @@ struct Counts {
     dropped: usize,
 }
 
-/// **One item**, as the daemon read it off the room.
+/// One item, as the daemon read it off the room.
 #[derive(Debug, Default, Deserialize)]
 struct Row {
     #[serde(default)]
@@ -205,8 +200,8 @@ struct Question {
 /// The pane's answer - `None` is *the layer passed*, and a stack below would be asked.
 fn answer(bytes: &[u8]) -> Option<String> {
     let input: Input = serde_json::from_slice(bytes).ok()?;
-    // **A feed the host did not hand is a screen that says so.** Drawing nothing would be a pane
-    // somebody thinks they closed, and an empty room is a different fact.
+    // A feed the host did not hand is a screen that says so. Drawing nothing would be a pane somebody
+    // thinks they closed, and an empty room is a different fact.
     let Some(value) = input.feeds.get("room") else {
         return serde_json::to_string(&no_feed()).ok();
     };
@@ -214,7 +209,7 @@ fn answer(bytes: &[u8]) -> Option<String> {
     serde_json::to_string(&view(&feed)).ok()
 }
 
-/// **The pane a host hands no `room` feed**: one panel naming the missing half.
+/// The pane a host hands no `room` feed: one panel naming the missing half.
 fn no_feed() -> Value {
     json!({
         "title": "the room",
@@ -230,7 +225,7 @@ fn no_feed() -> Value {
     })
 }
 
-/// **The whole view.**
+/// The whole view.
 fn view(feed: &Feed) -> Value {
     // A room that could not be read says so instead of drawing an empty queue: *nothing is queued*
     // and *nobody answered* are two facts. And the restart stays on it - an unreadable room is the
@@ -268,8 +263,8 @@ fn view(feed: &Feed) -> Value {
         "badge": {"text": badge(feed), "role": badge_role(feed)},
         "panels": panels,
         "legend": legend(feed),
-        // **Five seconds**, C3's floor: the room moves on claims and beats, and a picture older
-        // than a handful of seconds is a picture of a queue somebody else has already taken.
+        // Five seconds: the room moves on claims and beats, and a picture older than a handful of
+        // seconds is a picture of a queue somebody else has already taken.
         "every_s": 5,
     })
 }
@@ -300,16 +295,16 @@ fn badge_role(feed: &Feed) -> Role {
     }
 }
 
-/// **The room itself** - the identity sentence, the arbiter, who is connected, and the counts.
+/// The room itself - the identity sentence, the arbiter, who is connected, and the counts.
 fn header(feed: &Feed) -> Value {
     let mut lines: Vec<Value> = Vec::new();
     if let Some(a) = &feed.arbiter {
         lines.push(json!({
             "label": "arbiter",
             "value": a.session,
-            // **Up or not, in the role that makes a person look.** The socket is the daemon's
-            // liveness, so an arbiter that is not connected is a room whose questions wait for
-            // whoever opens this pane.
+            // Up or not, in the role that makes a person look. The socket is the daemon's liveness,
+            // so an arbiter that is not connected is a room whose questions wait for whoever opens
+            // this pane.
             "role": if a.up { "success" } else { "attention" },
             "tail": if a.up { "connected" } else { "NOT connected — a question waits" },
         }));
@@ -362,8 +357,8 @@ fn header(feed: &Feed) -> Value {
         "id": "room",
         "key": "r",
         "title": "the room",
-        // **The identity is a SENTENCE**, so it is markdown: a `lines` value is cut to the grid's
-        // value column, and a sentence cut in the middle is a sentence nobody finishes.
+        // The identity is a sentence, so it is markdown: a `lines` value is cut to the grid's value
+        // column, and a sentence cut in the middle is a sentence nobody finishes.
         "summary": [
             {"markdown": identity(feed)},
             {"lines": lines},
@@ -432,8 +427,8 @@ fn server(feed: &Feed) -> Value {
     })
 }
 
-/// **The identity, in the room's own words** - the field the feed carries verbatim, and the one
-/// that keeps *restarted clean* and *restarted empty* apart.
+/// The identity, in the room's own words - the field the feed carries verbatim, and the one that
+/// keeps *restarted clean* and *restarted empty* apart.
 fn identity(feed: &Feed) -> String {
     if feed.identity.trim().is_empty() {
         "the room did not say what it is — which is itself a fact: a coordinator that cannot name \
@@ -452,7 +447,7 @@ fn lease_of(feed: &Feed) -> u64 {
     }
 }
 
-/// **The queues, per tag** - a tag row, then its items in the room's own order.
+/// The queues, per tag - a tag row, then its items in the room's own order.
 fn queues(feed: &Feed) -> Value {
     let mut rows: Vec<Value> = Vec::new();
     for tag in &feed.tags {
@@ -477,9 +472,9 @@ fn queues(feed: &Feed) -> Value {
                     },
                     Role::Attention,
                 ),
-                // **Who owns this queue, or that nobody does.** Two sentences, never a blank: a tag
-                // with an agent says who and whether it is up; a tag with none says so, because
-                // *nobody is watching this queue* is the fact a person needs before posting to it.
+                // Who owns this queue, or that nobody does. Two sentences, never a blank: a tag with
+                // an agent says who and whether it is up; a tag with none says so, because *nobody is
+                // watching this queue* is the fact a person needs before posting to it.
                 agent_cell(tag.agent.as_ref()),
             ],
             "children": tag.rows.iter().map(item_row).collect::<Vec<Value>>(),
@@ -525,7 +520,7 @@ fn agent_cell(agent: Option<&Agent>) -> Cell {
     }
 }
 
-/// **A session id, short enough for a fact column** - the tail, which is the half that tells two
+/// A session id, short enough for a fact column - the tail, which is the half that tells two
 /// derivations apart (`s-room-<host key>-<tag>`: the tag is the end, and the key is not).
 fn short(session: &str) -> String {
     let n = session.chars().count();
@@ -536,7 +531,7 @@ fn short(session: &str) -> String {
     format!("…{tail}")
 }
 
-/// **One item, one row** - and the one verb that would do something on it.
+/// One item, one row - and the one verb that would do something on it.
 fn item_row(r: &Row) -> Value {
     let mut facts: Vec<Cell> = Vec::new();
     if let Some(who) = &r.claimant {
@@ -548,8 +543,8 @@ fn item_row(r: &Row) -> Value {
             facts.push(Cell::role(age(held), Role::Faint));
         }
         if let Some(beat) = r.beat_age_ms {
-            // **The age of the beat is the whole question** *is that claim about to be taken
-            // back?* - so it is a fact of its own, in the role that makes it one.
+            // The age of the beat is the whole question *is that claim about to be taken back?* - so
+            // it is a fact of its own, in the role that makes it one.
             facts.push(Cell::role(
                 format!("beat {}", age(beat)),
                 if r.stale { Role::Failure } else { Role::Faint },
@@ -598,14 +593,14 @@ fn item_row(r: &Row) -> Value {
         ],
         "facts": facts,
         "under": under,
-        // **The one verb that would move this row**, and none where none would.
+        // The one verb that would move this row, and none where none would.
         "enter": enter_of(r),
         "actions": actions_of(r),
     })
 }
 
-/// **What Enter does on an item row** - `release` on this session's own claim, `claim` where
-/// anybody may take it, and nothing at all otherwise.
+/// What Enter does on an item row - `release` on this session's own claim, `claim` where anybody may
+/// take it, and nothing at all otherwise.
 fn enter_of(r: &Row) -> Value {
     if r.mine {
         return json!(Act::verb_on("release", r.entry.clone()));
@@ -616,8 +611,8 @@ fn enter_of(r: &Row) -> Value {
     Value::Null
 }
 
-/// **The other key a row offers** - `x` marks this session's own claim abandoned, which is the same
-/// room verb as a release with the harder sentence on it.
+/// The other key a row offers - `x` marks this session's own claim abandoned, which is the same room
+/// verb as a release with the harder sentence on it.
 fn actions_of(r: &Row) -> Value {
     if !r.mine {
         return json!([]);
@@ -652,8 +647,8 @@ fn state_role(state: &str) -> Role {
     }
 }
 
-/// **The open questions, one row per decision** - a question is answered by picking the answer, so
-/// the answers are the rows.
+/// The open questions, one row per decision - a question is answered by picking the answer, so the
+/// answers are the rows.
 fn questions(feed: &Feed) -> Value {
     let mut rows: Vec<Value> = Vec::new();
     for q in &feed.questions {
@@ -686,8 +681,8 @@ fn questions(feed: &Feed) -> Value {
             "drop",
             "drop — out of the queue for good, with the reason on it",
         ));
-        // **One row per session the room has met**, because `hand` names one and a row that named
-        // nobody would be refused by the room (`UnknownSession`) - the person picks who.
+        // One row per session the room has met, because `hand` names one and a row that named nobody
+        // would be refused by the room (`UnknownSession`) - the person picks who.
         for session in &feed.connected {
             rows.push(decision_row(
                 q,
@@ -709,8 +704,8 @@ fn decision_row(q: &Question, decision: &str, label: &str) -> Value {
     json!({
         "id": format!("{}:{}", q.entry, decision),
         "cells": [Cell::role(" ", Role::Faint), Cell::role(label, Role::Plain)],
-        // **The verb is `rule` on all of them**, and what differs is the entry: the decision is
-        // part of the row's identity because it is what the person picked.
+        // The verb is `rule` on all of them, and what differs is the entry: the decision is part of
+        // the row's identity because it is what the person picked.
         "enter": Act::verb_on("rule", format!("{}:{}", q.entry, decision)),
     })
 }
@@ -747,8 +742,8 @@ fn legend(feed: &Feed) -> Value {
     })
 }
 
-/// **A duration a person reads** - `4s`, `2m`, `1h 3m`. The feed hands milliseconds; a row that
-/// printed `92000` would be a number nobody converts.
+/// A duration a person reads - `4s`, `2m`, `1h 3m`. The feed hands milliseconds; a row that printed
+/// `92000` would be a number nobody converts.
 fn age(ms: u64) -> String {
     if ms < 1_000 {
         return format!("{ms}ms");

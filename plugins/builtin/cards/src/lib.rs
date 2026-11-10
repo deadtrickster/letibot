@@ -1,14 +1,6 @@
-//! The cards a head draws for its transcript, as a built-in layer (X22, rank 2 of §4.1).
-//!
-//! `card_item` is asked once per row, with the row's parts and the typed facts the head holds. It
-//! answers one block per part: from the facts when the row carries them (a monitor firing does, and
-//! that is the whole point - a `notice_` layer that rewords the sentence must not take the card with
-//! it), and otherwise from the readers in `letibot_plugin::card::readers`, which are the SAME code
-//! the head falls back to. One source is the whole design: a card cannot be drawn two ways.
-//!
-//! `card_call` answers the verb a tool row is drawn as, for the calls it knows better than the tool's
-//! own name: `notes` is an `edit` or a `write`, which is what `call::drawn_as` says natively. Every
-//! other call is answered by nothing and the head's own rule stands.
+//! The cards a head draws for its transcript, as a built-in layer: `card_item` answers one block per
+//! row part, from the facts when the row carries them and otherwise from
+//! `letibot_plugin::card::readers` - the same code the head falls back to, so one card has one drawing.
 
 use letibot_guest_abi as abi;
 use letibot_plugin::card::{self, Lines};
@@ -48,11 +40,9 @@ fn the_cards(bytes: &[u8]) -> Option<String> {
     serde_json::to_string(&card::Out { blocks, verb: None }).ok()
 }
 
-/// The card a row's typed facts draw, when they are facts this layer has a card for. A row of
-/// several notices carries the facts of the delivery it opens with, which is why this is asked of
-/// the first part only - and the facts themselves are the SDK's, beside the readers: a card drawn
-/// from facts and one drawn from words are one function, so no layer can draw either differently
-/// from the head that falls back to it.
+/// The card a row's typed facts draw, when they are facts this layer has a card for. A row of several
+/// notices carries the facts of the delivery it opens with, which is why the first part only is
+/// asked; the facts are the SDK's, beside the readers, so facts-drawn and words-drawn are one.
 fn fact_cards(facts: &serde_json::Value) -> Option<Lines> {
     card::facts::read(facts)
 }

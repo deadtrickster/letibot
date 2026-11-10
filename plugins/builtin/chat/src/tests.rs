@@ -1,11 +1,6 @@
-//! The chat layer's policy, tested where it lives.
-//!
-//! The head's parity test (`crates/tui/src/app/tests/chat_plugin.rs`) says *this layer's stream
-//! draws what the native adapter draws*; these say *the stream is the one the plan describes* — a
-//! run, a hue, a mention, a divider, a quote, a line becoming an act, and Tab's ranking.
-//!
-//! They run natively (`cargo test` in this directory): the module is a `cdylib` for the host and an
-//! `rlib` for these, and none of the logic below knows that a wasm ABI exists.
+//! The chat layer's policy, tested where it lives. The head's parity test says this layer's stream
+//! draws what the native adapter draws; these say the stream is the one the layer describes, and they
+//! run natively, because none of the logic below knows a wasm ABI exists.
 
 use super::*;
 use letibot_plugin::pane::{ChatAlias, ChatChannel, ChatMember, ChatVerb};
@@ -73,8 +68,8 @@ fn entry(stream: &Value, seq: u64) -> &Value {
 
 // ─────────────────────────────── the stream ───────────────────────────────
 
-/// **A run.** Two messages from one speaker inside ten minutes are one burst: the second carries
-/// no header and no facts, because what it has to say is its body.
+/// A run. Two messages from one speaker inside ten minutes are one burst: the second carries no
+/// header and no facts, because what it has to say is its body.
 #[test]
 fn two_messages_from_one_author_within_ten_minutes_share_a_header() {
     let one = NOW - 120_000;
@@ -112,8 +107,8 @@ fn two_messages_from_one_author_within_ten_minutes_share_a_header() {
     assert!(entry(&s, 2)["head"].is_array(), "a mention ends a run: {s}");
 }
 
-/// **A hue.** The speaker's colour is its handle's, so a rename keeps it and two speakers do not
-/// share one by accident - and the reader is never a hue.
+/// A hue. The speaker's colour is its handle's, so a rename keeps it and two speakers do not share
+/// one by accident - and the reader is never a hue.
 #[test]
 fn the_same_handle_always_gets_the_same_hue() {
     let chat = feed(vec![
@@ -138,7 +133,7 @@ fn the_same_handle_always_gets_the_same_hue() {
     assert_eq!(entry(&s, 1)["head"][0]["role"], json!("strong"), "{s}");
 }
 
-/// **A mention.** A session addressed by its handle reads as the name the head has for it, in that
+/// A mention. A session addressed by its handle reads as the name the head has for it, in that
 /// session's own hue; the reader's own handle is the one mention that is not quiet.
 #[test]
 fn a_session_mention_is_mapped_to_its_title() {
@@ -156,7 +151,7 @@ fn a_session_mention_is_mapped_to_its_title() {
     assert!(drawn(&chat).get("mentions").is_none(), "{}", drawn(&chat));
 }
 
-/// **The unread mark.** The divider sits before the first message newer than `opened_seen`, and a
+/// The unread mark. The divider sits before the first message newer than `opened_seen`, and a
 /// channel opened with nothing read yet still puts it above the first message.
 #[test]
 fn the_unread_divider_precedes_the_first_unseen_message() {
@@ -188,7 +183,7 @@ fn the_unread_divider_precedes_the_first_unseen_message() {
     assert_eq!(ids(&drawn(&chat)), vec!["[today]", "1"]);
 }
 
-/// **The day.** A divider where the calendar turns, named the way a person reads a date: `today`,
+/// The day. A divider where the calendar turns, named the way a person reads a date: `today`,
 /// `yesterday`, the month and day inside this year, and the year too when the talk is older.
 #[test]
 fn a_day_divider_names_the_day_the_way_a_person_reads_it() {
@@ -216,7 +211,7 @@ fn a_day_divider_names_the_day_the_way_a_person_reads_it() {
     assert_eq!(entry(&s, 1).get("time"), None, "{s}");
 }
 
-/// **A quote.** A reply names the message it answers and as much of it as a quote line holds.
+/// A quote. A reply names the message it answers and as much of it as a quote line holds.
 #[test]
 fn a_reply_quotes_the_message_it_answers() {
     let long = "a line that runs on, and on, past the sixty columns a quote line has room for";
@@ -246,8 +241,8 @@ fn a_reply_quotes_the_message_it_answers() {
     );
 }
 
-/// **A system line.** A todo or a queue row is one quiet row: no header, no hue, and its refs
-/// bracketed and escaped so the markdown renderer draws them.
+/// A system line. A todo or a queue row is one quiet row: no header, no hue, and its refs bracketed
+/// and escaped so the markdown renderer draws them.
 #[test]
 fn a_system_line_is_one_quiet_row_with_its_ref_escaped() {
     let mut m = msg(1, NOW, "letibot", "wrote the doc");
@@ -323,7 +318,7 @@ fn line(text: &str, chat: &Chat) -> Value {
     serde_json::from_str(&command(asked.to_string().as_bytes()).expect("an answer")).expect("json")
 }
 
-/// **`/reply N text`** is a room message that answers message N.
+/// `/reply N text` is a room message that answers message N.
 #[test]
 fn slash_reply_12_answers_a_room_say_with_thread_12() {
     let chat = feed(Vec::new());
@@ -339,8 +334,8 @@ fn slash_reply_12_answers_a_room_say_with_thread_12() {
     assert!(said.get("acts").is_none(), "{said}");
 }
 
-/// **`/dm NAME text`** is a direct message to that peer, and so is a plain line typed in a DM
-/// channel: the peer is the channel's, not the head's selected room.
+/// `/dm NAME text` is a direct message to that peer, and so is a plain line typed in a DM channel:
+/// the peer is the channel's, not the head's selected room.
 #[test]
 fn slash_dm_answers_a_room_dm() {
     let chat = feed(Vec::new());
@@ -356,8 +351,8 @@ fn slash_dm_answers_a_room_dm() {
     assert_eq!(said["acts"][0]["args"]["to"], json!("s-b"), "{said}");
 }
 
-/// **An unknown verb is a sentence**, not a silent nothing: the person typed something the layer
-/// does not do, and a screen that says nothing looks like a send that worked.
+/// An unknown verb is a sentence, not a silent nothing: the person typed something the layer does
+/// not do, and a screen that says nothing looks like a send that worked.
 #[test]
 fn an_unknown_verb_is_refused_with_a_sentence() {
     let chat = feed(Vec::new());
@@ -487,8 +482,8 @@ fn a_room() -> Chat {
     chat
 }
 
-/// **The roster first.** `@` ranks the members of the room being typed to ahead of the others, a
-/// prefix ahead of a substring, and six is the row's whole width.
+/// The roster first. `@` ranks the members of the room being typed to ahead of the others, a prefix
+/// ahead of a substring, and six is the row's whole width.
 #[test]
 fn at_completion_ranks_the_rooms_roster_first() {
     let chat = a_room();
@@ -567,8 +562,8 @@ fn at_completion_ranks_the_rooms_roster_first() {
     );
 }
 
-/// **The verbs.** A `/` word ranks the composer's own list: prefix before substring, the room's
-/// verbs ahead of the head's, and the hint becomes the row's note.
+/// The verbs. A `/` word ranks the composer's own list: prefix before substring, the room's verbs
+/// ahead of the head's, and the hint becomes the row's note.
 #[test]
 fn slash_completion_ranks_the_verbs_with_their_hints() {
     let chat = a_room();

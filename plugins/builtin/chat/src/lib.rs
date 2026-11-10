@@ -1,21 +1,6 @@
-//! The room, as the built-in `chat` layer (`docs/plugin-extension-points.md` §5 P6).
-//!
-//! The decisions `crates/tui/src/app/chat_adapter.rs` and `chat_input/complete.rs` used to make in
-//! the head: a run of one speaker's messages within ten minutes keeps one header, a handle keeps one
-//! hue, a mention reads as the name behind it, the day and the unread mark divide the stream, and a
-//! reply quotes what it answers. A typed line becomes a `room_say` or a `room_dm`; Tab ranks the
-//! roster, the verbs and the bridge's aliases.
-//!
-//! Nothing here is a second renderer. What it answers is a `stream` block and the acts a line
-//! causes, and the head draws them with the same code it draws the native adapter's answer with -
-//! which is why a strand of the same feed comes out identical (`the_builtin_chat_layer_draws_what_
-//! the_native_adapter_draws`). The native adapter stays as the fallback: a layer that traps, or a
-//! host with no clock, draws as it always did.
-//!
-//! **What a guest does not have** is a clock and a width table. The day, the hour and `today` come
-//! from the input's `now_ms` and `utc_offset_s`; the quote's cut is [`width`]'s, the common half of
-//! `rano`'s table (ASCII, the CJK and Hangul blocks, combining marks). A quote of emoji joined by
-//! ZWJ is the one string where the two cuts can land a column apart.
+//! The room, as the built-in `chat` layer: a run of one speaker's messages within ten minutes keeps
+//! one header, a handle keeps one hue, a mention reads as the name behind it, and a reply quotes what
+//! it answers. It is not a second renderer - the host draws its `stream` block with the same code.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -71,10 +56,8 @@ mod tests;
 // ─────────────────────────────── the pane ───────────────────────────────
 
 /// The input a `pane_chat` call is handed, as far as this layer reads it: the feed it declared and
-/// the head's clock. The SDK's `pane::Input` is the HOST's whole envelope - state, looks, events,
-/// size, folds - and it carries `feeds` as a map of `Value`, which parses the window into a tree and
-/// then parses it AGAIN into `Chat`. Two passes over 329 KiB is fuel P5 set a ceiling for, so the
-/// envelope is written here while the PAYLOAD (`Chat` and everything in it) is still the SDK's.
+/// the head's clock. The SDK's `pane::Input` carries `feeds` as a map of `Value`, which would parse
+/// the window twice, so the envelope is written here while the payload is still the SDK's.
 #[derive(Debug, serde::Deserialize)]
 struct Ask {
     #[serde(default)]
@@ -95,8 +78,8 @@ struct Feeds {
 fn answer(bytes: &[u8]) -> Option<String> {
     let ask: Ask = serde_json::from_slice(bytes).ok()?;
     let chat = ask.feeds.chat?;
-    // **No clock, no zone, no layer.** The day a divider names and the hour a message prints are
-    // the local reading, and a guest has neither; the head's own adapter has both, so it draws.
+    // No clock, no zone, no layer. The day a divider names and the hour a message prints are the
+    // local reading, and a guest has neither; the head's own adapter has both, so it draws.
     let now = ask.now_ms?;
     let off = ask.utc_offset_s?;
     let stream = stream(&chat, now, off);
@@ -104,8 +87,8 @@ fn answer(bytes: &[u8]) -> Option<String> {
 }
 
 /// The view: one panel whose summary is the stream, and the input surface that makes the head's
-/// composer this pane's (`X5`). Typed rather than a `json!` tree: a guest module is embedded in the
-/// binary, and marshalling through `Value` costs more bytes than a struct that serialises straight.
+/// composer this pane's. Typed rather than a `json!` tree: a guest module is embedded in the binary,
+/// and marshalling through `Value` costs more bytes than a struct that serialises straight.
 #[derive(Debug, Serialize)]
 struct View {
     title: &'static str,
@@ -147,7 +130,7 @@ fn view(chat: &Chat, stream: Stream) -> View {
                 .unwrap_or_else(|| NO_CHANNEL.to_string()),
             placeholder: "say it to the room",
             // A `/` line is the head's before it is ours (`composer.rs` dispatches it first), so
-            // the hint names the spelling that reaches THIS layer: the room's own `>N`.
+            // the hint names the spelling that reaches this layer: the room's own `>N`.
             footer: "enter sends · >N text answers · tab completes",
         },
     }
@@ -707,7 +690,7 @@ fn rank(chat: &Chat, text: &str, cursor: usize) -> Completion {
     Completion::default()
 }
 
-/// The `/` verbs: prefix before substring, and the list's own order within a rank — which is what
+/// The `/` verbs: prefix before substring, and the list's own order within a rank - which is what
 /// puts the room's own verbs ahead of the head's.
 fn verbs_for(verbs: &[ChatVerb], frag: &str) -> Vec<Candidate> {
     let needle = frag.to_lowercase();
@@ -943,10 +926,9 @@ fn month(m: u32) -> &'static str {
 
 // ──────────────────────────── text a host did not author ────────────────────────────
 
-/// **Text made safe to measure**: an escape sequence goes whole, every other control character is
-/// a space, and a newline with it. `rano::agent::text::clean_line`, which a guest cannot link:
-/// the two must agree, or a name is measured one way and drawn another. Borrowed when there is
-/// nothing to remove, which is every ordinary name in a window of two hundred.
+/// Text made safe to measure: an escape sequence goes whole, every other control character is a
+/// space, and a newline with it. It must agree with `rano::agent::text::clean_line`, which a guest
+/// cannot link, or a name is measured one way and drawn another.
 fn clean_line(s: &str) -> Cow<'_, str> {
     if !s.chars().any(is_control) {
         return Cow::Borrowed(s);
@@ -1010,8 +992,8 @@ fn skip_osc(it: &mut std::iter::Peekable<std::str::Chars<'_>>) {
     }
 }
 
-/// **Shorten `s` to `cols` columns, marking the cut** - the same rule as `rano::width::text::
-/// truncate` for text with no escapes left in it (which [`clean_line`] has already done).
+/// Shorten `s` to `cols` columns, marking the cut - the same rule as `rano::width::text::truncate`
+/// for text with no escapes left in it, which [`clean_line`] has already done.
 fn truncate(s: &str, cols: usize) -> String {
     if width(s) <= cols {
         return s.to_string();
@@ -1056,10 +1038,9 @@ fn is_control(c: char) -> bool {
     u < 0x20 || (0x7f..0xa0).contains(&u)
 }
 
-/// Combining marks, joiners and selectors: they attach to the character before them. The blocks
-/// a name or a quote of prose actually holds, rather than rano's whole Unicode table: a guest is
-/// embedded in the binary, and the four thousand ranges it would take are most of a kilobyte of
-/// comparisons for scripts no room here is written in.
+/// Combining marks, joiners and selectors: they attach to the character before them. The blocks a
+/// name or a quote of prose actually holds, rather than rano's whole Unicode table, because a guest
+/// is embedded in the binary and four thousand ranges would cost most of a kilobyte.
 fn is_zero_width(u: u32) -> bool {
     matches!(u,
         0x0300..=0x036f      // combining diacritical marks, and the extended block

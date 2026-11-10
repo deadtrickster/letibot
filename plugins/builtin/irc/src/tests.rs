@@ -1,11 +1,6 @@
-//! The nick list's policy, tested where it lives.
-//!
-//! The sort rule, the column's arithmetic, the marks and the scope are what a project overrides and
-//! what the operator reads, so they are tested here rather than through an engine: the module is a
-//! `cdylib` for the host and an `rlib` for these, and nothing below knows a wasm ABI exists.
-//! The rows are rendered the way the host renders them - [`drawn`] is rano's `row_line` for the part
-//! this layer controls. A width test that measured the answer instead of the drawing would pass on
-//! a row the head then stretches.
+//! The nick list's policy, tested where it lives: the sort rule, the column's arithmetic, the marks and
+//! the scope. The rows are rendered the way the host renders them, because a width test that measured
+//! the answer instead of the drawing would pass on a stretched row.
 
 use super::*;
 
@@ -45,7 +40,7 @@ fn feed_of(sessions: Vec<Value>, here: &str) -> Value {
     json!({"sessions": sessions, "here": here, "home": "/home/dead", "now": NOW})
 }
 
-/// **One call of the pane**, and the view it answered.
+/// One call of the pane, and the view it answered.
 fn call(feed: &Value, state: &Value, rect: u32) -> Value {
     ask(feed, state, rect, None)
 }
@@ -99,8 +94,8 @@ fn sessions(view: &Value) -> Vec<Value> {
         .collect()
 }
 
-/// **A row as the host draws it**: rano's lead (`▸` and a space, or two spaces) and then the cells,
-/// one space between each. A cell is its string when it carries no role.
+/// A row as the host draws it: rano's lead (`▸` and a space, or two spaces) and then the cells, one
+/// space between each. A cell is its string when it carries no role.
 fn drawn(row: &Value) -> String {
     let cells: Vec<String> = row["cells"]
         .as_array()
@@ -127,8 +122,8 @@ fn role(row: &Value, i: usize) -> Option<&str> {
     row["cells"][i]["role"].as_str()
 }
 
-/// **Three top-level sessions in three states are a channel**: the header counts them, and each row
-/// says with one mark what it is.
+/// Three top-level sessions in three states are a channel: the header counts them, and each row says
+/// with one mark what it is.
 #[test]
 fn three_sessions_in_three_states_are_a_channel() {
     let f = feed_of(
@@ -189,8 +184,8 @@ fn three_sessions_in_three_states_are_a_channel() {
     assert_eq!(letters, vec!["w", "n", "h", "s"]);
 }
 
-/// **A subagent is not a nick.** A row whose `parent` is set is somebody's work, not a conversation
-/// you switch to, and a list that listed them would bury the four channels a person is in.
+/// A subagent is not a nick. A row whose `parent` is set is somebody's work, not a conversation you
+/// switch to, and a list that listed them would bury the four channels a person is in.
 #[test]
 fn a_subagent_is_not_in_the_nick_list() {
     let f = feed_of(
@@ -217,8 +212,8 @@ fn a_subagent_is_not_in_the_nick_list() {
     );
 }
 
-/// **The session you are in is marked** - `»`, the strong name, and the first row, because that is
-/// the one a person always wants to find.
+/// The session you are in is marked - `»`, the strong name, and the first row, because that is the
+/// one a person always wants to find.
 #[test]
 fn the_session_you_are_in_is_marked() {
     let f = feed_of(
@@ -240,9 +235,9 @@ fn the_session_you_are_in_is_marked() {
     assert_eq!(role(&drawn[1], 1), Some("plain"));
 }
 
-/// **The column does not stretch.** A pane handed a hundred columns draws a thirty-column column
-/// with the fact pinned to ITS right edge - the whole reason the fact is a padded cell rather than
-/// the host's `facts` (which the host right-aligns against the rectangle).
+/// The column does not stretch. A pane handed a hundred columns draws a thirty-column column with
+/// the fact pinned to its right edge - the reason the fact is a padded cell rather than the host's
+/// `facts`, which the host right-aligns against the rectangle.
 #[test]
 fn the_column_is_the_width_it_chose_and_not_the_rect() {
     let f = feed_of(
@@ -282,7 +277,7 @@ fn the_column_is_the_width_it_chose_and_not_the_rect() {
     );
 }
 
-/// **A name in a wide script does not push the fact out of the column.** Measured in the terminal's
+/// A name in a wide script does not push the fact out of the column. Measured in the terminal's
 /// cells rather than in characters, because that is what the host measures.
 #[test]
 fn a_wide_name_still_ends_the_fact_at_the_columns_edge() {
@@ -299,8 +294,8 @@ fn a_wide_name_still_ends_the_fact_at_the_columns_edge() {
     assert!(drawn(row).ends_with('m'), "{:?}", drawn(row));
 }
 
-/// **The order is a roster, not a ranking**: the same set keeps its order even when a member's
-/// state changes, because the host's cursor is an INDEX into these rows.
+/// The order is a roster, not a ranking: the same set keeps its order even when a member's state
+/// changes, because the host's cursor is an index into these rows.
 #[test]
 fn the_order_is_pinned_until_the_roster_changes() {
     let quiet = feed_of(
@@ -363,9 +358,9 @@ fn the_order_is_pinned_until_the_roster_changes() {
     );
 }
 
-/// **Hiding is a strip, and the strip is a stop** - a pane that hides itself to nothing is a pane
-/// somebody has to guess their way back into, and the key that brings it back has to be on a row
-/// the cursor can rest on.
+/// Hiding is a strip, and the strip is a stop - a pane that hides itself to nothing is a pane
+/// somebody has to guess their way back into, and the key that brings it back has to be on a row the
+/// cursor can rest on.
 #[test]
 fn hiding_leaves_a_strip_that_says_how_to_come_back() {
     let f = feed_of(
@@ -404,8 +399,8 @@ fn hiding_leaves_a_strip_that_says_how_to_come_back() {
     );
 }
 
-/// **Wider and narrower are the column's own, clamped** to a third of the rectangle and to the
-/// minimum - the two ends a person cannot press past.
+/// Wider and narrower are the column's own, clamped to a third of the rectangle and to the minimum -
+/// the two ends a person cannot press past.
 #[test]
 fn wider_and_narrower_are_clamped_to_a_third_and_to_the_minimum() {
     let f = feed_of(vec![with(s("s-a", "a"), json!({"heads": 1}))], "s-a");
@@ -434,8 +429,8 @@ fn wider_and_narrower_are_clamped_to_a_third_and_to_the_minimum() {
     assert!(!cell(row, 2).is_empty());
 }
 
-/// **The scope is a filter, and the header says what it hides** - the channel's name IS the scope,
-/// so a narrowed list can never look like a complete one.
+/// The scope is a filter, and the header says what it hides - the channel's name is the scope, so a
+/// narrowed list can never look like a complete one.
 #[test]
 fn the_scope_narrows_to_the_project_and_says_what_it_hides() {
     let f = feed_of(
@@ -486,7 +481,7 @@ fn the_scope_narrows_to_the_project_and_says_what_it_hides() {
     assert_eq!(cell(&rows(&round)[0], 0), "#agent-x · 1 of 3 · 0 working");
 }
 
-/// **A `repo` the host asked git about wins over the worktree convention** - the convention is the
+/// A `repo` the host asked git about wins over the worktree convention - the convention is the
 /// fallback for a host that did not say, not the rule.
 #[test]
 fn the_feeds_repository_wins_over_the_worktree_convention() {
@@ -511,8 +506,8 @@ fn the_feeds_repository_wins_over_the_worktree_convention() {
     );
 }
 
-/// **A session the scope hides but that is WORKING keeps a place** - a narrowed list that hides the
-/// one agent doing something is how a person loses an agent.
+/// A session the scope hides but that is working keeps a place - a narrowed list that hides the one
+/// agent doing something is how a person loses an agent.
 #[test]
 fn a_working_session_outside_the_scope_keeps_a_place() {
     let f = feed_of(
@@ -553,7 +548,7 @@ fn a_working_session_outside_the_scope_keeps_a_place() {
     assert_eq!(cell(&working, 0), "+", "and it keeps its mark");
 }
 
-/// **A running session that has gone quiet is drawn as news** - the whole question the fact column
+/// A running session that has gone quiet is drawn as news - the whole question the fact column
 /// answers, and the one place its role is not `faint` or `pending`.
 #[test]
 fn a_running_session_that_has_gone_quiet_is_drawn_as_news() {
@@ -596,8 +591,8 @@ fn a_running_session_that_has_gone_quiet_is_drawn_as_news() {
     );
 }
 
-/// **A host that hands no feed gets a screen that says so** - an empty nick list and a broken host
-/// look identical, and only one of them is the plugin's problem.
+/// A host that hands no feed gets a screen that says so - an empty nick list and a broken host look
+/// identical, and only one of them is the plugin's problem.
 #[test]
 fn a_host_with_no_feed_says_so() {
     let input = json!({"v": letibot_plugin::pane::V, "size": {"w": 100, "h": 40}});
@@ -610,8 +605,8 @@ fn a_host_with_no_feed_says_so() {
     assert!(said.contains("no `sessions` feed"), "{said}");
 }
 
-/// **A waiting session says so in its name**, because a switcher is exactly where being waited on
-/// must not be missed.
+/// A waiting session says so in its name, because a switcher is exactly where being waited on must
+/// not be missed.
 #[test]
 fn a_session_waiting_on_you_is_marked_in_its_name() {
     let f = feed_of(
@@ -631,8 +626,8 @@ fn a_session_waiting_on_you_is_marked_in_its_name() {
     );
 }
 
-/// **A list with nothing in it is still a row** - an `empty` sentence would leave the pane with no
-/// stop at all, and the keys that widen the column or the scope are on a stop.
+/// A list with nothing in it is still a row - an `empty` sentence would leave the pane with no stop
+/// at all, and the keys that widen the column or the scope are on a stop.
 #[test]
 fn an_empty_feed_is_a_row_so_the_keys_stay_reachable() {
     // A daemon that has answered with nothing: the case a head sees before its first `Sessions`
@@ -657,9 +652,9 @@ fn an_empty_feed_is_a_row_so_the_keys_stay_reachable() {
     assert_eq!(cell(&rows[0], 0), "#all · 0 here · 0 working");
 }
 
-/// **At the minimum width the list is still a list** - the mark and the fact never go, the name is
-/// cut, and nothing runs past the column's edge. This is the drawing itself, asserted, because a
-/// column that degrades into a broken grid is the one thing a narrow pane cannot afford.
+/// At the minimum width the list is still a list - the mark and the fact never go, the name is cut,
+/// and nothing runs past the column's edge. This is the drawing itself, asserted, because a column
+/// that degrades into a broken grid is the one thing a narrow pane cannot afford.
 #[test]
 fn the_minimum_width_keeps_the_mark_and_the_fact_and_cuts_the_name() {
     let f = feed_of(
@@ -691,8 +686,8 @@ fn the_minimum_width_keeps_the_mark_and_the_fact_and_cuts_the_name() {
     }
 }
 
-/// **The divider is fitted too**: a scope that hides sessions says how many, and at the minimum it
-/// keeps that count rather than a sentence cut in the middle of a word.
+/// The divider is fitted too: a scope that hides sessions says how many, and at the minimum it keeps
+/// that count rather than a sentence cut in the middle of a word.
 #[test]
 fn the_divider_keeps_the_count_when_the_words_do_not_fit() {
     let f = feed_of(

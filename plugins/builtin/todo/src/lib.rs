@@ -14,11 +14,10 @@
 //!    "repo_todos": [{"text": "T1 git init", "mark": "[x]", "indent": 4, "item": true}]}}
 //! ```
 //!
-//! `nag_todo` is the other export: the plan-check's decision (`docs/plugin-extension-points-wide.md`
-//! X13). This layer says exactly what the harness's own nag says - one row, the harness's words -
-//! so the bottom of the stack is today's daemon, and an operator's layer above it is where R127's
-//! every-free-head answer is written. It names the input's row back, which is the whole of what an
-//! identity layer may do: the clock and the eligibility filter are not its to move.
+//! `nag_todo` is the other export: the plan-check's decision. This layer says exactly what the
+//! harness's own nag says - one row, the harness's words - so the bottom of the stack is the daemon
+//! itself, and an operator's layer above it is where a project's own answer is written. It names the
+//! input's row back, which is all an identity layer may do: the clock and the filter are not its to move.
 
 /// The act name the host performs, and the one its `plugin.toml` declares.
 const ACT: &str = "add_todo";
@@ -50,7 +49,7 @@ fn the_nag(bytes: &[u8]) -> Option<String> {
 fn answer(bytes: &[u8]) -> Option<String> {
     let input: serde_json::Value = serde_json::from_slice(bytes).ok()?;
     // The head hands the line it was given, after the verb: `/todo title:"a" body:"b"` arrives as
-    // `a" body:"b` only if the head has already eaten `title:` — so the whole rest of the line is
+    // `a" body:"b` only if the head has already eaten `title:`, so the whole rest of the line is
     // what this reads, and the field names are its own business.
     let line = input.get("line")?.as_str()?;
     let content = parse(line)?;
@@ -104,7 +103,7 @@ fn is_field(name: &str) -> bool {
     name == "title" || name == "body"
 }
 
-/// One whitespace-separated token, **quote-aware**: `title:"two words"` is one token, and the
+/// One whitespace-separated token, quote-aware: `title:"two words"` is one token, and the
 /// quote is what makes the space inside it not a separator.
 fn next_token(s: &str) -> (&str, &str) {
     let bytes = s.as_bytes();
@@ -141,7 +140,7 @@ fn quoted_or_bare(v: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
-    /// **The line the operator types** — `title:"werwer" body:"blabla"` — and the shapes around
+    /// The line the operator types - `title:"werwer" body:"blabla"` - and the shapes around
     /// it: the other order, a bare value, a title alone, and the head's own verbs left alone.
     #[test]
     fn a_title_and_a_body_become_one_row() {
@@ -165,7 +164,7 @@ mod tests {
         );
     }
 
-    /// **What is not an add** — an empty line, a title that is only quotes, and the verbs the head
+    /// What is not an add - an empty line, a title that is only quotes, and the verbs the head
     /// owns (`pass`, so the head answers them as it always did).
     #[test]
     fn a_line_that_is_not_an_add_passes() {
@@ -175,7 +174,7 @@ mod tests {
         assert_eq!(parse("done 2"), Some("done 2".to_string()));
     }
 
-    /// **The answer is the act the host performs**, named exactly as `plugin.toml` declares it.
+    /// The answer is the act the host performs, named exactly as `plugin.toml` declares it.
     #[test]
     fn the_answer_names_the_act_and_its_words() {
         let out = answer(br#"{"line":"title:\"werwer\" body:\"blabla\""}"#).expect("an act");
@@ -202,8 +201,8 @@ mod tests {
         assert_eq!(v["act"]["args"]["content"], "a — b");
     }
 
-    /// **`nag_todo` says the harness's own sentence about the harness's own row.** The layer is
-    /// the identity of today's daemon, so the answer is the input's text and name, and nothing
+    /// `nag_todo` says the harness's own sentence about the harness's own row. The layer is the
+    /// identity of the daemon's own nag, so the answer is the input's text and name, and nothing
     /// else - a row it was not handed is a row it cannot name.
     #[test]
     fn the_nag_answers_the_sentence_it_was_handed() {

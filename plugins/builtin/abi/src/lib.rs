@@ -1,11 +1,6 @@
-//! rano ABI v1 from the guest's side: the input the host wrote, an arena to answer in, and the
-//! result block.
-//!
-//! A text hook is `(i32, i32) -> i32`: the host calls `rano_alloc(n)`, writes the input's JSON at
-//! the offset it answered, then calls the hook with `(offset, len)`. The hook answers the offset of
-//! an 8-byte result block holding `out_ptr` and `out_len`, or `-1` for *unchanged*, which passes.
-//! The answer goes into a fixed arena rather than the allocator because a guest may be called every
-//! frame, and no lock is needed because `wasm32-unknown-unknown` without atomics is one thread.
+//! rano ABI v1 from the guest's side: the input the host wrote, an arena to answer in, and the result
+//! block. A hook answers an 8-byte result block's offset, or `-1` for unchanged; the arena is fixed
+//! because a guest may be called every frame, and one thread needs no lock.
 
 use std::cell::UnsafeCell;
 
@@ -57,14 +52,14 @@ pub extern "C" fn rano_alloc(n: i32) -> i32 {
     }
 }
 
-/// **ABI v1**, which is what this host speaks (`docs/plugins-plan.md` §0).
+/// ABI v1, which is what this host speaks.
 #[unsafe(no_mangle)]
 pub extern "C" fn rano_abi() -> i32 {
     1
 }
 
 /// The input of the hook being called, as bytes - the region `rano_alloc` answered with.
-/// `ptr` is an ABSOLUTE address in this module's memory, not an offset, so a pointer outside the
+/// `ptr` is an address in this module's memory rather than an offset, so a pointer outside the
 /// arena is a host that broke its own contract: answered *unchanged* rather than by a panic.
 pub fn input(ptr: i32, len: i32) -> &'static [u8] {
     let base = INPUT.0.get() as usize;
@@ -79,14 +74,14 @@ pub fn input(ptr: i32, len: i32) -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(at as *const u8, len) }
 }
 
-/// **Empty the answer arena** - the first thing every hook does, so what it answers does not
+/// Empty the answer arena - the first thing every hook does, so what it answers does not
 /// depend on what was answered before.
 pub fn reset() {
     // SAFETY: see the module doc - one thread, one call at a time.
     unsafe { (*OUT.0.get()).at = 0 };
 }
 
-/// **Answer `text`**: copy it into the arena, point the result block at it, and give the host the
+/// Answer `text`: copy it into the arena, point the result block at it, and give the host the
 /// block's offset. The copy is why the guest needs no allocator and leaves nothing to free.
 pub fn answer(text: &str) -> i32 {
     // SAFETY: see the module doc.

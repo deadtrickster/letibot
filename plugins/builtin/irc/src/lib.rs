@@ -1,11 +1,6 @@
-//! The top-level session list as an IRC channel's nick list: who is here, who is busy, and the
-//! thing a person switches with.
-//!
-//! It draws ONE NARROW COLUMN and leaves the rest of the rectangle alone, because it is meant for
-//! the right-hand side of a conversation - the host hands a pane the whole screen, so the column
-//! is a drawing decision this layer makes, and its width, hidden flag and scope ride in `state`.
-//! One feed, `sessions`, and no capabilities. Top-level only: a row whose `parent` is set is a
-//! subagent, and a nick list of every subagent would bury the channels a person is actually in.
+//! The top-level session list as an IRC channel's nick list: who is here, who is busy, and the thing a
+//! person switches with. It draws one narrow column and leaves the rest alone, and it lists top-level
+//! sessions only, because a nick list of every subagent would bury the channels a person is in.
 
 use letibot_guest_abi as abi;
 use letibot_plugin::pane::{Act, Cell, Event, Role, Size};
@@ -13,33 +8,31 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// **The narrowest column worth drawing** - at this width a row is a mark, a name of twelve and a
-/// three-letter fact, which is the least that still answers *who* and *is it stuck*.
+/// The narrowest column worth drawing - at this width a row is a mark, a name of twelve and a
+/// three-letter fact, which is the least that still answers who and is it stuck.
 const MIN_W: usize = 20;
 
-/// **The column a person gets before they say otherwise** - the width a name and a three-letter
-/// fact fit in, and less than a third of a screen so that `w` still has somewhere to go.
+/// The column a person gets before they say otherwise - the width a name and a three-letter fact fit
+/// in, and less than a third of a screen so that `w` still has somewhere to go.
 const DEFAULT_W: usize = 30;
 
 /// One press of `w` or `n`.
 const STEP: usize = 4;
 
-/// **The widest the column may be** - about a third of the rectangle, because a nick list that
-/// takes half the screen is a conversation you cannot read. The floor is [`MIN_W`]: a rect too
-/// narrow to hold even the minimum still gets the minimum and the host clips it.
+/// The widest the column may be - about a third of the rectangle, because a nick list that takes
+/// half the screen is a conversation you cannot read. The floor is [`MIN_W`]: a rect too narrow to
+/// hold even the minimum still gets the minimum and the host clips it.
 const THIRD: usize = 3;
 
 /// The name is never cut below this: a list of four-letter stumps is not a list of sessions.
 const MIN_NAME: usize = 4;
 
-/// **How long a running session may go without a row before its age is drawn as news** - ten
-/// minutes. Below it a turn is just slow; above it, something is wrong and the operator is the one
-/// who has to decide.
+/// How long a running session may go without a row before its age is drawn as news - ten minutes.
+/// Below it a turn is just slow; above it something is wrong and the operator has to decide.
 const STALE_MS: u64 = 10 * 60 * 1000;
 
-/// The pane's state, which is the whole of its memory: a plugin is stateless between calls
-/// (`docs/plugins-plan.md` §1, principle 5 - state belongs to the host, and the host hands it
-/// back), so the width, the hidden flag, the scope and the roster all ride here.
+/// The pane's state, which is the whole of its memory: a plugin is stateless between calls, so the
+/// width, the hidden flag, the scope and the roster all ride here.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct State {
@@ -50,8 +43,8 @@ struct State {
     hidden: bool,
     /// Which sessions are shown. `None` is [`Scope::Path`], the workspace you are in.
     scope: Option<Scope>,
-    /// **The roster, pinned** - the ids in drawn order. Recomputed when the set changes, and
-    /// never while it does not, because the host's cursor is an index into these rows.
+    /// The roster, pinned - the ids in drawn order. Recomputed when the set changes, and never while
+    /// it does not, because the host's cursor is an index into these rows.
     order: Vec<String>,
 }
 
@@ -61,8 +54,8 @@ impl State {
         self.scope.unwrap_or_default()
     }
 
-    /// **The width this rect allows** - the chosen one, clamped to the rectangle's third and to
-    /// the minimum, so a pane in a 24-column rect still draws a readable column.
+    /// The width this rect allows - the chosen one, clamped to the rectangle's third and to the
+    /// minimum, so a pane in a 24-column rect still draws a readable column.
     fn width(&self, rect: usize) -> usize {
         let most = if rect == 0 {
             DEFAULT_W
@@ -72,9 +65,9 @@ impl State {
         self.w.unwrap_or(DEFAULT_W).clamp(MIN_W, most.max(MIN_W))
     }
 
-    /// **What one key did** - the four letters a row carries, and nothing else. An `event` word
-    /// this layer does not know is ignored rather than guessed: a key nobody wrote a meaning for
-    /// must not move the pane.
+    /// What one key did - the four letters a row carries, and nothing else. An `event` word this
+    /// layer does not know is ignored rather than guessed: a key nobody wrote a meaning for must not
+    /// move the pane.
     fn apply(&mut self, action: &str, rect: usize) {
         let width = self.width(rect);
         match action {
@@ -102,16 +95,16 @@ impl State {
     }
 }
 
-/// **Which sessions the list is narrowed to**, cycled by `s` - the vocabulary the merge queue's
-/// own pane uses (`Filter::Every`/`Repo`/`Path`), so one word means one thing in this head.
+/// Which sessions the list is narrowed to, cycled by `s` - the vocabulary the merge queue's own
+/// pane uses (`Filter::Every`/`Repo`/`Path`), so one word means one thing in this head.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Scope {
     /// The workspace this session is wired to - one folder, one conversation.
     #[default]
     Path,
-    /// **The project**: the repository the workspace is a worktree of. The useful one, because a
-    /// session in `…/letibot/worktrees/agent-x` and one in `…/letibot` are the same project.
+    /// The project: the repository the workspace is a worktree of. The useful one, because a session
+    /// in `…/letibot/worktrees/agent-x` and one in `…/letibot` are the same project.
     Repo,
     /// Every session this daemon holds, whatever folder it is in.
     Every,
@@ -139,7 +132,7 @@ struct Feed {
     here: String,
     /// The host's home, so a path can be drawn as `~/…`.
     home: String,
-    /// **The host's clock**, ms since the epoch. A guest on `wasm32-unknown-unknown` has no
+    /// The host's clock, ms since the epoch. A guest on `wasm32-unknown-unknown` has no
     /// `SystemTime` - asking for one is a panic, not a zero - so the age of a row is the host's
     /// fact and not this layer's arithmetic.
     now: u64,
@@ -163,11 +156,11 @@ struct Session {
     workspace: String,
     waits_on: usize,
     nags_paused: bool,
-    /// **When this session last moved** - the last row appended, ms since the epoch. `0` is
-    /// *the host did not say*, which is drawn as `?` rather than as *now*.
+    /// When this session last moved - the last row appended, ms since the epoch. `0` is the host did
+    /// not say, which is drawn as `?` rather than as now.
     moved_ms: u64,
-    /// **The repository the workspace is in**, when the host asked git. Empty is *the host did
-    /// not say*, and [`repo_of`] falls back to the tree's own worktree convention.
+    /// The repository the workspace is in, when the host asked git. Empty is the host did not say,
+    /// and [`repo_of`] falls back to the tree's own worktree convention.
     repo: String,
 }
 
@@ -226,8 +219,8 @@ fn answer(bytes: &[u8]) -> Option<String> {
     if let Some(event) = &event {
         st.apply(&event.action, rect);
     }
-    // **A feed the host did not hand is a screen that says so.** The layer passed would draw
-    // nothing at all, and a pane that vanishes is a pane somebody thinks they closed.
+    // A feed the host did not hand is a screen that says so. The layer passed would draw nothing at
+    // all, and a pane that vanishes is a pane somebody thinks they closed.
     let Some(feed) = feed else {
         return serde_json::to_string(&no_feed()).ok();
     };
@@ -239,8 +232,8 @@ fn answer(bytes: &[u8]) -> Option<String> {
     serde_json::to_string(&view).ok()
 }
 
-/// **The pane a host hands no `sessions` feed**: one line naming the missing half, because an
-/// empty nick list and a broken host look identical on a screen and mean opposite things.
+/// The pane a host hands no `sessions` feed: one line naming the missing half, because an empty
+/// nick list and a broken host look identical on a screen and mean opposite things.
 fn no_feed() -> Value {
     json!({
         "panels": [{
@@ -268,8 +261,8 @@ fn strip(feed: &Feed, st: &State, rect: usize) -> Value {
         },
         counts.working,
     );
-    // **The strip is drawn at the RECTANGLE's width, not the column's** - it is the whole of what
-    // a hidden pane says, so it spends the room it has.
+    // The strip is drawn at the rectangle's width, not the column's - it is the whole of what a
+    // hidden pane says, so it spends the room it has.
     let said = if rect > 0 { fit(&said, rect) } else { said };
     json!({
         "badge": {"text": format!("{} here · {} working", counts.shown, counts.working), "role": "pending"},
@@ -317,7 +310,7 @@ fn counts(feed: &Feed, st: &State) -> Counts {
     }
 }
 
-/// **The list**, in the order it is drawn.
+/// The list, in the order it is drawn.
 fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
     let width = st.width(rect);
     let here = here_of(feed);
@@ -332,9 +325,9 @@ fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
         .copied()
         .filter(|s| keeps(s, scope, here))
         .collect();
-    // **A session the scope hides but that is WORKING keeps a place** - a narrowed list that
-    // hides the one agent doing something is how a person loses an agent. It is drawn under a
-    // divider that says how many were left out, and its rows are real stops: Enter switches there.
+    // A session the scope hides but that is working keeps a place - a narrowed list that hides the
+    // one agent doing something is how a person loses an agent. It is drawn under a divider that says
+    // how many were left out, and its rows are real stops: Enter switches there.
     let outside: Vec<&Session> = top
         .iter()
         .copied()
@@ -394,9 +387,9 @@ fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
     }
     let elsewhere = top.len() - shown;
     if !outside.is_empty() {
-        // **The divider is fitted like every other line**: at the minimum width it keeps the count
-        // that matters - how many sessions the scope hid - and gives up the word *working*, which
-        // the header already counts.
+        // The divider is fitted like every other line: at the minimum width it keeps the count that
+        // matters - how many sessions the scope hid - and gives up the word working, which the
+        // header already counts.
         let long = format!("· {elsewhere} elsewhere · {} working", outside.len());
         let said = if cells(&long) <= width {
             long
@@ -420,8 +413,8 @@ fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
             "summary": [{"tree": {"rows": rows}}],
         }],
         "legend": legend(),
-        // **Five seconds**: a nick list is about *who is busy*, and an age that is a minute stale
-        // is a list that says `now` about a session that stopped. `MIN_EVERY_S` is the floor.
+        // Five seconds: a nick list is about who is busy, and an age that is a minute stale is a
+        // list that says `now` about a session that stopped. `MIN_EVERY_S` is the floor.
         "every_s": 5,
         "state": serde_json::to_value(&*st).unwrap_or(Value::Null),
     })
@@ -476,7 +469,7 @@ fn actions(hidden: bool) -> Value {
     ])
 }
 
-/// **What every mark and every fact means** - the `l` view, and the text that answers on hover.
+/// What every mark and every fact means - the `l` view, and the text that answers on hover.
 fn legend() -> Value {
     json!({
         "»": "the session you are in",
@@ -513,7 +506,7 @@ fn header(scope: Scope, here: Option<&Session>, c: &Counts, width: usize) -> Str
     channel
 }
 
-/// **The channel's name, which is the scope**: the folder of the workspace, the folder of the
+/// The channel's name, which is the scope: the folder of the workspace, the folder of the
 /// repository, or `all`.
 fn channel_of(scope: Scope, here: Option<&Session>) -> String {
     let Some(here) = here else {
@@ -544,7 +537,7 @@ fn base_of(path: &str) -> String {
         .to_string()
 }
 
-/// **Whether this scope shows this session.**
+/// Whether this scope shows this session.
 fn keeps(s: &Session, scope: Scope, here: Option<&Session>) -> bool {
     match scope {
         Scope::Every => true,
@@ -556,7 +549,7 @@ fn keeps(s: &Session, scope: Scope, here: Option<&Session>) -> bool {
     }
 }
 
-/// **The repository a session's workspace is in** - the feed's `repo` when the host asked git, and
+/// The repository a session's workspace is in - the feed's `repo` when the host asked git, and
 /// otherwise this tree's own worktree convention (`<repo>/worktrees/<name>`,
 /// `<repo>/.claude/worktrees/<name>`), which is where every worktree of this repository lives.
 fn repo_of(s: &Session) -> String {
@@ -583,9 +576,9 @@ fn here_of(feed: &Feed) -> Option<&Session> {
     feed.sessions.iter().find(|s| s.id == feed.here)
 }
 
-/// **The order the roster is computed by**, when it is computed at all: you, then a head attached,
-/// then working, then idle by recency, then only-on-disk. Ties by id, so one roster always sorts
-/// the same way.
+/// The order the roster is computed by, when it is computed at all: you, then a head attached, then
+/// working, then idle by recency, then only-on-disk. Ties by id, so one roster always sorts the same
+/// way.
 fn key_of(
     id: &str,
     by_id: &BTreeMap<&str, &Session>,
@@ -649,8 +642,8 @@ fn name_of(s: &Session) -> String {
     }
 }
 
-/// **The one fact**: how long since this session last moved, and its role says whether that is
-/// news. See this module's note - this is the question *is that one stuck?*, answered per row.
+/// The one fact: how long since this session last moved, and its role says whether that is news.
+/// This is the question is that one stuck?, answered per row.
 fn fact_of(s: &Session, now: u64) -> (String, Role) {
     let age = age_of(s, now);
     let text = match age {

@@ -1,10 +1,6 @@
 //! The GitHub reviewer seat, as a built-in plugin - one line per scope, one row per open pull
-//! request under it.
-//!
-//! Nothing here asks GitHub anything: the daemon's snapshot of the seat arrives in the `github`
-//! feed and this layer only decides how it reads. `posting: false` is drawn as words and not as a
-//! colour, because the operator has to know that nothing is being sent.
-//! One feed, `github`, and no clock: `SystemTime::now()` is a panic on `wasm32-unknown-unknown`.
+//! request under it. The daemon's snapshot arrives in the `github` feed and this layer decides how it
+//! reads; `posting: false` is drawn as words, because the operator must know nothing is sent.
 
 use letibot_guest_abi as abi;
 use letibot_plugin::pane::{Act, Cell, Input, Role};
@@ -28,7 +24,7 @@ const MIN_TITLE: usize = 8;
 /// The width a row is drawn at when the head did not say - a first frame, or a fixture.
 const DEFAULT_W: usize = 80;
 
-/// **The feed, as this layer reads it.** Every field is defaulted: the snapshot belongs to another
+/// The feed, as this layer reads it. Every field is defaulted: the snapshot belongs to another
 /// crate, and a field it gains or drops must not make this pane draw nothing.
 #[derive(Debug, Default, Deserialize)]
 struct Feed {
@@ -72,7 +68,7 @@ struct Pull {
     /// `queued`, `reviewing`, `drafted`, `posted`, `re-review pending`, `answering a mention`.
     #[serde(default)]
     review: String,
-    /// **A fork's diff is reviewed and nothing of it runs**, which is why the row says both words.
+    /// A fork's diff is reviewed and nothing of it runs, which is why the row says both words.
     #[serde(default)]
     fork: bool,
     #[serde(default)]
@@ -82,10 +78,10 @@ struct Pull {
     /// The session working this pull request; empty for one nobody has picked up.
     #[serde(default)]
     session: String,
-    /// **What would be sent.** Drawn in full, because the operator's decision is about these words.
+    /// What would be sent. Drawn in full, because the operator's decision is about these words.
     #[serde(default, deserialize_with = "drafts_of")]
     drafts: Vec<Draft>,
-    /// **What this pull request's words are like**: an open todo to watch, a review made before.
+    /// What this pull request's words are like: an open todo to watch, a review made before.
     /// Drawn as its own faint line each, and empty when nothing was close enough to offer.
     #[serde(default)]
     offers: Vec<Offer>,
@@ -117,7 +113,7 @@ struct Draft {
     body: String,
 }
 
-/// **A count from an older host is read as that many drafts with nothing in them.** The snapshot is
+/// A count from an older host is read as that many drafts with nothing in them. The snapshot is
 /// another crate's, and a field that changed shape must cost the words, not the whole pane.
 fn drafts_of<'de, D>(d: D) -> Result<Vec<Draft>, D::Error>
 where
@@ -136,7 +132,7 @@ where
     }
 }
 
-/// **One row this layer is about to draw.**
+/// One row this layer is about to draw.
 struct Out {
     id: String,
     cells: Vec<Cell>,
@@ -147,7 +143,7 @@ struct Out {
     children: Vec<Out>,
 }
 
-/// **A scope's line**: its name, the words its state is, and how many pull requests it holds.
+/// A scope's line: its name, the words its state is, and how many pull requests it holds.
 fn scope_row(s: &Scope, feed: &Feed, width: usize) -> Out {
     let mut cells = vec![Cell::role(s.scope.clone(), Role::Strong)];
     let mut facts = vec![Cell::role(count_words(s.pulls.len()), Role::Faint)];
@@ -195,7 +191,7 @@ fn scope_row(s: &Scope, feed: &Feed, width: usize) -> Out {
     }
 }
 
-/// **A pull request's row**: `#12` and the title on the left, the review state and the age on the
+/// A pull request's row: `#12` and the title on the left, the review state and the age on the
 /// right, the last action faint under it, and Enter into the session working it.
 fn pull_row(p: &Pull, width: usize) -> Out {
     let mut facts: Vec<Cell> = Vec::new();
@@ -223,7 +219,7 @@ fn pull_row(p: &Pull, width: usize) -> Out {
     if !p.last_action.is_empty() {
         under.push(fit(&one_line(&p.last_action), width));
     }
-    // **Each draft on its own line**, because a count is not something a person can decide about.
+    // Each draft on its own line, because a count is not something a person can decide about.
     for draft in &p.drafts {
         under.push(draft_line(draft, width));
     }
@@ -271,7 +267,7 @@ fn pull_row(p: &Pull, width: usize) -> Out {
 /// Why a fork's row says `read-only`.
 const FORK_WHY: &str = "a fork's diff is reviewed and nothing of it runs";
 
-/// **The seat itself**: whether posting is on, and whose token would send it.
+/// The seat itself: whether posting is on, and whose token would send it.
 fn chrome(feed: &Feed, width: usize) -> Vec<Value> {
     let room = width.saturating_sub(10);
     let (posting, role) = if feed.posting {
@@ -365,7 +361,7 @@ fn review_role(review: &str) -> Role {
     }
 }
 
-/// **`4m`** - an age, from the milliseconds the feed carries. The guest has no clock, so this is
+/// `4m` - an age, from the milliseconds the feed carries. The guest has no clock, so this is
 /// arithmetic and nothing else.
 fn age(ms: u64) -> String {
     if ms < 60_000 {
@@ -491,7 +487,7 @@ fn line_width(cells: &[Cell], facts: &[Cell]) -> usize {
     }
 }
 
-/// **Cut to fit, with an ellipsis.** A guest has no width table, so a character is the unit it can
+/// Cut to fit, with an ellipsis. A guest has no width table, so a character is the unit it can
 /// honestly count.
 fn fit(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
@@ -505,9 +501,9 @@ fn fit(text: &str, width: usize) -> String {
     out
 }
 
-/// **Nothing wider than the frame leaves this layer.** The title is fitted before this runs, so
-/// what is left is a state word or a scope name on a frame too narrow for it: the longest text
-/// gives up the difference, because a row drawn over the edge is a row the person cannot read.
+/// Nothing wider than the frame leaves this layer. The title is fitted before this runs, so what is
+/// left is a state word or a scope name on a frame too narrow for it: the longest text gives up the
+/// difference, because a row drawn over the edge is a row the person cannot read.
 fn clip(cells: &mut [Cell], facts: &mut [Cell], width: usize) {
     loop {
         let over = line_width(cells, facts).saturating_sub(width);
@@ -569,8 +565,8 @@ fn answer(bytes: &[u8]) -> Option<String> {
         0 => DEFAULT_W,
         w => w as usize,
     };
-    // **An absent feed is not an empty one.** The host hands over what the layer declared, so a
-    // missing `github` means nothing is attached, and that is a sentence rather than a blank panel.
+    // An absent feed is not an empty one. The host hands over what the layer declared, so a missing
+    // `github` means nothing is attached, and that is a sentence rather than a blank panel.
     let feed: Option<Feed> = input
         .feeds
         .get(FEED)

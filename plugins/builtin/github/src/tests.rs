@@ -1,8 +1,6 @@
-//! The github layer's policy, tested natively - no engine, no wasm, no network.
-//!
-//! Every test here is a claim the operator made about the pane: a scope is one line carrying its
-//! state words, every open pull request is a row under it with its review state and age, nothing is
-//! drawn wider than the frame, and a fork says what it is.
+//! The github layer's policy, tested natively - no engine, no wasm, no network. Every test here is a
+//! claim the operator made about the pane: a scope is one line carrying its state words, every open
+//! pull request is a row under it with its review state and age, and a fork says what it is.
 
 use super::*;
 use serde_json::json;
@@ -54,7 +52,7 @@ fn view_at(feed: Option<&Value>, w: u32) -> Value {
     serde_json::from_str(&text).expect("and it is JSON")
 }
 
-/// **One cell's text**, whether it is the plain string spelling or `{"text","role"}` - a cell that
+/// One cell's text, whether it is the plain string spelling or `{"text","role"}` - a cell that
 /// carries a role is an object, and reading it as a string would make every assertion here vacuous.
 fn text_of(cell: &Value) -> String {
     match cell {
@@ -85,7 +83,7 @@ fn row_text(row: &Value) -> String {
     all.join(" ")
 }
 
-/// **What the frame draws on the row's own line** - the two columns, joined the way the grid joins
+/// What the frame draws on the row's own line - the two columns, joined the way the grid joins
 /// them. The `under` lines are separate lines and are measured separately.
 fn row_line(row: &Value) -> String {
     let cells = cells_in(row, "cells").join(" ");
@@ -321,8 +319,8 @@ fn a_row_without_a_session_has_no_enter() {
     assert!(row.get("enter").is_none(), "{row}");
 }
 
-/// **A draft is drawn, not counted.** The operator's decision is whether to send these words, so
-/// the pane shows them: one faint line under the row per draft, and the whole text in the detail.
+/// A draft is drawn, not counted. The operator's decision is whether to send these words, so the
+/// pane shows them: one faint line under the row per draft, and the whole text in the detail.
 #[test]
 fn each_draft_is_drawn_under_its_row() {
     let view = view_of(Some(&a_feed()));

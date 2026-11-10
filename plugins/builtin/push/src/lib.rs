@@ -1,4 +1,4 @@
-//! The bridge's own push rule, as the built-in `push` layer (X25).
+//! The bridge's own push rule, as the built-in `push` layer.
 //!
 //! ```jsonc
 //! // in
@@ -10,8 +10,7 @@
 //!
 //! It answers what the bridge itself would have: `native` when the input carries one, and otherwise
 //! the room's own rule - a line that only passes by is not pushed and everything else is. A project
-//! puts a layer above this one to change the rule (R117's *every room message* is `{"push": true}`
-//! for `passing` too); the two events no layer may silence (an `ask` and a `failed`) are the host's.
+//! puts a layer above this one to change the rule, because a `{"push": true}` answer widens it.
 
 use letibot_guest_abi as abi;
 
@@ -35,7 +34,7 @@ pub fn decide(input: &serde_json::Value) -> serde_json::Value {
         .and_then(serde_json::Value::as_bool);
     let push = native.unwrap_or_else(|| {
         // `passing` is the room's word for a line addressed to somebody else: it reaches this seat
-        // as content and wakes nobody, which is the whole of "only addressed" (R117).
+        // as content and wakes nobody, which is the whole of "only addressed".
         input.get("event").and_then(serde_json::Value::as_str) != Some("passing")
     });
     let text = input
@@ -64,7 +63,7 @@ mod tests {
         input
     }
 
-    /// The layer is today's rule: only an addressed line is pushed, and the words are the bridge's.
+    /// The layer's standing rule: only an addressed line is pushed, and the words are the bridge's.
     #[test]
     fn the_layer_says_todays_rule() {
         for event in ["operator", "dm", "addressed", "turn_ended", "ask", "failed"] {

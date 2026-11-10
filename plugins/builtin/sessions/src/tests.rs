@@ -1,11 +1,6 @@
-//! The session list's policy, tested where it lives.
-//!
-//! This is the copy of the tree's shape and of a row's words that a project can override, so it is
-//! the copy that needs tests of its own: the host-side tests say *the list draws what the head
-//! draws*, and these say *the list is the one the plan describes*.
-//!
-//! They run natively (`cargo test` in this directory): the module is a `cdylib` for the host and an
-//! `rlib` for these, and none of the logic below knows that a wasm ABI exists.
+//! The session list's policy, tested where it lives. This is the copy of the tree's shape and of a
+//! row's words that a project can override, so it is the copy that needs tests of its own. They run
+//! natively, because none of the logic below knows a wasm ABI exists.
 
 use super::*;
 
@@ -76,7 +71,7 @@ fn feed(sessions: Vec<Session>, here: &str) -> Feed {
     }
 }
 
-/// **A project's line, then its conversations under it** - the top of the tree, and the level the
+/// A project's line, then its conversations under it - the top of the tree, and the level the
 /// operator asked for by name.
 #[test]
 fn a_projects_line_and_its_conversations_under_it() {
@@ -88,14 +83,14 @@ fn a_projects_line_and_its_conversations_under_it() {
     );
     assert_eq!(draw(&f, &[])[0].depth, 0, "the project is the top");
     assert_eq!(draw(&f, &[])[1].depth, 1, "a session is one step in");
-    // **A project's line is CLOSED by default** - except this one, which holds the session the head
-    // is standing in: a list that hides where you are cannot answer *where am I*.
+    // A project's line is closed by default - except this one, which holds the session the head is
+    // standing in: a list that hides where you are cannot answer *where am I*.
     assert_eq!(draw(&f, &[])[0].open, Some(Fold::Open));
     assert_eq!(draw(&f, &[])[0].enter, Some(Act::fold()));
 }
 
-/// **A child is drawn under its parent, and only when the parent is opened** - the collapsed
-/// default is what keeps thirty subagents from burying four conversations.
+/// A child is drawn under its parent, and only when the parent is opened - the collapsed default is
+/// what keeps thirty subagents from burying four conversations.
 #[test]
 fn a_child_is_drawn_under_its_parent_once_it_is_opened() {
     let mut child = session("s-c", "read the repo");
@@ -112,7 +107,7 @@ fn a_child_is_drawn_under_its_parent_once_it_is_opened() {
     assert_eq!(open[2].depth, 2);
 }
 
-/// **The `system` branch, one folded line per group** - and no line for a group with no rows.
+/// The `system` branch, one folded line per group - and no line for a group with no rows.
 #[test]
 fn the_system_branch_is_one_folded_line_per_group() {
     let mut gatekeeper = session("s-gatekeeper-0123456789ab", "the review queue");
@@ -129,8 +124,8 @@ fn the_system_branch_is_one_folded_line_per_group() {
         vec!["[letibot (3)]", "s-a", "[system (2)]"],
         "`system` starts closed, and a closed branch draws its own line and nothing under it"
     );
-    // **A group is folded until the person opens it** - that is what keeps twelve reviewers from
-    // burying the work - and so is the branch above it.
+    // A group is folded until the person opens it - that is what keeps twelve reviewers from burying
+    // the work - and so is the branch above it.
     let key = format!("{PROJECT}/system");
     let branch = draw(&f, &[(&key, true)]);
     assert_eq!(
@@ -154,8 +149,8 @@ fn the_system_branch_is_one_folded_line_per_group() {
     );
 }
 
-/// **A reviewer nests under the row that spawned it inside its group**, one step in - and it is
-/// drawn ONCE.
+/// A reviewer nests under the row that spawned it inside its group, one step in - and it is drawn
+/// once.
 #[test]
 fn a_reviewer_nests_inside_its_group() {
     let mut gatekeeper = session("s-gatekeeper-0123456789ab", "the review queue");
@@ -195,8 +190,8 @@ fn a_reviewer_nests_inside_its_group() {
     );
 }
 
-/// **A session's row says everything a row can say**: the slug, `WAITING ON YOU`, paused nags, and
-/// a fact column.
+/// A session's row says everything a row can say: the slug, `WAITING ON YOU`, paused nags, and a
+/// fact column.
 #[test]
 fn a_row_says_what_it_is() {
     let mut s = session("s-a", "the habr article");
@@ -223,8 +218,8 @@ fn a_row_says_what_it_is() {
     assert_eq!(row.enter, Some(Act::switch("s-a")));
 }
 
-/// **A number is the n-th SESSION** - a node's line takes none, because a number is something you
-/// type to go somewhere.
+/// A number is the n-th session - a node's line takes none, because a number is something you type
+/// to go somewhere.
 #[test]
 fn numbers_run_over_the_sessions_and_never_over_a_node() {
     let mut child = session("s-c", "read the repo");
@@ -246,8 +241,8 @@ fn numbers_run_over_the_sessions_and_never_over_a_node() {
     );
 }
 
-/// **A head standing in a sub-session draws its FAMILY** - the parent and its children, and no
-/// tree at all.
+/// A head standing in a sub-session draws its family - the parent and its children, and no tree at
+/// all.
 #[test]
 fn the_family_view_has_no_tree() {
     let mut child = session("s-c", "read the repo");
@@ -298,8 +293,8 @@ fn a_family_is_drawn_across_the_groups_its_members_are_in() {
     );
 }
 
-/// **The same rule on the other pair the tree creates**: a notes keeper spawned as a `task` child
-/// of an ordinary conversation has a parent with no group at all, and it belongs in that family.
+/// The same rule on the other pair the tree creates: a notes keeper spawned as a `task` child of an
+/// ordinary conversation has a parent with no group at all, and it belongs in that family.
 #[test]
 fn a_keeper_child_of_a_conversation_is_in_its_family() {
     let mut keeper = session("s-keeper", "You are the notes keeper. tidy the notes");
@@ -334,7 +329,7 @@ fn a_row_whose_child_is_on_the_path_is_drawn_open_though_it_was_folded() {
     );
 }
 
-/// **A workspace under the head's home is drawn as `~/…`**, and the full id sits under every row.
+/// A workspace under the head's home is drawn as `~/…`, and the full id sits under every row.
 #[test]
 fn a_row_under_is_the_id_and_a_shortened_path() {
     let mut s = session("s-a", "a");
@@ -363,7 +358,7 @@ fn every_project_line_is_drawn_and_no_session_under_the_ones_you_are_not_in() {
         vec!["[one (1)]", "s-here", "[two (1)]", "[three (1)]"],
         "every project is a line; the sessions of the two the head is not in are behind them"
     );
-    // **And each opens on its own** - the person's answer, one project at a time.
+    // And each opens on its own - the person's answer, one project at a time.
     let opened = draw(&f, &[("/home/dead/Projects/two", true)]);
     assert_eq!(
         words(&opened),
@@ -372,9 +367,9 @@ fn every_project_line_is_drawn_and_no_session_under_the_ones_you_are_not_in() {
     );
 }
 
-/// **The chain to `here` is drawn whatever the folds say** - the second exception a closed default
-/// must keep. A head standing two levels down draws the family it is in, and the row it stands in
-/// is one of them: *a list that hides where you are cannot answer where am I*.
+/// The chain to `here` is drawn whatever the folds say - the second exception a closed default must
+/// keep. A head standing two levels down draws the family it is in, and the row it stands in is one
+/// of them: a list that hides where you are cannot answer where am I.
 #[test]
 fn the_chain_to_here_is_drawn_though_every_fold_is_shut() {
     let mut grandchild = session("s-gc", "the one i am in");
@@ -385,8 +380,8 @@ fn the_chain_to_here_is_drawn_though_every_fold_is_shut() {
         vec![session("s-root", "the root"), child, grandchild],
         "s-gc",
     );
-    // **The family view, and the fold map has no say in it** - the person shut the middle row and
-    // the row the head is standing in is still on the list, one step under it.
+    // The family view, and the fold map has no say in it - the person shut the middle row and the
+    // row the head is standing in is still on the list, one step under it.
     assert_eq!(
         ids(&draw(&f, &[("s-child", false)])),
         vec!["s-child".to_string(), "s-gc".to_string()],
@@ -402,9 +397,9 @@ fn the_chain_to_here_is_drawn_though_every_fold_is_shut() {
         rows[1].depth, 1,
         "drawn at its depth, not promoted to the top"
     );
-    // **And the project's own exception**: the line holding `here` is open, so the sessions of the
+    // And the project's own exception: the line holding `here` is open, so the sessions of the
     // project the head is working in are on the list while every other project's are behind their
-    // line (see `every_project_line_is_drawn_and_no_session_under_the_ones_you_are_not_in`).
+    // line.
     let alone = feed(vec![session("s-a", "a")], "s-a");
     assert_eq!(
         words(&draw(&alone, &[])),
@@ -413,8 +408,8 @@ fn the_chain_to_here_is_drawn_though_every_fold_is_shut() {
     );
 }
 
-/// **The head's own project's line says where you are** when two projects would read alike - the
-/// name is the head's to resolve, and this layer draws whatever it was handed.
+/// The head's own project's line says where you are when two projects would read alike - the name is
+/// the head's to resolve, and this layer draws whatever it was handed.
 #[test]
 fn two_projects_are_drawn_in_the_order_the_feed_gives_them() {
     let mut other = session("s-b", "b");
@@ -438,8 +433,8 @@ fn two_projects_are_drawn_in_the_order_the_feed_gives_them() {
     );
 }
 
-/// **The synthetic first frame** a daemon asks every built-in pane at a session's door
-/// (`PluginHost::ensure_builtin_panes`): no feed at all is a pane that SAYS so. A layer that passed
+/// The synthetic first frame a daemon asks every built-in pane at a session's door
+/// (`PluginHost::ensure_builtin_panes`): no feed at all is a pane that says so. A layer that passed
 /// instead drew nothing, and a pane that vanishes reads as one somebody closed.
 #[test]
 fn a_host_with_no_feed_is_a_pane_that_says_so() {

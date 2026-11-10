@@ -1,4 +1,4 @@
-//! The harness's own compaction record, as the built-in `compact` layer (X15).
+//! The harness's own compaction record, as the built-in `compact` layer.
 //!
 //! ```jsonc
 //! // in
@@ -11,9 +11,8 @@
 //! ```
 //!
 //! It asks for the record the harness has always asked for - the same eight sections, in the same
-//! order, and no sentence of its own - and adds the two things G2 wanted carried verbatim: the
-//! project's `AGENTS.md`, then the rows still open. Both are candidates the host scored; a pin past
-//! the pin budget is cut and said by the host, not dropped here.
+//! order, and no sentence of its own - and adds the two things to carry verbatim: the project's
+//! `AGENTS.md`, then the rows still open. A pin past the budget is cut and said by the host.
 
 use letibot_guest_abi as abi;
 
@@ -79,7 +78,7 @@ mod tests {
         })
     }
 
-    /// K4's rule for this layer: `AGENTS.md` is pinned, and the rows after it, in that order.
+    /// `AGENTS.md` is pinned, and the rows after it, in that order.
     #[test]
     fn agents_md_is_pinned_before_the_rows() {
         let said = decide(&input(serde_json::json!([

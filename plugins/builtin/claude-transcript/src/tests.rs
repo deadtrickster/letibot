@@ -1,9 +1,6 @@
-//! **Claude Code's store, read the way this layer reads it - tested where the reading lives.**
-//!
-//! These run natively (`cargo test` in this directory): the crate is a `cdylib` for the host and an
-//! `rlib` for these, and nothing here knows that a wasm ABI exists. What they cover is the half the
-//! host cannot check for it - how one of Claude Code's own lines becomes an ask or a conclusion,
-//! how a path becomes a project directory's name, and that every answer says what it left out.
+//! Claude Code's store, read the way this layer reads it, tested where the reading lives. These run
+//! natively (`cargo test` in this directory): the crate is a `cdylib` for the host and an `rlib` for
+//! these, and nothing here knows a wasm ABI exists.
 
 use super::*;
 
