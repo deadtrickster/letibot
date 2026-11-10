@@ -7,6 +7,72 @@ use super::*;
 use crate::ui::transcript::line_cards::Card;
 use letibot_plugin::card as plugin_card;
 use letibot_transcript::TranscriptItem;
+use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+/// How many card answers one head keeps: a transcript window is bounded, and a session that has read
+/// more rows than this re-asks for the ones it draws again - one call per row, once.
+pub(crate) const MAX_CARDS: usize = 4096;
+
+/// The answers a `card_` layer gave, evicted least-recently-used.
+///
+/// A row's id alone is not a key: an edited row is the same id with different words, and a card
+/// cached under the id would draw the old sentence for the rest of the session. The key carries a
+/// hash of the input the layer was asked with, so an edit is a miss and a redrawn frame is not.
+#[derive(Default)]
+pub(crate) struct CardCache {
+    /// The answer's place in [`CardCache::by_age`], by [`CardCache::key`].
+    at: BTreeMap<String, u64>,
+    /// The same answers in the order they were last asked for, so the front is the one to evict.
+    by_age: BTreeMap<u64, (String, Option<serde_json::Value>)>,
+    tick: u64,
+}
+
+impl CardCache {
+    /// What a card is asked about: the hook, the row, and the input's own bytes - so a row drawn
+    /// again the same way is the same question, and one word changed is a different one.
+    pub(crate) fn key(hook: &str, id: &str, input: &serde_json::Value) -> String {
+        let mut hasher = DefaultHasher::new();
+        hook.hash(&mut hasher);
+        id.hash(&mut hasher);
+        input.to_string().hash(&mut hasher);
+        format!("{hook}\n{id}\n{:016x}", hasher.finish())
+    }
+
+    /// The answer kept for this key, marked as the most recently used. `Some(None)` is a row the
+    /// layer drew nothing for, which is an answer too: asking again would get the same nothing.
+    pub(crate) fn get(&mut self, key: &str) -> Option<Option<serde_json::Value>> {
+        let old = self.at.get(key).copied()?;
+        let (_, answer) = self.by_age.remove(&old)?;
+        self.tick += 1;
+        self.by_age
+            .insert(self.tick, (key.to_string(), answer.clone()));
+        self.at.insert(key.to_string(), self.tick);
+        Some(answer)
+    }
+
+    /// Keep one answer, dropping the least recently used when the cap is reached.
+    pub(crate) fn insert(&mut self, key: String, answer: Option<serde_json::Value>) {
+        self.tick += 1;
+        if let Some(old) = self.at.insert(key.clone(), self.tick) {
+            self.by_age.remove(&old);
+        }
+        self.by_age.insert(self.tick, (key, answer));
+        while self.by_age.len() > MAX_CARDS {
+            let Some((_, (gone, _))) = self.by_age.pop_first() else {
+                break;
+            };
+            self.at.remove(&gone);
+        }
+    }
+
+    /// How many answers are kept - a test's measure of the bound, and nothing else's.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.at.len()
+    }
+}
 
 /// One row, as the layer is asked about it: what it is, its words, and the facts it carries.
 struct Row<'a> {
@@ -15,8 +81,8 @@ struct Row<'a> {
 }
 
 /// The cards for one row, and the layer to ask. Cheap to build - a frame builds one per row - and
-/// the answer behind it is kept by row id in the head's [`Host`], so a row drawn on a hundred
-/// frames costs one call.
+/// the answer behind it is kept in the head's [`Host`] by row id and the input's own bytes, so a row
+/// drawn on a hundred frames costs one call and an edited one costs another.
 pub(crate) struct Cards<'a> {
     host: Option<&'a Host>,
     id: &'a str,
@@ -95,7 +161,7 @@ impl<'a> Cards<'a> {
         name: &str,
         edit: Option<&letibot_transcript::ToolEditExcerpt>,
     ) -> String {
-        match self.asked(plugin_card::CALL, 0, || call_input(self.id, name, edit)) {
+        match self.asked(plugin_card::CALL, 0, call_input(self.id, name, edit)) {
             Some(out) => out,
             None => crate::ui::drawn_as(name, edit).to_string(),
         }
@@ -113,15 +179,11 @@ impl<'a> Cards<'a> {
         card_of(&plugin_card::readers::generic(part))
     }
 
-    /// One hook asked once per row, and the verb it named when the ask was `card_call`.
-    fn asked(
-        &self,
-        hook: &str,
-        parts: usize,
-        ask: impl FnOnce() -> Option<serde_json::Value>,
-    ) -> Option<String> {
+    /// One hook asked once per row, and the verb it named when the ask was `card_call`. The input is
+    /// built even on a hit: it IS the question, so the cache cannot know the row changed without it.
+    fn asked(&self, hook: &str, parts: usize, input: Option<serde_json::Value>) -> Option<String> {
         let host = self.host?;
-        let answer = host.card_answer(hook, self.id, ask)?;
+        let answer = host.card_answer(hook, self.id, input?)?;
         let out = self.read(hook, &answer)?;
         out.cards(parts).ok().and_then(|cards| cards.verb)
     }
@@ -131,8 +193,8 @@ impl<'a> Cards<'a> {
     pub(crate) fn answered(&self, parts: &[&str]) -> Option<Vec<Option<plugin_card::Lines>>> {
         let host = self.host?;
         let row = self.row.as_ref()?;
-        let body = || row_input(row, parts);
-        let answer = host.card_answer(plugin_card::ITEM, self.id, body)?;
+        let input = row_input(row, parts)?;
+        let answer = host.card_answer(plugin_card::ITEM, self.id, input)?;
         let out = self.read(plugin_card::ITEM, &answer)?;
         match out.cards(parts.len()) {
             Ok(cards) => Some(cards.cards),

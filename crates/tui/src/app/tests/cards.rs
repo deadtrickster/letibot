@@ -113,8 +113,8 @@ fn a_reworded_notice_keeps_its_card() {
     );
 }
 
-/// A row is asked about ONCE: the answer is kept by its id, so a frame redrawn a hundred times is
-/// one call and not a hundred.
+/// A row is asked about ONCE: the answer is kept by its id and what the layer was asked, so a frame
+/// redrawn a hundred times is one call and not a hundred.
 #[test]
 fn a_card_is_asked_once_per_item() {
     let host = builtin_host("once");
@@ -132,6 +132,58 @@ fn a_card_is_asked_once_per_item() {
         host.cards_asked(),
         1,
         "a card is asked once per item, not once per frame"
+    );
+}
+
+/// A row is not frozen at the words it was read with. The same id with other words is another
+/// question - a card kept under the id alone would draw the old sentence for the rest of the session.
+#[test]
+fn an_edited_row_asks_for_its_card_again() {
+    let host = builtin_host("edited");
+    let before = "[monitor] `ci` fired: the command exited 2.";
+    let row = notice_row("s#t1#7", before, Some(firing("ci", "the command exited 2")));
+    let first = Cards::row(Some(&host), &row).lines(&[before]);
+    assert_eq!(host.cards_asked(), 1, "the first draw asks the layer");
+    assert_eq!(
+        Cards::row(Some(&host), &row).lines(&[before])[0].line,
+        first[0].line
+    );
+    assert_eq!(host.cards_asked(), 1, "and redrawing it does not ask again");
+    // The same row, edited: the same id, other words, and the facts that go with them.
+    let after = "[monitor] `ci` fired: the command exited 7.";
+    let edited = notice_row("s#t1#7", after, Some(firing("ci", "the command exited 7")));
+    let redrawn = Cards::row(Some(&host), &edited).lines(&[after]);
+    assert_eq!(
+        host.cards_asked(),
+        2,
+        "an edited row is a question of its own"
+    );
+    assert_eq!(
+        redrawn[0].line,
+        "monitor · ci the command exited 7 · click for details"
+    );
+}
+
+/// The cache is bounded, and what it drops is the answer nobody has asked for longest - not the
+/// whole thing at a cliff, which would re-ask for every row a long session still draws.
+#[test]
+fn the_card_cache_evicts_the_least_recently_used() {
+    let mut cache = CardCache::default();
+    for k in 0..MAX_CARDS {
+        cache.insert(format!("row {k}"), Some(serde_json::json!(k)));
+    }
+    assert_eq!(cache.len(), MAX_CARDS, "the cap is the cap");
+    // Ask for the oldest again: it is now the most recently used, so the NEXT insert is the one
+    // that takes it out of the way.
+    assert_eq!(cache.get("row 0"), Some(Some(serde_json::json!(0))));
+    cache.insert("one more".to_string(), None);
+    assert_eq!(cache.len(), MAX_CARDS, "still bounded");
+    assert!(cache.get("row 0").is_some(), "the row just asked for stays");
+    assert!(cache.get("row 1").is_none(), "the least recently used went");
+    assert_eq!(
+        cache.get("one more"),
+        Some(None),
+        "and a row the layer drew nothing for is an answer too"
     );
 }
 
