@@ -291,8 +291,8 @@ impl Host {
     fn any_layer_answering(session: &str, workspace: &Path, prefix: &str) -> bool {
         let roots = [
             session_plugins_dir(session),
-            Some(workspace.join(".letibot").join("plugins")),
-            user_config_dir().map(|d| d.join("plugins")),
+            Some(letibot_plugins::paths::project_plugin_dir(workspace)),
+            letibot_plugins::paths::user_plugin_dir(),
         ];
         roots.iter().flatten().any(|root| {
             let Ok(entries) = std::fs::read_dir(root) else {
@@ -678,25 +678,17 @@ fn would_not_load(stack: &Stack) -> Option<String> {
     (!said.is_empty()).then(|| said.join("; "))
 }
 
-/// The session's own plugin directory, where a session-scope layer lives.
+/// The session's own plugin directory, where a session-scope layer lives - under the data
+/// directory the daemon resolves, so the two processes read one scope.
 fn session_plugins_dir(session: &str) -> Option<PathBuf> {
-    let data = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
-    Some(
-        data.join("letibot")
-            .join("sessions")
-            .join(session)
-            .join("plugins"),
-    )
+    let data = letibot_plugins::paths::data_dir()?;
+    Some(letibot_plugins::paths::session_plugin_dir(&data, session))
 }
 
-/// `$XDG_CONFIG_HOME/letibot`, whose `plugins/` is the user scope.
+/// `$XDG_CONFIG_HOME/letibot`, whose `plugins/` is the user scope - from the one module that works
+/// this out, because a head and a daemon that disagree about it read two different stacks.
 fn user_config_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .map(|d| d.join("letibot"))
+    letibot_plugins::paths::config_dir()
 }
 
 impl App {
@@ -1536,6 +1528,54 @@ impl Module for RanoModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The head's own reading of `XDG_CONFIG_HOME=`, which used to be its own answer: the variable
+    /// set but empty joined `letibot/` onto nothing, so the head read a stack relative to its cwd
+    /// while the daemon read `~/.config/letibot`. Both scopes now come from `letibot_plugins::paths`.
+    #[test]
+    fn an_empty_xdg_config_home_is_the_users_plugin_dir() {
+        static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _held = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!(
+            "letibot-head-xdg-{}-{}",
+            std::process::id(),
+            letibot_metrics::now_ms()
+        ));
+        std::fs::create_dir_all(&home).expect("a temp home");
+        let before: Vec<(&str, Option<std::ffi::OsString>)> =
+            ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "HOME"]
+                .into_iter()
+                .map(|k| (k, std::env::var_os(k)))
+                .collect();
+        // SAFETY: the module's only test that touches the environment, under the lock above.
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", "");
+            std::env::set_var("XDG_DATA_HOME", "");
+            std::env::set_var("HOME", &home);
+        }
+        let config = user_config_dir();
+        let session = session_plugins_dir("s-1");
+        for (key, value) in before {
+            // SAFETY: as above, and restored before the assertions.
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+        assert_eq!(config, Some(home.join(".config").join("letibot")));
+        assert_eq!(
+            session,
+            Some(
+                home.join(".local/share/letibot")
+                    .join("sessions")
+                    .join("s-1")
+                    .join("plugins")
+            )
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     /// The built-in layer answers through rano's engine, in this process - the head's half of
     /// `docs/plugins-plan.md`: the same module the daemon carries, loaded by the same

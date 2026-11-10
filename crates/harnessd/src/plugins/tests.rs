@@ -539,6 +539,54 @@ fn tool_project(tag: &str, first: &str, second: &str, caps: &str) -> (PathBuf, V
     (root, declared)
 }
 
+/// `XDG_CONFIG_HOME=` is a person saying it is unset: the daemon's reader of the user scope must
+/// then look in `~/.config/letibot`, which is the directory the head and the trust book look at.
+/// A base derived from the empty string was `letibot/` relative to the daemon's cwd.
+#[test]
+fn an_empty_xdg_config_home_is_where_the_daemon_reads_the_user_scope() {
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _held = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let home = tempdir("user-scope-xdg");
+    let workspace = tempdir("user-scope-xdg-work");
+    let layer = home.join(".config/letibot/plugins/user-probe");
+    std::fs::create_dir_all(&layer).expect("the user scope's layer dir");
+    std::fs::write(
+        layer.join("plugin.toml"),
+        "name = \"user-probe\"\npurpose = \"the operator's own layer\"\n\
+         hooks = [\"tool_user_probe\"]\ncapabilities = []\ncontract = 1\n\n\
+         [[tools]]\nname = \"user_probe\"\ndescription = \"what the user scope declares\"\n\n\
+         schema = { type = \"object\", properties = {} }\n",
+    )
+    .expect("a manifest");
+    let before: Vec<(&str, Option<std::ffi::OsString>)> =
+        ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "HOME"]
+            .into_iter()
+            .map(|k| (k, std::env::var_os(k)))
+            .collect();
+    // SAFETY: this module's only test that touches the environment, under the lock above.
+    unsafe {
+        std::env::set_var("XDG_CONFIG_HOME", "");
+        std::env::set_var("XDG_DATA_HOME", "");
+        std::env::set_var("HOME", &home);
+    }
+    let declared = declared_tools("s-user-scope", &workspace);
+    for (key, value) in before {
+        // SAFETY: as above, restored before anything is asserted about the answer.
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+    assert!(
+        declared.iter().any(|d| d.tool.name == "user_probe"),
+        "the user scope's tool is the prompt's, from the directory the head reads: {declared:?}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
 /// The tool, wired to a host built over `root` - the two halves `Harness::open` and
 /// `Sessions::open_plugins` put together. The layer is pinned, because an unpinned one is
 /// adjudicated on every call and these tests are about the seam, not the ladder.

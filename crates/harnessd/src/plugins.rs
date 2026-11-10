@@ -2538,16 +2538,13 @@ fn say_failures(hub: &Arc<Hub>, inner: &mut Inner, failures: &[Failure]) {
 /// disagreement is a plugin written where nothing discovers it. `None` when the data dir is unknown.
 pub fn session_plugins_dir(session: &str) -> Option<PathBuf> {
     crate::mergequeue::git::letibot_data_dir()
-        .map(|dir| dir.join("sessions").join(session).join("plugins"))
+        .map(|dir| letibot_plugins::paths::session_plugin_dir(&dir, session))
 }
 
-/// `$XDG_CONFIG_HOME/letibot`, else `~/.config/letibot` - where the user scope's layers are.
+/// `$XDG_CONFIG_HOME/letibot`, else `~/.config/letibot` - where the user scope's layers are, from
+/// the one module every host reads it from: an empty `XDG_CONFIG_HOME` is unset, not a bare base.
 fn user_config_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .map(|base| base.join("letibot"))
+    letibot_plugins::paths::config_dir()
 }
 
 /// The tools this session's layers declare, in precedence order, one per tool name. Read at

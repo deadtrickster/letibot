@@ -10,18 +10,11 @@ use serde::Deserialize;
 const FILE_NAME: &str = "leticode.toml";
 
 /// `$XDG_CONFIG_HOME/letibot/leticode.toml`, else `~/.config/letibot/leticode.toml` - the same
-/// file `leticode_config::user_path` names, derived here because the bridge links no model crate.
+/// file `leticode_config::user_path` names, through the one module every host takes the directory
+/// from, so an empty `XDG_CONFIG_HOME` is unset here as it is in the daemon.
 pub fn path() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|v| !v.is_empty())
-                .map(|h| PathBuf::from(h).join(".config"))
-        })
+    letibot_plugins::paths::config_dir()
         .unwrap_or_default()
-        .join("letibot")
         .join(FILE_NAME)
 }
 

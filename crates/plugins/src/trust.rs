@@ -371,7 +371,7 @@ impl Trust {
         if let Some(named) = std::env::var_os("LETIBOT_PLUGIN_TRUST") {
             return (!named.is_empty()).then(|| PathBuf::from(named));
         }
-        config_dir().map(|dir| dir.join(FILE))
+        crate::paths::trust_book()
     }
 
     /// Where this book is, for a sentence that tells a person what to look at.
@@ -738,19 +738,6 @@ fn is_plugin_artifact(path: &Path) -> bool {
         at = dir.parent();
     }
     false
-}
-
-/// The book's file name in the config directory.
-const FILE: &str = "plugin-trust.json";
-
-/// `$XDG_CONFIG_HOME/letibot`, else `~/.config/letibot` - the same directory the user plugin scope
-/// is read from (`crates/harnessd/src/plugins.rs`), so a person finds the book beside the layers
-/// it is about.
-fn config_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .map(|d| d.join("letibot"))
 }
 
 #[cfg(test)]
@@ -1176,5 +1163,45 @@ mod tests {
         assert!(trust.pins().is_empty());
         assert!(!trust.standing(&dir, &pin.module, &pin.manifest).free);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `XDG_CONFIG_HOME=` is a person saying it is unset: the book is then the one in `~/.config`,
+    /// which is the file the daemon opens. Deriving it from the empty string gave a relative path.
+    #[test]
+    fn an_empty_xdg_config_home_is_the_boxes_book() {
+        static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _held = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempdir("empty-xdg");
+        let before: Vec<(&str, Option<std::ffi::OsString>)> =
+            ["XDG_CONFIG_HOME", "HOME", "LETIBOT_PLUGIN_TRUST"]
+                .into_iter()
+                .map(|k| (k, std::env::var_os(k)))
+                .collect();
+        // SAFETY: this module's only test that touches the environment, under the lock above.
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", "");
+            std::env::set_var("HOME", &home);
+            std::env::remove_var("LETIBOT_PLUGIN_TRUST");
+        }
+        let seen = Trust::default_path();
+        for (key, value) in before {
+            // SAFETY: the same lock, restored before anything else reads the environment.
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+        assert_eq!(
+            seen,
+            Some(
+                home.join(".config")
+                    .join("letibot")
+                    .join("plugin-trust.json")
+            ),
+            "the book sits beside the user scope, not under a relative `letibot/`"
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

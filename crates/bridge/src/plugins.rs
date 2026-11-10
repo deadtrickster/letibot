@@ -130,13 +130,10 @@ pub fn production(workspace: &Path) -> Option<Stack> {
     Some(stack)
 }
 
-/// The user's config directory, as the daemon and the head resolve it.
+/// The user's config directory: `letibot_plugins::paths`'s answer, so this process and the daemon
+/// that produced the same layers cannot read two different directories.
 fn user_config_dir() -> Option<PathBuf> {
-    let base = match std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()) {
-        Some(dir) => PathBuf::from(dir),
-        None => PathBuf::from(std::env::var_os("HOME")?).join(".config"),
-    };
-    Some(base.join("letibot"))
+    letibot_plugins::paths::config_dir()
 }
 
 /// The `tool_` layers of the user and project scopes, as MCP tools, in the order the stack resolves
@@ -317,6 +314,35 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// `XDG_CONFIG_HOME=` is unset, not a directory: the bridge reads `~/.config/letibot` like the
+    /// daemon, instead of `letibot/` relative to wherever the bridge was started.
+    #[test]
+    fn an_empty_xdg_config_home_is_the_boxes_config_dir() {
+        static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _held = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let home = Dir::new("empty-xdg");
+        let before: Vec<(&str, Option<std::ffi::OsString>)> = ["XDG_CONFIG_HOME", "HOME"]
+            .into_iter()
+            .map(|k| (k, std::env::var_os(k)))
+            .collect();
+        // SAFETY: this module's only test that touches the environment, under the lock above.
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", "");
+            std::env::set_var("HOME", &home.0);
+        }
+        let seen = user_config_dir();
+        for (key, value) in before {
+            // SAFETY: as above, and restored before the assertion reads the environment again.
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+        assert_eq!(seen, Some(home.0.join(".config").join("letibot")));
     }
 
     /// A `tool_` layer of the folder a bridge serves is an MCP tool like the native ones: listed

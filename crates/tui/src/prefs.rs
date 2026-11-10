@@ -183,12 +183,10 @@ pub fn leticode(workspace: &str) -> (leticode_config::LeticodeConfig, Vec<String
 
 /// `$XDG_CONFIG_HOME/letibot/head.toml`, or `~/.config/letibot/head.toml`.
 /// `None` when neither variable is set, which is a head with nowhere to write
-/// and says so rather than writing into the working directory.
+/// and says so rather than writing into the working directory. The directory is
+/// `letibot_plugins::paths`', so `XDG_CONFIG_HOME=` is unset here too.
 pub fn path() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .map(|d| d.join("letibot").join("head.toml"))
+    letibot_plugins::paths::config_dir().map(|d| d.join("head.toml"))
 }
 
 /// What one line of the file says.
