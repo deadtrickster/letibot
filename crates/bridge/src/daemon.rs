@@ -221,7 +221,7 @@ pub fn resolve(workspace: &Path) -> Result<Daemon, String> {
 
 /// The store to hand the daemon: the data directory, or its `sessions.db` while the directory has
 /// not been split yet. The daemon refuses an unsplit directory but still opens the old file.
-fn store_in(dir: &Path) -> PathBuf {
+pub(crate) fn store_in(dir: &Path) -> PathBuf {
     let old = dir.join("sessions.db");
     if old.is_file() && !dir.join("shared.db").exists() {
         old

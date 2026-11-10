@@ -58,10 +58,11 @@ impl Mover {
     /// recorded and a follower that gave up would never say anything again.
     pub fn step(&self) -> Result<Vec<Value>, String> {
         // A folder with no store has no queue: the daemon that serves one writes it.
-        if !self.store.exists() {
+        if !crate::store::exists(&self.store) {
             return Ok(Vec::new());
         }
-        let store = Store::open(&self.store).map_err(|e| format!("reading the queues: {e}"))?;
+        let store = crate::store::open(&self.store, "queue_transition", None)
+            .map_err(|e| format!("reading the queues: {e}"))?;
         let after = self.place(&store)?;
         let moves = store
             .transitions_after(after, PER_PASS)

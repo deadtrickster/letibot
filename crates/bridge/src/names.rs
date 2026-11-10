@@ -3,8 +3,6 @@
 
 use std::path::{Path, PathBuf};
 
-use letibot_tokencore::store::Store;
-
 /// Does `raw` already read as a handle the bridge can use as it is: an id, or the review queue's
 /// name. Those skip the store.
 fn is_id(raw: &str) -> bool {
@@ -16,10 +14,12 @@ fn is_id(raw: &str) -> bool {
 /// several sessions is refused with each one's id and folder.
 pub fn resolve(store: &Path, folders: &[PathBuf], raw: &str) -> Result<String, String> {
     let raw = raw.trim();
-    if raw.is_empty() || is_id(raw) || !store.exists() {
+    if raw.is_empty() || is_id(raw) || !crate::store::exists(store) {
         return Ok(raw.to_string());
     }
-    let store = Store::open(store).map_err(|e| format!("reading session names: {e}"))?;
+    let folder = folders.first().map(|f| f.as_path());
+    let store = crate::store::open(store, "session", folder)
+        .map_err(|e| format!("reading session names: {e}"))?;
     let mut found: Vec<(String, String)> = Vec::new();
     for folder in folders {
         let rows = store
@@ -48,7 +48,7 @@ pub fn resolve(store: &Path, folders: &[PathBuf], raw: &str) -> Result<String, S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use letibot_tokencore::store::SessionRecord;
+    use letibot_tokencore::store::{SessionRecord, Store};
 
     fn put(s: &Store, id: &str, workspace: &str, title: &str) {
         s.put_session(&SessionRecord {

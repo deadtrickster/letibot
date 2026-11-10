@@ -9,7 +9,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
-use letibot_tokencore::store::{SeatJob, Store};
+use letibot_tokencore::store::SeatJob;
 use letibot_tools::exec::jobs::JobId;
 use letibot_tools::exec::procs;
 use serde_json::{Value, json};
@@ -81,10 +81,13 @@ impl SeatJobs {
 
     /// Every job this seat has recorded, oldest first - what `seat_jobs` answers with.
     pub fn listing(&self) -> Vec<SeatJob> {
-        match Store::open(&self.store) {
+        // A bridge with no store yet has no jobs: the file is the daemon's, and there is
+        // nothing for one to be written to until it exists.
+        if !crate::store::exists(&self.store) {
+            return Vec::new();
+        }
+        match crate::store::open(&self.store, "seat_job", None) {
             Ok(store) => store.seat_jobs(&self.seat).unwrap_or_default(),
-            // A bridge with no store yet has no jobs: the file is the daemon's, and there is
-            // nothing for one to be written to until it exists.
             Err(_) => Vec::new(),
         }
     }
@@ -311,7 +314,13 @@ impl SeatJobs {
     }
 
     fn record(&self, job: &SeatJob) {
-        let Ok(store) = Store::open(&self.store) else {
+        // The store is the daemon's file, so a seat that runs before one exists keeps its job in
+        // this process rather than making a store of its own beside it.
+        let opened = match crate::store::exists(&self.store) {
+            true => crate::store::open(&self.store, "seat_job", None),
+            false => Err("no store yet".to_string()),
+        };
+        let Ok(store) = opened else {
             eprintln!(
                 "seat jobs: there is no store at {} yet, so `{}` lives in this process only",
                 self.store.display(),
@@ -339,6 +348,7 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use letibot_tokencore::store::Store;
 
     /// A job this process holds is running whatever its store row says about its start time. The
     /// table's answer needs that time to match, and a job read as ended puts its row back on the

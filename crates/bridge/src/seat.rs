@@ -576,10 +576,10 @@ fn arg(args: &Value, key: &str) -> Result<String, String> {
 /// The board on disk, or nothing. A store that does not exist is not created here: it is the
 /// daemon's file, and a bridge that made one would be a second writer in a folder with no daemon.
 fn load(store: &std::path::Path, seat: &str) -> Vec<TodoItem> {
-    if !store.exists() {
+    if !crate::store::exists(store) {
         return Vec::new();
     }
-    Store::open(store)
+    crate::store::open(store, "seat_todo", None)
         .ok()
         .and_then(|s| s.seat_todos(seat).ok())
         .unwrap_or_default()
@@ -588,14 +588,14 @@ fn load(store: &std::path::Path, seat: &str) -> Vec<TodoItem> {
 /// The store the board is kept in, or the sentence a caller needs: a bridge started before any
 /// daemon has no file yet, and `leticode_start` is what makes one.
 fn opened(store: &std::path::Path) -> Result<Store, String> {
-    if !store.exists() {
+    if !crate::store::exists(store) {
         return Err(format!(
             "there is no store at {} yet: it is the daemon's file, so `leticode_start` is what \
              opens one",
             store.display()
         ));
     }
-    Store::open(store).map_err(|e| format!("{}: {e}", store.display()))
+    crate::store::open(store, "seat_todo", None)
 }
 
 /// The board as one sentence per row, for an answer that changed nothing but an edge: the shape the

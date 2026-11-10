@@ -34,4 +34,5 @@ pub mod rows;
 pub mod seat;
 pub mod seat_jobs;
 pub mod settings;
+pub mod store;
 pub mod tools;
