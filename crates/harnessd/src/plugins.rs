@@ -2,7 +2,9 @@
 //! plugin stack - which session holds which `Stack`, when a look runs, and what reaches a
 //! head. The answer protocol, the precedence and the gate belong to `letibot_plugins`.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -120,7 +122,11 @@ impl Inherited {
 }
 
 struct Inner {
-    stack: Stack,
+    /// The layers in force, behind an `Arc` because a hook call runs OUTSIDE this lock: a caller
+    /// takes a reference to the layers here, releases the session, calls the module, and retakes
+    /// the lock to apply the answer. `Arc::make_mut` is what makes that safe - a change copies the
+    /// stack rather than landing under a call that is reading the layers it started with.
+    stack: Arc<Stack>,
     rec: Recorder,
     /// The panes a head has opened, by id, with what the pane returned and when it wants asking
     /// again.
@@ -146,6 +152,37 @@ struct Inner {
     /// first ask rather than at open, because a module costs seconds to compile.
     builtin_asked: BTreeSet<String>,
 }
+
+impl Inner {
+    /// The stack, for a caller that is going to change it. `Arc::make_mut` copies when a hook call
+    /// holds the old one, so a reload never rewrites the layers under a module answering from them.
+    fn stack_mut(&mut self) -> &mut Stack {
+        Arc::make_mut(&mut self.stack)
+    }
+
+    /// What a call is being answered FROM: the layers and the bytes they run. An answer that comes
+    /// back to a different footprint came from a stack that is no longer in force, and is dropped
+    /// the way any late answer is. A poll that found nothing changed leaves this alone, which is
+    /// what a hash of the layers buys over a version counter.
+    fn footprint(&self) -> Footprint {
+        let mut hasher = DefaultHasher::new();
+        for layer in self.stack.layers() {
+            layer.id.hash(&mut hasher);
+            layer.scope.prefix().hash(&mut hasher);
+            layer.sha256.hash(&mut hasher);
+            layer.manifest_sha256.hash(&mut hasher);
+            layer.disabled.hash(&mut hasher);
+            layer.trusted.hash(&mut hasher);
+            layer.manifest.hooks.hash(&mut hasher);
+        }
+        Footprint(hasher.finish())
+    }
+}
+
+/// Which layers a hook call was answered from - see [`Inner::footprint`]. Compared and never read,
+/// so the number is opaque on purpose.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Footprint(u64);
 
 /// What the host knows about one open pane.
 struct Open {
@@ -236,7 +273,7 @@ impl PluginHost {
             checkout,
             session_dir,
             inner: Mutex::new(Inner {
-                stack,
+                stack: Arc::new(stack),
                 rec: Recorder::new(),
                 panes: BTreeMap::new(),
                 sizes: BTreeMap::new(),
@@ -304,7 +341,7 @@ impl PluginHost {
     /// since. A pin that broke while no daemon was running is news, and this is where it arrives
     /// the moved pins are queued, and the first [`PluginHost::tick`] says them.
     pub fn with_trust(self, trust: Arc<letibot_plugins::Trust>) -> PluginHost {
-        let news = self.lock().stack.set_trust(trust);
+        let news = self.lock().stack_mut().set_trust(trust);
         if !news.is_empty() {
             self.lock().broken_pins.extend(news);
         }
@@ -383,10 +420,10 @@ impl PluginHost {
             // `lock()` in the same statement would deadlock on the first layer to inherit.
             let applied = {
                 let mut inner = self.lock();
-                inner
-                    .stack
-                    .candidate(&dir, Scope::Session)
-                    .and_then(|c| inner.stack.apply(c))
+                match inner.stack.candidate(&dir, Scope::Session) {
+                    Ok(cand) => inner.stack_mut().apply(cand),
+                    Err(why) => Err(why),
+                }
             };
             if let Err(why) = applied {
                 // Said once, to this child's own model: the parent's pin is on bytes this child
@@ -429,7 +466,7 @@ impl PluginHost {
             if has_a_door || !manifest.hooks.contains(&hook.to_string()) {
                 continue;
             }
-            if let Err(why) = self.lock().stack.register_builtin_bytes(
+            if let Err(why) = self.lock().stack_mut().register_builtin_bytes(
                 builtin.name,
                 builtin.manifest,
                 builtin.wasm,
@@ -458,11 +495,11 @@ impl PluginHost {
             if !declares {
                 continue;
             }
-            if let Err(why) =
-                inner
-                    .stack
-                    .register_builtin_bytes(builtin.name, builtin.manifest, builtin.wasm)
-            {
+            if let Err(why) = inner.stack_mut().register_builtin_bytes(
+                builtin.name,
+                builtin.manifest,
+                builtin.wasm,
+            ) {
                 // The stack has recorded the failure; this is the line the daemon's log shows.
                 eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
             }
@@ -485,11 +522,11 @@ impl PluginHost {
             if !answers {
                 continue;
             }
-            if let Err(why) =
-                inner
-                    .stack
-                    .register_builtin_bytes(builtin.name, builtin.manifest, builtin.wasm)
-            {
+            if let Err(why) = inner.stack_mut().register_builtin_bytes(
+                builtin.name,
+                builtin.manifest,
+                builtin.wasm,
+            ) {
                 // The stack has recorded the failure; this is the line the daemon's log shows.
                 eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
             }
@@ -522,7 +559,7 @@ impl PluginHost {
             if answered {
                 continue;
             }
-            if let Err(why) = self.lock().stack.register_builtin_bytes(
+            if let Err(why) = self.lock().stack_mut().register_builtin_bytes(
                 builtin.name,
                 builtin.manifest,
                 builtin.wasm,
@@ -585,7 +622,7 @@ impl PluginHost {
             if answered {
                 continue;
             }
-            if let Err(why) = self.lock().stack.register_builtin_bytes(
+            if let Err(why) = self.lock().stack_mut().register_builtin_bytes(
                 builtin.name,
                 builtin.manifest,
                 builtin.wasm,
@@ -618,19 +655,50 @@ impl PluginHost {
         if daemon_asks(hook) {
             self.install_builtin_for(hook);
         }
+        // What the call needs, taken under the lock and no more. A module runs for as long as its
+        // fuel lasts; a pane drawn or a tool adjudicated meanwhile must not queue behind it.
+        let (stack, was) = {
+            let mut inner = self.lock();
+            let answering = inner.stack.layers().iter().any(|l| {
+                !l.disabled
+                    && l.manifest.contract == letibot_plugins::CONTRACT
+                    && l.manifest.hooks.iter().any(|h| h == hook)
+            });
+            if !answering {
+                return None;
+            }
+            inner.rec.record(hook, input);
+            (Arc::clone(&inner.stack), inner.footprint())
+        };
+        let resolved = stack.call(hook, input);
         let mut inner = self.lock();
-        let answering = inner.stack.layers().iter().any(|l| {
-            !l.disabled
-                && l.manifest.contract == letibot_plugins::CONTRACT
-                && l.manifest.hooks.iter().any(|h| h == hook)
-        });
-        if !answering {
+        say_failures(hub, &mut inner, &resolved.failures);
+        // The layers changed while this answer was being made. A failure stays news - it happened -
+        // but the answer belongs to a stack that is no longer in force, and is dropped the way any
+        // late answer is: the caller falls back to what it does with no answer at all.
+        if inner.footprint() != was {
             return None;
         }
-        inner.rec.record(hook, input);
-        let resolved = inner.stack.call(hook, input);
-        say_failures(hub, &mut inner, &resolved.failures);
         Some(resolved)
+    }
+
+    /// One hook called outside the lock [`PluginHost::ask`] describes: the layers are taken under
+    /// it, the module runs without it, and the answer is applied only to the stack it came from.
+    fn call_unlocked(
+        &self,
+        hub: &Arc<Hub>,
+        hook: &str,
+        input: &Value,
+    ) -> Option<letibot_plugins::Resolved> {
+        let (stack, was) = {
+            let mut inner = self.lock();
+            inner.rec.record(hook, input);
+            (Arc::clone(&inner.stack), inner.footprint())
+        };
+        let resolved = stack.call(hook, input);
+        let mut inner = self.lock();
+        say_failures(hub, &mut inner, &resolved.failures);
+        (inner.footprint() == was).then_some(resolved)
     }
 
     /// One lifecycle event through this session's stack: the acts a layer asked for, checked against its
@@ -934,7 +1002,7 @@ impl PluginHost {
         let broken = {
             let mut inner = self.lock();
             let mut broken = std::mem::take(&mut inner.broken_pins);
-            broken.extend(inner.stack.refresh_trust());
+            broken.extend(inner.stack_mut().refresh_trust());
             broken
         };
         for pin in broken {
@@ -946,7 +1014,7 @@ impl PluginHost {
                 false
             } else {
                 inner.poll_at = Instant::now() + POLL_EVERY;
-                !inner.stack.poll_changes().is_empty()
+                !inner.stack_mut().poll_changes().is_empty()
             }
         };
         if changed {
@@ -968,7 +1036,7 @@ impl PluginHost {
         let mut cands = {
             let mut inner = self.lock();
             inner.poll_at = Instant::now() + POLL_EVERY;
-            inner.stack.poll_changes()
+            inner.stack_mut().poll_changes()
         };
         self.say_failures_now(hub);
         // A candidate for a directory that is not a layer yet has no id and nothing to replace.
@@ -984,12 +1052,12 @@ impl PluginHost {
             }
             let (stack, rec) = {
                 let inner = self.lock();
-                (inner.stack.clone(), inner.rec.clone())
+                (Arc::clone(&inner.stack), inner.rec.clone())
             };
             let report = letibot_plugins::gate(&stack, &rec, &cand, self.builder.as_ref());
             let refusal = if report.passed {
                 let mut inner = self.lock();
-                inner.stack.apply(cand).err()
+                inner.stack_mut().apply(cand).err()
             } else {
                 report
                     .failure
@@ -1018,7 +1086,7 @@ impl PluginHost {
             Ok(Some(letibot_plugins::Rebuilt::Kept(pin))) => {
                 // The pin moved with the bytes, so decide the layer now rather than at the next
                 // tick: two seconds of "unpinned" is two seconds of a call adjudicated per call.
-                let news = self.lock().stack.refresh_trust();
+                let news = self.lock().stack_mut().refresh_trust();
                 for broken in news {
                     self.say_broken_pin(hub, &broken);
                 }
@@ -1295,19 +1363,28 @@ impl PluginHost {
         // Before the lock for the same reason: `declared_actions` takes the same, non-reentrant
         // stack mutex.
         let declared_actions = self.declared_actions(&hook);
-        let mut interior = self.lock();
-        let size = interior
-            .sizes
-            .get(pane)
-            .copied()
-            .unwrap_or((SIZE_W, SIZE_H));
-        let mut state = interior.panes.get(pane).and_then(|p| p.state.clone());
+        // What the pane's next call is handed, read before the call and not across it: the module
+        // runs with the lock released, so a frame drawn a moment later is not this answer's.
+        let (size, mut state) = {
+            let interior = self.lock();
+            (
+                interior
+                    .sizes
+                    .get(pane)
+                    .copied()
+                    .unwrap_or((SIZE_W, SIZE_H)),
+                interior.panes.get(pane).and_then(|p| p.state.clone()),
+            )
+        };
         let mut req = req;
         for step in 0..2 {
             let input = input_value(&state, &req, size, &feeds);
-            interior.rec.record(&hook, &input);
-            let resolved = interior.stack.call(&hook, &input);
-            say_failures(hub, &mut interior, &resolved.failures);
+            let Some(resolved) = self.call_unlocked(hub, &hook, &input) else {
+                // The layers moved on while this frame was being drawn. Nothing is published: the
+                // next refresh asks the stack that is in force instead of drawing this answer.
+                return;
+            };
+            let mut interior = self.lock();
             let Some(answer) = resolved.answer else {
                 // A failed call and a hook nobody answers are different screens: a failure says
                 // why, while no answer means the layer is gone or disabled - and a pane nobody
@@ -1379,6 +1456,9 @@ impl PluginHost {
                     .layer(&by)
                     .map(|l| l.manifest.capabilities.clone())
                     .unwrap_or_default();
+                // A look reads the checkout, and a filesystem walk is not something this
+                // session's other panes and turns wait for.
+                drop(interior);
                 let result = look::run(&spec, self.look_trees(), &caps);
                 state = view.state.clone();
                 req = Req {
@@ -1495,7 +1575,7 @@ impl PluginHost {
         let dir = self.layer_dir(name)?;
         let (stack, rec) = {
             let inner = self.lock();
-            (inner.stack.clone(), inner.rec.clone())
+            (Arc::clone(&inner.stack), inner.rec.clone())
         };
         let cand = stack.candidate(&dir, Scope::Session).map_err(|why| {
             Refused::new(
@@ -1524,7 +1604,7 @@ impl PluginHost {
         // The shadow runs it, not the live stack: the candidate applied to a clone, every recorded
         // input of every pane hook it exports plus one synthetic first frame, each answer parsed
         // and validated as a view this host's keys can drive.
-        let mut shadow = stack.clone();
+        let mut shadow = (*stack).clone();
         shadow
             .apply(cand.clone())
             .map_err(|why| Refused::new(format!("`{name}` could not be shadowed"), why))?;
@@ -1617,7 +1697,7 @@ impl PluginHost {
             .map(|c| c.to_string())
             .collect();
         // A pass: the live stack gets the candidate, and every screen is brought into line.
-        self.lock().stack.apply(cand).map_err(|why| {
+        self.lock().stack_mut().apply(cand).map_err(|why| {
             Refused::new(
                 format!("`{name}` passed the gate but could not be applied"),
                 why,
@@ -1792,7 +1872,7 @@ impl PluginHost {
         {
             let mut inner = self.lock();
             inner
-                .stack
+                .stack_mut()
                 .set_disabled(&id, !enabled)
                 .map_err(|why| Refused::new(format!("`{id}` could not be moved"), why))?;
         }
@@ -1824,14 +1904,14 @@ impl PluginHost {
             .unwrap_or_else(|| synthetic_for(&hook, &self.feeds_for(&hook)));
         let (stack, rec) = {
             let inner = self.lock();
-            (inner.stack.clone(), inner.rec.clone())
+            (Arc::clone(&inner.stack), inner.rec.clone())
         };
         let asked = match &only {
-            None => stack,
+            None => (*stack).clone(),
             Some(id) => {
                 // Every other disk layer off: a built-in is the floor and stays, because a layer
                 // that asks below would otherwise be told the stack is empty.
-                let mut alone = stack.clone();
+                let mut alone = (*stack).clone();
                 for layer in stack.layers() {
                     if layer.scope != Scope::BuiltIn && &layer.id != id {
                         let _ = alone.mask(&layer.id, true);

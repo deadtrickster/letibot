@@ -800,13 +800,13 @@ fn a_pinned_layer_runs_freely_and_a_changed_one_is_refused_by_name() {
     // picks it up as the daemon does - the poll sees it, the gate applies it - and the pin is
     // decided again against what was applied.
     std::fs::write(dir.join("plugin.wasm"), b"a module, rebuilt").expect("a rebuild");
-    let pending = host.lock().stack.poll_changes();
+    let pending = host.lock().stack_mut().poll_changes();
     assert_eq!(pending.len(), 1, "the rebuild is a candidate");
     host.lock()
-        .stack
+        .stack_mut()
         .apply(pending.into_iter().next().unwrap())
         .expect("the rebuilt layer applies");
-    let news = host.lock().stack.refresh_trust();
+    let news = host.lock().stack_mut().refresh_trust();
     assert_eq!(news.len(), 1, "the pin broke: {news:?}");
     assert_eq!(news[0].name, "claude-transcript");
     // The layer is adjudicated again, so the decider that panics for a free layer is replaced
@@ -1717,6 +1717,105 @@ fn a_layer_rewords_a_notice() {
     assert_eq!(seen[0]["v"], json!(letibot_plugin::V));
 }
 
+/// A module that stops inside its call until the test lets it go: the seam that makes "a hook
+/// call does not hold the session's lock" a fact rather than a timing guess.
+struct SlowModule {
+    started: std::sync::mpsc::Sender<()>,
+    go: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl Module for SlowModule {
+    fn hooks(&self) -> Vec<String> {
+        vec!["notice_monitor".to_string()]
+    }
+
+    fn call(&self, _hook: &str, _input: &str) -> Result<Option<String>, String> {
+        let _ = self.started.send(());
+        let _ = self.go.lock().unwrap_or_else(|e| e.into_inner()).recv();
+        Ok(Some(json!({"text": "the slow layer's words"}).to_string()))
+    }
+
+    fn fuel(&self) -> u64 {
+        3
+    }
+}
+
+struct SlowLoader {
+    started: std::sync::mpsc::Sender<()>,
+    go: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl Loader for SlowLoader {
+    fn load(&self, wasm: &Path, _caps: &[Capability]) -> Result<Box<dyn Module>, String> {
+        let _ = std::fs::read(wasm).map_err(|e| format!("{}: {e}", wasm.display()))?;
+        Ok(Box::new(SlowModule {
+            started: self.started.clone(),
+            go: Arc::clone(&self.go),
+        }))
+    }
+}
+
+/// A layer runs for as long as its fuel says, and no session waits for it: what the call needs is
+/// taken under the lock, the module runs without it, and the answer is applied after. The witness is
+/// another thread taking the same lock while the module is still inside its call.
+#[test]
+fn a_hook_call_does_not_hold_the_session_lock() {
+    let root = tempdir("lock-free");
+    let layer = root.join(".letibot/plugins/slow");
+    std::fs::create_dir_all(&layer).expect("the layer dir");
+    std::fs::write(
+        layer.join("plugin.toml"),
+        "name = \"slow\"\npurpose = \"one hook, slowly\"\n\
+         hooks = [\"notice_monitor\"]\ncapabilities = []\ncontract = 1\n",
+    )
+    .expect("a manifest");
+    std::fs::write(layer.join("plugin.wasm"), b"a module").expect("a module");
+    let (started, started_rx) = std::sync::mpsc::channel();
+    let (go, go_rx) = std::sync::mpsc::channel();
+    let host = Arc::new(PluginHost::discover(
+        "s-plugins",
+        &root,
+        None,
+        None,
+        Arc::new(SlowLoader {
+            started,
+            go: Arc::new(Mutex::new(go_rx)),
+        }),
+        Arc::new(FileBuilder),
+    ));
+    let hub = Arc::new(Hub::new("s-plugins"));
+    let calling = {
+        let host = Arc::clone(&host);
+        let hub = Arc::clone(&hub);
+        std::thread::spawn(move || host.notice(&hub, "monitor", "the harness's own", json!({})))
+    };
+    started_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the layer was asked at all");
+    let (took, took_rx) = std::sync::mpsc::channel();
+    {
+        let host = Arc::clone(&host);
+        std::thread::spawn(move || {
+            let _ = host.layer("nobody");
+            let _ = took.send(());
+        });
+    }
+    let locked = took_rx.recv_timeout(Duration::from_secs(30));
+    // Let the module go before anything is asserted, so a failure is a failure and not a thread
+    // left in a channel's `recv`.
+    let _ = go.send(());
+    let said = calling.join().expect("the call thread");
+    assert!(
+        locked.is_ok(),
+        "the session's lock is free while a layer is inside a hook call"
+    );
+    assert_eq!(
+        said,
+        Some("the slow layer's words".to_string()),
+        "and the answer still lands, because nothing about this session moved on"
+    );
+}
+
 /// A mask switches the hook off from that layer down, and the harness's sentence is what the
 /// model reads - the difference between a notice nobody patched and one a layer silenced.
 #[test]
@@ -1795,7 +1894,10 @@ fn a_disabled_layer_is_not_asked() {
     let host = table_host(&root, &table);
     let hub = Hub::new("s-plugins");
     let id = host.lock().stack.layers()[0].id.clone();
-    host.lock().stack.set_disabled(&id, true).expect("disable");
+    host.lock()
+        .stack_mut()
+        .set_disabled(&id, true)
+        .expect("disable");
     assert_eq!(
         host.notice(&hub, "monitor", "the harness's own", json!({})),
         Some("the harness's own".to_string())
@@ -2085,7 +2187,10 @@ fn a_disabled_result_layer_is_not_asked() {
     let host = table_host(&root, &table);
     let hub = Hub::new("s-plugins");
     let id = host.lock().stack.layers()[0].id.clone();
-    host.lock().stack.set_disabled(&id, true).expect("disable");
+    host.lock()
+        .stack_mut()
+        .set_disabled(&id, true)
+        .expect("disable");
     assert!(host.on_tool_result(&hub, &a_call(), "ok", "x").is_none());
     assert_eq!(host.lock().rec.inputs("on_tool_result").len(), 0);
 }
@@ -2567,7 +2672,10 @@ fn a_disabled_call_layer_is_not_asked() {
     let host = table_host(&root, &table);
     let hub = Hub::new("s-plugins");
     let id = host.lock().stack.layers()[0].id.clone();
-    host.lock().stack.set_disabled(&id, true).expect("disable");
+    host.lock()
+        .stack_mut()
+        .set_disabled(&id, true)
+        .expect("disable");
     let asked = letibot_plugin::Call::new("monitor", json!({}));
     assert!(host.on_tool_call(&hub, &asked, &standing()).is_none());
     assert_eq!(host.lock().rec.inputs("on_tool_call").len(), 0);
@@ -3160,7 +3268,7 @@ fn a_top_level_session_hands_nothing_down() {
     assert!(top.layer("project-one").is_some());
     let id = top.layer("switched-off").expect("the session layer").id;
     top.lock()
-        .stack
+        .stack_mut()
         .set_disabled(&id, true)
         .expect("the layer is off in the parent");
     assert!(
@@ -3261,7 +3369,10 @@ fn a_condition_nobody_answers_is_refused() {
     );
     let host = Arc::new(table_host(&root, &table));
     let id = host.lock().stack.layers()[0].id.clone();
-    host.lock().stack.set_disabled(&id, true).expect("disable");
+    host.lock()
+        .stack_mut()
+        .set_disabled(&id, true)
+        .expect("disable");
     assert!(conditions(&host).arm("coderabbit", json!({})).is_err());
 }
 
@@ -3456,7 +3567,7 @@ fn a_builtins_exec_look_runs_without_the_gate() {
          capabilities = [\"exec:true\"]\ncontract = 1\n",
     )
     .expect("a manifest");
-    host.lock().stack.register_builtin(
+    host.lock().stack_mut().register_builtin(
         letibot_plugins::Layer {
             id: String::new(),
             scope: letibot_plugins::Scope::BuiltIn,
