@@ -173,14 +173,26 @@ pub fn project_files(at: &crate::config::StoreAt) -> Vec<std::path::PathBuf> {
         crate::config::StoreAt::File(path) => return vec![path.clone()],
         crate::config::StoreAt::Set { dir, .. } => dir,
     };
+    let mut files = Vec::new();
+    // Mid-transition, the project tables of every key not carved out of `sessions.db` yet are
+    // still in it, so a sweep that read only `projects/` would leave those decisions out.
+    let legacy = dir.join(letibot_tokencore::store::split::LEGACY_FILE);
+    if legacy.is_file()
+        && !dir
+            .join(letibot_tokencore::store::split::SHARED_FILE)
+            .is_file()
+    {
+        files.push(legacy);
+    }
     let Ok(entries) = std::fs::read_dir(dir.join(PROJECTS_DIR)) else {
-        return Vec::new();
+        return files;
     };
-    let mut files: Vec<std::path::PathBuf> = entries
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|e| e == "db"))
-        .collect();
+    files.extend(
+        entries
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|e| e == "db")),
+    );
     files.sort();
     files
 }
@@ -257,18 +269,19 @@ pub fn session_file(
         )
     })?;
     let want = recorded_project(index, &root).unwrap_or_else(|| project_key(&root.workspace_root));
+    // `file_of` answers `sessions.db` for a key no carve has taken yet, which is where its rows
+    // still are - the daemon's own key is the same question asked about itself.
+    let path = letibot_tokencore::store::split::file_of(dir, &want, "adjudication");
     if want.eq_ignore_ascii_case(key) {
-        let own = at.path("adjudication");
-        return match own.is_file() {
+        return match path.is_file() {
             true => Ok(Scoped::Own),
             false => Err(format!(
                 "session `{session}` is in this daemon's project {key}, and {} is not there - \
                  the file its decisions would be read from",
-                own.display()
+                path.display()
             )),
         };
     }
-    let path = dir.join(PROJECTS_DIR).join(format!("{want}.db"));
     match path.is_file() {
         true => Ok(Scoped::Elsewhere(path)),
         false => Err(format!(

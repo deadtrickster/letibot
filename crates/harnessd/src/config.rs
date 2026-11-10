@@ -1548,12 +1548,30 @@ impl Config {
     pub fn store_at(&self) -> Option<StoreAt> {
         let path = self.store.clone()?;
         if path.extension().is_some_and(|e| e == "db") {
+            // A `sessions.db` with a project file beside it is a data directory mid-transition
+            // (§ Carving one project), which is the shape the launcher and the bridge hand a
+            // daemon: opened as ONE file, a carved folder's daemon would write its project rows
+            // into the shared file and no reader would look there.
+            if let Some(dir) = transition_dir(&path) {
+                return Some(StoreAt::Set {
+                    dir,
+                    key: self.store_key(),
+                });
+            }
             return Some(StoreAt::File(path));
         }
-        let key = self.store_key.clone().unwrap_or_else(|| {
+        Some(StoreAt::Set {
+            dir: path,
+            key: self.store_key(),
+        })
+    }
+
+    /// The key this daemon's own rows are in: the folder it serves, never a stored session's
+    /// workspace (a resume may change it after the store is open).
+    fn store_key(&self) -> String {
+        self.store_key.clone().unwrap_or_else(|| {
             letibot_tokencore::migrate_split::project_key(&self.workspace.to_string_lossy())
-        });
-        Some(StoreAt::Set { dir: path, key })
+        })
     }
 
     /// A session against the box this repository is developed on - named so because the endpoint, the
@@ -3237,6 +3255,22 @@ impl From<&StoreAt> for StoreAt {
     }
 }
 
+/// The data directory a `--store` path names, when it is the single file of a store being carved
+/// out one project at a time: `sessions.db` beside a `projects/` that holds a project file. A
+/// fixture's one-file store has no such directory beside it, so it stays one file.
+fn transition_dir(path: &Path) -> Option<PathBuf> {
+    use letibot_tokencore::store::split::{LEGACY_FILE, PROJECTS_DIR, SHARED_FILE};
+    let dir = path.parent()?;
+    if path.file_name().is_none_or(|name| name != LEGACY_FILE) || dir.join(SHARED_FILE).is_file() {
+        return None;
+    }
+    let carved = std::fs::read_dir(dir.join(PROJECTS_DIR))
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .any(|entry| entry.path().extension().is_some_and(|ext| ext == "db"));
+    carved.then(|| dir.to_path_buf())
+}
+
 impl StoreAt {
     /// The daemon's door: a set is created when it is not there, so a fresh data directory opens.
     /// A data directory still holding the un-migrated `sessions.db` is refused by name, and the
@@ -3291,19 +3325,12 @@ impl StoreAt {
     }
 
     /// Where a file holding `table` is, or would be - for a line that names a file, and for a
-    /// caller that has to open one itself.
+    /// caller that has to open one itself. `sessions.db` answers a project table until that key is
+    /// carved, because that is where its rows still are.
     pub fn path(&self, table: &str) -> PathBuf {
         match self {
             StoreAt::File(path) => path.clone(),
-            StoreAt::Set { dir, key } => {
-                let file = letibot_tokencore::store::split::place_of(table);
-                match file {
-                    Some(letibot_tokencore::store::split::Place::Project) => dir
-                        .join(letibot_tokencore::store::split::PROJECTS_DIR)
-                        .join(format!("{key}.db")),
-                    _ => dir.join(letibot_tokencore::store::split::SHARED_FILE),
-                }
-            }
+            StoreAt::Set { dir, key } => letibot_tokencore::store::split::file_of(dir, key, table),
         }
     }
 
