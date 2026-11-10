@@ -202,7 +202,7 @@ pub fn resolve(workspace: &Path) -> Result<Daemon, String> {
         Some(s) if !s.is_empty() => PathBuf::from(s),
         // A DATA DIRECTORY, not `sessions.db`: the daemon opens `shared.db` and
         // `projects/<key>.db` under it, and the key is this folder's own.
-        _ => home()?.join(".local/share/letibot"),
+        _ => store_in(&home()?.join(".local/share/letibot")),
     };
     // The daemon's own record, with its socket's identity in it: a record left by a daemon that
     // is gone answers nothing, which the caller must treat as *unknown*.
@@ -219,6 +219,17 @@ pub fn resolve(workspace: &Path) -> Result<Daemon, String> {
     })
 }
 
+/// The store to hand the daemon: the data directory, or its `sessions.db` while the directory has
+/// not been split yet. The daemon refuses an unsplit directory but still opens the old file.
+fn store_in(dir: &Path) -> PathBuf {
+    let old = dir.join("sessions.db");
+    if old.is_file() && !dir.join("shared.db").exists() {
+        old
+    } else {
+        dir.to_path_buf()
+    }
+}
+
 /// Is something accepting connections on this socket right now? A connect, not a `stat`: the
 /// daemon's own shutdown unlinks the socket file while the process goes on listening on the
 /// nameless inode, so "is there a file" answers *no* for a folder that has a daemon.
@@ -226,9 +237,9 @@ pub fn is_up(socket: &Path) -> bool {
     std::os::unix::net::UnixStream::connect(socket).is_ok()
 }
 
-/// The daemon's binary: `$LETIBOT_BIN`, then `harnessd` on `PATH`, then beside this executable.
-/// The launcher resolves it against its own location instead; a bridge started by Claude Code has
-/// no launcher beside it, so an explicit `LETIBOT_BIN` comes first.
+/// The daemon's binary: `$LETIBOT_BIN`, then beside this executable, then `harnessd` on `PATH`.
+/// The one beside the bridge is its own build, so it speaks the same store layout; an older
+/// install earlier on `PATH` would be handed flags it does not know.
 fn daemon_binary() -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("LETIBOT_BIN")
         && !dir.is_empty()
@@ -243,13 +254,6 @@ fn daemon_binary() -> Result<PathBuf, String> {
             ))
         };
     }
-    if let Some(path) = std::env::var_os("PATH")
-        && let Some(found) = std::env::split_paths(&path)
-            .map(|d| d.join("harnessd"))
-            .find(|p| p.is_file())
-    {
-        return Ok(found);
-    }
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
@@ -257,6 +261,13 @@ fn daemon_binary() -> Result<PathBuf, String> {
         if p.is_file() {
             return Ok(p);
         }
+    }
+    if let Some(path) = std::env::var_os("PATH")
+        && let Some(found) = std::env::split_paths(&path)
+            .map(|d| d.join("harnessd"))
+            .find(|p| p.is_file())
+    {
+        return Ok(found);
     }
     Err("no harnessd: set $LETIBOT_BIN to the directory holding it, or put it on PATH".into())
 }
@@ -576,6 +587,22 @@ fn tail(path: &Path, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unsplit_data_dir_hands_the_daemon_its_sessions_db() {
+        let dir = std::env::temp_dir().join(format!("letibot-store-in-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        assert_eq!(store_in(&dir), dir, "an empty dir is a new data directory");
+        std::fs::write(dir.join("sessions.db"), b"").expect("old store");
+        assert_eq!(
+            store_in(&dir),
+            dir.join("sessions.db"),
+            "unsplit: the old file"
+        );
+        std::fs::write(dir.join("shared.db"), b"").expect("split store");
+        assert_eq!(store_in(&dir), dir, "split: the directory");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The key is the shell's key. These four values are the same ones
     /// `crates/letibot/src/launcher.rs` asserts against; if they ever disagree, the bridge and
