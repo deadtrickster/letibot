@@ -27,6 +27,7 @@ pub mod names;
 pub mod plugins;
 pub mod push;
 pub mod queue;
+pub mod refusals;
 pub mod relay;
 pub mod report;
 pub mod rooms;

@@ -14,6 +14,9 @@ impl App {
     /// hold is a wrapper because the frame is composed once and returned byte for byte, which is what lets a
     /// mouse selection survive a streaming turn. See [`App::toggle_hold`].
     pub fn screen(&mut self, term_w: usize, h: usize) -> Vec<String> {
+        // Whatever a key handler left owing is said before this frame is composed, so the line it
+        // belongs on is part of the picture rather than a tick behind it.
+        self.say_refusals();
         if self.hold
             && self.hold_size == (term_w, h)
             && let Some(frame) = &self.hold_frame
@@ -32,6 +35,10 @@ impl App {
         // Every link on this frame is a link (OSC 8) where the terminal speaks it, and a
         // target - see `App::draw_links` and `app::links`.
         self.draw_links(&mut out);
+        // And what drawing itself asked of a layer - a `card_` or a `link_` that trapped or
+        // answered a shape this head will not draw. The queue says each distinct refusal once, so
+        // a layer that traps on every frame is one notice and not one per frame.
+        self.say_refusals();
         if self.hold {
             // The marker takes the hint bar's row. It is one row that always exists, so the
             // freeze costs no height and reflows nothing - and it is the row that already talks

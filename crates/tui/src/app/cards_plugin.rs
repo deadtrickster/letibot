@@ -122,7 +122,7 @@ impl<'a> Cards<'a> {
     ) -> Option<String> {
         let host = self.host?;
         let answer = host.card_answer(hook, self.id, ask)?;
-        let out = self.read(&answer)?;
+        let out = self.read(hook, &answer)?;
         out.cards(parts).ok().and_then(|cards| cards.verb)
     }
 
@@ -133,14 +133,17 @@ impl<'a> Cards<'a> {
         let row = self.row.as_ref()?;
         let body = || row_input(row, parts);
         let answer = host.card_answer(plugin_card::ITEM, self.id, body)?;
-        let out = self.read(&answer)?;
+        let out = self.read(plugin_card::ITEM, &answer)?;
         match out.cards(parts.len()) {
             Ok(cards) => Some(cards.cards),
             Err(why) => {
-                self.complain(format!(
-                    "a card layer drew nothing this head will draw, so the row is drawn by its \
-                     own readers: {why}"
-                ));
+                self.complain(
+                    plugin_card::ITEM,
+                    format!(
+                        "a card layer drew nothing this head will draw, so the row is drawn by \
+                         its own readers: {why}"
+                    ),
+                );
                 None
             }
         }
@@ -148,24 +151,25 @@ impl<'a> Cards<'a> {
 
     /// The answer off the wire, with a refusal said once - the sentence a person reads when their
     /// layer answered a card this head will not draw.
-    fn read(&self, answer: &serde_json::Value) -> Option<plugin_card::Out> {
+    fn read(&self, hook: &str, answer: &serde_json::Value) -> Option<plugin_card::Out> {
         let out = match plugin_card::read(answer) {
             Ok(out) => out,
             Err(why) => {
-                self.complain(format!(
-                    "a card layer answered something this head cannot read: {why}"
-                ));
+                self.complain(
+                    hook,
+                    format!("a card layer answered something this head cannot read: {why}"),
+                );
                 return None;
             }
         };
         Some(out)
     }
 
-    /// A refusal is said once, through the host's one problem slot: the head still draws the row,
-    /// and the person learns why it is not their layer's line.
-    fn complain(&self, why: String) {
+    /// A refusal is queued under the hook it answered: the head still draws the row, the person
+    /// learns why it is not their layer's line, and the next frame says nothing new.
+    fn complain(&self, hook: &str, why: String) {
         if let Some(host) = self.host {
-            host.complain(why);
+            host.complain(hook, why);
         }
     }
 }

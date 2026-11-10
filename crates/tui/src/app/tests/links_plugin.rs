@@ -239,9 +239,47 @@ fn a_trapping_link_layer_leaves_the_words_as_text() {
         1,
         "it was asked, and the ask is what trapped"
     );
-    let said = a.take_sessions_failure().unwrap_or_default();
+    // The frame is where a refusal is met, so the frame is where it is said: the head's notice
+    // line, once, rather than a sentence kept until somebody happens to open the session list.
+    let said = a.notice.clone().unwrap_or_default();
     assert!(said.contains("link_gh"), "{said}");
     assert!(said.contains("trapped"), "{said}");
+    let _ = std::fs::remove_dir_all(&project);
+}
+
+/// A refusal met while drawing reaches the head's notice line ONCE: the next frames ask the same
+/// broken layer the same question, and the queue says each distinct refusal rather than each frame.
+#[test]
+fn a_head_refusal_reaches_the_notice_line_once() {
+    let project = a_project("once");
+    let (mut a, asked) = a_frame_over(&project, Mode::Trap, "see LET-1 and LET-2.");
+    let _ = a.screen(120, 20);
+    let once = a.notice.clone().unwrap_or_default();
+    assert!(
+        once.contains("could not answer `link_gh`"),
+        "the notice line says which hook: {once}"
+    );
+    assert!(once.contains("trapped"), "and why: {once}");
+    // Nothing is left owed, so a second frame has nothing to say - and it did ask again, which is
+    // what makes this a claim about the queue rather than about the cache.
+    assert_eq!(a.take_sessions_failure(), None, "taken by the frame");
+    let _ = a.screen(120, 20);
+    let _ = a.screen(120, 20);
+    assert_eq!(
+        asked.lock().unwrap().len(),
+        3,
+        "every frame asks the same broken layer"
+    );
+    assert_eq!(
+        a.take_sessions_failure(),
+        None,
+        "and none of them says it again"
+    );
+    assert_eq!(
+        a.notice.as_deref(),
+        Some(once.as_str()),
+        "the line did not change"
+    );
     let _ = std::fs::remove_dir_all(&project);
 }
 
@@ -253,7 +291,7 @@ fn a_link_answer_with_an_undrawable_scheme_links_nothing() {
     let (mut a, _asked) = a_frame_over(&project, Mode::Nonsense, "see LET-1.");
     let screen = a.screen(120, 20).join("\n");
     assert!(urls(&screen).is_empty(), "{:?}", urls(&screen));
-    let said = a.take_sessions_failure().unwrap_or_default();
+    let said = a.notice.clone().unwrap_or_default();
     assert!(
         said.contains("http"),
         "the refusal names the schemes: {said}"

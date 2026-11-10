@@ -12,9 +12,10 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use letibot_plugin::push::{self, Decision, Input, Native};
-use letibot_plugins::Stack;
+use letibot_plugins::{Refusal, Stack};
 
 use crate::head::{Attention, Entry, Head, LimitNews};
+use crate::refusals::refuse as refused;
 
 /// How long one `wait` blocks before the watcher looks again. It must outlast
 /// [`crate::head::START_GRACE`]: a `wait` that starts on a session which is already quiet answers
@@ -174,8 +175,6 @@ pub fn watch(head: &Arc<Head>, rules: Arc<Rules>) -> Arc<Outbox> {
 /// rule, said once on stderr - a channel that goes quiet because a layer broke is a session nobody hears.
 pub struct Rules {
     stack: Option<Arc<Stack>>,
-    /// A layer's refusal said once, so a broken layer is not a line per event.
-    told: AtomicBool,
 }
 
 /// The facts one push is decided on. `native` is what the bridge would do with no layer, and it is
@@ -192,18 +191,12 @@ pub struct At<'a> {
 impl Rules {
     /// No layer: every push is what the bridge itself decided.
     pub fn none() -> Rules {
-        Rules {
-            stack: None,
-            told: AtomicBool::new(false),
-        }
+        Rules { stack: None }
     }
 
     /// This folder's stack.
     pub fn with(stack: Arc<Stack>) -> Rules {
-        Rules {
-            stack: Some(stack),
-            told: AtomicBool::new(false),
-        }
+        Rules { stack: Some(stack) }
     }
 
     /// Offer one push to the stack, and answer what reaches the client.
@@ -229,28 +222,32 @@ impl Rules {
             .as_ref()
             .map(|answer| push::read(answer).and_then(|out| out.decide(&input)));
         if let Some(Err(why)) = &answered {
-            self.say_once(why);
+            // An answer the contract refuses: the stack read it fine, so there is no failure record
+            // to key on - the layer that answered and the reason it gave are the identity.
+            let layer = resolved.by.clone().unwrap_or_default();
+            refused(
+                Refusal::new(layer, Some(push::HOOK), why.clone()),
+                format!(
+                    "a push layer was refused, so the bridge's own rule decides this one: {why}"
+                ),
+            );
         }
         match answered {
             Some(Ok(decision)) => decision,
             // No layer answered, every one passed, or the answer was refused: today's rule stands,
             // and a trap is said once so a broken layer is not a silence nobody can explain.
             _ => {
-                let broke: Vec<String> = resolved.failures.iter().map(|f| f.to_string()).collect();
-                if !broke.is_empty() {
-                    self.say_once(&broke.join("; "));
+                for failure in &resolved.failures {
+                    refused(
+                        Refusal::of(failure),
+                        format!(
+                            "a push layer was refused, so the bridge's own rule decides this one: \
+                             {failure}"
+                        ),
+                    );
                 }
                 Decision::native(&input)
             }
-        }
-    }
-
-    fn say_once(&self, why: &str) {
-        if !self.told.swap(true, Ordering::Relaxed) {
-            eprintln!(
-                "letibot-mcp: a push layer was refused, so the bridge's own rule decides this one: \
-                 {why}"
-            );
         }
     }
 }
@@ -771,6 +768,64 @@ mod rules_tests {
             native: true,
         });
         assert!(!quiet.push);
+    }
+
+    /// The same layer, trapping every call - the fail-closed half of the contract, and the one a
+    /// bridge must say something about.
+    fn trapping(dir: &Dir) -> Arc<Stack> {
+        let one = dir.0.join("push");
+        std::fs::create_dir_all(&one).unwrap();
+        std::fs::write(
+            one.join("plugin.toml"),
+            "name = \"push\"\npurpose = \"a test's push rule\"\nhooks = [\"push_channel\"]\n\
+             capabilities = []\ncontract = 1\n",
+        )
+        .unwrap();
+        std::fs::write(one.join("plugin.wasm"), b"a table, not a module").unwrap();
+        let stack = Stack::discover(
+            Some(&dir.0),
+            None,
+            None,
+            Arc::new(Answers {
+                table: BTreeMap::from([("push_channel".to_string(), None)]),
+                traps: true,
+            }),
+        );
+        assert!(stack.failures().is_empty(), "{:?}", stack.failures());
+        Arc::new(stack)
+    }
+
+    /// One broken layer is one line, however many events meet it: this process's stderr is a
+    /// client's log, and a refusal per push about a layer that has not changed is a log nobody
+    /// reads. The identity is the layer, the hook and the reason - which is what makes a second,
+    /// different reason news again.
+    #[test]
+    fn the_bridge_says_a_repeated_refusal_once() {
+        let dir = Dir::new("repeated");
+        let rules = Rules::with(trapping(&dir));
+        let at = At {
+            event: "turn_ended",
+            session: "s-1",
+            room: None,
+            to: None,
+            text: "leticode `s-1` ended its turn",
+            native: true,
+        };
+        for _ in 0..3 {
+            assert!(
+                rules.decide(&at).push,
+                "a broken layer loses no push, however many times it breaks"
+            );
+        }
+        // This test's own fixture and no other: the queue is the process's, and the tests beside
+        // this one break layers of their own.
+        let mine: Vec<String> = crate::refusals::said()
+            .into_iter()
+            .filter(|said| said.contains("letibot-bridge-rule-repeated-"))
+            .collect();
+        assert_eq!(mine.len(), 1, "said once, not once per push: {mine:?}");
+        assert!(mine[0].contains("`push_channel`"), "{}", mine[0]);
+        assert!(mine[0].contains("trapped"), "and why: {}", mine[0]);
     }
 
     /// A layer that passes, traps or answers nonsense is the bridge's own rule: a channel that goes

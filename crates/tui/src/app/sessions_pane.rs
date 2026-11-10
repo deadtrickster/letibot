@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use letibot_plugin::pane::{Act as RowAct, Feed, Input};
-use letibot_plugins::Stack;
+use letibot_plugins::{Refusal, Refusals, Stack};
 use letibot_sessionlog::pane as pv;
 use rano::agent::pane::PaneLines;
 use rano::agent::tree_list::{
@@ -115,10 +115,10 @@ pub(crate) struct Host {
     /// means, and a test reads it rather than believing the cache.
     #[cfg(test)]
     asked: std::sync::atomic::AtomicUsize,
-    /// The last failure a layer met, until somebody is told. Fail down LOUDLY
-    /// (`docs/plugins-plan.md`): the list the person sees may be the built-in's or
-    /// the head's own, and either way the reason their layer is not drawing it is news.
-    problem: Mutex<Option<String>>,
+    /// What a layer owes the person, said once each: a failure, a trap, or an answer this head will
+    /// not draw. Fail down LOUDLY (`docs/plugins-plan.md`): the list the person sees may be the
+    /// built-in's or the head's own, and either way the reason their layer is not drawing it is news.
+    refusals: Refusals,
     /// The folder this host was built for; a head that moves to another one gets another stack.
     workspace: PathBuf,
     /// When this host next looks for a rebuilt layer, on the head's clock. The daemon's
@@ -166,19 +166,28 @@ impl Host {
     ) -> letibot_plugins::Resolved {
         let hook = format!("command_{verb}");
         let resolved = self.stack.call(&hook, input);
-        if let (Some(said), Ok(mut slot)) = (resolved.failures.first(), self.problem.lock()) {
-            *slot = Some(format!(
-                "a plugin layer could not answer `/{verb}`, so it was answered from below it: \
-                 {said}"
-            ));
+        if let Some(failure) = resolved.failures.first() {
+            self.refuse(
+                failure,
+                format!(
+                    "a plugin layer could not answer `/{verb}`, so it was answered from below it: \
+                     {failure}"
+                ),
+            );
         }
         resolved
     }
 
-    /// The failure the last call recorded, without taking it - the queue pane's refusal sentence
-    /// reads it on every draw, and taking it would eat the notice the picker owes its reader.
+    /// Queue a layer's failure with the sentence this caller wants read. The identity is the
+    /// failure's own - layer, hook, reason - so a pane asked on every frame says this once.
+    fn refuse(&self, failure: &letibot_plugins::Failure, said: String) {
+        self.refusals.push(Refusal::of(failure), said);
+    }
+
+    /// What a layer owes the person, without taking it - the queue pane's refusal sentence reads it
+    /// on every draw, and taking it would eat the notice the picker owes its reader.
     pub(crate) fn peek_problem(&self) -> Option<String> {
-        self.problem.lock().ok().and_then(|p| p.clone())
+        self.refusals.peek()
     }
 
     /// One `link_` question for a frame: the words no layer has answered yet, asked of each
@@ -207,11 +216,14 @@ impl Host {
                 break;
             };
             let resolved = self.stack.call(&hook, &input);
-            if let (Some(said), Ok(mut slot)) = (resolved.failures.first(), self.problem.lock()) {
-                *slot = Some(format!(
-                    "a plugin layer could not answer `{hook}`, so the words it would have linked \
-                     are text: {said}"
-                ));
+            if let Some(failure) = resolved.failures.first() {
+                self.refuse(
+                    failure,
+                    format!(
+                        "a plugin layer could not answer `{hook}`, so the words it would have \
+                         linked are text: {failure}"
+                    ),
+                );
             }
             let Some(answer) = resolved.answer else {
                 continue;
@@ -221,22 +233,22 @@ impl Host {
                 Ok(out) => match out.checked(&unknown) {
                     Ok(urls) => urls,
                     Err(why) => {
-                        if let Ok(mut slot) = self.problem.lock() {
-                            *slot = Some(format!(
-                                "the plugin layer `{by}` answered `{hook}` with something a head \
-                                 will not draw: {why}"
-                            ));
-                        }
+                        let said = format!(
+                            "the plugin layer `{by}` answered `{hook}` with something a head will \
+                             not draw: {why}"
+                        );
+                        self.refusals
+                            .push(Refusal::new(&by, Some(&hook), why), said);
                         continue;
                     }
                 },
                 Err(why) => {
-                    if let Ok(mut slot) = self.problem.lock() {
-                        *slot = Some(format!(
-                            "the plugin layer `{by}` answered `{hook}` with something that is not a \
-                             link answer: {why}"
-                        ));
-                    }
+                    let said = format!(
+                        "the plugin layer `{by}` answered `{hook}` with something that is not a \
+                         link answer: {why}"
+                    );
+                    self.refusals
+                        .push(Refusal::new(&by, Some(&hook), why.to_string()), said);
                     continue;
                 }
             };
@@ -308,11 +320,12 @@ impl Host {
         })
     }
 
-    /// The failure the last call recorded, taken - the seam [`App::take_sessions_failure`] reads
-    /// through, and the one a test uses to see that a broken layer was SEEN rather than skipped.
+    /// The failures owed, taken - the seam [`App::take_sessions_failure`] reads through, and the one
+    /// a test uses to see that a broken layer was SEEN rather than skipped.
     #[cfg(test)]
     fn take_problem(&self) -> Option<String> {
-        self.problem.lock().ok().and_then(|mut p| p.take())
+        let owed = self.refusals.drain();
+        (!owed.is_empty()).then(|| owed.join(" · "))
     }
 
     /// A host with exactly this stack - what a test stands a broken one in with. The stack's own
@@ -320,7 +333,10 @@ impl Host {
     /// this host is the last place that can say it.
     #[cfg(test)]
     pub(crate) fn with_stack(stack: Stack, workspace: PathBuf) -> Host {
-        let problem = would_not_load(&stack);
+        let refusals = Refusals::new();
+        if let Some(said) = would_not_load(&stack) {
+            refusals.push_said(said);
+        }
         Host {
             stack,
             cache: Mutex::new(Cached::default()),
@@ -329,7 +345,7 @@ impl Host {
             cards: Mutex::new(std::collections::BTreeMap::new()),
             #[cfg(test)]
             asked: std::sync::atomic::AtomicUsize::new(0),
-            problem: Mutex::new(problem),
+            refusals,
             workspace,
             next_poll: 0,
         }
@@ -359,7 +375,12 @@ impl Host {
         if let Some(builtin) = install_builtins(&mut stack) {
             broke.push(builtin);
         }
-        let problem = (!broke.is_empty()).then(|| broke.join("; "));
+        // Admission's news has no failure record this host can key on, so each sentence is its own
+        // identity: the same layers failing the same way on a rebuild is the same news.
+        let refusals = Refusals::new();
+        for said in broke {
+            refusals.push_said(said);
+        }
         Host {
             stack,
             cache: Mutex::new(Cached::default()),
@@ -368,7 +389,7 @@ impl Host {
             cards: Mutex::new(std::collections::BTreeMap::new()),
             #[cfg(test)]
             asked: std::sync::atomic::AtomicUsize::new(0),
-            problem: Mutex::new(problem),
+            refusals,
             workspace: workspace.to_path_buf(),
             next_poll: 0,
         }
@@ -526,7 +547,6 @@ impl Host {
         let resolved = self.stack.call(hook, &value);
         // Fail down, loudly: a layer that traps is skipped by the stack and
         // the one below answers; the sentence is kept for the person whose layer it was.
-        let why = resolved.failures.first().map(|f| f.to_string());
         let view = resolved
             .answer
             .as_ref()
@@ -535,10 +555,13 @@ impl Host {
             cache.key = key;
             cache.answer = resolved.answer.clone();
         }
-        if let (Some(said), Ok(mut slot)) = (why.as_ref(), self.problem.lock()) {
-            *slot = Some(format!(
-                "a plugin layer could not draw {pane}, so it is drawn from below it: {said}"
-            ));
+        if let Some(failure) = resolved.failures.first() {
+            self.refuse(
+                failure,
+                format!(
+                    "a plugin layer could not draw {pane}, so it is drawn from below it: {failure}"
+                ),
+            );
         }
         Answered {
             view,
@@ -552,15 +575,17 @@ impl Host {
     /// that answers a keystroke (`complete_`) would spend the one-slot cache above on every frame.
     pub(crate) fn call(&self, hook: &str, pane: &str, input: &Value) -> Answered {
         let resolved = self.stack.call(hook, input);
-        let why = resolved.failures.first().map(|f| f.to_string());
         let view = resolved
             .answer
             .as_ref()
             .and_then(|a| serde_json::from_value::<pv::View>(a.clone()).ok());
-        if let (Some(said), Ok(mut slot)) = (why.as_ref(), self.problem.lock()) {
-            *slot = Some(format!(
-                "a plugin layer could not draw {pane}, so it is drawn from below it: {said}"
-            ));
+        if let Some(failure) = resolved.failures.first() {
+            self.refuse(
+                failure,
+                format!(
+                    "a plugin layer could not draw {pane}, so it is drawn from below it: {failure}"
+                ),
+            );
         }
         Answered {
             view,
@@ -589,11 +614,14 @@ impl Host {
         #[cfg(test)]
         self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let resolved = self.stack.call(hook, &input);
-        if let (Some(said), Ok(mut slot)) = (resolved.failures.first(), self.problem.lock()) {
-            *slot = Some(format!(
-                "a plugin layer could not draw this row's card, so the head's own readers did: \
-                 {said}"
-            ));
+        if let Some(failure) = resolved.failures.first() {
+            self.refuse(
+                failure,
+                format!(
+                    "a plugin layer could not draw this row's card, so the head's own readers did: \
+                     {failure}"
+                ),
+            );
         }
         if let Ok(mut cards) = self.cards.lock() {
             if cards.len() >= MAX_CARDS {
@@ -610,12 +638,11 @@ impl Host {
         self.asked.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Say why a row was drawn the head's way rather than a layer's - the one problem slot, so a
-    /// sentence is not repeated per frame.
-    pub(crate) fn complain(&self, why: String) {
-        if let Ok(mut slot) = self.problem.lock() {
-            *slot = Some(why);
-        }
+    /// Say why a row was drawn the head's way rather than a layer's: queued under the hook it
+    /// answered, so a frame that draws the row again does not say it again.
+    pub(crate) fn complain(&self, hook: &str, why: String) {
+        self.refusals
+            .push(Refusal::new("", Some(hook), why.clone()), why);
     }
 
     /// The state a hook's layer answered with last time - per hook, because two panes share
@@ -850,12 +877,20 @@ impl App {
         })
     }
 
-    /// The sentence a layer's failure owes the person, once, taken by whoever opens the list: a
-    /// failure line in a list of sessions is a row nobody asked for. Three kinds arrive - a pane
-    /// call, a `/todo`, and a built-in that would not load at all.
+    /// Everything a layer owes the person, taken: one sentence per distinct refusal, joined into the
+    /// one line the head has for it. A caller with a screen says it at the moment it happened; the
+    /// frame itself says whatever is left, so a refusal met while drawing is not a silence.
     pub(crate) fn take_sessions_failure(&mut self) -> Option<String> {
-        let slot = self.sessions_host.get_mut().as_ref()?;
-        slot.problem.lock().ok().and_then(|mut p| p.take())
+        let owed = self.sessions_host.get_mut().as_ref()?.refusals.drain();
+        (!owed.is_empty()).then(|| owed.join(" · "))
+    }
+
+    /// The same, onto the notice line - the door a frame uses, because a refusal kept for a pane
+    /// nobody opened is a refusal the person never read.
+    pub(crate) fn say_refusals(&mut self) {
+        if let Some(said) = self.take_sessions_failure() {
+            self.say(&said);
+        }
     }
 
     /// The folder a session's layers are found under - the one it is wired to, or this process's

@@ -49,7 +49,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
-| R175 | The plugin extension points' review findings: a session layer can answer a tool call past the gate, and the hosts cost and diverge | Code work | items 1-5 built: an `answer` is a pinned layer's or a built-in's, `admit_for` at the door every layer takes, an `on_tool_result` answer is cut at the spill's budget, one `paths` module (the `XDG_CONFIG_HOME=` bug), the skill's counts and the `push`/`card` scaffold templates, one loader (`crates/plugins-rano`) with one sha256-keyed module cache and one admission path, the head's stack built off the UI thread, and a native-copy built-in's hook not called; left: items 6-8, `docs/review/2026-11-10-plugin-extension-points.md` |
+| R175 | The plugin extension points' review findings: a session layer can answer a tool call past the gate, and the hosts cost and diverge | Code work | items 1-6 built: an `answer` is a pinned layer's or a built-in's, `admit_for` at the door every layer takes, an `on_tool_result` answer is cut at the spill's budget, one `paths` module (the `XDG_CONFIG_HOME=` bug), the skill's counts and the `push`/`card` scaffold templates, one loader (`crates/plugins-rano`) with one sha256-keyed module cache and one admission path, the head's stack built off the UI thread, a native-copy built-in's hook not called, and one refusal queue per host (the head draining it into its notice line every frame, the bridge saying each refusal once per process); left: items 7-8, `docs/review/2026-11-10-plugin-extension-points.md` |
 | R176 | A package daemon never idles out: its gatekeeper session's own events reset the hour | Code work | built: the gatekeeper's own writes are not the daemon's activity, a board that did not move re-arms nothing, and a `--no-queue` daemon runs no review pass; left: the daemons already up leave when they are restarted onto this build |
 | R165 | Rooms for orchestration (3/6): a question goes to the owner, not the room | Needs the operator | built (scope asks to the owner, status posts folded); left: the counters read over real traffic, and a live run against a coordinator older than protocol 11 |
 | R166 | Rooms for orchestration (4/6): kinds, budgets and a stopping rule for agent-only threads | Needs the operator | built (say kinds, per-sender budget, depth cap, ranked digest); left: the numbers over real traffic, and no pane groups lines by kind |
@@ -271,7 +271,7 @@ Item 5, its own commit. The channel pushed a `job_ended` for EVERY job of every 
 
 ## R175 - The plugin extension points' review findings: a session layer can answer a tool call past the gate, and the hosts cost and diverge
 
-**Status:** items 1-5 built. left: items 6-8 of the list below. The record, with every report verbatim and the decisions, is `docs/review/2026-11-10-plugin-extension-points.md`.
+**Status:** items 1-6 built. left: items 7-8 of the list below. The record, with every report verbatim and the decisions, is `docs/review/2026-11-10-plugin-extension-points.md`.
 
 In order:
 
@@ -335,6 +335,46 @@ The head's stack is built off the drawing thread (`crates/tui/src/app/sessions_p
 A built-in that only restates the host is not called: `native_copy` in `plugin.toml` names the exports whose answer the host produces anyway, `Stack::run` skips such a layer, and a placed layer declaring the key is refused at `admit_for` - skipping a call is the host's decision about bytes it carries, not a layer's. It is per HOOK and not per layer because `plugins/builtin/todo` is both kinds at once: `command_todo` parses `title:`/`body:` and nothing native does that, while `nag_todo` is the harness's own sentence handed back.
 
 Tests. `crates/plugins-rano/src/lib.rs` - `a_second_host_build_compiles_no_builtin` (two stacks through one process: the second's loader compiles nothing), `the_bytes_are_the_key_and_not_the_name`, `a_refusal_names_what_the_bytes_came_from`; `crates/plugins/src/admit.rs` `admission_discovers_the_scopes_and_answers_the_news`; `crates/plugins/src/stack/tests.rs` `a_native_copy_builtin_alone_is_not_called` (the module traps if called, so a silent skip is a failure and the control without the key fails loudly), `a_placed_layer_may_not_declare_that_it_copies_the_host`, `native_copy_naming_a_hook_the_layer_does_not_answer_is_refused`; `crates/tui/src/app/tests/host_build.rs` `the_head_draws_its_first_frame_before_the_host_is_built` (a held build: the frame draws the head's list, the landed stack is the layer's) and `the_head_asks_for_its_host_off_the_drawing_thread`; and `crates/harnessd/tests/builtin_nag.rs` grew `the_builtins_nag_is_not_called`, with `the_builtin_nag_says_what_the_native_nag_said` now asking a placed copy of the layer's own bytes, because the built-in itself is no longer called.
+
+**Item 6 built.**
+
+One queue, `letibot_plugins::Refusals` (`crates/plugins/src/refusals.rs`): a bounded `VecDeque` of
+sentences, deduped by a `Refusal` - the layer, the hook it was answering, and the reason, which is
+the three fields a `Failure` already carries - so the same broken layer at the same hook is one line
+however many frames, pushes or tool calls meet it. `KEEP` = 256 bounds the identities a host
+remembers and the sentences it owes, because a layer whose reason changes every frame must not grow
+the host it broke in. `Refusals::push` answers `false` for a refusal already said, which is what a
+frame loop calls without checking anything; `push_said` is the same for news with no `Failure`
+behind it (admission's), where the sentence is its own identity.
+
+The head's `Host` holds one instead of its single overwritten `problem` slot. Every refusal site -
+`ask`, `call`, `card_answer`, `command`, `links`, `cards_plugin`'s two answer shapes - queues through
+`Host::refuse`/`complain`, and `App::screen` drains into the notice line twice: once before the frame
+is composed, for whatever a key handler left, and once after `draw_links`, for what drawing itself
+asked of a layer. A card or a `link_` layer refused while drawing is therefore said where the person
+is looking rather than kept until they open the session list, which was the only door that said it.
+The handlers that said a failure at the moment it happened (`/todo`, a command verb, the chat's
+input) still say it at once - the queue is what stops the frame repeating them.
+
+The bridge's is one per process (`crates/bridge/src/refusals.rs`), because every push, every
+`tools/list` and every `tool_` call is the same layer being asked the same thing: `Rules`' own
+`told: AtomicBool`, which made only the FIRST distinct refusal ever printable, is gone, and each
+distinct refusal is written to stderr once. `plugins::production`'s load news and `tools_in`'s "a
+plugin tool may not take a native one's name" take the same queue, so a client handshake no longer
+prints a line per `tools/list`.
+
+The daemon's `complain`/`say_once` path is untouched: it already dedupes by sentence, reaches the
+model through `hub.warn`, and its notices are the session's own queue - the one `take_notices`
+drains - rather than a host's to bound.
+
+Tests: `crates/plugins/src/refusals.rs`
+`the_same_refusal_queues_once_and_a_new_reason_is_news_again`, `the_queue_is_bounded`,
+`a_sentence_is_its_own_identity`; `crates/bridge/src/push.rs`
+`the_bridge_says_a_repeated_refusal_once` (three pushes through a trapping layer, one line, naming
+the hook and the reason); `crates/tui/src/app/tests/links_plugin.rs`
+`a_head_refusal_reaches_the_notice_line_once` (three frames ask the same broken layer, the notice
+line says it once and does not change). The two link tests that read the taken failure now read the
+notice line, which is where the frame says it.
 
 **Done when**: a session layer answering `on_tool_call` for `bash` is refused and the gate sees the call; an `on_tool_result` answer over the spill budget is cut; the head with `XDG_CONFIG_HOME=` reads the same plugin dir as the daemon; a head's second host build compiles no built-in.
 

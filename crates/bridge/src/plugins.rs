@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use letibot_plugins::{Capability, DeclaredTool, Stack, ToolDecl};
+use letibot_plugins::{Capability, DeclaredTool, Refusal, Stack, ToolDecl};
 use serde_json::{Value, json};
 
 /// The one `Loader` this binary uses, from `letibot-plugins-rano` - the daemon's and the head's too,
@@ -66,15 +66,21 @@ pub fn production(workspace: &Path) -> Option<Stack> {
         Arc::new(RanoLoader),
         Some(letibot_plugins::Trust::open_default()),
     );
-    let mut said = admitted.sentences();
+    let said = admitted.sentences();
     let mut stack = admitted.stack;
-    said.extend(letibot_builtins::install(&mut stack));
-    if !said.is_empty() {
-        eprintln!(
-            "letibot-mcp: a plugin layer was not loaded, so what it answers is answered by what is \
-             below it: {}",
-            said.join("; ")
-        );
+    // A layer that never became a stack has no failure record left to key on, so each sentence is
+    // its own identity: a stack rebuilt from the same disk says nothing a second time.
+    for sentence in said {
+        crate::refusals::refuse_said(format!(
+            "a plugin layer was not loaded, so what it answers is answered by what is below it: \
+             {sentence}"
+        ));
+    }
+    for said in letibot_builtins::install(&mut stack) {
+        crate::refusals::refuse_said(format!(
+            "this binary's own plugin layer could not be loaded, so what it answers is answered by \
+             what is below it: {said}"
+        ));
     }
     Some(stack)
 }
@@ -105,10 +111,19 @@ pub fn tools_in(workspace: &Path, user: Option<&Path>, native: &[String]) -> Vec
             capabilities,
         } = declared;
         if native.contains(&tool.name) {
-            eprintln!(
-                "letibot-mcp: the plugin layer `{layer}` declares the tool `{}`, and a plugin tool \
-                 may not take a native one's name - it is not listed",
+            // `tools/list` runs on every client handshake, so this is a refusal a bridge would
+            // otherwise print whole each time: one layer taking one native name is one line.
+            let why = format!(
+                "a plugin tool may not take the native tool name `{}`",
                 tool.name
+            );
+            crate::refusals::refuse(
+                Refusal::new(&layer, Some(&format!("tool_{}", tool.name)), why),
+                format!(
+                    "the plugin layer `{layer}` declares the tool `{}`, and a plugin tool may not \
+                     take a native one's name - it is not listed",
+                    tool.name
+                ),
             );
             continue;
         }
