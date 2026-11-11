@@ -1303,22 +1303,31 @@ fn perimeter_tables(
 }
 
 /// `[skills]` in a `leticode.toml`: the skills a session keeps in hand whatever it is
-/// asked to do.
+/// asked to do, and what each one needs of the seat.
 ///
 /// ```toml
 /// [skills]
 /// pin = ["latex-presentation", "release"]
+///
+/// [skills.when.instrument-dashboard]
+/// requires = ["flowy"]     # a status page fits a seat that can publish; without it, a pane
 /// ```
 ///
-/// Both levels' pins apply, so this is a union and not an override: a pin is a request
-/// to have a skill loaded, and a project file (which a session with `write` can edit) must
-/// not be able to unsay what the operator pinned for every project on the box.
+/// Both levels' pins apply, so `pin` and `never_offer` are unions and not overrides: a pin is a
+/// request to have a skill loaded, and a project file (which a session with `write` can edit)
+/// must not be able to unsay what the operator pinned for every project on the box. A
+/// `[skills.when.<name>]` table is the opposite question - what a skill NEEDS - so it REPLACES
+/// the skill's own frontmatter for that name, and when both levels name one skill the operator's
+/// table is the one in force, whole. A project file can leave a skill alone or make it fit this
+/// project less; it cannot unhide what the operator hid.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SkillKeys {
     pub pin: Vec<String>,
     /// Skills never offered or listed as usable, whatever their score: the operator's veto for
     /// skills that name tools this box lacks and that the automatic filter cannot see.
     pub never_offer: Vec<String>,
+    /// Per skill, what it needs of a seat before it applies at all.
+    pub when: std::collections::BTreeMap<String, letibot_tools::builtins::skill::SkillWhen>,
 }
 
 impl SkillKeys {
@@ -1334,16 +1343,25 @@ impl SkillKeys {
             }
             out
         };
+        // The project's tables first, then this (operator) level over them: a name both levels
+        // speak about is the operator's answer, and a table replaces rather than merges.
+        let mut when = other.when.clone();
+        when.extend(
+            self.when
+                .iter()
+                .map(|(name, table)| (name.clone(), table.clone())),
+        );
         SkillKeys {
             pin: union(&self.pin, &other.pin),
             never_offer: union(&self.never_offer, &other.never_offer),
+            when,
         }
     }
 
     /// Whether the file said anything at all, for the disclosure, which must not claim a
     /// setting nobody made.
     pub fn is_empty(&self) -> bool {
-        self.pin.is_empty() && self.never_offer.is_empty()
+        self.pin.is_empty() && self.never_offer.is_empty() && self.when.is_empty()
     }
 }
 
@@ -1355,15 +1373,21 @@ struct SkillTable {
     pin: Option<Vec<String>>,
     #[serde(default)]
     never_offer: Option<Vec<String>>,
+    #[serde(default)]
+    when: std::collections::BTreeMap<String, letibot_tools::builtins::skill::SkillWhen>,
 }
 
 fn skill_keys(value: &toml::Value) -> Result<SkillKeys, String> {
     let t: SkillTable = value.clone().try_into().map_err(|e| {
-        format!("[skills]: {e}; the keys are `pin` and `never_offer`, lists of skill names")
+        format!(
+            "[skills]: {e}; the keys are `pin` and `never_offer` (lists of skill names) and \
+             `when.<name>` (a table of `requires` and `unless`)"
+        )
     })?;
     Ok(SkillKeys {
         pin: t.pin.unwrap_or_default(),
         never_offer: t.never_offer.unwrap_or_default(),
+        when: t.when,
     })
 }
 

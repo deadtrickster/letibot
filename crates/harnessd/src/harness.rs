@@ -1309,10 +1309,7 @@ impl Harness {
     /// from - the same rows the prompt's index is composed from, read on the ask.
     fn install_skills_source(&self) {
         let skills = self.skills.clone();
-        let seat: std::collections::BTreeSet<String> = open::tool_names(&self.prefix.tools_json)
-            .into_iter()
-            .map(|t| t.to_ascii_lowercase())
-            .collect();
+        let seat = open::skill_seat(&self.cfg, &self.prefix.tools_json);
         let never: Vec<String> = self.cfg.skills_never_offer().to_vec();
         self.session_registry.set_skills_source(
             &self.cfg.session_id,
@@ -1326,7 +1323,7 @@ impl Harness {
                             && live
                                 .iter()
                                 .find(|s| s.name == r.name)
-                                .is_none_or(|s| s.unmet(&seat).is_none())
+                                .is_none_or(|s| skills.unmet(s, &seat).is_none())
                     })
                     .map(|r| letibot_sessionlog::protocol::SkillRow {
                         name: r.name,

@@ -145,6 +145,9 @@ pub fn with_session_tools(
     asks: Option<std::sync::Arc<dyn builtins::todo::AskLink>>,
     task_runner: std::sync::Arc<dyn builtins::task::TaskRunner>,
     skills: std::sync::Arc<builtins::skill::SkillRegistry>,
+    // The cell this session's tool names arrive in, filled by the daemon once its prefix is
+    // composed: `skill` reads a skill's `requires` against it, and the registry is the daemon's.
+    skill_seat: builtins::skill::Seat,
     lsp: std::sync::Arc<builtins::lsp::LspConfig>,
     reach: builtins::task::TaskReach,
 ) -> Result<Registry, RegisterError> {
@@ -162,7 +165,9 @@ pub fn with_session_tools(
     // The children read the same corpus as the tool, so a `task {skills}` name is checked
     // against what `skill list` answers: a second registry would be a second answer to
     // "is there a skill called this".
-    reg.register(Box::new(builtins::skill::SkillTool::new(skills.clone())))?;
+    reg.register(Box::new(
+        builtins::skill::SkillTool::new(skills.clone()).with_seat(skill_seat),
+    ))?;
     reg.register(Box::new(builtins::lsp::LspTool::new(lsp)))?;
     reg.register(Box::new(
         builtins::task::TaskTool::new(task_runner.clone()).with_skills(skills.clone()),
@@ -336,6 +341,7 @@ mod tests {
             None,
             std::sync::Arc::new(builtins::task::NoTaskRunner),
             std::sync::Arc::new(builtins::skill::SkillRegistry::default()),
+            builtins::skill::Seat::new(),
             std::sync::Arc::new(builtins::lsp::LspConfig::default()),
             builtins::task::TaskReach::Anywhere,
         )

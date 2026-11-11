@@ -561,3 +561,79 @@ fn the_real_synced_claude_skills_are_not_offered_to_a_plain_seat() {
         eprintln!("SKIPPED: no synced Claude Code skills on this box");
     }
 }
+
+/// Two skills answer one job and only one of them fits this seat: the offer names the one that
+/// fits and never the other, whatever it scores - and the log says why the other went unnamed.
+#[test]
+fn an_offer_skips_the_skill_whose_capability_this_seat_lacks() {
+    let page = Skill {
+        when_to_use: Some("the operator asks for a dashboard or a status page".into()),
+        keywords: vec!["dashboard".into(), "status".into(), "monitor".into()],
+        requires: vec!["flowy".into()],
+        ..Skill::new(
+            "instrument-dashboard",
+            "a status page served over the web",
+            "write html and serve it",
+            SkillSource::Installed(Some("npx skills add".into())),
+        )
+    };
+    let pane = Skill {
+        when_to_use: Some("the operator asks for a dashboard or a status page".into()),
+        keywords: vec!["dashboard".into(), "status".into(), "panel".into()],
+        ..Skill::new(
+            "plugin-pane",
+            "a pane drawn in this head",
+            "scaffold a pane",
+            SkillSource::BuiltIn,
+        )
+    };
+    let registry = SkillRegistry::new(vec![
+        page,
+        pane,
+        // A third subject, so the words the two share are not in every document: idf of a term in
+        // the whole corpus is zero, and a test whose two skills are the whole corpus would score
+        // both at 0 and prove nothing.
+        Skill::new(
+            "release",
+            "cut a tagged release",
+            "tag, push, write the notes",
+            SkillSource::Operator,
+        ),
+    ]);
+    let text = subject(
+        &prompt("the operator asks for a dashboard or a status page: build me one"),
+        &[],
+    );
+
+    let without = ["read".to_string(), "bash".to_string()];
+    let mut offered = Offers::new().with_seat(without.iter(), std::iter::empty::<&String>());
+    assert!(offered.compose(&registry, &text), "the pane still fits");
+    let names: Vec<&str> = offered.open.iter().map(|o| o.name.as_str()).collect();
+    assert_eq!(names, ["plugin-pane"], "the page is not offered: {names:?}");
+
+    // And the refusal is measured, not silent: the log carries the seat's own sentence.
+    let logs = std::env::temp_dir().join(format!(
+        "harnessd-skills-when-{}-{}",
+        std::process::id(),
+        now_secs()
+    ));
+    offered.settle(&logs, "s1", &[]);
+    let log = std::fs::read_to_string(logs.join(LOG)).unwrap_or_default();
+    assert!(
+        log.contains("instrument-dashboard")
+            && log.contains("requires `flowy`, which this seat does not have"),
+        "the skipped line names the skill and the reason: {log}"
+    );
+
+    // With flowy on the seat the page is offered beside the pane: the rule is the capability and
+    // nothing else.
+    let with = ["read".into(), "flowy".into()];
+    let mut both = Offers::new().with_seat(with.iter(), std::iter::empty::<&String>());
+    assert!(both.compose(&registry, &text));
+    assert!(
+        both.open.iter().any(|o| o.name == "instrument-dashboard"),
+        "a seat with the capability is offered the page: {:?}",
+        both.open.iter().map(|o| &o.name).collect::<Vec<_>>()
+    );
+    let _ = std::fs::remove_dir_all(&logs);
+}

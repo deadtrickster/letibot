@@ -163,6 +163,26 @@ pub(crate) fn tool_names(tools_json: &[String]) -> std::collections::BTreeSet<St
     tool_schemas(tools_json).into_keys().collect()
 }
 
+/// The capabilities a skill's `requires`/`unless` is checked against: this session's tool names,
+/// minus the doors that have nothing behind them. `flowy` is seated on every root session as a
+/// door so a `/flowy login` has somewhere to land, and only a session the daemon gave a fabric
+/// seat to can use it - a skill that says it needs `flowy` means the seat, not the door.
+pub(crate) fn skill_seat(
+    cfg: &Config,
+    tools_json: &[String],
+) -> std::collections::BTreeSet<String> {
+    // Lowercased, because a skill's names are: `mcp__Server__x` and `mcp__server__x` are one
+    // capability, and a second spelling is a second answer.
+    let mut seat: std::collections::BTreeSet<String> = tool_names(tools_json)
+        .into_iter()
+        .map(|t| t.to_ascii_lowercase())
+        .collect();
+    if cfg.fabric.is_none() {
+        seat.remove("flowy");
+    }
+    seat
+}
+
 /// The tool schemas by name, verbatim: the same read as [`tool_names`], keeping the schema text. The
 /// extra half is what lets a schema that GREW be named, since a tool whose parameters gained a field
 /// is in neither the added set nor the gone set.
@@ -2121,6 +2141,7 @@ impl Harness {
                 )),
             ))
             .map_err(|e| HarnessError::Setup(format!("registering the host config: {e}")))?;
+        let seat_cell = letibot_tools::builtins::skill::Seat::new();
         registry = letibot_tools::with_session_tools(
             registry,
             todo_board.clone(),
@@ -2131,6 +2152,9 @@ impl Harness {
             Some(room_late.clone()),
             task_runner,
             parts.skills.clone(),
+            // Filled below, once the prefix is composed: only then is this session's tool list
+            // final, and `skill` reads a skill's `requires` against exactly that list.
+            seat_cell.clone(),
             parts.lsp.clone(),
             // The queue's own session reads and corrects the reviewers it was handed, and the
             // runner behind these two verbs will address any live session in the daemon.
@@ -3071,6 +3095,9 @@ impl Harness {
             system: cfg.system.clone(),
             tools_json: parts.wiring.tools_json(&schemas),
         };
+        // This session's tools are final here, so `skill` can now tell a skill's `requires` from
+        // the seat it is asked in - the same set the listing and the offer are filtered by.
+        seat_cell.set(skill_seat(&cfg, &prefix.tools_json));
         let dialect_sha = hex32(&parts.wiring.spec().template_sha);
 
         let (

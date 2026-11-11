@@ -1,6 +1,8 @@
 ---
 name: plugin-pane
 description: Write a letibot plugin pane in the session and make it answer, hot — scaffold, edit the view, build, test, load, and iterate — and draw it so every number has its denominator and every word was measured. Use when the operator asks for a dashboard or panel that letibot does not have, or when a session needs to see something letibot has no pane for.
+when_to_use: The operator asks for a dashboard, panel, live view or status display: in this head that is a pane, not a web page or a script serving HTML
+keywords: dashboard, panel, pane, live view, status, monitor, sparkline
 ---
 
 # Write a pane plugin in this session

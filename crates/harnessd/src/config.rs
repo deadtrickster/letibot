@@ -1852,6 +1852,14 @@ impl Config {
         &self.leticode.skills.never_offer
     }
 
+    /// `[skills.when.<name>]`, both levels resolved: what each skill needs of a seat, over what its
+    /// own frontmatter says. The operator's table wins a name both files speak about, whole.
+    pub fn skills_when(
+        &self,
+    ) -> &std::collections::BTreeMap<String, letibot_tools::builtins::skill::SkillWhen> {
+        &self.leticode.skills.when
+    }
+
     /// This session's logs directory: `<logs_root>/<session id>/`, or - with no logs root, as
     /// in a fixture - `<workspace>/.letibot/`, where they were before.
     pub fn daemon_logs(&self) -> PathBuf {

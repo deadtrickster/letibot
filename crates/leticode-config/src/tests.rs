@@ -819,6 +819,82 @@ fn the_two_levels_pin_skills_by_union() {
     );
 }
 
+/// `[skills.when.<name>]` is a table per skill, and a key this build does not know is refused by
+/// name - the same loudness every other table in this file has.
+#[test]
+fn the_when_table_is_read_per_skill_and_its_keys_are_named() {
+    let dir = project_dir("skills-when");
+    let path = write_file(
+        &dir,
+        "[skills.when.instrument-dashboard]\nrequires = [\"flowy\"]\n\
+         [skills.when.status-page]\nunless = [\"flowy\", \"bash\"]\n",
+    );
+    let cfg = LeticodeConfig::load(&path).expect("the tables parse");
+    assert_eq!(cfg.skills.when["instrument-dashboard"].requires, ["flowy"]);
+    assert!(
+        cfg.skills.when["instrument-dashboard"].unless.is_empty(),
+        "a key the table did not write is empty, not inherited"
+    );
+    assert_eq!(cfg.skills.when["status-page"].unless, ["flowy", "bash"]);
+    assert!(cfg.skills.when["status-page"].requires.is_empty());
+    assert!(
+        LeticodeConfig::default().skills.is_empty(),
+        "a file that names no skill needs nothing of any seat"
+    );
+
+    let path = write_file(
+        &dir,
+        "[skills.when.instrument-dashboard]\nneeds = [\"flowy\"]\n",
+    );
+    let err = LeticodeConfig::load(&path).unwrap_err();
+    assert!(
+        err.contains("needs") && err.contains("requires"),
+        "the refusal names the key and the two there are: {err}"
+    );
+}
+
+/// Both levels may say what one skill needs, and the operator's answer is the one in force, whole:
+/// a project file can make a skill fit less, and cannot unhide what the operator hid.
+#[test]
+fn the_operator_wins_the_skill_both_levels_speak_about() {
+    let user_dir = project_dir("skills-when-user");
+    let user_path = write_file(
+        &user_dir,
+        "[skills.when.dashboard]\nrequires = [\"flowy\"]\n\
+         [skills.when.both]\nrequires = [\"flowy\"]\nunless = []\n",
+    );
+    let user = LeticodeConfig::load_as(&user_path, Level::User).expect("the user file parses");
+    let project_root = project_dir("skills-when-project");
+    let project_path = write_file(
+        &project_root,
+        // The project tries to unhide what the operator gated, and gates one of its own.
+        "[skills.when.dashboard]\nrequires = []\n\
+         [skills.when.local]\nrequires = [\"bash\"]\n",
+    );
+    let project = LeticodeConfig::load(&project_path).expect("the project file parses");
+    let merged = user.overridden_by(&project).skills.when;
+    assert_eq!(
+        merged["dashboard"].requires,
+        ["flowy"],
+        "the operator's table is in force, whole - the project cannot unhide it"
+    );
+    assert_eq!(
+        merged["local"].requires,
+        ["bash"],
+        "and the project's own apply"
+    );
+    let named: Vec<&str> = merged.keys().map(String::as_str).collect();
+    assert_eq!(
+        named,
+        ["both", "dashboard", "local"],
+        "every table either level wrote is in force, and no other"
+    );
+    assert!(
+        merged["both"].unless.is_empty(),
+        "the operator's own table is kept as written"
+    );
+}
+
 /// `[github] post` needs its token and nothing is posted without both, and a project file
 /// may stop the seat and may not start it: a repository a session can write must not begin
 /// posting under the operator's identity.

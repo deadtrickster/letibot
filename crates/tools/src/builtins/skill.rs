@@ -2,7 +2,7 @@
 //! The prompt carries one line per skill; a body arrives only when something asks. Each carries a
 //! [`SkillSource`], because only the operator's own directory is theirs and the index shows it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -26,6 +26,10 @@ pub const INDEX_BUDGET_TOKENS: usize = 800;
 /// The floor a free-text `skill find` must clear before it loads anything. Asking is a decision the
 /// model has already made, so it may be looser than the offer's own floor, which speaks unasked.
 pub const QUERY_FLOOR: f64 = 0.15;
+
+/// How many ranked names `skill find` scores before it keeps three. The extra room is for skills
+/// this seat cannot use: they are skipped, and the one that fits must not lose its slot to them.
+const FINDS_ASKED: usize = 8;
 
 /// Where a skill was found, the fact the index shows beside every name. A label, never a
 /// permission: a skill cannot grant itself anything by where it sits.
@@ -91,6 +95,12 @@ pub struct Skill {
     /// The frontmatter's `keywords`, split on commas and spaces: the words a subject reaches a
     /// skill's subject by when the prose around them differs.
     pub keywords: Vec<String>,
+    /// The frontmatter's `requires`: capabilities this seat must have for the skill to apply at
+    /// all. A capability is a fact about the seat and never something a skill can grant itself.
+    pub requires: Vec<String>,
+    /// The frontmatter's `unless`: capabilities whose PRESENCE hides the skill - two skills for one
+    /// job, and which one fits is whichever this seat can actually do.
+    pub unless: Vec<String>,
     /// The `SKILL.md` it was read from; `None` for a skill compiled in or held on a shelf.
     pub path: Option<PathBuf>,
 }
@@ -111,14 +121,45 @@ impl Skill {
             tools: Vec::new(),
             when_to_use: None,
             keywords: Vec::new(),
+            requires: Vec::new(),
+            unless: Vec::new(),
             path: None,
         }
     }
 
     /// Why this seat cannot use the skill, or `None` when it can. `seat` is the lowercased names of
-    /// the tools the session has. Only `mcp__` tools and `the X connector` are checked: a skill that
-    /// names none needs nothing special, and a built-in skill is ours and always usable.
+    /// the tools the session has. `requires`/`unless` are checked for every source; the `mcp__` and
+    /// connector reads are a skill AUTHOR's guess about a server, so a built-in skips them.
     pub fn unmet(&self, seat: &BTreeSet<String>) -> Option<String> {
+        self.unmet_with(seat, &BTreeMap::new())
+    }
+
+    /// [`unmet`](Self::unmet) with the operator's `[skills.when.<name>]`: a table for this name
+    /// REPLACES what the frontmatter says, because an operator who has the seat knows and the
+    /// author guessed.
+    pub fn unmet_with(
+        &self,
+        seat: &BTreeSet<String>,
+        when: &BTreeMap<String, SkillWhen>,
+    ) -> Option<String> {
+        let own = when.get(&self.name);
+        let requires = own.map(|w| &w.requires[..]).unwrap_or(&self.requires);
+        let unless = own.map(|w| &w.unless[..]).unwrap_or(&self.unless);
+        // The unconditional half first: it is the one an operator's file also speaks about, and
+        // the sentence a listing shows must be the same one a load refuses with.
+        if let Some(missing) = requires.iter().find(|n| !capability(seat, n)) {
+            return Some(format!(
+                "requires `{missing}`, which this seat does not have"
+            ));
+        }
+        if let Some(present) = unless.iter().find(|n| capability(seat, n)) {
+            return Some(format!("hidden while `{present}` is on this seat"));
+        }
+        self.unmet_for_an_author(seat)
+    }
+
+    /// The half an author's own words are read for: `mcp__` servers and `the X connector`.
+    fn unmet_for_an_author(&self, seat: &BTreeSet<String>) -> Option<String> {
         if matches!(self.source, SkillSource::BuiltIn) {
             return None;
         }
@@ -201,6 +242,40 @@ impl Skill {
             out.push_str(keyword);
         }
         out
+    }
+}
+
+/// What a skill needs of a seat before it applies, as `[skills.when.<name>]` in a `leticode.toml`
+/// writes it. Operator configuration rather than a skill's words, so it is the same type both sides
+/// read: a table here REPLACES the skill's own frontmatter for that name, whole.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillWhen {
+    /// Every one of these must be on the seat, or the skill is not for it.
+    #[serde(default)]
+    pub requires: Vec<String>,
+    /// Any one of these on the seat hides the skill.
+    #[serde(default)]
+    pub unless: Vec<String>,
+}
+
+impl SkillWhen {
+    /// Whether the table says anything. An empty one unhides what the frontmatter hid, which is
+    /// the operator's call and not a mistake this crate refuses.
+    pub fn is_empty(&self) -> bool {
+        self.requires.is_empty() && self.unless.is_empty()
+    }
+}
+
+/// Whether this seat has a capability a skill named: a tool it seats (`bash`, `flowy`), or an
+/// `mcp__server` / `mcp__server__*`, which is any tool of that server.
+fn capability(seat: &BTreeSet<String>, name: &str) -> bool {
+    match mcp_server(name) {
+        Some(server) => {
+            let prefix = format!("mcp__{server}__");
+            seat.iter().any(|t| t.starts_with(&prefix))
+        }
+        None => seat.contains(&name.to_ascii_lowercase()),
     }
 }
 
@@ -324,6 +399,9 @@ pub struct SkillRegistry {
     /// The names the operator pinned for this project: the only rows the prompt's index carries.
     /// A pin is not a load - the body still arrives only when `skill` is asked for it.
     pins: BTreeSet<String>,
+    /// `[skills.when.<name>]`, both levels resolved: what an operator says a skill needs of a seat,
+    /// over what its frontmatter says. Read here because every door asks it.
+    when: BTreeMap<String, SkillWhen>,
     shelf: Mutex<Option<Arc<dyn SkillShelf>>>,
 }
 
@@ -342,8 +420,23 @@ impl SkillRegistry {
             skills,
             dirs: None,
             pins: BTreeSet::new(),
+            when: BTreeMap::new(),
             shelf: Mutex::new(None),
         }
+    }
+
+    /// The registry with the operator's `[skills.when.<name>]` tables. A table REPLACES its
+    /// skill's own frontmatter whole, `requires` and `unless` together, so an operator cannot
+    /// half-overrule an author and leave the other half standing.
+    pub fn with_when(mut self, when: BTreeMap<String, SkillWhen>) -> Self {
+        self.when = when;
+        self
+    }
+
+    /// Why this seat cannot use this skill, or `None`. The one answer every door reads, so a name
+    /// the listing hides is a name `find` does not offer and `load` refuses - with this sentence.
+    pub fn unmet(&self, skill: &Skill, seat: &BTreeSet<String>) -> Option<String> {
+        skill.unmet_with(seat, &self.when)
     }
 
     /// The registry with the operator's pins, set once before it is shared: the prompt is composed
@@ -500,8 +593,14 @@ impl SkillRegistry {
         })
     }
 
-    fn list(&self) -> String {
+    /// Every skill there is, usable ones first and then the ones this seat cannot use, each with
+    /// the reason. Naming the reason is the point: a model that silently loses a skill from the
+    /// list cannot tell a rule from a bug, and picks the wrong one of two that answer one job.
+    fn list(&self, seat: Option<&BTreeSet<String>>) -> String {
         let skills = self.live_skills();
+        let why = |s: &Skill| seat.and_then(|seat| self.unmet(s, seat));
+        let (hidden, usable): (Vec<&Skill>, Vec<&Skill>) =
+            skills.iter().partition(|s| why(s).is_some());
         let mut out = String::new();
         if skills.is_empty() {
             out.push_str("no skills are loaded — none on disk and none in this build.\n");
@@ -509,15 +608,26 @@ impl SkillRegistry {
             out.push_str(&format!(
                 "{} skill(s) — the label says where each was found, and only `the operator's` is \
                  an instruction of theirs:\n",
-                skills.len()
+                usable.len()
             ));
-            for s in &skills {
+            for s in &usable {
                 out.push_str(&format!(
                     "- {}  [{}]  {}\n",
                     s.name,
                     s.source.label(),
                     s.description
                 ));
+            }
+            if !hidden.is_empty() {
+                out.push_str(&format!(
+                    "{} skill(s) not for this seat: they stay out of the index and `load` refuses \
+                     them, with the reason here\n",
+                    hidden.len()
+                ));
+                for s in &hidden {
+                    let reason = why(s).unwrap_or_default();
+                    out.push_str(&format!("- {}  [{}]  {reason}\n", s.name, s.source.label()));
+                }
             }
         }
         match self.shelf() {
@@ -861,8 +971,22 @@ fn from_text(text: &str, source: SkillSource) -> Option<Skill> {
     let mut tools_line = Vec::new();
     let mut when = None;
     let mut keywords = Vec::new();
+    let mut requires = Vec::new();
+    let mut unless = Vec::new();
+    // A block list is written under its key, one name a line, so the key that ended the last
+    // value is remembered: `requires:` with nothing after it opens one.
+    let mut open = Names::None;
     for line in front.lines() {
         let line = line.trim();
+        if let Some(item) = line.strip_prefix("- ") {
+            match open {
+                Names::Requires => requires.extend(name_list(item)),
+                Names::Unless => unless.extend(name_list(item)),
+                Names::None => {}
+            }
+            continue;
+        }
+        open = Names::None;
         if let Some(v) = line.strip_prefix("name:") {
             name = Some(v.trim().to_string());
         } else if let Some(v) = line.strip_prefix("description:") {
@@ -876,16 +1000,18 @@ fn from_text(text: &str, source: SkillSource) -> Option<Skill> {
             tools_line = tool_names(v);
         } else if let Some(v) = line.strip_prefix("when_to_use:") {
             when = Some(v.trim().to_string()).filter(|v| !v.is_empty());
+        } else if let Some(v) = line.strip_prefix("requires:") {
+            requires = name_list(v);
+            if v.trim().is_empty() {
+                open = Names::Requires;
+            }
+        } else if let Some(v) = line.strip_prefix("unless:") {
+            unless = name_list(v);
+            if v.trim().is_empty() {
+                open = Names::Unless;
+            }
         } else if let Some(v) = line.strip_prefix("keywords:") {
-            // The two spellings authors write: one line of words and a `[a, b]` list.
-            keywords = v
-                .trim()
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .split([',', ' '])
-                .map(|w| w.trim().trim_matches(['"', '\'']).to_string())
-                .filter(|w| !w.is_empty())
-                .collect();
+            keywords = name_list(v);
         }
     }
     let name = name.filter(|n| !n.is_empty())?;
@@ -898,8 +1024,30 @@ fn from_text(text: &str, source: SkillSource) -> Option<Skill> {
         tools: tools_line,
         when_to_use: when,
         keywords,
+        requires,
+        unless,
         path: None,
     })
+}
+
+/// Which of the two name lists a block item below a key belongs to.
+#[derive(Clone, Copy)]
+enum Names {
+    None,
+    Requires,
+    Unless,
+}
+
+/// One list of names as an author writes it: `flowy, bash`, `[flowy, bash]`, or quoted. The two
+/// spellings `keywords` has always taken, so a new key does not invent a third.
+fn name_list(list: &str) -> Vec<String> {
+    list.trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split([',', ' '])
+        .map(|w| w.trim().trim_matches(['"', '\'']).to_string())
+        .filter(|w| !w.is_empty())
+        .collect()
 }
 
 /// `allowed-tools: Read, Bash(git:*)`: the names only, lowercased, because the qualifier is Claude
@@ -920,14 +1068,65 @@ fn tool_names(list: &str) -> Vec<String> {
     out
 }
 
+/// The tools a session really seats, filled by its daemon once the prefix is composed. A cell and
+/// not a value because the registry is the daemon's and the seat is the session's; unset (a
+/// runtime with no daemon behind it) says nothing about the seat rather than refusing everything.
+#[derive(Clone, Default)]
+pub struct Seat(Arc<Mutex<Option<BTreeSet<String>>>>);
+
+impl Seat {
+    pub fn new() -> Seat {
+        Seat::default()
+    }
+
+    /// Record the session's tool names. Lowercased here, because every name a skill declares is
+    /// matched that way and a second spelling of the same tool is a second answer.
+    pub fn set<I: IntoIterator<Item = S>, S: AsRef<str>>(&self, tools: I) {
+        let set = tools
+            .into_iter()
+            .map(|t| t.as_ref().to_ascii_lowercase())
+            .collect();
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(set);
+    }
+
+    /// The set, or `None` when nothing has told this cell what the seat holds.
+    pub fn get(&self) -> Option<BTreeSet<String>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
 /// The `skill` tool.
 pub struct SkillTool {
     registry: Arc<SkillRegistry>,
+    seat: Seat,
 }
 
 impl SkillTool {
     pub fn new(registry: Arc<SkillRegistry>) -> Self {
-        SkillTool { registry }
+        SkillTool {
+            registry,
+            seat: Seat::new(),
+        }
+    }
+
+    /// The cell the session's tool names arrive in. The daemon fills it after composing the
+    /// prefix, since only then is the seat's own list final.
+    pub fn with_seat(mut self, seat: Seat) -> Self {
+        self.seat = seat;
+        self
+    }
+
+    /// Why this seat cannot use the named skill. A shelf row is not looked up: its frontmatter is
+    /// not read before it is loaded, and a name this cell cannot explain is not refused unseen.
+    fn unmet(
+        &self,
+        seat: Option<&BTreeSet<String>>,
+        skills: &[Skill],
+        name: &str,
+    ) -> Option<String> {
+        let seat = seat?;
+        let skill = skills.iter().find(|s| s.name == name)?;
+        self.registry.unmet(skill, seat)
     }
 }
 
@@ -967,8 +1166,10 @@ impl Tool for SkillTool {
                  (with `query`).",
             );
         };
+        let seat = self.seat.get();
+        let seat = seat.as_ref();
         match action {
-            "list" => Invocation::ok(self.registry.list()),
+            "list" => Invocation::ok(self.registry.list(seat)),
             "load" => {
                 let Some(name) = args.get("name").and_then(|v| v.as_str()) else {
                     return Invocation::failed(
@@ -978,7 +1179,17 @@ impl Tool for SkillTool {
                     );
                 };
                 match self.registry.load_any(name) {
-                    Ok(skill) => Invocation::ok(loaded(&skill)),
+                    Ok(skill) => match seat.and_then(|st| self.registry.unmet(&skill, st)) {
+                        Some(why) => Invocation::failed(
+                            format!("`{name}` is not for this seat"),
+                            format!(
+                                "it {why}. Every door agrees: the listing shows it under `not for \
+                                 this seat`, `find` skips it, and this load refuses it. `skill` \
+                                 action=\"list\" names the skill that fits here."
+                            ),
+                        ),
+                        None => Invocation::ok(loaded(&skill)),
+                    },
                     Err(why) => Invocation::failed(format!("no skill named `{name}`"), why),
                 }
             }
@@ -993,7 +1204,16 @@ impl Tool for SkillTool {
                          to do, in your own words.",
                     );
                 };
-                let ranked = self.registry.ranked(query, 3);
+                // Asked for more than the three answered, so a skill this seat cannot use does
+                // not take one of the three slots from the one that fits here.
+                let live = self.registry.live_skills();
+                let ranked: Vec<(String, f64)> = self
+                    .registry
+                    .ranked(query, FINDS_ASKED)
+                    .into_iter()
+                    .filter(|(name, _)| self.unmet(seat, &live, name).is_none())
+                    .take(3)
+                    .collect();
                 let Some((best, rest)) = ranked.split_first() else {
                     return Invocation::failed(
                         format!("nothing in the skills index is like `{query}`"),
@@ -1455,8 +1675,8 @@ mod tests {
         assert_eq!(r.names(), vec!["commit"]);
         assert!(r.load("commit").unwrap().contains("conventional-commits"));
         assert!(r.load("nope").is_none());
-        assert!(r.list().contains("commit"), "{}", r.list());
-        assert!(r.list().contains("no shelf"), "{}", r.list());
+        assert!(r.list(None).contains("commit"), "{}", r.list(None));
+        assert!(r.list(None).contains("no shelf"), "{}", r.list(None));
         assert!(
             r.load_any("nope")
                 .unwrap_err()
@@ -1505,7 +1725,7 @@ mod tests {
                 visibility: "project".into(),
             },
         ]))));
-        let l = r.list();
+        let l = r.list(None);
         assert!(l.contains("2 skill(s) on the shelf (a fake node)"), "{l}");
         assert!(l.contains("- 01M1  [fabric]  doing diagrams"), "{l}");
         assert_eq!(r.load_any("01M1").unwrap().body, "body of 01M1");
@@ -1533,9 +1753,9 @@ mod tests {
             visibility: "public".into(),
         }]))));
         assert!(
-            r.list().contains("- sk-42  [public]  Beamer Slides"),
+            r.list(None).contains("- sk-42  [public]  Beamer Slides"),
             "the listing prints the id first: {}",
-            r.list()
+            r.list(None)
         );
         assert!(
             r.unknown_pins().is_empty(),
@@ -1555,7 +1775,7 @@ mod tests {
     fn a_shelf_that_cannot_be_read_is_not_an_empty_shelf() {
         let r = registry();
         r.set_shelf(Arc::new(FakeShelf(Err("node unreachable".into()))));
-        let l = r.list();
+        let l = r.list(None);
         assert!(
             l.contains("could not be read: node unreachable. That is not an empty shelf"),
             "{l}"
@@ -1596,7 +1816,7 @@ mod tests {
             "zebra-grooming",
             "groom a zebra",
         );
-        assert!(r.list().contains("zebra-grooming"), "{}", r.list());
+        assert!(r.list(None).contains("zebra-grooming"), "{}", r.list(None));
         assert!(
             r.load_any("zebra-grooming")
                 .unwrap()
@@ -1633,5 +1853,191 @@ mod tests {
         assert_eq!(deck.source.label(), "installed");
         assert!(!r.skills.iter().any(|s| s.name == "deep"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn seat(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|n| n.to_ascii_lowercase()).collect()
+    }
+
+    /// `requires` and `unless` are read by the one frontmatter reader, in both spellings an author
+    /// writes: one line of names, and a block of them under the key.
+    #[test]
+    fn the_frontmatter_reads_requires_and_unless_in_both_spellings() {
+        let inline = from_text(
+            "---\nname: dashboard\ndescription: a status page\nrequires: flowy, bash\n\
+             unless: [screen]\n---\n\nbody\n",
+            SkillSource::Installed(None),
+        )
+        .expect("inline lists parse");
+        assert_eq!(inline.requires, ["flowy", "bash"]);
+        assert_eq!(inline.unless, ["screen"]);
+
+        let block = from_text(
+            "---\nname: dashboard\ndescription: a status page\nrequires:\n  - flowy\n  - bash\n\
+             unless:\n  - screen\n---\n\nbody\n",
+            SkillSource::Installed(None),
+        )
+        .expect("block lists parse");
+        assert_eq!(block.requires, ["flowy", "bash"]);
+        assert_eq!(block.unless, ["screen"]);
+
+        // A skill that says neither needs nothing special, which is every skill written before
+        // this key existed.
+        let plain = from_text(
+            "---\nname: plain\ndescription: nothing\n---\n\nbody\n",
+            SkillSource::Installed(None),
+        )
+        .expect("a plain skill");
+        assert!(plain.requires.is_empty() && plain.unless.is_empty());
+        assert!(plain.unmet(&seat(&["read"])).is_none());
+    }
+
+    /// A missing capability hides the skill and says which one; a seat that has it shows the
+    /// skill. `mcp__server` and `mcp__server__*` are the same server, checked the way the declared
+    /// `mcp__` tools already were.
+    #[test]
+    fn a_missing_capability_names_itself_and_a_present_one_satisfies_it() {
+        let skill = Skill {
+            requires: vec!["flowy".into(), "mcp__github".into(), "mcp__jira__*".into()],
+            ..Skill::new("dash", "a panel", "body", SkillSource::Operator)
+        };
+        let bare = seat(&["read", "bash"]);
+        let why = skill.unmet(&bare).expect("nothing it needs is here");
+        assert!(
+            why.contains("requires `flowy`") && why.contains("does not have"),
+            "the reason names the first missing capability: {why}"
+        );
+
+        let flock = seat(&["read", "flowy"]);
+        let why = skill.unmet(&flock).expect("github is still missing");
+        assert!(why.contains("`mcp__github`"), "{why}");
+
+        let all = seat(&[
+            "read",
+            "flowy",
+            "mcp__github__create_issue",
+            "mcp__jira__search",
+        ]);
+        assert!(
+            skill.unmet(&all).is_none(),
+            "one tool of the server is the server, and `mcp__server__*` is the same read"
+        );
+    }
+
+    /// `unless` is the other half: the capability being PRESENT is what hides the skill, so the
+    /// skill that fits a seat without flowy is offered exactly there.
+    #[test]
+    fn a_capability_in_unless_hides_the_skill_only_while_it_is_present() {
+        let skill = Skill {
+            unless: vec!["flowy".into()],
+            ..Skill::new("status-page", "an html page", "body", SkillSource::Operator)
+        };
+        assert!(skill.unmet(&seat(&["read"])).is_none(), "the seat it fits");
+        let why = skill
+            .unmet(&seat(&["read", "flowy"]))
+            .expect("flowy is here, so it is not");
+        assert!(
+            why.contains("hidden while `flowy` is on this seat"),
+            "the reason says the capability is PRESENT, not missing: {why}"
+        );
+    }
+
+    /// A built-in is the build's own words, so the `mcp__`/connector half its author guessed is
+    /// skipped - but `requires` is a fact about the SEAT, and every source pays it.
+    #[test]
+    fn a_built_in_skill_honours_requires_and_unless() {
+        let built_in = Skill {
+            requires: vec!["flowy".into()],
+            ..Skill::new(
+                "flowy-pane",
+                "a pane fed by the fabric",
+                "names no mcp__ tools at all",
+                SkillSource::BuiltIn,
+            )
+        };
+        let why = built_in
+            .unmet(&seat(&["read"]))
+            .expect("a built-in is not exempt from a seat it cannot use");
+        assert!(why.contains("`flowy`"), "{why}");
+        assert!(built_in.unmet(&seat(&["flowy"])).is_none());
+
+        // And the author's half is still skipped for a built-in: it names a server and nothing
+        // is behind it, which is not this build's claim to make.
+        let ours = Skill::new(
+            "ours",
+            "",
+            "call mcp__nothing__here to check",
+            SkillSource::BuiltIn,
+        );
+        assert!(ours.unmet(&seat(&["read"])).is_none());
+    }
+
+    /// The operator's table is the one in force: it REPLACES the frontmatter whole, so it can
+    /// hide a skill the author left open and unhide one they closed.
+    #[test]
+    fn the_operators_table_replaces_the_frontmatter_for_that_name() {
+        let open = Skill::new("dash", "a panel", "body", SkillSource::Operator);
+        let gated = Skill {
+            requires: vec!["flowy".into()],
+            ..Skill::new("page", "a page", "body", SkillSource::Operator)
+        };
+        let mut when = BTreeMap::new();
+        when.insert(
+            "dash".to_string(),
+            SkillWhen {
+                requires: Vec::new(),
+                unless: vec!["bash".into()],
+            },
+        );
+        when.insert(
+            "page".to_string(),
+            SkillWhen {
+                requires: vec!["read".into()],
+                unless: Vec::new(),
+            },
+        );
+        let r = SkillRegistry::new(vec![open.clone(), gated.clone()]).with_when(when);
+        // The operator hid a skill the author left open, on the capability that is here.
+        assert!(r.unmet(&open, &seat(&["read"])).is_none());
+        assert!(
+            r.unmet(&open, &seat(&["read", "bash"]))
+                .is_some_and(|w| w.contains("hidden while `bash`")),
+            "the table's `unless` is the one asked"
+        );
+        // And replaced an author's `requires: flowy` with `requires: read`, which is here.
+        assert!(r.unmet(&gated, &seat(&["read"])).is_none());
+        assert!(
+            gated.unmet(&seat(&["read"])).is_some(),
+            "the frontmatter alone would have hidden it"
+        );
+    }
+
+    /// The listing names the reason, so a model choosing between two skills that answer one job
+    /// can see which one this seat has, and the registry's `unmet` is the one sentence both the
+    /// listing and the load read.
+    #[test]
+    fn a_hidden_skill_is_listed_with_its_reason_and_not_as_usable() {
+        let r = SkillRegistry::new(vec![
+            Skill::new("plain", "always fits", "body", SkillSource::Operator),
+            Skill {
+                requires: vec!["flowy".into()],
+                ..Skill::new(
+                    "dashboard",
+                    "needs the fabric",
+                    "body",
+                    SkillSource::Operator,
+                )
+            },
+        ]);
+        let read_only = seat(&["read"]);
+        let listed = r.list(Some(&read_only));
+        assert!(listed.contains("1 skill(s) —"), "{listed}");
+        assert!(listed.contains("1 skill(s) not for this seat"), "{listed}");
+        assert!(
+            listed.contains("requires `flowy`, which this seat does not have"),
+            "the listing carries the reason a load refuses with: {listed}"
+        );
+        // No seat known (a runtime with no daemon behind it) filters nothing.
+        assert!(r.list(None).contains("2 skill(s) —"), "{}", r.list(None));
     }
 }

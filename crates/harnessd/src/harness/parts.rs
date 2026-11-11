@@ -84,7 +84,10 @@ impl Parts {
         };
         let skills = std::sync::Arc::new(
             letibot_tools::builtins::skill::SkillRegistry::load_for(&cfg.skill_dirs())
-                .with_pins(cfg.skills_pin().iter().cloned()),
+                .with_pins(cfg.skills_pin().iter().cloned())
+                // And what the operator's files say each skill needs of a seat, which every door
+                // asks before it lists, offers, ranks or loads one.
+                .with_when(cfg.skills_when().clone()),
         );
         let lsp = std::sync::Arc::new(letibot_tools::builtins::lsp::LspConfig::default());
         let tasks = std::sync::Arc::new(crate::tasks::TaskJournal::new(

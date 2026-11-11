@@ -1800,7 +1800,7 @@ impl Harness {
         offers.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
         // The turn's skill offers, by the same delivery and the same memory: a name in the tail, once
         // per session, settled against the round's own `skill` loads.
-        let seat_tools = super::open::tool_names(&self.prefix.tools_json);
+        let seat_tools = super::open::skill_seat(&self.cfg, &self.prefix.tools_json);
         let mut skill_offers = crate::skills_offer::Offers::new()
             .with_tier(self.cfg.tier())
             .with_seat(seat_tools.iter(), self.cfg.skills_never_offer().iter());

@@ -634,6 +634,7 @@ fn build_ext(
         None,
         Arc::new(crate::builtins::task::NoTaskRunner),
         Arc::new(crate::builtins::skill::SkillRegistry::default()),
+        crate::builtins::skill::Seat::new(),
         Arc::new(crate::builtins::lsp::LspConfig::default()),
         crate::builtins::task::TaskReach::Anywhere,
     )

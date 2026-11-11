@@ -180,7 +180,7 @@ impl Offers {
                 Some("never_offer".to_string())
             } else {
                 match (&self.seat, live.iter().find(|s| s.name == name)) {
-                    (Some(seat), Some(skill)) => skill.unmet(seat),
+                    (Some(seat), Some(skill)) => registry.unmet(skill, seat),
                     _ => None,
                 }
             };
