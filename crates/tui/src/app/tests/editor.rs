@@ -1466,6 +1466,48 @@ fn a_decision_arriving_takes_the_keyboard_back_from_the_editor() {
     );
 }
 
+/// A sudo secret asked while the editor has the keyboard takes it back: the password goes to the
+/// masked card, never into the open file.
+#[test]
+fn a_secret_ask_takes_the_keyboard_back_from_the_editor() {
+    let ws = workspace("secret");
+    let mut a = edited(&ws);
+    a.screen(100, 40);
+    a.key(Key::CtrlBracket);
+    settle(&mut a);
+    assert!(a.editor_focused());
+    a.apply(ServerFrame::Event(env(
+        9,
+        SessionEvent::SecretRequested {
+            req_id: "secret-s-9".into(),
+            prompt: "[sudo] password for dead:".into(),
+            command: "sudo true".into(),
+            deadline: 1_000_000,
+        },
+    )));
+    a.screen(100, 40);
+    assert!(!a.editor_focused(), "the keyboard left the editor");
+    for k in route_text(&mut a, "hunter2") {
+        a.key(k);
+    }
+    assert!(
+        !a.edit_pane.as_ref().unwrap().ed.send_event().modified,
+        "the password was typed into the buffer"
+    );
+    let buffer = a.screen(100, 40).join("\n");
+    assert!(
+        !buffer.contains("hunter2"),
+        "the password is on the screen:\n{buffer}"
+    );
+    assert_eq!(
+        a.key(Key::Enter),
+        Some(Action::Secret {
+            req_id: "secret-s-9".into(),
+            secret: Some("hunter2".into()),
+        })
+    );
+}
+
 /// The pointer's light belongs to the screen it was taken on. The popup is drawn over the rows the
 /// card lit and is not scrolled to the pointer, so a light left on them marks nothing in particular.
 #[test]

@@ -438,6 +438,22 @@ impl App {
                 );
             }
         }
+        // The typed cards are not in `open`, and a sudo password or an API key typed into the
+        // open file is a leak: while one is up the editor does not hold the keyboard.
+        let typed_card = (self.secret.is_some() && !self.secret_away)
+            || (self.prompt.is_some() && !self.prompt_away)
+            || self.key_ask.is_some()
+            || self.mode_confirm.is_some();
+        if typed_card
+            && let Some(p) = self.edit_pane.as_mut()
+            && p.focused
+        {
+            p.focused = false;
+            p.dirty = true;
+            self.say(
+                "a card came up — the keyboard is back on the card; ctrl-] returns to the editor",
+            );
+        }
         if front != self.sel_for {
             self.sel_for = front.clone();
             self.sel = 0;
