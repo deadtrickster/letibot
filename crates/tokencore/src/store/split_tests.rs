@@ -365,3 +365,19 @@ fn no_set_file_is_created_beside_the_legacy_store() {
     Connection::open(&shared).expect("made by hand");
     Store::open(&shared).expect("an existing file opens");
 }
+
+/// A split directory gains a `sessions.db` when a process from before the split opens its old
+/// path; a new folder's project file is still created beside it.
+#[test]
+fn a_stray_sessions_db_in_a_split_directory_does_not_stop_a_new_project() {
+    let dir = temp("stray-legacy");
+    Store::open_set(&dir, "aaaaaaaaaaaa").expect("the split set");
+    Store::open(&dir.join(split::LEGACY_FILE)).expect("a stray made after the split");
+    let fresh = Store::open_set(&dir, KEY).expect("a new folder's project file");
+    assert!(fresh.is_set());
+    assert!(
+        dir.join(split::PROJECTS_DIR)
+            .join(format!("{KEY}.db"))
+            .is_file()
+    );
+}

@@ -601,7 +601,9 @@ pub(crate) fn refuse_creating_beside_legacy(path: &Path) -> Result<()> {
     };
     let Some(dir) = dir else { return Ok(()) };
     let old = dir.join(LEGACY_FILE);
-    if old.is_file() {
+    // Once `shared.db` is there the directory is split, and a `sessions.db` beside it is one an
+    // old process made after the split: refusing on it would stop every new folder's daemon.
+    if old.is_file() && !dir.join(SHARED_FILE).is_file() {
         return Err(StoreError::Refused(format!(
             "{} is not split yet: it holds {LEGACY_FILE}, so {} is not created beside it. Carve \
              one project at a time with `letibot-migrate-split --project KEY {} {}`, or split the \
