@@ -32,6 +32,7 @@ pub fn exists(store: &Path) -> bool {
 /// it. No table this bridge reads is per-project, so a table the assignment has no row for refuses
 /// rather than answering the wrong file.
 pub fn file_for(store: &Path, table: &str, folder: Option<&Path>) -> Result<PathBuf, String> {
+    let store = &current(store);
     if !store.is_dir() {
         return Ok(store.to_path_buf());
     }
@@ -58,10 +59,25 @@ pub fn file_for(store: &Path, table: &str, folder: Option<&Path>) -> Result<Path
     }
 }
 
+/// A bridge resolves its store once, so a `sessions.db` it was handed before the split names a file
+/// that is gone; opening it would create an empty store nobody reads. Its directory is the store now.
+fn current(store: &Path) -> PathBuf {
+    match store.parent() {
+        Some(dir)
+            if store.file_name().is_some_and(|n| n == split::LEGACY_FILE)
+                && dir.join(split::SHARED_FILE).is_file() =>
+        {
+            dir.to_path_buf()
+        }
+        _ => store.to_path_buf(),
+    }
+}
+
 /// [`file_for`]'s store, opened: the file itself, or - for a split directory - the SET of the two
 /// files, because the session index's query must not read `transcript` through the shared file and
 /// one `Store` over a set is what knows not to.
 pub fn open(store: &Path, table: &str, folder: Option<&Path>) -> Result<Store, String> {
+    let store = &current(store);
     let file = file_for(store, table, folder)?;
     if !(store.is_dir() && store.join(split::SHARED_FILE).is_file()) {
         return Store::open(&file).map_err(|e| format!("{}: {e}", file.display()));
@@ -111,8 +127,26 @@ mod tests {
             "the index's query must not read a project's transcript through the shared file"
         );
         assert!(
-            !open(&d.db(), "session", None).expect("the file").is_set(),
+            !open(&d.0.join("one.db"), "session", None)
+                .expect("the file")
+                .is_set(),
             "one file is one file"
+        );
+    }
+
+    #[test]
+    fn a_sessions_db_handed_before_the_split_opens_the_split_store() {
+        let d = TempDir::new("stale");
+        let dir = split_dir(&d);
+        let stale = dir.join(split::LEGACY_FILE);
+        assert!(open(&stale, "seat_todo", None).expect("the set").is_set());
+        assert_eq!(
+            file_for(&stale, "seat_todo", None).unwrap(),
+            dir.join(split::SHARED_FILE)
+        );
+        assert!(
+            !stale.exists(),
+            "no empty sessions.db is created beside the split store"
         );
     }
 
