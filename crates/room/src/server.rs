@@ -1589,6 +1589,24 @@ impl Server {
             .is_some_and(|g| g.contains(name))
     }
 
+    /// The refusal a seat gets for a room it may not see. A project room that is not its own is said
+    /// so with the room it IS in: `unknown_chat_room` would read as a typo it should fix.
+    fn room_refusal(project: &str, room: &str) -> crate::Refused {
+        match chat::project_of_room(room) {
+            Some(_) => crate::Refused::NotYourRoom {
+                room: room.to_string(),
+                own: if project.is_empty() {
+                    String::new()
+                } else {
+                    chat::project_room(project)
+                },
+            },
+            None => crate::Refused::UnknownChatRoom {
+                room: room.to_string(),
+            },
+        }
+    }
+
     /// The project room `named` means - `project/<key>` or a room's label - when it exists.
     fn project_room_named(&self, named: &str) -> Option<String> {
         let named = named.trim();
@@ -1716,16 +1734,17 @@ impl Server {
         crate::project_labels(&rows, &std::env::var("HOME").unwrap_or_default())
     }
 
-    /// Who is in a chat room: the tree's top-level sessions of its project, whoever is connected
-    /// to it, and the wide seats, which are in every room. The host room's project is the empty
-    /// one, so a gatekeeper of serenedb is in serenedb's roster and not in host's.
+    /// Who is in a chat room: its tree's top-level sessions, whoever is connected to it, and the
+    /// wide seats, which are in every room. The host room is every top-level seat on this host -
+    /// every project's - so its rows carry the project each one is in; a project room is its own.
     pub fn roster_rows(&self, room: &str) -> Vec<chat::Presence> {
         let key = chat::project_of_room(room);
+        let host = room == chat::HOST_ROOM;
         let mut rows: BTreeMap<String, chat::Presence> = BTreeMap::new();
         {
             let rooms = self.inner.rooms.lock().expect("the rooms lock");
             for (project, r) in rooms.iter() {
-                if project.as_str() != key.unwrap_or(crate::DEFAULT_PROJECT) {
+                if !host && project.as_str() != key.unwrap_or(crate::DEFAULT_PROJECT) {
                     continue;
                 }
                 for m in r.members().iter().filter(|m| m.group == crate::Group::Top) {
@@ -1769,12 +1788,13 @@ impl Server {
         }
         for c in self.conn_list() {
             let name = c.who.session.clone();
-            // The host room is the room of the sessions in no project; a session of a project is
-            // in that project's room, and connected to the host room only to read it.
+            // A queue seat is one project's queue and not a member of the host room. Every other
+            // seat is in the host room and in its own project's room; the operator is in all.
             let in_room = c.seat.is_wide()
-                || match key {
-                    Some(k) => k == c.project,
-                    None => c.project.is_empty(),
+                || if host {
+                    queue_seat_project(&name).is_none()
+                } else {
+                    key == Some(c.project.as_str())
                 }
                 || guests.contains(&name);
             if !in_room {
@@ -2407,7 +2427,7 @@ impl Server {
                     r => r.to_string(),
                 };
                 if room != chat::DM_ROOM && !self.may_see(name, seat, project, &room) {
-                    return refuse(None, crate::Refused::UnknownChatRoom { room });
+                    return refuse(None, Self::room_refusal(project, &room));
                 }
                 if let Some(t) = thread {
                     self.inner.signals.lock().expect("the signals lock").act(
@@ -2492,7 +2512,7 @@ impl Server {
                     r => r.to_string(),
                 };
                 if !self.may_see(name, seat, project, &room) {
-                    return refuse(None, crate::Refused::UnknownChatRoom { room });
+                    return refuse(None, Self::room_refusal(project, &room));
                 }
                 Response::Roster {
                     rows: self.roster_of(&room),
@@ -2521,9 +2541,9 @@ impl Server {
                     return refuse(None, crate::Refused::UnknownChatRoom { room: room.clone() });
                 };
                 let key = chat::project_of_room(&room).unwrap_or("");
-                // The room's own members and the wide seats invite; a guest does not.
+                // The room's own members and the operator invite; a guest does not.
                 if !seat.is_wide() && project != key {
-                    return refuse(None, crate::Refused::UnknownChatRoom { room });
+                    return refuse(None, Self::room_refusal(project, &room));
                 }
                 let asked = session.trim().trim_start_matches('@');
                 let who = match self.resolve_name(project, asked, Reach::Host) {
@@ -2557,9 +2577,9 @@ impl Server {
                         .resolve_name(project, asked, Reach::Host)
                         .unwrap_or_else(|_| asked.to_string()),
                 };
-                // A guest leaves by itself; the room's members and the wide seats show one out.
+                // A guest leaves by itself; the room's members and the operator show one out.
                 if who != name && !seat.is_wide() && project != key {
-                    return refuse(None, crate::Refused::UnknownChatRoom { room });
+                    return refuse(None, Self::room_refusal(project, &room));
                 }
                 self.set_guest(&room, &who, false);
                 Response::Roster {
@@ -2853,7 +2873,7 @@ impl Server {
                 r => r.to_string(),
             };
             if !self.may_see(name, seat, project, &room) {
-                return refuse(crate::Refused::UnknownChatRoom { room });
+                return refuse(Self::room_refusal(project, &room));
             }
             // The box-wide room carries announcements, blockers and mentions, not talk: a line
             // there is for somebody, for everybody, or it stops the box - anything else belongs to
@@ -3408,7 +3428,7 @@ impl Server {
             r => r.to_string(),
         };
         if room == chat::DM_ROOM || !self.may_see(name, seat, project, &room) {
-            return refuse(crate::Refused::UnknownChatRoom { room });
+            return refuse(Self::room_refusal(project, &room));
         }
         if queue_seat_project(&target).is_some()
             && seat != Seat::Operator
@@ -3508,14 +3528,13 @@ impl Server {
             return refuse(crate::Refused::AskNotASession);
         }
         // The room the ask lands in: the asker's own, unless it names one. A scope is resolved in
-        // THAT room's project - a `cc@` seat has no project of its own, and a question about a
-        // project's file is about that project's owners.
+        // THAT room's project, and a question about a project's file is about that project's owners.
         let room = match room.trim() {
             "" => Self::default_chat_room(seat, project),
             r => r.to_string(),
         };
         if room == chat::DM_ROOM || !self.may_see(name, seat, project, &room) {
-            return refuse(crate::Refused::UnknownChatRoom { room });
+            return refuse(Self::room_refusal(project, &room));
         }
         let project = chat::project_of_room(&room).unwrap_or(project);
         let scope = match crate::scope::Scope::of(path, topic) {
@@ -4353,7 +4372,8 @@ enum Lookup {
 }
 
 /// How far a written name may reach. A dm is one session talking to one other, so it keeps to
-/// its own project's names; an ask, an invite and every wide seat may name one on the host.
+/// its own project's names; an ask, an invite and every seat outside a project may name one on the
+/// host.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Reach {
     OwnProject,

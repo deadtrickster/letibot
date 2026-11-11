@@ -108,7 +108,7 @@ pub enum Seat {
     Session,
     /// The person, through a head: every room.
     Operator,
-    /// A named outsider such as `claude-code`: every room.
+    /// A named outsider such as `claude-code`: the host room and its own project's, like a session.
     External,
     /// The harness reporting a fact (a todo moved, a branch landed). Authored by the daemon, never
     /// by a model or a head.
@@ -139,9 +139,10 @@ impl Seat {
         }
     }
 
-    /// Does this seat see every room, whatever project it is in?
+    /// Does this seat see every room, whatever project it is in? Only the person does: a session and
+    /// an outsider are both scoped by the project their `Hello` names.
     pub fn is_wide(self) -> bool {
-        matches!(self, Seat::Operator | Seat::External)
+        matches!(self, Seat::Operator)
     }
 }
 

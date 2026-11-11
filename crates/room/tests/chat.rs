@@ -147,19 +147,25 @@ fn two_projects_and_the_host_room_on_one_coordinator() {
     assert_eq!(m.room, project_room(A));
     assert_eq!(op.next().0.text, "project a only");
     b1.silent();
-    assert!(matches!(
-        refused(b1.call(Request::Read {
-            room: project_room(A),
-            since: 0,
-            last: None,
-            thread: None,
-            before: None
-        })),
-        Refused::UnknownChatRoom { .. }
-    ));
+    // Another project's room is refused naming both, and says nothing about what is in it.
+    match refused(b1.call(Request::Read {
+        room: project_room(A),
+        since: 0,
+        last: None,
+        thread: None,
+        before: None,
+    })) {
+        Refused::NotYourRoom { room, own } => {
+            assert_eq!(
+                (room.as_str(), own.as_str()),
+                (project_room(A).as_str(), project_room(B).as_str())
+            )
+        }
+        other => panic!("a room of another project is not an unknown one: {other:?}"),
+    }
     assert!(matches!(
         refused(a1.say("2", &project_room(B), "reach")),
-        Refused::UnknownChatRoom { .. }
+        Refused::NotYourRoom { .. }
     ));
 
     // A host message reaches both projects and the operator, but not its author. The host room
@@ -257,12 +263,10 @@ fn dms_mentions_threads_and_the_inbox() {
         attachments: Vec::new(),
     }));
     assert_eq!(dm.room, "dm");
-    assert_eq!(cc.next().0.text, "@s-a2 look at this");
-    let mut texts = Vec::new();
-    while let Ok((m, _)) = cc.heard.recv_timeout(Duration::from_millis(300)) {
-        texts.push(m.text);
-    }
-    assert!(texts.contains(&"private".to_string()), "{texts:?}");
+    // A bridge in no project sees the host room and its dms, so the dm is the first thing it hears:
+    // a line said in A's room is not pushed to it at all.
+    assert_eq!(cc.next().0.text, "private");
+    cc.silent();
     for outsider in [&a2, &b1] {
         match outsider.call(Request::Read {
             room: "dm".into(),
@@ -367,7 +371,8 @@ fn chat_history_seq_cursor_and_dedup_survive_a_coordinator_restart() {
     let dir = Scratch::new();
     let first = stored(&dir);
     let a = seat(&first, "s-a1", A, Seat::Session);
-    let cc = seat(&first, "claude-code", "", Seat::External);
+    // In A's room, so the two sessions' lines are the ones its cursor is about.
+    let cc = seat(&first, "claude-code", A, Seat::External);
     let before = instance_of(&a.client);
     assert_ne!(before, 0);
     let one = said(a.say("r1", "", "before the restart"));
@@ -380,7 +385,7 @@ fn chat_history_seq_cursor_and_dedup_survive_a_coordinator_restart() {
 
     let second = stored(&dir);
     let a = seat(&second, "s-a1", A, Seat::Session);
-    let cc = seat(&second, "claude-code", "", Seat::External);
+    let cc = seat(&second, "claude-code", A, Seat::External);
     assert_ne!(
         instance_of(&a.client),
         before,
@@ -853,7 +858,9 @@ fn a_room_is_labelled_by_its_project_folder() {
         rows: Vec::new(),
         root: root.display().to_string(),
     });
-    let op = seat(&server, "cc@app", "", Seat::External);
+    // The operator is the seat that reads every project's row; a bridge is in its own project's
+    // now, and `rooms` tells it which.
+    let op = seat(&server, OPERATOR, "", Seat::Operator);
     match op.call(Request::Rooms) {
         Response::Rooms { rows } => {
             let row = rows.iter().find(|r| r.id.starts_with("project/")).unwrap();

@@ -1,9 +1,10 @@
 # The room - one host's chat, and one queue per tag
 
 A room is a place where the sessions on this host, the operator and outside tools talk. There is one
-**host room** that every top-level session is in, and one **project room** per project. Beside the
-chat sits a tagged queue for the things only one session may have at a time: RAM, a port, the staging
-database, a reviewer. Chat is the primary thing and the queue is unchanged by it.
+**host room** that every top-level seat on the host is in - each project's sessions and the Claude Code
+seats - and one **project room** per project. Beside the chat sits a tagged queue for the things only
+one session may have at a time: RAM, a port, the staging database, a reviewer. Chat is the primary
+thing and the queue is unchanged by it.
 
 The first half of this page is how to use it. The contract section is what the `/rooms` view and the
 MCP bridge build on. The rest is the long form of `crates/room`.
@@ -425,21 +426,27 @@ server in `crates/room/src/server.rs`. Frames are one line of JSON, `Request` an
 
 | id | who is in it |
 |---|---|
-| `host` | the sessions in no project, the operator, every external |
-| `project/<key>` | the top-level sessions of that project, the operator, every external |
+| `host` | every top-level seat on this host: each project's sessions, the externals, the operator |
+| `project/<key>` | the top-level sessions of that project, its externals, the operator |
 | `dm` | not a room: the pseudo id a principal reads its direct messages from |
 
 `<key>` is the project key: twelve hex characters of the SHA-256 of the project's canonical root (the
 same key `s-gatekeeper-<key>` and `scripts/letibot` use). A session whose folder is no repository is in the project of that folder. A session in no project (the daemon could not
 place it) is in the host room only. A project room exists once a session of that project has connected.
 Subagents are in no chat room. The roster of a room is the tree's top-level sessions of its project
-plus everything connected to it: a session of a project is a member of that project's room, and it
-reads `host` without being one of its members - so `gatekeeper@serenedb` is in `project/serenedb` and
-not in `host`, and a host line wakes only the host room's own members (see **Who a message wakes**).
+plus everything connected to it, and the `host` room's is every project's - each row carrying its
+`project` and `label`, so a head can group them. A queue seat is one project's and is in no host
+roster: `gatekeeper@serenedb` is in `project/serenedb` and not in `host`. A host line wakes only the
+host room's own members (see **Who a message wakes**).
 
-A client lists the rooms it may see with `rooms`. A session gets `host` and its own project room. The
-operator and an external get `host` and every project room that exists. Each row carries `members`,
-`last_seq` and `unread` (messages after this principal's inbox cursor that are not its own).
+A client lists the rooms it may see with `rooms`: every seat gets `host` and its own project room, and
+the operator gets every project room that exists. Each row carries `members`, `last_seq` and `unread`
+(messages after this principal's inbox cursor that are not its own).
+
+Reading and posting keep to those rooms. A seat that names another project's room is refused with
+`not_your_room`, which names the room it asked for and the one it is in; a `dm` or an `@mention` still
+reaches anyone on this host, and an `@` of a seat that cannot see the room brings it in for that
+conversation (see **Messages**, under the mention rule).
 
 ### Identity, seats and the operator
 
@@ -449,7 +456,11 @@ A connection says its **seat** in `hello` (`seat`, default `session`):
 |---|---|---|---|
 | `session` | the session id | host and own project | any name except `operator`; never a subagent |
 | `operator` | exactly `operator` | all | the person, through a head |
-| `external` | a handle: `a-z`, `0-9`, `-`, at most 32, not starting `s-`, not `operator` (for example `cc@letibot` or `cc@stroppy-io:conformity`; one `@` and one `:` after it allowed) | all | an outside tool |
+| `external` | a handle: `a-z`, `0-9`, `-`, at most 32, not starting `s-`, not `operator` (for example `cc@letibot` or `cc@stroppy-io:conformity`; one `@` and one `:` after it allowed) | host and its project's, as its `hello` names it | an outside tool |
+
+A seat's project comes from its `hello`'s `room`, resolved once and never moved: the name
+`<host key>/<project key>` is that project's room, and an empty (or absent) `room` is the host room
+alone. A `session` and an `external` are scoped the same way; only the `operator` is in every room.
 
 A message's `author` and `kind` (`session`, `operator`, `external`, `system`) come from the connection,
 never from the request, so a client cannot post under another name. A wrong name for the seat is
@@ -806,6 +817,15 @@ Claude Code is in the rooms as an external seat, `cc@<folder>`, through the MCP 
 the coordinator restarts. `Seat::External` and the handle are fixed in `hello`: no tool argument reaches
 `author`, `kind` or `seat`, so Claude Code cannot post as the operator or as a session.
 
+**The rooms.** The bridge is a seat like a session: `hello` names `<box key>/<project key>` of its
+working folder's repository, so it is in the host room and in that project's room and is refused in any
+other (`hello_room`). A bridge in a folder that is no repository is in the project of that folder, as a
+session there is; one that cannot place itself sends an empty `room`, which is the host room only - and
+so does a bridge built before this, which is why an older one lands in the host room and not in every
+room. Nothing about it is a protocol change: `room` was always the field a `hello` carries. A
+`room_say` or `room_ask` with no `room` argument says it in that seat's own room, exactly as a
+session's `say` does; `rooms` lists the two it may use.
+
 **The name.** Each bridge speaks as `cc@<folder>:<name>`, or `cc@<name>` when they match, or
 `$LETIBOT_ROOM_NAME` when set (the whole handle). The name is the repository's folder (the main worktree's,
 for a linked worktree) or the `room_nick` the working folder was given (kept under the data dir's
@@ -967,6 +987,10 @@ A tag's agent and the arbiter work the queue and are never woken by chat.
 - `crates/room/tests/chat.rs`: two projects and the host room on one coordinator. Each project's
   sessions see the host room and their own project room and never the other's. A host message reaches
   both. The operator sees and posts in all three. A session is refused as the operator.
+- `crates/room/tests/rooms.rs`: a seat's rooms. An external that named project A is in A's roster and
+  not B's, and in the host room's roster with its project on the row; a session of A is in the host
+  roster; an external with no project is in host only; the operator is in every room; a read or a say
+  of another project's room is refused naming both; a dm across projects is delivered.
 - `crates/harnessd/tests/room_chat.rs`: the same through `SessionRoom` and the `room` tool, the
   operator through its seat, and the todo and queue lines.
 - `crates/harnessd/tests/room_two_sessions.rs`: two daemons and the queue chain, a post answered by a

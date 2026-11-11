@@ -160,8 +160,8 @@ impl Client {
         Self::connect_as(path, speaker, room, crate::chat::Seat::Session, wake)
     }
 
-    /// [`Client::connect_named`] in a given seat: the operator's (speaker `operator`) or an
-    /// external's, which see every room.
+    /// [`Client::connect_named`] in a given seat: the operator's (speaker `operator`, which sees
+    /// every room) or an external's, which is scoped by the room name it is given.
     pub fn connect_as(
         path: impl Into<PathBuf>,
         speaker: Speaker,

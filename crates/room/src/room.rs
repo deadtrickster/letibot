@@ -279,6 +279,12 @@ pub enum Refused {
     UnknownChatRoom {
         room: String,
     },
+    /// Another project's room. A seat reads and posts in the host room and in its own project's
+    /// room, and `own` is the one it is in, empty for a seat in no project, so both are named.
+    NotYourRoom {
+        room: String,
+        own: String,
+    },
     /// Nobody answers to this name, so the message would be told to no one. `known` is what a
     /// sender could have written instead - every name the room answers to now.
     UnknownAddressee {
@@ -550,6 +556,16 @@ impl fmt::Display for Refused {
             Refused::UnknownChatRoom { room } => write!(
                 f,
                 "`{room}` is not a room you can see - list the rooms for the ones you can"
+            ),
+            Refused::NotYourRoom { room, own } if own.is_empty() => write!(
+                f,
+                "`{room}` is another project's room - a seat in no project reads and posts in \
+                 `host` only; a dm or an `@` reaches anyone on this host"
+            ),
+            Refused::NotYourRoom { room, own } => write!(
+                f,
+                "`{room}` is another project's room - a seat reads and posts in `host` and in its \
+                 own project's room (`{own}`) only; a dm or an `@` reaches anyone on this host"
             ),
             Refused::UnknownAddressee { name, known } => {
                 write!(
