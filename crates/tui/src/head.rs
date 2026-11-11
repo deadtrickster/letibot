@@ -751,8 +751,13 @@ fn discover(path: &std::path::Path) -> Result<Vec<String>, Box<dyn std::error::E
         // on attach, which none does; treat it as "held nothing useful".
         Ok(_) => Ok(Vec::new()),
         Err(ClientError::Refused(reason)) => match reason.split_once("it holds ") {
-            Some((_, list)) => Ok(list.split(", ").map(str::to_string).collect()),
-            // "this daemon holds none yet" - nothing held, nothing to interrupt.
+            // The list is capped and counts the rest, so a count is not an id (`and 2 more`).
+            Some((_, list)) => Ok(list
+                .split(", ")
+                .filter(|id| !(id.starts_with("and ") && id.ends_with(" more")))
+                .map(str::to_string)
+                .collect()),
+            // "this daemon holds none live" - nothing held, nothing to interrupt.
             None => Ok(Vec::new()),
         },
         Err(e) => Err(e.into()),
@@ -884,6 +889,16 @@ fn live(
     // A refusal arrives as a `Bye`, exactly as `HeadClient::attach` treats it.
     if let ServerFrame::Bye { reason } = &hello {
         return Err(ClientError::Refused(reason.clone()).into());
+    }
+    // A daemon holding no live session answers the bare attach with a control connection named no
+    // session (R178): there is nothing to draw, so the head says what gives it one rather than
+    // sitting in a session that is not there.
+    if matches!(&hello, ServerFrame::Hello { session_id, .. } if session_id.is_empty()) {
+        return Err(
+            "the daemon on this socket holds no live session, so there is nothing to \
+                    attach to. `letibot --new-session <title>` makes one."
+                .into(),
+        );
     }
     link.seated_by(&hello);
     // Which process that is, read off the socket this head just connected to.

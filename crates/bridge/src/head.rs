@@ -2465,7 +2465,18 @@ pub fn open_default(d: &Daemon) -> Result<String, String> {
     )
     .map_err(|e| said(&d.socket, e))?;
     let id = match hello {
-        ServerFrame::Hello { session_id, .. } => session_id,
+        ServerFrame::Hello { session_id, .. } if !session_id.is_empty() => session_id,
+        // A daemon holding nothing live serves the bare attach as a control connection, which is
+        // named no session: there is nothing to have landed on, and saying so beats returning an
+        // empty id a caller would take for one.
+        ServerFrame::Hello { .. } => {
+            let _ = client.detach();
+            return Err(format!(
+                "the daemon on {} holds no live session: there is nothing to attach to until one \
+                 is made",
+                d.socket.display()
+            ));
+        }
         other => return Err(format!("expected Hello, got {other:?}")),
     };
     let _ = client.detach();
@@ -2482,8 +2493,9 @@ pub fn create_session(d: &Daemon, title: &str) -> Result<String, String> {
 /// The same, with the tree the session is about named: a review's session stands in the pull
 /// request's own worktree, which is not the daemon's workspace.
 pub fn create_session_in(d: &Daemon, title: &str, workspace: &str) -> Result<String, String> {
-    // A daemon always opens one session eagerly, so a bare attach lands somewhere; a daemon
-    // that holds none yet is a build this cannot create a session on, and says so by name.
+    // A daemon whose last session closed stays up holding none, and serves this bare attach as a
+    // control connection: no seat, and only the frames that give it one (R178). This socket claims
+    // no session, so it cannot break the rule that a head's socket is its session's from frame one.
     let (mut client, hello, reader) = HeadClient::attach(
         &d.socket,
         "",

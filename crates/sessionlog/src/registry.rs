@@ -2058,6 +2058,14 @@ impl Registry {
         reached
     }
 
+    /// The ids this daemon holds live, in creation order. What a refusal may name, and never
+    /// the store's index: a head that asked for a session is owed this daemon's own answer, and
+    /// since the split that index is every project's.
+    pub fn live_ids(&self) -> Vec<String> {
+        let g = self.lock();
+        g.entries.iter().map(|(id, _)| id.clone()).collect()
+    }
+
     /// Every session, in creation order, each cut under its own hub's lock. The hubs are cloned
     /// out from under the registry lock first, so a slow session cannot hold the list.
     pub fn list(&self) -> Vec<SessionBrief> {

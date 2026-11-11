@@ -253,6 +253,130 @@ fn no_password_sentence(heads: usize) -> String {
     }
 }
 
+/// How many live ids a refusal names before it counts the rest. Ten is what a person reads in a
+/// one-line error; the list itself is one `Sessions` frame away.
+const REFUSAL_NAMES: usize = 10;
+
+/// Why an attach landed on no session. Only what this daemon holds live is named: `list()` merges
+/// the store's index, which since the split is every project's, and the head asked this daemon.
+fn refusal_for(session_id: &str, live: &[String]) -> String {
+    if live.is_empty() {
+        return format!("{REJECT_UNKNOWN_SESSION}: this daemon holds none live");
+    }
+    let named: Vec<&str> = live
+        .iter()
+        .take(REFUSAL_NAMES)
+        .map(String::as_str)
+        .collect();
+    let more = live.len() - named.len();
+    let rest = if more == 0 {
+        String::new()
+    } else {
+        format!(", and {more} more")
+    };
+    format!(
+        "{REJECT_UNKNOWN_SESSION} {session_id:?}; it holds {}{rest}",
+        named.join(", ")
+    )
+}
+
+/// Serve a connection to a daemon that holds no live session. It has no seat: there is no hub to
+/// be a head in, so it gets no backlog, no pump and no vote, and the only frames it may send are
+/// the ones a sessionless daemon can answer - make a session, list them, detach. A head's socket
+/// still belongs to its session from frame one; this one is not a head's socket, and everything
+/// else is refused by name rather than done.
+fn control_seat(
+    registry: Arc<Registry>,
+    mut reader: FrameReader<UnixStream>,
+    writer: Arc<Mutex<FrameWriter<UnixStream>>>,
+    kind: String,
+    identity: String,
+) -> Result<(), WireError> {
+    eprintln!(
+        "head {identity:?} (kind {kind:?}) attached to a daemon holding no live session: serving \
+         the bare attach as a control seat so it can make one (R178)"
+    );
+    writer.lock().unwrap().write(&ServerFrame::Hello {
+        protocol_version: PROTOCOL_VERSION,
+        // No session and no head: a head id names a seat inside some session's hub.
+        session_id: String::new(),
+        head_id: String::new(),
+        dropped: 0,
+        snapshot: None,
+        resumed_from: None,
+        scrubbed: Default::default(),
+        // There is no session to copy the wiring from, and a session made here is opened by the
+        // daemon from its own command line: the head's tree is the one fact the frame brings.
+        wiring: SessionWiring::default(),
+        sessions: registry.list(),
+    })?;
+    loop {
+        let answer = match reader.read::<ClientFrame>() {
+            Ok(ClientFrame::Detach) => return Ok(()),
+            Ok(ClientFrame::ListSessions) => ServerFrame::Sessions {
+                sessions: registry.list(),
+                current: String::new(),
+                created: None,
+            },
+            Ok(ClientFrame::NewSession {
+                client_request_id,
+                title,
+                workspace,
+            }) => {
+                let id = mint_session_id(&registry);
+                let wiring = SessionWiring {
+                    workspace,
+                    ..SessionWiring::default()
+                };
+                match registry.create(&id, title, wiring) {
+                    Ok(_) => {
+                        // WHO ASKED, as on a seated connection: a session's own row cannot say.
+                        registry.record_origin(&id, SessionOrigin::of_opener(&kind, &identity));
+                        ServerFrame::Sessions {
+                            sessions: registry.list(),
+                            current: String::new(),
+                            created: Some(id),
+                        }
+                    }
+                    Err(e) => ServerFrame::Rejected {
+                        client_request_id,
+                        reason: e.to_string(),
+                        expected_seq: 0,
+                        actual_seq: 0,
+                    },
+                }
+            }
+            Ok(frame) => {
+                let (client_request_id, expected_seq) = crate::peer::request_of(&frame);
+                ServerFrame::Rejected {
+                    client_request_id,
+                    reason: "this connection holds no session: the daemon holds none live, so \
+                             there is nothing here to act on. Ask for a new session, list them, \
+                             or detach and attach again naming one"
+                        .to_string(),
+                    expected_seq,
+                    actual_seq: 0,
+                }
+            }
+            // A head going away says nothing; a frame that cannot be read is said before it goes,
+            // exactly as on a seated connection.
+            Err(WireError::Eof) => return Ok(()),
+            Err(e) => {
+                let reason = format!(
+                    "this connection sent a frame this daemon could not read ({e}). This daemon \
+                     speaks protocol {PROTOCOL_VERSION}; a head built against a newer one will do \
+                     this on the first frame the two do not share."
+                );
+                if let Ok(mut w) = writer.lock() {
+                    let _ = w.write(&ServerFrame::Bye { reason });
+                }
+                return Err(e);
+            }
+        };
+        writer.lock().unwrap().write(&answer)?;
+    }
+}
+
 #[cfg(test)]
 mod settings_answer_tests {
     use super::*;
@@ -619,17 +743,15 @@ pub fn serve_conn_rooted(
     }
 
     let Some(hub) = registry.resolve(&session_id) else {
+        // A daemon that holds nothing live is still reachable, or it is one nothing can come back
+        // to: a session is made by `NewSession`, and that needs a connection (R178). The bare
+        // attach is served as a control seat, which holds no session and asks for none.
+        if session_id.is_empty() && registry.is_empty() && !peer.inside {
+            return control_seat(registry, reader, writer, kind, identity);
+        }
         let mut w = writer.lock().unwrap();
-        let held: Vec<String> = registry.list().into_iter().map(|s| s.session_id).collect();
         w.write(&ServerFrame::Bye {
-            reason: if held.is_empty() {
-                format!("{REJECT_UNKNOWN_SESSION}: this daemon holds none yet")
-            } else {
-                format!(
-                    "{REJECT_UNKNOWN_SESSION} {session_id:?}; it holds {}",
-                    held.join(", ")
-                )
-            },
+            reason: refusal_for(&session_id, &registry.live_ids()),
         })?;
         return Ok(());
     };
