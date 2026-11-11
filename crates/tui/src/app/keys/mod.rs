@@ -445,6 +445,8 @@ impl App {
             Reaction::Quit => {
                 self.quit_card = true;
                 self.quit_sel = 0;
+                // Every open starts unarmed: the count of unsaved edits is a question each time.
+                self.quit_armed = false;
                 None
             }
             Reaction::Changed => None,

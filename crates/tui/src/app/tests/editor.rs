@@ -1642,3 +1642,96 @@ fn a_terminal_without_pictures_gets_no_graphics() {
     a.close_editor();
     assert!(a.take_image_uploads().is_empty());
 }
+
+/// A pane put away with `ctrl-e` holding unsaved edits: the quit card names the files, and the
+/// first Enter only asks - the edits are not dropped by a card the operator never read.
+#[test]
+fn the_quit_card_names_a_dirty_hidden_pane_and_waits_for_the_second_enter() {
+    let ws = workspace("quitdirty");
+    let mut a = open_file_in_pane(&ws, FILE, 100);
+    a.wiring.workspace = ws.0.display().to_string();
+    assert!(route_text(&mut a, "zz").is_empty(), "rano took the keys");
+    assert!(
+        a.edit_pane.as_ref().unwrap().ed.send_event().modified,
+        "the buffer is dirty"
+    );
+    // Away to the composer, and the pane put away: the edits are on a screen nobody is looking at.
+    a.route(vec![ctrl(']')]);
+    a.key(Key::CtrlE);
+    assert!(!a.editor_drawn(), "the pane is put away, not closed");
+    assert_eq!(a.modified_buffers(), vec![FILE.to_string()]);
+
+    a.key(Key::CtrlC);
+    a.key(Key::CtrlC);
+    assert!(a.quit_card, "the second ctrl-c asks");
+    let card = a.quit_card_lines(120).join(" ");
+    assert!(card.contains("unsaved edits to notes.txt"), "{card}");
+    assert!(card.contains("press e to show"), "{card}");
+    assert!(
+        a.screen(100, 30)
+            .join("\n")
+            .contains("unsaved edits to notes.txt"),
+        "the card is on the screen"
+    );
+
+    assert_eq!(a.key(Key::Enter), None, "the first enter only asks");
+    assert!(!a.quit, "no quit action while the edits are unconfirmed");
+    assert!(a.quit_card, "and the card stays up");
+    assert!(
+        a.notice
+            .as_deref()
+            .is_some_and(|n| n.contains("enter again leaves without saving")),
+        "{:?}",
+        a.notice
+    );
+    // The second enter is the confirmation, and it takes the row the mark is on.
+    assert_eq!(a.key(Key::Enter), Some(Action::Quit));
+    assert!(a.quit && !a.quit_card);
+}
+
+/// The card's `e` shows what it counts: the pane comes back on the file with the unsaved edits,
+/// still modified, so leaving is a decision about a file the operator has seen.
+#[test]
+fn the_quit_card_shows_the_dirty_buffers_before_anything_is_left() {
+    let ws = workspace("quitshow");
+    let mut a = open_file_in_pane(&ws, FILE, 100);
+    a.wiring.workspace = ws.0.display().to_string();
+    route_text(&mut a, "zz");
+    a.route(vec![ctrl(']')]);
+    a.key(Key::CtrlE);
+    a.key(Key::CtrlC);
+    a.key(Key::CtrlC);
+    assert!(a.quit_card);
+
+    assert_eq!(a.key(Key::Char('e')), None);
+    assert!(!a.quit_card && !a.quit, "showing them is not leaving");
+    assert!(a.editor_drawn() && a.editor_focused(), "the pane is back");
+    assert!(is_the_file(&place(&a).0), "on the file that would be lost");
+    assert!(
+        a.edit_pane.as_ref().unwrap().ed.send_event().modified,
+        "the edits are still there"
+    );
+    assert!(
+        a.notice.as_deref().is_some_and(|n| n.contains("notes.txt")),
+        "{:?}",
+        a.notice
+    );
+}
+
+/// With nothing modified the card is what it was: no file named, and one Enter leaves.
+#[test]
+fn a_clean_quit_card_names_no_file_and_leaves_on_the_first_enter() {
+    let ws = workspace("quitclean");
+    let mut a = open_file_in_pane(&ws, FILE, 100);
+    a.wiring.workspace = ws.0.display().to_string();
+    a.route(vec![ctrl(']')]);
+    a.key(Key::CtrlE);
+    a.key(Key::CtrlC);
+    a.key(Key::CtrlC);
+    assert!(a.quit_card);
+    assert!(a.modified_buffers().is_empty());
+    let card = a.quit_card_lines(120).join(" ");
+    assert!(!card.contains("unsaved edits"), "{card}");
+    assert!(!card.contains(FILE), "{card}");
+    assert_eq!(a.key(Key::Enter), Some(Action::Quit));
+}

@@ -582,6 +582,52 @@ impl App {
         }
     }
 
+    /// The pane's buffers with unsaved edits, as the operator reads a path. rano keeps every buffer
+    /// a hidden or switched-away file left behind, so this is the pane's state and not the drawn
+    /// buffer's - which is exactly the work a quit discards.
+    pub fn modified_buffers(&self) -> Vec<String> {
+        self.modified_paths()
+            .iter()
+            .map(|p| self.workspace_relative(p))
+            .collect()
+    }
+
+    /// The same buffers as rano holds them, for opening one.
+    fn modified_paths(&self) -> Vec<PathBuf> {
+        self.edit_pane
+            .as_ref()
+            .map(|p| {
+                p.ed.buffers
+                    .iter()
+                    .filter(|b| b.buf.modified)
+                    .filter_map(|b| b.buf.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The quit card's offer: the pane comes back on the first file leaving would discard, so the
+    /// answer is given about files the operator has seen rather than a count nobody read.
+    pub(crate) fn show_modified_buffers(&mut self) {
+        self.quit_card = false;
+        let mut paths = self.modified_paths();
+        if paths.is_empty() {
+            self.say("no editor buffer has unsaved edits");
+            return;
+        }
+        let first = paths.swap_remove(0);
+        let rest = paths.len();
+        let shown = self.workspace_relative(&first);
+        self.open_in_editor(&FileRef::file(&first.display().to_string()));
+        let more = match rest {
+            0 => String::new(),
+            n => format!(" and {n} more"),
+        };
+        self.say(&format!(
+            "{shown}{more} — ctrl-s writes it; ctrl-c twice asks about leaving again"
+        ));
+    }
+
     /// `p` relative to the workspace when it is inside it, as it is otherwise. Both sides are
     /// canonicalised, because rano's path is and a workspace spelled through a symlink would
     /// otherwise never be a prefix of it. No workspace is the directory this head runs in.

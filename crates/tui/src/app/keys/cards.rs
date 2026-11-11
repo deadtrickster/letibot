@@ -430,8 +430,19 @@ impl App {
                     );
                     return ControlFlow::Break(None);
                 }
+                // A quit would discard every buffer the pane holds, and a pane put away with
+                // ctrl-e shows none of them: the first Enter only asks. The second one leaves.
+                Key::Enter if !self.quit_armed && !self.modified_buffers().is_empty() => {
+                    self.quit_armed = true;
+                    self.say(
+                        "the editor has unsaved edits — enter again leaves without saving, or e \
+                         shows them",
+                    );
+                    return ControlFlow::Break(None);
+                }
                 Key::Enter => {
                     self.quit_card = false;
+                    self.quit_armed = false;
                     self.quit = true;
                     return ControlFlow::Break(Some(if self.quit_sel == 0 {
                         Action::Quit
@@ -439,11 +450,21 @@ impl App {
                         Action::StopDaemon
                     }));
                 }
+                // The card's offer to show what it counts, on the digits' empty-composer rule: a
+                // letter typed into a draft must not be swallowed by the card above it.
+                _ if self.editor.text().is_empty()
+                    && matches!(k, Key::Char('e' | 'E'))
+                    && !self.modified_buffers().is_empty() =>
+                {
+                    self.show_modified_buffers();
+                    return ControlFlow::Break(None);
+                }
                 // Esc is "I did not mean to leave", which is the answer a card
                 // like this has to have - the alternative is an operator who
                 // hit Ctrl+C twice by habit and cannot take it back.
                 Key::Esc | Key::CtrlC => {
                     self.quit_card = false;
+                    self.quit_armed = false;
                     self.say("staying");
                     return ControlFlow::Break(None);
                 }

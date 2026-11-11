@@ -630,6 +630,9 @@ pub struct App {
     /// Which row of the quit card the cursor is on. Seeded to *leave the head*, so Enter on an
     /// untouched card does the smaller thing.
     pub(crate) quit_sel: usize,
+    /// The operator has been told which editor buffers leaving discards and answered anyway. Reset
+    /// whenever the card opens: the first Enter on a card whose counts are not empty only asks.
+    pub(crate) quit_armed: bool,
     /// The reseat card, `Some` exactly while the daemon says this session's prompt is stale: open
     /// in the ask slot, or pinned above the composer after *not now*. See `app::reseat`.
     pub(crate) reseat: Option<reseat::ReseatCard>,
@@ -1407,6 +1410,7 @@ impl App {
             todo_seed_pending: false,
             quit_card: false,
             quit_sel: 0,
+            quit_armed: false,
             reseat: None,
             mode_sel: 0,
             pick_unseeded: false,

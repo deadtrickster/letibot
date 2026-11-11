@@ -32,10 +32,10 @@ impl App {
 
     pub(crate) fn quit_card_lines(&self, w: usize) -> Vec<String> {
         let mut rows = row_strings(&self.quit_view().lines(w), self.cfg.palette());
-        // The card's own counts are this session's jobs and subagents, so the work that dies with the
-        // daemon in OTHER sessions - their turns, a reviewer mid-verdict, a running gate - was invisible
-        // and the cheap row and the killing row read alike on a busy box.
-        if let Some(said) = self.also_killing() {
+        for said in [self.unsaved_buffers(), self.also_killing()]
+            .into_iter()
+            .flatten()
+        {
             let line = Line::new(vec![Span::role(said, Role::Faint)]);
             rows.extend(
                 wrap(&line, w.saturating_sub(8))
@@ -44,6 +44,39 @@ impl App {
             );
         }
         rows
+    }
+
+    /// The editor buffers a quit would discard, named. A pane puts away with `ctrl-e` keeps every
+    /// buffer and the card is drawn over the conversation, so without this the files leaving loses
+    /// are the one thing the operator cannot see.
+    fn unsaved_buffers(&self) -> Option<String> {
+        let names = self.modified_buffers();
+        let (last, rest) = names.split_last()?;
+        // Three names and a count: a card is a slot's worth of rows, and the count is what says how
+        // much is behind them.
+        let listed = match rest {
+            [] => last.clone(),
+            [one] => format!("{one} and {last}"),
+            [one, two] => format!("{one}, {two} and {last}"),
+            _ => format!(
+                "{}, {}, {} and {} more",
+                rest[0],
+                rest[1],
+                rest[2],
+                rest.len() - 2
+            ),
+        };
+        let count = names.len();
+        Some(match count {
+            1 => format!(
+                "the editor holds unsaved edits to {listed} — leaving discards them; \
+                 press e to show the file"
+            ),
+            n => format!(
+                "the editor holds unsaved edits to {n} files: {listed} — leaving discards them; \
+                 press e to show them"
+            ),
+        })
     }
 
     /// What else stopping the daemon ends, or `None` when nothing else is running.
