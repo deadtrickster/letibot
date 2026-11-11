@@ -875,7 +875,9 @@ fn a_scope_ask_carries_the_path_and_shows_the_owner() {
     assert_eq!(frame["path"], "crates/room/src/server.rs");
     assert_eq!(frame["question"], "which port?");
     assert!(frame["id"].is_string(), "a request id goes with it");
-    assert_eq!(frame["room"], "host", "the seat's default room");
+    // Empty: the coordinator places an unnamed room on the seat's own project room, as it does for
+    // a session. The bridge does not spell that rule a second time.
+    assert_eq!(frame["room"], "", "the seat's own room, chosen by the room");
     let line = asked["lines"][0]
         .as_str()
         .unwrap_or_else(|| panic!("{asked}"));

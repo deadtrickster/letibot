@@ -15,11 +15,12 @@ use serde_json::{Value, json};
 /// The environment variable that names this bridge in the rooms.
 pub const NAME_ENV: &str = "LETIBOT_ROOM_NAME";
 
-/// How `me` behaves in the rooms, said once in the server's instructions: it sees every message,
-/// and the standing rule is the one a letibot session reads in its `room` tool.
+/// How `me` behaves in the rooms, said once in the server's instructions: it is in the host room and
+/// in its own project's room, never a third, and the standing rule is the one a letibot session
+/// reads in its `room` tool. Short, because the instructions have a byte budget a test holds.
 pub fn etiquette(me: &str) -> String {
     format!(
-        "As `{me}` you see every room. {}",
+        "As `{me}` you see `host`, your project's room, dms. {}",
         letibot_tools::builtins::room::STANDING_RULE
     )
 }
@@ -265,13 +266,8 @@ pub fn host_key_of(raw: &str) -> String {
     format!("{safe}-{:08x}", h as u32)
 }
 
-/// This box's coordinator socket: `$LETIBOT_ROOM_SOCKET`, else `room-<host key>.sock` in the
-/// letibot data directory.
-pub fn socket_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("LETIBOT_ROOM_SOCKET").filter(|v| !v.is_empty()) {
-        return PathBuf::from(p);
-    }
-    let data = data_dir();
+/// This box's key, as the room crate derives it: the host's name made safe, with a hash of it.
+pub fn box_key() -> String {
     let name = std::process::Command::new("uname")
         .arg("-n")
         .stdin(std::process::Stdio::null())
@@ -282,7 +278,35 @@ pub fn socket_path() -> PathBuf {
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("HOSTNAME").ok())
         .unwrap_or_else(|| "localhost".to_string());
-    data.join(format!("room-{}.sock", host_key_of(&name)))
+    host_key_of(&name)
+}
+
+/// The room this bridge's `Hello` names - `<box key>/<project key>`, exactly what a session's daemon
+/// sends, derived from the same repository root so both land in one room. Empty - the host room -
+/// when `cwd` belongs to no folder at all; an older bridge sends nothing and is there too.
+pub fn hello_room(cwd: &std::path::Path) -> String {
+    let root = repo_root(cwd).or_else(|| {
+        // A folder outside a repository is its own project, as the daemon's roster reads it, so a
+        // seat there is not dropped into the host room when a session in the same folder is not.
+        let dir = std::fs::canonicalize(cwd).ok().filter(|p| p.is_dir())?;
+        Some(dir)
+    });
+    match root {
+        Some(root) => letibot_room::room_name(
+            &box_key(),
+            &letibot_room::project_key(&root.display().to_string()),
+        ),
+        None => String::new(),
+    }
+}
+
+/// This box's coordinator socket: `$LETIBOT_ROOM_SOCKET`, else `room-<host key>.sock` in the
+/// letibot data directory.
+pub fn socket_path() -> PathBuf {
+    if let Some(p) = std::env::var_os("LETIBOT_ROOM_SOCKET").filter(|v| !v.is_empty()) {
+        return PathBuf::from(p);
+    }
+    data_dir().join(format!("room-{}.sock", box_key()))
 }
 
 /// How much of the room a reader wants. Mirrors the coordinator's filter.
@@ -700,12 +724,18 @@ impl RoomLink {
         let mut writer = stream;
         let _ = writer.set_read_timeout(Some(Duration::from_secs(2)));
         let _ = writer.set_write_timeout(Some(Duration::from_secs(2)));
-        // Seat and speaker are constants: nothing a tool says reaches them.
+        // Seat and speaker are constants: nothing a tool says reaches them. The room is the one
+        // thing the working folder decides: the project's room, never every room, and the host
+        // room alone outside any folder.
+        let here = match std::env::current_dir() {
+            Ok(cwd) => hello_room(&cwd),
+            Err(_) => String::new(),
+        };
         let hello = json!({
             "type": "hello",
             "protocol": PROTOCOL,
             "speaker": { "session": handle(), "parent": null },
-            "room": "",
+            "room": here,
             "seat": "external",
             "share": self.inner.share.load(Ordering::SeqCst),
         });
@@ -1128,7 +1158,7 @@ pub fn tool_list() -> Vec<Value> {
             json!({
                 "type": "object",
                 "properties": {
-                    "room": { "type": "string", "description": "`host` (default) or `project/<key>`." },
+                    "room": { "type": "string", "description": "Empty is your own project's room (see `rooms`); `host` is the whole box." },
                     "text": { "type": "string" },
                     "to": { "type": "string", "description": "One principal, PRIVATE: the dm, no room." },
                     "thread": { "type": "integer", "description": "The seq this answers." },
@@ -1173,7 +1203,7 @@ pub fn tool_list() -> Vec<Value> {
                     "path": { "type": "string", "description": "Repo-relative: `crates/room/src/server.rs`." },
                     "topic": { "type": "string", "description": "A topic word, instead of a path." },
                     "to": { "type": "string", "description": "A session, when you know which." },
-                    "room": { "type": "string", "description": "`host` (default) or `project/<key>`." }
+                    "room": { "type": "string", "description": "Empty is your own project's room; `host` is the whole box." }
                 },
                 "required": ["question"]
             }),
@@ -1543,7 +1573,9 @@ pub fn call_in(
             let mut f = json!({
                 "type": "say",
                 "id": link.id(),
-                "room": arg_opt_str(args, "room")?.unwrap_or_else(|| "host".into()),
+                // Empty is the coordinator's own rule for a seat: its project room, or the host
+                // room for a seat in none. The bridge does not decide that twice.
+                "room": arg_opt_str(args, "room")?.unwrap_or_default(),
                 "text": text,
                 "refs": arg_refs(args)?,
             });
@@ -1586,7 +1618,7 @@ pub fn call_in(
             let mut f = json!({
                 "type": "ask",
                 "id": link.id(),
-                "room": arg_opt_str(args, "room")?.unwrap_or_else(|| "host".into()),
+                "room": arg_opt_str(args, "room")?.unwrap_or_default(),
                 "question": arg_str(args, "question")?,
             });
             for key in ["to", "path", "topic"] {
@@ -1732,6 +1764,42 @@ fn replay(link: &RoomLink, attention: Attention) -> Result<Option<String>, Strin
 
 #[cfg(test)]
 mod tests {
+
+    /// The `hello`'s room is the working folder's project under this box's key - the derivation a
+    /// session's daemon sends - and the host room alone for a path that belongs to no folder.
+    #[test]
+    fn a_hello_names_its_folders_project_room_or_the_host_room() {
+        let dir = std::env::temp_dir().join(format!("letibot-hello-room-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("etcd");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let box_key = super::box_key();
+        assert_eq!(
+            super::hello_room(&repo),
+            letibot_room::room_name(
+                &box_key,
+                &letibot_room::project_key(&repo.display().to_string())
+            ),
+            "a repository is its project's room"
+        );
+        // A folder outside one is its own project, as the daemon's roster reads it.
+        let loose = dir.join("loose");
+        std::fs::create_dir_all(&loose).unwrap();
+        assert_eq!(
+            super::hello_room(&loose),
+            letibot_room::room_name(
+                &box_key,
+                &letibot_room::project_key(&loose.display().to_string())
+            )
+        );
+        // Nothing to place it by: the host room, which is an empty name on the wire.
+        assert_eq!(super::hello_room(&dir.join("gone")), "");
+        assert_eq!(
+            letibot_room::room_of_name(&box_key, &super::hello_room(&repo)),
+            Some(letibot_room::project_key(&repo.display().to_string()))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// An agent's DM wakes this seat with its first [`DM_TEXT_MAX`] bytes; the operator's whole.
     #[test]

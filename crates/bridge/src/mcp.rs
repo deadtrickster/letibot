@@ -285,9 +285,12 @@ mod tests {
         let said = r["result"]["instructions"].as_str().unwrap_or("");
         let me = crate::rooms::handle();
         assert!(
-            said.contains(&format!("As `{me}` you see every room")),
+            said.contains(&format!(
+                "As `{me}` you see `host`, your project's room, dms"
+            )),
             "{said}"
         );
+        assert!(!said.contains("every room"), "no room is its own: {said}");
         assert!(said.len() <= 600, "{} bytes: {said}", said.len());
         assert!(!said.contains('\u{2014}'), "no em dash: {said}");
     }
