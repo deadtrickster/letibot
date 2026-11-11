@@ -195,7 +195,7 @@ impl PluginHost {
     /// Put the binary's built-in layer for `hook` at the bottom of this stack, once. It is the third
     /// door, after a declared tool's and a head's pane's: a hook the daemon asks on a session's behalf is
     /// answered by a built-in where nobody has words, installed on the first ask because a compile costs.
-    pub(super) fn install_builtin_for(&self, hook: &str) {
+    pub(super) fn install_builtin_for(&self, hub: &Arc<Hub>, hook: &str) {
         if !self.install_builtin_panes {
             return;
         }
@@ -206,10 +206,7 @@ impl PluginHost {
             }
             inner.builtin_asked.insert(hook.to_string());
         }
-        for builtin in letibot_builtins::table() {
-            let Ok(manifest) = Manifest::parse(builtin.manifest) else {
-                continue;
-            };
+        self.install_where(Some(hub), |manifest| {
             // A built-in that declares a tool or a pane belongs to that door: this one is for the
             // hooks the daemon asks itself, and a layer seated for a hook nobody called is cost
             // with no reader.
@@ -218,17 +215,8 @@ impl PluginHost {
                 .iter()
                 .any(|t| manifest.hooks.contains(&format!("tool_{}", t.name)))
                 || manifest.hooks.iter().any(|h| h.starts_with("pane_"));
-            if has_a_door || !manifest.hooks.contains(&hook.to_string()) {
-                continue;
-            }
-            if let Err(why) = self.lock().stack_mut().register_builtin_bytes(
-                builtin.name,
-                builtin.manifest,
-                builtin.wasm,
-            ) {
-                eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
-            }
-        }
+            (!has_a_door && manifest.hooks.iter().any(|h| h.as_str() == hook)).then(Vec::new)
+        });
     }
 
     /// Put the built-in layers a session declared a tool from at the bottom of this stack, matched
@@ -238,90 +226,41 @@ impl PluginHost {
         if declared.is_empty() {
             return;
         }
-        let mut inner = self.lock();
-        for builtin in letibot_builtins::table() {
-            let declares = Manifest::parse(builtin.manifest)
-                .map(|m| {
-                    m.tools
-                        .iter()
-                        .any(|t| declared.iter().any(|d| d.tool.name == t.name))
-                })
-                .unwrap_or(false);
-            if !declares {
-                continue;
-            }
-            if let Err(why) = inner.stack_mut().register_builtin_bytes(
-                builtin.name,
-                builtin.manifest,
-                builtin.wasm,
-            ) {
-                // The stack has recorded the failure; this is the line the daemon's log shows.
-                eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
-            }
-        }
+        self.install_where(None, |manifest| {
+            manifest
+                .tools
+                .iter()
+                .any(|t| declared.iter().any(|d| d.tool.name == t.name))
+                .then(Vec::new)
+        });
     }
 
     /// Put the binary's built-in layers that answer `nag_` at the bottom of this stack, so the
     /// plan-check's default is a layer rather than a branch: the answer is `b-todo`'s, and an operator's
     /// layer above it is the project's own. Without this the hook would have nothing to ask.
     fn install_builtin_nags(&self) {
-        let mut inner = self.lock();
-        for builtin in letibot_builtins::table() {
-            let answers = Manifest::parse(builtin.manifest)
-                .map(|m| {
-                    m.hooks
-                        .iter()
-                        .any(|h| h.strip_prefix("nag_").is_some_and(|n| !n.is_empty()))
-                })
-                .unwrap_or(false);
-            if !answers {
-                continue;
-            }
-            if let Err(why) = inner.stack_mut().register_builtin_bytes(
-                builtin.name,
-                builtin.manifest,
-                builtin.wasm,
-            ) {
-                // The stack has recorded the failure; this is the line the daemon's log shows.
-                eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
-            }
-        }
+        self.install_where(None, |manifest| {
+            manifest
+                .hooks
+                .iter()
+                .any(|h| h.strip_prefix("nag_").is_some_and(|n| !n.is_empty()))
+                .then(Vec::new)
+        });
     }
 
     /// Put the binary's own `steer_`/`compact_` decisions on this stack: the built-in layers whose hooks
     /// are neither a pane (a head's door) nor a tool (a project's declaration), so they would otherwise
     /// be installed at no door at all. A `nag_` built-in comes through [`PluginHost::install_builtin_nags`].
     fn install_builtin_deciders(&self) {
-        for builtin in letibot_builtins::table() {
-            let Ok(manifest) = Manifest::parse(builtin.manifest) else {
-                continue;
-            };
+        self.install_where(None, |manifest| {
             let decides = manifest.hooks.iter().any(|h| {
                 h.starts_with(letibot_plugin::steer::PREFIX)
                     || h.starts_with(letibot_plugin::compact::PREFIX)
             });
-            if !decides {
-                continue;
-            }
             // A layer that already answers the hook is the one that decides: the built-in belongs
             // under it, and a stack that put it above would silently overrule the project.
-            let answered = {
-                let inner = self.lock();
-                inner.stack.layers().iter().any(|l| {
-                    !l.disabled && l.manifest.hooks.iter().any(|h| manifest.hooks.contains(h))
-                })
-            };
-            if answered {
-                continue;
-            }
-            if let Err(why) = self.lock().stack_mut().register_builtin_bytes(
-                builtin.name,
-                builtin.manifest,
-                builtin.wasm,
-            ) {
-                eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
-            }
-        }
+            decides.then(|| manifest.hooks.clone())
+        });
     }
 
     /// Install the binary's built-in pane layers the first time a head comes through a door that needs
@@ -330,39 +269,75 @@ impl PluginHost {
         if !self.install_builtin_panes {
             return;
         }
+        self.install_where(None, |manifest| {
+            let panes: Vec<String> = manifest
+                .hooks
+                .iter()
+                .filter(|h| h.strip_prefix("pane_").is_some_and(|n| !n.is_empty()))
+                .cloned()
+                .collect();
+            // A layer that already answers the hook is the one that draws it - ours would sit below
+            // it and never be called, and a project that shipped its own pane has said which it
+            // wants. The layer itself, installed for a declared tool, is that layer too.
+            (!panes.is_empty()).then_some(panes)
+        });
+    }
+
+    /// The one loop behind every door above: walk the built-in table, take what `wanted` names, and
+    /// put it under the stack's own layers.
+    ///
+    /// `wanted` answers what makes a built-in already answered, and `None` for *not this door's*: one
+    /// rule, so a sixth door cannot forget the guard, the answered check or the failure line.
+    fn install_where(
+        &self,
+        hub: Option<&Arc<Hub>>,
+        wanted: impl Fn(&Manifest) -> Option<Vec<String>>,
+    ) -> usize {
+        let mut installed = 0;
         for builtin in letibot_builtins::table() {
             let Ok(manifest) = Manifest::parse(builtin.manifest) else {
                 continue;
             };
-            let panes: Vec<&String> = manifest
-                .hooks
-                .iter()
-                .filter(|h| h.strip_prefix("pane_").is_some_and(|n| !n.is_empty()))
-                .collect();
-            if panes.is_empty() {
+            let Some(hooks) = wanted(&manifest) else {
                 continue;
-            }
-            // A layer that already answers the hook is the one that draws it - ours would sit below
-            // it and never be called, and a project that shipped its own pane has said which it
-            // wants. The layer itself, installed for a declared tool, is that layer too.
-            let answered = {
-                let inner = self.lock();
-                inner
-                    .stack
-                    .layers()
-                    .iter()
-                    .any(|l| !l.disabled && l.manifest.hooks.iter().any(|h| panes.contains(&h)))
             };
-            if answered {
+            if !hooks.is_empty() && self.answered(&hooks) {
                 continue;
             }
-            if let Err(why) = self.lock().stack_mut().register_builtin_bytes(
+            let registered = self.lock().stack_mut().register_builtin_bytes(
                 builtin.name,
                 builtin.manifest,
                 builtin.wasm,
-            ) {
-                eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
+            );
+            match registered {
+                Ok(()) => installed += 1,
+                Err(why) => self.say_builtin_failed(hub, builtin.name, &why),
             }
+        }
+        installed
+    }
+
+    /// Whether an enabled layer here already answers one of `hooks`.
+    fn answered(&self, hooks: &[String]) -> bool {
+        let inner = self.lock();
+        inner
+            .stack
+            .layers()
+            .iter()
+            .any(|l| !l.disabled && l.manifest.hooks.iter().any(|h| hooks.contains(h)))
+    }
+
+    /// A built-in that would not load, said once: the hooks it answers fall back to the harness's own,
+    /// and while the stack has recorded the failure, only this line names the layer that broke.
+    fn say_builtin_failed(&self, hub: Option<&Arc<Hub>>, name: &str, why: &str) {
+        let said = format!(
+            "the plugin built-in `{name}` did not load, so the hooks it answered fall to the \
+             harness's own: {why}"
+        );
+        if self.say_once(said.clone())
+            && let Some(hub) = hub
+        {
+            hub.warn("plugin_layer", said);
         }
     }
 

@@ -29,7 +29,7 @@ impl PluginHost {
         // The binary's own layer for a hook the daemon asks, before the stack is read: a session
         // whose project says nothing about reviews still gets the words this build carries.
         if daemon_asks(hook) {
-            self.install_builtin_for(hook);
+            self.install_builtin_for(hub, hook);
         }
         // What the call needs, taken under the lock and no more. A module runs for as long as its
         // fuel lasts; a pane drawn or a tool adjudicated meanwhile must not queue behind it.
