@@ -3616,8 +3616,10 @@ impl Harness {
         // reader who cannot tell whose they are cannot weigh them. The origin goes on the log the head reads.
         self.import_note("imported", tree.root.origin());
         let total = tree.parts;
+        // The unit is the reader's own: `part` rows in a v1 database, stored messages in a v2 one.
+        let unit = tree.unit_plural();
         const WHAT: &str = "importing an opencode conversation";
-        self.filling(WHAT, "parts", 0, total);
+        self.filling(WHAT, unit, 0, total);
 
         let mut failure: Option<String> = None;
         let mut since_persist = 0u64;
@@ -3629,7 +3631,7 @@ impl Harness {
                 // Throttled: one tick per 64 parts is a live bar, and one per part is
                 // thousands of publishes for a quarter-second read.
                 if done % 64 == 0 {
-                    self.filling(WHAT, "parts", done, total);
+                    self.filling(WHAT, unit, done, total);
                 }
             }
             letibot_opencode::Event::Row(r) => {
@@ -3675,7 +3677,7 @@ impl Harness {
                 let _ = self.persist();
                 // The last tick clears the head's line; the summary is the durable
                 // residue, and it carries the spend rule 2 is about.
-                self.filling(WHAT, "parts", total, total);
+                self.filling(WHAT, unit, total, total);
                 self.import_note("imported_summary", report.summary());
             }
         }

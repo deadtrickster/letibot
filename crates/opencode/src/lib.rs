@@ -1,6 +1,23 @@
 //! Reading an opencode conversation into this head's rows.
-//! Opens opencode's SQLite database read-only and turns parts into `TranscriptItem`s. Rows say they are
-//! imported, the ledger never claims the spend, and an unknown tag becomes a counted scrap.
+//! Opens opencode's SQLite database read-only and turns its stored messages into `TranscriptItem`s. Rows say they
+//! are imported, the ledger never claims the spend, and an unknown tag becomes a counted scrap.
+//!
+//! # The two layouts
+//!
+//! opencode 1.x wrote `session`, `message` and `part` - `[v1]` below. Every 2.x writes `session_v2`,
+//! `session_message` and `session_part` - `[v2]` - and freezes the v1 rows at the upgrade while a background job
+//! migrates them across (`v1-migration.bun.ts`). So a fresh install has no v1 tables at all, an upgraded one has
+//! both with the v1 rows stopping at the moment it was upgraded, and the operator's own 1.18.31 has v1 only.
+//!
+//! A database is read as v2 when it has `session_v2` at all. Within such a database each session id is read from
+//! v2 where v2 has it and from the frozen v1 rows where it does not - a session the migration job has not reached
+//! yet, which is the one case where v1 rows are still the whole history. v1 rows are never preferred over v2 ones
+//! for the same id: they are frozen, so reading them would cut a continued session off at the upgrade point.
+//! A database with no `session_v2` is read exactly as it was before v2 existed: one query over `part`, ordered by
+//! `time_created`.
+//!
+//! The unit of a v2 read is the stored message (`session_message`), and a v1 read's is the `part` row; a tree's
+//! [`Tree::unit`] says which, so the progress line counts what it is actually walking.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -8,6 +25,9 @@ use std::path::{Path, PathBuf};
 
 use letibot_transcript::{ReasoningField, ToolCall, ToolOutcome, TranscriptItem, UserPart};
 use rusqlite::{Connection, OpenFlags};
+
+// opencode 2.x's layout: `session_v2`, `session_message` and `session_part`, in its own file.
+mod v2;
 
 /// Everything that can stop a read.
 #[derive(Debug)]
@@ -18,6 +38,9 @@ pub enum ImportError {
     NoDatabase { path: PathBuf, err: String },
     /// The database opened, the schema is there, and no session has that id.
     NoSuchSession { id: String },
+    /// The database opened and holds neither layout: no `session` (v1) and no `session_v2` (v2).
+    /// A different fact from a failed query, and said as such rather than as "no such table".
+    NeitherSchema { path: PathBuf, tables: Vec<String> },
     /// A query that the schema should answer did not.
     Sql(String),
 }
@@ -36,6 +59,18 @@ impl fmt::Display for ImportError {
                 "the database has no session `{id}`. Check the id: opencode ids look \
                  like `ses_…`, and the namespace mark this head strips (`oc-`) is not \
                  part of the id."
+            ),
+            ImportError::NeitherSchema { path, tables } => write!(
+                f,
+                "the database at {} holds neither of opencode's layouts: no `session` table (what 1.x \
+                 writes) and no `session_v2` (what every 2.x writes). This is not a session id problem. \
+                 Its tables are: {}.",
+                path.display(),
+                if tables.is_empty() {
+                    "none".to_string()
+                } else {
+                    tables.join(", ")
+                }
             ),
             ImportError::Sql(e) => write!(f, "reading opencode's database: {e}"),
         }
@@ -114,13 +149,27 @@ impl SessionMeta {
 pub struct Tree {
     pub root: SessionMeta,
     pub children: Vec<SessionMeta>,
-    /// Parts across the whole tree - the denominator. Not the root's, per the ruling.
+    /// What the read walks: parts in a v1 database, stored messages in a v2 one. Not the
+    /// root's, per the ruling - it is the whole tree's.
     pub parts: u64,
+    /// The word [`Tree::parts`] is counted in, so a progress line says `message(s)` where it
+    /// is counting messages. Not a field a caller sets: [`Source::tree`] fills it.
+    pub unit: &'static str,
 }
 
 impl Tree {
     pub fn sessions(&self) -> usize {
         1 + self.children.len()
+    }
+
+    /// The word a progress line puts after the counts, which the head draws as `12/30 parts`. The
+    /// reader counts in the singular ([`Tree::unit`]); this is the same fact in the head's spelling.
+    pub fn unit_plural(&self) -> &'static str {
+        if self.unit == "message" {
+            "messages"
+        } else {
+            "parts"
+        }
     }
 }
 
@@ -171,8 +220,11 @@ pub struct Spend {
 /// What a whole read produced - the numbers the finish line and `/status` keep.
 #[derive(Debug, Clone, Default)]
 pub struct Report {
-    /// Parts examined (the denominator).
+    /// Items examined (the denominator): parts in a v1 database, stored messages in a v2 one.
     pub parts: u64,
+    /// The word `parts` is counted in. Empty means `part`, which is what a v1 database has
+    /// always counted, so a summary from one reads exactly as it did.
+    pub unit: &'static str,
     /// Transcript rows emitted.
     pub rows: u64,
     /// Parts that became a sentence rather than a row.
@@ -195,7 +247,12 @@ pub struct Report {
 impl Report {
     /// The sentence the finish line and `/status` carry.
     pub fn summary(&self) -> String {
-        let mut s = format!("imported {} row(s) from {} part(s)", self.rows, self.parts);
+        let mut s = format!(
+            "imported {} row(s) from {} {}(s)",
+            self.rows,
+            self.parts,
+            self.unit_word()
+        );
         if let Some((d, t)) = self.child_parts() {
             s.push_str(&format!(" (of {t} across {d} session(s))"));
         }
@@ -233,22 +290,63 @@ impl Report {
         self.tree
     }
 
+    /// The unit noun, defaulted so a report built before the field existed still says `part`.
+    fn unit_word(&self) -> &'static str {
+        if self.unit.is_empty() {
+            "part"
+        } else {
+            self.unit
+        }
+    }
+
     /// Set by [`Source::read_tree`] so [`Report::summary`] can name the tree.
     pub fn set_tree(&mut self, sessions: u64, parts: u64) {
         self.tree = Some((sessions, parts));
     }
 }
 
+/// Which of opencode's two storage layouts one session id is read with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Schema {
+    /// `session`/`message`/`part`: what opencode 1.x wrote, and what an upgraded database still
+    /// holds - frozen - for a session the background migration has not reached.
+    V1,
+    /// `session_v2`/`session_message`/`session_part`: what every 2.x writes.
+    V2,
+}
+
+/// One session id in a tree, and the layout it is read with. A tree can hold both: a v2 root's
+/// child may be a session created before the upgrade and not yet migrated.
+#[derive(Debug, Clone)]
+struct Id {
+    id: String,
+    schema: Schema,
+}
+
+/// Both layouts as one table of ids, v2 winning: a v1 row for an id v2 also has is dropped, so a
+/// frozen row can never be the parent of a tree walk over an upgraded database.
+const SRC_BOTH: &str = "(SELECT id, parent_id, 1 AS v2 FROM session_v2 \
+                        UNION ALL \
+                        SELECT id, parent_id, 0 AS v2 FROM session \
+                         WHERE id NOT IN (SELECT id FROM session_v2))";
+/// A fresh 2.x database has no v1 tables at all, so the walk is over `session_v2` alone.
+const SRC_V2: &str = "(SELECT id, parent_id, 1 AS v2 FROM session_v2)";
+
 /// A read-only handle on opencode's database.
 pub struct Source {
     conn: Connection,
     path: PathBuf,
+    /// The database has opencode 1.x's tables: every upgraded 2.x one does, a fresh 2.x one does not.
+    has_v1: bool,
+    /// The database has opencode 2.x's tables, so it is read as v2 - per session id.
+    has_v2: bool,
 }
 
 impl Source {
     /// Open the database read-only, and not `immutable=1`: opencode's WAL is live, and an
     /// immutable open ignores it and reads a torn snapshot, while read-only still sees it.
-    /// The open is proven here with the cheapest query, because SQLite opens lazily.
+    /// The open is proven here with the cheapest query, because SQLite opens lazily. Which layout
+    /// the file speaks is decided once, here, so every later read knows without asking again.
     pub fn open(path: &Path) -> Result<Self> {
         let conn =
             Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
@@ -262,9 +360,29 @@ impl Source {
                 path: path.to_path_buf(),
                 err: e.to_string(),
             })?;
+        let mut tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .and_then(|mut s| {
+                s.query_map([], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<String>>>()
+            })
+            .map_err(sql_err)?;
+        let has_v1 = tables.iter().any(|t| t == "session");
+        let has_v2 = tables.iter().any(|t| t == "session_v2");
+        if !has_v1 && !has_v2 {
+            // Neither layout is a different fact from a query that failed, and the operator asked
+            // for the two to be told apart: this file is not an opencode database at all.
+            tables.retain(|t| !t.starts_with("sqlite_"));
+            return Err(ImportError::NeitherSchema {
+                path: path.to_path_buf(),
+                tables,
+            });
+        }
         Ok(Source {
             conn,
             path: path.to_path_buf(),
+            has_v1,
+            has_v2,
         })
     }
 
@@ -272,11 +390,22 @@ impl Source {
         &self.path
     }
 
-    /// The whole tree of `root`: root first in `children` order, plus the part count.
-    /// `NoSuchSession` when `root` names nothing, which is a different sentence from
-    /// `NoDatabase` and the operator asked for the two to be told apart.
+    /// The layout this database is read with: v2 when it has `session_v2` at all, because a v2 id
+    /// must be read from v2 even where frozen v1 rows exist for it. A v1-only database - the
+    /// operator's own opencode 1.18.31 - answers `V1` and is read exactly as it always was.
+    pub fn schema(&self) -> Schema {
+        if self.has_v2 { Schema::V2 } else { Schema::V1 }
+    }
+
+    /// The whole tree of `root`: root first in `children` order, plus the count. `NoSuchSession`
+    /// when `root` names nothing, which is a different sentence from `NoDatabase` and the operator
+    /// asked for the two to be told apart.
     pub fn tree(&self, root: &str) -> Result<Tree> {
         let ids = self.tree_ids(root)?;
+        self.tree_of(ids, root)
+    }
+
+    fn tree_of(&self, ids: Vec<Id>, root: &str) -> Result<Tree> {
         if ids.is_empty() {
             return Err(ImportError::NoSuchSession {
                 id: root.to_string(),
@@ -284,7 +413,10 @@ impl Source {
         }
         let mut metas = Vec::new();
         for id in &ids {
-            metas.push(self.session_meta(id)?);
+            metas.push(match id.schema {
+                Schema::V2 => v2::session_meta(&self.conn, &id.id)?,
+                Schema::V1 => self.session_meta(&id.id)?,
+            });
         }
         let root_meta = metas
             .iter()
@@ -294,30 +426,39 @@ impl Source {
                 id: root.to_string(),
             })?;
         let children = metas.into_iter().filter(|m| m.id != root).collect();
-        let parts = self.count_parts(&ids)?;
+        let (parts, unit) = self.count(&ids)?;
         Ok(Tree {
             root: root_meta,
             children,
             parts,
+            unit,
         })
     }
 
-    /// Read the whole tree, oldest part first, one callback per event so the caller can
-    /// publish as it goes and keep the screen live. A function returning a `Vec` would have
-    /// read everything before drawing anything.
+    /// Read the whole tree, oldest first, one callback per event so the caller can publish as it
+    /// goes and keep the screen live. A function returning a `Vec` would have read everything before
+    /// drawing anything.
     pub fn read_tree(&self, root: &str, sink: &mut dyn FnMut(Event)) -> Result<Report> {
-        let tree = self.tree(root)?;
         let ids = self.tree_ids(root)?;
+        let tree = self.tree_of(ids.clone(), root)?;
         let total = tree.parts;
 
         let mut report = Report {
             parts: total,
+            unit: tree.unit,
             ..Default::default()
         };
         report.set_tree(tree.sessions() as u64, total);
 
+        if self.has_v2 {
+            v2::read_tree(&self.conn, &ids, &mut report, total, sink)?;
+            return Ok(report);
+        }
+        // A v1-only database: unchanged, one query over `part` ordered by `time_created` across the
+        // whole tree, because that is the order this importer has always read.
+        let names: Vec<&str> = ids.iter().map(|i| i.id.as_str()).collect();
         // `IN (?1, ?2, …)`, built from the ids - never interpolated, always bound.
-        let placeholders = vec!["?"; ids.len()].join(",");
+        let placeholders = vec!["?"; names.len()].join(",");
         let sql = format!(
             "SELECT p.session_id, m.data, p.id, p.time_created, p.data \
              FROM part p JOIN message m ON p.message_id = m.id \
@@ -327,7 +468,7 @@ impl Source {
         let mut stmt = self.conn.prepare(&sql).map_err(sql_err)?;
         // `params_from_iter` needs the iterator inline; the borrow lives for the query.
         let mut rows = stmt
-            .query(rusqlite::params_from_iter(ids.iter()))
+            .query(rusqlite::params_from_iter(names.iter()))
             .map_err(sql_err)?;
 
         let mut done = 0u64;
@@ -356,6 +497,17 @@ impl Source {
     /// to the tree the conversation was had in rather than the daemon's start directory.
     /// One query, read before the backend is built because the root is baked into it.
     pub fn directory(&self, id: &str) -> Result<String> {
+        if self.has_v2 {
+            match v2::directory(&self.conn, id) {
+                Ok(dir) => return Ok(dir),
+                // A session the background migration has not reached is in the frozen v1 rows only.
+                Err(ImportError::NoSuchSession { .. }) if self.has_v1 => {}
+                Err(e) => return Err(e),
+            }
+        }
+        if !self.has_v1 {
+            return Err(ImportError::NoSuchSession { id: id.to_string() });
+        }
         self.conn
             .query_row("SELECT directory FROM session WHERE id = ?1", [id], |r| {
                 r.get::<_, String>(0)
@@ -368,32 +520,90 @@ impl Source {
             })
     }
 
-    /// The recursive tree of session ids, root first, in a stable order.
-    fn tree_ids(&self, root: &str) -> Result<Vec<String>> {
-        let sql = "WITH RECURSIVE t(id, depth) AS ( \
-                       SELECT id, 0 FROM session WHERE id = ?1 \
-                       UNION ALL \
-                       SELECT s.id, t.depth + 1 FROM session s JOIN t ON s.parent_id = t.id \
-                   ) \
-                   SELECT id FROM t ORDER BY depth, id";
-        let mut stmt = self.conn.prepare(sql).map_err(sql_err)?;
+    /// The recursive tree of session ids, root first, in a stable order, each with the layout it is
+    /// read with. On an upgraded database the walk unions both layouts, so a child that only exists
+    /// in the frozen v1 rows is still part of its v2 parent's tree.
+    fn tree_ids(&self, root: &str) -> Result<Vec<Id>> {
+        if !self.has_v2 {
+            let sql = "WITH RECURSIVE t(id, depth) AS ( \
+                           SELECT id, 0 FROM session WHERE id = ?1 \
+                           UNION ALL \
+                           SELECT s.id, t.depth + 1 FROM session s JOIN t ON s.parent_id = t.id \
+                       ) \
+                       SELECT id FROM t ORDER BY depth, id";
+            let mut stmt = self.conn.prepare(sql).map_err(sql_err)?;
+            let ids = stmt
+                .query_map([root], |r| r.get::<_, String>(0))
+                .map_err(sql_err)?
+                .collect::<rusqlite::Result<Vec<String>>>()
+                .map_err(sql_err)?;
+            return Ok(ids
+                .into_iter()
+                .map(|id| Id {
+                    id,
+                    schema: Schema::V1,
+                })
+                .collect());
+        }
+        let src = if self.has_v1 { SRC_BOTH } else { SRC_V2 };
+        let sql = format!(
+            "WITH RECURSIVE t(id, depth, v2) AS ( \
+                 SELECT id, 0, v2 FROM {src} WHERE id = ?1 \
+                 UNION ALL \
+                 SELECT s.id, t.depth + 1, s.v2 FROM {src} s JOIN t ON s.parent_id = t.id \
+             ) \
+             SELECT id, v2 FROM t ORDER BY depth, id"
+        );
+        let mut stmt = self.conn.prepare(&sql).map_err(sql_err)?;
         let ids = stmt
-            .query_map([root], |r| r.get::<_, String>(0))
+            .query_map([root], |r| {
+                Ok(Id {
+                    id: r.get::<_, String>(0)?,
+                    schema: if r.get::<_, i64>(1)? == 1 {
+                        Schema::V2
+                    } else {
+                        Schema::V1
+                    },
+                })
+            })
             .map_err(sql_err)?
-            .collect::<rusqlite::Result<Vec<String>>>()
+            .collect::<rusqlite::Result<Vec<Id>>>()
             .map_err(sql_err)?;
         Ok(ids)
     }
 
-    /// The denominator: parts across the whole tree, before the first row is read.
-    fn count_parts(&self, ids: &[String]) -> Result<u64> {
-        let placeholders = vec!["?"; ids.len()].join(",");
-        let sql = format!("SELECT count(*) FROM part WHERE session_id IN ({placeholders})");
-        let n: i64 = self
-            .conn
-            .query_row(&sql, rusqlite::params_from_iter(ids.iter()), |r| r.get(0))
-            .map_err(sql_err)?;
-        Ok(n.max(0) as u64)
+    /// The denominator, before the first row is read, and the word it is counted in: `part` rows in
+    /// a v1-only database (as it has always been), stored messages once the database is v2.
+    fn count(&self, ids: &[Id]) -> Result<(u64, &'static str)> {
+        if !self.has_v2 {
+            let names: Vec<&str> = ids.iter().map(|i| i.id.as_str()).collect();
+            let placeholders = vec!["?"; names.len()].join(",");
+            let sql = format!("SELECT count(*) FROM part WHERE session_id IN ({placeholders})");
+            let n: i64 = self
+                .conn
+                .query_row(&sql, rusqlite::params_from_iter(names.iter()), |r| r.get(0))
+                .map_err(sql_err)?;
+            return Ok((n.max(0) as u64, "part"));
+        }
+        let mut total = 0u64;
+        for (schema, table) in [(Schema::V2, "session_message"), (Schema::V1, "message")] {
+            let names: Vec<&str> = ids
+                .iter()
+                .filter(|i| i.schema == schema)
+                .map(|i| i.id.as_str())
+                .collect();
+            if names.is_empty() {
+                continue;
+            }
+            let placeholders = vec!["?"; names.len()].join(",");
+            let sql = format!("SELECT count(*) FROM {table} WHERE session_id IN ({placeholders})");
+            let n: i64 = self
+                .conn
+                .query_row(&sql, rusqlite::params_from_iter(names.iter()), |r| r.get(0))
+                .map_err(sql_err)?;
+            total = total.saturating_add(n.max(0) as u64);
+        }
+        Ok((total, "message"))
     }
 
     fn session_meta(&self, id: &str) -> Result<SessionMeta> {
@@ -486,8 +696,9 @@ fn sql_err(e: rusqlite::Error) -> ImportError {
     ImportError::Sql(e.to_string())
 }
 
-/// Turn one part into whatever it becomes, calling `sink` for each row or scrap.
-fn interpret(
+/// Turn one part into whatever it becomes, calling `sink` for each row or scrap. The v2 reader calls
+/// this too, for a session an upgraded database has only in its frozen v1 rows.
+pub(crate) fn interpret(
     source_session: &str,
     part_id: &str,
     ts_ms: u64,
@@ -732,7 +943,7 @@ fn interpret(
     }
 }
 
-fn emit_row(
+pub(crate) fn emit_row(
     source_session: &str,
     part_id: &str,
     ts_ms: u64,
@@ -781,15 +992,60 @@ fn tokens_from(t: &serde_json::Value) -> Tokens {
     }
 }
 
-/// Where opencode's database is on this box, if it is anywhere: `$OPENCODE_DB` wins,
-/// otherwise `~/.local/share/opencode/opencode.db`. Absence is reported by `Source::open`
-/// as `NoDatabase`, with this path in the sentence.
+/// Where opencode's database is on this box, if it is anywhere. Absence is reported by
+/// `Source::open` as `NoDatabase`, with this path in the sentence.
 pub fn default_db_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("OPENCODE_DB") {
-        return Some(PathBuf::from(p));
-    }
-    let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(".local/share/opencode/opencode.db"))
+    db_path_from(|k| std::env::var_os(k).map(|v| v.to_string_lossy().into_owned()))
+}
+
+/// opencode's own rule (`packages/cli/src/database-path.ts`, `packages/util/src/global-roots.ts`):
+/// `$OPENCODE_DB` - resolved against the DATA directory and not the working one - else
+/// `opencode-<channel>.db` when a channel is named, else `opencode.db`. The data directory is
+/// `$XDG_DATA_HOME/opencode`, defaulting to `~/.local/share/opencode`.
+///
+/// opencode's channel is baked in at build time, so `$OPENCODE_CHANNEL` is the only way a person
+/// can name it here; a release channel and `$OPENCODE_DISABLE_CHANNEL_DB` both mean `opencode.db`,
+/// as they do there. Taking the lookup as an argument keeps this testable without touching the
+/// process environment, which every test in one binary shares.
+fn db_path_from(env: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    let data = match env("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
+        Some(dir) => PathBuf::from(dir).join("opencode"),
+        None => PathBuf::from(env("HOME")?).join(".local/share/opencode"),
+    };
+    let name = match env("OPENCODE_DB").filter(|d| !d.is_empty()) {
+        Some(db) => PathBuf::from(db),
+        None => match env("OPENCODE_CHANNEL").filter(|c| !c.is_empty()) {
+            Some(channel) if !is_release_channel(&channel) => {
+                match env("OPENCODE_DISABLE_CHANNEL_DB") {
+                    Some(off) if off == "1" || off == "true" => PathBuf::from("opencode.db"),
+                    _ => PathBuf::from(format!(
+                        "opencode-{}.db",
+                        channel
+                            .chars()
+                            .map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) {
+                                c
+                            } else {
+                                '-'
+                            })
+                            .collect::<String>()
+                    )),
+                }
+            }
+            _ => PathBuf::from("opencode.db"),
+        },
+    };
+    // `path.resolve(data, name)` in opencode: a bare filename lands in the data directory, an
+    // absolute one stands as written.
+    Some(if name.is_absolute() {
+        name
+    } else {
+        data.join(name)
+    })
+}
+
+/// The channels opencode ships as stable builds, and so the ones that use the plain `opencode.db`.
+fn is_release_channel(channel: &str) -> bool {
+    matches!(channel, "latest" | "dev" | "beta" | "next" | "prod")
 }
 
 #[cfg(test)]
@@ -1135,6 +1391,79 @@ mod tests {
             "an empty file list is said, not drawn as an empty diff: {said:?}"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// opencode's own rule for where the database is: `$OPENCODE_DB` resolved against the DATA
+    /// directory (not the working one, which is what this importer used to do), `$XDG_DATA_HOME`, and
+    /// the channel file when a channel is named. The lookup is handed in so no test touches the
+    /// process environment, which every test in one binary shares.
+    #[test]
+    fn the_database_path_follows_opencodes_own_rule() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(name, _)| *name == k)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        let home = env(&[("HOME", "/home/someone")]);
+        assert_eq!(
+            db_path_from(home),
+            Some(PathBuf::from(
+                "/home/someone/.local/share/opencode/opencode.db"
+            )),
+            "today's default, unchanged"
+        );
+
+        let xdg = env(&[("HOME", "/home/someone"), ("XDG_DATA_HOME", "/xdg")]);
+        assert_eq!(
+            db_path_from(xdg),
+            Some(PathBuf::from("/xdg/opencode/opencode.db")),
+            "$XDG_DATA_HOME is where opencode puts its data directory"
+        );
+
+        // A bare `$OPENCODE_DB` is resolved against the data directory, never the cwd: opencode's
+        // `path.resolve(data, filename)`.
+        let relative = env(&[("HOME", "/home/someone"), ("OPENCODE_DB", "other.db")]);
+        assert_eq!(
+            db_path_from(relative),
+            Some(PathBuf::from(
+                "/home/someone/.local/share/opencode/other.db"
+            ))
+        );
+        let absolute = env(&[
+            ("HOME", "/home/someone"),
+            ("OPENCODE_DB", "/elsewhere/x.db"),
+        ]);
+        assert_eq!(
+            db_path_from(absolute),
+            Some(PathBuf::from("/elsewhere/x.db"))
+        );
+
+        // A channel that is not a release build has its own file; a release channel and an explicit
+        // opt-out both mean the plain one.
+        let channel = env(&[("HOME", "/h"), ("OPENCODE_CHANNEL", "local")]);
+        assert_eq!(
+            db_path_from(channel),
+            Some(PathBuf::from("/h/.local/share/opencode/opencode-local.db"))
+        );
+        let release = env(&[("HOME", "/h"), ("OPENCODE_CHANNEL", "latest")]);
+        assert_eq!(
+            db_path_from(release),
+            Some(PathBuf::from("/h/.local/share/opencode/opencode.db"))
+        );
+        let off = env(&[
+            ("HOME", "/h"),
+            ("OPENCODE_CHANNEL", "local"),
+            ("OPENCODE_DISABLE_CHANNEL_DB", "1"),
+        ]);
+        assert_eq!(
+            db_path_from(off),
+            Some(PathBuf::from("/h/.local/share/opencode/opencode.db"))
+        );
+
+        assert_eq!(db_path_from(env(&[])), None, "no HOME, no path to name");
     }
 
     /// The reader runs against the real database without writing to it, when one is
