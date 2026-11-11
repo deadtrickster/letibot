@@ -116,7 +116,7 @@ fn sessions_the_operator_and_the_daemons_facts_share_the_rooms() {
     let err = a1
         .call("read", &json!({"room": project_room(B)}))
         .expect_err("another project's room is refused");
-    assert!(err.contains("not a room you can see"), "{err}");
+    assert!(err.contains("is another project's room"), "{err}");
 
     // The operator lists all three rooms.
     let rooms = seat.ask("h1", json!({"type": "rooms"}));
