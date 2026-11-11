@@ -363,6 +363,11 @@ KEY="$(printf '%s' "$WORKSPACE" | sha12)"
 SOCKET="${LETIBOT_SOCKET:-$RUNDIR/$KEY.sock}"
 RECORD="$RUNDIR/$KEY.json"
 STORE="${LETIBOT_STORE:-$HOME/.local/share/letibot}"
+# An exported LETIBOT_STORE=.../sessions.db outlives the split: once shared.db is beside it, the
+# directory is the store, and the daemon refuses the old file by name.
+if [ "$(basename "$STORE")" = sessions.db ] && [ -f "$(dirname "$STORE")/shared.db" ]; then
+  STORE="$(dirname "$STORE")"
+fi
 # The one file a caller that still takes a single store path wants: `letibot migrate` moves a
 # session's project file, and the key is the one this folder's socket already wears.
 STORE_FILE="$STORE/projects/$KEY.db"
