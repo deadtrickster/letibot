@@ -28,6 +28,8 @@ Everything below the second `---` is the body. It is what the model reads when i
 | `description` | the one line the listing shows |
 | `when_to_use` | optional. The sentence a reader decides by, and the words a ranker needs, since a description is often a title |
 | `keywords` | optional. Comma or space separated, either a list or one line |
+| `requires` | optional. Capabilities this seat must have for the skill to apply at all. Comma or space separated, or one name a line under the key |
+| `unless` | optional. Capabilities whose PRESENCE hides the skill - two skills for one job, and which fits is whichever this seat can do |
 | `allowed-tools` | optional. Tool names only. It can narrow what a session may call, never grant anything |
 | `origin` | optional. Where an installed skill came from, shown as its label |
 
@@ -92,6 +94,63 @@ a pinned skill nothing on this box answers to: `latex-pres`. `[skills] pin` take
 
 The warning's code is `skills_pin`. A key this build does not know inside `[skills]` is refused at
 load, by name.
+
+## Conditional skills
+
+Two skills can answer one job and only one of them can be done on a given seat. A skill says so
+itself:
+
+```markdown
+---
+name: instrument-dashboard
+description: the cluster's state as a page anyone can open
+requires: flowy
+---
+
+…and the skill that fits a seat with no fabric says `unless: flowy`.
+```
+
+A capability is a **tool this session really has** (`bash`, `flowy`, `read`), or an `mcp__server` /
+`mcp__server__*`, which is any tool of that server. A name whose door has nothing behind it is not
+a capability: `flowy` is seated as a door on every root session so a `/flowy login` has somewhere to
+land, and a seat only *has* it when the daemon gave it a fabric seat. That is read at the session's
+open, so a session that logged in to the fabric afterwards keeps the answer it opened with - the
+registry is the daemon's and the seat is the session's, and the listing follows the session.
+Everything else is the tool name, exactly.
+
+`requires` and `unless` are checked for **every** source, a built-in included - the build's own
+skills are not exempt from a seat they cannot use. The older `mcp__`/connector half, which reads a
+skill's body for a server its author guessed at, still skips built-ins.
+
+The operator can say it for any skill, over anything a file claims:
+
+```toml
+[skills.when.instrument-dashboard]
+requires = ["flowy"]
+
+[skills.when.panel]
+unless = ["flowy"]
+```
+
+A table for a name **replaces that skill's own frontmatter whole** - `requires` and `unless`
+together - because an operator who has the seat knows and the author guessed. Both levels may write
+tables: the project's apply, and when both name one skill the operator's is the one in force, whole.
+A project file can make a skill fit this project less, and cannot unhide what the operator hid. (A
+pin unions, for the other reason: a pin is a request, and a project must not unsay one.)
+
+One rule, four doors. A skill this seat cannot use is
+
+- **not in the `/skills` pane's listing**,
+- **not offered** - and the skip is logged in `skills-offers.jsonl` with the reason, so a skill that
+  never gets offered is measured rather than guessed at,
+- **not what `skill find` answers**, even when it scores highest, and
+- **refused by `skill load`**, in the sentence the listing shows it under: *requires `flowy`, which
+  this seat does not have*, or *hidden while `flowy` is on this seat*.
+
+`skill list` still names it, under `not for this seat`, with the reason - a model that silently
+loses a skill from a listing cannot tell a rule from a bug. The operator's own `/skills NAME` still
+hands the body over: that door is theirs, and the condition is an author's or their own file's
+opinion rather than a permission.
 
 ## The offer
 
