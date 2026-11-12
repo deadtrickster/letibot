@@ -133,6 +133,72 @@ impl App {
         }
     }
 
+    /// Take the line typed while the model card is up. The line FILTERS - the card draws what
+    /// it leaves - and Enter takes the marked row, else the exact name, else the best match.
+    /// A row number is not read here as it is on the mode card: a model name is full of digits,
+    /// so a digit is a filter character. The number keys still mark a row on an empty line.
+    pub(crate) fn pick_model(&mut self, typed: &str) -> Option<Action> {
+        if typed.trim().is_empty() {
+            self.pick = None;
+            return None;
+        }
+        let all = self.model_choices();
+        if all.is_empty() {
+            self.say("this daemon does not send the model list; use `/models PROVIDER/MODEL`");
+            return None;
+        }
+        let rows = filter_models(&all, typed);
+        if rows.is_empty() {
+            // The line goes BACK: a filter that was refused is a word to correct, and the card
+            // draws nothing without it, so losing it would leave an empty list and no reason.
+            self.set_composer(typed);
+            self.say(&format!("no model matches {typed:?} — esc closes the list"));
+            return None;
+        }
+        // What the arrows marked, when they marked anything: the reader can see which row is
+        // marked, so Enter must take that one and not the filter's own first guess.
+        let marked = if self.pick_unseeded {
+            None
+        } else {
+            rows.get(self.mode_sel).map(|(n, _)| n.clone())
+        };
+        let want = typed.trim().to_ascii_lowercase();
+        let exact = rows
+            .iter()
+            .find(|(n, _)| {
+                let lower = n.to_ascii_lowercase();
+                lower == want || lower.rsplit('/').next() == Some(want.as_str())
+            })
+            .map(|(n, _)| n.clone());
+        let name = marked.or(exact).unwrap_or_else(|| rows[0].0.clone());
+        self.take_pick(name)
+    }
+
+    /// The `model` row's choices with the facts the daemon sent beside them, in step. A facts
+    /// row of a different length is dropped rather than zipped: a misaligned line would give a
+    /// model another one's window, which is worse than showing none.
+    pub(crate) fn model_choices(&self) -> Vec<(String, String)> {
+        let Some(row) = self
+            .settings
+            .iter()
+            .find(|r| r.key == letibot_sessionlog::protocol::MODEL_KEY)
+        else {
+            return Vec::new();
+        };
+        let facts = self
+            .settings
+            .iter()
+            .find(|r| r.key == letibot_sessionlog::protocol::MODEL_FACTS_KEY)
+            .filter(|f| f.choices.len() == row.choices.len())
+            .map(|f| f.choices.as_slice())
+            .unwrap_or_default();
+        row.choices
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.clone(), facts.get(i).cloned().unwrap_or_default()))
+            .collect()
+    }
+
     /// Leave the mode picker for the mode the operator chose. The mode the session already runs
     /// under closes the list and says so, the way the session picker answers Enter on its own
     /// row: a round trip to be told what the screen already showed is not worth its flicker.
@@ -230,6 +296,12 @@ impl App {
                 .iter()
                 .map(|(v, why)| ((*v).to_string(), (*why).to_string()))
                 .collect();
+        }
+        // The model card is the one list that does not fit on a screen, so it is the one that
+        // filters as a line is typed. Filtering HERE and not in the drawing keeps the drawn rows,
+        // the numbers on them and what Enter takes one list - the defect the spans already avoid.
+        if subject == Pick::Model {
+            return filter_models(&self.model_choices(), self.editor.text());
         }
         self.pick_row()
             .map(|r| {
@@ -506,6 +578,43 @@ impl App {
         }
         rows
     }
+}
+
+/// The model card's rows under what has been typed on it. The order within one rank is the
+/// daemon's own - largest window first - because a filter decides WHICH rows, not which is best.
+pub(crate) fn filter_models(rows: &[(String, String)], typed: &str) -> Vec<(String, String)> {
+    let want = typed.trim().to_ascii_lowercase();
+    if want.is_empty() {
+        return rows.to_vec();
+    }
+    let mut hits: Vec<(u8, (String, String))> = rows
+        .iter()
+        .filter_map(|r| rank(&r.0, &want).map(|k| (k, r.clone())))
+        .collect();
+    hits.sort_by_key(|h| h.0);
+    hits.into_iter().map(|(_, r)| r).collect()
+}
+
+/// How well one row's name answers what was typed, lowest first: the whole name, the model part
+/// alone, a model part that begins with it, anywhere in it, and last its letters in order -
+/// which is what makes `dflash` enough to reach `deepseek/deepseek-v4-flash`.
+fn rank(name: &str, want: &str) -> Option<u8> {
+    let lower = name.to_ascii_lowercase();
+    let model = lower.rsplit('/').next().unwrap_or(&lower);
+    if lower == want {
+        return Some(0);
+    }
+    if model == want {
+        return Some(1);
+    }
+    if model.starts_with(want) {
+        return Some(2);
+    }
+    if lower.contains(want) {
+        return Some(3);
+    }
+    let mut letters = lower.chars();
+    want.chars().all(|c| letters.any(|x| x == c)).then_some(4)
 }
 
 /// What the diff style means. Unified against side-by-side is the setting; colour versus the

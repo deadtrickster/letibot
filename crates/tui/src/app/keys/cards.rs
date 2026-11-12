@@ -522,8 +522,12 @@ impl App {
                 }
                 // A row number MARKS the row and Enter answers it, as on the ladder and the quit
                 // card: answering on the digit took the `2` of a free-text answer meant for the
-                // card in front.
-                _ if self.editor.text().is_empty() && digit_row(k, n).is_some() => {
+                // card in front. Never on the model card, where the line is a FILTER and a name
+                // is full of digits - a digit there must narrow the list, not move a mark.
+                _ if subject != Pick::Model
+                    && self.editor.text().is_empty()
+                    && digit_row(k, n).is_some() =>
+                {
                     self.mode_sel = digit_row(k, n).expect("just checked");
                     self.pick_unseeded = false;
                     return ControlFlow::Break(None);

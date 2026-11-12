@@ -1267,6 +1267,167 @@ fn the_mode_picker_takes_a_row_number_a_name_and_refuses_an_ambiguous_prefix() {
     assert!(notice.contains("no mode matches"), "{notice}");
 }
 
+/// The model card takes the line typed on it. Before this the whole card was a display: a name
+/// typed on it left as a chat message to the model, which is what its own `or type a name`
+/// promised it would not do.
+#[test]
+fn a_name_typed_on_the_model_card_switches_the_model_and_leaves_no_message() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(model_settings(
+        "local",
+        &[
+            "local",
+            "deepseek/deepseek-flash",
+            "deepseek/deepseek-v4-flash",
+            "glm/glm-5.3",
+        ],
+    ));
+    assert_eq!(a.command("models"), Some(Action::Settings));
+    typed(&mut a, "v4-flash");
+    match a.key(Key::Enter) {
+        Some(Action::Slash { line }) => assert_eq!(line, "models deepseek/deepseek-v4-flash"),
+        other => panic!("a typed model name left as {other:?}"),
+    }
+    assert!(a.pick.is_none(), "taking a model closes the list");
+    assert!(
+        a.pending_prompts.is_empty(),
+        "the name reached the transcript as a message: {:?}",
+        a.pending_prompts
+    );
+}
+
+/// It filters as the line is typed, which is the only way a list of 84 models is usable, and a
+/// DIGIT is a filter character here - unlike the mode card, where a digit is a row number - since
+/// a model name is full of them (`glm-5.3`, `grok-4.3`).
+#[test]
+fn the_model_card_filters_as_a_line_is_typed_and_a_digit_is_not_a_row_number() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(model_settings(
+        "local",
+        &[
+            "local",
+            "deepseek/deepseek-flash",
+            "glm/glm-5.3",
+            "grok/grok-4.3",
+        ],
+    ));
+    assert_eq!(a.command("models"), Some(Action::Settings));
+    typed(&mut a, "glm");
+    let rows: Vec<String> = a.pick_values().into_iter().map(|(n, _)| n).collect();
+    assert_eq!(
+        rows,
+        vec!["glm/glm-5.3".to_string()],
+        "the card drew the whole list"
+    );
+    // A digit narrows the same way, and Enter takes the row it leaves rather than the number's.
+    for _ in 0..3 {
+        a.key(Key::Backspace);
+    }
+    typed(&mut a, "4.3");
+    match a.key(Key::Enter) {
+        Some(Action::Slash { line }) => assert_eq!(line, "models grok/grok-4.3"),
+        other => panic!("a typed digit was read as a row number: {other:?}"),
+    }
+}
+
+/// A line nothing matches says so and leaves the list standing: a card that closed on a typo
+/// would be a list that vanished and a model that did not move.
+#[test]
+fn a_typed_line_that_matches_no_model_says_so_and_stays() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(model_settings("local", &["local", "glm/glm-5.3"]));
+    assert_eq!(a.command("models"), Some(Action::Settings));
+    typed(&mut a, "zzz");
+    assert_eq!(a.key(Key::Enter), None);
+    assert!(
+        a.pick == Some(Pick::Model),
+        "the card waits, it does not close"
+    );
+    let notice = a.notice.clone().unwrap();
+    assert!(notice.contains("no model matches"), "{notice}");
+    // And the card says the same thing in its own words rather than blaming the daemon for a
+    // list it did send.
+    let screen = a.screen(110, 30).join("\n");
+    assert!(screen.contains("nothing here matches"), "{screen}");
+}
+
+/// Each row carries the window and the price the daemon read out of the catalogue, and the rows
+/// are grouped under the provider their own name is prefixed with.
+#[test]
+fn the_model_card_shows_each_rows_window_and_price_under_its_providers_heading() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(model_facts_settings(
+        "local",
+        &["local", "deepseek/deepseek-flash", "glm/glm-5.3"],
+        &[
+            "this daemon's own server — no key, no meter",
+            "1M window · $0.15 in / $0.6 out per M",
+            "200k window · price unlisted",
+        ],
+    ));
+    assert_eq!(a.command("models"), Some(Action::Settings));
+    let screen = a.screen(110, 30);
+    let all = screen.join("\n");
+    assert!(all.contains("1M window"), "{all}");
+    assert!(all.contains("$0.15 in / $0.6 out per M"), "{all}");
+    assert!(all.contains("200k window · price unlisted"), "{all}");
+    // The headings are read off the names, so they are the providers' own spellings.
+    assert!(
+        screen.iter().any(|l| l.trim() == "deepseek"),
+        "no deepseek heading: {all}"
+    );
+    assert!(
+        screen.iter().any(|l| l.trim() == "this box"),
+        "the bare rows got no heading: {all}"
+    );
+}
+
+/// The facts belong to the choice at their own index and to no other, and a facts row of another
+/// length is dropped whole: a misaligned line would give a model another one's window, which is
+/// worse than showing none.
+#[test]
+fn the_facts_beside_the_model_choices_are_matched_by_index_and_never_by_guess() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(model_facts_settings(
+        "local",
+        &["local", "glm/glm-5.3"],
+        &["the box's own server", "200k window · price unlisted"],
+    ));
+    assert_eq!(a.command("models"), Some(Action::Settings));
+    assert_eq!(a.model_choices()[1].1, "200k window · price unlisted");
+    // One line short: nothing is drawn under either row rather than the wrong line under one.
+    a.apply(ServerFrame::Settings {
+        rows: vec![
+            letibot_sessionlog::protocol::SettingRow {
+                key: letibot_sessionlog::protocol::MODEL_KEY.into(),
+                value: "local".into(),
+                source: String::new(),
+                editable: "/models PROVIDER/MODEL".into(),
+                choices: vec!["local".into(), "glm/glm-5.3".into()],
+                tools: Vec::new(),
+            },
+            letibot_sessionlog::protocol::SettingRow {
+                key: letibot_sessionlog::protocol::MODEL_FACTS_KEY.into(),
+                value: "the vendored snapshot".into(),
+                source: String::new(),
+                editable: String::new(),
+                choices: vec!["the box's own server".into()],
+                tools: Vec::new(),
+            },
+        ],
+    });
+    assert!(
+        a.model_choices().iter().all(|(_, f)| f.is_empty()),
+        "a short facts row was zipped anyway: {:?}",
+        a.model_choices()
+    );
+}
+
 #[test]
 fn mode_with_a_name_still_goes_straight_to_the_daemon() {
     let mut a = app();

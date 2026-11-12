@@ -644,6 +644,10 @@ pub struct App {
     /// open the card and ask for fresh rows in the same breath, so the seed reads an empty list and
     /// the cursor sits on row 0. Cleared by anything the reader does, so an answer cannot snap it back.
     pub(crate) pick_unseeded: bool,
+    /// Which row the setting card's cursor was on at the last frame's scroll decision, so a cursor
+    /// that MOVED takes the window with it and a window scrolled by hand is not pulled back every
+    /// frame. `None` while no setting card is drawn.
+    pub(crate) pick_sel_at: Option<usize>,
     /// Which value of the setting card each screen row of the last frame belongs to, as `(y, k)`
     /// for every row value `k` was drawn on, its wrapped `why` included. Empty unless the whole
     /// card fit, because a click is trusted only for a list the frame proved was all on screen.
@@ -1414,6 +1418,7 @@ impl App {
             reseat: None,
             mode_sel: 0,
             pick_unseeded: false,
+            pick_sel_at: None,
             mode_hits: Vec::new(),
             drawn_card: None,
             card_span: None,

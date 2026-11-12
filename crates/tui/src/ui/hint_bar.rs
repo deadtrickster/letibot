@@ -3,7 +3,7 @@
 //! and editor pane keep rano's own sentences, pinned by tag.
 
 use crate::app::*;
-use crate::ui::panes::picker::SETTING_BAR;
+use crate::ui::panes::picker::{MODEL_BAR, SETTING_BAR};
 use rano::agent::hint_bar::{HintBar, HintMode, centred};
 use rano::render::Line;
 use rano::style::Role;
@@ -179,8 +179,13 @@ impl App {
             Some(HintMode::EditorBehind)
         } else if self.pick.is_some() {
             // The card's bar is this head's, not rano's `HintMode::Pick`, whose line promises a
-            // key that only moves a mark - see `SETTING_BAR`.
-            return crate::ui::render::row(&centred(Some(&editor), SETTING_BAR, w), p);
+            // key that only moves a mark - see `SETTING_BAR`. The model card's line filters, so
+            // its digits narrow the list rather than marking a row, and it says so.
+            let bar = match self.pick {
+                Some(Pick::Model) => MODEL_BAR,
+                _ => SETTING_BAR,
+            };
+            return crate::ui::render::row(&centred(Some(&editor), bar, w), p);
         } else {
             None
         };

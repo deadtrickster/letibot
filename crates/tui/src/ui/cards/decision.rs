@@ -231,6 +231,18 @@ impl App {
         content
     }
 
+    /// Put the card's window where a value's rows are, when the cursor has moved and left it. `room`
+    /// is the whole viewport the fit ladder granted, one row of which the seam spends - read the same
+    /// way `card_window` reads it, so a value near the end can still be brought fully into view.
+    pub(crate) fn card_scroll_into(&mut self, span: std::ops::Range<usize>, room: usize) {
+        let shown = room.saturating_sub(1).max(1);
+        if span.start < self.dec_scroll {
+            self.dec_scroll = span.start;
+        } else if span.end > self.dec_scroll + shown {
+            self.dec_scroll = span.end.saturating_sub(shown);
+        }
+    }
+
     /// The card's content as a window: `room` rows, seam included; returns the lines to draw and the
     /// scroll used. The seam says how many lines are out of view - never "there is more" - and the
     /// scroll is clamped here, since the drawn length is a function of the width and the fold.

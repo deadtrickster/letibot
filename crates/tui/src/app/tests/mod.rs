@@ -842,6 +842,31 @@ fn model_settings(value: &str, choices: &[&str]) -> ServerFrame {
     }
 }
 
+/// The model card as a daemon on this build sends it: the choices, and one line of facts beside
+/// each. Two rows and not one field, so what a person types stays exactly the switch name.
+fn model_facts_settings(value: &str, choices: &[&str], facts: &[&str]) -> ServerFrame {
+    ServerFrame::Settings {
+        rows: vec![
+            letibot_sessionlog::protocol::SettingRow {
+                key: letibot_sessionlog::protocol::MODEL_KEY.into(),
+                value: value.into(),
+                source: String::new(),
+                editable: "/models PROVIDER/MODEL".into(),
+                choices: choices.iter().map(|s| (*s).to_string()).collect(),
+                tools: Vec::new(),
+            },
+            letibot_sessionlog::protocol::SettingRow {
+                key: letibot_sessionlog::protocol::MODEL_FACTS_KEY.into(),
+                value: "the vendored snapshot".into(),
+                source: String::new(),
+                editable: String::new(),
+                choices: facts.iter().map(|s| (*s).to_string()).collect(),
+                tools: Vec::new(),
+            },
+        ],
+    }
+}
+
 /// `Mode::NAMED`'s names verbatim, spaces and all. A fixture list that agreed with the code's
 /// assumption instead of with the daemon's bytes is how a defect where the current mode's name
 /// contains a space passed a suite that looked like it covered the card.

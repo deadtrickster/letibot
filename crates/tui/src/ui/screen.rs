@@ -223,6 +223,8 @@ impl App {
         // Which rows of the card are which value's, set only when the card in the slot IS
         // the setting card - see `mode_hits` below.
         let mut pick_spans: Option<Vec<std::ops::Range<usize>>> = None;
+        // The marked value's rows in that card, when the card was drawn: what the window scrolls to.
+        let mut pick_sel: Option<std::ops::Range<usize>> = None;
         // Which card the slot holds, as a click target - set by the arm that drew it,
         // so the record names the card on the screen and not one that is merely open.
         let mut card_target: Option<Target> = None;
@@ -262,6 +264,9 @@ impl App {
                 }
                 (None, None, None) if self.pick.is_some() => {
                     let (rows, spans) = self.setting_picker_layout(w);
+                    // Where the marked value was drawn, for the window below: the model card holds
+                    // more rows than a screen, and the arrows move a cursor through it.
+                    pick_sel = spans.get(self.mode_sel).cloned();
                     pick_spans = Some(spans);
                     card_target = Some(Target::SettingCard);
                     (rows, Vec::new())
@@ -379,6 +384,17 @@ impl App {
         // to it. Wrapped rather than trimmed: this one is read, not glanced at.
         if let Some(line) = self.mode_confirm_line() {
             chrome.extend(row_strings(&screens::asking(&line, w), self.cfg.palette()));
+        }
+        // The setting card's list can be longer than the screen, and its cursor moves through it
+        // with the arrows: a cursor below the window is a key that looks like it did nothing. The
+        // snap is taken only when the cursor MOVED, so a window moved by hand with pgup stays.
+        match &pick_sel {
+            Some(sel) if self.pick_sel_at != Some(self.mode_sel) => {
+                self.pick_sel_at = Some(self.mode_sel);
+                self.card_scroll_into(sel.clone(), content_rows);
+            }
+            None => self.pick_sel_at = None,
+            Some(_) => {}
         }
         // The content as a window, then the answer in full underneath: the seam says how many lines are out of
         // view and names the keys that move, and it is drawn only when there is something out of view.
