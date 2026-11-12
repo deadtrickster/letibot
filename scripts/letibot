@@ -322,9 +322,43 @@ epoch_fmt() { # epoch_fmt SECONDS FORMAT
 # No user manager (a bare ssh login without lingering, a container): the scope cannot be
 # made, `scope_ok` says so once, and the daemon starts the old way — it then reports its
 # tool calls as UNCAPPED itself, so the fallback is never silent.
+#
+# **AND WHAT IT SAYS IS THE MANAGER'S OWN ANSWER** (TODO.md R192): "no systemd user manager
+# here" was false on the box that reported it - the manager was there, at its unit limit, and
+# refusing. The probe is bounded too, so a manager pegged at 100% CPU costs seconds, not minutes.
+SCOPE_PROBE_SECONDS=10
+SCOPE_WHY=""
+# A command that cannot outlive `SCOPE_PROBE_SECONDS`. `timeout` is coreutils and is absent on a
+# Mac, where this is not asked anyway.
+probe_bounded() {
+  if command -v timeout > /dev/null 2>&1; then
+    timeout "$SCOPE_PROBE_SECONDS" "$@"
+    return $?
+  fi
+  "$@"
+}
 scope_ok() {
-  [ "$HOST_OS" != Darwin ] && command -v systemd-run >/dev/null 2>&1 &&
-    systemd-run --user --scope --quiet --collect --expand-environment=no true >/dev/null 2>&1
+  SCOPE_WHY=""
+  if [ "$HOST_OS" = Darwin ]; then
+    SCOPE_WHY="macOS has no systemd user manager, and needs none"
+    return 1
+  fi
+  if ! command -v systemd-run > /dev/null 2>&1; then
+    SCOPE_WHY="there is no systemd-run on this PATH"
+    return 1
+  fi
+  local out rc=0 line
+  out="$(probe_bounded systemd-run --user --scope --quiet --collect --expand-environment=no true 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  if [ "$rc" -eq 124 ]; then
+    SCOPE_WHY="the user manager did not answer within ${SCOPE_PROBE_SECONDS}s"
+    return 1
+  fi
+  # Its last line, which is where systemd puts the reason: the rest is the transient unit's own
+  # chatter, and a multi-line message in a terminal's scrollback is the one nobody finishes.
+  line="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1 || true)"
+  SCOPE_WHY="the user manager refused a scope: ${line:-exit $rc with nothing said}"
+  return 1
 }
 # Sets SCOPE_RUN to the words that start a command in such a scope, or to nothing.
 scope_run() { # scope_run UNIT-STEM
@@ -333,7 +367,7 @@ scope_run() { # scope_run UNIT-STEM
     SCOPE_RUN=(systemd-run --user --scope --quiet --collect --expand-environment=no
       --unit "$1-$KEY-$$" -p Delegate=yes -p OOMPolicy=continue)
   elif [ "$HOST_OS" != Darwin ]; then
-    echo "letibot: no systemd user manager here - harnessd shares this terminal's cgroup, and its tool calls run uncapped" >&2
+    echo "letibot: ${SCOPE_WHY} - harnessd shares this terminal's cgroup, and its tool calls run uncapped" >&2
   fi
 }
 detach() { # detach UNIT-STEM COMMAND [ARGS...]

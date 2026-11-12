@@ -1480,6 +1480,45 @@ else
   fails=$((fails + bad))
 fi
 
+# **A SCOPE THAT CANNOT BE MADE IS THE MANAGER'S OWN SENTENCE, NOT A FALSE ABSENCE** (TODO.md
+# R192). A manager at its unit limit answers `systemd-run` with `Argument list too long`, and one
+# pegged at 100% CPU answers nothing at all - so the launcher says the first and bounds the second.
+# The stubs sit ahead of any real `systemd-run` on the PATH, and the run is the ONE-SHOT.
+if [ "$(uname -s)" = Linux ]; then
+  mkdir -p "$T/noscope"
+  cat > "$T/noscope/systemd-run" << 'STUB'
+#!/usr/bin/env bash
+# The manager's own last line, which is the reason systemd puts where a person looks.
+echo "Failed to start transient scope unit: Argument list too long" >&2
+exit 1
+STUB
+  chmod +x "$T/noscope/systemd-run"
+  out="$(RUN_PATH_EXTRA="$T/noscope:" run "$DEFAULT_ONLY" "one question")"
+  expect "a refused scope is the manager's own words" "$out" \
+    "the user manager refused a scope: Failed to start transient scope unit: Argument list too long"
+  refuse "  ...and not an absence of the manager that refused" "$out" "no systemd user manager here"
+  expect "  ...and the run goes on without a scope" "$out" "^harnessd .*--prompt one"
+
+  cat > "$T/noscope/systemd-run" << 'STUB'
+#!/usr/bin/env bash
+# A pegged manager: it takes the ask and never answers it.
+exec sleep 60
+STUB
+  chmod +x "$T/noscope/systemd-run"
+  started="$(date +%s)"
+  out="$(RUN_PATH_EXTRA="$T/noscope:" run "$DEFAULT_ONLY" "one question")"
+  spent=$(($(date +%s) - started))
+  expect "a manager that never answers is given up on" "$out" \
+    "the user manager did not answer within 10s"
+  if [ "$spent" -le 30 ]; then
+    echo "ok   ...within seconds of the probe's bound (${spent}s)"
+  else
+    echo "FAIL ...within seconds of the probe's bound: the launcher waited ${spent}s"
+                                                                        fails=$((fails + 1))
+  fi
+  expect "  ...and the run goes on there too" "$out" "^harnessd .*--prompt one"
+fi
+
 if [ "$fails" -ne 0 ]; then
   echo "launcher: $fails failed"
   exit 1
