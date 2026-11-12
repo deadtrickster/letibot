@@ -782,8 +782,9 @@ impl App {
     pub fn unreadable(&mut self, u: Unreadable) -> Disposition {
         self.unreadable += 1;
         // `ts` is 0: this happened on the socket rather than on the session's log, and the log's
-        // clock is not this. A note with no timestamp renders without one.
-        self.note(Note::Warned(Warned {
+        // clock is not this. Beside the conversation, like every other count `/status` keeps: a
+        // frame this head could not read is not something any model was sent.
+        self.note_beside(Note::Warned(Warned {
             code: "unreadable_frame".into(),
             detail: u.said(),
             ts: 0,

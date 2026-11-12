@@ -16,10 +16,6 @@ pub(crate) const DAEMON_STARTED: &str = "daemon_started";
 /// STATE rather than as a note - see [`App::store_newer`].
 pub(crate) const STORE_NEWER: &str = "store_newer";
 
-/// The one line a session's developer diagnostics get (`warning::is_developer`): its own code, so
-/// the conversation says *this is a diagnostic* rather than looking like a fault of the session.
-pub(crate) const DEVELOPER_CODE: &str = "diagnostics";
-
 impl App {
     /// A boot step, taken as the state it is - `true` when `code` was one, so the caller
     /// draws no row for it. The live arm and the snapshot both come here, so a head that attaches
@@ -222,70 +218,43 @@ impl App {
                     v.polling = false;
                     v.error = Some(detail.clone());
                 }
-                // Weather notes go on the edge (`warning::ALARM_ONLY`): the triangle, a counter with
-                // `/status` holding the number, and the daemon's sentence listed by `/notes` and
-                // drawn nowhere - filed BESIDE the conversation, which is why this is `Filtered`.
-                if letibot_sessionlog::warning::to_the_alarm(&code) {
-                    // The sentence is filed, not dropped. Filtering it here and filing it only on
-                    // the snapshot door gave one warning two records decided by when you attached:
-                    // a head that came later listed it and a live head kept only the count.
-                    self.note_beside(Note::Warned(Warned {
-                        code: code.clone(),
-                        detail,
-                        ts,
-                    }));
-                    if !self.count_edge_note(&code) {
-                        self.note(Note::Warned(Warned {
-                            code: "alarm_only_unregistered".into(),
-                            detail: format!(
-                                "`{code}` is classified as edge-bound and this head has no \
-                                 counter for it, so nothing on the edge points at the sentence \
-                                 `/notes` now lists. See `warning::ALARM_ONLY`."
-                            ),
-                            ts,
-                        }));
+                // One record: EVERY warning's sentence goes where the table says, and nowhere near
+                // the conversation. `Go::Notes` is `/notes` plus - for a fault - a count on the
+                // edge; `Go::Status` is live state and is also said on the status line;
+                // `Go::Model` means the model was sent the same event, so its own row is the row
+                // drawn. See `warning::Go`, `warning::STATUS` and `warning::TWIN`: a code that
+                // lands here unclassified goes to `/notes` and draws nothing.
+                match letibot_sessionlog::warning::destination(&code) {
+                    letibot_sessionlog::warning::Go::Status => self.say(&detail),
+                    letibot_sessionlog::warning::Go::Model => {}
+                    letibot_sessionlog::warning::Go::Notes => {
+                        // A fault is never only a list nobody opened: the edge counts it, and
+                        // `/status` holds the number. A routine note asks the reader nothing and
+                        // is listed alone.
+                        let class = letibot_sessionlog::warning::class(&code);
+                        if class.is_refused() {
+                            self.refused += 1;
+                        } else if class.is_failure() {
+                            self.failed += 1;
+                        }
                     }
-                    return Disposition::Filtered;
                 }
-                // A developer's diagnostic: the harness measured itself, and no reader has a move.
-                // `/notes` lists every one and the daemon's log has the numbers; the conversation
-                // gets ONE line per session, because a census is not something to read between turns.
-                if letibot_sessionlog::warning::is_developer(&code) {
+                // The weather counter (`warning::ALARM_ONLY`) is a second count over the same
+                // rule: one code, one counter, and a code that names the edge and has none says so.
+                if letibot_sessionlog::warning::to_the_alarm(&code) && !self.count_edge_note(&code)
+                {
                     self.note_beside(Note::Warned(Warned {
-                        code: code.clone(),
-                        detail: detail.clone(),
-                        ts,
-                    }));
-                    if self.developer_said {
-                        return Disposition::Filtered;
-                    }
-                    self.developer_said = true;
-                    self.note(Note::Warned(Warned {
-                        code: DEVELOPER_CODE.into(),
+                        code: "alarm_only_unregistered".into(),
                         detail: format!(
-                            "`{code}` is one: the harness measuring itself, with no move this \
-                             session can make. `/notes` lists every one as it arrives and the \
-                             daemon's log holds the numbers."
+                            "`{code}` is classified as edge-bound and this head has no counter \
+                             for it, so nothing on the edge points at the sentence `/notes` now \
+                             lists. See `warning::ALARM_ONLY`."
                         ),
                         ts,
                     }));
-                    return Disposition::Rendered;
                 }
-                // One record: a warning whose event the model was ALSO sent is filed BESIDE the
-                // conversation - `/notes` lists it, `/status` counts it, a refusal or a failure is
-                // said on the status line as it lands - and the model's own row is the row drawn.
-                // The table names that row for every code this applies to. See `warning::TWIN`.
-                if letibot_sessionlog::warning::twin(&code).is_some() {
-                    if letibot_sessionlog::warning::class(&code).is_refused()
-                        || letibot_sessionlog::warning::class(&code).is_failure()
-                    {
-                        self.say(&detail);
-                    }
-                    self.note_beside(Note::Warned(Warned { code, detail, ts }));
-                    return Disposition::Filtered;
-                }
-                self.note(Note::Warned(Warned { code, detail, ts }));
-                Disposition::Rendered
+                self.note_beside(Note::Warned(Warned { code, detail, ts }));
+                Disposition::Filtered
             }
             _ => unreachable!("on_warning was handed an event it does not handle"),
         }

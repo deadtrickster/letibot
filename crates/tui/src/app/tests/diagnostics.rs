@@ -12,60 +12,38 @@ const DETAIL: &str = "a sentence no card reads, and this is its second clause";
 /// conversation is a developer's, filed beside it for `/notes` and never a row.
 #[test]
 fn every_code_draws_its_action_or_is_not_drawn() {
-    use letibot_sessionlog::warning::{Action, TABLE};
-    let (mut drawn, mut silent, mut filed) = (0, 0, 0);
-    for (code, _class, action) in TABLE {
+    use letibot_sessionlog::warning::TABLE;
+    let (mut held, mut state) = (0, 0);
+    for (code, _class, _action) in TABLE {
         let mut a = with_warning(code, DETAIL);
-        let screen = a.screen(200, 40);
-        let joined = screen.join("\n");
-        let row = rows_with(&screen, code).first().map(|l| l.to_string());
-        match action {
-            Action::Do(said) => match row {
-                Some(row) => {
-                    assert!(
-                        row.contains(said),
-                        "`{code}` draws without its action `{said}`: {row}"
-                    );
-                    drawn += 1;
-                }
-                // A code the head takes as state rather than as a row (the model's switch, a
-                // store's build, a turn's own failure) draws nothing, and that is its answer.
-                None => silent += 1,
-            },
-            // A report: what happened, and nothing invented about what to do.
-            Action::Nothing => {
-                if let Some(row) = row {
-                    assert!(
-                        !row.contains("click for details · "),
-                        "`{code}` is a report and grew an action: {row}"
-                    );
-                    drawn += 1;
-                }
-            }
-            Action::Developer => {
-                assert!(
-                    !a.notes
-                        .iter()
-                        .any(|(place, n)| matches!(place, Placed::Seam(_))
-                            && matches!(n, Note::Warned(w) if w.code == *code)),
-                    "`{code}` is a developer's diagnostic and took a row: {joined}"
-                );
-                assert!(
-                    a.notes
-                        .iter()
-                        .any(|(place, n)| matches!(place, Placed::Before)
-                            && matches!(n, Note::Warned(w) if w.code == *code)),
-                    "`{code}` is not in `/notes` either"
-                );
-                filed += 1;
-            }
+        let _ = a.screen(200, 40);
+        let listed = a.notes_lines().join("\n");
+        // One record: no code draws a row of the conversation, whatever it asks the reader to do.
+        assert!(
+            !a.notes
+                .iter()
+                .any(|(place, _)| matches!(place, Placed::Seam(_))),
+            "`{code}` took a row of the conversation"
+        );
+        if a.notes
+            .iter()
+            .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == *code))
+        {
+            assert!(
+                listed.contains(code),
+                "`{code}` is held and `/notes` does not list it"
+            );
+            held += 1;
+        } else {
+            // A code the head takes as state rather than as a note (the model's switch, a store's
+            // build, a turn's own failure) files nothing, and that is its answer.
+            state += 1;
         }
     }
-    // The floors: a table that stopped being drawn, or a routing that swept everything into
-    // `/notes`, would pass every assert above without checking anything.
-    assert!(drawn > 100, "{drawn} codes drawn");
-    assert!(silent < 20, "{silent} codes drawn nowhere");
-    assert!(filed >= 8, "{filed} developer codes");
+    // The floors: a head that filed nothing, or one that kept every code as state, would pass
+    // every assert above without checking anything.
+    assert!(held > 100, "{held} codes held in `/notes`");
+    assert!(state < 20, "{state} codes kept as state");
 }
 
 /// A session's developer diagnostics get ONE line, whatever arrives: the codes themselves are
@@ -78,11 +56,9 @@ fn a_sessions_developer_diagnostics_are_one_info_line() {
     );
     let screen = a.screen(200, 40);
     let joined = screen.join("\n");
-    assert_eq!(
-        rows_with(&screen, "diagnostics · `memory_creep`").len(),
-        1,
-        "{joined}"
-    );
+    // Not a row: a developer's diagnostic is `/notes` and the daemon's log, and the conversation
+    // gets nothing at all - not even the one line it used to.
+    assert_eq!(rows_with(&screen, "diagnostics ·").len(), 0, "{joined}");
     // More of them: the listing grows and the screen does not.
     for (code, detail) in [
         ("memory_bound_broken", "a bound did not hold"),
@@ -107,7 +83,7 @@ fn a_sessions_developer_diagnostics_are_one_info_line() {
     }
     let screen = a.screen(200, 40);
     let joined = screen.join("\n");
-    assert_eq!(rows_with(&screen, "diagnostics ·").len(), 1, "{joined}");
+    assert_eq!(rows_with(&screen, "diagnostics ·").len(), 0, "{joined}");
     for code in [
         "memory_creep",
         "memory_bound_broken",

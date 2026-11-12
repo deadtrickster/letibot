@@ -68,7 +68,6 @@ tie_breaker = "deepseek/deepseek-flash"   # the model that arbitrates the room's
 
 [warnings]
 mute = ["model_slow_first_byte"]  # codes the head files and never draws
-coalesce = true                   # notices of one kind inside a minute are one counted row
 
 [keys]
 "todos.d" = "f"                   # SURFACE.KEY, as the bar spells them, to one other key

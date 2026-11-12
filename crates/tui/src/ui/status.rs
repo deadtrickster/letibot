@@ -372,8 +372,26 @@ impl App {
              a durable fact once. **A note that is not drawn** is one that arrived with a \
              snapshot — it happened before this head attached, so it is listed and counted \
              rather than planted in a conversation it did not precede (R19) — or one filed \
-             beside the conversation on purpose, which is where the edge-bound diagnostics \
-             go: `/notes` lists the sentence and the conversation never drew it.",
+             beside the conversation on purpose, which is where every warning's sentence goes: \
+             `/notes` lists it and the conversation never draws it.",
+        );
+        // The two numbers the edge points at. A fault filed only in `/notes` is a fault nobody
+        // read, so every refusal and every failure the daemon raises is counted here and the `⚠`
+        // on the composer's edge is drawn while either has moved since the last read.
+        row(
+            "refused",
+            self.refused.to_string(),
+            "Warnings this head filed beside the conversation whose register is a refusal: the \
+             answer to a line somebody typed, in the daemon's words. `/notes` lists each one; \
+             this is the number the edge points at, so a refusal is never only in a list nobody \
+             opened.",
+        );
+        row(
+            "failed",
+            self.failed.to_string(),
+            "Warnings this head filed beside the conversation whose register is a failure: \
+             something did not work and the model was not told. `/notes` lists each sentence \
+             with its code, and this is the number the edge points at.",
         );
         row(
             "dropped",

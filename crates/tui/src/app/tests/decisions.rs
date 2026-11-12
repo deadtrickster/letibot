@@ -564,9 +564,12 @@ fn a_refused_call_is_rendered_as_refused_rather_than_as_silence() {
         testing::requested("r1", "rm -rf /"),
     )));
     a.apply(ServerFrame::Event(env(2, testing::answered("r1", "deny"))));
-    let screen = a.screen(120, 16).join("\n");
-    assert!(screen.contains("rm -rf /"), "{screen}");
-    assert!(screen.contains("REFUSED"), "{screen}");
+    let _ = a.screen(120, 16);
+    // Not a row of the conversation: a decision is the operator's own act, and its record is
+    // `/notes` - which is where a reader looks for what they answered.
+    let listed = a.notes_lines().join("\n");
+    assert!(listed.contains("rm -rf /"), "{listed}");
+    assert!(listed.contains("REFUSED"), "{listed}");
 }
 
 /// A question the person answered is not a permission's verdict: the settled event says `Cancelled`
@@ -600,7 +603,10 @@ fn an_answered_question_is_drawn_as_the_answer_and_not_as_a_permission_verdict()
         },
     )));
     assert!(a.open_decisions().is_empty());
-    let screen = a.screen(160, 24).join("\n");
+    let _ = a.screen(160, 24);
+    // `/notes` holds the answer, and it is attributed and worded as the answer it is - never as
+    // one of a permission's four words.
+    let screen = a.notes_lines().join("\n");
     assert!(
         screen.contains("which database should the migration target?"),
         "{screen}"

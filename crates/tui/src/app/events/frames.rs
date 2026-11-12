@@ -532,10 +532,10 @@ impl App {
                 if self.seq > 0 && env.session_id == self.session_id && env.seq > self.seq + 1 {
                     let lost = env.seq - self.seq - 1;
                     self.gaps += 1;
-                    // Said in the conversation, once per gap, and the range is
-                    // named. Two gaps have to be two lines; deduping on the code
-                    // would collapse a session's whole history of them into one.
-                    self.note(Note::Warned(Warned {
+                    // Filed beside the conversation, and the range is named: this head's own
+                    // reading of the wire is not a row any model was sent. Two gaps have to be
+                    // two records; deduping on the code would collapse them into one.
+                    self.note_beside(Note::Warned(Warned {
                         code: "log_gap".into(),
                         detail: format!(
                             "{lost} event(s) never reached this head: seq {}..{} are \

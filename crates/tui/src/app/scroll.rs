@@ -1436,7 +1436,10 @@ impl App {
             _ => false,
         });
         if !already {
-            self.note(Note::Warned(Warned {
+            // Beside the conversation: this head lost a place in a transcript it never sent the
+            // model, so it is not a row. The transient line below is where a reader looking at the
+            // viewport sees it.
+            self.note_beside(Note::Warned(Warned {
                 code: "anchor_lost".into(),
                 detail: said,
                 ts: 0,

@@ -160,9 +160,10 @@ fn retry_rows(frame: &[String]) -> Vec<String> {
 
 #[test]
 fn one_retried_call_is_one_row_at_eighty_columns() {
-    // ── BEFORE: three attempts, three rows ───────────────────────────────────────────────
-    // The same sentence three times with the count behind the cut: the head cannot revise a note,
-    // because a note is filed under its own text.
+    // ── BEFORE: three attempts, and no row at all ────────────────────────────────────────
+    // A warning is not a row of the conversation any more, so three attempts used to be three
+    // lines and are now three sentences in `/notes` - which is why the LIVE line below is the
+    // one place a retry can be watched.
     let mut before = app();
     for n in 1..=3 {
         before.apply(ServerFrame::Event(env(n as u64, attempt_warning(n))));
@@ -174,21 +175,15 @@ fn one_retried_call_is_one_row_at_eighty_columns() {
         .collect();
     assert_eq!(
         had.len(),
-        3,
-        "the before half of this comparison is three rows:\n{}",
+        0,
+        "an attempt drew a row of the conversation:\n{}",
         wall.join("\n")
     );
-    // The failure's own mark, and the count cut off behind the head of the sentence: what this
-    // comparison is about is that one attempt was one row, not the four words it gets through.
-    let cut = "    session · ! model_endpoint_retry · the model endpoi… · click for details";
-    for row in &had {
-        assert_eq!(
-            glass(row),
-            cut,
-            "one row per attempt, and every one of them cut before the count:\n{}",
-            wall.join("\n")
-        );
-    }
+    assert_eq!(
+        before.notes.len(),
+        3,
+        "and every attempt is held in `/notes`"
+    );
 
     // ── AFTER: one row, and it MOVES ─────────────────────────────────────────────────────
     let mut after = app();

@@ -330,7 +330,6 @@ impl App {
         let mut problems = said;
         self.quiet = crate::app::Quiet {
             muted: cfg.warnings.mute.iter().map(|e| e.value.clone()).collect(),
-            coalesce: cfg.warnings.coalesce.unwrap_or(true),
         };
         // A code nothing knows is a mute that would never fire, which is the silently-ignored
         // key this tree names: it is said with the line, and the rest of the list stands.

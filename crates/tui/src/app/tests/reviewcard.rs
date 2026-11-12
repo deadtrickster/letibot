@@ -259,25 +259,35 @@ fn every_session_shape_draws_as_one_line() {
     }
 }
 
-/// Every hub warning a review raises is one line, and a click on it opens the detail whole.
+/// Every hub warning a review raises reads as one line - and is live state, so the status line
+/// says it and `/notes` holds it, never the conversation.
 #[test]
-fn every_review_warning_draws_as_one_line_and_opens_whole() {
+fn every_review_warning_reads_as_one_line_and_is_no_row() {
     for (code, detail, line) in warning_shapes() {
         let mut a = with_warning(code, detail);
         let screen = a.screen(200, 30);
         let joined = screen.join("\n");
-        assert_eq!(rows_with(&screen, &line).len(), 1, "{code}: {joined}");
-        assert!(!joined.contains("/queue restart"), "{code}: {joined}");
-        assert_eq!(a.card_rows.len(), 1, "{code}: {:?}", a.card_rows);
-        let (y, _) = a.card_rows[0];
-        assert_eq!(a.key(Key::Click { x: 10, y: y as u16 }), None);
-        let whole = popup_text(&mut a);
+        assert!(!joined.contains(&line), "{code}: drew a row: {joined}");
+        assert_eq!(a.card_rows.len(), 0, "{code}: {:?}", a.card_rows);
+        // The table still reads it, and the status line said it as it landed.
         assert!(
-            holds(&whole, detail),
-            "{code}: the popup lost words: {whole}"
+            crate::ui::transcript::line_cards::warning_card(code, detail)
+                .is_some_and(|c| c.line == line),
+            "{code}: the table stopped reading the sentence"
         );
-        assert_eq!(a.key(Key::Esc), None);
-        assert!(a.diff_popup.is_none());
+        assert!(
+            a.notice
+                .as_deref()
+                .is_some_and(|n| n.contains(code) || detail.contains(n)),
+            "{code}: the status line is silent: {:?}",
+            a.notice
+        );
+        assert!(
+            a.notes
+                .iter()
+                .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == code)),
+            "{code}: left no record"
+        );
     }
 }
 
@@ -462,15 +472,18 @@ fn a_shape_the_reader_does_not_know_falls_back() {
         let mut a = with_warning(code, detail);
         let screen = a.screen(200, 60);
         let joined = screen.join("\n");
-        assert_eq!(
-            screen
-                .iter()
-                .filter(|l| l.contains(&format!(" {code} · ")))
-                .count(),
-            1,
-            "{code}: drawn as the generic line: {joined}"
+        // Not a row, generic or otherwise: no warning is. The table refuses the shape, so
+        // `/notes` draws the generic line for it, and the status line said it.
+        assert!(
+            !screen.iter().any(|l| l.contains(&format!(" {code} · "))),
+            "{code}: drew a row: {joined}"
         );
-        assert_eq!(newest_notice(&mut a), detail, "{code}");
+        assert!(
+            a.notes
+                .iter()
+                .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == code && w.detail == detail)),
+            "{code}: left no record"
+        );
     }
 }
 

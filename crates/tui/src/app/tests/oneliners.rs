@@ -168,35 +168,34 @@ fn a_job_beside_a_monitor_keeps_both_compact() {
     assert!(!joined.contains("Only a FIRED watch"), "{joined}");
 }
 
-/// A warning no card reads is one line in its register, clickable, its code said once - it was three
-/// wrapped lines and a `+N lines` tail that nothing could open.
+/// A warning no card reads is not a row either: the sentence is in `/notes` whole, and the
+/// status line says the live half - the shape the note pane reads is the table's.
 #[test]
-fn a_warning_no_card_reads_is_one_clickable_line() {
+fn a_warning_no_card_reads_is_held_whole_and_never_a_row() {
     let detail = "`deadtrickster` asked this daemon to stop. Every head detaches, the socket \
                   goes, and nothing new is started. Runs in flight are ended.";
     let mut a = with_warning("daemon_stopping", detail);
     let screen = a.screen(160, 30);
     let joined = screen.join("\n");
-    assert_eq!(
-        rows(
-            &screen,
-            "session · daemon_stopping · `deadtrickster` asked this daemon to stop · `/continue` \
-             reopens the session · click for details"
-        ),
-        1,
-        "{joined}"
-    );
-    assert!(!joined.contains("/notes"), "{joined}");
-    assert_eq!(a.card_rows.len(), 1, "{:?}", a.card_rows);
-    let (y, _) = a.card_rows[0];
-    a.key(Key::Click { x: 10, y: y as u16 });
-    assert!(holds(&popup_text(&mut a), "Runs in flight are ended."));
-    // The title says what it is, in its register - not `notice` in red.
-    let top = a.screen(160, 30).join("\n");
+    assert!(!joined.contains("session · daemon_stopping ·"), "{joined}");
+    assert_eq!(a.card_rows.len(), 0, "{:?}", a.card_rows);
+    // Live state: said on the status line as it lands, and held in `/notes`.
     assert!(
-        top.contains("daemon_stopping · `deadtrickster` asked"),
-        "{top}"
+        a.notice
+            .as_deref()
+            .is_some_and(|n| n.contains("Runs in flight are ended")),
+        "the status line is silent: {:?}",
+        a.notice
     );
+    let held = a
+        .notes
+        .iter()
+        .find_map(|(_, n)| match n {
+            Note::Warned(w) if w.code == "daemon_stopping" => Some(w.detail.clone()),
+            _ => None,
+        })
+        .expect("held in /notes");
+    assert!(held.contains("Runs in flight are ended"), "{held}");
 }
 
 /// The hint is the last thing a narrow screen cuts - the facts go first.

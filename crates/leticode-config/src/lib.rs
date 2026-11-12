@@ -225,7 +225,6 @@
 //!
 //! [warnings]
 //! mute = ["model_slow_first_byte"]  # codes the head files and never draws
-//! coalesce = true                   # notices of one kind inside a minute are one counted row
 //!
 //! [keys]
 //! "todos.d" = "f"                   # SURFACE.KEY as the bar spells them, to one other key
@@ -1562,16 +1561,13 @@ pub struct Rebind {
     pub from: Origin,
 }
 
-/// `[warnings]` in a `leticode.toml`: what the head files and never draws, and whether a burst of
-/// one kind is one counted row. See the module doc for the two rules it inherits.
+/// `[warnings]` in a `leticode.toml`: what the head files and never draws. See the module doc for
+/// the rule it inherits.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WarningKeys {
     /// Warning codes the head files but does not draw. A code and not a copy: `head.toml`'s
     /// `retired` retires one note at a time, and this retires the kind.
     pub mute: Vec<Entry<String>>,
-    /// Whether notices of one kind inside a minute become one counted row. `None` is the head's
-    /// own answer, which is *yes* - the burst is what keeps a hundred slow bytes one line.
-    pub coalesce: Option<bool>,
 }
 
 /// `[keys]` in a `leticode.toml`: one surface's key, moved. A binding is rebound within its
@@ -1700,7 +1696,7 @@ fn warning_keys(
     text: &str,
     user: bool,
 ) -> Result<WarningKeys, String> {
-    let keys = "the keys are `mute` (a list of warning codes) and `coalesce` (true or false)";
+    let keys = "the only key is `mute` (a list of warning codes)";
     let table = table_at(value, path, text, "warnings", keys)?;
     let mut out = WarningKeys::default();
     for (key, v) in table {
@@ -1730,14 +1726,6 @@ fn warning_keys(
                     });
                 }
             }
-            "coalesce" => {
-                out.coalesce = Some(v.as_bool().ok_or_else(|| {
-                    format!(
-                        "{from}: [warnings] coalesce is true or false, not {}",
-                        kind_of(v)
-                    )
-                })?);
-            }
             other => {
                 return Err(format!("{from}: [warnings] `{other}` is not a key; {keys}"));
             }
@@ -1747,8 +1735,8 @@ fn warning_keys(
 }
 
 impl WarningKeys {
-    /// The two levels as one: the mutes union, each once, and `coalesce` is the project's answer
-    /// when it gave one. See the module doc for why a mute is a union.
+    /// The two levels as one: the mutes union, each once. See the module doc for why a mute is a
+    /// union.
     pub fn overridden_by(&self, other: &WarningKeys) -> WarningKeys {
         let mut mute = self.mute.clone();
         for e in &other.mute {
@@ -1756,10 +1744,7 @@ impl WarningKeys {
                 mute.push(e.clone());
             }
         }
-        WarningKeys {
-            mute,
-            coalesce: other.coalesce.or(self.coalesce),
-        }
+        WarningKeys { mute }
     }
 }
 

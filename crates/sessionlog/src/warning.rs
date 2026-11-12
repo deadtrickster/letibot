@@ -1121,6 +1121,76 @@ pub fn twin(code: &str) -> Option<&'static str> {
     TWIN.iter().find(|(c, _)| *c == code).map(|(_, why)| *why)
 }
 
+/// Where a warning's sentence goes, now that the conversation is one record: one row per event, and
+/// that row is the model's. Every code in [`TABLE`] resolves to exactly one of these, and
+/// [`destination`] is the only place that decides.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Go {
+    /// The model was sent this event too, so the row drawn is its own and the sentence is only
+    /// filed beside. See [`TWIN`].
+    Model,
+    /// Live state that changes while the session runs - a provider's trouble, the queue's, a stop
+    /// on the way, a refusal of the line just typed: the status line, and `/notes` as well.
+    Status,
+    /// `/notes` alone, plus - for a [`Class::Refused`] or a [`Class::Failure`] - a count on the
+    /// edge, so a fault is never only in a list nobody opened.
+    #[default]
+    Notes,
+}
+
+/// The codes whose sentence is live STATE on the status line rather than a line of the record:
+/// everything that moves while the session runs and is over or changed by the next thing that
+/// happens. A code not here goes to `/notes` - see [`Go`].
+pub const STATUS: &[&str] = &[
+    // The daemon is going, or gone and back.
+    "daemon_stopping",
+    "daemon_stopping_runs",
+    // The merge queue: what it is doing now, and what it cannot do.
+    "review_queue_not_open",
+    "merge_queue_store_error",
+    "queue_needs_human",
+    "queue_blocked",
+    "queue_waiting_for_vm",
+    "queue_vm_slots_exhausted",
+    "merge_queued",
+    "refusal_undelivered",
+    "gate_timeout",
+    // A provider that will not answer, and what it says about when.
+    "limit_returned",
+    "model_switch_pending",
+    "model_switch_applied",
+    "model_switch_not_applied",
+    "model_switch_refused",
+    // The session's own switches, and the wall it is standing at.
+    "auto_compact_no_progress",
+    "nags_paused",
+    "nags_resumed",
+    "turn_failed",
+    // The reader's own line coming back: seven `Refused` codes, which answer something the person
+    // just typed and are over as soon as the next one is.
+    "slash",
+    "slash_refused",
+    "mode_unknown",
+    "mode_set_refused",
+    "job_output_refused",
+    "reseat_refused",
+    "import_no_session",
+    "import_no_db",
+];
+
+/// Where this code's sentence goes. The one answer a head asks for; `Go::Model` for a code in
+/// [`TWIN`], `Go::Status` for a code in [`STATUS`], and `/notes` for every other one.
+pub fn destination(code: &str) -> Go {
+    let code = family(code);
+    if twin(code).is_some() {
+        Go::Model
+    } else if STATUS.contains(&code) {
+        Go::Status
+    } else {
+        Go::Notes
+    }
+}
+
 /// Which register a code is drawn in. See [`TABLE`].
 ///
 /// A code the table does not know is [`Class::Routine`]: an unclassified code is not evidence that
@@ -1381,6 +1451,61 @@ mod tests {
         }
         // A family code answers as its family, like every other question of a code.
         assert_eq!(twin("denied:r1"), twin("denied"));
+    }
+
+    /// Every warning the daemon can raise has exactly ONE destination, and the head asks for it
+    /// rather than deciding for itself: `/notes` by default, the status line for live state, and the
+    /// model's own row where the model was sent the event too. A code that is in none or in two
+    /// fails here, which is what keeps a new code from quietly landing in the conversation.
+    #[test]
+    fn every_code_has_exactly_one_destination() {
+        let mut counts = [0usize; 3];
+        for (code, class, _) in TABLE {
+            let go = destination(code);
+            counts[match go {
+                Go::Model => 0,
+                Go::Status => 1,
+                Go::Notes => 2,
+            }] += 1;
+            match go {
+                Go::Model => assert!(
+                    twin(code).is_some(),
+                    "`{code}` is sent to the model's row and twins none"
+                ),
+                Go::Status => assert!(
+                    twin(code).is_none() && STATUS.contains(code),
+                    "`{code}` is live state and is not in `STATUS` (or twins a model row)"
+                ),
+                Go::Notes => assert!(
+                    twin(code).is_none() && !STATUS.contains(code),
+                    "`{code}` is filed to `/notes` and is also somewhere else"
+                ),
+            }
+            // A fault or a refusal is never silent: `/notes` plus the edge, or the status line.
+            if !class.is_routine() && matches!(go, Go::Notes) {
+                assert!(
+                    !to_the_alarm(code),
+                    "`{code}` is a fault drawn only as a triangle and filed only in `/notes`"
+                );
+            }
+        }
+        assert!(counts[0] >= TWIN.len(), "{} twin rows", counts[0]);
+        assert!(counts[2] > 100, "{} codes to `/notes`", counts[2]);
+        // And the other direction: nothing in the status list is a code nobody can raise, and no
+        // code is in both lists - a code in two places proves neither.
+        for code in STATUS {
+            assert!(
+                TABLE.iter().any(|(c, _, _)| c == code),
+                "`{code}` is in `STATUS` and is not a code the table classifies"
+            );
+            assert!(
+                twin(code).is_none(),
+                "`{code}` is both live state and the model's own row"
+            );
+        }
+        // The families answer as their family, so a refusal's per-request id lands where it should.
+        assert_eq!(destination("denied:r1"), destination("denied"));
+        assert_eq!(destination("a_code_from_next_week"), Go::Notes);
     }
 
     /// Every warning says what a reader can do about it, and a row that says nothing is a report.

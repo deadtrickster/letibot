@@ -134,25 +134,28 @@ impl App {
                 // read before the gap may be one whose zero it never saw; the daemon says the
                 // count again after every attach.
                 self.held = None;
-                // Now it can be said. A note rather than a `say`: this outlives the next keystroke and
-                // belongs in the conversation, anchored at the end of whatever the snapshot carried.
-                // `note` dedupes on `(code, detail, ts)`, so a `Switch`'s second `Hello` says it once.
+                // Now it can be said. Filed BESIDE the conversation - `/notes` lists it and
+                // `/status` counts it - because it is this head's reading, not a row any model was
+                // ever sent. `note_beside` dedupes on `(code, detail, ts)`, so a `Switch`'s second
+                // `Hello` says it once.
                 if let Some(said) = skew_said {
-                    self.note(Note::Warned(Warned {
+                    self.note_beside(Note::Warned(Warned {
                         code: "protocol_skew".into(),
                         detail: said,
                         ts: 0,
                     }));
                 }
                 if let Some(said) = replaced_said {
-                    self.note(Note::Warned(Warned {
+                    self.say(&said);
+                    self.note_beside(Note::Warned(Warned {
                         code: "daemon_replaced".into(),
                         detail: said,
                         ts: 0,
                     }));
                 }
                 if let Some(said) = reattached {
-                    self.note(Note::Warned(Warned {
+                    self.say(&said);
+                    self.note_beside(Note::Warned(Warned {
                         code: "reattached".into(),
                         detail: said,
                         ts: 0,

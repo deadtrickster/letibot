@@ -1361,7 +1361,6 @@ mod askedcard;
 mod asks;
 mod attention;
 mod bindings;
-mod bursts;
 mod cardkeys;
 mod cards;
 mod chat_plugin;

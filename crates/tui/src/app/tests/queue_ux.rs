@@ -332,16 +332,21 @@ fn a_verdict_says_who_reviewed_what_and_how_it_went() {
         "who reviewed it: {line}"
     );
 
-    // A warning that stops for a person names the reviewer that could not decide.
+    // A warning that stops for a person names the reviewer that could not decide - on the status
+    // line, which is where live state goes, and in `/notes`.
     let mut a = with_warning("queue_needs_human", NEEDS_HUMAN);
-    let screen = a.screen(160, 30).join("\n");
-    let line = screen
-        .lines()
-        .find(|l| l.contains("review ·"))
-        .unwrap_or_else(|| panic!("the warning drew as one line: {screen}"));
+    let _ = a.screen(160, 30);
     assert!(
-        line.contains("could not decide by s-gatekeeper-sub-17917"),
-        "who could not decide: {line}"
+        a.notice.as_deref().is_some_and(|n| n.contains(NEEDS_HUMAN)),
+        "the status line is silent: {:?}",
+        a.notice
+    );
+    assert!(
+        crate::ui::transcript::line_cards::warning_card("queue_needs_human", NEEDS_HUMAN)
+            .is_some_and(|c| c
+                .line
+                .contains("could not decide by s-gatekeeper-sub-17917")),
+        "the table reads the sentence"
     );
 }
 

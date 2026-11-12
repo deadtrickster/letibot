@@ -574,10 +574,11 @@ pub struct App {
     /// and not an event in the conversation, so it is a counter here and a warning triangle
     /// rather than a row. See `letibot_sessionlog::warning::ALARM_ONLY`.
     pub slow_first_byte: u64,
-    /// Whether this head has drawn the one line a session's developer diagnostics get. Each code is
-    /// filed beside the conversation (`/notes`) and written to the daemon's log; a session that
-    /// drew one row per census would be a screen measuring itself. See `warning::is_developer`.
-    pub(crate) developer_said: bool,
+    /// Refusals and failures the daemon raised, each filed beside the conversation with its sentence
+    /// in `/notes`. The EDGE points at these two numbers, so a fault is never only in a list nobody
+    /// opened. See `Counters::exceeds`.
+    pub(crate) refused: u64,
+    pub(crate) failed: u64,
     /// The counter values this reader has already been shown: the `⚠` on the composer's edge is
     /// drawn while a counter exceeds its value here, so reading the screen clears it. Not persisted,
     /// because the counters die with this process and an ack on disk would outlive them.
@@ -1423,7 +1424,8 @@ impl App {
             behind: 0,
             orphan_bodies: 0,
             slow_first_byte: 0,
-            developer_said: false,
+            refused: 0,
+            failed: 0,
             acked: Counters::default(),
             scroll: 0,
             editor: Editor::new(),

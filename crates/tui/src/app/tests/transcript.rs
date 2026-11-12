@@ -1003,9 +1003,18 @@ fn the_conversation_rung_hides_no_warning_no_card_and_no_liveness() {
     a.invalidate_history();
     let frame = a.screen(100, 40);
     let all = frame.join("\n");
+    // A warning is held in `/notes` at every rung, and drawn at none: the ladder is about the
+    // conversation's rows, and a warning is not one.
     assert!(
-        all.contains("WARNING-MAGIC-SENTENCE"),
-        "a warning is not on the ladder: {all}"
+        !all.contains("WARNING-MAGIC-SENTENCE"),
+        "a warning drew a row: {all}"
+    );
+    assert!(
+        a.notes.iter().any(
+            |(_, n)| matches!(n, Note::Warned(w) if w.detail.contains("WARNING-MAGIC-SENTENCE"))
+        ),
+        "the warning is not held either: {:?}",
+        a.notes
     );
     assert!(
         all.contains("?") && all.contains("permission"),
@@ -1503,18 +1512,18 @@ fn the_sentence_for_a_run_the_daemon_may_not_look_at_is_drawn() {
         },
     )));
     let screen = a.screen(120, 20).join("\n");
+    // The sentence is the operator's own report: held in `/notes`, counted on the edge, and not a
+    // row - which is the whole of what this test is for.
     assert!(
-        screen.contains("operator_run_unreadable"),
-        "the sentence never reached the screen — which is the operator's own report, and \
-             the whole of what this test is for:\n{screen}"
+        !screen.contains("operator_run_unreadable"),
+        "the sentence drew a row:\n{screen}"
     );
-    // And it is a ROW, not a counter. `ALARM_ONLY` moves a code out of the conversation
-    // and onto the triangle; a fault drawn only as a number in `/status` is a fault nobody
-    // reads, and this one is the pointer to `!send`.
+    let held = a.notes_lines().join("\n");
     assert!(
-        !letibot_sessionlog::warning::to_the_alarm("operator_run_unreadable"),
-        "the code is edge-bound, so a head would never draw the way in"
+        held.contains("operator_run_unreadable"),
+        "the sentence never reached `/notes` — which is the operator's own report:\n{held}"
     );
+    assert_eq!(a.failed, 1, "and the edge counts it");
     // And the way in survives the fold. The sentence is a document and folds to its
     // head; what may not be folded away is the verb the person needs.
     assert!(

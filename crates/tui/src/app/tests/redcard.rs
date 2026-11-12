@@ -461,13 +461,13 @@ fn a_shape_the_parser_does_not_know_falls_back() {
             "{what}: it drew a row: {joined}"
         );
     }
-    // Another code with the same words is not this card.
+    // Another code with the same words is not this card - and it is not a row either.
     let mut a = with_warning("queue_blocked", WARNING);
     let screen = a.screen(200, 60);
     let joined = screen.join("\n");
     assert_eq!(
         rows_with(&screen, "! queue_blocked · ").len(),
-        1,
+        0,
         "{joined}"
     );
     assert!(!joined.contains("‼"), "{joined}");

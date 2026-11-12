@@ -198,7 +198,9 @@ impl App {
                 {
                     c.decision = Some(d);
                 } else {
-                    self.note(Note::settled(d));
+                    // No call to ride, so there is no model row for this decision to be the
+                    // second version of: it is filed beside like every other operator-side fact.
+                    self.note_beside(Note::settled(d));
                 }
                 Disposition::Rendered
             }
@@ -238,7 +240,8 @@ impl App {
                     // Given: the daemon says where it was saved (`provider_key_saved`), so
                     // one line rather than two. Not given: the refusal is the operator's.
                     if !given {
-                        self.note(Note::Warned(Warned {
+                        self.say(&format!("no key given ({by})"));
+                        self.note_beside(Note::Warned(Warned {
                             code: "provider_key_refused".into(),
                             detail: format!("no key given ({by})"),
                             ts,
@@ -246,7 +249,12 @@ impl App {
                     }
                     return Disposition::Rendered;
                 }
-                self.note(Note::Warned(Warned {
+                self.say(&if given {
+                    format!("password given by {by}")
+                } else {
+                    format!("no password given ({by})")
+                });
+                self.note_beside(Note::Warned(Warned {
                     code: "sudo".into(),
                     detail: if given {
                         format!("password given by {by}")
@@ -300,7 +308,12 @@ impl App {
                     self.prompt_buf.clear();
                     self.prompt_away = false;
                 }
-                self.note(Note::Warned(Warned {
+                self.say(&if sent {
+                    format!("answer sent by {by}")
+                } else {
+                    format!("nothing sent ({by})")
+                });
+                self.note_beside(Note::Warned(Warned {
                     code: "prompt".into(),
                     detail: if sent {
                         format!("answer sent by {by}")
@@ -346,7 +359,7 @@ impl App {
                     // note would say the row's own words twice. What the row cannot say is that
                     // this is a repeat, or that the breaker has closed the direction.
                     if !repeat.is_empty() {
-                        self.note(Note::NotRun(Warned {
+                        self.note_beside(Note::NotRun(Warned {
                             code: format!("denied:{request_id}"),
                             // The gist, not the transcript of it: layer A's
                             // explanation runs to a paragraph per unresolved
@@ -359,7 +372,7 @@ impl App {
                         }));
                     }
                 } else {
-                    self.note(Note::Warned(Warned {
+                    self.note_beside(Note::Warned(Warned {
                         code: format!("denied:{request_id}"),
                         detail: format!(
                             "REFUSED {tool} — {summary}. {outcome} by {by}: {basis}{repeat}. {grant}"

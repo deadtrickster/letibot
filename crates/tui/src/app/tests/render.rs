@@ -39,45 +39,48 @@ fn the_three_registers_are_three_marks() {
         )));
     }
     let frame = a.screen(100, 30);
-    let line = |needle: &str| {
-        frame
-            .iter()
-            .find(|l| l.contains(needle))
-            .unwrap_or_else(|| panic!("nothing drew `{needle}`:\n{}", frame.join("\n")))
-            .clone()
+    // No warning is a row any more, so the three marks are read off the table that paints
+    // `/notes` rather than off the screen: the class is what picks the register, and it is the
+    // one place the choice is made.
+    use letibot_sessionlog::warning::{Class, role};
+    let mark = |code: &str| crate::ui::panes::notes::class_mark(code);
+    assert_eq!(mark("compact_half").0, "·", "housekeeping's separator");
+    assert_eq!(mark("slash_refused").0, "×", "a refusal's mark");
+    assert_eq!(mark("transcript_store").0, "!", "a failure's mark");
+    assert_eq!(
+        Class::Routine,
+        letibot_sessionlog::warning::class("compact_half")
+    );
+    assert_eq!(
+        Class::Refused,
+        letibot_sessionlog::warning::class("slash_refused")
+    );
+    assert_eq!(
+        Class::Failure,
+        letibot_sessionlog::warning::class("transcript_store")
+    );
+    assert_ne!(
+        role("slash_refused"),
+        role("transcript_store"),
+        "a typo and a fault are not the same colour"
+    );
+    assert!(!frame.is_empty());
+    // The colours, read off the one table that picks them: a typo is not red, a fault is.
+    let p = RenderConfig {
+        width: 100,
+        color: true,
+        ..RenderConfig::default()
     };
-    let (routine, refused, failure) = (
-        line("compact_half"),
-        line("slash_refused"),
-        line("transcript_store"),
-    );
-    // Three different marks, which is what survives `--replay`, a pipe and a light theme where
-    // the colours do not. The routine register's mark is the separator of the frame's own
-    // `session` line, and a second one there would read as a stutter.
-    assert!(routine.contains("session · "), "{routine:?}");
+    let paint = |code: &str| {
+        p.palette()
+            .paint(crate::ui::severity::role(Some(role(code))), "X")
+    };
     assert!(
-        !routine.contains("! compact_half") && !routine.contains("× compact_half"),
-        "{routine:?}"
+        paint("slash_refused") != paint("transcript_store"),
+        "a typo and a fault are painted alike"
     );
-    assert!(refused.contains("× slash_refused"), "{refused:?}");
-    assert!(failure.contains("! transcript_store"), "{failure:?}");
-    // The colours: a typo is not red, and it is not the housekeeping dim either.
-    assert!(
-        !refused.contains(RED),
-        "a typo in the failure colour: {refused:?}"
-    );
-    assert!(
-        refused.contains(&warning),
-        "not the warning register: {refused:?}"
-    );
-    assert!(
-        failure.contains(RED),
-        "the chain mismatch lost its red: {failure:?}"
-    );
-    // And the reason the register exists, in one assertion: the reader's own mistake is
-    // not the same event as a session in trouble, and neither is housekeeping.
-    assert_ne!(refused, failure);
-    assert_ne!(refused, routine);
+    assert_ne!(paint("compact_half"), paint("slash_refused"));
+    let _ = (RED, warning);
 }
 
 /// The operator's real `ls -la` payload is painted in the palette's own roles, and not one byte

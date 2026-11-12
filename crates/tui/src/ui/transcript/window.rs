@@ -7,10 +7,6 @@ use crate::ui::*;
 use letibot_sessionlog::view::{CallState, TurnState};
 use letibot_transcript::TranscriptItem;
 
-/// A note's row in the window, and the popup a click on it opens: the popup's text with the
-/// title and role it carries.
-type DrawnNote = (Vec<String>, Option<(String, (String, rano::style::Role))>);
-
 impl App {
     /// The conversation while a switch is in flight: the wait, and nothing of the session being left. The cat used
     /// to be pushed after every row of the session being left, which reads as the parent's conversation with a
@@ -820,44 +816,24 @@ impl App {
                 // A retired note contributes nothing, not its text and not the blank above it: the reading has
                 // happened, and skipping the blank is what makes the wall go rather than become a column of gaps.
                 if !crate::app::note_retired(dismissed, quiet, read_marks, &notes[*note_upto].1) {
-                    // One row per kind, counted: a burst of notices of the same kind is drawn once at its first live
-                    // member, and the others draw nothing at all, not even the blank.
-                    let burst =
-                        crate::app::burst_at(notes, dismissed, quiet, read_marks, *note_upto);
-                    let drawn: Option<DrawnNote> = match &burst {
-                        crate::app::Burst::Drawn => None,
-                        // Every note but a pane's ending is a card's one line, and a click opens it whole: where it
-                        // is, kept for the click map, with the card's own title.
-                        crate::app::Burst::Single => {
-                            let n = &notes[*note_upto].1;
-                            let lines = note_lines(cfg, n);
-                            let popup =
-                                note_card(n).map(|(card, text, _)| (text, (card.title, card.role)));
-                            Some((lines, popup))
-                        }
-                        crate::app::Burst::Counted(members) => {
-                            let ns: Vec<&Note> = members.iter().map(|&j| &notes[j].1).collect();
-                            let lines = crate::ui::panes::notes::burst_lines(cfg, &ns);
-                            let popup = crate::ui::panes::notes::burst_card(&ns)
-                                .map(|(card, text, _)| (text, (card.title, card.role)));
-                            Some((lines, popup))
-                        }
-                    };
-                    if let Some((lines, popup)) = drawn {
-                        if !hist_lines.is_empty() {
-                            hist_lines.push(String::new());
-                        }
-                        if let Some((text, title)) = popup {
-                            note_cards.push(crate::app::diff_popup::NoteCard {
-                                at: hist_lines.len(),
-                                lines: lines.len(),
-                                text,
-                                title,
-                            });
-                        }
-                        hist_lines.extend(lines);
-                        *hist_class = Some(RowClass::Other);
+                    // Every note but a pane's ending is a card's one line, and a click opens it
+                    // whole: where it is, kept for the click map, with the card's own title.
+                    let n = &notes[*note_upto].1;
+                    let lines = note_lines(cfg, n);
+                    let popup = note_card(n).map(|(card, text, _)| (text, (card.title, card.role)));
+                    if !hist_lines.is_empty() {
+                        hist_lines.push(String::new());
                     }
+                    if let Some((text, title)) = popup {
+                        note_cards.push(crate::app::diff_popup::NoteCard {
+                            at: hist_lines.len(),
+                            lines: lines.len(),
+                            text,
+                            title,
+                        });
+                    }
+                    hist_lines.extend(lines);
+                    *hist_class = Some(RowClass::Other);
                 }
                 *note_upto += 1;
             // `hist_upto` is "every row at or below this index is accounted for": a tail walk sets it to the row

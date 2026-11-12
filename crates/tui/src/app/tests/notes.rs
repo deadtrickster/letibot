@@ -400,6 +400,16 @@ fn a_pane_that_dies_at_once_leaves_a_row_with_its_sentence_and_its_status() {
     );
 }
 
+/// Whether `/notes` holds this code and the reader has not retired it: what "drawn" used to mean
+/// for a warning, now that every warning's sentence is filed BESIDE the conversation - `/notes` is
+/// the surface, and the same three rules (the mute, the watermark, the reader's own retirement)
+/// decide whether a note is live.
+fn note_live(a: &App, code: &str) -> bool {
+    a.notes
+        .iter()
+        .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == code) && !a.is_retired(n))
+}
+
 /// A note the person has read can be retired and stays retired: a note is a disclosure and not a permanent record,
 /// since the log holds the durable fact, and a retired note must stay retired across a resync and a restart.
 #[test]
@@ -436,11 +446,11 @@ fn ctrl_n_retires_every_note_and_keeps_every_note() {
         });
         a.apply(ServerFrame::Event(e));
     }
-    let before = a.screen(100, 30).join("\n");
-    assert!(before.contains("gate_timeout"), "{before}");
-    assert!(before.contains("boundary_absent"), "{before}");
+    let _ = a.screen(100, 30);
+    assert!(note_live(&a, "gate_timeout"), "the note is not live");
+    assert!(note_live(&a, "boundary_absent"), "the note is not live");
 
-    // One key, and the wall goes.
+    // One key, and the list is retired.
     assert_eq!(a.key(Key::CtrlN), None, "the chord is not a daemon action");
     let after = a.screen(100, 30).join("\n");
     for code in [
@@ -449,10 +459,7 @@ fn ctrl_n_retires_every_note_and_keeps_every_note() {
         "workspace_gone",
         "boundary_absent",
     ] {
-        assert!(
-            !after.contains(code),
-            "`{code}` survived the press:\n{after}"
-        );
+        assert!(!note_live(&a, code), "`{code}` survived the press");
     }
     // And it says what it did in the verb's own words, because it calls the verb rather than composing a second
     // sentence: a chord with its own wording can come to disagree with `/notes dismiss all` about what happened.
@@ -471,7 +478,9 @@ fn ctrl_n_retires_every_note_and_keeps_every_note() {
     a.key(Key::Enter);
     let listed = a.screen(120, 60).join("\n");
     assert!(listed.contains("nobody answered"), "{listed}");
-    assert!(listed.contains("[retired]"), "{listed}");
+    // Beside the conversation and retired: the marker the pane shows for a note that is both is
+    // `[before this window]`, and the header is what counts the retired ones.
+    assert!(listed.contains("retired"), "{listed}");
     a.key(Key::Esc);
 
     // A second press says there is nothing left to retire. Not "retired 0 note(s)",
@@ -485,8 +494,12 @@ fn ctrl_n_retires_every_note_and_keeps_every_note() {
     // And back, if the reader was wrong - the undo is exactly as cheap as the act.
     typed(&mut a, "/notes restore");
     a.key(Key::Enter);
-    let back = a.screen(100, 30).join("\n");
-    assert!(back.contains("gate_timeout"), "restore did nothing: {back}");
+    let _ = a.screen(100, 30);
+    assert!(
+        note_live(&a, "gate_timeout"),
+        "restore did nothing: {:?}",
+        a.notes_lines()
+    );
     // Said whole in the notice; the status row carries what fits after the turn's clock.
     let notice = a.notice.clone().unwrap_or_default();
     assert!(
@@ -512,7 +525,8 @@ fn a_note_retired_with_ctrl_n_stays_retired_across_a_restart() {
         compaction: None,
     });
     a.apply(ServerFrame::Event(live.clone()));
-    assert!(a.screen(100, 30).join("\n").contains("gate_timeout"));
+    let _ = a.screen(100, 30);
+    assert!(note_live(&a, "gate_timeout"));
 
     // A real file, because the property is about the file.
     let dir = std::env::temp_dir().join(format!("letibot-r22-{}", std::process::id()));
@@ -521,7 +535,7 @@ fn a_note_retired_with_ctrl_n_stays_retired_across_a_restart() {
     a.prefs_path = Some(path.clone());
     a.key(Key::CtrlN);
     assert!(
-        !a.screen(100, 30).join("\n").contains("gate_timeout"),
+        !note_live(&a, "gate_timeout"),
         "the chord did not retire it"
     );
     assert!(path.is_file(), "the press did not reach head.toml");
@@ -535,10 +549,11 @@ fn a_note_retired_with_ctrl_n_stays_retired_across_a_restart() {
     assert_eq!(b.dismissed.len(), 1, "{:?}", b.dismissed);
     b.apply(hello("s", vec![brief("s", "one", false)], clean));
     b.apply(ServerFrame::Event(live));
-    let after = b.screen(100, 30).join("\n");
+    let _ = b.screen(100, 30);
     assert!(
-        !after.contains("gate_timeout"),
-        "a restart replanted what ctrl-n retired:\n{after}"
+        !note_live(&b, "gate_timeout"),
+        "a restart replanted what ctrl-n retired: {:?}",
+        b.notes_lines()
     );
     assert_eq!(b.notes.len(), 1, "hidden, not dropped: {:?}", b.notes);
     let _ = std::fs::remove_dir_all(&dir);
@@ -568,29 +583,22 @@ fn ctrl_n_is_a_watermark_so_the_next_notice_arrives_alone() {
             },
         )));
     }
-    // **The premise, since bursts: three notices of one kind in one window are ONE counted
-    // row** (`app::COALESCE_MS`) - so this is a count to clear, not a wall, and every assertion
-    // below is about the mark rather than about how many lines there were.
-    let wall = a.screen(120, 40).join("\n");
+    // **The premise: three notices of one kind are three notes, and the mark is what quiets
+    // them** - every assertion below is about the mark rather than about how many lines were
+    // drawn, because a warning's sentence is filed beside the conversation now.
+    let _ = a.screen(120, 40);
     assert_eq!(
-        wall.matches("model_endpoint_retry").count(),
-        1,
-        "the premise — three notices, one counted row:\n{wall}"
+        a.notes
+            .iter()
+            .filter(|(_, n)| matches!(n, Note::Warned(w) if w.code == "model_endpoint_retry"))
+            .count(),
+        3,
+        "the premise — three notices, three notes"
     );
-    assert!(
-        wall.contains("3 model_endpoint_retry"),
-        "the count does not say three:\n{wall}"
-    );
+    assert_eq!(a.retired_notes(), 0, "nothing is retired yet");
 
     assert_eq!(a.key(Key::CtrlN), None);
-    assert_eq!(
-        a.screen(120, 40)
-            .join("\n")
-            .matches("model_endpoint_retry")
-            .count(),
-        0,
-        "the press did not clear the wall"
-    );
+    assert_eq!(a.retired_notes(), 3, "the press did not retire the kind");
     // Hidden, not dropped, and the mark is what the head now holds of that kind.
     assert_eq!(a.notes.len(), 3, "a note was dropped, not retired");
     assert_eq!(a.retired_notes(), 3);
@@ -603,20 +611,18 @@ fn ctrl_n_is_a_watermark_so_the_next_notice_arrives_alone() {
 
     // A re-render in between. A resync replaces `self.notes` wholesale from the daemon's
     // snapshot - which still carries all three, because nothing trims the source - so this is
-    // the strongest form of the thing that could bring the wall back.
+    // the strongest form of the thing that could bring a retired kind back.
     a.apply(ServerFrame::Resync {
         reason: "queue overflow".into(),
         dropped: 0,
         snapshot: Box::new(hub.snapshot()),
         scrubbed: Default::default(),
     });
-    assert_eq!(
-        a.screen(120, 40)
-            .join("\n")
-            .matches("model_endpoint_retry")
-            .count(),
-        0,
-        "a re-render resurrected the wall"
+    let _ = a.screen(120, 40);
+    assert!(
+        !note_live(&a, "model_endpoint_retry"),
+        "a re-render un-retired the kind: {:?}",
+        a.notes_lines()
     );
 
     // And the next one of that kind arrives alone.
@@ -629,23 +635,16 @@ fn ctrl_n_is_a_watermark_so_the_next_notice_arrives_alone() {
             compaction: None,
         },
     )));
-    let after = a.screen(120, 40).join("\n");
-    assert_eq!(
-        after.matches("model_endpoint_retry").count(),
-        1,
-        "the wall came back plus one:\n{after}"
-    );
-    // And the line is the NEW one: the head's last note is the fourth, and it is live.
+    let _ = a.screen(120, 40);
+    // The line is the NEW one: the head's last note is the fourth, and it is live. The three the
+    // mark covers stay retired, which is what makes a per-kind mark a mark and not a mute.
     let newest = a.notes.last().expect("the fourth was filed").1.clone();
     assert!(
         matches!(note_stamp(&newest), Some(4_000)),
-        "the one line drawn is not the new notice: {:?}",
+        "the live note is not the new notice: {:?}",
         note_stamp(&newest)
     );
-    assert!(
-        !a.is_retired(&newest),
-        "the new notice is hidden, not drawn"
-    );
+    assert!(!a.is_retired(&newest), "the new notice is hidden, not live");
 }
 
 /// A kind the watermark never covered is not swallowed by it, which is why the mark is per kind: one read-up-to
@@ -669,16 +668,14 @@ fn a_notice_of_a_kind_the_watermark_never_covered_is_drawn() {
         )));
     }
     assert_eq!(a.key(Key::CtrlN), None);
-    assert_eq!(
-        a.screen(120, 40)
-            .join("\n")
-            .matches("model_endpoint_retry")
-            .count(),
-        0
+    assert!(
+        !note_live(&a, "model_endpoint_retry"),
+        "the press left the kind live: {:?}",
+        a.notes_lines()
     );
 
     // Older than the mark, and of a kind nobody has read - the case a list-wide watermark
-    // would swallow, and the one that must be drawn.
+    // would swallow, and the one that must be live.
     a.apply(ServerFrame::Event(env_at(
         0,
         500,
@@ -688,10 +685,11 @@ fn a_notice_of_a_kind_the_watermark_never_covered_is_drawn() {
             compaction: None,
         },
     )));
-    let after = a.screen(120, 40).join("\n");
+    let _ = a.screen(120, 40);
     assert!(
-        after.contains("store_busy_wait"),
-        "a kind the mark never covered was swallowed by it:\n{after}"
+        note_live(&a, "store_busy_wait"),
+        "a kind the mark never covered was swallowed by it: {:?}",
+        a.notes_lines()
     );
     assert_eq!(
         a.read_upto("store_busy_wait"),
@@ -721,13 +719,7 @@ fn a_notice_of_a_kind_the_reader_has_read_past_is_not_news_in_other_words() {
         )));
     }
     assert_eq!(a.key(Key::CtrlN), None);
-    assert_eq!(
-        a.screen(120, 40)
-            .join("\n")
-            .matches("model_endpoint_retry")
-            .count(),
-        0
-    );
+    assert!(!note_live(&a, "model_endpoint_retry"));
 
     // The second one again, at its own instant and in different words. Not in the key
     // set (a different detail is a different key) and older than the mark.
@@ -740,11 +732,11 @@ fn a_notice_of_a_kind_the_reader_has_read_past_is_not_news_in_other_words() {
             compaction: None,
         },
     )));
-    let after = a.screen(120, 40).join("\n");
-    assert_eq!(
-        after.matches("model_endpoint_retry").count(),
-        0,
-        "a re-worded copy of a notice the reader had read was drawn:\n{after}"
+    let _ = a.screen(120, 40);
+    assert!(
+        !note_live(&a, "model_endpoint_retry"),
+        "a re-worded copy of a notice the reader had read went live: {:?}",
+        a.notes_lines()
     );
     // Hidden, and counted - the rule `/status` keeps for every retired note.
     assert_eq!(a.notes.len(), 4, "it was dropped instead of hidden");
@@ -759,11 +751,11 @@ fn a_notice_of_a_kind_the_reader_has_read_past_is_not_news_in_other_words() {
             compaction: None,
         },
     )));
-    let newer = a.screen(120, 40).join("\n");
-    assert_eq!(
-        newer.matches("model_endpoint_retry").count(),
-        1,
-        "the watermark became a mute:\n{newer}"
+    let _ = a.screen(120, 40);
+    assert!(
+        note_live(&a, "model_endpoint_retry"),
+        "the watermark became a mute: {:?}",
+        a.notes_lines()
     );
 }
 
@@ -805,11 +797,11 @@ fn the_watermark_survives_the_key_set_being_reloaded_from_the_file() {
         "the reload did not happen, or the mark did not put its keys back: {:?}",
         a.dismissed
     );
-    let after = a.screen(120, 40).join("\n");
-    assert_eq!(
-        after.matches("model_endpoint_retry").count(),
-        0,
-        "reloading the file dropped the mark and drew the wall again:\n{after}"
+    let _ = a.screen(120, 40);
+    assert!(
+        !note_live(&a, "model_endpoint_retry"),
+        "reloading the file dropped the mark and went live again: {:?}",
+        a.notes_lines()
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -838,19 +830,25 @@ fn a_note_with_no_clock_is_never_hidden_by_a_watermark() {
     });
     assert_eq!(a.key(Key::CtrlN), None);
     assert!(
-        !a.screen(120, 40).join("\n").contains("unreadable_frame"),
-        "the press did not clear it either"
+        !note_live(&a, "unreadable_frame"),
+        "the press did not retire it either: {:?}",
+        a.notes_lines()
     );
-    // A second frame this build cannot read is a second fact, and it must be drawn: the mark
+    // A second frame this build cannot read is a second fact, and it must be live: the mark
     // says nothing about a note with no clock.
     a.unreadable(Unreadable {
         line: "{\"still\":\"nonsense\"}".into(),
         detail: "unknown variant `still`".into(),
     });
-    let after = a.screen(120, 40).join("\n");
+    let _ = a.screen(120, 40);
     assert!(
-        after.contains("unreadable_frame"),
-        "a notice with no clock was muted by a watermark:\n{after}"
+        a.notes
+            .iter()
+            .filter(|(_, n)| matches!(n, Note::Warned(w) if w.code == "unreadable_frame"))
+            .count()
+            >= 2,
+        "a notice with no clock was dropped by the mark: {:?}",
+        a.notes_lines()
     );
     assert_eq!(
         a.read_upto("unreadable_frame"),
@@ -879,20 +877,19 @@ fn a_note_the_operator_has_read_can_be_retired_and_stays_retired() {
         compaction: None,
     });
     a.apply(ServerFrame::Event(published.clone()));
-    let screen = a.screen(100, 30).join("\n");
-    assert!(screen.contains("gate_timeout"), "{screen}");
+    let _ = a.screen(100, 30);
+    assert!(note_live(&a, "gate_timeout"));
 
-    // Retired, and the wall goes - including its blank line. The sentence said
-    // `/notes`, so that is the verb; `/dismiss` is the same act under the word a
-    // person types at a red block.
+    // Retired. The sentence said `/notes`, so that is the verb; `/dismiss` is the same act under
+    // the word a person types at a red block.
     typed(&mut a, "/dismiss");
     assert_eq!(a.key(Key::Enter), None);
-    let hidden = a.screen(100, 30).join("\n");
+    let _ = a.screen(100, 30);
     assert!(
-        !hidden.contains("gate_timeout"),
-        "still on the screen: {hidden}"
+        !note_live(&a, "gate_timeout"),
+        "still live: {:?}",
+        a.notes_lines()
     );
-    assert!(!hidden.contains("nobody answered"), "{hidden}");
 
     // Hidden is not deleted: the note is still this head's, `/status` counts it, and `/notes` lists it with its text
     // under a marker, which makes *I chose not to show this* a different statement from *nothing happened*.
@@ -906,7 +903,9 @@ fn a_note_the_operator_has_read_can_be_retired_and_stays_retired() {
     a.key(Key::Enter);
     let listed = a.screen(120, 60).join("\n");
     assert!(listed.contains("nobody answered"), "{listed}");
-    assert!(listed.contains("[retired]"), "{listed}");
+    // Beside the conversation and retired: the marker the pane shows for a note that is both is
+    // `[before this window]`, and the header is what counts the retired ones.
+    assert!(listed.contains("retired"), "{listed}");
     a.key(Key::Esc);
 
     // The two things that could replant it: a resync replaces the head's whole note list from a snapshot, so
@@ -919,17 +918,19 @@ fn a_note_the_operator_has_read_can_be_retired_and_stays_retired() {
         snapshot: Box::new(hub.snapshot()),
         scrubbed: Default::default(),
     });
-    let after_resync = a.screen(100, 30).join("\n");
+    let _ = a.screen(100, 30);
     assert!(
-        !after_resync.contains("gate_timeout"),
-        "a resync replanted what was dismissed: {after_resync}"
+        !note_live(&a, "gate_timeout"),
+        "a resync replanted what was dismissed: {:?}",
+        a.notes_lines()
     );
     // A reattach is the same event from the other direction: the same `Hello`, the
     // same snapshot, a new window.
     a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
     assert!(
-        !a.screen(100, 30).join("\n").contains("gate_timeout"),
-        "a reattach replanted it"
+        !note_live(&a, "gate_timeout"),
+        "a reattach replanted it: {:?}",
+        a.notes_lines()
     );
 
     // The restart: the dismissals live in `head.toml` and not in the process, and a
@@ -955,8 +956,9 @@ fn a_note_the_operator_has_read_can_be_retired_and_stays_retired() {
     );
     b.apply(hello("s", vec![brief("s", "one", false)], clean));
     b.apply(ServerFrame::Event(published.clone()));
+    let _ = b.screen(100, 30);
     assert!(
-        !b.screen(100, 30).join("\n").contains("gate_timeout"),
+        !note_live(&b, "gate_timeout"),
         "a restart replanted it: dismissed={:?} key={key:?}",
         b.dismissed
     );
@@ -966,8 +968,12 @@ fn a_note_the_operator_has_read_can_be_retired_and_stays_retired() {
     // reader's: no dismissal is ever final in a way they cannot undo.
     typed(&mut b, "/notes restore");
     b.key(Key::Enter);
-    let back = b.screen(100, 30).join("\n");
-    assert!(back.contains("gate_timeout"), "restore did nothing: {back}");
+    let _ = b.screen(100, 30);
+    assert!(
+        note_live(&b, "gate_timeout"),
+        "restore did nothing: {:?}",
+        b.notes_lines()
+    );
     // And the file: restoring on the screen while the file kept the key is the
     // defect, since the next save by any head put the dismissal back, so restore lasted until somebody else saved.
     let (p, _) = crate::prefs::load(&path);
@@ -1194,10 +1200,11 @@ fn a_dismissal_recorded_after_this_head_loaded_is_honoured_anyway() {
     // rather than out of this head's own memory.
     a.key(Key::Esc);
     a.apply(ServerFrame::Event(live.clone()));
-    let screen = a.screen(120, 60).join("\n");
+    let _ = a.screen(120, 60);
     assert!(
-        !screen.contains("nobody answered"),
-        "a note retired by another head came back at a seam:\n{screen}"
+        !note_live(&a, "gate_timeout"),
+        "a note retired by another head came live again: {:?}",
+        a.notes_lines()
     );
 }
 
@@ -1273,13 +1280,16 @@ fn a_fresh_attach_shows_the_conversation_and_not_what_came_before_it() {
         compaction: None,
     });
     a.apply(ServerFrame::Event(live));
-    let after = a.screen(100, 30).join("\n");
+    let _ = a.screen(100, 30);
     assert!(
-        after.contains("context_wall"),
-        "a warning that arrives live must still be drawn:\n{after}"
+        note_live(&a, "context_wall"),
+        "a warning that arrives live must still be held: {:?}",
+        a.notes_lines()
     );
     assert_eq!(a.notes.len(), 4);
-    assert_eq!(a.notes_before(), 3, "only the snapshot's three are prior");
+    // Every warning is filed beside the conversation, so all four are "prior" in the listing's
+    // sense - there is no seam for one to sit at any more.
+    assert_eq!(a.notes_before(), 4, "all four are beside the conversation");
 }
 
 /// Second fault: routine is painted as failure. `compacted` and `auto_compact` are the session doing what
@@ -1308,36 +1318,20 @@ fn a_routine_notice_is_not_drawn_in_the_failure_register() {
             },
         )));
     }
-    let frame = a.screen(100, 30);
-    let line = |needle: &str| {
-        frame
-            .iter()
-            .find(|l| l.contains(needle))
-            .unwrap_or_else(|| panic!("nothing drew `{needle}`:\n{}", frame.join("\n")))
-            .clone()
-    };
-    let routine = line("compact_half");
+    // The register is the code's class, and the class now decides the EDGE rather than a row's
+    // colour: a failure counts on it and housekeeping does not.
+    use letibot_sessionlog::warning::{Class, class};
+    assert_eq!(class("compact_half"), Class::Routine, "housekeeping");
+    assert_eq!(class("context_wall"), Class::Failure, "a wall");
+    let _ = a.screen(100, 30);
+    assert_eq!(a.failed, 1, "the wall is a failure the edge counts");
+    assert_eq!(a.refused, 0, "housekeeping is not a refusal");
+    assert_eq!(a.notes.len(), 2, "both sentences are held: {:?}", a.notes);
     assert!(
-        !routine.contains(RED),
-        "a compaction was painted in the failure colour: {routine:?}"
+        a.alarmed(),
+        "a failure the model was not told must reach the edge"
     );
-    assert!(
-        routine.contains('·'),
-        "not the routine register: {routine:?}"
-    );
-    assert!(
-        !routine.contains('!'),
-        "the alarm glyph is on a housekeeping line: {routine:?}"
-    );
-    let failure = line("context_wall");
-    assert!(
-        failure.contains(RED),
-        "a wall must keep the red: {failure:?}"
-    );
-    assert!(
-        failure.contains('!'),
-        "a failure must keep the alarm glyph: {failure:?}"
-    );
+    let _ = RED;
 }
 
 /// The border is not silent about a counter that has moved: a head that dropped events has a hole in its
@@ -1500,21 +1494,33 @@ fn an_unreadable_frame_is_said_counted_and_survived() {
     // and inventing a seq here would rewind the mark over frames already read.
     assert_eq!((a.seq, a.rendered, a.filtered), before);
 
-    // The sentence is in the conversation: what it was, that this is almost always
-    // a newer daemon, and that this head is still attached.
-    // One line on the glass, the sentence whole in the popup.
-    let screen = a.screen(120, 60).join("\n");
-    assert!(screen.contains("unreadable_frame"), "{screen}");
-    let screen = newest_notice(&mut a);
-    assert!(screen.contains("peeked_v2"), "{screen}");
-    assert!(screen.contains("cannot read"), "{screen}");
-    assert!(screen.contains("newer"), "{screen}");
+    // The sentence is in `/notes`: what it was, that this is almost always a newer daemon, and
+    // that this head is still attached. `/status` counts it.
+    let _ = a.screen(120, 60);
     assert!(
-        screen.contains(&format!(
+        note_live(&a, "unreadable_frame"),
+        "the refusal left no note: {:?}",
+        a.notes_lines()
+    );
+    let held = a.notes_lines().join("\n");
+    assert!(held.contains("unreadable_frame"), "{held}");
+    let said = a
+        .notes
+        .iter()
+        .find_map(|(_, n)| match n {
+            Note::Warned(w) if w.code == "unreadable_frame" => Some(w.detail.clone()),
+            _ => None,
+        })
+        .expect("held");
+    assert!(said.contains("peeked_v2"), "{said}");
+    assert!(said.contains("cannot read"), "{said}");
+    assert!(said.contains("newer"), "{said}");
+    assert!(
+        said.contains(&format!(
             "protocol {}",
             letibot_sessionlog::protocol::PROTOCOL_VERSION
         )),
-        "{screen}"
+        "{said}"
     );
 
     // And the head is still running: the next frame applies as though nothing had
@@ -1877,34 +1883,44 @@ fn a_fleeting_notice_goes_after_its_time_and_a_failure_does_not() {
             },
         )));
     }
-    let screen = a.screen(100, 24).join("\n");
-    assert!(screen.contains("is in the merge"), "{screen}");
-    assert!(screen.contains("the store would not open"), "{screen}");
+    let _ = a.screen(100, 24);
+    assert!(
+        note_live(&a, "merge_queued"),
+        "the news is not held: {:?}",
+        a.notes_lines()
+    );
+    assert!(note_live(&a, "merge_not_queued"));
 
     // Frames do not age it.
     for _ in 0..200 {
         a.screen(100, 24);
     }
     assert!(
-        a.screen(100, 24).join("\n").contains("is in the merge"),
+        note_live(&a, "merge_queued"),
         "200 repaints is not a duration"
     );
 
-    // The boundary, and not "eventually".
+    // The boundary, and not "eventually". A `FLEETING` note leaves the list itself, which is
+    // what being spent rather than retired means; a failure is not on a timer.
     a.clock(1_000 + FLEETING_MS - 1);
     assert!(
-        a.screen(100, 24).join("\n").contains("is in the merge"),
+        a.notes
+            .iter()
+            .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == "merge_queued")),
         "still there a millisecond before"
     );
     a.clock(1_000 + FLEETING_MS);
-    let screen = a.screen(100, 24).join("\n");
+    let _ = a.screen(100, 24);
     assert!(
-        !screen.contains("is in the merge"),
-        "gone the millisecond it is due: {screen}"
+        !a.notes
+            .iter()
+            .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == "merge_queued")),
+        "gone the millisecond it is due: {:?}",
+        a.notes_lines()
     );
     assert!(
-        screen.contains("the store would not open"),
-        "a failure is not on a timer, and the class table is what keeps it off one: {screen}"
+        note_live(&a, "merge_not_queued"),
+        "a failure is not on a timer, and the class table is what keeps it off one"
     );
 
     // Spent, not retired. The sentence leaves this head rather than joining the reader's
@@ -2112,8 +2128,8 @@ fn an_edge_bound_warning_raises_the_alarm_and_never_becomes_a_row() {
         "the code the reader greps the log for is not on the screen at all:\n{stats}"
     );
 
-    // The control: a code that changes the conversation is still a row in it. Without
-    // this, a head that swallowed every warning would pass everything above.
+    // The control: a code the model was not told is held and reaches the edge; without this, a
+    // head that swallowed every warning would pass everything above.
     let mut b = App::new(plain_cfg(80));
     assert_eq!(
         b.apply(ServerFrame::Event(env(
@@ -2126,13 +2142,21 @@ fn an_edge_bound_warning_raises_the_alarm_and_never_becomes_a_row() {
                 compaction: None,
             },
         ))),
-        Disposition::Rendered,
-        "a daemon fact the model was not told is a row of the conversation"
+        Disposition::Filtered,
+        "no warning is a row of the conversation"
     );
-    let drawn = b.screen(80, 24).join("\n");
+    let _ = b.screen(80, 24);
     assert!(
-        drawn.contains("workspace_gone"),
-        "the sentence is not drawn: {drawn}"
+        note_live(&b, "workspace_gone"),
+        "the sentence is not held: {:?}",
+        b.notes_lines()
+    );
+    assert_eq!(b.failed, 1, "and the edge counts it");
+    let _ = b.hist_lines.join("\n");
+    assert!(
+        !b.hist_lines.join("\n").contains("workspace_gone"),
+        "a warning drew a row: {}",
+        b.hist_lines.join("\n")
     );
     // And a twin of a model row is NOT one: the fold's own row is the model's, and the warning is
     // beside it. See `warning::TWIN`.
@@ -2153,8 +2177,19 @@ fn an_edge_bound_warning_raises_the_alarm_and_never_becomes_a_row() {
     );
     assert_eq!(b.slow_first_byte, 0, "neither is the weather");
     assert!(
-        !b.alarmed(),
-        "and it raises no triangle, because nothing is wrong"
+        c.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::Warning {
+                code: "boundary_absent".into(),
+                detail: "this session has no boundary".into(),
+                compaction: None,
+            },
+        ))) == Disposition::Filtered,
+        "and a daemon fact is not a row either"
+    );
+    assert!(
+        !c.alarmed() || c.failed > 0,
+        "a clean head's triangle is about its own counters, not about a warning"
     );
 }
 
@@ -2441,20 +2476,28 @@ fn a_warning_beside_a_compaction_still_draws_whole() {
     }
     let frame = a.screen(100, 30);
     let screen = frame.join("\n");
-    let mismatch: Vec<&String> = frame
-        .iter()
-        .filter(|l| l.contains("transcript_store"))
-        .collect();
-    assert_eq!(mismatch.len(), 1, "the failure has its own row:\n{screen}");
-    // Its register and its first clause are on the row, and its sentence is a click away
-    //: one line a notice, a failure included - the mark and the red say what it is.
+    // Neither is a row: the compaction's row is the fork's own `System` row, and the chain
+    // mismatch is a failure the model was not told - `/notes` holds its sentence whole.
     assert!(
-        mismatch[0].contains("! transcript_store · row 41's head is not the one"),
-        "{screen}"
+        !screen.contains("transcript_store"),
+        "the failure drew a row:\n{screen}"
     );
     assert!(
-        newest_notice(&mut a).contains("unverifiable"),
-        "and its sentence is in the popup, not folded away"
+        note_live(&a, "transcript_store"),
+        "the failure left no record: {:?}",
+        a.notes_lines()
+    );
+    let held = a
+        .notes
+        .iter()
+        .find_map(|(_, n)| match n {
+            Note::Warned(w) if w.code == "transcript_store" => Some(w.detail.clone()),
+            _ => None,
+        })
+        .expect("held");
+    assert!(
+        held.contains("unverifiable"),
+        "its sentence was cut, not kept whole: {held}"
     );
     assert!(
         !screen.contains("THE MODEL'S OWN RECORD"),
@@ -2493,25 +2536,25 @@ fn a_stale_prefix_is_drawn_as_a_note_row_and_not_as_a_failure() {
         letibot_sessionlog::warning::Class::Routine,
         "the register is the whole of what a reader takes from the colour"
     );
-    // One line now - the operator, of the wall this note
-    // drew: *"these gray walls are hilarious … make them the usual one liners"*
-    // (`stale_card`). The remedy is the card's (`alt-r`), and the sentence is one click away.
-    let screen = a.screen(120, 40).join("\n");
-    let row = screen
-        .lines()
-        .find(|l| l.contains("prompt stale · seated 10-08 21:14"))
-        .unwrap_or_else(|| panic!("the notice is not on a note row at all:\n{screen}"));
+    // The sentence is in `/notes`, in the routine register by its class, and the reseat card is
+    // what the reader acts on - `/notes` lists the daemon's words whole.
+    let _ = a.screen(120, 40);
     assert!(
-        row.contains("tool schemas changed · click for details"),
-        "what moved, and how to read the rest: {row:?}"
+        note_live(&a, "prefix_stale"),
+        "the stale prompt left no note: {:?}",
+        a.notes_lines()
     );
-    assert!(!row.contains('!'), "never the failure mark: {row:?}");
-    let (y, _) = a.card_rows[0];
-    a.key(Key::Click { x: 10, y: y as u16 });
-    assert!(
-        super::redcard::popup_text(&mut a).contains("`/reseat`"),
-        "and the remedy is in the words one click away, not only in the daemon's event"
-    );
+    assert!(a.reseat.is_some(), "the reseat card is the reader's move");
+    let held = a
+        .notes
+        .iter()
+        .find_map(|(_, n)| match n {
+            Note::Warned(w) if w.code == "prefix_stale" => Some(w.detail.clone()),
+            _ => None,
+        })
+        .expect("held");
+    assert!(held.contains("`/reseat`"), "the remedy is in the words");
+    assert!(held.contains("tool schemas have changed since"), "{held}");
     // A row, not a counter on the alarm. `ALARM_ONLY` is the list of codes that belong
     // on the triangle; this one is a fact about the conversation the operator is in, and a
     // reader who never opens `/status` is exactly the reader it is for.
@@ -2716,8 +2759,8 @@ fn a_notice_whose_row_is_above_the_window_is_not_drawn() {
         a.retired_notes()
     );
 
-    // And a notice at the END of the conversation is drawn - the rule is the seam, not the
-    // silence: a note whose row IS in the window still arrives.
+    // And a notice at the END of the conversation is held and live - the rule is the seam, not
+    // the silence: a note whose row IS in the window still arrives.
     a.apply(ServerFrame::Event(env_at(
         0,
         9_000,
@@ -2727,16 +2770,24 @@ fn a_notice_whose_row_is_above_the_window_is_not_drawn() {
             compaction: None,
         },
     )));
-    let screen = a.screen(120, 40).join("\n");
+    let _ = a.screen(120, 40);
     assert!(
-        screen.contains("target_green at 294af894"),
-        "the notice filed at the end of the conversation is not on the screen:\n{screen}"
+        note_live(&a, "target_green"),
+        "the notice filed at the end of the conversation is not live: {:?}",
+        a.notes_lines()
     );
-    // The one in the window is not counted.
+    assert!(
+        a.notes_lines().join("\n").contains("294af894"),
+        "and its sentence is in the listing: {:?}",
+        a.notes_lines()
+    );
+    // The one in the window is not counted as out of it either: every warning is beside the
+    // conversation, so the seam a note is placed at no longer exists.
     assert_eq!(
         a.notes_before(),
-        1,
-        "a note that IS in the window is counted as out of it"
+        2,
+        "both notes are beside the conversation: {:?}",
+        a.notes
     );
 }
 
@@ -2750,7 +2801,7 @@ fn ctrl_n_then_the_counters_expansion_draws_no_notice() {
     // rebuild, so the second is the steady one every door below starts from.
     a.screen(200, 40);
     let before = a.screen(200, 40).join("\n");
-    assert!(before.contains("model_endpoint_retry"), "{before}");
+    assert!(note_live(&a, "model_endpoint_retry"), "{before}");
     assert!(before.contains("2 tool calls"), "{before}");
     assert!(
         a.hist_floor > 0,
@@ -2765,7 +2816,7 @@ fn ctrl_n_then_the_counters_expansion_draws_no_notice() {
     assert_eq!(
         cleared.matches("model_endpoint_retry").count(),
         0,
-        "the press did not clear the wall:\n{cleared}"
+        "a warning drew a row:\n{cleared}"
     );
 
     // Open the run - the door the operator's click takes.
@@ -2809,10 +2860,8 @@ fn ctrl_n_then_a_queued_row_draws_no_notice() {
     // rebuild, the second is the steady one.
     a.screen(200, 40);
     assert!(
-        a.screen(200, 40)
-            .join("\n")
-            .contains("model_endpoint_retry"),
-        "the fixture's notices are not on the frame"
+        note_live(&a, "model_endpoint_retry"),
+        "the fixture's notices are not held"
     );
     assert!(
         a.hist_floor > 0,
@@ -2867,31 +2916,35 @@ fn a_muted_warning_kind_is_never_drawn() {
         )
     };
 
-    // The premise: with nothing muted the code IS a row in the conversation.
+    // The premise: an unmuted note is live, and no warning is a row at all.
     let mut plain = App::new(plain_cfg(80));
     assert_eq!(
         plain.apply(ServerFrame::Event(gone())),
-        Disposition::Rendered
+        Disposition::Filtered
     );
+    let _ = plain.screen(80, 24);
     assert!(
-        plain.screen(80, 24).join("\n").contains("workspace_gone"),
-        "the premise: an unmuted row is drawn"
+        note_live(&plain, "workspace_gone"),
+        "the premise: an unmuted note is live"
     );
 
     let mut muted = App::new(plain_cfg(80));
     muted.quiet = Quiet {
         muted: vec!["workspace_gone".to_string()],
-        coalesce: true,
     };
     assert_eq!(
         muted.apply(ServerFrame::Event(gone())),
-        // Read and filed as always: the mute is the DRAWING's, not the event's.
-        Disposition::Rendered
+        // Read and filed as always: the mute is the LISTING's, not the event's.
+        Disposition::Filtered
     );
     let drawn = muted.screen(80, 24).join("\n");
     assert!(
         !drawn.contains("workspace_gone"),
         "a muted kind was drawn:\n{drawn}"
+    );
+    assert!(
+        !note_live(&muted, "workspace_gone"),
+        "a muted kind is live in `/notes`"
     );
     // And it is still there: held, counted, and one verb from being read.
     assert_eq!(muted.notes.len(), 1, "the note was dropped, not muted");
@@ -2918,5 +2971,9 @@ fn a_muted_warning_kind_is_never_drawn() {
     assert!(
         !other.screen(80, 24).join("\n").contains("Projects/other"),
         "a second copy of a muted kind was drawn"
+    );
+    assert!(
+        !note_live(&other, "workspace_gone"),
+        "a second copy of a muted kind is live"
     );
 }

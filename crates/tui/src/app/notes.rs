@@ -8,23 +8,18 @@ use letibot_sessionlog::view::{SettledDecision, Warned};
 /// box.
 pub(crate) const NOTES_KEPT: usize = 64;
 
-/// What this head keeps quiet: the warning kinds `leticode.toml`'s `[warnings] mute` names, and
-/// whether a burst of one kind is one counted row (`[warnings] coalesce`, whose default is
-/// today's head). One value because the drawing walk reads the two together, and a kind's mute is
-/// answered before its burst is counted.
+/// What this head keeps quiet: the warning kinds `leticode.toml`'s `[warnings] mute` names. The
+/// mute is the LISTING's, not the event's: `/notes` still holds the sentence and marks it retired,
+/// so a muted kind is hidden and restored, never lost.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Quiet {
     pub(crate) muted: Vec<String>,
-    pub(crate) coalesce: bool,
 }
 
 impl Quiet {
-    /// The head's own answer: nothing muted, and bursts counted.
+    /// The head's own answer: nothing muted.
     pub(crate) fn shipped() -> Quiet {
-        Quiet {
-            muted: Vec::new(),
-            coalesce: true,
-        }
+        Quiet { muted: Vec::new() }
     }
 }
 
@@ -66,30 +61,11 @@ impl App {
     /// second ending, and [`note_key`] cannot tell it from the first.
     pub(crate) fn file_note(&mut self, n: Note) {
         let at = self.items.len();
-        // A note joining a burst changes a row that is already drawn: the count lives in the first member's seam and
-        // the walk is incremental, so the rewind goes to the row before it. The chain is with the previous note of
-        // its KIND, since the wall interleaves two codes - and `[warnings] coalesce = false` means nothing joins.
-        let head = coalescable(&n)
-            .filter(|_| self.quiet.coalesce)
-            .and_then(|_| {
-                let prev = self
-                    .notes
-                    .iter()
-                    .rposition(|(place, o)| matches!(place, Placed::Seam(_)) && chains(o, &n))?;
-                Some(burst_head(&self.notes, prev))
-            });
-        let head = head.and_then(|i| match self.notes[i].0 {
-            Placed::Seam(at) => Some(at),
-            Placed::Before => None,
-        });
         self.notes.push((Placed::Seam(at), n));
         // A note born older than what the reader has read is born hidden: the watermark's half of filing, and the
         // reason a re-said notice cannot rebuild a wall that was cleared. Through `hide_read`, so there is one writer
         // of the mark's keys and one place the cap lives.
         self.hide_read();
-        if let Some(head) = head {
-            self.invalidate_history_from(head.saturating_sub(1));
-        }
         self.cap_notes();
     }
 
@@ -279,6 +255,8 @@ impl App {
             gaps: self.gaps,
             orphan_bodies: self.orphan_bodies,
             slow_first_byte: self.slow_first_byte,
+            refused: self.refused,
+            failed: self.failed,
         }
     }
 
@@ -330,7 +308,7 @@ pub(crate) enum RetiredWrite {
     Replace,
 }
 
-/// The six disclosure counters as one comparable value: a struct rather than six arguments, because the alarm and
+/// The disclosure counters as one comparable value: a struct rather than one argument each, because the alarm and
 /// its acknowledgement have to agree about which numbers count, and a list spelled out at two call sites grows at
 /// one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -342,6 +320,11 @@ pub(crate) struct Counters {
     pub(crate) gaps: u64,
     pub(crate) orphan_bodies: u64,
     pub(crate) slow_first_byte: u64,
+    /// Refusals and failures the daemon raised while this head watched. Their sentences are in
+    /// `/notes`; these are the number the EDGE points at, because a fault filed only in a list
+    /// nobody opened is a fault nobody read.
+    pub(crate) refused: u64,
+    pub(crate) failed: u64,
 }
 
 impl Counters {
@@ -356,6 +339,8 @@ impl Counters {
             || self.gaps > seen.gaps
             || self.orphan_bodies > seen.orphan_bodies
             || self.slow_first_byte > seen.slow_first_byte
+            || self.refused > seen.refused
+            || self.failed > seen.failed
     }
 }
 
@@ -583,79 +568,8 @@ pub(crate) fn past_its_time(n: &Note, now_ms: u64) -> bool {
     letibot_sessionlog::warning::is_fleeting(&w.code) && now_ms >= w.ts.saturating_add(FLEETING_MS)
 }
 
-/// How long a burst lasts: the window in which notices of one kind become one counted row. A minute, which is the
-/// daemon's own tick, so two consecutive passes of one incident are one burst and the third is not.
-pub const COALESCE_MS: u64 = 60_000;
-
-/// Codes that are re-said while they still stand, and so are never coalesced: a burst counts things that happened,
-/// and a line saying *this is still true* is not one of them.
-pub const LIVE: &[&str] = &["store_busy_wait", "model_retry"];
-
-/// The plural a burst of this code is counted in - `5 reviews could not run` rather than
-/// `5 × queue_blocked`. A code with no row here is counted by its code, which is the head's own
-/// vocabulary everywhere else (`notice_card::warning_notice` leads with it too).
-pub const COUNTED_AS: &[(&str, &str)] = &[
-    ("queue_blocked", "reviews could not run"),
-    ("queue_needs_human", "reviews need you"),
-    ("queue_branch_kept", "trees kept"),
-    ("queue_waiting_for_vm", "reviews waiting for a VM"),
-    ("queue_vm_slots_exhausted", "VM-slot waits"),
-    ("target_red", "targets RED"),
-    ("target_green", "targets green again"),
-    ("target_unjudged", "targets not judged"),
-    ("target_timed_out", "targets whose gate timed out"),
-    ("gate_setup_failed", "targets the gate could not judge"),
-    ("gate_killed", "targets whose gate was killed"),
-    ("merge_failed", "landings that failed their gate"),
-    ("merge_conflict", "branches that would not rebase"),
-    ("merge_queued", "branches queued"),
-    ("queue_push_failed", "pushes that failed"),
-    ("queue_install_failed", "installs that failed"),
-    ("refusal_undelivered", "refusals that reached nobody"),
-    ("plugin_layer", "plugin layers that failed"),
-    ("plugin_refused", "plugin layers refused"),
-    ("plugin_view_refused", "panes a layer refused to draw"),
-    ("restart_restored", "restarts that brought work back"),
-    ("restart_reminded", "restarts that reminded the model"),
-    ("workspace_gone", "sessions whose workspace is gone"),
-    ("boundary_absent", "sessions refused for want of a boundary"),
-    // A refusal's code carries its request id (`denied:<id>`); the family is what a count of them
-    // is counted in, and each member's own id is on its line in the popup.
-    ("denied", "calls the gate refused"),
-];
-
-/// The phrase a burst of `code` is counted in - its own, or the code itself.
-pub(crate) fn counted_as(code: &str) -> &str {
-    COUNTED_AS
-        .iter()
-        .find(|(c, _)| *c == code)
-        .map(|(_, words)| *words)
-        .unwrap_or(code)
-}
-
-/// May this note join a burst, and under which kind and clock? `Warned` and `NotRun` only, since a settled
-/// decision, an answer and a pane's ending are each about one request or one program, so there is no more of the
-/// same to count.
-pub(crate) fn coalescable(n: &Note) -> Option<(&str, u64)> {
-    let kind = note_kind(n)?;
-    if LIVE.contains(&kind) {
-        return None;
-    }
-    let ts = note_stamp(n)?;
-    (ts > 0).then_some((kind, ts))
-}
-
-/// Is `b` the next member of `a`'s burst: the same kind and inside [`COALESCE_MS`]. A clock that went backwards is
-/// a member and not a new burst, since two notices that cannot be ordered are one incident as far as a count goes.
-pub(crate) fn chains(a: &Note, b: &Note) -> bool {
-    match (coalescable(a), coalescable(b)) {
-        (Some((ka, ta)), Some((kb, tb))) => ka == kb && tb.saturating_sub(ta) <= COALESCE_MS,
-        _ => false,
-    }
-}
-
 /// Is this note one the reader has retired? - [`App::is_retired`] as a free function, for the
-/// walk and for [`burst_at`], which hold the head's fields destructured.
+/// walk, which holds the head's fields destructured.
 pub(crate) fn note_retired(
     dismissed: &[String],
     quiet: &Quiet,
@@ -670,98 +584,4 @@ pub(crate) fn note_retired(
 /// kind instead of once per copy.
 pub(crate) fn muted(quiet: &Quiet, n: &Note) -> bool {
     note_kind(n).is_some_and(|kind| quiet.muted.iter().any(|m| m == kind))
-}
-
-/// The `ts` of note `j` when it may chain with `kind` - drawn, coalescable, the same kind.
-fn chained_ts(notes: &[(Placed, Note)], j: usize, kind: &str) -> Option<u64> {
-    if !matches!(notes[j].0, Placed::Seam(_)) {
-        return None;
-    }
-    match coalescable(&notes[j].1) {
-        Some((k, ts)) if k == kind => Some(ts),
-        _ => None,
-    }
-}
-
-/// The first member of the burst `i` belongs to - the chain walked backwards.
-pub(crate) fn burst_head(notes: &[(Placed, Note)], i: usize) -> usize {
-    let Some((kind, ts)) = coalescable(&notes[i].1) else {
-        return i;
-    };
-    let mut head = i;
-    let mut next_ts = ts;
-    for j in (0..i).rev() {
-        let Some(t) = chained_ts(notes, j, kind) else {
-            continue;
-        };
-        if next_ts.saturating_sub(t) > COALESCE_MS {
-            break;
-        }
-        head = j;
-        next_ts = t;
-    }
-    head
-}
-
-/// The last member of the burst `i` belongs to - the chain walked forwards.
-fn burst_end(notes: &[(Placed, Note)], i: usize) -> usize {
-    let Some((kind, ts)) = coalescable(&notes[i].1) else {
-        return i;
-    };
-    let mut end = i;
-    let mut prev_ts = ts;
-    for j in (i + 1)..notes.len() {
-        let Some(t) = chained_ts(notes, j, kind) else {
-            continue;
-        };
-        if t.saturating_sub(prev_ts) > COALESCE_MS {
-            break;
-        }
-        end = j;
-        prev_ts = t;
-    }
-    end
-}
-
-/// What the walk does with one note, as far as a burst is concerned.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Burst {
-    /// A member of a burst whose counted row has already been drawn - draw nothing.
-    Drawn,
-    /// Draw the note as it always was: it is not coalescable, or it is alone.
-    Single,
-    /// The head of a burst of two or more - the indices of the live members, oldest first.
-    Counted(Vec<usize>),
-}
-
-/// Is this note the one that draws, and how many does it stand for? The row belongs to the first LIVE member of the
-/// chain, since the reader can retire one notice and the others must still be on the screen.
-pub(crate) fn burst_at(
-    notes: &[(Placed, Note)],
-    dismissed: &[String],
-    quiet: &Quiet,
-    marks: &[(String, u64)],
-    i: usize,
-) -> Burst {
-    // `[warnings] coalesce = false` is one row per notice and no counting: the reader asked for
-    // every copy, and a burst would draw one of them.
-    if !quiet.coalesce {
-        return Burst::Single;
-    }
-    let Some((kind, _)) = coalescable(&notes[i].1) else {
-        return Burst::Single;
-    };
-    // The chain's own members and not every index between its ends: the notes of other kinds are interleaved with
-    // them, and an index range would count a neighbour as a member.
-    let live: Vec<usize> = (burst_head(notes, i)..=burst_end(notes, i))
-        .filter(|&j| chained_ts(notes, j, kind).is_some())
-        .filter(|&j| !note_retired(dismissed, quiet, marks, &notes[j].1))
-        .collect();
-    if live.first() != Some(&i) {
-        return Burst::Drawn;
-    }
-    if live.len() < 2 {
-        return Burst::Single;
-    }
-    Burst::Counted(live)
 }

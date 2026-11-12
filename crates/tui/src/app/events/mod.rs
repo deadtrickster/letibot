@@ -843,7 +843,7 @@ impl App {
             // snapshot that no longer carries this id, so the words arrive with nowhere to go. Counted rather
             // than made to work, because there is nothing to recover.
             self.orphan_bodies += 1;
-            self.note(Note::Warned(Warned {
+            self.note_beside(Note::Warned(Warned {
                 code: "orphan_body".into(),
                 detail: format!(
                     "a row's content arrived for `{item_id}`, which this head is not \

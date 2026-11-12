@@ -222,19 +222,15 @@ fn a_system_row_and_an_offer_open_on_a_click() {
     }
 }
 
+/// A warning is not a row of the conversation, so there is no legend to click: the sentence is
+/// opened from `/notes`, which is the pane's own key. This test used to walk every warning card's
+/// legend; the walk it pins now is the one `/notes` needs, so it asserts the sentence is there.
 #[test]
-fn every_warning_card_opens_on_a_click() {
-    // The codes whose row the head draws: a code `warning::TWIN` names is filed BESIDE the
-    // conversation (the model's own row is the one drawn), so it has no row here to click -
-    // `/notes` opens it.
-    let warnings: [(&str, &str); 6] = [
+fn a_warning_is_opened_from_notes_not_from_a_row() {
+    for (code, detail) in [
         (
             "prefix_stale",
             include_str!("fixtures/prefix_stale_warning.txt"),
-        ),
-        (
-            "queue_needs_human",
-            include_str!("fixtures/review_needs_human_warning.txt"),
         ),
         (
             "queue_blocked",
@@ -244,21 +240,19 @@ fn every_warning_card_opens_on_a_click() {
             "daemon_stopping",
             "`dead` asked this daemon to stop. Every head detaches.",
         ),
-        (
-            "workspace_gone",
-            "this session's workspace is not there any more: /home/dead/Projects/gone.",
-        ),
-        (
-            "boundary_absent",
-            "this session has no boundary, so nothing confines the sandbox.",
-        ),
-    ];
-    for (code, detail) in warnings {
+    ] {
+        let mut a = with_warning(code, detail);
+        let screen = a.screen(120, 30);
+        let joined = screen.join("\n");
         assert!(
-            letibot_sessionlog::warning::twin(code).is_none(),
-            "`{code}` is filed beside the conversation, so this list cannot click it"
+            !joined.contains(code) || !joined.contains(CLICK),
+            "`{code}` drew a row with a legend: {joined}"
         );
-        every_legend_opens(with_warning(code, detail), code);
+        let listed = a.notes_lines().join("\n");
+        assert!(
+            listed.contains(code),
+            "`{code}` is not in `/notes`: {listed}"
+        );
     }
 }
 

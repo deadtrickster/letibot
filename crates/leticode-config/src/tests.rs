@@ -1450,7 +1450,6 @@ fn the_six_tables_are_read_and_an_empty_file_is_the_shipped_daemon() {
     assert_eq!(none.queue, QueueKeys::default());
     assert_eq!(none.room, RoomKeys::default());
     assert!(none.warnings.mute.is_empty());
-    assert_eq!(none.warnings.coalesce, None);
     assert!(none.keys.rebind.is_empty());
     assert!(none.verbosity.profiles.is_empty());
     assert_eq!(
@@ -1465,7 +1464,7 @@ fn the_six_tables_are_read_and_an_empty_file_is_the_shipped_daemon() {
         "[queue]\nstuck_after_seconds = 900\nstuck_repeat_seconds = 7200\n\
              [nag]\nafter_seconds = 60\nfloor_seconds = 10\nrepeat_cap_seconds = 1800\n\
              [room]\ntie_breaker = \"glm-coding/glm-5.3\"\n\
-             [warnings]\nmute = [\"model_slow_first_byte\", \"denied\"]\ncoalesce = false\n\
+             [warnings]\nmute = [\"model_slow_first_byte\", \"denied\"]\n\
              [keys]\n\"todos.d\" = \"f\"\n\
              [verbosity.mine]\nshow = [\"edits\", \"thinking=folded\"]\n",
     );
@@ -1484,7 +1483,6 @@ fn the_six_tables_are_read_and_an_empty_file_is_the_shipped_daemon() {
             .collect::<Vec<_>>(),
         ["model_slow_first_byte", "denied"]
     );
-    assert_eq!(c.warnings.coalesce, Some(false));
     assert_eq!(c.keys.rebind.len(), 1);
     assert_eq!(c.keys.rebind[0].name, "todos.d");
     assert_eq!(c.keys.rebind[0].key, "f");
@@ -1545,9 +1543,9 @@ fn a_bad_value_in_every_table_is_refused_with_its_file_and_line() {
             3,
         ),
         (
-            "coalesce",
+            "warnings_key",
             "\n[warnings]\ncoalesce = \"yes\"\n",
-            "coalesce is true or false",
+            "`coalesce` is not a key",
             3,
         ),
         ("mute", "\n[warnings]\nmute = \"a\"\n", "mute is a list", 3),
@@ -1640,7 +1638,7 @@ fn the_projects_value_wins_and_a_mute_unions_across_the_levels() {
         "[nag]\nafter_seconds = 90\nrepeat_cap_seconds = 900\n\
              [queue]\nstuck_after_seconds = 600\n\
              [room]\ntie_breaker = \"deepseek/deepseek-flash\"\n\
-             [warnings]\nmute = [\"model_slow_first_byte\"]\ncoalesce = true\n\
+             [warnings]\nmute = [\"model_slow_first_byte\"]\n\
              [keys]\n\"todos.d\" = \"f\"\n\"rooms.r\" = \"u\"\n\
              [verbosity.mine]\nshow = [\"tools\"]\n",
     );
@@ -1649,7 +1647,7 @@ fn the_projects_value_wins_and_a_mute_unions_across_the_levels() {
         "[nag]\nafter_seconds = 30\n\
              [queue]\nstuck_after_seconds = 120\n\
              [room]\ntie_breaker = \"glm-coding/glm-5.3\"\n\
-             [warnings]\nmute = [\"denied\"]\ncoalesce = false\n\
+             [warnings]\nmute = [\"denied\"]\n\
              [keys]\n\"todos.d\" = \"x\"\n\
              [verbosity.mine]\nshow = [\"edits\", \"tools\"]\n",
     );
@@ -1671,7 +1669,6 @@ fn the_projects_value_wins_and_a_mute_unions_across_the_levels() {
         merged.room.tie_breaker.as_deref(),
         Some("glm-coding/glm-5.3")
     );
-    assert_eq!(merged.warnings.coalesce, Some(false));
     assert_eq!(
         merged
             .warnings

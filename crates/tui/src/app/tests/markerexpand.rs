@@ -158,18 +158,19 @@ fn expand_the_tools(a: &mut App) {
 #[test]
 fn an_expansion_draws_no_notice_the_watermark_covers() {
     let mut a = a_turn_with_a_cleared_wall();
-    let wall = a.screen(120, 40).join("\n");
-    assert_eq!(
-        wall.matches("model_endpoint_retry").count(),
-        1,
-        "the premise — three notices of one kind are one counted row:\n{wall}"
+    let _ = a.screen(120, 40);
+    assert!(
+        a.notes
+            .iter()
+            .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == "model_endpoint_retry")),
+        "the premise — the notices are held"
     );
 
     assert_eq!(a.key(Key::CtrlN), None);
     let cleared = a.screen(120, 40).join("\n");
     assert!(
         !cleared.contains("model_endpoint_retry"),
-        "the press did not clear the wall:\n{cleared}"
+        "a warning drew a row:\n{cleared}"
     );
     assert_eq!(
         a.read_upto("model_endpoint_retry"),
@@ -191,12 +192,8 @@ fn an_expansion_draws_no_notice_the_watermark_covers() {
     );
     assert_eq!(
         open.matches("model_endpoint_retry").count(),
-        1,
-        "the expansion drew the retired wall back:\n{open}"
-    );
-    assert!(
-        open.contains("model_endpoint_retry"),
-        "the one notice that is news is not drawn:\n{open}"
+        0,
+        "the expansion drew a warning row:\n{open}"
     );
     // Every notice but the newest is retired, and the mark retires the re-said ones - the key set
     // cannot, because `[fallback] attempt 1 of 5 ...` is a different sentence and so a different
@@ -255,8 +252,8 @@ fn an_expansion_draws_no_notice_the_watermark_covers() {
     );
     assert_eq!(
         landed.matches("model_endpoint_retry").count(),
-        1,
-        "the round's rows brought the wall back:\n{landed}"
+        0,
+        "the round's rows brought a warning row back:\n{landed}"
     );
 
     // Collapse and expand again - the toggle is the operator's *"then they show"*, and the
@@ -265,15 +262,15 @@ fn an_expansion_draws_no_notice_the_watermark_covers() {
     let folded = a.screen(120, 40).join("\n");
     assert_eq!(
         folded.matches("model_endpoint_retry").count(),
-        1,
-        "the collapse changed what the mark covers:\n{folded}"
+        0,
+        "the collapse drew a warning row:\n{folded}"
     );
     expand_the_tools(&mut a);
     let again = a.screen(120, 40).join("\n");
     assert_eq!(
         again.matches("model_endpoint_retry").count(),
-        1,
-        "the second expansion drew the retired wall back:\n{again}"
+        0,
+        "the second expansion drew a warning row:\n{again}"
     );
 
     // And the watermark is the same value it was - the expansion re-renders the transcript,
@@ -369,7 +366,7 @@ fn a_settled_runs_expansion_draws_no_notice_the_watermark_covers() {
         !a.screen(120, 40)
             .join("\n")
             .contains("model_endpoint_retry"),
-        "the press did not clear the wall"
+        "a warning drew a row"
     );
     // The wall re-said in other words, and one notice that is genuinely newer than the mark.
     resay(&mut a, 1, 1_000);
@@ -384,8 +381,8 @@ fn a_settled_runs_expansion_draws_no_notice_the_watermark_covers() {
     );
     assert_eq!(
         open.matches("model_endpoint_retry").count(),
-        1,
-        "the settled run's expansion drew the retired wall back:\n{open}"
+        0,
+        "the expansion drew a warning row:\n{open}"
     );
     assert_eq!(
         a.retired_notes(),

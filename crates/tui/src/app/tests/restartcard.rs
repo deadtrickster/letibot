@@ -321,20 +321,30 @@ fn the_stale_prompt_note_is_one_line_pointing_at_the_card() {
     let screen = a.screen(200, 40);
     let joined = screen.join("\n");
     let line = "prompt stale · seated 09-20 17:51 · new: task_resume · click for details";
-    assert_eq!(rows_with(&screen, line).len(), 1, "{joined}");
-    assert!(!joined.contains("message 0 is frozen"), "{joined}");
-    assert!(!joined.contains("+1 lines"), "{joined}");
-    assert_eq!(a.card_rows.len(), 1, "{:?}", a.card_rows);
-    let (y, _) = a.card_rows[0];
-    assert_eq!(a.key(Key::Click { x: 10, y: y as u16 }), None);
-    let whole = popup_text(&mut a);
+    // Not a row: the stale prompt is a note and the reseat card is the reader's move.
+    assert!(!joined.contains(line), "the note drew a row: {joined}");
+    assert_eq!(a.card_rows.len(), 0, "{:?}", a.card_rows);
+    assert!(
+        crate::ui::transcript::line_cards::warning_card("prefix_stale", STALE)
+            .is_some_and(|c| c.line == line),
+        "the table stopped reading the sentence"
+    );
+    let held = a
+        .notes
+        .iter()
+        .find_map(|(_, n)| match n {
+            Note::Warned(w) if w.code == "prefix_stale" => Some(w.detail.clone()),
+            _ => None,
+        })
+        .expect("held in /notes");
     for needle in [
         "session s-1789919514688401228 was seated 09-20 17:51",
         "so the model cannot call them: task_resume",
         "`/reseat` rebuilds the prompt",
     ] {
-        assert!(holds(&whole, needle), "the popup lost `{needle}`: {whole}");
+        assert!(holds(&held, needle), "the note lost `{needle}`: {held}");
     }
+    assert!(a.reseat.is_some(), "and the card is up");
 }
 
 /// What it does not know, it does not read - and the note is still ONE line: the
@@ -354,16 +364,18 @@ fn a_restart_or_stale_shape_this_head_does_not_know_falls_back() {
         let mut a = with_warning(code, detail);
         let screen = a.screen(200, 40);
         let joined = screen.join("\n");
-        assert_eq!(
-            rows_with(&screen, &format!("· {code} · ")).len(),
-            1,
-            "the generic line: {joined}"
+        // No generic line either: no warning is a row of the conversation, whatever its shape.
+        assert!(
+            !screen.iter().any(|l| l.contains(&format!("· {code} · "))),
+            "drew a row: {joined}"
         );
-        assert_eq!(a.card_rows.len(), 1, "{code}");
-        assert_eq!(
-            newest_notice(&mut a),
-            detail,
-            "the popup is the detail verbatim"
+        assert_eq!(a.card_rows.len(), 0, "{code}");
+        assert!(
+            a.notes
+                .iter()
+                .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == code && w.detail == detail)),
+            "{code} left no record: {:?}",
+            a.notes
         );
     }
     // A restart's shape this head does not know is not drawn at all: the `[restart]` notice the

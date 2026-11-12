@@ -169,15 +169,15 @@ fn the_reseat_card_still_moves_and_draws_nothing() {
     );
 }
 
-/// The whole table, one code at a time: `warning::TWIN` is the answer to "does this code draw?" and
-/// nothing else is. A twin draws nothing (and is held to be read); every other code draws its row
-/// as it always did, because it is a daemon fact the model was never told. A code added to one half
-/// without the other fails here.
+/// The whole table, one code at a time: NO warning is a row of the conversation, and each one is
+/// held with its destination's other half - a count on the edge for a fault, the status line for
+/// live state. A code that starts drawing a row, or loses its record, fails here.
 #[test]
-fn the_twin_table_is_the_only_thing_that_stops_a_warning_being_drawn() {
-    let mut beside = 0;
-    let mut drawn = 0;
-    for (code, _, _) in letibot_sessionlog::warning::TABLE {
+fn no_warning_is_a_row_of_the_conversation() {
+    let mut model = 0;
+    let mut notes = 0;
+    let mut status = 0;
+    for (code, class, _) in letibot_sessionlog::warning::TABLE {
         let mut a = app();
         a.apply(hello(
             "s",
@@ -194,36 +194,67 @@ fn the_twin_table_is_the_only_thing_that_stops_a_warning_being_drawn() {
             },
         )));
         let _ = screen(&mut a);
+        // A code whose arm took it as STATE (a fold's announcement, a turn's own failure, the
+        // model's switch) files nothing: those return before the head reaches the table.
+        if matches!(
+            *code,
+            "compacting"
+                | "turn_failed"
+                | "store_newer"
+                | "prefix_current"
+                | "model_switch_pending"
+                | "daemon_starting"
+                | "daemon_started"
+                | "model_set"
+        ) {
+            continue;
+        }
         let body = a.hist_lines.join("\n");
         let placed = a
             .notes
             .iter()
             .any(|(place, _)| matches!(place, Placed::Seam(_)));
-        if letibot_sessionlog::warning::twin(code).is_some() {
-            assert!(
-                !body.contains(code) && !placed,
-                "`{code}` twins a model row and drew a row of its own\n{body}"
-            );
-            assert!(
-                a.notes
-                    .iter()
-                    .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == *code)),
-                "`{code}` drew nothing and left no record at all: {:?}",
-                a.notes
-            );
-            beside += 1;
-        } else {
-            drawn += 1;
+        assert!(
+            !body.contains(&format!("`{code}`")) && !placed,
+            "`{code}` drew a row of the conversation\n{body}"
+        );
+        match letibot_sessionlog::warning::destination(code) {
+            letibot_sessionlog::warning::Go::Model => model += 1,
+            letibot_sessionlog::warning::Go::Status => {
+                status += 1;
+                // Live state is said on the status line, and it is still in `/notes`.
+                assert!(
+                    a.notice.as_deref().is_some_and(|n| n.contains(code)),
+                    "`{code}` is live state and the status line is silent: {:?}",
+                    a.notice
+                );
+            }
+            letibot_sessionlog::warning::Go::Notes => {
+                notes += 1;
+                if class.is_refused() {
+                    assert_eq!(a.refused, 1, "`{code}` is a refusal and the edge missed it");
+                } else if class.is_failure() {
+                    assert_eq!(a.failed, 1, "`{code}` is a failure and the edge missed it");
+                }
+            }
         }
+        let _ = body;
+        assert!(
+            a.notes
+                .iter()
+                .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == *code)),
+            "`{code}` left no record at all: {:?}",
+            a.notes
+        );
     }
-    assert_eq!(beside, letibot_sessionlog::warning::TWIN.len());
-    assert!(drawn > 40, "{drawn} codes are still drawn");
+    assert_eq!(model, letibot_sessionlog::warning::TWIN.len());
+    assert!(notes > 100, "{notes} codes go to `/notes`");
+    assert!(status > 10, "{status} are live state");
 }
 
-/// A warning the model was NOT told keeps its row, and the head's own reading of it is `Rendered`
-/// as before: the twin table is the only thing that took a row away.
+/// A daemon fact the model was not told is held and counted on the edge - and still not a row.
 #[test]
-fn a_daemon_fact_with_no_model_twin_still_draws() {
+fn a_daemon_fact_with_no_model_twin_is_held_and_counted() {
     let mut a = app();
     a.apply(hello(
         "s",
@@ -241,8 +272,16 @@ fn a_daemon_fact_with_no_model_twin_still_draws() {
     )));
     let _ = screen(&mut a);
     assert!(
-        a.hist_lines.join("\n").contains("no boundary"),
-        "the row went with the twins: {}",
+        a.notes
+            .iter()
+            .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == "boundary_absent")),
+        "the sentence is not held: {:?}",
+        a.notes
+    );
+    assert_eq!(a.failed, 1, "the edge does not count it");
+    assert!(
+        !a.hist_lines.join("\n").contains("no boundary"),
+        "it drew a row: {}",
         a.hist_lines.join("\n")
     );
 }
