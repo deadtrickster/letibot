@@ -71,7 +71,7 @@ line. It runs on this box or the host `[queue] gate_host` names, never on GitHub
 ```sh
 sh scripts/check-fmt.sh main
 sh scripts/check-test-attrs.sh
-sh scripts/clippy-gate.sh --all-targets -- -D warnings -A clippy::result_large_err -A clippy::type_complexity -A clippy::large_enum_variant -A clippy::too_many_arguments
+sh scripts/clippy-gate.sh --workspace --all-targets -- -D warnings
 LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast -- --nocapture
 # ^ also runs tests/launcher.sh and tests/rrun.sh, from crates/tools/tests/shell_suites.rs
 cargo build --release --bins
@@ -83,8 +83,8 @@ sh scripts/install-gate-build.sh
   only by comments attach to one function and one test stops running.
 - `clippy-gate.sh` touches every workspace member's root first. A warm target dir otherwise answers
   `-D warnings` from a fresh plain-clippy fingerprint and lints nothing.
-- The four design-shaped lints are exempt on the clippy line instead of by `#[allow]`. A plain
-  `cargo clippy --all-targets` still reports them.
+- The clippy line exempts nothing. A lint that is genuinely wrong for one function is an
+  `#[allow]` on that function with its reason in a comment, never a hole in the gate's flags.
 - `LETIBOT_REQUIRE_APPARATUS=1` turns a test's missing-apparatus skip (no vocabulary GGUF, no cgroup
   v2 subtree, no store fixture) into a failure. Without it a skipping test returns and counts as
   passed. Apparatus the platform can never have goes through `apparatus::applies` and is not

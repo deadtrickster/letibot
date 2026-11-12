@@ -73,9 +73,7 @@ that make a by-hand run disagree with the queue are called out under it:
 ```sh
 sh scripts/check-fmt.sh main
 sh scripts/check-test-attrs.sh
-sh scripts/clippy-gate.sh --all-targets -- -D warnings \
-  -A clippy::result_large_err -A clippy::type_complexity \
-  -A clippy::large_enum_variant -A clippy::too_many_arguments
+sh scripts/clippy-gate.sh --workspace --all-targets -- -D warnings
 LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast -- --nocapture
 cargo build --release --bins
 ```

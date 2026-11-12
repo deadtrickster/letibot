@@ -107,7 +107,7 @@ while [ $# -gt 0 ]; do
     --gate)
       steps=("sh scripts/check-fmt.sh main"
         "sh scripts/check-test-attrs.sh"
-        "sh scripts/clippy-gate.sh --offline --all-targets"
+        "sh scripts/clippy-gate.sh --offline --workspace --all-targets -- -D warnings"
         "LETIBOT_REQUIRE_APPARATUS=1 cargo test --offline --workspace --no-fail-fast")
       shift
       ;;
