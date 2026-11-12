@@ -660,8 +660,12 @@ STUB
   ( run "$DEFAULT_ONLY" --session s-1 > "$T/going.out" 2>&1 ) &
   launched=$!
   # Let it reach the wait, then let the daemon go. The bound is the point of the case: it
-  # must not have started a second daemon in that window.
-  sleep 1
+  # must not have started a second daemon in that window. Released on the launcher's own
+  # line, not after a fixed sleep: a loaded host reaches the check later than any sleep.
+  for _ in $(seq 1 600); do
+    grep -q "is still going" "$T/going.out" 2> /dev/null && break
+    sleep 0.1
+  done
   : > "$T/let-go"
   wait "$launched" 2> /dev/null || true
   out="$(cat "$T/going.out")"
