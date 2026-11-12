@@ -594,6 +594,133 @@ fn a_press_in_the_pane_takes_the_keyboard_and_one_outside_gives_it_back() {
     assert!(keys.is_empty() && took);
 }
 
+/// At 160 columns the editor is a column on the LEFT and the conversation keeps the rest: a
+/// click in either lands in it, and the caret is where the keyboard is. At 100 columns the two
+/// cannot share, so the frame is the one there was - the pane over the whole rectangle.
+#[test]
+fn the_editor_sits_beside_the_conversation_and_zooms_when_the_columns_will_not_fit() {
+    let ws = workspace("split");
+    let mut a = edited(&ws);
+    a.screen(160, 30);
+    a.key(Key::CtrlBracket);
+    // Off the review view and onto the text, where rano shows a caret.
+    a.route(vec![key(KeyCode::Esc, Mods::NONE)]);
+    settle(&mut a);
+    let rows = a.screen(160, 30);
+    let edw = a.editor_col;
+    assert!(edw >= 40, "the editor took {edw} columns");
+    // The pane's frame, the file in its top edge, in the left of the row it was drawn on.
+    let top = rows
+        .iter()
+        .find(|l| l.contains('╭') && l.contains(FILE))
+        .unwrap_or_else(|| panic!("no editor column: {rows:#?}"));
+    let at = crate::app::keyhints::cells(top)
+        .windows(FILE.chars().count())
+        .position(|w| w.iter().collect::<String>() == FILE)
+        .expect("the file's name in the edge");
+    assert!(at < edw, "the name is in the editor's columns: {at}");
+    // …and the conversation is to its right, on the same rows.
+    let q = rows
+        .iter()
+        .position(|l| l.contains("please fix line eleven"))
+        .expect("the conversation beside it");
+    let qx = crate::app::keyhints::cells(&rows[q])
+        .windows(6)
+        .position(|w| w.iter().collect::<String>() == "please")
+        .expect("the question's column");
+    assert!(qx > edw, "the conversation is right of the border: {qx}");
+    assert!(a.editor_focused(), "the pane has the keys");
+    // The caret is rano's, in the editor's own columns.
+    let (_, cx) = a.cursor().expect("the caret");
+    assert!(cx < edw, "the caret is in the pane: {cx}");
+
+    // A click on the conversation takes the keyboard out of the pane; one back in the pane's
+    // text takes it back - the column's x is the terminal's, and neither is off by a column.
+    let (keys, took) = a.route(vec![press((qx + 1) as u16, q as u16)]);
+    assert!(!took && keys.len() == 1, "the conversation's click");
+    assert!(!a.editor_focused());
+    a.screen(160, 30);
+    let (_, cx) = a.cursor().expect("the caret");
+    assert!(cx > edw, "the composer's caret, right of the border: {cx}");
+    let (keys, took) = a.route(vec![press((edw / 2) as u16, 3)]);
+    assert!(took && keys.is_empty(), "the pane's click");
+    assert!(a.editor_focused());
+
+    // The overlay: the same pane over the whole rectangle, as it was before the split - its
+    // text inset two columns from the frame, which sits at the gutter.
+    a.screen(100, 30);
+    assert_eq!(a.editor_col, 0, "too narrow to share");
+    let rows = a.screen(100, 30);
+    let qx = rows
+        .iter()
+        .position(|l| l.contains("please fix line eleven"));
+    assert!(
+        qx.is_none(),
+        "the pane takes the rectangle: the conversation is not drawn beside it"
+    );
+    let area = a.edit_pane.as_ref().unwrap().area;
+    let gutter = u16::try_from(App::gutter(100)).unwrap();
+    assert_eq!(
+        (area.x, area.w),
+        (gutter + 2, 100 - 2 * gutter - 4),
+        "the rectangle it always had: the gutter, then the frame's two columns"
+    );
+}
+
+/// `alt-i` crosses without the chord and `alt-m` puts the pane back over the whole rectangle,
+/// and the width the operator keyed is one the next start finds in `head.toml`.
+#[test]
+fn alt_i_crosses_alt_m_zooms_and_the_width_is_kept() {
+    let ws = workspace("splitkeys");
+    let dir = std::env::temp_dir().join(format!("letibot-editor-w-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("head.toml");
+    let mut a = edited(&ws);
+    a.prefs_path = Some(path.clone());
+    a.screen(160, 30);
+    a.key(Key::CtrlBracket);
+    a.route(vec![key(KeyCode::Esc, Mods::NONE)]);
+    settle(&mut a);
+    a.screen(160, 30);
+    assert!(a.editor_focused());
+    let half = a.editor_col;
+    assert_eq!(half, 80, "half the terminal");
+
+    // alt-i inside the pane: the composer's keys, and the pane still beside it.
+    let (keys, took) = a.route(vec![key(KeyCode::Char('i'), Mods::ALT)]);
+    assert!(
+        keys.is_empty() && took,
+        "the chord is the head's, not rano's"
+    );
+    assert!(!a.editor_focused());
+    a.screen(160, 30);
+    assert_eq!(a.editor_col, half, "the pane stays drawn");
+    // …and alt-i from the composer comes back.
+    a.key(Key::AltI);
+    assert!(a.editor_focused());
+
+    // alt-m: the whole rectangle, exactly as it was before the split.
+    a.route(vec![key(KeyCode::Char('m'), Mods::ALT)]);
+    a.screen(160, 30);
+    assert_eq!(a.editor_col, 0, "zoomed");
+    assert!(a.editor_drawn() && a.editor_focused());
+    a.key(Key::AltM);
+    a.screen(160, 30);
+    assert_eq!(a.editor_col, half, "and back beside the conversation");
+
+    // The key resize, and the file it is kept in.
+    a.key(Key::AltNarrow);
+    assert_eq!(a.editor_width, Some(half - 4));
+    a.screen(160, 30);
+    assert_eq!(a.editor_col, half - 4);
+    let mut b = app();
+    b.prefs_path = Some(path);
+    b.load_prefs();
+    assert_eq!(b.editor_width, Some(half - 4), "the next start");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The chord is advertised where the head's chords are: `/help` names it, with what it does
 /// on each side of the crossing.
 #[test]
@@ -947,6 +1074,20 @@ fn the_editor_pane_wears_the_heads_frame_not_nanos() {
             .iter()
             .any(|l| l.contains('╰') && l.contains("write out")),
         "rano's keys in the bottom edge: {flat}"
+    );
+    // The close chord is the one the edge names, and the older one still closes the pane without
+    // being advertised anywhere (`rano_exit_closes_the_pane_and_never_the_head` has both).
+    let edge = screen
+        .iter()
+        .find(|l| l.contains('╰') && l.contains("write out"))
+        .expect("the bottom edge");
+    assert!(
+        edge.contains("C-x exit") || edge.contains("C-x Exit"),
+        "the close chord on the edge: {edge:?}"
+    );
+    assert!(
+        !edge.contains("C-q"),
+        "the old chord is not advertised: {edge:?}"
     );
     // The text is inside the frame, and the cursor's place is still said.
     assert!(flat.contains("line 11"), "{flat}");
@@ -1612,10 +1753,17 @@ fn a_markdown_preview_is_centred_in_a_wide_pane() {
         .iter()
         .find(|l| l.contains("alpha beta"))
         .unwrap_or_else(|| panic!("the prose is drawn: {screen:#?}"));
-    let lead = line.chars().take_while(|c| *c == ' ').count();
+    // A terminal this wide shares its columns with the conversation, so rano's centring is
+    // measured inside the editor's own - which is what the frame must not take away from it.
+    let cols = if a.editor_col > 0 { a.editor_col } else { 220 };
+    let mine: String = crate::app::keyhints::cells(line)
+        .into_iter()
+        .take(cols)
+        .collect();
+    let lead = mine.chars().take_while(|c| *c == ' ').count();
     assert!(
-        lead >= 40,
-        "prose is centred, not at the left: {lead} {line:?}"
+        lead >= 4,
+        "prose is centred, not at the left: {lead} of {cols} {mine:?}"
     );
 }
 

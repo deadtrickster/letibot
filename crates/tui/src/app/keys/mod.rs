@@ -189,7 +189,23 @@ impl App {
                 return None;
             }
             Key::AltNarrow | Key::AltWiden => {
-                self.sidebar_resize_key(k == Key::AltWiden);
+                // The width keys belong to whichever border is on the screen: the editor takes them
+                // while it is a column, and the sidebar has them the rest of the time.
+                if self.editor_col > 0 {
+                    self.editor_resize_key(k == Key::AltWiden);
+                } else {
+                    self.sidebar_resize_key(k == Key::AltWiden);
+                }
+                return None;
+            }
+            // The editor's two, wherever the keyboard is: alt-i crosses, alt-m zooms. They are
+            // settled here because they mean the same from either side of the border.
+            Key::AltI => {
+                self.editor_focus_key();
+                return None;
+            }
+            Key::AltM => {
+                self.editor_zoom_key();
                 return None;
             }
             k => k,
@@ -874,7 +890,13 @@ pub enum Key {
     AltL,
     /// alt-j: the keyboard into the rooms sidebar.
     AltJ,
-    /// alt-< and alt->: the rooms sidebar narrower and wider.
+    /// alt-i: the keyboard between the editor pane and the composer - the editor's own half of
+    /// `ctrl-]`, and the only way across when the pane is a column that does not have the keys.
+    AltI,
+    /// alt-m: the editor zoomed over the conversation, or beside it (`app/editor.rs`).
+    AltM,
+    /// alt-< and alt->: the border on the screen narrower and wider - the editor's when it is a
+    /// column, the rooms sidebar's otherwise.
     AltNarrow,
     AltWiden,
     Backspace,
@@ -1031,6 +1053,8 @@ impl Key {
             | Key::AltH
             | Key::AltL
             | Key::AltJ
+            | Key::AltI
+            | Key::AltM
             | Key::AltNarrow
             | Key::AltWiden
             | Key::PageUp

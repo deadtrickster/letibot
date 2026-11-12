@@ -50,6 +50,10 @@ fn key(k: KeyEvent) -> Option<Key> {
         // alt-l / alt-j: the rooms sidebar on or off, and into it (`app/sidebar.rs`).
         KeyCode::Char('l') if m == Mods::ALT => Key::AltL,
         KeyCode::Char('j') if m == Mods::ALT => Key::AltJ,
+        // alt-i / alt-m: the editor's two - the keyboard between the pane and the composer, and
+        // the pane zoomed over the conversation or beside it (`app/editor.rs`).
+        KeyCode::Char('i') if m == Mods::ALT => Key::AltI,
+        KeyCode::Char('m') if m == Mods::ALT => Key::AltM,
         KeyCode::Char('<') if m == Mods::ALT => Key::AltNarrow,
         KeyCode::Char('>') if m == Mods::ALT => Key::AltWiden,
         KeyCode::Char('f') if m == Mods::ALT => Key::WordRight,
@@ -377,6 +381,8 @@ mod tests {
             (b"\x1bh", Key::AltH),
             (b"\x1bl", Key::AltL),
             (b"\x1bj", Key::AltJ),
+            (b"\x1bi", Key::AltI),
+            (b"\x1bm", Key::AltM),
             (b"\x1b<", Key::AltNarrow),
             (b"\x1b>", Key::AltWiden),
             (b"\x01", Key::Home),

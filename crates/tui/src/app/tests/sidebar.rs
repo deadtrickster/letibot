@@ -30,6 +30,37 @@ fn config_turns_the_sidebar_on() {
     assert!(a.sidebar.on, "[ui] rooms_sidebar = true was not read");
 }
 
+/// With the editor in a column there are THREE, and the one that gives way is the sidebar: a pane
+/// too narrow to share is zoomed, and the conversation keeps its minimum either way.
+#[test]
+fn three_columns_need_the_editor_and_the_sidebar_and_the_sidebar_gives_way() {
+    let mut a = app();
+    a.session_id = "s".into();
+    reply(&mut a, rooms_reply(&[("host", 2, 7, 3)]));
+    with_sessions(&mut a);
+    a.sidebar_command("on");
+    a.screen(150, 24);
+    a.key(Key::CtrlE);
+    a.screen(150, 24);
+    let edw = a.editor_col;
+    assert!(edw > 0, "the editor is a column at 150");
+    assert!(
+        a.sidebar.drawn,
+        "and the sidebar keeps its own: {:?}",
+        a.sidebar.last_w
+    );
+    let main = 150 - edw - 1 - a.sidebar.last_w - 1;
+    assert!(
+        main >= MAIN_MIN,
+        "the conversation keeps its minimum: {main}"
+    );
+
+    // At 120 the three cannot fit: the list folds to its strip and the editor keeps its column.
+    a.screen(120, 24);
+    assert!(!a.sidebar.drawn, "no room for the list at 120");
+    assert!(a.editor_col > 0, "and the pane is not zoomed for it");
+}
+
 /// Rooms and sessions stand beside the transcript, on every row, and a click on a session switches.
 #[test]
 fn the_sidebar_stands_beside_the_transcript() {

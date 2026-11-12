@@ -80,6 +80,18 @@ pub struct App {
     /// The conversation's rectangle in the last frame, in terminal cells: what a pane opened
     /// between frames is given before it draws, so it opens centred on its change.
     pub(crate) edit_area: rano::editor::Area,
+    /// How many columns the editor took on the left of the last frame, and how wide that frame's
+    /// terminal was - 0 when the pane has the whole rectangle. Set by the frame, and read by
+    /// `drawn()`, the clicks and the cursor, so the three cannot disagree about the split.
+    pub(crate) editor_col: usize,
+    pub(crate) editor_term_w: usize,
+    /// alt-m: the pane takes the whole rectangle even where the two columns would fit. The
+    /// operator's choice, not the terminal's.
+    pub(crate) editor_zoom: bool,
+    /// The width the operator dragged or keyed the editor column to, kept in `head.toml`.
+    pub(crate) editor_width: Option<usize>,
+    /// The border between the two columns is held: motion resizes instead of selecting.
+    pub(crate) editor_dragging: bool,
     /// Which screen rows of the last frame are a call the turn is still drawing, as `(row, call
     /// id)`. Keyed by the call and not the card's words, which change: the ids come out of the
     /// function that drew the lines, so the record and the drawing cannot disagree.
@@ -1251,6 +1263,11 @@ impl App {
             term: None,
             edit_pane: None,
             edit_area: rano::editor::Area::default(),
+            editor_col: 0,
+            editor_term_w: 0,
+            editor_zoom: false,
+            editor_width: None,
+            editor_dragging: false,
             call_rows: Vec::new(),
             file_rows: Vec::new(),
             notice_rows: Vec::new(),

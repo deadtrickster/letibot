@@ -30,7 +30,7 @@ type Piece = (usize, usize, Vec<u8>, bool);
 #[derive(Debug, Clone, Default)]
 pub(crate) struct HintRow {
     row: String,
-    key: (bool, bool),
+    key: (bool, bool, usize),
     pub(crate) hints: Vec<KeyHint>,
 }
 
@@ -333,6 +333,10 @@ impl App {
             .map(|h| (h.rect.y, h.rect.y + h.rect.h))
             .collect();
         let editor = self.editor_drawn().then_some(self.edit_area);
+        // The pane's text is nobody's hint, and which columns are its own depends on where the
+        // frame put it: the whole rectangle when it is zoomed, the border's left when it is a
+        // column beside the conversation.
+        let col = self.editor_offset();
         // Only text this head wrote is a button. The body above the chrome is another party's (a
         // room, a plugin, a tool's output, a file) except the head's own static screens and the diff
         // popup; the hint bar and the composer's edges stay.
@@ -360,7 +364,7 @@ impl App {
                 let (top, h) = (usize::from(a.y), usize::from(a.h));
                 y + 1 == top || y == top + h
             });
-            let key = (skipped, on_editor_frame);
+            let key = (skipped, on_editor_frame, col);
             if let Some(cached) = self.hint_rows.get(y)
                 && cached.row == *row
                 && cached.key == key
@@ -375,8 +379,13 @@ impl App {
                     Vec::new()
                 } else {
                     let mut hs = scan_row(y, &cs);
+                    // Left of the border is the editor's: its file's text and its own keys, which
+                    // are rano's and not buttons of this head's bar.
+                    if col > 0 {
+                        hs.retain(|h| h.x >= col);
+                    }
                     for h in &mut hs {
-                        h.editor = on_editor_frame;
+                        h.editor = on_editor_frame && col == 0;
                     }
                     hs
                 }

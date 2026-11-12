@@ -56,6 +56,9 @@ pub struct HeadPrefs {
     /// The rooms sidebar's width in columns, as the operator last dragged or keyed it. `None` is
     /// the configured or default width.
     pub rooms_sidebar_width: Option<u16>,
+    /// The editor's column width in columns, as the operator last dragged or keyed it. `None` is
+    /// half the terminal. Read by `app::editor`'s `editor_fit` and written by its resize.
+    pub editor_width: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +142,7 @@ impl Default for HeadPrefs {
             theme: None,
             colors: Vec::new(),
             rooms_sidebar_width: None,
+            editor_width: None,
         }
     }
 }
@@ -349,6 +353,17 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
                     )),
                 },
             },
+            // The editor's column: the width a drag or alt-< / alt-> chose, kept so the next
+            // start opens on the same split rather than half the terminal every time.
+            "editor_width" => match v.trim() {
+                "" | "false" => p.editor_width = None,
+                n => match n.parse::<u16>() {
+                    Ok(n) if n > 0 => p.editor_width = Some(n),
+                    _ => notes.push(format!(
+                        "head.toml: editor_width = {n:?} is a column count or false"
+                    )),
+                },
+            },
             "theme" => p.theme = (!v.is_empty()).then_some(v),
             k if k.starts_with("color.") => {
                 p.colors.push((k["color.".len()..].to_string(), v));
@@ -363,7 +378,7 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
 /// key from a newer build - where it was. Creates the directory.
 pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let ours: [(&str, String); 11] = [
+    let ours: [(&str, String); 12] = [
         ("diff", format!("\"{}\"", p.diff.as_str())),
         ("thinking", format!("\"{}\"", p.thinking)),
         ("tools", format!("\"{}\"", p.tools)),
@@ -386,6 +401,11 @@ pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
         (
             "rooms_sidebar_width",
             p.rooms_sidebar_width
+                .map_or_else(|| "false".to_string(), |n| n.to_string()),
+        ),
+        (
+            "editor_width",
+            p.editor_width
                 .map_or_else(|| "false".to_string(), |n| n.to_string()),
         ),
         // The template itself quoted, or `false` bare - the two words the file may hold.

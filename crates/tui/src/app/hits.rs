@@ -65,6 +65,11 @@ pub(crate) enum Target {
     SideRow,
     /// The sidebar's left border: a press on it starts a resize, a click does nothing.
     SideBorder,
+    /// The editor column, whole: the pane's own mouse reports are rano's, and this is what a click
+    /// on the frame around them means - the keyboard back in the editor.
+    EditorColumn,
+    /// The border between the editor and the conversation: a press on it starts a resize.
+    EditorBorder,
     /// The decision card; its stops are the ladder's rows.
     Decision,
     /// The quit card; its stops are its two choices.

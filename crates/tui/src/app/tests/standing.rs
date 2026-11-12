@@ -241,7 +241,9 @@ fn leaving_rano_lands_back_on_the_notes_list() {
         note(&first, Some("the first"), true, NoteForm::Verbatim),
         note(&second, Some("the second"), true, NoteForm::Verbatim),
     ]));
-    a.screen(120, 24);
+    // A hundred columns: too narrow to share, so the note takes the rectangle the list was in,
+    // which is the shape this test is about (`app::editor::EditorFit`).
+    a.screen(100, 24);
     assert!(
         a.hint_bar(160)
             .contains("enter opens the note in the editor"),
@@ -253,7 +255,7 @@ fn leaving_rano_lands_back_on_the_notes_list() {
     settle(&mut a);
     assert!(a.editor_drawn(), "the note took the screen");
     assert!(
-        !a.screen(120, 24).join("\n").contains("standing notes"),
+        !a.screen(100, 24).join("\n").contains("standing notes"),
         "and the list is under it, not beside it"
     );
     // And the list's keys are off while rano is over it: a bar naming keys that do nothing
@@ -274,7 +276,7 @@ fn leaving_rano_lands_back_on_the_notes_list() {
         a.is_open(Surface::Standing),
         "and the list is what was under it"
     );
-    let screen = a.screen(120, 24).join("\n");
+    let screen = a.screen(100, 24).join("\n");
     assert!(screen.contains("standing notes"), "{screen}");
     assert_eq!(a.standing_sel, 1, "the cursor is where the reader left it");
     assert!(

@@ -62,8 +62,72 @@ impl App {
         Fit::Wide(want.clamp(SIDE_MIN, term_w - MAIN_MIN - 1))
     }
 
-    /// The frame with the sidebar beside it, or a strip row that says it is collapsed.
+    /// The frame: the editor's column on the left when it shares the terminal, then the
+    /// conversation's, then the sidebar beside that. The editor takes its columns first, because
+    /// it is the one of the three that cannot collapse - a pane too narrow is zoomed instead
+    /// ([`EditorFit`]).
     pub(crate) fn compose_framed(&mut self, term_w: usize, h: usize) -> Vec<String> {
+        self.editor_term_w = term_w;
+        let edw = self.editor_fit(term_w).columns();
+        self.editor_col = edw;
+        if edw == 0 {
+            return self.compose_side(term_w, h);
+        }
+        let off = edw + 1;
+        let mut out = self.compose_side(term_w - off, h);
+        let ed = self.editor_rows(0, 0, edw, h);
+        // rano's rectangle in the terminal's own cells: the frame just composed wrote the
+        // MAIN column's into `edit_area`, and the pane is not there.
+        self.edit_area = crate::ui::editor::editor_inner(0, 0, edw, h).into();
+        for (i, row) in out.iter_mut().enumerate() {
+            let mut line = ed.get(i).cloned().unwrap_or_default();
+            let pad = edw.saturating_sub(crate::ui::render::visible_width(&line));
+            line.push_str(&" ".repeat(pad));
+            line.push('│');
+            line.push_str(row);
+            *row = line;
+        }
+        // Every x the main column recorded was measured from its own left edge, and the termi-
+        // nal's counts from the frame's: the hits and the caret move by the editor's share.
+        for hit in &mut self.hits {
+            hit.rect.x += off;
+        }
+        // The caret last, and rano's read again rather than as the main column left it: the
+        // pane's rows were drawn above, and a caret taken from before them would be a key behind.
+        if self.editor_focused() {
+            self.cursor = self.edit_pane.as_ref().and_then(|p| p.caret);
+        } else if let Some(c) = self.cursor.as_mut() {
+            c.1 += off;
+        }
+        // The border is the resize handle, pushed last so it is over the column's own target - a
+        // click on it starts a drag rather than taking the keyboard. The column is the pane's:
+        // anywhere on it that rano did not claim puts the keyboard back in the editor.
+        self.hits.push(Hit {
+            rect: Rect {
+                x: 0,
+                y: 0,
+                w: off,
+                h: out.len(),
+            },
+            target: Target::EditorColumn,
+            stops: Vec::new(),
+        });
+        self.hits.push(Hit {
+            rect: Rect {
+                x: edw,
+                y: 0,
+                w: 1,
+                h: out.len(),
+            },
+            target: Target::EditorBorder,
+            stops: Vec::new(),
+        });
+        out
+    }
+
+    /// The conversation's frame with the rooms sidebar beside it, or a strip row that says it is
+    /// collapsed.
+    pub(crate) fn compose_side(&mut self, term_w: usize, h: usize) -> Vec<String> {
         let fit = self.sidebar_fit(term_w);
         self.sidebar.drawn = matches!(fit, Fit::Wide(_));
         self.sidebar.term_w = term_w;
@@ -206,9 +270,11 @@ impl App {
         let _ = self.save_prefs(RetiredWrite::Union);
     }
 
-    /// A press on column `x`: the border starts a resize. `true` when it was taken.
+    /// A press on column `x`: the border starts a resize. `true` when it was taken. The x is the
+    /// terminal's, and the sidebar's own arithmetic is measured from the conversation's left edge.
     pub(crate) fn sidebar_press(&mut self, x: u16, _y: u16) -> bool {
-        if self.sidebar.drawn && usize::from(x) == self.sidebar.term_w - self.sidebar.last_w - 1 {
+        let x = usize::from(x).saturating_sub(self.editor_offset());
+        if self.sidebar.drawn && x == self.sidebar.term_w.saturating_sub(self.sidebar.last_w + 1) {
             self.sidebar.dragging = true;
             true
         } else {
@@ -222,7 +288,8 @@ impl App {
             return false;
         }
         let t = self.sidebar.term_w;
-        self.sidebar_set_width(t.saturating_sub(usize::from(x) + 1));
+        let x = usize::from(x).saturating_sub(self.editor_offset());
+        self.sidebar_set_width(t.saturating_sub(x + 1));
         true
     }
 

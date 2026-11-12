@@ -153,7 +153,10 @@ impl App {
             Drawn::Term
         } else if self.diff_popup.is_some() {
             Drawn::DiffPopup
-        } else if self.edit_pane.as_ref().is_some_and(|p| !p.hidden) {
+        } else if self.editor_fit(self.editor_term_w.max(self.term_cols)) == EditorFit::Zoom {
+            // Only where the two cannot share, or where `alt-m` asked: in a column the pane is
+            // drawn beside the conversation instead (`compose_framed`). The wider of the two
+            // widths is the terminal's, since a split frame measures its main column.
             Drawn::Editor
         } else if let Some(s) = self.top_surface() {
             Drawn::Surface(s)

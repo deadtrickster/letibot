@@ -28,6 +28,9 @@ impl App {
             Target::RoomMember | Target::RoomChan => self.focused_surface() == Some(Surface::Rooms),
             Target::SideRow => !self.sidebar.rows.is_empty(),
             Target::SideBorder => self.sidebar.drawn,
+            // The editor's column and its border are there only while the frame drew them: a key
+            // earlier in the same read can have closed the pane.
+            Target::EditorColumn | Target::EditorBorder => self.editor_col > 0 && self.editor_up(),
             Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture => {
                 self.drawn() == Drawn::Conversation
             }
@@ -212,6 +215,16 @@ impl App {
                 return ControlFlow::Break(None);
             }
             (Target::SideBorder, _) => return ControlFlow::Break(None),
+            // The editor's border is the drag's, and a click on it is nobody's; anywhere else on
+            // the column is the pane's, and takes the keyboard.
+            (Target::EditorBorder, _) => return ControlFlow::Break(None),
+            (Target::EditorColumn, _) => {
+                if let Some(p) = self.edit_pane.as_mut() {
+                    p.focused = true;
+                    p.dirty = true;
+                }
+                return ControlFlow::Break(None);
+            }
             (Target::SideRow, Some(k)) => {
                 return ControlFlow::Break(self.sidebar_click(k));
             }
@@ -361,6 +374,9 @@ impl App {
             // A line of the window with no window up - `still_drawn` has already refused
             // this one, so it is here for the enum and not for a pointer that can reach it.
             | Target::PayloadLine => {}
+            // The editor's column is rano's: a notch over it is nobody's here, and the two
+            // arms exist because this match is exhaustive over the enum.
+            Target::EditorColumn | Target::EditorBorder => {}
             // A link returned above, with the notch handed on: the arm is here because this
             // match is exhaustive over the enum and a missing arm is a click swallowed.
             Target::Link => {}

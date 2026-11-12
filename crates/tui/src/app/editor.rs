@@ -21,10 +21,18 @@ pub(crate) const TO_COMPOSER: &str = "letibot-to-composer";
 /// host keymap. The head's own half of it is [`Key::CtrlBracket`].
 const CROSS: &str = "C-]";
 
-/// The chord that closes the pane - bound to rano's own `exit`, not to a host command, so
-/// it asks about unsaved edits exactly as `^X` does. `ctrl-q` is the head's jobs pane while the
-/// composer has the keys; the two cannot collide, because only one side has them.
-const CLOSE: &str = "C-q";
+/// The chord that closes the pane. `C-x` is rano's own `exit`, either way it reaches - the head's
+/// map only puts it ahead of `ctrl-q`, which still closes the pane and is no longer advertised, so
+/// a reader who learned the old key keeps it.
+const CLOSE: &str = "C-x";
+/// The old close chord, bound below the new one and shown nowhere.
+const CLOSE_LEGACY: &str = "C-q";
+
+/// The narrowest an editor column may be. With `MAIN_MIN` and the border between them, a terminal
+/// under `EDIT_MIN + 1 + MAIN_MIN` columns cannot hold the two side by side.
+pub(crate) const EDIT_MIN: usize = 40;
+/// Columns one `alt-<` / `alt->` moves the editor's border.
+const EDIT_STEP: usize = 4;
 
 /// How long the head's own read waits when nothing arrives (`Terminal::events`, `VTIME=1`).
 /// The pane polls first when rano wants to be ticked sooner than this.
@@ -70,6 +78,27 @@ impl FileRef {
             path: path.to_string(),
             line: 1,
             change: None,
+        }
+    }
+}
+
+/// How the pane sits in a frame, decided from the terminal's width and the operator's zoom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditorFit {
+    /// No pane for this frame: the conversation has the whole width.
+    Off,
+    /// Today's layout - the pane takes the conversation's rectangle, and `ctrl-]` flips which of
+    /// the two shows. A terminal too narrow to share, or the operator's `alt-m`.
+    Zoom,
+    /// A column this many columns wide, on the left.
+    Column(usize),
+}
+
+impl EditorFit {
+    pub(crate) fn columns(self) -> usize {
+        match self {
+            EditorFit::Column(w) => w,
+            _ => 0,
         }
     }
 }
@@ -137,7 +166,10 @@ impl EditorPane {
         ed.set_pictures(proto);
         let mut keys = Keymap::new("letibot");
         keys.bind(CROSS, TO_COMPOSER);
+        // Bound first, so `where_is("exit")` names it on the pane's bottom edge: the two reach the
+        // same command and only one of them is worth teaching.
         keys.bind(CLOSE, "exit");
+        keys.bind(CLOSE_LEGACY, "exit");
         ed.push_keymap(keys);
         let sends: Rc<RefCell<Vec<SendEvent>>> = Rc::default();
         let queue = sends.clone();
@@ -198,9 +230,137 @@ impl App {
         self.drawn() == Drawn::Editor
     }
 
+    /// Is the pane anywhere on the screen: as the whole rectangle, or as the column beside the
+    /// conversation. What the keyboard, the mouse and the frame's pace are handed to.
+    pub(crate) fn editor_up(&self) -> bool {
+        self.edit_pane.as_ref().is_some_and(|p| !p.hidden)
+    }
+
     /// Does the editor pane have the keyboard.
     pub fn editor_focused(&self) -> bool {
-        self.editor_drawn() && self.edit_pane.as_ref().is_some_and(|p| p.focused)
+        self.editor_takes_input() && self.edit_pane.as_ref().is_some_and(|p| p.focused)
+    }
+
+    /// Is the pane the one the terminal's reports go to: on the screen, and not under a `!term`
+    /// pane or the diff popup, which are drawn over it and own the keys themselves.
+    pub(crate) fn editor_takes_input(&self) -> bool {
+        self.editor_up() && !self.pane_open() && self.diff_popup.is_none()
+    }
+
+    /// How the pane sits in a frame `term_w` columns wide. The editor's own width is the
+    /// operator's, clamped so the conversation keeps its minimum - and the rooms sidebar's
+    /// columns too, when the terminal is wide enough to hold all three.
+    pub(crate) fn editor_fit(&self, term_w: usize) -> EditorFit {
+        if !self.editor_up() {
+            return EditorFit::Off;
+        }
+        // A `!term` program and the diff popup take the conversation's rectangle whole, as they
+        // always have: a screen drawn over the pane is not a column beside it.
+        if self.pane_open() || self.diff_popup.is_some() {
+            return EditorFit::Zoom;
+        }
+        let least = EDIT_MIN + 1 + super::sidebar::MAIN_MIN;
+        if self.editor_zoom || term_w < least {
+            return EditorFit::Zoom;
+        }
+        let reserve = match term_w >= least + 1 + super::sidebar::SIDE_MIN && self.sidebar.on {
+            true => super::sidebar::MAIN_MIN + super::sidebar::SIDE_MIN + 2,
+            false => super::sidebar::MAIN_MIN + 1,
+        };
+        let want = self.editor_width.unwrap_or(term_w / 2);
+        let most = term_w.saturating_sub(reserve).max(EDIT_MIN);
+        EditorFit::Column(want.clamp(EDIT_MIN, most))
+    }
+
+    /// alt-i: the keyboard between the pane and the composer. A pane that was put away comes
+    /// back, because a key that only says `it is not here` is a key the operator stops pressing.
+    pub(crate) fn editor_focus_key(&mut self) {
+        let Some(p) = self.edit_pane.as_mut() else {
+            self.say("no editor open — ctrl-e opens one on any file");
+            return;
+        };
+        p.hidden = false;
+        p.focused = !p.focused;
+        p.dirty = true;
+    }
+
+    /// alt-m: the pane takes the whole rectangle instead of sharing it, and back. Below the
+    /// width the two need it changes nothing, and says so rather than doing nothing.
+    pub(crate) fn editor_zoom_key(&mut self) {
+        if self.edit_pane.is_none() {
+            self.say("no editor open — ctrl-e opens one on any file");
+            return;
+        }
+        self.editor_zoom = !self.editor_zoom;
+        let least = EDIT_MIN + 1 + super::sidebar::MAIN_MIN;
+        if !self.editor_zoom && self.editor_term_w > 0 && self.editor_term_w < least {
+            self.say(&format!(
+                "this terminal is {} columns: the editor needs {least} to sit beside the \
+                 conversation",
+                self.editor_term_w
+            ));
+        }
+    }
+
+    /// The columns the conversation's own x's are shifted right by on the last frame.
+    pub(crate) fn editor_offset(&self) -> usize {
+        match self.editor_col {
+            0 => 0,
+            w => w + 1,
+        }
+    }
+
+    /// Set the editor's width and keep it: clamped to the minimums, written to `head.toml`.
+    fn editor_set_width(&mut self, want: usize) {
+        let t = self.editor_term_w;
+        let least = EDIT_MIN + 1 + super::sidebar::MAIN_MIN;
+        if t < least {
+            return;
+        }
+        let most = t - super::sidebar::MAIN_MIN - 1;
+        self.editor_width = Some(want.clamp(EDIT_MIN, most));
+    }
+
+    /// alt-< and alt-> while the pane is a column: narrower and wider by a few columns.
+    pub(crate) fn editor_resize_key(&mut self, wider: bool) {
+        if self.editor_col == 0 {
+            return;
+        }
+        let w = self.editor_col;
+        self.editor_set_width(if wider {
+            w + EDIT_STEP
+        } else {
+            w.saturating_sub(EDIT_STEP)
+        });
+        let _ = self.save_prefs(RetiredWrite::Union);
+    }
+
+    /// A press on the border between the two columns starts a drag. `true` when it was the
+    /// border's: the x is the terminal's own.
+    pub(crate) fn editor_press(&mut self, x: u16, _y: u16) -> bool {
+        if self.editor_col > 0 && usize::from(x) == self.editor_col {
+            self.editor_dragging = true;
+            return true;
+        }
+        false
+    }
+
+    /// Motion while that border is held: the editor's right edge follows the pointer.
+    pub(crate) fn editor_drag(&mut self, x: u16) -> bool {
+        if !self.editor_dragging {
+            return false;
+        }
+        self.editor_set_width(usize::from(x));
+        true
+    }
+
+    /// The button came up on the border: keep the width.
+    pub(crate) fn editor_release(&mut self) -> bool {
+        if !std::mem::take(&mut self.editor_dragging) {
+            return false;
+        }
+        let _ = self.save_prefs(RetiredWrite::Union);
+        true
     }
 
     /// A row's path, as a file this head can open: absolute as it is, relative to the session's
@@ -427,7 +587,7 @@ impl App {
     pub fn editor_wait(&self) -> Option<Duration> {
         self.edit_pane
             .as_ref()
-            .filter(|_| self.editor_drawn())
+            .filter(|p| !p.hidden)
             .map(|p| p.ed.next_wakeup())
     }
 
@@ -449,7 +609,7 @@ impl App {
         let mut keys = Vec::new();
         let mut took = false;
         for e in events {
-            if self.editor_drawn()
+            if self.editor_takes_input()
                 && let Some(p) = self.edit_pane.as_mut()
             {
                 match &e {
@@ -470,7 +630,14 @@ impl App {
                     }
                     Event::Key(k) if p.focused => {
                         took = true;
-                        self.editor_key(*k);
+                        // The head's two keys cross into the pane and out of it, so they are read
+                        // before rano: rano has neither bound, and a key that reaches it is one
+                        // the operator cannot press to leave.
+                        match key_of(Event::Key(*k)) {
+                            Some(Key::AltI) => self.editor_focus_key(),
+                            Some(Key::AltM) => self.editor_zoom_key(),
+                            _ => self.editor_key(*k),
+                        }
                         continue;
                     }
                     Event::Paste(s) if p.focused => {
