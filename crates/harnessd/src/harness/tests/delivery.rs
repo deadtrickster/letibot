@@ -89,6 +89,18 @@ fn deliveries(
     )
 }
 
+/// [`deliveries`] for a session of its own. The room's pen is one per process and keyed by session,
+/// so a test that pushes room lines under the shared `s-r79` hands them to every other test here.
+fn room_deliveries(w: &Arc<JobWatchers>, dir: &Scratch, cap: Duration, sid: &str) -> Deliveries {
+    Deliveries::new(
+        Arc::clone(w),
+        Some(Arc::new(TodoBoard::new(Vec::new()))),
+        DeliveryLog::under(&dir.0, sid),
+        cap,
+        sid,
+    )
+}
+
 fn steering(hub: &Arc<Hub>, d: Deliveries) -> HubSteering {
     HubSteering {
         hub: hub.clone(),
@@ -1020,24 +1032,24 @@ fn a_room_line_put_back_rings_the_session_that_owes_it() {
 fn a_passing_line_then_a_mention_is_one_delivery_in_seq_order() {
     use letibot_room::chat::Reach;
     let dir = Scratch::new("r187-order");
-    let hub = Hub::new("s-r79");
+    let hub = Hub::new("s-r187-order");
     let w = watchers(&hub, false);
-    let d = deliveries(&w, Vec::new(), &dir, Duration::from_secs(600));
+    let d = room_deliveries(&w, &dir, Duration::from_secs(600), "s-r187-order");
     let mut s = steering(&hub, d.clone());
 
     crate::room::wake::push_chat(
-        "s-r79",
+        "s-r187-order",
         1307,
         Reach::Passing,
         "#1307 [project] from s-peer (session) to all, passing by\n> the gate is red".into(),
     );
     crate::room::wake::push_chat(
-        "s-r79",
+        "s-r187-order",
         1309,
         Reach::Addressed,
         "#1309 [project] from s-peer (session) to @you\n> look at this".into(),
     );
-    assert_eq!(crate::room::wake::waiting("s-r79"), 2);
+    assert_eq!(crate::room::wake::waiting("s-r187-order"), 2);
 
     let got = boundary(&mut s).expect("the mention rings, and the door says both");
     let first = got.text.find("#1307").expect("#1307 is said");
@@ -1047,7 +1059,11 @@ fn a_passing_line_then_a_mention_is_one_delivery_in_seq_order() {
         "the trigger arrived before the line it follows: {}",
         got.text
     );
-    assert_eq!(crate::room::wake::waiting("s-r79"), 0, "one door, one take");
+    assert_eq!(
+        crate::room::wake::waiting("s-r187-order"),
+        0,
+        "one door, one take"
+    );
     assert!(!got.urgent && !got.from_operator, "a room line is neither");
 }
 
@@ -1057,18 +1073,28 @@ fn a_passing_line_then_a_mention_is_one_delivery_in_seq_order() {
 fn a_job_that_ended_between_two_room_lines_is_said_between_them() {
     use letibot_room::chat::Reach;
     let dir = Scratch::new("r187-between");
-    let hub = Hub::new("s-r79");
+    let hub = Hub::new("s-r187-between");
     let w = watchers(&hub, false);
-    let d = deliveries(&w, Vec::new(), &dir, Duration::from_secs(600));
+    let d = room_deliveries(&w, &dir, Duration::from_secs(600), "s-r187-between");
     let mut s = steering(&hub, d.clone());
 
-    crate::room::wake::push_chat("s-r79", 1, Reach::Passing, "#1 the first line".into());
+    crate::room::wake::push_chat(
+        "s-r187-between",
+        1,
+        Reach::Passing,
+        "#1 the first line".into(),
+    );
     std::thread::sleep(Duration::from_millis(5));
     // `wake: "now"` so the door has an immediate to say at this boundary, not one to hold.
     w.want_now("j1", WantedNow::WakeNow);
     w.queue_for_test(settled("j1", "exited 0", SystemTime::now()));
     std::thread::sleep(Duration::from_millis(5));
-    crate::room::wake::push_chat("s-r79", 2, Reach::Passing, "#2 the second line".into());
+    crate::room::wake::push_chat(
+        "s-r187-between",
+        2,
+        Reach::Passing,
+        "#2 the second line".into(),
+    );
 
     let got = boundary(&mut s).expect("the boundary says all three");
     let text = &got.text;
@@ -1085,10 +1111,10 @@ fn a_job_that_ended_between_two_room_lines_is_said_between_them() {
 fn a_room_line_arriving_after_a_held_result_is_said_after_it_when_the_cap_releases_it() {
     use letibot_room::chat::Reach;
     let dir = Scratch::new("r187-cap");
-    let hub = Hub::new("s-r79");
+    let hub = Hub::new("s-r187-cap");
     let w = watchers(&hub, false);
     let cap = Duration::from_millis(300);
-    let d = deliveries(&w, Vec::new(), &dir, cap);
+    let d = room_deliveries(&w, &dir, cap, "s-r187-cap");
     let mut s = steering(&hub, d.clone());
 
     w.queue_for_test(settled("j7", "exited 0", SystemTime::now()));
@@ -1097,7 +1123,12 @@ fn a_room_line_arriving_after_a_held_result_is_said_after_it_when_the_cap_releas
         "inside the cap, nothing comes in"
     );
     std::thread::sleep(cap + Duration::from_millis(50));
-    crate::room::wake::push_chat("s-r79", 9, Reach::Passing, "#9 line after the job".into());
+    crate::room::wake::push_chat(
+        "s-r187-cap",
+        9,
+        Reach::Passing,
+        "#9 line after the job".into(),
+    );
 
     let got = boundary(&mut s).expect("past the cap, the batch is released");
     let text = &got.text;
@@ -1105,7 +1136,7 @@ fn a_room_line_arriving_after_a_held_result_is_said_after_it_when_the_cap_releas
     let job = text.find("`j7`").expect("the job");
     let room = text.find("#9 line after the job").expect("the room's line");
     assert!(heading < job && job < room, "not in arrival order: {text}");
-    assert_eq!(crate::room::wake::waiting("s-r79"), 0);
+    assert_eq!(crate::room::wake::waiting("s-r187-cap"), 0);
 }
 
 /// The room's lines are not held by the boundary: one that arrives with no result to say is said at
@@ -1114,12 +1145,12 @@ fn a_room_line_arriving_after_a_held_result_is_said_after_it_when_the_cap_releas
 fn a_room_line_alone_reaches_a_running_turn_without_waiting_for_a_boundary() {
     use letibot_room::chat::Reach;
     let dir = Scratch::new("r187-poll");
-    let hub = Hub::new("s-r79");
+    let hub = Hub::new("s-r187-poll");
     let w = watchers(&hub, false);
-    let d = deliveries(&w, Vec::new(), &dir, Duration::from_secs(600));
+    let d = room_deliveries(&w, &dir, Duration::from_secs(600), "s-r187-poll");
     let mut s = steering(&hub, d.clone());
 
-    crate::room::wake::push_chat("s-r79", 4, Reach::Addressed, "#4 for you".into());
+    crate::room::wake::push_chat("s-r187-poll", 4, Reach::Addressed, "#4 for you".into());
     let got = s
         .try_next()
         .expect("a poll that is not a boundary still says the room");
