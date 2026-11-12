@@ -2052,21 +2052,28 @@ impl Config {
                 .map(|m| m.name)
                 .collect::<Vec<_>>(),
         ));
-        // What answers the turns, with the models this box can actually reach. The choices
+        // What answers the turns, with every model this box can actually reach. The choices
         // travel with the row for the `mode` row's reason: a head that kept its own copy of a list
         // got it wrong, and this list is not even fixed at build time - it comes from the catalogue.
+        // Which presets hold a key here, asked once: the card expands those and shows one row for
+        // the rest, and the `models.keys` row below publishes this same answer rather than a second.
+        let keyed: Vec<&str> = letibot_provider::presets::ALL
+            .iter()
+            .filter(|p| letibot_provider::keys::resolve(p, None, None).is_ok())
+            .map(|p| p.name)
+            .collect();
         {
             let cat = letibot_provider::catalogue::Catalogue::load();
-            let mut names = vec!["local".to_string()];
             // The local models this fleet declares, right after `local`. This row is what the head's
             // model PICKER draws, and the first cut built it from the compiled-in presets only - so bare
             // `/models` knew no `dense78` the daemon had working. Above the presets: no key, no meter.
-            for m in letibot_provider::keys::local_models(None) {
-                names.push(m.name);
-            }
-            for p in letibot_provider::presets::ALL {
-                names.push(format!("{}/{}", p.name, p.default_model(&cat)));
-            }
+            let fleet: Vec<(String, String)> = letibot_provider::keys::local_models(None)
+                .into_iter()
+                .map(|m| (m.name, m.url))
+                .collect();
+            let listed = model_rows(&keyed, &cat, &fleet);
+            let mut names: Vec<String> = listed.iter().map(|(n, _)| n.clone()).collect();
+            let mut facts: Vec<String> = listed.iter().map(|(_, f)| f.clone()).collect();
             let now = match &self.provider {
                 // The local alias is kept in the value, and named when it is a declared local
                 // model, so the picker shows the row the operator is on. Matched on the address
@@ -2097,6 +2104,7 @@ impl Config {
             // silently absent from a menu that claims to show what answers now.
             if !names.contains(&now) {
                 names.insert(1, now.clone());
+                facts.insert(1, named_model_facts(&self.provider, &cat));
             }
             let source = if self.provider.is_none() {
                 "--model"
@@ -2106,6 +2114,19 @@ impl Config {
             let mut r = row("model", now, source, "/models PROVIDER/MODEL");
             r.choices = names;
             out.push(r);
+            // The facts beside those choices, one line each and in the same order, so a reader
+            // choosing between two models of one provider is not choosing blind. Its value is
+            // where they came from, which is the one thing about a price that can go stale.
+            out.push(choices(
+                row(
+                    letibot_sessionlog::protocol::MODEL_FACTS_KEY,
+                    cat.source()
+                        .unwrap_or_else(|| "no catalogue on this box".to_string()),
+                    "the models catalogue",
+                    "",
+                ),
+                &facts.iter().map(String::as_str).collect::<Vec<_>>(),
+            ));
         }
         out.push(choices(
             row(
@@ -2143,11 +2164,6 @@ impl Config {
         // have keys for"*. Only the daemon can answer it: a head that guessed would green a row that
         // refuses at the first turn. `local` is absent on purpose - it needs no credential.
         {
-            let keyed: Vec<&str> = letibot_provider::presets::ALL
-                .iter()
-                .filter(|p| letibot_provider::keys::resolve(p, None, None).is_ok())
-                .map(|p| p.name)
-                .collect();
             out.push(row(
                 letibot_sessionlog::protocol::MODEL_KEYS_KEY,
                 keyed.join(","),
@@ -3373,6 +3389,67 @@ fn project_key_cached(workspace: &Path) -> String {
     let k = letibot_tools::notes_repo::project_key(workspace);
     keys.push((workspace.to_path_buf(), k.clone()));
     k
+}
+
+/// What the model card draws under `local`: the alias is this box's own server, so there is no
+/// key to hold and nothing to meter.
+const LOCAL_FACTS: &str = "this daemon's own server — no key, no meter";
+
+/// The model card's rows in the order it draws them: `local`, the declared fleet, then a block per
+/// provider - every catalogue model for a keyed one, its single default for the rest, since that
+/// row's job is to ask for the key. Each row is its switch name and the facts drawn under it.
+fn model_rows(
+    keyed: &[&str],
+    cat: &letibot_provider::catalogue::Catalogue,
+    fleet: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut out = vec![("local".to_string(), LOCAL_FACTS.to_string())];
+    for (name, url) in fleet {
+        out.push((name.clone(), format!("at {url}")));
+    }
+    for p in letibot_provider::presets::ALL {
+        let listed = cat.models(p.catalogue_id);
+        // A key with no catalogue behind it still gets its row: the card losing a provider the
+        // operator holds a key for would be worse than a row that says it knows no window.
+        let names: Vec<String> = if keyed.contains(&p.name) && !listed.is_empty() {
+            listed.into_iter().map(|(m, _)| m).collect()
+        } else {
+            vec![p.default_model(cat)]
+        };
+        for m in names {
+            out.push((
+                format!("{}/{}", p.name, m),
+                match cat.model(p.catalogue_id, &m) {
+                    Some(f) => f.card_line(),
+                    None => letibot_provider::catalogue::ModelFacts::missing_line().to_string(),
+                },
+            ));
+        }
+    }
+    out
+}
+
+/// The facts for a model the operator named that the card's list does not hold: their own
+/// provider's catalogue entry when the catalogue has one, and the flat sentence when it does not.
+fn named_model_facts(
+    provider: &Option<ProviderConfig>,
+    cat: &letibot_provider::catalogue::Catalogue,
+) -> String {
+    let unknown = letibot_provider::catalogue::ModelFacts::missing_line().to_string();
+    let Some(pc) = provider else {
+        return LOCAL_FACTS.to_string();
+    };
+    let Ok(preset) = letibot_provider::Preset::parse(&pc.name) else {
+        return unknown;
+    };
+    let model = match &pc.model {
+        Some(m) => m.clone(),
+        None => preset.default_model(cat),
+    };
+    match cat.model(preset.catalogue_id, &model) {
+        Some(f) => f.card_line(),
+        None => unknown,
+    }
 }
 
 #[cfg(test)]

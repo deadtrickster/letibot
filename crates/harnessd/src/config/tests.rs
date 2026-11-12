@@ -221,6 +221,100 @@ fn the_model_row_offers_every_declared_local_model() {
     );
 }
 
+/// With a key held, a provider's block is every model it can answer with, not the one default a
+/// build-time constant names - which is what the card had, so a DeepSeek account offering twelve
+/// models offered one row. Every other provider is still one row, because that row's job is to
+/// ask for the key. The lines are the window and the meter, which is what a choice is made on.
+#[test]
+fn a_keyed_provider_lists_every_model_it_answers_with_and_the_others_list_one() {
+    let cat = letibot_provider::catalogue::Catalogue::snapshot();
+    assert!(!cat.is_empty(), "the vendored snapshot parses");
+    let rows = model_rows(&["deepseek"], &cat, &[]);
+    assert_eq!(rows[0].0, "local", "the box's own server comes first");
+    let deepseek: Vec<&(String, String)> = rows
+        .iter()
+        .filter(|(n, _)| n.starts_with("deepseek/"))
+        .collect();
+    assert!(
+        deepseek.len() > 1,
+        "one row for a keyed provider is the defect: {deepseek:?}"
+    );
+    assert_eq!(
+        deepseek.len(),
+        cat.models("deepseek").len(),
+        "a catalogue model the card does not offer cannot be switched to"
+    );
+    for (name, facts) in &deepseek {
+        assert!(facts.contains("window"), "{name}: {facts}");
+    }
+    // Two rates and not one: a model is chosen on what it charges for what it writes too. Not
+    // every row, since a catalogue may leave a model unpriced and that is said, not zeroed.
+    assert!(
+        deepseek.iter().any(|(_, f)| f.contains(" in /")),
+        "not one row carries a rate: {deepseek:?}"
+    );
+    let glm: Vec<&(String, String)> = rows.iter().filter(|(n, _)| n.starts_with("glm/")).collect();
+    assert_eq!(glm.len(), 1, "no key, so one row and a prompt: {glm:?}");
+    // Nothing is listed twice, whatever two presets share.
+    let mut seen = std::collections::HashSet::new();
+    for (name, _) in &rows {
+        assert!(seen.insert(name.clone()), "{name} is offered twice");
+    }
+}
+
+/// A key held for a provider the catalogue says nothing about still gets its row: the card
+/// dropping a provider the operator can actually reach is worse than a row admitting it knows no
+/// window, and `/models glm/NAME` would then be the only way to it.
+#[test]
+fn a_keyed_provider_with_no_catalogue_still_gets_its_row() {
+    let empty = letibot_provider::catalogue::Catalogue::default();
+    let rows = model_rows(&["glm"], &empty, &[]);
+    let glm: Vec<&(String, String)> = rows.iter().filter(|(n, _)| n.starts_with("glm/")).collect();
+    assert_eq!(glm.len(), 1, "the provider vanished: {rows:?}");
+    assert_eq!(
+        glm[0].1,
+        letibot_provider::catalogue::ModelFacts::missing_line(),
+        "said rather than blank: {}",
+        glm[0].1
+    );
+}
+
+/// The fleet's own blocks come before the providers and carry the address they answer on, since
+/// two blocks can name one model and only the address says which.
+#[test]
+fn the_declared_local_models_come_before_every_provider() {
+    let cat = letibot_provider::catalogue::Catalogue::snapshot();
+    let fleet = vec![("dense78".to_string(), "http://192.168.1.9:8080".to_string())];
+    let rows = model_rows(&["deepseek"], &cat, &fleet);
+    assert_eq!(rows[0].0, "local");
+    assert_eq!(rows[1].0, "dense78");
+    assert!(rows[1].1.contains("192.168.1.9"), "{:?}", rows[1]);
+    assert!(rows[2].0.starts_with("deepseek/"), "{:?}", rows[2]);
+}
+
+/// The facts travel beside the choices as one row of their own, one line each and never a
+/// different number: a card that paired them by guess would give a model another one's window.
+#[test]
+fn the_facts_row_is_one_line_per_model_choice() {
+    let cfg = Config::for_this_box("/tmp");
+    let rows = cfg.settings("", false, &[]);
+    let model = rows.iter().find(|r| r.key == "model").expect("a model row");
+    let facts = rows
+        .iter()
+        .find(|r| r.key == letibot_sessionlog::protocol::MODEL_FACTS_KEY)
+        .expect("the facts row is published beside the choices");
+    assert_eq!(
+        facts.choices.len(),
+        model.choices.len(),
+        "{} choices, {} facts",
+        model.choices.len(),
+        facts.choices.len()
+    );
+    for (name, line) in model.choices.iter().zip(&facts.choices) {
+        assert!(!line.is_empty(), "`{name}` has no facts line");
+    }
+}
+
 /// The picker's greening comes from a row, and the row names the presets this box can actually
 /// authenticate. The assertion is the agreement, not a list: a row that disagreed with the
 /// daemon's own check would green exactly the rows that fail at the first turn.
@@ -1241,8 +1335,9 @@ fn settings_rows_lead_with_what_changes_now_and_never_repeat_a_key() {
     assert_eq!(rows[0].source, "project store (modes.tsv)");
     // The changeable rows lead, and the assertion is that rather than a position: `model` joined
     // them and shifted `supervise` down, which is the list doing its job and not a regression.
-    // Indexing by number made adding a row look like breaking one.
-    let leading: Vec<&str> = rows.iter().take(3).map(|r| r.key.as_str()).collect();
+    // Indexing by number made adding a row look like breaking one. Four because the model card's
+    // facts row is the model row's own business and belongs beside it.
+    let leading: Vec<&str> = rows.iter().take(4).map(|r| r.key.as_str()).collect();
     assert!(leading.contains(&"supervise"), "{leading:?}");
     assert!(leading.contains(&"model"), "{leading:?}");
     let sup = rows
