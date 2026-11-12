@@ -1776,6 +1776,49 @@ fn a_v45_file_with_no_prompt_journal_still_opens() {
 }
 
 #[test]
+fn a_v44_project_file_with_no_session_table_still_opens() {
+    // A split set's project file at v44: `session` lives in `shared.db`.
+    let path = std::env::temp_dir().join(format!(
+        "letibot-migrate-v44-project-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_file(&path);
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch(
+            "CREATE TABLE queued_prompt (
+                 session_id TEXT NOT NULL, seq INTEGER NOT NULL, enqueued_ms INTEGER NOT NULL,
+                 head_id TEXT NOT NULL, identity TEXT NOT NULL, client_request_id TEXT NOT NULL,
+                 text TEXT NOT NULL, attachments_json TEXT NOT NULL,
+                 PRIMARY KEY (session_id, seq));
+             CREATE TABLE schema_version (version INTEGER);
+             INSERT INTO schema_version (version) VALUES (44);",
+        )
+        .unwrap();
+    }
+    let opened = Store::open(&path);
+    let c = rusqlite::Connection::open(&path).unwrap();
+    let v: Option<i64> = c
+        .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+        .ok();
+    let col = c
+        .query_row("SELECT context_json FROM queued_prompt", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()
+        .is_ok();
+    drop(c);
+    let _ = std::fs::remove_file(&path);
+    assert!(opened.is_ok(), "{:?}", opened.err());
+    assert_eq!(v, Some(SCHEMA_VERSION));
+    assert!(col, "the v46 arm still reached the project file's journal");
+}
+
+#[test]
 fn a_v44_store_gains_the_prompt_context_column() {
     let path = std::env::temp_dir().join(format!(
         "letibot-migrate-v44-{}-{}-{}.db",

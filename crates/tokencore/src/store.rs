@@ -2430,11 +2430,18 @@ impl Store {
                     .and_then(|mut st| st.exists([]))
                     .unwrap_or(false)
             };
-            if !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'archived_ms'") {
+            // A split store's project file holds no `session`: that file has nothing to add.
+            let table =
+                has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'");
+            if table
+                && !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'archived_ms'")
+            {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN archived_ms INTEGER")?;
             }
-            if !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'archived_reason'") {
+            if table
+                && !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'archived_reason'")
+            {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN archived_reason TEXT")?;
             }
