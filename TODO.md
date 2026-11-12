@@ -609,11 +609,19 @@ Tests. `tests/launcher.sh`: a `systemd-run` stub ahead of the real one on the PA
 
 ## R193 - Stopping a VM session leaves its VM running and the next session never gets one
 
-**Status:** filed, 2026-11-12.
+**Status:** built, 2026-11-12. left: the end-to-end pair (a stuck turn, then a second session opening on the same daemon) needs a vocabulary GGUF this guest does not have, so the seams are proved one at a time; and an open that hangs is still bounded by the firecode client's own wall clock rather than a knob of its own.
 
 L3's first package hung on a tool call for three hours. `leticode_stop` answered `closed: true`, but its firecracker VM (`firecode-20261112-111454-2218966`) kept running and the daemon's `idle_exit` still said "held: s-1794478489296943693 has a head attached". A new session started on the same worktree and daemon opened, placement `firecode`, and its worker never opened: no VM booted in 20 minutes, `/models` and the brief sat queued. `firecode down s-1794478489296943693 --discard` plus `letibot --stop` cleared it.
 
 Fix: closing a placed session brings its VM down (the copy-out the operator relies on still happens), and a daemon's hold is released when the session is closed. A worker that cannot open within a bound says so as a failure row instead of leaving the session idle forever. Done when: a test closes a firecode-placed session whose turn is stuck in a tool call and finds no VM for it and a second session on the same daemon able to open.
+
+Built. The close is served off the worker: the `ClientFrame::CloseSession` arm in `crates/sessionlog/src/server.rs` asks the registry's `CloseSettler` — installed by the daemon at startup (`crates/harnessd/src/close_settle.rs`) — and that arms its own thread, waits `CLOSE_GRACE` (3 s) for the worker that is not coming, then brings the session's VM down. The door it uses is `letibot_tools::firecode::down_session`, which finds the VM in this process's own record by session id (`LIVE`, now keyed by session) and runs the backend's own `down` over it, so the copy-out wait and the copy's removal are one body and cannot differ between a close that reached the worker and one that did not. The stuck `firecode in` comes back when the guest goes, which is what frees the worker to serve `Work::Close` and the sessions queued behind it.
+
+The other half is the failure row: an open that fails now says so ON the session (`open_failed`, with the reason and how to reopen it) instead of only on the daemon's stderr — a head left attached to a session that never opened had nothing to read.
+
+Proved: `crates/tools/src/firecode/tests.rs::a_close_brings_down_the_vm_its_session_holds_from_any_thread` (a command blocked in the guest comes back when `down_session` runs, from another thread) and `crates/bridge/tests/vm_close.rs::a_stop_brings_down_the_vm_of_a_session_no_worker_can_close` (`leticode_stop` through the socket, no worker at all, leaves no VM).
+
+Boots are now 32 GiB of layer: `firecode up` is given `FIRECODE_LAYER_SIZE` on its own environment (32 GiB), which is R200's overlay half (`a_boot_names_the_layer_size_a_debug_build_needs`).
 
 ## R194 - A tool call can hang a turn for hours
 
@@ -623,11 +631,17 @@ The first L3 package's turn sat on one `grep` call (pattern `esc_taps`, path `cr
 
 ## R195 - leticode_start and leticode_mode give up while a VM is still booting
 
-**Status:** filed, 2026-11-12.
+**Status:** built, 2026-11-12. left: "applied in order when the worker opens" is the daemon's own queue order — the frames are proved queued in that order, and the worker-side apply is the existing `dispatch` path, not a new one.
 
 Every `vm: true` start this session timed out at 120 s ("its session did not answer `/models deepseek` within 120s: the session's worker was still opening"), so the brief was never sent and the caller had to poll and then call `leticode_model`, `leticode_mode` and `leticode_send` by hand. On a loaded box (load 150-380) a VM takes 3-6 minutes. `leticode_mode allow-all` on a VM session also put a confirmation card in front of the heads while the worker was opening, though allow-all inside a VM needs nobody, and the daemon had been started with `--mode allow-all` anyway.
 
 Fix: start queues the model, mode and brief on the session and applies them in order when the worker opens, answering at once with "queued until the VM is up"; allow-all on a session whose placement is a VM is applied without a card even before the worker is up. Done when: a start with a stub VM that takes 200 s to boot sends the brief without any further call, and no card is shown.
+
+Built. `leticode_start` on a session that is placed anywhere but this box (`vm`, or a declared host) no longer waits for `/models` to be answered: `Head::queue_model` sends the same line and does not wait, so the model, the mode and the brief go out in that order — the order the daemon applies one session's commands in — and the answer says so: `model_queued: true`, `queued: ["model", "mode", "brief"]`, and a `state` sentence naming the wait ("queued until the VM is up: …"). The 120 s `MODEL_PATIENCE` wait is kept for a session whose tools run here, where an unanswered `/models` is a real refusal and the brief must not run on a model nobody asked for.
+
+`leticode_mode` and `leticode_model` on a VM-placed session queue too (`in_a_vm`: `Firecode` or `RemoteVm`): a guest IS the boundary, so `allow-all` inside one needs no person, and no card is put in front of a head for a question the placement already answered; and a worker that is booting a guest cannot answer a verb about its own mode or model, so both are queued rather than refused.
+
+Proved: `crates/bridge/tests/vm_start_queues.rs` (a daemon holding one session and serving frames, with no worker at all — the boot taken to its limit: the start answers in well under the old wait, the three steps are named, and the frames are on the session's queue in that order) and `crates/bridge/tests/vm_mode_without_a_card.rs` (allow-all on a VM session puts no `ModeConfirm` on the wire).
 
 ## R196 - Built-in guests go stale in a target shared between worktrees
 
