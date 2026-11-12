@@ -19,7 +19,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
     CORPUS_INDEXES_SQL, READER_FLOOR_SQL, RECALL_SQL, Result, SCHEMA_SQL, SCHEMA_VERSION,
-    SESSION_INDEXES_SQL, Store, StoreError, citations, leases, marks, modes, pragmas, procs,
+    SESSION_INDEXES_SQL, Store, StoreError, citations, leases, marks, modes, owners, pragmas, procs,
     prompts, queues, seat, subagents, told, writers,
 };
 
@@ -115,6 +115,11 @@ pub const SHARED_TABLES: &[&str] = &[
     // a seat is not a session, and its board and jobs are read by every head
     "seat_todo",
     "seat_job",
+    // an owner and what it holds are box-wide: a reaper with no daemon opens one file, and a
+    // resource's host is a column rather than a file
+    "owner",
+    "holding",
+    "reap_event",
 ];
 
 /// Named by § Table assignment and created by no fresh store: the v24 arm's archive of the single
@@ -159,7 +164,7 @@ pub fn tables_in(file: StoreFile) -> impl Iterator<Item = &'static str> {
 
 /// The batches `Store::migrate` builds a fresh file from, in its own order, plus the reader-floor
 /// table its `ensure_reader_floor` runs. One list, so a batch added there is routed or refused here.
-pub(super) fn batches() -> [&'static str; 17] {
+pub(super) fn batches() -> [&'static str; 18] {
     [
         SCHEMA_SQL,
         SESSION_INDEXES_SQL,
@@ -177,6 +182,7 @@ pub(super) fn batches() -> [&'static str; 17] {
         leases::LEASES_SQL,
         prompts::PROMPTS_SQL,
         RECALL_SQL,
+        owners::OWNERS_SQL,
         READER_FLOOR_SQL,
     ]
 }

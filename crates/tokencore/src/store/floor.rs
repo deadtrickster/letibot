@@ -90,6 +90,7 @@ pub const READER_ARMS: &[(i64, Arm)] = &[
     (45, Arm::Additive), // session.archived_ms/archived_reason: NULLed columns
     (46, Arm::Additive), // queued_prompt.context_json: a defaulted column
     (47, Arm::Additive), // recall_unit: a new table, which an older reader never names
+    (48, Arm::Additive), // owner/holding/reap_event: new tables, which an older reader never names
 ];
 
 /// The floor a store at `version` carries: the newest arm at or below it that [`Arm::Breaks`],

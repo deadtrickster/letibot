@@ -497,4 +497,22 @@ fn an_older_set_migrates_both_files() {
         &paths[1],
         "SELECT 1 FROM pragma_table_info('queued_prompt') WHERE name = 'context_json'"
     ));
+    // And v48's three tables went to the shared file alone: the project file holds no `session`,
+    // so the arm that creates them skips it rather than making tables its file does not own.
+    for table in ["owner", "holding", "reap_event"] {
+        assert!(
+            has(
+                &paths[0],
+                &format!("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '{table}'")
+            ),
+            "{table} is missing from the shared file"
+        );
+        assert!(
+            !has(
+                &paths[1],
+                &format!("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '{table}'")
+            ),
+            "{table} was created in the project file, which does not hold it"
+        );
+    }
 }

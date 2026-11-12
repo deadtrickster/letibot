@@ -35,6 +35,7 @@ pub use subagents::*;
 mod citations;
 mod leases;
 mod marks;
+mod owners;
 mod procs;
 mod prompts;
 mod recall;
@@ -42,6 +43,10 @@ mod seat;
 pub mod split;
 mod told;
 pub use leases::{Ask, FIRST_PORT, LEASES_SQL, Lease};
+pub use owners::{
+    HoldingClass, HoldingRow, HoldingState, OWNERS_SQL, OwnerKind, OwnerRow, OwnerState, ReapAct,
+    ReapEvent,
+};
 pub use procs::{Check, PROCS_SQL, ProcState, ProcessRecord};
 pub use prompts::{PROMPTS_SQL, QueuedPrompt};
 pub use recall::{RECALL_SQL, RecallUnit};
@@ -197,7 +202,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 47;
+pub const SCHEMA_VERSION: i64 = 48;
 
 /// What this row's columns mean. Stamped on every corpus row, because a column can keep its
 /// name and its type while changing what it records, and a trainer that pools two meanings
@@ -1800,6 +1805,7 @@ impl Store {
         self.conn().execute_batch(leases::LEASES_SQL)?;
         self.conn().execute_batch(prompts::PROMPTS_SQL)?;
         self.conn().execute_batch(recall::RECALL_SQL)?;
+        self.conn().execute_batch(owners::OWNERS_SQL)?;
         self.conn().execute("DELETE FROM schema_version", [])?;
         self.conn().execute(
             "INSERT INTO schema_version (version) VALUES (?1)",
@@ -2477,6 +2483,19 @@ impl Store {
             // vector for each. Additive: a store never searched for its own history has an empty
             // table, which is exactly what it had before.
             self.conn().execute_batch(recall::RECALL_SQL)?;
+        }
+        if from < 48 {
+            // v48: the owner, holding and reap_event tables (`docs/lifecycle.md` d.2) - box-wide,
+            // because a reaper with no daemon opens one file. A split set's project file holds no
+            // `session`, so it has nothing to add and must not be given the tables.
+            let has: bool = self
+                .conn()
+                .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'")
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if has {
+                self.conn().execute_batch(owners::OWNERS_SQL)?;
+            }
         }
         Ok(())
     }
