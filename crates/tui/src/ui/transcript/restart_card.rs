@@ -12,9 +12,9 @@
 //! The counts come from the hub warning or the session notice, whichever opened the row; an unrecognised line is `None` and the popup keeps the text.
 //!
 //! The register follows what the store knows: an orderly `letibot --stop` records its own stop time,
-//! so a down time that is not an estimate is the operator's own act and draws as news. Anything else
-//! - an estimate from a heartbeat, or no record at all - is a daemon that went down unwatched, and
-//! that is the one a person has to look at.
+//! so a down time that is not an estimate is the operator's own act and draws as news. A down time
+//! that IS an estimate, or no record at all, is a daemon that went down unwatched, and that is the
+//! one a person has to look at.
 
 use letibot_sessionlog::pane::Role as Meaning;
 

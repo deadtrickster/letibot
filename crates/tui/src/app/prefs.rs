@@ -8,7 +8,7 @@ use super::*;
 fn known_warning(code: &str) -> bool {
     letibot_sessionlog::warning::TABLE
         .iter()
-        .any(|(c, _)| *c == code || letibot_sessionlog::warning::family(c) == code)
+        .any(|(c, _, _)| *c == code || letibot_sessionlog::warning::family(c) == code)
 }
 
 impl App {

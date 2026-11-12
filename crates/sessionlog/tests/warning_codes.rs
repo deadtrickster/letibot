@@ -339,7 +339,7 @@ fn every_warning_code_in_the_tree_is_classified() {
         .filter(|(code, _)| {
             !letibot_sessionlog::warning::TABLE
                 .iter()
-                .any(|(known, _)| known == code)
+                .any(|(known, _, _)| known == code)
         })
         .collect();
     assert!(

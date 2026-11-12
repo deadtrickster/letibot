@@ -180,8 +180,8 @@ fn a_warning_no_card_reads_is_one_clickable_line() {
     assert_eq!(
         rows(
             &screen,
-            "session · daemon_stopping · `deadtrickster` asked this daemon to stop · click for \
-             details"
+            "session · daemon_stopping · `deadtrickster` asked this daemon to stop · `/continue` \
+             reopens the session · click for details"
         ),
         1,
         "{joined}"
@@ -226,7 +226,7 @@ fn a_hint_outlives_the_facts_at_sixty_eighty_and_a_hundred_and_twenty() {
         ("a verdict", REVIEW_VERDICT, "review ·"),
         ("a refusal", REVIEW_REFUSAL, "review ·"),
         ("a red target", RED_TARGET, "‼ main RED"),
-        ("a restart", RESTARTED, "restarted, stopped by operator"),
+        ("a restart", RESTARTED, "restarted"),
     ] {
         let one = |cols: usize| {
             let mut a = with_notice(text);

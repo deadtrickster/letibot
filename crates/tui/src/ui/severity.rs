@@ -105,7 +105,7 @@ mod tests {
         use crate::ui::transcript::notice_card::session_notice;
         // The codes: `note_card` draws `Note::Warned`'s card in the class's role.
         let mut codes = 0;
-        for (code, _class) in letibot_sessionlog::warning::TABLE {
+        for (code, _class, _action) in letibot_sessionlog::warning::TABLE {
             let note = crate::app::Note::Warned(letibot_sessionlog::view::Warned {
                 code: (*code).to_string(),
                 detail: "a sentence no card reads".into(),

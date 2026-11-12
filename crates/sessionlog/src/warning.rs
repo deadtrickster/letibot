@@ -66,532 +66,946 @@ impl Class {
     }
 }
 
-/// The split. One row per code; a code that is not here is drawn quiet (`Class::Routine`).
-/// The order is the order it is read in - routine first, because that is the list whose
-/// absences caused the complaint - and each row carries the reason it is where it is.
-pub const TABLE: &[(&str, Class)] = &[
+/// What a code asks of the reader - the second half of every drawn line, which is
+/// "what happened - what to do".
+///
+/// A code with no move a person can make is not the operator's: it is a developer's diagnostic,
+/// and it belongs in the daemon's log and in `/notes` rather than in the conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    /// The move, in the reader's own words. Short, because it is drawn after the fact on one line.
+    Do(&'static str),
+    /// Nothing is asked: a report of something that worked or was asked for.
+    Nothing,
+    /// No reader can act on it - the harness measuring itself. Never drawn as a row.
+    Developer,
+}
+
+/// The split. One row per code; a code that is not here is drawn quiet (`Class::Routine`) and
+/// asks nothing (`Action::Nothing`). The order is the order it is read in - routine first, because
+/// that is the list whose absences caused the complaint - and each row carries the reason it is
+/// where it is, the register it is drawn in, and what the reader can do about it.
+pub const TABLE: &[(&str, Class, Action)] = &[
     // ───────────────────────── routine ─────────────────────────
     //
     // Housekeeping the session does by design: nothing here is the reader's line answered.
-    ("auto_compact", Class::Routine),
-    ("compacted", Class::Routine),
+    ("auto_compact", Class::Routine, Action::Nothing),
+    ("compacted", Class::Routine, Action::Nothing),
     // A compact layer's pin past the budget was cut, and the cut said: the budget doing its job.
-    ("compaction_pin_cut", Class::Routine),
+    ("compaction_pin_cut", Class::Routine, Action::Nothing),
     // A fold about to run, and why: the wall, a refusal for length, which fold was chosen. A
     // head keeps it as the state behind the progress line, so one compaction leaves one row;
     // a head that does not know the code draws the sentence, as it did before.
-    ("compacting", Class::Routine),
+    ("compacting", Class::Routine, Action::Nothing),
     // The built-in embedding model is being fetched for the first time; said once at start.
-    ("embedder_fetching", Class::Routine),
+    ("embedder_fetching", Class::Routine, Action::Nothing),
     // A plugin or a model misbehaved and the harness handled it: a layer that failed while
     // the one below answered, a candidate the shadow gate refused, a pane whose view the host
     // refused, a model that refused an image. Hiccups handled, nothing at risk.
-    ("plugin_layer", Class::Routine),
-    ("plugin_refused", Class::Routine),
-    ("plugin_view_refused", Class::Routine),
-    ("model_refused_images", Class::Routine),
+    ("plugin_layer", Class::Routine, Action::Nothing),
+    ("plugin_refused", Class::Routine, Action::Nothing),
+    ("plugin_view_refused", Class::Routine, Action::Nothing),
+    ("model_refused_images", Class::Routine, Action::Nothing),
     // A look a plugin declared that the gate would not run: the layer is told through its
     // look result and the session once per (layer, program, reason). The gate did its job and
     // the layer is the one that has to change.
-    ("plugin_look", Class::Routine),
+    (
+        "plugin_look",
+        Class::Routine,
+        Action::Do("fix the look, or `plugin disable`"),
+    ),
     // A layer that was pinned and is not any more: its bytes changed after the pin, so
     // every call it makes is adjudicated again until somebody pins what is there now. Said
     // once per (layer, bytes), never per poll.
-    ("plugin_untrusted", Class::Routine),
+    (
+        "plugin_untrusted",
+        Class::Routine,
+        Action::Do("pin it as it is now, or disable it"),
+    ),
     // The fold saying what it is doing while it does it: the half, its items and its
     // tokens to read, and then what the half answered. Deleting it loses only the reason a
     // silent wait was minutes long.
-    ("compact_half", Class::Routine),
+    ("compact_half", Class::Routine, Action::Nothing),
     // The operator's own call ran, with the size disclosure: the count of context they
     // just chose to buy, said while they can still act on it.
-    ("operator_call_ran", Class::Routine),
+    ("operator_call_ran", Class::Routine, Action::Nothing),
     // The operator's mark was taken (`/fb`, alt-g / alt-b) - the confirmation
     // both heads draw. Routine: it answers what the operator just did, and it worked.
-    ("feedback", Class::Routine),
+    ("feedback", Class::Routine, Action::Nothing),
     // The operator's own `!` line ran, and the note says what it put in the conversation.
     // The command's own failure, if it had one, is on the `ToolResult` row it produced.
-    ("operator_shell_ran", Class::Routine),
+    ("operator_shell_ran", Class::Routine, Action::Nothing),
     // The `!` line ran but its rows could not be recorded. A failure, and the same one
     // the door's `operator_call_abandoned` is: the work happened and the record of it is
     // what is missing.
-    ("operator_shell_failed", Class::Failure),
+    (
+        "operator_shell_failed",
+        Class::Failure,
+        Action::Do("run it again; its rows were lost"),
+    ),
     // The daemon cannot tell whether the operator's own run is waiting for a line: one of
     // its processes belongs to another user, so no card can be raised. A check that did not
     // happen - the way in is `!send`.
-    ("operator_run_unreadable", Class::Failure),
+    (
+        "operator_run_unreadable",
+        Class::Failure,
+        Action::Do("use `!send` to answer it"),
+    ),
     // The operator's own acts that failed: a door call not
     // admitted or not runnable, and a `!` line holding the daemon's one worker.
-    ("operator_call_failed", Class::Failure),
-    ("operator_shell_on_worker", Class::Failure),
+    (
+        "operator_call_failed",
+        Class::Failure,
+        Action::Do("send the line again when it is free"),
+    ),
+    (
+        "operator_shell_on_worker",
+        Class::Failure,
+        Action::Do("let this run end first"),
+    ),
     // The review queue's session did not open - so nothing in the merge queue is reviewed by
     // this daemon, and from a head that looks exactly like a queue with nothing to review. Said
     // once per reason (`Sessions::ensure_gatekeeper`), on the daemon's own session.
-    ("review_queue_not_open", Class::Failure),
+    (
+        "review_queue_not_open",
+        Class::Failure,
+        Action::Do("restart the daemon"),
+    ),
     // The merge queue could not reach its store (`database is locked`, or a table it
     // cannot read). The queue waits, retries and says this once per reason; nothing moves
     // while it stands.
-    ("merge_queue_store_error", Class::Failure),
+    (
+        "merge_queue_store_error",
+        Class::Failure,
+        Action::Do("restart the daemon if it stands"),
+    ),
     // The harness's half of the same report: a tool call the idle sweep closed out because
     // its executor was gone, and a plan the store did not take - the durable half missing, and
     // a fired condition left unwritten fires again after a restart.
-    ("calls_abandoned", Class::Failure),
-    ("todos_not_stored", Class::Failure),
+    (
+        "calls_abandoned",
+        Class::Failure,
+        Action::Do("call the tool again"),
+    ),
+    (
+        "todos_not_stored",
+        Class::Failure,
+        Action::Do("write the plan again"),
+    ),
     // Three ways something did not land where it was meant to: words a turn took and did
     // not read (they ride the next turn), a round's context measurement the store refused, and
     // a fork whose rows are not all stored.
-    ("steering_carried", Class::Failure),
-    ("context_not_stored", Class::Failure),
-    ("fork_unstored", Class::Failure),
+    ("steering_carried", Class::Failure, Action::Nothing),
+    ("context_not_stored", Class::Failure, Action::Nothing),
+    (
+        "fork_unstored",
+        Class::Failure,
+        Action::Do("check the transcript"),
+    ),
     // A background job's row did not land, so a `when: job` todo row may not be released
     // after a restart; and the merge queue could not be read for a pane - an empty pane
     // that means *unread*.
-    ("job_not_recorded", Class::Failure),
-    ("merge_queue_unreadable", Class::Failure),
+    (
+        "job_not_recorded",
+        Class::Failure,
+        Action::Do("wait by the call's own handle"),
+    ),
+    (
+        "merge_queue_unreadable",
+        Class::Failure,
+        Action::Do("reopen the pane, or restart"),
+    ),
     // Refused, both: the reader's own act, answered. A `/todo` move naming a row the model
     // has since rewritten, and a command a subagent does not run - its parent owns them.
-    ("todo_move_unresolved", Class::Refused),
-    ("child_door_refused", Class::Refused),
+    (
+        "todo_move_unresolved",
+        Class::Refused,
+        Action::Do("read the board and move that row"),
+    ),
+    (
+        "child_door_refused",
+        Class::Refused,
+        Action::Do("ask the parent session instead"),
+    ),
     // The compaction also picked up the tools this daemon now seats, and the second
     // summary turn `/reseat` would have cost was not paid. It is a *report of a
     // repair that succeeded* - the compaction's own second half.
-    ("reseated", Class::Routine),
+    ("reseated", Class::Routine, Action::Nothing),
     // `/clear` landed: the operator's own act, answered - the conversation was replaced by a
     // fresh one for the same session, and this is the boundary row where the old one ended. A
     // report of a fork that succeeded, `reseated`'s register one verb along.
-    ("cleared", Class::Routine),
+    ("cleared", Class::Routine, Action::Nothing),
     // The evidence for a refused frame was written where somebody can read it. The
     // refusal is the failure and it is said elsewhere; this is the capture working.
-    ("frame_capture_written", Class::Routine),
+    ("frame_capture_written", Class::Routine, Action::Developer),
     // Capture is switched off, so nothing was written. A disclosure of configuration  -
     // the code above, one branch along.
-    ("frame_capture_disabled", Class::Routine),
+    ("frame_capture_disabled", Class::Routine, Action::Developer),
     // A command the operator typed, answered: `mode_set` where the point moved, and
     // `mode_set_next_session_only` where it moved for *later* sessions because this one cannot
     // carry it.
-    ("mode_set", Class::Routine),
-    ("mode_set_next_session_only", Class::Routine),
+    ("mode_set", Class::Routine, Action::Nothing),
+    (
+        "mode_set_next_session_only",
+        Class::Routine,
+        Action::Nothing,
+    ),
     // A consented `allow-all` is this session's and was deliberately NOT written to the
     // project row. Consent is the thing working; the row not moving is the point.
-    ("mode_session_only", Class::Routine),
+    ("mode_session_only", Class::Routine, Action::Nothing),
     // A confirmation another head asked for, and its two answers: `mode_confirmed` is the
     // person agreeing and `mode_declined` a person declining - the card working, not a fault.
     // `mode_unconfirmed` stays a Failure: a yes the session could not carry.
-    ("mode_confirmed", Class::Routine),
-    ("mode_declined", Class::Routine),
-    ("mode_unconfirmed", Class::Failure),
+    ("mode_confirmed", Class::Routine, Action::Nothing),
+    ("mode_declined", Class::Routine, Action::Nothing),
+    (
+        "mode_unconfirmed",
+        Class::Failure,
+        Action::Do("`/mode` again from a head"),
+    ),
     // A confirmation nobody could be asked about: a program wanted the point and the
     // session has no other head, so nothing was attempted. `mode_consent_refused` is the other
     // half - an answer from a head that was not asked.
-    ("mode_confirm_refused", Class::Routine),
-    ("mode_consent_refused", Class::Refused),
+    ("mode_confirm_refused", Class::Routine, Action::Nothing),
+    (
+        "mode_consent_refused",
+        Class::Refused,
+        Action::Do("`/mode` again from here"),
+    ),
     // The model server did not answer and the round is being taken again. The retry is
     // the handling - and when the retries are exhausted the turn fails under
     // `turn_failed`, which is a failure.
-    ("model_endpoint_retry", Class::Routine),
+    ("model_endpoint_retry", Class::Routine, Action::Nothing),
     // A usage limit the provider put a time on: the session is parked until the reset and the turn
     // is owed again there. Nothing failed and nothing was lost - the wait IS the handling.
-    ("limit_park", Class::Routine),
+    ("limit_park", Class::Routine, Action::Nothing),
     // The reset came, and the turn the park stopped went on by itself.
-    ("limit_resumed", Class::Routine),
+    ("limit_resumed", Class::Routine, Action::Nothing),
     // A switch a limit forced was undone once the limited model's own instant had passed.
-    ("limit_returned", Class::Routine),
+    ("limit_returned", Class::Routine, Action::Nothing),
     // A rate limit that named no instant: the long beat before the round is taken again. Past the
     // few the config allows, the turn fails under its own name.
-    ("limit_retry", Class::Routine),
+    ("limit_retry", Class::Routine, Action::Nothing),
     // The endpoint that did not answer came back: the recovery is the news, and a recovery
     // not said is how somebody believes the endpoint is still down. Said once per outage, with
     // the count and how long it was out.
-    ("model_endpoint_answered", Class::Routine),
+    ("model_endpoint_answered", Class::Routine, Action::Nothing),
     // The session store was busy and a turn is waiting to write its rows: the wait IS the
     // handling, nothing is lost (the rows are in memory), and if the store stays wedged the
     // turn fails under its own name.
-    ("store_busy_wait", Class::Routine),
+    ("store_busy_wait", Class::Routine, Action::Nothing),
     // Another session of this daemon is waiting on the store, so this one waits behind it:
     // the same wait seen from the next session in line.
-    ("store_busy_queue", Class::Routine),
+    ("store_busy_queue", Class::Routine, Action::Nothing),
     // The operator typed a provider key on the masked card and it was saved - the ask
     // working, said once so the file it went to is on the record.
-    ("provider_key_saved", Class::Routine),
+    ("provider_key_saved", Class::Routine, Action::Nothing),
     // The key card was closed with no key: the operator's own answer, and the turn says
     // what happens instead.
-    ("provider_key_refused", Class::Refused),
+    (
+        "provider_key_refused",
+        Class::Refused,
+        Action::Do("send the key from the card"),
+    ),
     // A provider that has not started answering, said while it is still silent: nothing
     // failed, the request is open and the round is still running. Filing it as a failure would
     // mark a session as having gone wrong for the crime of waiting.
-    ("model_slow_first_byte", Class::Routine),
+    ("model_slow_first_byte", Class::Routine, Action::Nothing),
     // Their interrupt and their promote arrived between turns, so there was nothing to
     // stop or move. The operator's own act, and a no-op.
-    ("interrupt_idle", Class::Routine),
+    ("interrupt_idle", Class::Routine, Action::Nothing),
     // A stop took the session's children with it: the downward edge of a supervision tree,
     // reporting an act somebody asked for. See `stop_children_first`.
-    ("subagents_stopped", Class::Routine),
+    ("subagents_stopped", Class::Routine, Action::Nothing),
     // What a child's estate became: the jobs and monitors it still held ended with it, and
     // the ones in an `explicit` scope are the parent's now - or one could not be handed over and
     // is running unwatched. That last clause is why this is not the quiet register.
-    ("subagent_left_over", Class::Failure),
+    (
+        "subagent_left_over",
+        Class::Failure,
+        Action::Do("watch the one left running"),
+    ),
     // A child was woken for a settlement and the turn that would have read it failed: the
     // settlement is still queued and the next wake finds it, but a notice it was owed did not
     // reach it.
-    ("wake_failed", Class::Failure),
+    ("wake_failed", Class::Failure, Action::Nothing),
     // A child was due its idle plan-check and the turn that carries it failed: the check is
     // spent rather than lost, but the sentence saying its plan is unfinished did not reach the
     // model, and a child has no worker to report that.
-    ("todo_check_failed", Class::Failure),
+    (
+        "todo_check_failed",
+        Class::Failure,
+        Action::Do("read the plan yourself"),
+    ),
     // A model said its context is full again, after the harness told it the measured fill:
     // the first time it is told and the turn continues; the second goes to the operator,
     // because a correction repeated is a loop and not a correction.
-    ("context_claim_repeated", Class::Failure),
-    ("promote_idle", Class::Routine),
+    (
+        "context_claim_repeated",
+        Class::Failure,
+        Action::Do("`/compact` the session by hand"),
+    ),
+    ("promote_idle", Class::Routine, Action::Nothing),
     // A promote routed, not answered here: the operator's Ctrl+O arrived while their own
     // run is in flight, so the worker leaves the flag for that run's wait loop to take.
-    ("promote_in_flight", Class::Routine),
+    ("promote_in_flight", Class::Routine, Action::Nothing),
     // A parent's message to a subagent that had already finished: the runner refuses these
     // by name, so this is the race it cannot close. Nothing went wrong - the parent's next
     // `task_result` reads a finished child and says so.
-    ("message_idle", Class::Routine),
+    ("message_idle", Class::Routine, Action::Nothing),
     // A refusing verdict that reached NOBODY: the row is written and the message carrying
     // the complaints could not be sent to the child that wrote the branch or the root that
     // enqueued it, so the entry waits for a person. A refusal that reached the root is not this.
-    ("refusal_undelivered", Class::Failure),
+    (
+        "refusal_undelivered",
+        Class::Failure,
+        Action::Do("read the refusal here"),
+    ),
     // A finished `task_start` child's branch is in the merge queue, said to the parent that
     // started it: it reports something that worked and says where the work went. The same fact
     // is on the queue pane and in `task_result`.
-    ("merge_queued", Class::Routine),
+    ("merge_queued", Class::Routine, Action::Nothing),
     // A finished child's branch could NOT be enqueued: the store would not open, or this
     // daemon has no `--store`. The branch is safe in its worktree and nothing will land it,
     // which the reader cannot fix by typing something else.
-    ("merge_not_queued", Class::Failure),
+    (
+        "merge_not_queued",
+        Class::Failure,
+        Action::Do("enqueue the branch by hand"),
+    ),
     // The merge queue serving again after `merge_queue_store_error` - see that row.
-    ("merge_queue_recovered", Class::Routine),
+    ("merge_queue_recovered", Class::Routine, Action::Nothing),
     // The model proposing the project's queue target (`propose_target`): the
     // exact `[queue] target = "…"` lines for the operator to choose. A proposal, not a fault  -
     // nothing failed, and the decision it asks for is the operator's.
-    ("queue_target_proposed", Class::Routine),
+    (
+        "queue_target_proposed",
+        Class::Routine,
+        Action::Do("pick a line and put it in `[queue]`"),
+    ),
     // The two queues' raises. A review or landing that cannot run, a target RED, a reviewer
     // that cannot decide, a `[queue]` table that does not parse, a build that does not match the
     // store: nothing moves while they stand. `queue_lease_lost` is Routine - still served.
-    ("queue_blocked", Class::Failure),
-    ("target_red", Class::Failure),
-    ("queue_needs_human", Class::Failure),
-    ("queue_settings_unreadable", Class::Failure),
-    ("queue_wrong_build", Class::Failure),
-    ("queue_lease_lost", Class::Routine),
+    (
+        "queue_blocked",
+        Class::Failure,
+        Action::Do("fix what the sentence names"),
+    ),
+    (
+        "target_red",
+        Class::Failure,
+        Action::Do("fix the target's branch"),
+    ),
+    (
+        "queue_needs_human",
+        Class::Failure,
+        Action::Do("answer the queue's question"),
+    ),
+    (
+        "queue_settings_unreadable",
+        Class::Failure,
+        Action::Do("fix the `[queue]` table"),
+    ),
+    (
+        "queue_wrong_build",
+        Class::Failure,
+        Action::Do("restart on the store's build"),
+    ),
+    ("queue_lease_lost", Class::Routine, Action::Nothing),
     // A target the gate could not judge: its own setup failed, or its step was killed before
     // it judged the code. Nothing lands until it is gated again, and never as `target_red`,
     // because the code was not judged red.
-    ("gate_setup_failed", Class::Failure),
-    ("gate_killed", Class::Failure),
+    (
+        "gate_setup_failed",
+        Class::Failure,
+        Action::Do("fix the setup and `regate`"),
+    ),
+    (
+        "gate_killed",
+        Class::Failure,
+        Action::Do("`regate` the target"),
+    ),
     // Queue failures: a gate that timed out or could not judge for
     // another cause, a branch that does not rebase or whose landing gate failed, a push or an
     // install that failed. `target_green` and `queue_branch_kept` are Routine: reports.
-    ("target_timed_out", Class::Failure),
-    ("target_unjudged", Class::Failure),
-    ("merge_conflict", Class::Failure),
-    ("merge_failed", Class::Failure),
-    ("queue_push_failed", Class::Failure),
-    ("queue_install_failed", Class::Failure),
-    ("target_green", Class::Routine),
-    ("queue_branch_kept", Class::Routine),
+    (
+        "target_timed_out",
+        Class::Failure,
+        Action::Do("`regate`, or raise the timeout"),
+    ),
+    (
+        "target_unjudged",
+        Class::Failure,
+        Action::Do("`regate` the target"),
+    ),
+    (
+        "merge_conflict",
+        Class::Failure,
+        Action::Do("rebase the branch and enqueue it"),
+    ),
+    (
+        "merge_failed",
+        Class::Failure,
+        Action::Do("fix what the gate's log names"),
+    ),
+    (
+        "queue_push_failed",
+        Class::Failure,
+        Action::Do("enqueue the branch again"),
+    ),
+    (
+        "queue_install_failed",
+        Class::Failure,
+        Action::Do("read its log and `regate`"),
+    ),
+    ("target_green", Class::Routine, Action::Nothing),
+    ("queue_branch_kept", Class::Routine, Action::Nothing),
     // A session's workspace is gone - said when it opens or wakes on a directory
     // that no longer exists. A Failure: nothing the session runs can work until somebody acts.
-    ("workspace_gone", Class::Failure),
+    (
+        "workspace_gone",
+        Class::Failure,
+        Action::Do("give it a workspace that exists"),
+    ),
     // A session asked for a boundary and did not get one: on a Mac it runs unconfined and every
     // command that runs code is decided per command, on Linux the seat is refused. The fix is the
     // operator's.
-    ("boundary_absent", Class::Failure),
+    (
+        "boundary_absent",
+        Class::Failure,
+        Action::Do("run it where a boundary is possible"),
+    ),
     // A session whose shell was withheld because this daemon holds no delegated cgroup: the
     // session opens (it can be talked to) and cannot run a command until the operator fixes the
     // user manager or the box's cgroup delegation. A Failure, for `boundary_absent`'s reason.
-    ("shell_withheld", Class::Failure),
+    (
+        "shell_withheld",
+        Class::Failure,
+        Action::Do("fix the user manager's cgroup delegation, then restart"),
+    ),
     // A session that runs unconfined by design: a `leticode` seat that seats no command, said once
     // by the top-level session. A disclosure of the state the session was asked to be in, so Routine.
-    ("unconfined_session", Class::Routine),
+    ("unconfined_session", Class::Routine, Action::Nothing),
     // The seat opened without a GitHub token: `gh auth token` gave none, so `git push` and `gh`
     // cannot authenticate. The fix is the operator's (`gh auth login`).
-    ("gh_token_absent", Class::Failure),
+    (
+        "gh_token_absent",
+        Class::Failure,
+        Action::Do("`gh auth login`, then restart"),
+    ),
     // A message between sessions that the turn did not read, and the durable half of it:
     // `message_carried` are words written into the transcript instead of riding the next turn,
     // and `message_not_stored` is those words not landing in the transcript at all.
-    ("message_carried", Class::Failure),
-    ("message_not_stored", Class::Failure),
+    ("message_carried", Class::Failure, Action::Nothing),
+    (
+        "message_not_stored",
+        Class::Failure,
+        Action::Do("say it again if it still matters"),
+    ),
     // A file the operator chipped into a prompt was not there when it was sent: the model
     // read a sentence naming a file it was never given. Only the operator can put it back, and
     // the row says which one.
-    ("attachment_refused", Class::Failure),
+    (
+        "attachment_refused",
+        Class::Failure,
+        Action::Do("attach the file and send again"),
+    ),
     // The daemon's boot: each step from the socket's bind to the worker's start, and the
     // start itself, are Routine - a head draws them as the tail's line. A boot that failed
     // after the socket was bound is a Failure: the session will not run.
-    ("daemon_starting", Class::Routine),
-    ("daemon_started", Class::Routine),
-    ("daemon_start_failed", Class::Failure),
+    ("daemon_starting", Class::Routine, Action::Nothing),
+    ("daemon_started", Class::Routine, Action::Nothing),
+    (
+        "daemon_start_failed",
+        Class::Failure,
+        Action::Do("read the log and start it again"),
+    ),
     // This daemon's binary is older than the store it is serving, and it went on serving it:
     // the store's reader floor says older code still reads it, and `letibot --stop` is the fix.
     // Drawn as STATE on the status row, said on every attach.
-    ("store_newer", Class::Failure),
+    (
+        "store_newer",
+        Class::Failure,
+        Action::Do("restart: `letibot --stop`"),
+    ),
     // A review waiting for a free VM slot: the row went back to `waiting` and is asked
     // again, said once per wait. Past thirty minutes it is `queue_vm_slots_exhausted`, a Failure
     // - slots are not freeing on their own.
-    ("queue_waiting_for_vm", Class::Routine),
-    ("queue_vm_slots_exhausted", Class::Failure),
+    ("queue_waiting_for_vm", Class::Routine, Action::Nothing),
+    (
+        "queue_vm_slots_exhausted",
+        Class::Failure,
+        Action::Do("free a slot, or raise `vm_slots`"),
+    ),
     // A claim about the corpus rather than about the session: an operator's own call was
     // admitted and the head that asked went away before reporting what it did. The session is
     // fine, and a claim on the record is not.
-    ("operator_call_abandoned", Class::Failure),
+    (
+        "operator_call_abandoned",
+        Class::Failure,
+        Action::Do("make the call from a head"),
+    ),
     // Somebody asked this daemon to stop. The session is on disk and `/continue` reopens
     // it; the sentence exists so that a session ending is not a session disappearing.
-    ("daemon_stopping", Class::Routine),
+    (
+        "daemon_stopping",
+        Class::Routine,
+        Action::Do("`/continue` reopens the session"),
+    ),
     // What the stop ended on its way out: a command was in flight, so it was ended rather
     // than waited for. The operator asked for this, so it is not a fault.
-    ("daemon_stopping_runs", Class::Routine),
+    ("daemon_stopping_runs", Class::Routine, Action::Nothing),
     // The store's own notes about what opening or resuming did - the workspace it took
     // from the row, the title, the seat. Facts about where you are.
-    ("resume_note", Class::Routine),
-    ("open_note", Class::Routine),
+    ("resume_note", Class::Routine, Action::Nothing),
+    ("open_note", Class::Routine, Action::Nothing),
     // What a daemon restart brought back, or only reminded the model of: a fact about where
     // the session stands after a restart the operator made. A child that could not come back is
     // said in the detail and is not a fault of this session.
-    ("restart_restored", Class::Routine),
-    ("restart_reminded", Class::Routine),
+    ("restart_restored", Class::Routine, Action::Nothing),
+    (
+        "restart_reminded",
+        Class::Routine,
+        Action::Do("bring back only what matters"),
+    ),
     // A restart that had nothing to restore, said for the clock: the daemon came back at a
     // time and what was running was nothing. Its own word, because `restart_reminded` over an
     // empty list would draw *"reminded: nothing"*.
-    ("restart_nothing", Class::Routine),
+    ("restart_nothing", Class::Routine, Action::Nothing),
     // The session's message 0 is not the one this daemon would compose now: a session keeps
     // the prefix it was created with, and the remedy is a verb the operator has (`/reseat`).
     // Written by `Harness::open` through `prefix_fingerprint`.
-    ("prefix_stale", Class::Routine),
+    (
+        "prefix_stale",
+        Class::Routine,
+        Action::Do("`/reseat` rebuilds the prompt"),
+    ),
     // A wall the prompt goes on past - compacted, room for the next turn, continuations
     // left: one routine line, not a red failure. The wall that
     // ends the prompt is still `turn_failed`.
-    ("context_wall_continued", Class::Routine),
+    ("context_wall_continued", Class::Routine, Action::Nothing),
     // A verbatim reseat that went ahead under the window but short of a turn's room - as
     // close to the window as the session already was; compaction makes the room, as before.
-    ("reseat_tight", Class::Routine),
+    ("reseat_tight", Class::Routine, Action::Nothing),
     // And the end of it: the session has been moved onto the prompt this daemon seats, so
     // the notice above has stopped being true. A head takes this as the signal to take its
     // reseat card down.
-    ("prefix_current", Class::Routine),
+    ("prefix_current", Class::Routine, Action::Nothing),
     // A question nobody answered in time, and the model's own default taken: a fact for the
     // operator to review later. Nothing is broken, and the sentence names the choice so it can
     // be undone.
-    ("auto_decision", Class::Routine),
+    (
+        "auto_decision",
+        Class::Routine,
+        Action::Do("the choice is named: undo it if wrong"),
+    ),
     // This head's own: it got its connection back. Filed at a real seam as it
     // happens, so it is news rather than history.
-    ("reattached", Class::Routine),
+    ("reattached", Class::Routine, Action::Nothing),
     // A slash command's answer. `slash_refused` is the same channel with the other
     // verdict, and it is a failure.
-    ("slash", Class::Routine),
+    ("slash", Class::Routine, Action::Nothing),
     // The operator paused this session's plan-check, and the pause ended: their own act, or
     // its own deadline. The row is the event; the head's resident line while the `nags` row
     // says `paused` is the state.
-    ("nags_paused", Class::Routine),
-    ("nags_resumed", Class::Routine),
+    ("nags_paused", Class::Routine, Action::Nothing),
+    ("nags_resumed", Class::Routine, Action::Nothing),
     // A todo row waits on the operator - the one sentence here whose whole point is that
     // the reader acts, so it is red on purpose. Its settling is Routine; an answer the board
     // would not take is a Failure.
-    ("waiting_on_operator", Class::Failure),
-    ("operator_question_settled", Class::Routine),
-    ("todo_answer_refused", Class::Failure),
+    (
+        "waiting_on_operator",
+        Class::Failure,
+        Action::Do("answer the row on the board"),
+    ),
+    ("operator_question_settled", Class::Routine, Action::Nothing),
+    (
+        "todo_answer_refused",
+        Class::Failure,
+        Action::Do("answer the row again"),
+    ),
     // A row waiting on ANOTHER session's answer, and what became of it: an answer that landed is
     // the plan moving and is quiet, while a target whose session was deleted releases the row with
     // no answer at all - the one ending a person has to stop for.
-    ("ask_settled", Class::Routine),
-    ("ask_lost", Class::Failure),
+    ("ask_settled", Class::Routine, Action::Nothing),
+    (
+        "ask_lost",
+        Class::Failure,
+        Action::Do("ask another session, or do it"),
+    ),
     // An import's three routine notes: whose rows these are, what could not be a row
     // (an unknown tag, a patch, a compaction - *counted and said, never dropped*), and
     // the count and spend it left behind.
-    ("imported", Class::Routine),
-    ("import_scrap", Class::Routine),
-    ("imported_summary", Class::Routine),
+    ("imported", Class::Routine, Action::Nothing),
+    ("import_scrap", Class::Routine, Action::Nothing),
+    ("imported_summary", Class::Routine, Action::Nothing),
     // The operator's steering prompt arrived, so the turn was aborted to take it. Their
     // own act, and the interruption itself is drawn where interruptions go.
-    ("steering_urgent", Class::Routine),
+    ("steering_urgent", Class::Routine, Action::Nothing),
     // The prefix check did not run, so nothing was found and nothing is wrong: the reason travels
     // in the detail and the metrics row keeps the verdict. Drawn red it taught a reader to skim the
     // register that holds our actual defects.
-    ("prefix_check_skipped", Class::Routine),
+    ("prefix_check_skipped", Class::Routine, Action::Developer),
     // A diagnostic of the server's prefix cache: the prompts are proven identical over
     // the span, so this is llama.cpp resuming from a checkpoint and snapping `n_past`
     // back. Off the screen unless the debug channel is on.
-    ("cache_reuse_shortfall", Class::Routine),
+    ("cache_reuse_shortfall", Class::Routine, Action::Developer),
+    // The one line a session's developer diagnostics get: the codes themselves are filed beside
+    // the conversation and written to the daemon's log (see [`Action::Developer`]).
+    ("diagnostics", Class::Routine, Action::Nothing),
     // The `testing` module's helper, and there is no production fact behind it. It has a
     // row because the guard reads the tree and this is a code literal in it.
-    ("test", Class::Routine),
+    ("test", Class::Routine, Action::Developer),
     // ───────────────────────── failure ─────────────────────────
     //
     // At risk here is the session, not the line. Grouped by where the code COMES FROM.
-    ("turn_failed", Class::Failure),
+    (
+        "turn_failed",
+        Class::Failure,
+        Action::Do("read it, then send the turn again"),
+    ),
     // A written `[embeddings]` section produced no embedder (fetch failed, bad key): scores
     // are lexical until the operator fixes it.
-    ("embedder_unavailable", Class::Failure),
+    (
+        "embedder_unavailable",
+        Class::Failure,
+        Action::Do("fix the `[embeddings]` section"),
+    ),
     // A tier that stopped answering MID-session - the same loss as the row above and a different
     // cause, which `docs/embeddings.md` spells with this code.
-    ("embeddings_unavailable", Class::Failure),
-    ("context_wall", Class::Failure),
+    (
+        "embeddings_unavailable",
+        Class::Failure,
+        Action::Do("fix the tier, or `/embed` back"),
+    ),
+    (
+        "context_wall",
+        Class::Failure,
+        Action::Do("`/compact` makes the room"),
+    ),
     // *At* the wall, and nothing was compacted because automatic compaction is off for
     // this session. Exactly the sentence an operator has to read: `/compact` does it by
     // hand.
-    ("auto_compact_skipped", Class::Failure),
+    (
+        "auto_compact_skipped",
+        Class::Failure,
+        Action::Do("`/compact` by hand"),
+    ),
     // Compaction ran and left the summary within the headroom of the window, so
     // automatic compaction is off rather than looping once a turn. *"Start a fresh
     // session, or raise --context-window."*
-    ("auto_compact_no_progress", Class::Failure),
-    ("auto_compact_failed", Class::Failure),
+    (
+        "auto_compact_no_progress",
+        Class::Failure,
+        Action::Do("start fresh, or raise the window"),
+    ),
+    (
+        "auto_compact_failed",
+        Class::Failure,
+        Action::Do("`/compact` by hand"),
+    ),
     // The summary turn proposed tool calls, so it was refused and its rows taken back: the session
     // is still over budget and `/compact` is the move. A row and not a hint, because a refusal
     // nobody saw reads as a compaction that never ran.
-    ("summary_refused", Class::Failure),
+    (
+        "summary_refused",
+        Class::Failure,
+        Action::Do("`/compact` again"),
+    ),
     // The turn was cut short at the length limit, or the batch of calls was truncated so
     // none of them ran, or it stopped with the reasoning block still open.
-    ("length_empty_turn", Class::Failure),
-    ("length_batch_refused", Class::Failure),
-    ("ended_in_reasoning", Class::Failure),
+    (
+        "length_empty_turn",
+        Class::Failure,
+        Action::Do("send the turn again"),
+    ),
+    (
+        "length_batch_refused",
+        Class::Failure,
+        Action::Do("send the calls again, fewer"),
+    ),
+    (
+        "ended_in_reasoning",
+        Class::Failure,
+        Action::Do("send the turn again"),
+    ),
     // A guard fired. The note on this register: *a guard nobody notices is a guard
     // nobody wrote* - and both of these are a turn that was going nowhere, stopped.
-    ("repetition_collapse", Class::Failure),
-    ("reasoning_stall", Class::Failure),
+    (
+        "repetition_collapse",
+        Class::Failure,
+        Action::Do("steer it: say what to do instead"),
+    ),
+    (
+        "reasoning_stall",
+        Class::Failure,
+        Action::Do("stop it and say what it missed"),
+    ),
     // The prompt this box rebuilt diverged from what the server was sent - the code's own comment
     // calls it *our defect*. A check that did not run found nothing and is no defect: see
     // `prefix_check_skipped` in the routine half.
-    ("prefix_divergence", Class::Failure),
+    ("prefix_divergence", Class::Failure, Action::Developer),
     // The token chain does not agree with the ledger, or rows are missing from the
     // store's coverage, or N row events arrived for M items.
-    ("ledger_chain_mismatch", Class::Failure),
-    ("row_coverage_gap", Class::Failure),
-    ("record_item_pairing", Class::Failure),
+    ("ledger_chain_mismatch", Class::Failure, Action::Developer),
+    ("row_coverage_gap", Class::Failure, Action::Developer),
+    ("record_item_pairing", Class::Failure, Action::Developer),
     // A caveat that a check could not be made: the carry was not verified against the
     // window, and the monitors will be polled rather than woken.
-    ("reseat_unchecked", Class::Failure),
-    ("monitor_wake_not_armed", Class::Failure),
+    ("reseat_unchecked", Class::Failure, Action::Nothing),
+    ("monitor_wake_not_armed", Class::Failure, Action::Nothing),
     // Refused: the dominant case is *there is nothing to re-seat*, and the other branch
     // leaves the transcript unchanged with *"try again"*. Both put nothing at risk but the
     // attempt.
-    ("reseat_refused", Class::Refused),
+    (
+        "reseat_refused",
+        Class::Refused,
+        Action::Do("`/reseat` again"),
+    ),
     // The capture of a refused frame did not happen, which is the one branch of that
     // trio that is not the mechanism working.
-    ("frame_capture_failed", Class::Failure),
+    ("frame_capture_failed", Class::Failure, Action::Developer),
     // An answer to a password prompt arrived with nothing waiting for it - the helper had
     // given up, or another head answered first - so the call that needed the password did
     // not get one.
-    ("secret_late", Class::Failure),
+    (
+        "secret_late",
+        Class::Failure,
+        Action::Do("answer the next prompt with `!send`"),
+    ),
     // A line for the operator's own run found nothing waiting: the card was raised for a
     // command that has since ended, or another head answered it first. The person typed an
     // answer and the command did not get it.
-    ("prompt_late", Class::Failure),
+    (
+        "prompt_late",
+        Class::Failure,
+        Action::Do("run the line again"),
+    ),
     // There was no command of the operator's own to send to: `!send` with nothing running,
     // or with the run already ended. The act had nothing to act on.
-    ("nothing_to_send_to", Class::Refused),
+    (
+        "nothing_to_send_to",
+        Class::Refused,
+        Action::Do("start the run with `!`"),
+    ),
     // Refused, and it must be read: the mode they named does not exist, or the session
     // cannot carry it, so the point did NOT move and the fix is their next line.
     // `mode_unpersisted` stays a Failure: the mode moved and the next session will not carry it.
-    ("mode_unknown", Class::Refused),
-    ("mode_set_refused", Class::Refused),
-    ("mode_unpersisted", Class::Failure),
+    (
+        "mode_unknown",
+        Class::Refused,
+        Action::Do("`/mode` one `/status` lists"),
+    ),
+    (
+        "mode_set_refused",
+        Class::Refused,
+        Action::Do("`/mode` another, or a new session"),
+    ),
+    (
+        "mode_unpersisted",
+        Class::Failure,
+        Action::Do("set it again in the next session"),
+    ),
     // A seat is attached to this session and nothing said on the fabric can wake it.
-    ("flowy_not_seated", Class::Failure),
+    (
+        "flowy_not_seated",
+        Class::Failure,
+        Action::Do("seat the session on the fabric"),
+    ),
     // An answer reached the queue with nothing waiting for it - one of the two branches
     // says outright that this is a defect.
-    ("answer_unclaimed", Class::Failure),
+    ("answer_unclaimed", Class::Failure, Action::Nothing),
     // Refused, and the clearest case in the table: one channel's two verdicts belong in one
     // register, and a red `slash_refused` is the code that taught a reader to skim red.
-    ("job_output_refused", Class::Refused),
-    ("slash_refused", Class::Refused),
+    (
+        "job_output_refused",
+        Class::Refused,
+        Action::Do("`job_list` names the live handles"),
+    ),
+    (
+        "slash_refused",
+        Class::Refused,
+        Action::Do("`/` lists the verbs"),
+    ),
     // A key on the room's pane that the room would not take: the person's own act, answered
     // with the room's sentence. A key that said nothing would be indistinguishable from a key
     // that was not pressed.
-    ("room_act_refused", Class::Refused),
+    (
+        "room_act_refused",
+        Class::Refused,
+        Action::Do("its sentence says why: try again"),
+    ),
     // The room was restarted, and this is the outcome said out loud: the control is a
     // daemon lifetime rather than a queue act, and the room is empty afterwards.
-    ("room_restarted", Class::Routine),
+    ("room_restarted", Class::Routine, Action::Nothing),
     // A restart asked for and not made: no launcher on the box, a launcher that refused, a
     // supervisor that overran. The reader's own act answered with the reason.
-    ("room_restart_refused", Class::Refused),
+    (
+        "room_restart_refused",
+        Class::Refused,
+        Action::Do("read why, and start it another way"),
+    ),
     // The first round on a newly chosen model was refused by its provider: the turn failed,
     // and the notice names the model before it and the command back.
-    ("model_switch_refused", Class::Failure),
+    (
+        "model_switch_refused",
+        Class::Failure,
+        Action::Do("`/models` the one before it"),
+    ),
     // A `/models` the operator typed while a turn was running, waiting for that turn to
     // end: the request was accepted and the sentence says when it takes, and the head draws
     // it on the status line until the switch lands.
-    ("model_switch_pending", Class::Routine),
+    ("model_switch_pending", Class::Routine, Action::Nothing),
     // The switch that was waiting for the turn, applied: the sentence names the model and
     // says it stands now. The other verdict of the same channel, one line up, and Routine for the
     // same reason `slash` is.
-    ("model_switch_applied", Class::Routine),
+    ("model_switch_applied", Class::Routine, Action::Nothing),
     // The session's model moved, said to the heads already attached: the head takes it as the
     // name the header draws, and nothing is wrong - a switch is what somebody asked for.
-    ("model_set", Class::Routine),
+    ("model_set", Class::Routine, Action::Nothing),
     // The operator asked for a model and did not get it: the pending switch could not be
     // made, and the session is left on a model that works.
-    ("model_switch_not_applied", Class::Refused),
+    (
+        "model_switch_not_applied",
+        Class::Refused,
+        Action::Do("`/models` again after the turn"),
+    ),
     // This session was closed so it could move to another machine (`letibot --migrate`): the
     // operator asked for it, nothing is deleted, and the row says where the live copy is now  -
     // news about where the session lives, not something that went wrong.
-    ("session_closed", Class::Routine),
+    ("session_closed", Class::Routine, Action::Nothing),
     // The operator put this session out of sight (`letibot --archive`): the rows stay and it
     // opens again by id, so the row is news, not something that went wrong.
-    ("session_archived", Class::Routine),
+    ("session_archived", Class::Routine, Action::Nothing),
     // The store, in every way it can fail to do its job: the session does not open, the
     // transcript cannot be written, the corpus cannot be consulted, the title cannot be
     // recorded, a resume fails, an import stops part-way.
-    ("session_unavailable", Class::Failure),
+    (
+        "session_unavailable",
+        Class::Failure,
+        Action::Do("open the session's folder again"),
+    ),
     // A ring nobody could serve: a settlement arrived for a session this daemon is not
     // holding, so no turn could run for it. The settlement is a row the next open says; *a wake
     // went nowhere* has no other witness.
-    ("wake_undelivered", Class::Failure),
-    ("transcript_store", Class::Failure),
-    ("decision_corpus", Class::Failure),
-    ("title_not_stored", Class::Failure),
-    ("resume_failed", Class::Failure),
+    (
+        "wake_undelivered",
+        Class::Failure,
+        Action::Do("`/continue` wakes the session"),
+    ),
+    (
+        "transcript_store",
+        Class::Failure,
+        Action::Do("read why and retry"),
+    ),
+    (
+        "decision_corpus",
+        Class::Failure,
+        Action::Do("ask again: the decision is unmade"),
+    ),
+    ("title_not_stored", Class::Failure, Action::Nothing),
+    (
+        "resume_failed",
+        Class::Failure,
+        Action::Do("`/continue` again, or by id"),
+    ),
     // Refused: there is nothing to import from, or no session by that name in the other
     // store. `import_failed` stays a Failure - an import that stopped part-way is a half-filled
     // transcript.
-    ("import_no_db", Class::Refused),
-    ("import_no_session", Class::Refused),
-    ("import_failed", Class::Failure),
-    ("fabric_refresh_failed", Class::Failure),
+    (
+        "import_no_db",
+        Class::Refused,
+        Action::Do("name the store to import from"),
+    ),
+    (
+        "import_no_session",
+        Class::Refused,
+        Action::Do("check the name in that store"),
+    ),
+    (
+        "import_failed",
+        Class::Failure,
+        Action::Do("import again, or read what landed"),
+    ),
+    (
+        "fabric_refresh_failed",
+        Class::Failure,
+        Action::Do("`/rooms` again once it answers"),
+    ),
     // This head's own failure, and it is about the reader: the row a scrolled viewport was
     // holding is gone, because a compaction, a resync or a snapshot replaced it, so the thing
     // they were reading is not there and they have to be told.
-    ("anchor_lost", Class::Failure),
+    (
+        "anchor_lost",
+        Class::Failure,
+        Action::Do("scroll to where the end is now"),
+    ),
     // This head's own failures: events that never reached it, a frame it could not read, a
     // daemon that disagrees about the protocol, a row's content with no row to land on, and a
     // password prompt that settled with nobody giving one.
-    ("log_gap", Class::Failure),
-    ("unreadable_frame", Class::Failure),
-    ("protocol_skew", Class::Failure),
+    (
+        "log_gap",
+        Class::Failure,
+        Action::Do("re-attach so the rows come again"),
+    ),
+    ("unreadable_frame", Class::Failure, Action::Nothing),
+    (
+        "protocol_skew",
+        Class::Failure,
+        Action::Do("restart both ends on one build"),
+    ),
     // A head that outlives its daemon, and does not notice: the registry is in memory, so
     // the answers still on the screen were a predecessor's. The session is fine and the head is
     // what is wrong.
-    ("daemon_replaced", Class::Failure),
-    ("orphan_body", Class::Failure),
-    ("sudo", Class::Failure),
+    (
+        "daemon_replaced",
+        Class::Failure,
+        Action::Do("re-attach the head"),
+    ),
+    ("orphan_body", Class::Failure, Action::Nothing),
+    ("sudo", Class::Failure, Action::Do("run it without `sudo`")),
     // A command of the operator's own, answered or not: `answer sent by WHO` is the feature
     // working, and `nothing sent (WHY)` is a line that did not reach a program waiting for it.
     // A register is per code, so the case that settles it is the one that was not delivered.
-    ("prompt", Class::Failure),
+    (
+        "prompt",
+        Class::Failure,
+        Action::Do("answer the next one with `!send`"),
+    ),
     // A head that was told something is edge-bound and has nowhere to put it: the
     // diagnostic reaches neither the record nor the triangle, so a reader not told has been
     // told nothing at all.
-    ("alarm_only_unregistered", Class::Failure),
+    ("alarm_only_unregistered", Class::Failure, Action::Developer),
     // The daemon's resident memory crossed a step: what is at risk is every session this
     // daemon holds, a daemon that keeps growing is killed by the kernel with all of them, and
     // restarting it is the remedy.
-    ("memory_high", Class::Failure),
+    (
+        "memory_high",
+        Class::Failure,
+        Action::Do("restart: `letibot --stop`"),
+    ),
+    // A resident that grew with nothing in the census to account for it: the daemon measuring
+    // itself, and no reader has a move - the numbers are in its log.
+    ("memory_creep", Class::Failure, Action::Developer),
     // A bound the daemon relies on to keep its memory flat did not hold. The same shape as
     // `memory_high` and reported beside it: the harness, not the session, is what is failing.
-    ("memory_bound_broken", Class::Failure),
+    ("memory_bound_broken", Class::Failure, Action::Developer),
     // A tool call somebody DECIDED to refuse - the head's `denied:<request id>` note, looked
     // up under `denied` for every id. The call did not happen and only the operator can lift it.
-    ("denied", Class::Failure),
+    (
+        "denied",
+        Class::Failure,
+        Action::Do("ask the operator to allow it"),
+    ),
     // Codes that exist only in fixtures in this tree: the guard reads every `code:` literal
     // under `crates/`, which is where the tests that use them live.
-    ("gate", Class::Failure),
-    ("gate_timeout", Class::Failure),
-    ("gap", Class::Failure),
-    ("guard.empty", Class::Failure),
+    ("gate", Class::Failure, Action::Nothing),
+    ("gate_timeout", Class::Failure, Action::Nothing),
+    ("gap", Class::Failure, Action::Nothing),
+    ("guard.empty", Class::Failure, Action::Nothing),
     // The head's own note that a call was not run: nobody refused it and the tool's result row
     // one above already says why, so the note keeps the quiet register. See `Note::NotRun`.
-    ("not_run", Class::Routine),
+    ("not_run", Class::Routine, Action::Nothing),
 ];
 
 /// Which register a code is drawn in. See [`TABLE`].
@@ -601,10 +1015,33 @@ pub const TABLE: &[(&str, Class)] = &[
 /// taught to skim the red.
 pub fn class(code: &str) -> Class {
     let code = family(code);
-    match TABLE.iter().find(|(c, _)| *c == code) {
-        Some((_, class)) => *class,
+    match TABLE.iter().find(|(c, _, _)| *c == code) {
+        Some((_, class, _)) => *class,
         None => Class::Routine,
     }
+}
+
+/// What a code asks of the reader - the second half of its drawn line. See [`Action`].
+///
+/// A code the table does not know asks nothing: an unclassified code is not evidence that there is
+/// anything to do about it.
+pub fn action(code: &str) -> Action {
+    let code = family(code);
+    match TABLE.iter().find(|(c, _, _)| *c == code) {
+        Some((_, _, action)) => *action,
+        None => Action::Nothing,
+    }
+}
+
+/// Whether this code is a developer's diagnostic rather than the operator's business.
+pub fn is_developer(code: &str) -> bool {
+    matches!(action(code), Action::Developer)
+}
+
+/// The line a developer code leaves in the daemon's log, `None` for every other one. One shape,
+/// so the daemon and the head cannot word a diagnostic two ways.
+pub fn developer_log(code: &str, detail: &str) -> Option<String> {
+    is_developer(code).then(|| format!("  diagnostic · {code}: {detail}"))
 }
 
 /// [`class`], as the role it is drawn in.
@@ -767,7 +1204,7 @@ mod tests {
     #[test]
     fn no_code_is_classified_twice() {
         let mut seen: Vec<&str> = Vec::new();
-        for (code, _) in TABLE {
+        for (code, _, _) in TABLE {
             assert!(!code.is_empty(), "an empty code");
             assert!(
                 !seen.contains(code),
@@ -777,6 +1214,65 @@ mod tests {
         }
         // The floor, so a table that was emptied passes no test at all.
         assert!(seen.len() > 50, "{} codes classified", seen.len());
+    }
+
+    /// Every code says what a reader can do about it, and a row that says nothing is a report.
+    /// A developer's diagnostic is spelled out rather than left blank, because it is the one
+    /// answer that moves the code OUT of the conversation.
+    #[test]
+    fn every_row_answers_what_to_do_and_a_developer_code_is_named_as_one() {
+        let mut developers: Vec<&str> = Vec::new();
+        for (code, _class, action) in TABLE {
+            match action {
+                // An action is a move a person can type or do, and it is drawn after the fact on
+                // one line: a sentence that is not short is a line cut to nothing else.
+                Action::Do(said) => {
+                    assert!(!said.is_empty(), "`{code}` has an empty action");
+                    assert!(
+                        said.len() <= 60,
+                        "`{code}`'s action is {} bytes: {said}",
+                        said.len()
+                    );
+                    assert!(
+                        !is_developer(code),
+                        "`{code}` is a developer code and asks a move too"
+                    );
+                }
+                Action::Nothing => {
+                    assert!(!is_developer(code), "`{code}` asks nothing and is a report")
+                }
+                Action::Developer => developers.push(code),
+            }
+        }
+        // The floor: the codes the plan named are all here, so the routing cannot be emptied and
+        // still pass.
+        for code in [
+            "memory_creep",
+            "memory_bound_broken",
+            "ledger_chain_mismatch",
+            "prefix_divergence",
+            "frame_capture_failed",
+        ] {
+            assert!(
+                developers.contains(&code),
+                "`{code}` is a developer code and is not one: {developers:?}"
+            );
+        }
+        // A code the table never heard of asks nothing rather than asking something invented.
+        assert_eq!(action("a_code_from_next_week"), Action::Nothing);
+        assert!(!is_developer("a_code_from_next_week"));
+    }
+
+    /// The daemon's log carries a diagnostic and nothing else: a warning the operator is meant to
+    /// act on is not copied into a log nobody reads.
+    #[test]
+    fn only_a_developer_code_reaches_the_daemons_log() {
+        let said = developer_log("memory_creep", "grew on 3 readings").expect("a line");
+        assert!(said.contains("memory_creep"), "{said}");
+        assert!(said.contains("grew on 3 readings"), "{said}");
+        for code in ["turn_failed", "compacted", "slash_refused"] {
+            assert_eq!(developer_log(code, "x"), None, "`{code}`");
+        }
     }
 }
 
@@ -828,15 +1324,15 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_82_routine_15_refused_and_97_failures() {
-        let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
+    fn the_table_is_83_routine_15_refused_and_98_failures() {
+        let count = |c: Class| TABLE.iter().filter(|(_, k, _)| *k == c).count();
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 194, "the table's size");
-        assert_eq!(count(Class::Routine), 82, "the four limits are routine");
+        assert_eq!(TABLE.len(), 196, "the table's size");
+        assert_eq!(count(Class::Routine), 83, "the four limits are routine");
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 97);
+        assert_eq!(count(Class::Failure), 98);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);
@@ -865,8 +1361,8 @@ mod the_register_census {
     fn refused_is_exactly_the_readers_own_input() {
         let refused: BTreeSet<&str> = TABLE
             .iter()
-            .filter(|(_, k)| *k == Class::Refused)
-            .map(|(c, _)| *c)
+            .filter(|(_, k, _)| *k == Class::Refused)
+            .map(|(c, _, _)| *c)
             .collect();
         let named: BTreeSet<&str> = READER_INPUT.iter().copied().collect();
         assert_eq!(refused, named, "the refused set and READER_INPUT disagree");

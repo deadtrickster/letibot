@@ -2404,7 +2404,9 @@ fn a_warning_beside_a_compaction_still_draws_whole() {
         (1u64, "compacted", a_compacted_said()),
         (
             2,
-            "ledger_chain_mismatch",
+            // A Failure that asks a move: the ledger's own codes are developer diagnostics and do
+            // not take a row at all (`warning::is_developer`).
+            "transcript_store",
             "row 41's head is not the one that was stored, so every row after it is \
              unverifiable: the chain broke at 41 and the store says nothing about how."
                 .into(),
@@ -2423,13 +2425,13 @@ fn a_warning_beside_a_compaction_still_draws_whole() {
     let screen = frame.join("\n");
     let mismatch: Vec<&String> = frame
         .iter()
-        .filter(|l| l.contains("ledger_chain_mismatch"))
+        .filter(|l| l.contains("transcript_store"))
         .collect();
     assert_eq!(mismatch.len(), 1, "the failure has its own row:\n{screen}");
     // Its register and its first clause are on the row, and its sentence is a click away
     //: one line a notice, a failure included - the mark and the red say what it is.
     assert!(
-        mismatch[0].contains("! ledger_chain_mismatch · row 41's head is not the one"),
+        mismatch[0].contains("! transcript_store · row 41's head is not the one"),
         "{screen}"
     );
     assert!(

@@ -16,6 +16,10 @@ pub(crate) const DAEMON_STARTED: &str = "daemon_started";
 /// STATE rather than as a note - see [`App::store_newer`].
 pub(crate) const STORE_NEWER: &str = "store_newer";
 
+/// The one line a session's developer diagnostics get (`warning::is_developer`): its own code, so
+/// the conversation says *this is a diagnostic* rather than looking like a fault of the session.
+pub(crate) const DEVELOPER_CODE: &str = "diagnostics";
+
 impl App {
     /// A boot step, taken as the state it is - `true` when `code` was one, so the caller
     /// draws no row for it. The live arm and the snapshot both come here, so a head that attaches
@@ -242,6 +246,30 @@ impl App {
                         }));
                     }
                     return Disposition::Filtered;
+                }
+                // A developer's diagnostic: the harness measured itself, and no reader has a move.
+                // `/notes` lists every one and the daemon's log has the numbers; the conversation
+                // gets ONE line per session, because a census is not something to read between turns.
+                if letibot_sessionlog::warning::is_developer(&code) {
+                    self.note_beside(Note::Warned(Warned {
+                        code: code.clone(),
+                        detail: detail.clone(),
+                        ts,
+                    }));
+                    if self.developer_said {
+                        return Disposition::Filtered;
+                    }
+                    self.developer_said = true;
+                    self.note(Note::Warned(Warned {
+                        code: DEVELOPER_CODE.into(),
+                        detail: format!(
+                            "`{code}` is one: the harness measuring itself, with no move this \
+                             session can make. `/notes` lists every one as it arrives and the \
+                             daemon's log holds the numbers."
+                        ),
+                        ts,
+                    }));
+                    return Disposition::Rendered;
                 }
                 self.note(Note::Warned(Warned { code, detail, ts }));
                 Disposition::Rendered

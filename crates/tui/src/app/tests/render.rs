@@ -21,7 +21,9 @@ fn the_three_registers_are_three_marks() {
             "/qwe is not a daemon verb; /help lists the head's",
         ),
         (
-            "ledger_chain_mismatch",
+            // A Failure that takes a row: the ledger's codes are developer diagnostics now, filed
+            // beside the conversation rather than drawn (`warning::is_developer`).
+            "transcript_store",
             "row 41's head is not the one that was stored",
         ),
     ] {
@@ -45,7 +47,7 @@ fn the_three_registers_are_three_marks() {
     let (routine, refused, failure) = (
         line("compacted"),
         line("slash_refused"),
-        line("ledger_chain_mismatch"),
+        line("transcript_store"),
     );
     // Three different marks, which is what survives `--replay`, a pipe and a light theme where
     // the colours do not. The routine register's mark is the separator of the frame's own
@@ -56,7 +58,7 @@ fn the_three_registers_are_three_marks() {
         "{routine:?}"
     );
     assert!(refused.contains("× slash_refused"), "{refused:?}");
-    assert!(failure.contains("! ledger_chain_mismatch"), "{failure:?}");
+    assert!(failure.contains("! transcript_store"), "{failure:?}");
     // The colours: a typo is not red, and it is not the housekeeping dim either.
     assert!(
         !refused.contains(RED),

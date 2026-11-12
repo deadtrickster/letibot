@@ -104,6 +104,9 @@ fn opens_notice(group: &str) -> bool {
         });
     tagged
         || OPENINGS.iter().any(|o| group.starts_with(o))
+        // A room message: `#41 [project] from dead (say) to all` and its text under it. It has a
+        // reader of its own, and one that draws it as chat rather than as one more notice.
+        || letibot_plugin::card::readers::is_room_line(group)
         || crate::ui::transcript::stale_card::stale_of(group).is_some()
         || crate::ui::transcript::line_cards::opens_card(group)
 }
@@ -181,10 +184,19 @@ pub(crate) fn warning_notice(code: &str, detail: &str, mark: &str, role: Role) -
     } else {
         format!("{mark} {code}")
     };
+    // The second half of the line, and never the daemon's sentence: that sentence is cut to its
+    // first clause (a reader scanning rows wants the head of it), which is where a remedy usually
+    // is - so the remedy is the table's, and it is drawn whole.
+    let mut parts = vec![said.clone()];
+    if let letibot_sessionlog::warning::Action::Do(action) =
+        letibot_sessionlog::warning::action(code)
+    {
+        parts.push(action.to_string());
+    }
     card(
         &lead,
         role,
-        vec![said.clone()],
+        parts,
         format!("{code} · {}", short(&said, PART)),
     )
 }
@@ -460,7 +472,31 @@ mod tests {
                 Role::Faint
             )
             .line,
-            "daemon_stopping · `dead` asked this daemon to stop · click for details"
+            "daemon_stopping · `dead` asked this daemon to stop · `/continue` reopens the session · \
+             click for details"
+        );
+        // The action is the table's and it is drawn WHOLE: the daemon's sentence is cut at its
+        // first clause, and a remedy that stopped there would be no remedy at all.
+        assert_eq!(
+            warning_notice(
+                "context_wall",
+                "the context is full, and more. `/compact` next.",
+                "!",
+                Role::Failure
+            )
+            .line,
+            "! context_wall · the context is full… · `/compact` makes the room · click for details"
+        );
+        // A code with nothing to ask is the sentence alone - no invented line after it.
+        assert_eq!(
+            warning_notice(
+                "compacted",
+                "240000 → 9000 tokens, nothing dropped.",
+                "·",
+                Role::Faint
+            )
+            .line,
+            "compacted · 240k → 9k tokens · nothing dropped · click for details"
         );
     }
 

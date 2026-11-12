@@ -410,10 +410,11 @@ mod tests {
         let (_, text, _) = note_card(&n).expect("a card");
         assert_eq!(text, detail);
         // Every warning is one line now - a code no card reads included, and a failure:
-        // its reason's first clause, the rest a click away.
+        // its reason's first clause, the rest a click away. Codes with no action clause, because
+        // this row is cut in its facts and what survives the cut is the width's business.
         for code in [
             "ledger_chain_mismatch",
-            "auto_compact_failed",
+            "reseat_unchecked",
             "a_code_from_next_week",
         ] {
             let other = warned(code, &"a sentence long enough to fold. ".repeat(12));

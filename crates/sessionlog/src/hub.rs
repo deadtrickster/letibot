@@ -987,12 +987,19 @@ impl Hub {
 
     /// [`Hub::warn`] for a warning that carries what a compaction did: one construction of the
     /// variant in this crate, so the three fields cannot be filled in two orders by two callers.
+    ///
+    /// A developer's diagnostic leaves a line here as well: a head draws it once per session and
+    /// `/notes` lists it, and the numbers themselves belong where they were measured.
     pub fn warn_with(
         &self,
         code: impl Into<String>,
         detail: impl Into<String>,
         compaction: Option<Box<crate::event::CompactionReport>>,
     ) -> Envelope {
+        let (code, detail) = (code.into(), detail.into());
+        if let Some(line) = crate::warning::developer_log(&code, &detail) {
+            eprintln!("{line}");
+        }
         self.publish(SessionEvent::warning_with(code, detail, compaction))
     }
 

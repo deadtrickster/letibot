@@ -481,7 +481,8 @@ fn an_unknown_gate_killed_warning_falls_back() {
     assert_eq!(
         rows_with(
             &screen,
-            "! gate_killed · the gate was killed, somehow · click for details"
+            "! gate_killed · the gate was killed, somehow · `regate` the target · click for \
+             details"
         )
         .len(),
         1,

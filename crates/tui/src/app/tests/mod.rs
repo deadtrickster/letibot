@@ -1370,6 +1370,7 @@ mod commands;
 mod composer;
 mod decisions;
 mod detected;
+mod diagnostics;
 mod editor;
 mod feedback;
 mod ghlinks;

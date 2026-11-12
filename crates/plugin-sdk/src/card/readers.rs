@@ -108,6 +108,7 @@ pub fn read(text: &str) -> Option<Lines> {
         answer,
         context_wall,
         overthinking,
+        room_message,
     ];
     READERS.iter().find_map(|r| r(text))
 }
@@ -529,6 +530,68 @@ fn overthinking(text: &str) -> Option<Lines> {
     ))
 }
 
+/// The header of a room message: `#41 [project] from dead (say) to all`, or the room's own
+/// `#41 [project] digest`. `None` for anything else. Shared with the head, which splits a row of
+/// several deliveries on this shape.
+fn room_head(text: &str) -> Option<(&str, &str, &str)> {
+    let head = text.lines().next()?;
+    let rest = head.strip_prefix('#')?;
+    let (seq, after) = rest.split_once(' ')?;
+    if seq.is_empty() || !seq.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let (room, after) = after.strip_prefix('[')?.split_once(']')?;
+    let room_ok = !room.is_empty()
+        && room
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_'));
+    room_ok.then(|| (seq, room, after.trim_start()))
+}
+
+/// Whether `text` opens with a room message's header - the cue a head splits a row on.
+pub fn is_room_line(text: &str) -> bool {
+    room_head(text).is_some()
+}
+
+/// `#41 [project] from dead (say) to all` with the text quoted under it - a room message, drawn as
+/// chat rather than as one more notice: a person talking is the one shape a reader should know
+/// without reading a label.
+fn room_message(text: &str) -> Option<Lines> {
+    let (seq, room, after) = room_head(text)?;
+    // The room's own fold of older lines carries no sender: `#41 [project] digest`.
+    let who = after
+        .strip_prefix("from ")
+        .map(|m| m.split_once(' ').map_or(m, |(w, _)| w))
+        .unwrap_or_default();
+    let g = gist(&quoted_text(text));
+    let lead = match who.is_empty() {
+        true => format!("chat {room} digest"),
+        false => format!("chat {who}"),
+    };
+    let mut parts = Vec::new();
+    if !who.is_empty() {
+        parts.push(format!("#{seq} in {room}"));
+    }
+    if !g.is_empty() {
+        parts.push(g);
+    }
+    Some(card(
+        &lead,
+        Role::Pending,
+        parts,
+        format!("chat · {room} #{seq}"),
+    ))
+}
+
+/// The text a room message carries: every line after the header, without the room's `> `.
+fn quoted_text(text: &str) -> String {
+    text.lines()
+        .skip(1)
+        .map(|l| l.strip_prefix("> ").unwrap_or(l))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The generic line a notice no reader accounts for draws: the tag (or `notice`), and the first
 /// clause of what follows. It is `info`: a shape nobody has taught a reader is not a warning, and
 /// drawing it yellow is how an untaught tag came to look like something to act on.
@@ -609,6 +672,14 @@ pub const FIXTURES: &[(&str, &str)] = &[
     (
         "[something new] the daemon learned to say this, and more. Second sentence.",
         "something new · the daemon learned to say this… · click for details",
+    ),
+    (
+        "#41 [project] from dead (say) to all\n> the gate is green, landing it now",
+        "chat dead · #41 in project · the gate is green, landing it now · click for details",
+    ),
+    (
+        "#42 [project] digest\n12 earlier lines, summarised: the gate is green.",
+        "chat project digest · 12 earlier lines, summarised… · click for details",
     ),
 ];
 

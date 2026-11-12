@@ -483,7 +483,7 @@ fn a_warning_the_census_names_is_one_row_at_eighty_columns() {
         assert!(
             letibot_sessionlog::warning::TABLE
                 .iter()
-                .any(|(c, _)| *c == family(code)),
+                .any(|(c, _, _)| *c == family(code)),
             "{code} is not in the census"
         );
     }
