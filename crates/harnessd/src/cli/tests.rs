@@ -36,9 +36,9 @@ fn a_name_resolves_exact_then_unique_prefix_and_an_id_is_unchanged() {
 }
 
 /// Rows for the global resolver: (id, title, workspace, origin, parent).
-fn spread(
-    rows: &[(&str, &str, &str, Option<&str>, Option<&str>)],
-) -> Vec<letibot_tokencore::store::StoredSession> {
+type Row<'a> = (&'a str, &'a str, &'a str, Option<&'a str>, Option<&'a str>);
+
+fn spread(rows: &[Row<'_>]) -> Vec<letibot_tokencore::store::StoredSession> {
     use letibot_tokencore::store::{SessionRecord, Store};
     let s = Store::open_in_memory().unwrap();
     for (id, title, ws, origin, parent) in rows {

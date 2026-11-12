@@ -119,12 +119,15 @@ impl From<'_> {
     }
 }
 
+/// The process's module cache, by content hash: one `Engine`'s modules, shared by every host.
+type Cache = Mutex<BTreeMap<[u8; 32], Arc<dyn Module>>>;
+
 /// The compiled modules this process holds, by the SHA-256 of their bytes. A rebuild leaves its old
 /// module here until the cap needs the room - and dropping the entry frees nothing while a stack
 /// still holds the `Arc`, which is why eviction is safe in either order.
-static COMPILED: OnceLock<Mutex<BTreeMap<[u8; 32], Arc<dyn Module>>>> = OnceLock::new();
+static COMPILED: OnceLock<Cache> = OnceLock::new();
 
-fn cache() -> &'static Mutex<BTreeMap<[u8; 32], Arc<dyn Module>>> {
+fn cache() -> &'static Cache {
     COMPILED.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 

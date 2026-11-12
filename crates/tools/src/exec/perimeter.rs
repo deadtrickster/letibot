@@ -171,6 +171,15 @@ fn widening_refusal(table: &PerimeterTable) -> Result<(), String> {
     Ok(())
 }
 
+/// One perimeter's `env`, as a placement hands it to another machine: the values that may be
+/// spelled out, the ones that are secrets, and a line for each entry that could not travel.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct EnvPairs {
+    pub spelled: Vec<(String, String)>,
+    pub secret: Vec<(String, String)>,
+    pub said: Vec<String>,
+}
+
 /// What one session's commands see, as the config decided it: the level, and what this session
 /// adds to or takes off that level's own view.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -328,18 +337,13 @@ impl Perimeter {
     /// and may not. Only `env`: a named `secrets` grant is the seat's own injection and is not a
     /// placement's business. Every entry is checked by the table's own rule again, and one that
     /// cannot be read comes back as a line rather than a silent absence.
-    pub fn env_pairs(
-        &self,
-        home: &Path,
-    ) -> (Vec<(String, String)>, Vec<(String, String)>, Vec<String>) {
+    pub fn env_pairs(&self, home: &Path) -> EnvPairs {
         let label = self.label();
-        let mut spelled = Vec::new();
-        let mut secret = Vec::new();
-        let mut said = Vec::new();
+        let mut pairs = EnvPairs::default();
         for e in &self.env {
             let (k, value) = &e.value;
             if !a_variable_name(k) {
-                said.push(format!(
+                pairs.said.push(format!(
                     "{}: {label} env: `{k}` is not a variable name",
                     e.from
                 ));
@@ -350,7 +354,7 @@ impl Perimeter {
                 _ => boundary::env_shape_refusal(k),
             };
             if let Some(why) = refused {
-                said.push(format!(
+                pairs.said.push(format!(
                     "{}: {label} env: `{k}` is refused, {why}; it did not travel",
                     e.from
                 ));
@@ -363,13 +367,13 @@ impl Perimeter {
             };
             match got {
                 Ok(v) => match value {
-                    EnvValue::Constant(_) => spelled.push((k.clone(), v)),
-                    _ => secret.push((k.clone(), v)),
+                    EnvValue::Constant(_) => pairs.spelled.push((k.clone(), v)),
+                    _ => pairs.secret.push((k.clone(), v)),
                 },
-                Err(why) => said.push(format!("{label} carries no `{k}`: {why}")),
+                Err(why) => pairs.said.push(format!("{label} carries no `{k}`: {why}")),
             }
         }
-        (spelled, secret, said)
+        pairs
     }
 
     /// What this perimeter's computed env is worth: every value a file or a command gives, and
@@ -947,10 +951,13 @@ mod tests {
             ("BASH_ENV".to_string(), EnvValue::Constant("/tmp/no".into())),
             true,
         ));
-        let (spelled, secret, said) = p.env_pairs(&home);
-        assert_eq!(spelled, vec![("RUST_LOG".to_string(), "info".to_string())]);
+        let pairs = p.env_pairs(&home);
         assert_eq!(
-            secret,
+            pairs.spelled,
+            vec![("RUST_LOG".to_string(), "info".to_string())]
+        );
+        assert_eq!(
+            pairs.secret,
             vec![(
                 "A_PLAINLY_NAMED".to_string(),
                 "s3cr3t-from-a-file".to_string()
@@ -958,19 +965,24 @@ mod tests {
             "a value a file gave is a secret whatever it is called"
         );
         assert!(
-            said.iter()
+            pairs
+                .said
+                .iter()
                 .any(|s| s.contains("BASH_ENV") && s.contains("refused")),
-            "{said:?}"
+            "{:?}",
+            pairs.said
         );
         assert!(
-            said.iter().any(|s| s.contains("A_PLAINLY_NAMED_TOO")),
-            "an unreadable value is said, not dropped: {said:?}"
+            pairs.said.iter().any(|s| s.contains("A_PLAINLY_NAMED_TOO")),
+            "an unreadable value is said, not dropped: {:?}",
+            pairs.said
         );
         // The named grant is not a placement's business, even at a level that carries it.
         assert!(
-            !spelled
+            !pairs
+                .spelled
                 .iter()
-                .chain(secret.iter())
+                .chain(pairs.secret.iter())
                 .any(|(k, _)| k == "GH_TOKEN")
         );
         let _ = std::fs::remove_dir_all(&home);

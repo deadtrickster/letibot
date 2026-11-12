@@ -85,7 +85,7 @@ fn text_of(item: &TranscriptItem) -> String {
 
 /// A seat that has the two tools, and one that has not.
 fn seated() -> Offers {
-    let tools = vec!["transcript".to_string(), "read".to_string()];
+    let tools = ["transcript".to_string(), "read".to_string()];
     Offers::new().with_tools(tools.iter())
 }
 
@@ -292,7 +292,7 @@ fn the_log_is_the_memory_of_what_was_already_offered() {
 /// tool the session has not got is a round spent on a refusal.
 #[test]
 fn a_seat_without_the_tool_hears_nothing() {
-    let tools = vec!["read".to_string(), "bash".to_string()];
+    let tools = ["read".to_string(), "bash".to_string()];
     let mut offers = Offers::new().with_tools(tools.iter());
     assert!(!offers.seated());
     offers.units(index(), BTreeMap::new());

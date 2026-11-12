@@ -909,18 +909,18 @@ pub fn run_with_launcher(
         Err(why) => return could_not_run(steps, why),
     };
     let mut done: Vec<Done> = Vec::with_capacity(steps.len());
+    // What every step of this run shares, gathered once: the tree, the scratch the steps inherit,
+    // the cap, and the control the wait loop reads.
+    let bound = Bound {
+        worktree,
+        scratch: scratch.path(),
+        cap,
+        ctl,
+        place: &place,
+    };
     for (i, step) in steps.iter().enumerate() {
         let started = now_ms();
-        let (end, mem, leftover) = run_step(
-            worktree,
-            step,
-            &launch(step),
-            (i + 1, steps.len()),
-            scratch.path(),
-            cap,
-            ctl,
-            &place,
-        );
+        let (end, mem, leftover) = run_step(&bound, step, &launch(step), (i + 1, steps.len()));
         let elapsed = now_ms().saturating_sub(started);
         let judged = judge(step, end, mem, leftover, ctl.budget);
         let last = judged.verdict.is_some();
@@ -1156,20 +1156,34 @@ pub(crate) enum StepEnd {
     Infra(String),
 }
 
+/// What every step of one gate run shares: the tree it runs in, the scratch its env points at, the
+/// cap the run resolved, and the control the wait loop reads.
+#[derive(Clone, Copy)]
+struct Bound<'a> {
+    worktree: &'a Path,
+    scratch: &'a Path,
+    cap: Option<u64>,
+    ctl: &'a GateControl<'a>,
+    place: &'a Placement,
+}
+
 /// One step: its end, what its memory did, and how many processes it left behind in its cgroup
 /// (killed with it). `at` is which step this is, 1-based, and `of` how many the gate has - the
 /// `2 of 4` a pane reads beside the tail.
 fn run_step(
-    worktree: &Path,
+    bound: &Bound<'_>,
     step: &str,
     command: &str,
     at: (usize, usize),
-    scratch: &Path,
-    cap: Option<u64>,
-    ctl: &GateControl,
-    place: &Placement,
 ) -> (StepEnd, StepMemory, usize) {
     use std::os::unix::process::CommandExt;
+    let Bound {
+        worktree,
+        scratch,
+        cap,
+        ctl,
+        place,
+    } = *bound;
     let env = StepEnv::for_run(worktree, scratch, cap);
     let log = match tempfile_in(worktree) {
         Ok(l) => l,

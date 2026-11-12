@@ -59,29 +59,30 @@ fi
 "#;
 
 /// Run Chrome on `url` in `mode` (`shot` or `dom`) and return what the script printed after its
-/// marker, or the sentence for why there is none.
-fn run(ctx: &mut InvokeCtx<'_>, args: &Value, mode: &str) -> Result<String, Invocation> {
+/// marker, or the sentence for why there is none. The failure is boxed: an `Invocation` is what the
+/// caller returns, and this `Result` carries it only on a cold path.
+fn run(ctx: &mut InvokeCtx<'_>, args: &Value, mode: &str) -> Result<String, Box<Invocation>> {
     let Some(url) = args.get("url").and_then(|v| v.as_str()).map(str::trim) else {
-        return Err(Invocation::failed(
+        return Err(Box::new(Invocation::failed(
             "this action needs `url`",
             "an http(s) or file URL",
-        ));
+        )));
     };
     let lower = url.to_ascii_lowercase();
     if !(lower.starts_with("http://")
         || lower.starts_with("https://")
         || lower.starts_with("file://"))
     {
-        return Err(Invocation::failed(
+        return Err(Box::new(Invocation::failed(
             "unsupported URL",
             "only http://, https:// and file:// are rendered",
-        ));
+        )));
     }
     let Some(host) = ctx.backend.processes() else {
-        return Err(Invocation::failed(
+        return Err(Box::new(Invocation::failed(
             "no browser on this seat",
             "this seat has no local process host",
-        ));
+        )));
     };
     let num = |k: &str| args.get(k).and_then(|v| v.as_u64());
     let width = num("width").unwrap_or(DEFAULT_W).clamp(100, MAX_W);
@@ -95,7 +96,7 @@ fn run(ctx: &mut InvokeCtx<'_>, args: &Value, mode: &str) -> Result<String, Invo
     let cwd = ctx
         .backend
         .workdir(".")
-        .map_err(|e| Invocation::failed("no working directory", e.to_string()))?;
+        .map_err(|e| Box::new(Invocation::failed("no working directory", e.to_string())))?;
     let env = vec![
         ("SCREEN_URL".to_string(), url.to_string()),
         ("SCREEN_MODE".to_string(), mode.to_string()),
@@ -117,35 +118,40 @@ fn run(ctx: &mut InvokeCtx<'_>, args: &Value, mode: &str) -> Result<String, Invo
             memory: None,
             env_trailer: false,
         })
-        .map_err(|e| Invocation::failed("the browser did not start", e.to_string()))?;
+        .map_err(|e| {
+            Box::new(Invocation::failed(
+                "the browser did not start",
+                e.to_string(),
+            ))
+        })?;
     let waited = host
         .wait_job(&id, DEADLINE)
-        .map_err(|e| Invocation::failed("the browser run failed", e.to_string()))?;
+        .map_err(|e| Box::new(Invocation::failed("the browser run failed", e.to_string())))?;
     if matches!(waited, Waited::Deadline { .. }) {
         let _ = host.kill_job(&id);
-        return Err(Invocation::failed(
+        return Err(Box::new(Invocation::failed(
             "the page took too long",
             format!(
                 "no picture inside {}s; the browser was killed",
                 DEADLINE.as_secs()
             ),
-        ));
+        )));
     }
     let out = host
         .output(&id, 0, usize::MAX)
-        .map_err(|e| Invocation::failed("no output", e.to_string()))?;
+        .map_err(|e| Box::new(Invocation::failed("no output", e.to_string())))?;
     if out.dropped > 0 {
-        return Err(Invocation::failed(
+        return Err(Box::new(Invocation::failed(
             "the picture was too large to carry",
             "use a smaller `height`, or drop `full_page`",
-        ));
+        )));
     }
     let text = String::from_utf8_lossy(&out.bytes).into_owned();
     let (_, rest) = text.split_once("---").unwrap_or(("", &text));
     let (marker, body) = rest.split_once("---\n").unwrap_or((rest, ""));
     match marker.trim() {
         "OK" => Ok(body.to_string()),
-        "NOCHROME" => Err(Invocation::failed(
+        "NOCHROME" => Err(Box::new(Invocation::failed(
             "no Chrome or Chromium in this seat",
             format!(
                 "looked for Google Chrome and Chromium under /Applications and for chromium and \
@@ -156,7 +162,7 @@ fn run(ctx: &mut InvokeCtx<'_>, args: &Value, mode: &str) -> Result<String, Invo
                     p => format!(" `{p}` exists but this seat's view cannot read it."),
                 }
             ),
-        )),
+        ))),
         m => {
             let hint = if m.contains("134") {
                 "\nChrome aborted while starting. On macOS it needs the window server and \
@@ -165,10 +171,10 @@ fn run(ctx: &mut InvokeCtx<'_>, args: &Value, mode: &str) -> Result<String, Invo
             } else {
                 ""
             };
-            Err(Invocation::failed(
+            Err(Box::new(Invocation::failed(
                 "the browser produced nothing",
                 format!("{m}\n{}{hint}", body.trim()),
-            ))
+            )))
         }
     }
 }
@@ -176,7 +182,7 @@ fn run(ctx: &mut InvokeCtx<'_>, args: &Value, mode: &str) -> Result<String, Invo
 pub fn web(ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
     let b64 = match run(ctx, args, "shot") {
         Ok(b) => b,
-        Err(e) => return e,
+        Err(e) => return *e,
     };
     let bytes = letibot_transcript::media::decode_base64(&b64);
     let Some(media) = crate::media::Media::of("page.png", &bytes) else {
@@ -195,7 +201,7 @@ pub fn web(ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
 pub fn dom(ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
     let html = match run(ctx, args, "dom") {
         Ok(b) => b,
-        Err(e) => return e,
+        Err(e) => return *e,
     };
     let body = if args.get("html").and_then(|v| v.as_bool()) == Some(true) {
         html

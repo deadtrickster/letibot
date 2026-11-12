@@ -6,10 +6,13 @@ use super::*;
 use letibot_room::chat::Reach;
 use std::sync::{Arc, Mutex};
 
+/// What each request asked for: its `thinking` flag and its token cap.
+type Asked = Vec<(Option<bool>, Option<u32>)>;
+
 /// What each request asked for, and what the fake answers: `Finish::Length` with only
 /// reasoning is the round a nudge would answer on a full turn.
 struct Recorder {
-    seen: Arc<Mutex<Vec<(Option<bool>, Option<u32>)>>>,
+    seen: Arc<Mutex<Asked>>,
     finish: letibot_backend::Finish,
     reasoning: &'static str,
 }

@@ -915,13 +915,14 @@ impl Harness {
                 .map(std::path::PathBuf::from)
                 .unwrap_or_default();
             let p = crate::perimeter::of(cfg).map_err(HarnessError::Setup)?;
-            let (mut spelled, secrets, said) = p.env_pairs(&home);
+            let pairs = p.env_pairs(&home);
+            let (mut spelled, secrets) = (pairs.spelled, pairs.secret);
             // `[boundary] env` is every level's too, and it is constants only: the seat applies it
             // after the perimeter's own pairs, so it comes last here for the same reason.
             let r =
                 crate::perimeter::resolved(&cfg.workspace, &home).map_err(HarnessError::Setup)?;
             spelled.extend(r.env.iter().map(|(k, v, _)| (k.clone(), v.clone())));
-            for note in said {
+            for note in pairs.said {
                 hub.warn(REMOTE_PLACEMENT, note);
             }
             (spelled, secrets)

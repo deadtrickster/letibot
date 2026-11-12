@@ -149,10 +149,15 @@ fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// The listing and when it was taken: one second's cache, shared by the card and the popup, which
+/// ask together and each attach to every running daemon.
+type Listing = (Instant, Vec<sessions::Row>);
+type Cache = Arc<Mutex<Option<Listing>>>;
+
 /// Accept forever, one thread per connection. The listing is cached for a second: the card and
 /// the popup ask together, and each listing attaches to every running daemon.
 pub fn serve(listener: TcpListener, server: Arc<Server>) {
-    let cache: Arc<Mutex<Option<(Instant, Vec<sessions::Row>)>>> = Arc::default();
+    let cache: Cache = Arc::default();
     for stream in listener.incoming().flatten() {
         let (server, cache) = (server.clone(), cache.clone());
         let _ = std::thread::Builder::new()
@@ -161,10 +166,7 @@ pub fn serve(listener: TcpListener, server: Arc<Server>) {
     }
 }
 
-fn listing(
-    server: &Server,
-    cache: &Mutex<Option<(Instant, Vec<sessions::Row>)>>,
-) -> Result<Vec<sessions::Row>, String> {
+fn listing(server: &Server, cache: &Mutex<Option<Listing>>) -> Result<Vec<sessions::Row>, String> {
     let mut g = cache.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((at, rows)) = g.as_ref()
         && at.elapsed() < Duration::from_secs(1)
@@ -178,11 +180,7 @@ fn listing(
 
 /// The door checks, then the route. A refusal never carries the allow-origin header unless the
 /// origin was the extension's, so a page cannot read why it was refused.
-fn handle(
-    mut stream: TcpStream,
-    server: &Server,
-    cache: &Mutex<Option<(Instant, Vec<sessions::Row>)>>,
-) {
+fn handle(mut stream: TcpStream, server: &Server, cache: &Mutex<Option<Listing>>) {
     let req = match http::read_request(&mut stream, server.limits.body as usize) {
         Ok(r) => r,
         Err(r) => return http::error(&mut stream, r.status, None, &r.why),
@@ -261,7 +259,7 @@ fn handle(
 fn tab_sync(
     stream: &mut TcpStream,
     server: &Server,
-    cache: &Mutex<Option<(Instant, Vec<sessions::Row>)>>,
+    cache: &Mutex<Option<Listing>>,
     body: &[u8],
     poll: bool,
 ) {
@@ -344,12 +342,7 @@ fn ask_id() -> Result<String, String> {
     ))
 }
 
-fn ask_route(
-    stream: &mut TcpStream,
-    server: &Server,
-    cache: &Mutex<Option<(Instant, Vec<sessions::Row>)>>,
-    body: &[u8],
-) {
+fn ask_route(stream: &mut TcpStream, server: &Server, cache: &Mutex<Option<Listing>>, body: &[u8]) {
     let allow = Some(server.origin.as_str());
     let body: ask::AskBody = match serde_json::from_slice(body) {
         Ok(b) => b,
@@ -630,7 +623,7 @@ pub fn run(port: u16, extension_id: &str, token_path: &Path) -> Result<(), Strin
         }
     }
     let activity = Arc::new(letibot_activation::serve::Activity::default());
-    let cache: Arc<Mutex<Option<(Instant, Vec<sessions::Row>)>>> = Arc::default();
+    let cache: Cache = Arc::default();
     letibot_activation::serve::poll_loop(
         &[listener.as_raw_fd(), unix.as_raw_fd()],
         Duration::from_secs(1),

@@ -3956,7 +3956,7 @@ impl Server {
                 // The door. The first frame is the `Hello`, and a connection that does not
                 // open with one has nothing to say that the room could act on.
                 let first = match read_frame(&mut reader) {
-                    ReadFrame::Frame(frame) => frame,
+                    ReadFrame::Frame(frame) => *frame,
                     ReadFrame::OverLong(got) => {
                         let mut w = writer;
                         let _ = write_frame(
@@ -4093,7 +4093,7 @@ impl Server {
                         break;
                     }
                     let frame = match read_frame(&mut reader) {
-                        ReadFrame::Frame(f) => f,
+                        ReadFrame::Frame(f) => *f,
                         // A line past the bound is answered before the close: the peer is told
                         // what it sent and what the room takes, rather than reading a bare close.
                         ReadFrame::OverLong(got) => {
@@ -4510,9 +4510,11 @@ fn write_frame(w: &mut impl Write, response: &Response) -> std::io::Result<()> {
 }
 
 /// `read_frame`'s answer, as four different facts: a frame, the peer's end, a line past the bound
-/// (which is answered with a sentence before the close), and a line that is not a frame.
+/// (which is answered with a sentence before the close), and a line that is not a frame. The frame
+/// is boxed because a `Request` is the one large variant, and every connection carries this enum
+/// through a match per line it reads.
 enum ReadFrame {
-    Frame(Request),
+    Frame(Box<Request>),
     End,
     OverLong(usize),
     Bad(String),
@@ -4540,7 +4542,7 @@ fn read_frame(reader: &mut BufReader<UnixStream>) -> ReadFrame {
         return ReadFrame::End;
     }
     match serde_json::from_str(text) {
-        Ok(request) => ReadFrame::Frame(request),
+        Ok(request) => ReadFrame::Frame(Box::new(request)),
         Err(e) => ReadFrame::Bad(e.to_string()),
     }
 }

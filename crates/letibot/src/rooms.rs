@@ -276,7 +276,7 @@ fn print_status(h: &Here) {
         },
     }
     let me = harnessd();
-    let built = state::mtime(&me).map_or("?".into(), &ago);
+    let built = state::mtime(&me).map_or("?".into(), ago);
     row("this", format!("{} (built {built})", me.display()));
     row("socket", h.socket.display().to_string());
     row(

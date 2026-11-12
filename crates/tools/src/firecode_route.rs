@@ -252,12 +252,16 @@ pub trait Vm: Send + Sync {
     fn run(&self, command: &str, cwd: &str) -> Result<Routed, String>;
 }
 
+/// A repository's VM, made on its first routed call and kept for the next: boxed because the
+/// closure that makes it has to outlive the call that handed it over.
+type VmFor = Box<dyn Fn(&std::path::Path) -> Arc<dyn Vm> + Send + Sync>;
+
 /// Runs a call between a snapshot of its repository and a restore of everything but
 /// `node_modules/` and the manifests. The repository is the nearest one holding the call's `cwd`
 /// inside the session's folder, and its VM mounts that repository alone, so a workspace of many
 /// repositories routes each call to the one it names. A call no repository holds is not routed.
 pub struct GuardedVm {
-    vm_for: Box<dyn Fn(&std::path::Path) -> Arc<dyn Vm> + Send + Sync>,
+    vm_for: VmFor,
     pub root: std::path::PathBuf,
     vms: Mutex<std::collections::HashMap<std::path::PathBuf, Arc<dyn Vm>>>,
 }
