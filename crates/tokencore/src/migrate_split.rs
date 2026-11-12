@@ -806,6 +806,9 @@ impl Rows {
     }
 }
 
+/// Project tables that are caches over the transcripts, absent from a store older than them.
+const DERIVED: &[&str] = &["recall_unit"];
+
 /// Which rows of a project table are one key's, or `None` for a table the assignment gained and
 /// this pass does not know - a refusal by name, never a copy of nothing.
 fn rows_of(table: &str) -> Option<Rows> {
@@ -821,6 +824,7 @@ fn rows_of(table: &str) -> Option<Rows> {
         // parent and child are always in one daemon, and a child that never got a session row of
         // its own still has a parent that did
         "subagent_run" => Rows::Session("parent_id"),
+        "recall_unit" => Rows::Session("session"),
         _ => return None,
     })
 }
@@ -835,6 +839,10 @@ fn copy_table(
 ) -> Result<()> {
     let wanted = columns(into, table)?;
     let held = columns(from, table)?;
+    // An index the daemon rebuilds from the transcripts: an old store without it has nothing to carry.
+    if held.is_empty() && DERIVED.contains(&table) {
+        return Ok(());
+    }
     if held.is_empty() {
         return Err(StoreError::Refused(format!(
             "the old store has no {table} table and this build's schema does - the two are not \
