@@ -4,7 +4,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use letibot_bridge::mcp;
@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 struct Fake {
     path: PathBuf,
     frames: Arc<Mutex<Vec<Value>>>,
-    conns: Arc<Mutex<Vec<UnixStream>>>,
+    conns: Arc<Mutex<Vec<Arc<Conn>>>>,
     log: Arc<Mutex<Vec<Value>>>,
     cursor: Arc<Mutex<u64>>,
     /// The coordinator start the welcome names; `restart` moves it.
@@ -25,8 +25,83 @@ struct Fake {
     blobs: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
 }
 
+/// One accepted connection and the single writer every frame on it goes through. The coordinator
+/// has one writer per connection (`Conn` in `crates/room/src/server.rs`) and says nothing before
+/// its welcome, which the bridge reads as the answer to its hello.
+struct Conn {
+    out: Mutex<Out>,
+    greeted: Condvar,
+    /// How long this coordinator holds its welcome back: a coordinator that is slow to answer a
+    /// hello, and the window in which a push could otherwise reach the socket first.
+    greet_after: Duration,
+}
+
+struct Out {
+    stream: UnixStream,
+    greeted: bool,
+}
+
+impl Conn {
+    fn new(stream: UnixStream, greet_after: Duration) -> Arc<Conn> {
+        Arc::new(Conn {
+            out: Mutex::new(Out {
+                stream,
+                greeted: false,
+            }),
+            greeted: Condvar::new(),
+            greet_after,
+        })
+    }
+
+    /// A reply to a frame this connection sent. `welcome` is the hello's own: it is the fact a
+    /// push waits for.
+    fn send(&self, frame: &Value, welcome: bool) {
+        if welcome && !self.greet_after.is_zero() {
+            std::thread::sleep(self.greet_after);
+        }
+        let mut out = self.out.lock().unwrap();
+        let _ = writeln!(out.stream, "{frame}");
+        if welcome {
+            out.greeted = true;
+            self.greeted.notify_all();
+        }
+    }
+
+    /// A message the coordinator pushes. It waits for the welcome, because a coordinator that
+    /// spoke first would hand the bridge a line it reads as its hello's answer - which is how a
+    /// loaded box turned this harness into a link that never opened. Bounded, so a connection
+    /// nobody greets cannot hang a test.
+    fn deliver(&self, frame: &Value) {
+        let mut out = self.out.lock().unwrap();
+        let end = Instant::now() + Duration::from_secs(20);
+        while !out.greeted {
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            out = self.greeted.wait_timeout(out, left).unwrap().0;
+        }
+        let _ = writeln!(out.stream, "{frame}");
+    }
+
+    fn close(&self) {
+        let _ = self
+            .out
+            .lock()
+            .unwrap()
+            .stream
+            .shutdown(std::net::Shutdown::Both);
+    }
+}
+
 impl Fake {
     fn start(tag: &str) -> Fake {
+        Fake::start_after(tag, Duration::ZERO)
+    }
+
+    /// The same, with the welcome held back - a coordinator that is slow to answer a hello, and
+    /// the window in which a push could otherwise reach the socket first.
+    fn start_after(tag: &str, greet_after: Duration) -> Fake {
         // The handle is read once per process: these tests speak as the legacy handle.
         static NAME: std::sync::Once = std::sync::Once::new();
         NAME.call_once(|| {
@@ -63,7 +138,8 @@ impl Fake {
         );
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                conns.lock().unwrap().push(stream.try_clone().unwrap());
+                let conn = Conn::new(stream.try_clone().unwrap(), greet_after);
+                conns.lock().unwrap().push(conn.clone());
                 let (frames, log, cursor, instance, blobs) = (
                     frames.clone(),
                     log.clone(),
@@ -71,7 +147,9 @@ impl Fake {
                     instance.clone(),
                     blobs.clone(),
                 );
-                std::thread::spawn(move || serve_one(stream, frames, log, cursor, instance, blobs));
+                std::thread::spawn(move || {
+                    serve_one(stream, conn, frames, log, cursor, instance, blobs)
+                });
             }
         });
         fake
@@ -79,14 +157,19 @@ impl Fake {
 
     /// A message appears in the log, and is pushed to every connection with `names_you`.
     fn push(&self, author: &str, kind: &str, room: &str, to: Option<&str>, text: &str) -> Value {
-        let mut log = self.log.lock().unwrap();
-        let m = json!({"seq": log.len() as u64 + 1, "ts": 0, "room": room, "author": author,
-            "kind": kind, "to": to, "thread": null, "refs": [], "text": text});
-        log.push(m.clone());
+        let m = {
+            let mut log = self.log.lock().unwrap();
+            let m = json!({"seq": log.len() as u64 + 1, "ts": 0, "room": room, "author": author,
+                "kind": kind, "to": to, "thread": null, "refs": [], "text": text});
+            log.push(m.clone());
+            m
+        };
         let names = to == Some("claude-code") || text.contains("@claude-code");
         let frame = json!({"type": "chat", "message": m, "names_you": names});
-        for c in self.conns.lock().unwrap().iter_mut() {
-            let _ = writeln!(c, "{frame}");
+        // Cloned out of the lock: a connection that has not said hello yet is waited on here.
+        let conns: Vec<Arc<Conn>> = self.conns.lock().unwrap().clone();
+        for c in &conns {
+            c.deliver(&frame);
         }
         m
     }
@@ -101,7 +184,7 @@ impl Fake {
 
     fn drop_connections(&self) {
         for c in self.conns.lock().unwrap().drain(..) {
-            let _ = c.shutdown(std::net::Shutdown::Both);
+            c.close();
         }
     }
 
@@ -118,24 +201,25 @@ impl Fake {
 
 fn serve_one(
     stream: UnixStream,
+    conn: Arc<Conn>,
     frames: Arc<Mutex<Vec<Value>>>,
     log: Arc<Mutex<Vec<Value>>>,
     cursor: Arc<Mutex<u64>>,
     instance: Arc<Mutex<u64>>,
     blobs: Arc<Mutex<std::collections::BTreeMap<String, Value>>>,
 ) {
-    let mut w = stream.try_clone().unwrap();
     let mut seat = String::from("session");
     let mut name = String::new();
     for line in BufReader::new(stream).lines().map_while(Result::ok) {
         let f: Value = serde_json::from_str(&line).unwrap();
         frames.lock().unwrap().push(f.clone());
+        let welcome = f["type"] == "hello";
         let reply = match f["type"].as_str().unwrap() {
             "hello" => {
                 seat = f["seat"].as_str().unwrap().to_string();
                 name = f["speaker"]["session"].as_str().unwrap().to_string();
                 if f["protocol"] != letibot_room::ROOM_PROTOCOL_VERSION {
-                    let _ = writeln!(w, "{}", json!({"type": "bye", "why": "protocol"}));
+                    conn.send(&json!({"type": "bye", "why": "protocol"}), false);
                     return;
                 }
                 json!({"type": "welcome", "protocol": letibot_room::ROOM_PROTOCOL_VERSION,
@@ -247,9 +331,7 @@ fn serve_one(
                 "state": {"state": "open"}}}),
             other => json!({"type": "refused", "id": null, "why": {"refused": other}}),
         };
-        if writeln!(w, "{reply}").is_err() {
-            return;
-        }
+        conn.send(&reply, welcome);
     }
 }
 
@@ -551,6 +633,31 @@ fn the_bridge_says_the_rooms_protocol_number() {
     link.ensure().expect("the hello was accepted");
     let hello = fake.frames("hello");
     assert_eq!(hello[0]["protocol"], letibot_room::ROOM_PROTOCOL_VERSION);
+}
+
+/// A coordinator that is slow to answer a hello, with a message already on its way. The push waits
+/// for the welcome instead of racing it, because a chat frame first is a line the bridge reads as
+/// the answer to its hello - the link then never opens, and a loaded box made that happen.
+#[test]
+fn a_message_behind_a_slow_welcome_does_not_pass_for_one() {
+    let fake = Fake::start_after("slow-hello", Duration::from_millis(300));
+    let link = RoomLink::at(&fake.path);
+    let opened = std::thread::scope(|scope| {
+        let h = scope.spawn(|| link.ensure());
+        wait_until(|| !fake.conns.lock().unwrap().is_empty());
+        fake.push(
+            "s-a",
+            "session",
+            "host",
+            Some("claude-code"),
+            "hello is late",
+        );
+        h.join().unwrap()
+    });
+    assert!(opened.is_ok(), "the link opened: {opened:?}");
+    // And the message is not lost with the race: it is in the log the inbox reads.
+    let inbox = call(&link, "room_inbox", json!({})).unwrap();
+    assert_eq!(inbox["rows"].as_array().unwrap().len(), 1, "{inbox}");
 }
 
 #[test]
