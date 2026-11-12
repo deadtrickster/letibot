@@ -18,14 +18,38 @@ const SAFE: &[(&str, &[&str])] = &[
     ("render-qwen", &[]),
 ];
 
-fn run(args: &[&str]) -> (Option<i32>, String, String) {
+/// One temp home for the whole suite. The binary these tests drive reads `$HOME/.config/letibot`
+/// and `$HOME/.local/share/letibot`, so a test with the operator's `$HOME` writes into the
+/// operator's config - and on a fresh box the first such write says so on stderr, which is a
+/// line the two-line assertions below count. Made once and never removed: a suite that deletes
+/// it races the next test to make it.
+fn home() -> std::path::PathBuf {
+    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let dir =
+            std::env::temp_dir().join(format!("letibot-dispatch-home-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp home");
+        dir
+    })
+    .clone()
+}
+
+/// The binary, in the temp home, with no session and no socket: a role that would attach must not
+/// find one.
+fn cmd(args: &[&str]) -> std::process::Command {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_letibot"));
     cmd.args(args)
-        // No session, no socket: a role that would attach must not find one.
+        .env("HOME", home())
+        .env("XDG_CONFIG_HOME", home().join(".config"))
+        .env("XDG_DATA_HOME", home().join(".local/share"))
         .env_remove("LETIBOT_SOCKET")
         .env_remove("LETIBOT_SESSION")
         .env_remove("LETIBOT_COMPLETION_URL");
-    let out = cmd.output().expect("the multicall runs");
+    cmd
+}
+
+fn run(args: &[&str]) -> (Option<i32>, String, String) {
+    let out = cmd(args).output().expect("the multicall runs");
     (
         out.status.code(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -256,6 +280,50 @@ fn an_unknown_session_id_names_the_real_ones_and_where_to_list_them() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A store query is a store query. `--delete` on a box that has never run a daemon must leave
+/// `$XDG_CONFIG_HOME` as it found it: the daemon installed its preapproved list from the config's
+/// own read, so the first such query on a fresh box answered a two-line refusal with three - and
+/// every test that built a `Config` wrote the operator's real config.
+#[test]
+fn a_store_query_writes_nothing_into_the_config_dir() {
+    let dir = std::env::temp_dir().join(format!("letibot-cli-clean-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let home = dir.join("home");
+    let config = dir.join("config");
+    let data = dir.join("data");
+    let store_dir = dir.join("store");
+    for d in [&home, &config, &data, &store_dir] {
+        std::fs::create_dir_all(d).expect("a temp dir");
+    }
+    let store = store_dir.join("sessions.db").to_string_lossy().into_owned();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_letibot"))
+        .args(["daemon", "--store", &store, "--delete", "s-nope"])
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", &config)
+        .env("XDG_DATA_HOME", &data)
+        .env_remove("LETIBOT_SOCKET")
+        .env_remove("LETIBOT_SESSION")
+        .output()
+        .expect("the store query runs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert_eq!(
+        stderr.lines().count(),
+        2,
+        "the refusal is two lines, and the first run on a fresh box is no different: {stderr:?}"
+    );
+    let written: Vec<String> = std::fs::read_dir(&config)
+        .expect("the config dir is there")
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        written.is_empty(),
+        "a store query wrote into the config dir: {written:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `attach`'s refusal is two lines and names the word that is missing: the source, or the
 /// scope. The help line is the scope's own example, not a parenthetical clause at 150 columns.
 #[test]
@@ -343,6 +411,9 @@ fn each_role_is_reachable_through_a_symlink_of_its_own_name() {
         std::os::unix::fs::symlink(exe, &link).expect("a symlink");
         let out = std::process::Command::new(&link)
             .args(&args)
+            .env("HOME", home())
+            .env("XDG_CONFIG_HOME", home().join(".config"))
+            .env("XDG_DATA_HOME", home().join(".local/share"))
             .env_remove("LETIBOT_SOCKET")
             .env_remove("LETIBOT_SESSION")
             .output()
