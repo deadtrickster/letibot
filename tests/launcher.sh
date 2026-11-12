@@ -336,7 +336,7 @@ for spec in "--delete|letibot --delete ID" "--session|letibot --session ID" \
   "--stop|--force" "--room|--stop" "--handover|letibot --handover SESSION DIR" \
   "--note-continued|letibot --note-continued" "--list-claude|letibot --list-claude" \
   "--ls|letibot --ls" "--daemons|letibot --daemons" "--attach|letibot --attach" \
-  "--status|letibot --status" "attach|letibot attach github"; do
+  "--status|letibot --status" "--where|letibot --where [FOLDER]" "attach|letibot attach github"; do
   verb="${spec%%|*}"
                       want="${spec#*|}"
   out="$(run "$DEFAULT_ONLY" "$verb" --help)"
@@ -366,7 +366,7 @@ out="$(run "$DEFAULT_ONLY" --help)"
 for verb in --continue --session --sessions --new --rename --delete --migrate --reattach \
   --handover --note --note-continued --revert --list-claude --stop --room --status \
   --ls --daemons --attach --glm --provider --host --vm --tsv \
-  --web-fetch --no-web-fetch --effort --vm-copy --listen \
+  --web-fetch --no-web-fetch --effort --vm-copy --listen --where \
   --list --list-all --claude-sessions --bash; do
   if printf '%s\n' "$out" | grep -q -- "$verb"; then
                                                      echo "ok   --help names $verb"
@@ -1155,6 +1155,23 @@ cat > "$T/bin/letibot" << 'STUB'
 printf 'letibot'; printf ' %q' "$@"; printf '\n'
 STUB
 chmod +x "$T/bin/letibot"
+
+# **Which socket this folder's daemon listens on** — what a program that drives letibot (rano's
+# editor panel) asks instead of re-deriving `<rundir>/<sha12>.sock`. The launcher does not answer
+# it from a hash of its own: it hands the folder to the binary's resolver, which IS
+# `bridge::daemon::resolve` (`crates/letibot/tests/where.rs` holds that equality).
+out="$(run "$DEFAULT_ONLY" --where --ensure --json)"
+expect "--where is the resolver verb's, with this folder and both modifiers" "$out" \
+  "^letibot where .*/ws --ensure --json$"
+refuse "  ...and the launcher starts nothing of its own for it" "$out" "^harnessd "
+out="$(run "$DEFAULT_ONLY" --where)"
+expect "--where with no modifier asks the same question" "$out" "^letibot where .*/ws$"
+for modifier in --ensure --json; do
+  out="$(run "$DEFAULT_ONLY" "$modifier")"
+                                                  rc=$?
+  refusal "$modifier alone is refused by name, as --force is" "$rc" "$out" \
+    "^letibot: $modifier only means something with --where" "--where"
+done
 
 out="$(run "$DEFAULT_ONLY" --migrate s-4242 --to lab2x1)"
 expect "--migrate is handed to the migration verb with this box's store" "$out" \

@@ -1744,6 +1744,11 @@ pub const KNOWN_FLAGS: &[&str] = &[
     "--oracle-budget-ms",
     "--ls",
     "--list-all",
+    // `--where` and its two modifiers: which socket this folder's daemon listens on, and
+    // whether it is up. The modifiers are refused without the verb, as `--force` is.
+    "--where",
+    "--ensure",
+    "--json",
 ];
 
 /// What an invocation of `letibot` asks the launcher to do. One variant per arm of the
@@ -1774,6 +1779,15 @@ pub enum Action {
     },
     /// `--ls` / `--list-all`: every folder's daemon, numbered, with what is live inside.
     ListAll,
+    /// `--where [FOLDER] [--ensure] [--json]`: the socket `bridge::daemon::resolve` gives this
+    /// folder, and whether a daemon is live there. `--where`'s own arm answers it with the
+    /// bridge's resolver (see `whereis`): a program that drives letibot asks rather than
+    /// hashing the path itself.
+    Where {
+        folder: String,
+        ensure: bool,
+        json: bool,
+    },
     /// `--daemons`: the records, each checked against a live listener.
     Daemons,
     /// `--status`: this folder's daemon, and the local model server as a separate fact.
@@ -1863,6 +1877,21 @@ pub fn decide(args: &[String]) -> Result<(Seat, Action), String> {
     // a flag that does nothing is a flag the operator cannot trust.
     let force = args.iter().any(|a| a == "--force");
 
+    // `--ensure` and `--json` belong to `--where` alone, and saying so beats ignoring them:
+    // the `--force` rule, one verb over.
+    if args.first().map(String::as_str) != Some("--where") {
+        for a in args {
+            match a.as_str() {
+                "--ensure" | "--json" => {
+                    return Err(format!("{a} only means something with --where"));
+                }
+                _ if a.starts_with("--") => {}
+                // The prompt starts here; nothing after it is a flag.
+                _ => break,
+            }
+        }
+    }
+
     // Pass 3: the option loop, and its leftovers.
     let (seat, rest) = parse_seat(args)?;
 
@@ -1910,6 +1939,16 @@ pub fn decide(args: &[String]) -> Result<(Seat, Action), String> {
             }
         }
         "--daemons" => Action::Daemons,
+        "--where" => Action::Where {
+            folder: rest
+                .iter()
+                .skip(1)
+                .find(|a| !a.starts_with("--"))
+                .cloned()
+                .unwrap_or_default(),
+            ensure: rest.iter().any(|a| a == "--ensure"),
+            json: rest.iter().any(|a| a == "--json"),
+        },
         "--status" => Action::Status,
         "--stop" => {
             // `--all` and `--force` are not targets; anything else there is.
@@ -2002,6 +2041,45 @@ mod dispatch_tests {
             "{e}"
         );
         assert!(decide(&v(&["--stop", "--force"])).is_ok());
+    }
+
+    /// `--where` answers with its folder and its two modifiers, and each modifier is refused
+    /// without the verb - a flag that does nothing is a flag the operator cannot trust.
+    #[test]
+    fn where_takes_a_folder_and_its_modifiers_and_nothing_else_does() {
+        let bare = Action::Where {
+            folder: String::new(),
+            ensure: false,
+            json: false,
+        };
+        assert_eq!(act(&["--where"]), bare);
+        assert_eq!(
+            act(&["--where", "/tmp/x", "--ensure", "--json"]),
+            Action::Where {
+                folder: "/tmp/x".into(),
+                ensure: true,
+                json: true,
+            }
+        );
+        for modifier in ["--ensure", "--json"] {
+            let e = decide(&v(&[modifier])).unwrap_err();
+            assert!(
+                e.contains(&format!("{modifier} only means something with --where")),
+                "{e}"
+            );
+        }
+        let e = decide(&v(&["--stop", "--json"])).unwrap_err();
+        assert!(
+            e.contains("--json only means something with --where"),
+            "{e}"
+        );
+        // A prompt that merely says the word is a prompt: nothing after it is a flag.
+        assert_eq!(
+            act(&["explain --json"]),
+            Action::Bring {
+                one_shot: v(&["explain --json"])
+            }
+        );
     }
 
     /// The verbs, one per arm.

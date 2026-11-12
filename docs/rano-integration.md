@@ -262,8 +262,8 @@ for (`L/sessionlog/src/protocol/tests.rs:261-263`).
   track folders" half: when the focused buffer moves to another repository the panel header shows
   the new folder and Enter follows it. Following is explicit, so a stray `open-file` does not drop
   a live stream.
-- Socket: rano asks letibot, it does not re-derive the hash. New launcher verb
-  `letibot --where --json` prints `{workspace, socket, up, protocol}` from
+- Socket: rano asks letibot, it does not re-derive the hash. The launcher verb
+  `letibot --where --json` prints `{socket, live, project, folder}` from
   `bridge::daemon::resolve` and `is_up` (`L/bridge/src/daemon.rs:188-199`, `:236`).
   `$LETIBOT_SOCKET` wins when set, as it does there. Rejected: copying the sha12 rule
   (`L/bridge/src/daemon.rs:58-64`) into rano. It is a second spelling of which folder a session

@@ -61,6 +61,7 @@ mod notes;
 mod roles;
 mod rooms;
 mod stats;
+mod whereis;
 
 /// What this invocation is being asked to be. No catch-all variant: an unknown name is an
 /// error rather than a guess, because the guess would be "be the daemon" for a typo, and that is
@@ -285,6 +286,10 @@ fn main() -> ExitCode {
                 };
                 if word == "stats" {
                     stats::run_stats(&tail())
+                } else if word == "where" || word == "--where" {
+                    // Which daemon serves a folder, for a program that drives letibot and must
+                    // not re-derive the socket's hash. `scripts/letibot --where` execs it.
+                    whereis::run(&tail())
                 } else if word == "boundary" {
                     boundary::run(&tail())
                 } else if word == "notes" {
@@ -362,6 +367,9 @@ VERBS
   attach github <scope>       the reviewer seat on an org or `owner/repo`: one session per
                               open pull request, one review per push, drafts until
                               `[github] post` and a token are set
+  where [FOLDER]              the socket this folder's daemon listens on and whether it is up:
+                              `--ensure` starts it, `--json` prints socket, live, project
+                              and folder in one object (`letibot --where` is the same verb)
 
 Every verb answers for itself: `letibot <verb> --help` says what it takes, which
 flags have defaults, and one example. A role is reachable by its own name through a

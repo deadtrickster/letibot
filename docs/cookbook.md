@@ -193,6 +193,9 @@ walk from `/` never enters `/proc`, `/sys`, `/dev` or `/run`.
 letibot                      connect to THIS folder's daemon (the git toplevel), or start one - it says which
 letibot --attach [DIR]       connect only
 letibot --daemons            every folder's daemon on this box
+letibot --where [--json]     the socket this folder's daemon listens on - what
+                             `bridge::daemon::resolve` computes - and whether one is up;
+                             `--ensure` starts it (`--json`: socket, live, project, folder)
 letibot --stop [--all]       this folder's daemon, by pid - never every harnessd on the box
 ```
 

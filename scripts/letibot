@@ -639,6 +639,25 @@ letibot --daemons
     letibot --daemons
 EOF
       ;;
+    --where)
+      cat <<'EOF'
+letibot --where [FOLDER] [--ensure] [--json]
+  The socket this folder's daemon listens on — exactly what `bridge::daemon::resolve`
+  computes: $LETIBOT_SOCKET when set, else <rundir>/<sha256(folder)[..12]>.sock — and
+  whether a daemon is live there. A program that drives letibot asks this instead of
+  hashing the path itself.
+
+  FOLDER     the folder (default: this one), as its git toplevel
+  --ensure   start the folder's daemon when none is running, then answer
+  --json     one object: socket, live, project (the key), folder
+
+  The plain form is two lines: the socket, and then `up` or `down`.
+
+  example:
+    letibot --where --json
+    letibot --where --ensure --json      (what an editor panel runs to start one)
+EOF
+      ;;
     --attach)
       cat <<'EOF'
 letibot --attach [N|DIR]
@@ -773,6 +792,9 @@ KNOWN_FLAGS='
 --status
 --ls
 --list-all
+--where
+--ensure
+--json
 --daemons
 --attach
 --listen
@@ -886,6 +908,10 @@ already up, then attaches the TUI head to it.
   letibot --ls                every folder's daemon and the live sessions inside it, numbered: the
                               number is what `--stop N` and `--attach N` take
   letibot --daemons           which folders have a daemon, and whether anything is listening on it
+  letibot --where [FOLDER] [--ensure] [--json]   the socket this folder's daemon listens on — what
+                              `bridge::daemon::resolve` computes — and whether one is live. A
+                              program that drives letibot (rano's editor panel) asks this instead
+                              of hashing the path itself; `--ensure` starts it when none is running
   letibot --attach [N|DIR]    connect to this folder's daemon — or another folder's, by its number
                               from `--ls` or by directory — and never start one
 
@@ -1277,6 +1303,18 @@ FORCE=0
 for a in "$@"; do [ "$a" = "--force" ] && FORCE=1; done
 if [ "$FORCE" = 1 ] && [ "${1:-}" != "--stop" ] && [ "${1:-}" != "--room" ]; then
   die "--force only means something with --stop"
+fi
+
+# `--ensure` and `--json` belong to `--where` alone — the same rule one verb over: a flag
+# that does nothing is a flag the operator cannot trust.
+if [ "${1:-}" != "--where" ]; then
+  for a in "$@"; do
+    case "$a" in
+      --ensure | --json) die "$a only means something with --where" ;;
+      --*) : ;;
+      *) break ;; # the prompt starts here; nothing after it is a flag
+    esac
+  done
 fi
 
 # One loop over every flag, in any order and any number. Two single-shot
@@ -2548,6 +2586,16 @@ case "${1:-}" in
   --unarchive)
     [ $# -ge 2 ] || need "ID" --unarchive
     exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --unarchive "$2"
+    ;;
+  --where)
+    # **Which socket this folder's daemon listens on, and whether it is up** — for a program
+    # that drives letibot and must not re-derive the path. The answer is the BRIDGE's
+    # (`bridge::daemon::resolve`), not a second copy of the hash here: `$BIN/letibot where`
+    # is that resolver, and it is also what `--ensure` starts a daemon with. This folder is
+    # passed as a word so `LETIBOT_WORKSPACE` keeps its meaning.
+    [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the where verb lives there)"
+    shift
+    exec "$BIN/letibot" where "$WORKSPACE" "$@"
     ;;
   --migrate)
     # **The whole daemon, on a host and back** (`docs/remote-hosts.md` RH4). A verb and not a
