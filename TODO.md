@@ -573,6 +573,76 @@ Built. **The daemon lists what a provider can answer with.** `crate::config::mod
 
 Tests. `crates/provider/src/catalogue.rs`: the card line with the window and both rates, `price unlisted` where the catalogue prices nothing, and the `1M`/`393k`/`512` spelling. `crates/harnessd/src/config/tests.rs` (4): a keyed provider lists every catalogue model it carries while an unkeyed one lists exactly one and no name appears twice; the fleet's blocks come before the providers and carry their address; the facts row is one line per choice with none empty; a keyed provider the catalogue says nothing about still gets its row rather than vanishing. `crates/harnessd/tests/model_card_rows.rs`: the Done-when end to end - a `providers.toml` holding a DeepSeek key lists more than one `deepseek/` model, each with a window and a meter, the `models.keys` row agrees with the listing, and the provider with no key stays one row. `crates/tui/src/app/tests/settings.rs` (5): a typed name switches the model and leaves no prompt behind; the card filters as the line is typed and a digit narrows rather than marking a row; a line matching nothing says so and leaves the card up; each row shows its window and price under its provider's heading; the facts are matched by index and dropped whole when the row is short.
 
+## R191 - A test the gate kills for size dumps core into the operator's desktop
+
+**Status:** filed, 2026-11-12.
+
+The rano project's landing gate runs rano's tests under a file-size limit. One rano test writes an 8 MB file with `dd if=/dev/zero of=…/rano-pdf-page-<pid>-<n>.png bs=1024 count=8192`; the limit kills `dd` with SIGXFSZ and it dumps core (`coredumpctl` on lab2x1: a few hundred such dumps from Nov 11 23:01 on, user unit `letibot-harnessd-c74d1fd17483-*.scope`). On lab2x1 every dump started KDE's crash reporter, which could not load its Qt platform plugin, aborted and dumped core itself - a loop of about 121k crashes over a day. Each left a failed `drkonqi-coredump-launcher@…` unit, the user systemd manager reached its unit limit (~131k), `systemd-run --user --scope` failed with E2BIG and then timed out, and every new letibot daemon came up without a scope (R192). Masking the socket stopped the loop; the 128k failed units stay until the user manager restarts.
+
+A kill the gate itself causes is an expected outcome, not a crash anyone should be told about. Fix: every gate step and every job the gate runs gets `RLIMIT_CORE=0` (and `prctl(PR_SET_DUMPABLE, 0)` is not needed - the rlimit is enough for systemd-coredump to skip it). Done when: a gate step that runs `sh -c 'ulimit -f 1; dd if=/dev/zero of=x bs=1k count=8'` leaves no new entry in `coredumpctl list`.
+
+## R192 - With no user scope, a daemon dies on the shell sandbox instead of saying why
+
+**Status:** filed, 2026-11-12.
+
+When `systemd-run --user --scope` fails (here: the user manager at its unit limit, R191, then pegged at 100% CPU for minutes), `scripts/letibot` prints "no systemd user manager here" - which was false, the manager was there and refusing - and starts harnessd in the terminal's own cgroup. The daemon then refuses the session outright: "this session asks for the wide seat and no boundary could be built for it: cgroup mkdir failed … Permission denied". The operator saw `leticode --new github` fail three times with three different-looking messages.
+
+Fix: (1) `scope_ok` keeps the manager's error and the launcher prints it ("the user manager refused a scope: Argument list too long" / "timed out after 10 s"), with a timeout on the probe so a pegged manager costs seconds, not minutes; (2) a daemon without a delegated cgroup opens the session with its shell seat withheld and one clear Attention line naming the cause and the fix, instead of refusing the session - a session that cannot run commands can still be talked to. Done when: with `systemd-run` stubbed to fail, the launcher's stderr carries the stub's message and the session opens with no `bash` seat and that line.
+
+## R193 - Stopping a VM session leaves its VM running and the next session never gets one
+
+**Status:** filed, 2026-11-12.
+
+L3's first package hung on a tool call for three hours. `leticode_stop` answered `closed: true`, but its firecracker VM (`firecode-20261112-111454-2218966`) kept running and the daemon's `idle_exit` still said "held: s-1794478489296943693 has a head attached". A new session started on the same worktree and daemon opened, placement `firecode`, and its worker never opened: no VM booted in 20 minutes, `/models` and the brief sat queued. `firecode down s-1794478489296943693 --discard` plus `letibot --stop` cleared it.
+
+Fix: closing a placed session brings its VM down (the copy-out the operator relies on still happens), and a daemon's hold is released when the session is closed. A worker that cannot open within a bound says so as a failure row instead of leaving the session idle forever. Done when: a test closes a firecode-placed session whose turn is stuck in a tool call and finds no VM for it and a second session on the same daemon able to open.
+
+## R194 - A tool call can hang a turn for hours
+
+**Status:** filed, 2026-11-12.
+
+The first L3 package's turn sat on one `grep` call (pattern `esc_taps`, path `crates/tui/src`, inside a firecode VM) from 11:30 to 14:40 with no result and no timeout; status said `waiting_on: turn, calls`. Nothing told the operator or the bridge. Fix: every builtin tool call has a wall-clock bound (search tools a few minutes), and a call past it is cancelled and returned as a failed result that says so, so the model can narrow and retry. Done when: a test with a search tool stubbed to block returns a timed-out result within the bound and the turn goes on.
+
+## R195 - leticode_start and leticode_mode give up while a VM is still booting
+
+**Status:** filed, 2026-11-12.
+
+Every `vm: true` start this session timed out at 120 s ("its session did not answer `/models deepseek` within 120s: the session's worker was still opening"), so the brief was never sent and the caller had to poll and then call `leticode_model`, `leticode_mode` and `leticode_send` by hand. On a loaded box (load 150-380) a VM takes 3-6 minutes. `leticode_mode allow-all` on a VM session also put a confirmation card in front of the heads while the worker was opening, though allow-all inside a VM needs nobody, and the daemon had been started with `--mode allow-all` anyway.
+
+Fix: start queues the model, mode and brief on the session and applies them in order when the worker opens, answering at once with "queued until the VM is up"; allow-all on a session whose placement is a VM is applied without a card even before the worker is up. Done when: a start with a stub VM that takes 200 s to boot sends the brief without any further call, and no card is shown.
+
+## R196 - Built-in guests go stale in a target shared between worktrees
+
+**Status:** filed, 2026-11-12.
+
+`crates/builtins/build.rs` compiles `plugins/builtin/*` into `OUT_DIR` and watches them with absolute `cargo:rerun-if-changed` paths. Two worktrees sharing one `CARGO_TARGET_DIR` share that build script's output, so the watch list names whichever worktree ran it first; a change in another worktree's `plugins/builtin/chat/src` is never seen and the test binary embeds the old wasm. B1's gate failed `the_builtin_chat_layer_draws_what_the_native_adapter_draws` on exactly that: the native adapter drew the new `Warning` mark and the layer, from a `chat.wasm` built out of wt-landing-31's source, the old `Attention`. The gate script now deletes a `letibot-builtins-*` output whose watch list is not its own tree; that is a workaround in a scratch script, not a fix.
+
+Fix: make the build script's freshness depend on the tree it is built from - e.g. hash the guests' sources into the generated table and `rerun-if-env-changed` on a variable the workspace sets, or key the guests' own target dir by `CARGO_MANIFEST_DIR`. Done when: building worktree A, then changing a guest in worktree B and building B with the same target dir, embeds B's guest.
+
+## R197 - Workspace clippy is red on rustc 1.98
+
+**Status:** filed, 2026-11-12.
+
+`cargo clippy --workspace --all-targets -- -D warnings` stops on lints new in 1.98 in code nobody touched: `crates/plugins-rano/src/lib.rs:125` (type_complexity), `crates/room/src/server.rs:4514` (large_enum_variant), `crates/tools/src/builtins/screen/web.rs:63`, `crates/tools/src/exec/perimeter.rs:334`, `crates/tools/src/firecode_route.rs:260`, `crates/harnessd/src/mergequeue/gate.rs:1162`, `crates/harnessd/src/cli/tests.rs:40`, `crates/harnessd/src/harness/tests/cheap_wake.rs:12`, `crates/letibot/src/rooms.rs:279` (needless_borrows_for_generic_args). Every package this session reported it could not get a clean `-D warnings` run because of them. Fix them (not `allow`), and put clippy in the landing gate so it cannot drift again. Done when: the workspace clippy is clean and the gate runs it.
+
+## R198 - Tests that touch the operator's real config and runtime dir
+
+**Status:** filed, 2026-11-12.
+
+From the L9 package: `crates/letibot/tests/dispatch.rs`'s unknown-session test writes into the real `~/.config/letibot`, so it fails once on a fresh box with an extra stderr line and then passes; and `scripts/letibot --help` dies under `set -e` at `mkdir -p /run/user/<uid>/letibot` when `XDG_RUNTIME_DIR` is unset. A test must not write outside its temp dir, and `--help` must not need a runtime dir. Done when: the dispatch suite run with `HOME` and `XDG_CONFIG_HOME` pointed at an empty temp dir passes on its first run and leaves the real config untouched, and `env -u XDG_RUNTIME_DIR letibot --help` prints help.
+
+## R199 - mergequeue review runs-table test flakes under load
+
+**Status:** filed, 2026-11-12.
+
+`mergequeue::review::claude_tests::the_runs_table_holds_a_process_until_it_is_dead` failed once in a full `--lib` run on the loaded host ("and forgotten once it is": the SIGINT'd `sleep 60` stub must be gone within 30 s) and passed 3/3 alone. Same class as the six fixed today: find whether the bound or the reaping is wrong, fix the cause, prove it with repeated runs under load.
+
+## R200 - The package VM image lacks what the workspace needs
+
+**Status:** filed, 2026-11-12.
+
+Every package this session spent its first rounds repairing the firecode guest: `rustup target add wasm32-unknown-unknown` (crates/builtins' build script refuses without it), `cargo fetch` inside each `plugins/builtin/*` because the image's cargo cache has `serde_json 1.0.151` and their locks pin 1.0.154, and `shfmt`/`shellcheck`/`mise` are absent so no shell change is checked in the guest. The guest's 16 G overlay filled on a debug build of the harnessd test binaries (`ld … Bus error`, `No space left on device`), and harnessd's lib tests ran the guest out of memory. Fix in the image letibot boots for packages: the wasm target, a warmed cargo cache from the workspace's own locks, the shell linters, and a larger overlay; and say the guest's memory in the brief so a package does not try a suite it cannot hold. Done when: a fresh package VM builds the workspace and runs `scripts/check-fmt.sh` with no setup step.
+
 ## R190 - "Remember we did that?" does not reach the transcript tools
 
 **Status:** built, 2026-11-12. left: the index is warmed on the turn's own thread - bounded to 24 units, one read a turn, and a transcript the index holds is not read again - rather than a spawned one, because a `Store` is not shareable across threads in this crate; and `OFFER_FLOOR` is still a judgement rather than a ratio, because no box has read `recall-offers.jsonl` yet.
