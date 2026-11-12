@@ -732,6 +732,16 @@ impl ExecBackend for HostBackend {
         if p.is_dir() {
             return Err(BackendError::IsADirectory(path.to_string()));
         }
+        // A FIFO, a socket or a device has no end to read to: `read` blocks until a writer appears,
+        // which is forever for a named pipe nobody opened. No deadline inside this process can end
+        // that, so the file kind is the bound (R194: a search must never be the thing that waits).
+        if let Ok(meta) = std::fs::metadata(&p)
+            && !meta.is_file()
+        {
+            return Err(BackendError::Unsupported(
+                "a pipe, a socket or a device: only a regular file has contents a read can finish",
+            ));
+        }
         std::fs::read(&p).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => BackendError::NotFound(path.to_string()),
             _ => BackendError::Io(e.to_string()),
@@ -1709,6 +1719,44 @@ mod tests {
         // And nothing is asked of the backend for nothing.
         assert_eq!(b.read_many(&[]).expect("an empty page").len(), 0);
         assert_eq!(b.read_calls.load(Ordering::SeqCst), 3);
+    }
+
+    /// A named pipe in a tree is not a file a search may open: a `read` of it blocks until a writer
+    /// appears, and nothing else in this process can end that. The refusal is the bound, so the
+    /// read answers rather than waiting - the assertion is a timeout, because the failure this
+    /// guards against IS a hang and a test that merely returned late would not see it.
+    #[test]
+    fn a_named_pipe_in_the_tree_is_refused_and_not_read_forever() {
+        let d = tempdir::TempDir::new();
+        let pipe = d.path().join("pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !made {
+            // `mkfifo` is not on this box; a skip said out loud rather than a green that measured
+            // nothing.
+            eprintln!("a_named_pipe_in_the_tree_is_refused_and_not_read_forever: no mkfifo here");
+            return;
+        }
+        let b = HostBackend::new(d.path()).expect("a project-rooted backend");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let got = b.read("pipe");
+            let _ = tx.send(format!("{got:?}"));
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(said) => assert!(
+                said.contains("regular file"),
+                "a pipe was read rather than refused: {said}"
+            ),
+            Err(_) => panic!(
+                "reading a named pipe with no writer blocked, which no deadline in this process \
+                 can end"
+            ),
+        }
+        let _ = reader.join();
     }
 }
 

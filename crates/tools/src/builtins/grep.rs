@@ -9,6 +9,7 @@ use crate::backend::{DirEntry, default_skip, walk};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
+use super::paging::{Reader, Stop};
 use super::pattern::{Pattern, PatternError, bare_identifier, glob_match};
 use super::text_of;
 
@@ -108,8 +109,14 @@ impl Tool for Grep {
 
         // A `path` naming a file would otherwise search nothing: `walk` lists its root, `list` on a
         // file errors, and zero entries come back, which the ladder reports as "matched nothing"
-        // about a file that is there. Scoping to one file is an obvious ask, so it is done.
-        if ctx.backend.stat(&scope).is_none() && scope != "." {
+        // about a file that is there. The stat that says so seeds the listing below, and the
+        // `scope != "."` test comes first: a round trip to learn the root exists is one to skip.
+        let at = if scope == "." {
+            None
+        } else {
+            ctx.backend.stat(&scope)
+        };
+        if scope != "." && at.is_none() {
             let (dir, entries) = super::nearest_listing(ctx.backend, &scope);
             return Invocation::failed(
                 format!("no directory at `{scope}`"),
@@ -165,10 +172,21 @@ impl Tool for Grep {
         let mut files_scanned = 0usize;
         let mut unopened: Option<String> = None;
         let mut parseable: Vec<&'static str> = Vec::new();
+        // One listing per scope, not one per rung: the ladder has four rungs and three of them can
+        // share a scope, and a walk is a round trip over every directory in it. A scope that named
+        // a file starts from the stat above, which is the whole of its listing.
+        let mut walked = match at {
+            Some(entry) if !entry.is_dir => Listings {
+                scope: Some(scope.clone()),
+                entries: vec![entry],
+            },
+            _ => Listings::default(),
+        };
 
         for attempt in &ladder {
             let scan = search(
                 ctx,
+                &mut walked,
                 &attempt.pattern,
                 &attempt.scope,
                 file_glob,
@@ -176,6 +194,16 @@ impl Tool for Grep {
                 context,
             );
             files_scanned = files_scanned.max(scan.scanned);
+            // A scan that stopped on its bound or on a dying channel ends the ladder: every rung
+            // below would pay the same round trips to learn the same nothing.
+            if let Some(stop) = &scan.stop {
+                mark_shown(ctx, &scan.hits);
+                let mut inv = stopped(&scan, stop, &attempt.scope, ctx.call_bound());
+                for t in &tried {
+                    inv = inv.with_note(t.clone());
+                }
+                return inv;
+            }
             if attempt.scope == scope {
                 unopened = unopened_note(scan.skipped_large, scan.unreached);
             }
@@ -406,35 +434,57 @@ struct Scan {
     /// because it is the only place that knows which files were really read: a suggestion to use
     /// `outline` is only honest if it would have worked.
     languages: Vec<&'static str>,
+    /// Candidates the walk offered, read or not: the second half of the denominator a stop needs.
+    candidates: usize,
+    /// Set when the scan stopped before the tree ran out. What it found is then part of an
+    /// answer and never the whole of one.
+    stop: Option<Stop>,
+}
+
+/// The listings one call has walked, by scope. A rung that searches the same scope as the rung
+/// above it reuses the walk: a walk is a round trip over every directory, and the ladder has four.
+#[derive(Default)]
+struct Listings {
+    scope: Option<String>,
+    entries: Vec<DirEntry>,
+}
+
+impl Listings {
+    /// The entries under `scope`, walked once. A `scope` naming a file is the file itself, and the
+    /// stat that says so is asked only when the walk came back empty: over a channel every call is
+    /// a round trip, and the common case is a directory.
+    fn of(&mut self, ctx: &InvokeCtx<'_>, scope: &str) -> &[DirEntry] {
+        if self.scope.as_deref() != Some(scope) {
+            let mut entries = walk(
+                ctx.backend,
+                scope,
+                ctx.limits.max_walk_entries,
+                &default_skip,
+            )
+            .0;
+            if entries.is_empty()
+                && let Some(e) = ctx.backend.stat(scope)
+                && !e.is_dir
+            {
+                entries = vec![e];
+            }
+            self.scope = Some(scope.to_string());
+            self.entries = entries;
+        }
+        &self.entries
+    }
 }
 
 fn search(
     ctx: &mut InvokeCtx<'_>,
+    walked: &mut Listings,
     pattern: &Pattern,
     scope: &str,
     file_glob: Option<&str>,
     max: usize,
     context: usize,
 ) -> Scan {
-    // `scope` may name a single file; `walk` would list it, fail, and return
-    // nothing. See the `single_file` note above.
-    let one: Vec<DirEntry>;
-    let entries: &[DirEntry] = match ctx.backend.stat(scope) {
-        Some(e) if !e.is_dir => {
-            one = vec![e];
-            &one
-        }
-        _ => {
-            let (walked, _) = walk(
-                ctx.backend,
-                scope,
-                ctx.limits.max_walk_entries,
-                &default_skip,
-            );
-            one = walked;
-            &one
-        }
-    };
+    let entries = walked.of(ctx, scope);
     let files: Vec<&DirEntry> = entries
         .iter()
         .filter(|e| !e.is_dir)
@@ -447,6 +497,10 @@ fn search(
     let mut unreached = 0usize;
     let mut read_bytes = 0u64;
     let mut languages: Vec<&'static str> = Vec::new();
+    let candidates = files.len();
+    // The page's own bounds, and the two the substrate can spend for us: a failed page is retried
+    // one file at a time only so far, and the call's wall clock ends the scan either way.
+    let mut reader = Reader::new();
     // A page at a time, not a file at a time. The page is chosen by the same tests the one-at-a-time
     // loop applied (the size ceiling, then the byte budget), so the tallies and the hit list are
     // unchanged, and a backend whose `read` is a round trip is asked once per page.
@@ -485,13 +539,9 @@ fn search(
             break;
         }
         let paths: Vec<&str> = page.iter().map(|k| files[*k].path.as_str()).collect();
-        // One call for the page where the backend can do it. A call that FAILS is not N
-        // unreadable files: it says nothing about any path, so the page is retried one file at a
-        // time rather than losing every match in it.
-        let got = match ctx.backend.read_many(&paths) {
-            Ok(v) if v.len() == paths.len() => v,
-            _ => paths.iter().map(|p| ctx.backend.read(p)).collect(),
-        };
+        // One call for the page where the backend can do it, and a BOUNDED retry when the page's
+        // own call failed: a channel that answers nothing in ten seconds is not a slow channel.
+        let got = reader.page(ctx, &paths);
         for (slot, bytes) in page.iter().zip(got) {
             let e = files[*slot];
             let Ok(bytes) = bytes else {
@@ -545,8 +595,15 @@ fn search(
                     skipped_large,
                     unreached,
                     languages,
+                    candidates,
+                    stop: None,
                 };
             }
+        }
+        if reader.stop().is_some() {
+            // What was never reached is the stop's own sentence: `unreached` means the byte
+            // budget, and saying "stopped after reading 512 MiB" about a dying channel is a lie.
+            break;
         }
     }
     Scan {
@@ -556,6 +613,38 @@ fn search(
         skipped_large,
         unreached,
         languages,
+        candidates,
+        stop: reader.stop().cloned(),
+    }
+}
+
+/// What a scan that stopped on its bound or a dying channel returns: every hit it did find, the
+/// sentence that says what stopped it, and what to do instead. Never silence, and never a miss -
+/// the files it never opened are where the answer might be.
+fn stopped(scan: &Scan, stop: &Stop, scope: &str, bound: std::time::Duration) -> Invocation {
+    let said = stop.sentence(scan.scanned, scan.candidates);
+    let mut body = if scan.hits.is_empty() {
+        format!(
+            "no match(es) among the {} file(s) opened under `{scope}`.\n",
+            scan.scanned
+        )
+    } else {
+        render_hits(&scan.hits, scope)
+    };
+    body.push_str(&format!("\nTHE SEARCH DID NOT FINISH. {said}.\n"));
+    body.push_str(
+        "What is above is real; what is missing was never looked at, so a miss here says \
+         nothing about the rest of the tree. Narrow `path` (one directory), add `glob`, or \
+         search for a rarer term, and the smaller tree finishes.",
+    );
+    match stop {
+        Stop::Time => Invocation::timed_out(body).with_note(format!(
+            "this call was cancelled at its wall-clock bound ({bound:?}) rather than left to hold \
+             the turn; ask again on a narrower scope."
+        )),
+        Stop::Channel(why) => {
+            Invocation::failed(format!("the search could not read its tree: {why}"), body)
+        }
     }
 }
 

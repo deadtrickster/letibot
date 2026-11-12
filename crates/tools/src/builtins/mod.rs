@@ -26,6 +26,9 @@ pub mod merge_gate;
 pub mod monitor;
 pub mod notes;
 pub mod outline;
+/// Reading a search's candidate files: the one-call page and its bounded fallback, shared by
+/// `grep` and `outline`.
+pub mod paging;
 pub mod pattern;
 pub mod pkill;
 pub mod plugin;

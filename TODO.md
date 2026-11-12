@@ -607,7 +607,7 @@ Fix: closing a placed session brings its VM down (the copy-out the operator reli
 
 ## R194 - A tool call can hang a turn for hours
 
-**Status:** filed, 2026-11-12.
+**Status:** built, 2026-11-12. left: the bound is a fact a tool reads (`Limits::call_timeout`, 180 s) and not a thread the runtime can kill, because a call holds the session's own sink and backend by reference; a backend call already in flight is bounded only by the substrate's own timeout (120 s in a VM). The cause was round trips: a failed page was retried one file at a time, each `firecode in` in the guest cost about 10 s, and a 1 500-file tree was 3 053 of them.
 
 The first L3 package's turn sat on one `grep` call (pattern `esc_taps`, path `crates/tui/src`, inside a firecode VM) from 11:30 to 14:40 with no result and no timeout; status said `waiting_on: turn, calls`. Nothing told the operator or the bridge. Fix: every builtin tool call has a wall-clock bound (search tools a few minutes), and a call past it is cancelled and returned as a failed result that says so, so the model can narrow and retry. Done when: a test with a search tool stubbed to block returns a timed-out result within the bound and the turn goes on.
 

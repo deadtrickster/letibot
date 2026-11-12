@@ -183,6 +183,12 @@ pub struct Limits {
     /// rest. A clipped line is named in the notes, because a model that cannot
     /// see a boundary will assume there is none.
     pub max_read_line_chars: usize,
+    /// The wall clock one call may spend before it stops and says so (R194). Enforced by the tools
+    /// that walk and read in loops, through [`InvokeCtx::out_of_time`]: the bound travels as a fact
+    /// rather than as a thread to kill, because a call borrows the session's own sink and backend.
+    /// `bash` keeps its own deadlines, and a tool that waits on a person or a job is bounded by
+    /// what it waits on.
+    pub call_timeout: std::time::Duration,
 }
 
 impl Default for Limits {
@@ -194,6 +200,7 @@ impl Default for Limits {
             max_read_lines: 200,
             max_read_bytes: 32 * 1024,
             max_read_line_chars: 2000,
+            call_timeout: std::time::Duration::from_secs(180),
         }
     }
 }
@@ -389,9 +396,30 @@ pub struct InvokeCtx<'a> {
     /// What this session's own commands may see, so a spawn starts from it and the operator can be
     /// asked for anything beyond. `None` in a runtime with no daemon behind it.
     pub perimeter: Option<&'a crate::exec::perimeter::Perimeter>,
+    /// When this call started, so [`InvokeCtx::out_of_time`] can answer. Set by the runtime and
+    /// never by a tool: a tool that could move its own start would have no bound at all.
+    started: std::time::Instant,
 }
 
 impl InvokeCtx<'_> {
+    /// How long this call has been running: what a long tool reports when it gives up, so the
+    /// answer names the time it spent rather than leaving the model to guess.
+    pub fn elapsed(&self) -> std::time::Duration {
+        self.started.elapsed()
+    }
+
+    /// Has this call spent the wall clock one call may spend ([`Limits::call_timeout`])? The
+    /// question a tool that walks or reads in a loop asks between iterations: past it the call
+    /// stops and says what it got through, instead of holding the turn for hours (R194).
+    pub fn out_of_time(&self) -> bool {
+        self.elapsed() >= self.limits.call_timeout
+    }
+
+    /// The bound this call is held to, for the sentence a timed-out result says.
+    pub fn call_bound(&self) -> std::time::Duration {
+        self.limits.call_timeout
+    }
+
     /// Say that this call wrote these bytes here, recorded at the write. Called after the
     /// backend accepted it, so a refused write records nothing. A remote placement records
     /// nothing: the bytes landed on another machine, and its daemon reads that layer.
@@ -2185,6 +2213,7 @@ impl ToolRuntime {
                 provenance: self.provenance.as_deref(),
                 recall: self.recall.as_deref(),
                 perimeter: self.perimeter.as_deref(),
+                started: std::time::Instant::now(),
             };
             tool.invoke(&mut ctx, &args)
         };

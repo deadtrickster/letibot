@@ -14,6 +14,7 @@ use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
 use super::grep::{READ_PAGE_BYTES, READ_PAGE_FILES};
+use super::paging::{Reader, Stop};
 use super::text_of;
 
 pub struct OutlineTool;
@@ -194,6 +195,8 @@ impl OutlineTool {
         let mut shown = 0usize;
         let mut capped = false;
         let mut all_kinds: Vec<&'static str> = Vec::new();
+        // The page's retry is bounded and the call has a wall clock: see [`super::paging`].
+        let mut reader = Reader::new();
 
         // A page at a time, not a file at a time: over firecode one `read` is one `firecode in`
         // (~0.5 s), so a tree-wide outline was hundreds of round trips with no result until the last.
@@ -229,12 +232,10 @@ impl OutlineTool {
                 break;
             }
             let paths: Vec<&str> = page.iter().map(|(k, _)| files[*k].path.as_str()).collect();
-            // One call for the page where the backend can do it, and one file at a time
-            // for a page whose batch call failed - a failed page loses no definition.
-            let got = match ctx.backend.read_many(&paths) {
-                Ok(v) if v.len() == paths.len() => v,
-                _ => paths.iter().map(|p| ctx.backend.read(p)).collect(),
-            };
+            // One call for the page where the backend can do it, and a bounded retry when that
+            // call fails: a page whose batch call failed loses no definition, but it may not cost
+            // one round trip per file to prove that.
+            let got = reader.page(ctx, &paths);
             for ((slot, lang), bytes) in page.iter().zip(got) {
                 let e = files[*slot];
                 let Ok(bytes) = bytes else {
@@ -274,6 +275,15 @@ impl OutlineTool {
                 body.push('\n');
                 capped |= cut;
             }
+            if reader.stop().is_some() {
+                break;
+            }
+        }
+
+        // A stop outranks every other ending: what it parsed is part of an answer, and an outline
+        // over a tree whose reads died is not the outline of that tree.
+        if let Some(stop) = reader.stop() {
+            return stopped(stop, &body, parsed, files.len(), root);
         }
 
         // A denominator of zero is a failed scope, never an answer about content.
@@ -364,6 +374,31 @@ impl OutlineTool {
             ));
         }
         inv
+    }
+}
+
+/// What an outline that stopped on its bound or a dying channel returns: the rows it did parse,
+/// and, in one sentence, that they are not the whole tree. The numbers are both denominators, so
+/// nobody reads a partial outline as the outline of that path.
+fn stopped(stop: &Stop, body: &str, parsed: usize, files: usize, root: &str) -> Invocation {
+    let said = stop.sentence(parsed, files);
+    let head = if body.trim().is_empty() {
+        format!("no definition was parsed under `{root}` before the call stopped.\n")
+    } else {
+        format!("{parsed} parsed file(s) under `{root}`, not all of them:\n\n{body}")
+    };
+    let payload = format!(
+        "{head}\nTHE OUTLINE DID NOT FINISH. {said}.\n\nNarrow `path` to one directory, or \
+         outline a single file, and it finishes."
+    );
+    match stop {
+        Stop::Time => Invocation::timed_out(payload).with_note(
+            "this call was cancelled at its wall-clock bound rather than left to hold the turn.",
+        ),
+        Stop::Channel(why) => Invocation::failed(
+            format!("the outline could not read its tree: {why}"),
+            payload,
+        ),
     }
 }
 
