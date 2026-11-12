@@ -357,6 +357,133 @@ thread_local! {
     static LAST: std::cell::Cell<Option<MemoryUse>> = const { std::cell::Cell::new(None) };
 }
 
+/// What a scope holds RIGHT NOW, read from the cgroup: the answer no `ps` can give a shell in
+/// another PID namespace, and the reason a job whose pid its own seat cannot see is still shown to
+/// be alive with its memory. Every field is the kernel's; a file that is not there is `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ScopeUse {
+    /// `cgroup.events`' `populated`: anything in the subtree, the race-free liveness test.
+    pub populated: bool,
+    /// Processes now, from `cgroup.procs` and every directory under it.
+    pub procs: u64,
+    /// `memory.current`.
+    pub memory_current: Option<u64>,
+    /// `memory.peak`.
+    pub memory_peak: Option<u64>,
+    /// `memory.max`; `None` is the word `max`, which is an uncapped scope and not a missing file.
+    pub memory_max: Option<u64>,
+    /// `memory.events`' `oom`: times the scope hit its cap (and something survived it).
+    pub oom: u64,
+    /// `memory.events`' `oom_kill`: processes the kernel killed at the cap.
+    pub oom_kills: u64,
+    /// `cpu.stat`'s `usage_usec`.
+    pub cpu_usec: Option<u64>,
+}
+
+impl ScopeUse {
+    /// The one clause every listing and plan row carries: `75 processes, 17.0G now of a 32.0G cap,
+    /// peak 30.1G, 591 OOM kills`. The count first because it is the fact a pid cannot give.
+    pub fn clause(&self) -> String {
+        let mut parts = vec![match self.procs {
+            0 => "no processes".to_string(),
+            1 => "1 process".to_string(),
+            n => format!("{n} processes"),
+        }];
+        if let Some(now) = self.memory_current {
+            parts.push(match self.memory_max {
+                Some(cap) => format!("{} now of a {} cap", human_bytes(now), human_bytes(cap)),
+                None => format!("{} now, uncapped", human_bytes(now)),
+            });
+        }
+        if let Some(peak) = self.memory_peak {
+            parts.push(format!("peak {}", human_bytes(peak)));
+        }
+        if self.oom_kills > 0 {
+            parts.push(format!("{} OOM kills", self.oom_kills));
+        } else if self.oom > 0 {
+            parts.push(format!("{} OOM events", self.oom));
+        }
+        parts.join(", ")
+    }
+
+    /// Is anything in it? `populated` is the kernel's own answer, so this never races a fork.
+    pub fn alive(&self) -> bool {
+        self.populated || self.procs > 0
+    }
+}
+
+/// [`ScopeUse`] for one cgroup directory, or `None` when the directory is not there at all - a
+/// scope already removed, or a host with no cgroup v2. A directory with no memory controller still
+/// answers its process count and `populated`, which is why the files are read one by one.
+pub fn use_at(dir: &Path) -> Option<ScopeUse> {
+    let events = std::fs::read_to_string(dir.join("cgroup.events")).ok()?;
+    let populated = events
+        .lines()
+        .find_map(|l| l.strip_prefix("populated "))
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false);
+    let mut procs = 0u64;
+    count_members(dir, &mut procs);
+    let read = |name: &str| -> Option<u64> {
+        std::fs::read_to_string(dir.join(name))
+            .ok()?
+            .trim()
+            .parse::<u64>()
+            .ok()
+    };
+    let memory = std::fs::read_to_string(dir.join("memory.events")).unwrap_or_default();
+    let event = |name: &str| -> u64 {
+        memory
+            .lines()
+            .find_map(|l| l.strip_prefix(name))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0)
+    };
+    Some(ScopeUse {
+        populated,
+        procs,
+        memory_current: read("memory.current"),
+        memory_peak: read("memory.peak"),
+        // `max` is uncapped, and `.parse` failing on that word is the answer - not a missing file.
+        memory_max: read("memory.max"),
+        oom: event("oom "),
+        oom_kills: event("oom_kill "),
+        cpu_usec: std::fs::read_to_string(dir.join("cpu.stat"))
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("usage_usec "))
+                    .and_then(|v| v.trim().parse().ok())
+            }),
+    })
+}
+
+/// Count the processes in one cgroup directory and every directory under it.
+fn count_members(dir: &Path, out: &mut u64) {
+    if let Ok(s) = std::fs::read_to_string(dir.join("cgroup.procs")) {
+        *out += s.lines().filter(|l| !l.trim().is_empty()).count() as u64;
+    }
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                count_members(&e.path(), out);
+            }
+        }
+    }
+}
+
+/// A span as a listing writes it: `900ms`, `12s`, `4m`, `2h03m`, `3d4h`.
+pub fn human_millis(ms: u64) -> String {
+    let secs = ms / 1000;
+    match secs {
+        0 => format!("{ms}ms"),
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h{:02}m", s / 3600, (s % 3600) / 60),
+        s => format!("{}d{}h", s / 86_400, (s % 86_400) / 3600),
+    }
+}
+
 /// A command's memory, left for whoever ran the tool call on this thread to read. A side channel
 /// rather than a field on `ToolResult`, which has no other use for it: `bash` runs its foreground
 /// wait on the thread that invoked it, so the invoker takes this the moment the call returns.

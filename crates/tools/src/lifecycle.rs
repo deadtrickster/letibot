@@ -1,0 +1,784 @@
+//! Owners, holdings and the read-only plan (`docs/lifecycle.md`, package G1).
+//!
+//! Ownership is proved by a stamp on the resource itself - a cgroup directory, a run file under
+//! firecode's `runs/`, an `owner.json` in the owner root - and the store's rows are the index and
+//! the journal over those stamps, never the proof. So every fact here is read from the filesystem
+//! and the kernel: a discovery pass re-derives what an owner holds with no daemon, no session and
+//! no `ps`. That last part is why a held resource's size and liveness come from its cgroup: a seat
+//! in a sandbox cannot see host pids at all.
+//!
+//! Nothing here reaps. `plan` judges, and G2, G3 and G4 are the hands that act on the verdict.
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
+use letibot_tokencore::store::{
+    HoldingClass, HoldingRow, HoldingState, OwnerKind, OwnerRow, Result as StoreResult, Store,
+};
+
+use crate::exec::scope::{self, ScopeUse};
+
+mod plan;
+#[cfg(test)]
+mod tests;
+pub use plan::{
+    HoldingView, LANDED_GRACE_MS, OwnerView, Plan, Stranger, UNLANDED_GRACE_MS, Verdict, judge,
+    plan, stamp_of,
+};
+/// The file an owner root carries: the owner id, this box, the kind and the lease. It is what a
+/// reaper with no store reads, and the one thing that tells letibot's root from a directory that
+/// merely sits beside it.
+pub const OWNER_JSON: &str = "owner.json";
+
+/// What an owner root holds, and the class each directory is (`docs/lifecycle.md` d.4). A directory
+/// inside the root is the owner's because of where it is; the file names the owner.
+pub const ROOT_DIRS: [(&str, &str, HoldingClass); 5] = [
+    ("wt", "worktree", HoldingClass::Work),
+    ("target", "target", HoldingClass::Cache),
+    ("tmp", "tmp", HoldingClass::Cache),
+    ("home", "home", HoldingClass::Cache),
+    ("out", "copy-out", HoldingClass::Work),
+];
+
+/// A kind word for a holding, as the rows carry it.
+pub const SCOPE: &str = "scope";
+pub const VM: &str = "vm";
+pub const DAEMON: &str = "daemon";
+/// The copy a VM was booted on, under letibot's firecode cache.
+pub const COPY: &str = "copy";
+/// What `firecode down` delivered beside it - the only copy of that work until it is fetched.
+pub const COPY_OUT: &str = "copy-out";
+/// A remote home or build directory, under that host's `.letibot-home`.
+pub const REMOTE_HOME: &str = "home";
+
+/// An owner root's own record, as `owner.json` holds it. Deliberately small: a reaper that cannot
+/// open the store must still be able to read an owner's id, its box and when its lease ran out.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Stamp {
+    pub owner: String,
+    /// The home box this owner belongs to, so a root on another machine is not read as a local one.
+    pub box_id: String,
+    /// `session`, `package`, `subagent`, `gate`, `review`.
+    pub kind: String,
+    #[serde(default)]
+    pub repo: Option<String>,
+    pub created_ms: i64,
+    /// When the owner last did anything, as this box's clock had it.
+    pub lease_ms: i64,
+}
+
+impl Stamp {
+    pub fn of(owner: &OwnerRow, box_id: &str) -> Stamp {
+        Stamp {
+            owner: owner.id.clone(),
+            box_id: box_id.to_string(),
+            kind: owner.kind.word().to_string(),
+            repo: owner.repo.clone(),
+            created_ms: owner.created_ms,
+            lease_ms: owner.lease_ms,
+        }
+    }
+}
+
+/// Everything a discovery pass reads, so a test can point it at a fixture instead of the box.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Places {
+    /// Where owner roots live: `<gc_root>/<box>/<owner>/…`.
+    pub gc_root: PathBuf,
+    pub box_id: String,
+    /// The directory this box's store is in - what a remote or a journal is found beside.
+    pub data_dir: PathBuf,
+    /// `$XDG_RUNTIME_DIR/letibot`: a folder's daemon record is `<key>.json` in it.
+    pub rundir: PathBuf,
+    /// firecode's `runs/`, when this box has a firecode at all.
+    pub firecode_runs: Option<PathBuf>,
+    /// `~/.cache/letibot/firecode`: the booted copies and the copy-outs.
+    pub firecode_cache: Option<PathBuf>,
+    /// `/proc`, or a fixture's.
+    pub proc_root: PathBuf,
+    /// `/sys/fs/cgroup`, or a fixture's.
+    pub cgroup_fs: PathBuf,
+}
+
+impl Places {
+    /// This box's own places, as every caller computes them. `$LETIBOT_GC_ROOT` moves the owner
+    /// roots; a test points the rest at a fixture through [`Places`] itself.
+    pub fn here() -> Places {
+        let data_dir = data_dir();
+        let gc_root = std::env::var_os("LETIBOT_GC_ROOT")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .unwrap_or_else(|| data_dir.join("gc"));
+        let runs = crate::firecode::firecode_available()
+            .ok()
+            .and_then(|bin| crate::firecode::held::runs_dir(&bin));
+        let cache = crate::firecode::FirecodeBackend::project_of("x")
+            .parent()
+            .map(Path::to_path_buf);
+        Places {
+            gc_root,
+            box_id: box_id(),
+            data_dir,
+            rundir: rundir(),
+            firecode_runs: runs,
+            firecode_cache: cache,
+            proc_root: PathBuf::from("/proc"),
+            cgroup_fs: PathBuf::from("/sys/fs/cgroup"),
+        }
+    }
+
+    /// The root of one owner's things: `<gc_root>/<box>/<owner>/`.
+    pub fn owner_root(&self, owner: &str) -> PathBuf {
+        self.gc_root.join(&self.box_id).join(owner)
+    }
+
+    /// The box directory every owner root sits under.
+    pub fn box_dir(&self) -> PathBuf {
+        self.gc_root.join(&self.box_id)
+    }
+
+    /// The stamp on one owner root, or `None` for a directory that is not letibot's - a missing
+    /// file and an unreadable one are the same answer, and both are *look, do not act*.
+    pub fn stamp_at(&self, root: &Path) -> Option<Stamp> {
+        let text = std::fs::read_to_string(root.join(OWNER_JSON)).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+}
+
+/// `$XDG_DATA_HOME/letibot`, else `~/.local/share/letibot`: the directory the store lives in.
+pub fn data_dir() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
+        .map(|d| d.join("letibot"))
+        .unwrap_or_else(|| PathBuf::from(".letibot-data"))
+}
+
+/// `$XDG_RUNTIME_DIR/letibot`, else `/run/user/<uid>/letibot`, else the temp directory - the same
+/// rule the launcher and the bridge resolve, so a plan run by hand finds the daemon it is about.
+pub fn rundir() -> PathBuf {
+    let base = match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(d) if !d.is_empty() => PathBuf::from(d),
+        _ => {
+            let uid = unsafe { libc::getuid() };
+            let run = PathBuf::from(format!("/run/user/{uid}"));
+            if run.is_dir() {
+                run
+            } else {
+                std::env::temp_dir()
+            }
+        }
+    };
+    base.join("letibot")
+}
+
+/// This box's name: what a stamp says the owner belongs to, so a directory carried to another
+/// machine is not read as that machine's.
+pub fn box_id() -> String {
+    for path in ["/proc/sys/kernel/hostname", "/etc/hostname"] {
+        if let Ok(name) = std::fs::read_to_string(path) {
+            let name = name.trim();
+            if !name.is_empty() {
+                return name.to_string();
+            }
+        }
+    }
+    std::env::var("HOSTNAME")
+        .ok()
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "this-box".into())
+}
+
+/// One resource a discovery pass found on the filesystem, with the stamp that proves whose it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    pub owner: String,
+    pub kind: String,
+    pub host: Option<String>,
+    pub handle: String,
+    pub class: HoldingClass,
+    pub stamp: String,
+    pub bytes: Option<u64>,
+    /// What the resource itself says about itself, when it says anything - a live VM's pid, a
+    /// dead one's absence.
+    pub why: Option<String>,
+    /// The cgroup facts, when the resource is a cgroup: the answer no `ps` in another PID
+    /// namespace can give.
+    pub use_: Option<ScopeUse>,
+}
+
+impl Found {
+    pub fn row(&self, now_ms: i64) -> HoldingRow {
+        HoldingRow {
+            owner_id: self.owner.clone(),
+            kind: self.kind.clone(),
+            host: self.host.clone(),
+            handle: self.handle.clone(),
+            class: self.class,
+            state: HoldingState::Held,
+            stamp: self.stamp.clone(),
+            bytes: self.bytes,
+            archive: None,
+            why: self.why.clone(),
+            created_ms: now_ms,
+            checked_ms: Some(now_ms),
+            attempts: 0,
+        }
+    }
+}
+
+// ---------------------------------------------------------------- what an owner creates
+
+/// How long a package or a subagent may sit with no turn, no job and no input before the reaper
+/// closes it (`docs/lifecycle.md` d.3). A session an operator holds is never closed for idleness.
+pub const PACKAGE_IDLE_TTL_MS: i64 = 30 * 60 * 1000;
+/// A gate run's own: its work is done the moment its landing ends, so it is closed sooner.
+pub const GATE_IDLE_TTL_MS: i64 = 10 * 60 * 1000;
+/// The hard bound on a package, whatever it is doing - the backstop a missing call bound needs.
+pub const PACKAGE_HARD_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+/// And a gate run's.
+pub const GATE_HARD_TTL_MS: i64 = 6 * 60 * 60 * 1000;
+
+/// The owner row an open writes: a new one, or the row this id already has with the operator's
+/// hold, the landing and the creation kept and its state `live` again - which is what a resume of
+/// a closed owner is (`docs/lifecycle.md` d.3). The TTLs come from the kind, so a session that
+/// becomes a package cannot keep a session's never.
+pub fn owner_for_open(
+    store: &Store,
+    id: &str,
+    kind: OwnerKind,
+    repo: Option<String>,
+    now_ms: i64,
+) -> StoreResult<OwnerRow> {
+    let existing = store.owner(id)?;
+    let (idle_ttl_ms, hard_ttl_ms) = match kind {
+        OwnerKind::Package | OwnerKind::Subagent | OwnerKind::Review => {
+            (Some(PACKAGE_IDLE_TTL_MS), Some(PACKAGE_HARD_TTL_MS))
+        }
+        OwnerKind::Gate => (Some(GATE_IDLE_TTL_MS), Some(GATE_HARD_TTL_MS)),
+        OwnerKind::Session => (None, None),
+    };
+    let mut row = OwnerRow::live(id, kind, repo, now_ms);
+    row.idle_ttl_ms = idle_ttl_ms;
+    row.hard_ttl_ms = hard_ttl_ms;
+    if let Some(was) = existing {
+        row.created_ms = was.created_ms;
+        row.held_until_ms = was.held_until_ms;
+        row.landed_sha = was.landed_sha;
+        row.parent_id = was.parent_id;
+    }
+    Ok(row)
+}
+
+/// Write an owner's row and its root, then the holdings the filesystem already proves. The row
+/// goes first and the root second: a row with no resource is harmless, a resource with no row is
+/// the leak this whole package exists to stop.
+pub fn register(store: &Store, places: &Places, owner: &OwnerRow) -> StoreResult<()> {
+    store.put_owner(owner)?;
+    let root = places.owner_root(&owner.id);
+    std::fs::create_dir_all(&root).map_err(|e| {
+        letibot_tokencore::store::StoreError::Refused(format!(
+            "could not make the owner root {} ({e}): its directories are the stamp every pass \
+             reads",
+            root.display()
+        ))
+    })?;
+    let stamp = Stamp::of(owner, &places.box_id);
+    let text = serde_json::to_string_pretty(&stamp)?;
+    std::fs::write(root.join(OWNER_JSON), text).map_err(|e| {
+        letibot_tokencore::store::StoreError::Refused(format!(
+            "could not write {}: {e}",
+            root.join(OWNER_JSON).display()
+        ))
+    })?;
+    // And what the filesystem already proves, written down beside it: `refresh` is the same walk a
+    // plan does, so the index starts out true instead of empty.
+    refresh(store, owner, places)?;
+    Ok(())
+}
+
+/// One discovery pass for one owner, written down: every holding the filesystem proves is upserted
+/// (so a row deleted by hand comes back), and every row the walk no longer finds is `gone`. This is
+/// the pass a daemon runs; `letibot gc` runs [`discover`] and writes nothing.
+pub fn refresh(store: &Store, owner: &OwnerRow, places: &Places) -> StoreResult<Vec<HoldingRow>> {
+    let now = now_ms();
+    let found = discover(owner, places);
+    let mut written = Vec::with_capacity(found.len());
+    for f in &found {
+        let row = f.row(now);
+        store.put_holding(&row)?;
+        written.push(row);
+    }
+    for row in store.holdings_of(&owner.id)? {
+        let still = found
+            .iter()
+            .any(|f| f.kind == row.kind && f.handle == row.handle && f.host == row.host);
+        if !still && row.state.present() {
+            store.put_holding(&HoldingRow {
+                state: HoldingState::Gone,
+                why: Some("the pass found no such resource on this box".into()),
+                checked_ms: Some(now),
+                ..row
+            })?;
+        }
+    }
+    Ok(written)
+}
+
+// ---------------------------------------------------------------- the discovery walk
+
+/// Every resource this box can still prove is this owner's, re-derived from the filesystem and the
+/// kernel alone - the owner row says what to look for, never which holdings exist.
+pub fn discover(owner: &OwnerRow, places: &Places) -> Vec<Found> {
+    let mut out = Vec::new();
+    out.extend(from_root(owner, places));
+    out.extend(from_daemon(owner, places));
+    out.extend(scopes_of(owner, places));
+    out.extend(from_firecode(owner, places));
+    out
+}
+
+/// One line saying what a cgroup's facts are, for a row's `why` or a listing.
+pub fn scope_clause(u: &ScopeUse) -> String {
+    u.clause()
+}
+
+/// `6.1 GiB`, `38.0 GiB`, `512 KiB`: the one spelling every plan line uses.
+pub fn human_bytes(n: u64) -> String {
+    scope::human_bytes(n)
+}
+
+/// `12m`, `1h02m`: a span as a person reads it.
+pub fn human_millis(ms: u64) -> String {
+    scope::human_millis(ms)
+}
+
+/// The owner root's own directories: each one a holding because of where it is, and the file beside
+/// them naming whose it is.
+fn from_root(owner: &OwnerRow, places: &Places) -> Vec<Found> {
+    let root = places.owner_root(&owner.id);
+    let Some(stamp) = places.stamp_at(&root) else {
+        return Vec::new();
+    };
+    if stamp.owner != owner.id || stamp.box_id != places.box_id {
+        // A root that names another owner or another box is not this owner's, whatever its path
+        // says: the file disagrees with the directory, and the file is the proof.
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for (dir, kind, class) in ROOT_DIRS {
+        let path = root.join(dir);
+        if !path.is_dir() {
+            continue;
+        }
+        let (bytes, complete) = size_of(&path);
+        out.push(Found {
+            owner: owner.id.clone(),
+            kind: kind.to_string(),
+            host: None,
+            handle: path.display().to_string(),
+            class,
+            stamp: format!("{} names this owner", root.join(OWNER_JSON).display()),
+            bytes,
+            why: (!complete).then(|| "its size was not measured whole (too big to walk)".into()),
+            use_: None,
+        });
+    }
+    out
+}
+
+/// The daemon that serves this owner: its record under the rundir, and the process the record
+/// names. A record whose workspace is not this owner's is another folder's daemon.
+fn from_daemon(owner: &OwnerRow, places: &Places) -> Vec<Found> {
+    let Some(repo) = owner.repo.as_deref() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&places.rundir) else {
+        return Vec::new();
+    };
+    let wanted = std::fs::canonicalize(repo).unwrap_or_else(|_| PathBuf::from(repo));
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        // A room or a forward is a record of its own kind and names a directory nobody works in.
+        if v.get("room").is_some() || v.get("forward").is_some() {
+            continue;
+        }
+        let Some(workspace) = v.get("workspace").and_then(|w| w.as_str()) else {
+            continue;
+        };
+        let here = std::fs::canonicalize(workspace).unwrap_or_else(|_| PathBuf::from(workspace));
+        if here != wanted {
+            continue;
+        }
+        let pid = v.get("pid").and_then(|p| p.as_u64());
+        let alive = pid.is_some_and(|p| crate::firecode::held::alive(&places.proc_root, p as u32));
+        let handle = match pid {
+            Some(p) => format!("pid:{p}"),
+            None => path.display().to_string(),
+        };
+        let socket = v
+            .get("socket")
+            .and_then(|s| s.as_str())
+            .unwrap_or_default()
+            .to_string();
+        out.push(Found {
+            owner: owner.id.clone(),
+            kind: DAEMON.to_string(),
+            host: None,
+            handle,
+            class: HoldingClass::Compute,
+            stamp: format!(
+                "{} and {}",
+                path.display(),
+                places.proc_root.join("pid").display()
+            ),
+            bytes: None,
+            why: Some(if alive {
+                format!("serving {} on {}", repo, socket)
+            } else {
+                format!(
+                    "the record is here and no process is at {}: its daemon is gone",
+                    pid.map(|p| p.to_string()).unwrap_or_default()
+                )
+            }),
+            use_: None,
+        });
+    }
+    out
+}
+
+/// The cgroup subtrees of this owner's daemon: `session.<id>` under a `letibot.<pid>.<n>` root,
+/// found from the daemon's own `/proc/<pid>/cgroup`. A scope is the only place a process's
+/// lifetime and its memory can be read without a pid list, which is the whole reason a plan uses it.
+fn scopes_of(owner: &OwnerRow, places: &Places) -> Vec<Found> {
+    let mut out = Vec::new();
+    for base in cgroup_bases(owner, places) {
+        let Ok(entries) = std::fs::read_dir(&base) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("letibot.") {
+                continue;
+            }
+            let scope = entry.path().join(format!("session.{}", owner.id));
+            let Some(use_) = scope::use_at(&scope) else {
+                continue;
+            };
+            out.push(Found {
+                owner: owner.id.clone(),
+                kind: SCOPE.to_string(),
+                host: None,
+                handle: scope.display().to_string(),
+                class: HoldingClass::Compute,
+                stamp: format!("the kernel's own directory, {}", scope.display()),
+                bytes: use_.memory_current,
+                why: Some(scope_clause(&use_)),
+                use_: Some(use_),
+            });
+        }
+    }
+    out
+}
+
+/// Where this owner's daemon may have put its cgroup trees: the daemon's own cgroup, and the leaf
+/// it steps into to get a memory delegation (`exec::scope::Cgroup2::probe`).
+fn cgroup_bases(owner: &OwnerRow, places: &Places) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for pid in daemon_pids(owner, places) {
+        let Ok(text) =
+            std::fs::read_to_string(places.proc_root.join(pid.to_string()).join("cgroup"))
+        else {
+            continue;
+        };
+        let Some(rel) = text.lines().find_map(|l| l.strip_prefix("0::")) else {
+            continue;
+        };
+        let base = places.cgroup_fs.join(rel.trim().trim_start_matches('/'));
+        out.push(base.clone());
+        out.push(base.join(crate::exec::scope::DAEMON_LEAF));
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The pids this owner's daemons are recorded at, from the rundir records.
+fn daemon_pids(owner: &OwnerRow, places: &Places) -> Vec<u32> {
+    let Some(repo) = owner.repo.as_deref() else {
+        return Vec::new();
+    };
+    let wanted = std::fs::canonicalize(repo).unwrap_or_else(|_| PathBuf::from(repo));
+    let Ok(entries) = std::fs::read_dir(&places.rundir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let Some(workspace) = v.get("workspace").and_then(|w| w.as_str()) else {
+            continue;
+        };
+        let here = std::fs::canonicalize(workspace).unwrap_or_else(|_| PathBuf::from(workspace));
+        if here != wanted {
+            continue;
+        }
+        if let Some(pid) = v.get("pid").and_then(|p| p.as_u64())
+            && pid > 0
+        {
+            out.push(pid as u32);
+        }
+    }
+    out
+}
+
+/// firecode's own records: the live run (its `owner` file, written at `up`), the copy it was booted
+/// on, and the copy-out beside it - the last being the only copy of that work until it is fetched.
+fn from_firecode(owner: &OwnerRow, places: &Places) -> Vec<Found> {
+    let mut out = Vec::new();
+    let live = places
+        .firecode_runs
+        .as_deref()
+        .map(|runs| crate::firecode::held::live_vms(runs, &places.proc_root))
+        .unwrap_or_default();
+    if let Some(runs) = &places.firecode_runs {
+        let owned = |run: &str| -> Option<String> {
+            std::fs::read_to_string(runs.join(run).join("owner"))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        };
+        // The live VMs first: their fires are the ones the plan reports a pid for.
+        for vm in &live {
+            if owned(&vm.run).as_deref() != Some(owner.id.as_str()) {
+                continue;
+            }
+            out.push(Found {
+                owner: owner.id.clone(),
+                kind: VM.to_string(),
+                host: None,
+                handle: vm.run.clone(),
+                class: HoldingClass::Compute,
+                stamp: format!(
+                    "{} names its owner",
+                    runs.join(&vm.run).join("owner").display()
+                ),
+                bytes: vm.cgroup.as_deref().and_then(|c| {
+                    std::fs::read_to_string(c.join("memory.current"))
+                        .ok()
+                        .and_then(|v| v.trim().parse().ok())
+                }),
+                why: Some(vm.line()),
+                use_: None,
+            });
+        }
+        // And a run whose owner file names it but whose firecracker is gone: a record, not a VM.
+        if let Ok(entries) = std::fs::read_dir(runs) {
+            for entry in entries.flatten() {
+                let run = entry.file_name().to_string_lossy().into_owned();
+                if owned(&run).as_deref() != Some(owner.id.as_str())
+                    || live.iter().any(|v| v.run == run)
+                {
+                    continue;
+                }
+                out.push(Found {
+                    owner: owner.id.clone(),
+                    kind: VM.to_string(),
+                    host: None,
+                    handle: run.clone(),
+                    class: HoldingClass::Record,
+                    stamp: format!("{} names its owner", runs.join(&run).join("owner").display()),
+                    bytes: size_of(&entry.path()).0,
+                    why: Some(
+                        "its owner file is here and no firecracker carries its id: the run is over, \
+                         its directory is a record"
+                            .into(),
+                    ),
+                    use_: None,
+                });
+            }
+        }
+    }
+    // The booted copy (a cache) and the copy-out beside it (work).
+    if let Some(cache) = &places.firecode_cache {
+        let copy = cache.join(&owner.id);
+        if copy.is_dir() {
+            let (bytes, complete) = size_of(&copy);
+            out.push(Found {
+                owner: owner.id.clone(),
+                kind: COPY.to_string(),
+                host: None,
+                handle: copy.display().to_string(),
+                class: HoldingClass::Cache,
+                stamp: format!("a copy named for its owner under {}", cache.display()),
+                bytes,
+                why: (!complete).then(|| "its size was not measured whole".into()),
+                use_: None,
+            });
+        }
+        let prefix = format!("{}-", owner.id);
+        if let Ok(entries) = std::fs::read_dir(cache) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !name.starts_with(&prefix) || !entry.path().is_dir() {
+                    continue;
+                }
+                let (bytes, complete) = size_of(&entry.path());
+                out.push(Found {
+                    owner: owner.id.clone(),
+                    kind: COPY_OUT.to_string(),
+                    host: None,
+                    handle: entry.path().display().to_string(),
+                    class: HoldingClass::Work,
+                    stamp: format!("a copy-out named for its owner under {}", cache.display()),
+                    bytes,
+                    why: (!complete).then(|| "its size was not measured whole".into()),
+                    use_: None,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// What sits in the places letibot writes and names no owner it knows: the "looks like ours" list.
+/// A pattern only ever produces a row here, never a reap (`docs/lifecycle.md` c.4).
+pub fn unowned(places: &Places, known: &BTreeSet<String>) -> Vec<Found> {
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(places.box_dir()) {
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if known.contains(&name) {
+                continue;
+            }
+            let stamp = places.stamp_at(&entry.path());
+            let (bytes, _) = size_of(&entry.path());
+            out.push(Found {
+                owner: stamp
+                    .as_ref()
+                    .map(|s| s.owner.clone())
+                    .unwrap_or_else(|| format!("unrecorded:{name}")),
+                kind: "root".to_string(),
+                host: None,
+                handle: entry.path().display().to_string(),
+                class: HoldingClass::Work,
+                stamp: match &stamp {
+                    Some(s) => format!(
+                        "{} names `{}`",
+                        entry.path().join(OWNER_JSON).display(),
+                        s.owner
+                    ),
+                    None => format!("no {} in it", OWNER_JSON),
+                },
+                bytes,
+                why: Some(match &stamp {
+                    Some(s) => format!(
+                        "it carries a stamp for `{}`, which this store does not know",
+                        s.owner
+                    ),
+                    None => "it looks like an owner root and nothing in it says whose".into(),
+                }),
+                use_: None,
+            });
+        }
+    }
+    if let Some(cache) = &places.firecode_cache
+        && let Ok(entries) = std::fs::read_dir(cache)
+    {
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if owner_of_cache_name(&name).is_some_and(|o| known.contains(&o)) {
+                continue;
+            }
+            // Only the two shapes letibot writes: `<owner>` and `<owner>-<stamp>`.
+            if owner_of_cache_name(&name).is_none() {
+                continue;
+            }
+            let (bytes, _) = size_of(&entry.path());
+            out.push(Found {
+                owner: format!("unrecorded:{name}"),
+                kind: COPY.to_string(),
+                host: None,
+                handle: entry.path().display().to_string(),
+                class: HoldingClass::Cache,
+                stamp: format!("named for an owner under {}", cache.display()),
+                bytes,
+                why: Some("its name says whose it is and this store has no such owner".into()),
+                use_: None,
+            });
+        }
+    }
+    out
+}
+
+/// The owner a firecode cache directory is named for: `<owner>` or `<owner>-<stamp>`. `None` for a
+/// name in neither shape, which is somebody else's directory and not a candidate at all.
+fn owner_of_cache_name(name: &str) -> Option<String> {
+    if name.starts_with("s-") {
+        // `s-<digits>` is an owner; `s-<digits>-<stamp>` is a copy-out for it.
+        let mut parts = name.split('-');
+        parts.next();
+        let digits = parts.next()?;
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        return Some(format!("s-{digits}"));
+    }
+    None
+}
+
+/// How big a path is, and whether the walk finished. A directory too big to walk inside the budget
+/// answers the size it reached and `false`, which every caller says rather than passing off as a
+/// measurement - on a box with two 38G targets, an honest partial number beats a hung plan.
+pub fn size_of(path: &Path) -> (Option<u64>, bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+    let mut total = 0u64;
+    let mut entries = 0usize;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            entries += 1;
+            if entries > 200_000 || std::time::Instant::now() > deadline {
+                return (Some(total), false);
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total += meta.len();
+            }
+        }
+    }
+    (Some(total), true)
+}
+
+/// This box's clock, as the store's rows are stamped.
+pub fn now_ms() -> i64 {
+    letibot_metrics::now_ms() as i64
+}

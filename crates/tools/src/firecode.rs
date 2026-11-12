@@ -413,6 +413,10 @@ pub struct FirecodeSpec {
     /// the session works in, so edits, worktrees beside a repository and commits land on the host
     /// as they are made. A VM already running with it mounted is joined, not booted again.
     pub mount_rw: bool,
+    /// The owner this VM belongs to: the session id, written into firecode's own run directory as
+    /// `owner` once the run exists. That file is the stamp a discovery pass reads, so a VM is
+    /// attributable with no store and no daemon (`docs/lifecycle.md` d.4).
+    pub owner: Option<String>,
 }
 
 impl FirecodeSpec {
@@ -443,6 +447,7 @@ impl FirecodeSpec {
             bin: None,
             verify: None,
             mount_rw: false,
+            owner: None,
             copy_max: std::env::var("LETIBOT_FIRECODE_COPY_MAX")
                 .ok()
                 .and_then(|v| v.trim().parse().ok())
@@ -605,6 +610,13 @@ impl FirecodeBackend {
         }
         unwind.vm = true;
         let run = run_id(&bin, &project).unwrap_or_default();
+        // The stamp: firecode's own run directory, named for the owner it was booted for. Written
+        // from here rather than by firecode, so it is there whatever version answered `up`.
+        if let Some(owner) = &spec.owner
+            && let Some(runs) = held::runs_dir(&bin)
+        {
+            let _ = std::fs::write(runs.join(&run).join("owner"), owner);
+        }
 
         let processes = if spec.exec {
             let confine = FirecodeConfinement::new(bin.clone(), project.clone());
