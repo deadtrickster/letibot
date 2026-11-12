@@ -830,6 +830,95 @@ fn a_step_is_told_how_many_jobs_its_cap_pays_for() {
     let _ = std::fs::remove_dir_all(&wt);
 }
 
+/// The test process's own core limit, as (soft, hard).
+fn core_limit() -> Option<(libc::rlim_t, libc::rlim_t)> {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `getrlimit` writes into this local and reads nothing else.
+    if unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut lim) } != 0 {
+        return None;
+    }
+    Some((lim.rlim_cur, lim.rlim_max))
+}
+
+/// This process's soft core limit raised to its hard one, so a child keeping it can be told from a
+/// child whose limit the gate zeroed. False when the box's hard limit is already zero.
+fn allow_cores() -> bool {
+    let Some((_, hard)) = core_limit() else {
+        return false;
+    };
+    if hard == 0 {
+        return false;
+    }
+    let want = libc::rlimit {
+        rlim_cur: hard,
+        rlim_max: hard,
+    };
+    // SAFETY: `setrlimit` with a value at the hard limit, which the kernel accepts.
+    unsafe { libc::setrlimit(libc::RLIMIT_CORE, &want) == 0 }
+}
+
+/// A step killed for the size of what it writes leaves no core dump, and neither does anything the
+/// step forks: the kill is the gate's own (`ulimit -f` in a test), and a dump from one wakes
+/// whatever crash reporter the box runs - 121k of them filled a user manager's unit table before
+/// this (TODO.md R191). The measurement is the limit a grandchild of the gate reports, with the box's
+/// own limit non-zero beside it, so a zero cannot be inherited from the box and read as the gate's.
+#[test]
+fn a_step_and_everything_it_forks_keep_no_core() {
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "a core limit (RLIMIT_CORE) above zero, so a step's zero is the gate's doing",
+        allow_cores(),
+    ) else {
+        return;
+    };
+    // The control: a shell this test starts itself keeps the limit the box has. It runs BEFORE the
+    // gate, because the gate's whole point is that its own children would have said zero.
+    let own = Command::new("sh")
+        .args(["-c", "ulimit -c"])
+        .output()
+        .expect("a shell to read the box's own limit");
+    let own = String::from_utf8_lossy(&own.stdout).trim().to_string();
+    assert_ne!(
+        own, "0",
+        "the box's hard limit is zero, so this test could not tell the gate's zero from the box's"
+    );
+
+    let wt = std::env::temp_dir().join(format!("letibot-gate-core-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&wt);
+    std::fs::create_dir_all(&wt).unwrap();
+    let stop = AtomicBool::new(false);
+    let alive = || true;
+    let ctl = GateControl {
+        deadline: Instant::now() + Duration::from_secs(60),
+        budget: Duration::from_secs(60),
+        stop: &stop,
+        alive: &alive,
+    };
+    // The row's own case, then `true` so the step's exit is its own and not the killed `dd`'s: the
+    // 8 MB write against a 1 KiB file limit ends `dd` with SIGXFSZ, and the step goes on.
+    let steps = vec![
+        "sh -c 'ulimit -c'".to_string(),
+        "sh -c 'ulimit -f 1; dd if=/dev/zero of=x bs=1k count=8 2>/dev/null; \
+         printf \"core %s\\n\" \"$(ulimit -c)\"; true'"
+            .to_string(),
+    ];
+    let run = run_with_memory(&wt, &steps, &ctl, Ask::Amount(Amount::Bytes(256 << 20)));
+    let said: Vec<String> = run.steps.iter().map(|s| s.output.clone()).collect();
+    assert_eq!(run.verdict, GateVerdict::Passed, "{run:#?}");
+    assert_eq!(
+        step_said(&run),
+        "0",
+        "a step is started with no core limit at all, whatever the box has ({own}): {said:?}"
+    );
+    assert!(
+        run.steps[1].output.contains("core 0"),
+        "and a process under the step keeps it, so the dd killed here dumps nothing: {said:?}"
+    );
+    let _ = std::fs::remove_dir_all(&wt);
+}
+
 /// A failing workspace run, as `cargo test --workspace --no-fail-fast` writes one: the failing
 /// target's block, then sixty other targets each reporting `running 0 tests`. The end of the stream
 /// is the other targets and cargo's one-line summary, which is all the row kept before this.

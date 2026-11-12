@@ -1030,6 +1030,9 @@ fn ended(code: i32, tail: String) -> StepEnd {
 /// The launcher - one file per step, so the step's own text needs no quoting: it is written
 /// into a file this box sends over the connection's stdin, never spliced into an argv. `( …
 /// )` is a subshell and not `{ … }`, which is 's measured trap
+///
+/// `ulimit -c 0` covers the step and everything it forks: a step the gate kills for size dumps
+/// no core (R191).
 pub fn launcher_script(
     step: &str,
     tree: &str,
@@ -1053,6 +1056,7 @@ pub fn launcher_script(
     format!(
         "#!/bin/bash\n\
          echo $$ > '{pid}'\n\
+         ulimit -c 0\n\
          cd '{tree}' || exit 97\n\
          export CARGO_TARGET_DIR='{target}'\n\
          ( {run} ) > '{out}' 2>&1\n\

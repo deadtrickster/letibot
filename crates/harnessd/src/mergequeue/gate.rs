@@ -1217,6 +1217,7 @@ fn run_step(
         None => cmd.arg("-c").arg(command),
     };
     env.apply(&mut cmd);
+    no_core_dumps(&mut cmd);
     let child = cmd
         .current_dir(worktree)
         .stdin(Stdio::null())
@@ -1299,6 +1300,27 @@ fn run_step(
         None => (StepMemory::Uncapped(unscoped.unwrap_or_default()), 0),
     };
     (end, memory, leftover)
+}
+
+/// Every process a step starts inherits a core limit of zero. A gate step killed for writing a
+/// file too big is the gate's own doing, and a core dump from one wakes a crash reporter that has
+/// nothing to report - on one box 121k of them filled a user manager's unit table (TODO.md R191).
+fn no_core_dumps(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: `setrlimit` is called between fork and exec, touches only this child's limits and
+    // allocates nothing; a failure is reported as the spawn's error rather than ignored.
+    unsafe {
+        cmd.pre_exec(|| {
+            let none = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            if libc::setrlimit(libc::RLIMIT_CORE, &none) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 }
 
 /// `SIGTERM` to the whole group, five seconds, then `SIGKILL` - and `cgroup.kill` on the step's

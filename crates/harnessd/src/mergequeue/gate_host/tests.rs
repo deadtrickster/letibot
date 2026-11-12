@@ -112,6 +112,12 @@ fn the_launcher_runs_the_step_in_a_subshell_with_the_hosts_own_cache() {
     // A step containing a quote of its own is written verbatim: nothing is spliced or escaped.
     let quoted = launcher_script("echo \"it's fine\"", "/t", "/c", "/p", "/o", "/e", false);
     assert!(quoted.contains("( echo \"it's fine\" )"), "{quoted}");
+    // And the step keeps no core dump, whatever the host's own limit is: a step the gate kills for
+    // size is not a crash anybody is owed a report about (TODO.md R191).
+    assert!(
+        script.lines().any(|l| l.trim() == "ulimit -c 0"),
+        "the launcher zeroes the core limit before the step runs: {script}"
+    );
 }
 
 /// A step that must have a cgroup of its own is started in a transient delegated scope, with the
