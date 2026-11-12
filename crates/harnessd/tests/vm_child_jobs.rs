@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use letibot_harnessd::config::{Config, Seat};
@@ -22,6 +22,7 @@ use letibot_turn::Endpoint;
 mod support;
 
 use support::canned::Frame;
+use support::canned::sse_body;
 use support::qwen::{THINK_CLOSE, a_plain_answer_turn, ids, spoken};
 use support::stub::{read_request, write_frames, write_props};
 
@@ -329,6 +330,11 @@ struct Scene {
 
 impl Scene {
     fn new(tag: &str, sleep_secs: u64) -> Scene {
+        Scene::with_gate(tag, sleep_secs, None)
+    }
+
+    /// A scene whose child's answer turn stops half-streamed until `gate` opens.
+    fn with_gate(tag: &str, sleep_secs: u64, gate: Option<Arc<Gate>>) -> Scene {
         fake_firecode();
         fake_bwrap();
         let dir = TempDir::new(tag);
@@ -360,7 +366,7 @@ impl Scene {
             Endpoint::new("127.0.0.1", 1),
             &store,
         ));
-        let stub = Stub::new(&parts.vocab, sleep_secs);
+        let stub = Stub::new(&parts.vocab, sleep_secs, gate);
         let cfg = config(&parent, &repo, stub.endpoint.clone(), &store);
         let registry = Registry::new();
         // The store source the daemon installs at startup.
@@ -472,6 +478,46 @@ fn the_child(hub: &Hub) -> Option<String> {
 // The model
 // ---------------------------------------------------------------------------
 
+/// A latch the stub waits on: the test opens it once it has done what must land mid-stream.
+#[derive(Default)]
+struct Gate {
+    open: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl Gate {
+    fn open(&self) {
+        *self.open.lock().expect("the gate") = true;
+        self.cv.notify_all();
+    }
+
+    fn wait(&self) {
+        let g = self.open.lock().expect("the gate");
+        let _ = self
+            .cv
+            .wait_timeout_while(g, PATIENCE, |open| !*open)
+            .expect("the gate");
+    }
+}
+
+/// Half of `frames`, then `gate`, then the rest: a turn the test can act on while it streams.
+/// A prefix of the body is the same bytes whatever follows it, so the halves join exactly.
+fn write_frames_gated(mut stream: std::net::TcpStream, frames: &[Frame], gate: &Gate) {
+    use std::io::Write;
+    let body = sse_body(frames);
+    let head = sse_body(&frames[..frames.len() / 2]);
+    let head = &head[..head.len() - b"0\r\n\r\n".len()];
+    let _ = stream.write_all(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+          Transfer-Encoding: chunked\r\n\r\n",
+    );
+    let _ = stream.write_all(head).and_then(|_| stream.flush());
+    gate.wait();
+    let _ = stream
+        .write_all(&body[head.len()..])
+        .and_then(|_| stream.flush());
+}
+
 /// A model that answers its first request with a `task where: firecode`, and answers the child
 /// according to which of its turns the request holds.
 struct Stub {
@@ -484,7 +530,11 @@ struct Stub {
 }
 
 impl Stub {
-    fn new(vocab: &Arc<letibot_tokencore::Vocab>, sleep_secs: u64) -> Stub {
+    fn new(
+        vocab: &Arc<letibot_tokencore::Vocab>,
+        sleep_secs: u64,
+        gate: Option<Arc<Gate>>,
+    ) -> Stub {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("an ephemeral port");
         let addr = listener.local_addr().unwrap();
         let parent_turn = Arc::new(a_vm_call_turn(
@@ -524,6 +574,7 @@ impl Stub {
                 let vocab = Arc::clone(&vocab);
                 let seen = Arc::clone(&seen);
                 let said = Arc::clone(&said);
+                let gate = gate.clone();
                 // One thread per connection: the parent's turn and the child's run at once.
                 std::thread::spawn(move || {
                     let (line, body) = read_request(stream.try_clone().expect("clone the socket"));
@@ -555,7 +606,12 @@ impl Stub {
                         1 => &answer,
                         _ => &after,
                     };
-                    let _ = write_frames(stream, frames);
+                    match (n, gate) {
+                        (1, Some(gate)) => write_frames_gated(stream, frames, &gate),
+                        _ => {
+                            let _ = write_frames(stream, frames);
+                        }
+                    }
                 });
             }
         });
@@ -804,19 +860,70 @@ fn a_job_killed_with_the_vm_is_reported_as_killed_and_not_as_a_finish() {
     );
 
     // The stop is the parent's own door, and the child is holding for its job when it arrives.
+    stop_the_child(&sessions, &scene, &child);
+    the_kill_is_reported(&mut sessions, &scene, &child);
+}
+
+/// The same stop, landing while the child's task turn is still streaming: the interrupt is spent
+/// on that turn, and the hold that follows must still read it as the stop it was.
+#[test]
+fn a_stop_during_the_task_turn_still_kills_the_job_with_the_vm() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let Some(_) = apparatus() else {
+        return;
+    };
+    let gate = Arc::new(Gate::default());
+    let scene = Scene::with_gate("vm-child-stopped-mid-turn", 30, Some(Arc::clone(&gate)));
+    let sessions_cell = std::cell::RefCell::new(scene.open());
+    let _drain = DrainOnDrop {
+        sessions: &sessions_cell,
+        registry: &scene.registry,
+    };
+    let mut sessions = sessions_cell.borrow_mut();
+
+    let parent_hub = scene.registry.get(&scene.parent).expect("the parent's hub");
+    let first = cmd_of(&parent_hub, START);
+    assert!(
+        matches!(
+            sessions.dispatch(&scene.parent, &first),
+            Outcome::Replied(_)
+        ),
+        "the parent's first turn did not run"
+    );
+    let child = the_child(&parent_hub).expect("the `task` call names the child it started");
+    // The answer turn has been asked for and is held half-streamed by the gate.
+    until(
+        &mut sessions,
+        &scene.registry,
+        "the child's answer turn began",
+        || scene.stub.child_turns() >= 2,
+    );
+    stop_the_child(&sessions, &scene, &child);
+    gate.open();
+    the_kill_is_reported(&mut sessions, &scene, &child);
+}
+
+/// The parent's stop, which must name the child.
+fn stop_the_child(sessions: &Sessions<'_>, scene: &Scene, child: &str) {
     let stopped = sessions
         .harness_of(&scene.parent)
         .expect("the parent is open")
         .stop_children();
     assert!(
-        stopped.as_deref().is_some_and(|s| s.contains(&child)),
+        stopped.as_deref().is_some_and(|s| s.contains(child)),
         "the parent stopped nothing: {stopped:?}"
     );
+}
 
+/// A stopped VM child's rows and `task_result`: killed, its job `lost with its VM`, never a finish.
+fn the_kill_is_reported(sessions: &mut Sessions<'_>, scene: &Scene, child: &str) {
+    let child = child.to_string();
     // The stop writes `killed` / `stopped` the moment it is accepted; the finish rewrites it once
     // the child's thread has closed the VM, and that row is the one under test.
     until(
-        &mut sessions,
+        sessions,
         &scene.registry,
         "the child's finish was recorded",
         || {
@@ -870,7 +977,7 @@ fn a_job_killed_with_the_vm_is_reported_as_killed_and_not_as_a_finish() {
     );
 
     // The parent's result is the same reading: not a finish, and the kill named.
-    let result = task_result(&sessions, &scene.parent, &child);
+    let result = task_result(sessions, &scene.parent, &child);
     assert!(
         result.contains("killed under it"),
         "`task_result` does not say the child finished with a job killed under it: {result}"

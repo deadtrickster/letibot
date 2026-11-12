@@ -330,6 +330,10 @@ impl TaskSlot {
         }
     }
 
+    pub(crate) fn was_killed(&self) -> bool {
+        self.killed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// The status as the slot holds it, for a test that has to assert a settlement happened  -
     /// or did not overwrite an earlier one. `collect` is the real reader.
     #[cfg(test)]
@@ -1055,6 +1059,12 @@ pub(crate) fn serve_child_with(
         // caller the moment nothing is left, which is when its newest answer is the one to give.
         if hold.is_some_and(|h| h.over(sub, hub)) {
             return ChildExit::Settled;
+        }
+        // A stop that landed during the task turn was spent as that turn's interrupt, so no
+        // `Stop` will reach this queue: the slot's mark is the stop, and a hold must not outlive it.
+        if hold.is_some() && turns.slot.as_ref().is_some_and(|s| s.was_killed()) {
+            sub.stop_children();
+            return ChildExit::Stopped;
         }
         let deadline = [turns.nag.due_at(), park_at, turns.sweep_at]
             .into_iter()
@@ -2603,6 +2613,8 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 // than *answered*, so setting it for a refused interrupt would make a running child look settled.
                 // The child may still settle before this line, which with the acceptance reads as the stop it is.
                 slot.kill();
+                // A child already blocked in its hold reads the mark only when it looks again.
+                hub.wake_its_own_reader();
                 Ok(format!(
                     "the daemon accepted the interrupt for `{handle}`, so its turn stops at its \
                      next boundary. A subagent is stopped by interrupting its turn, not by \
