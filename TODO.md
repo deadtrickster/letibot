@@ -573,6 +573,14 @@ Built. **The daemon lists what a provider can answer with.** `crate::config::mod
 
 Tests. `crates/provider/src/catalogue.rs`: the card line with the window and both rates, `price unlisted` where the catalogue prices nothing, and the `1M`/`393k`/`512` spelling. `crates/harnessd/src/config/tests.rs` (4): a keyed provider lists every catalogue model it carries while an unkeyed one lists exactly one and no name appears twice; the fleet's blocks come before the providers and carry their address; the facts row is one line per choice with none empty; a keyed provider the catalogue says nothing about still gets its row rather than vanishing. `crates/harnessd/tests/model_card_rows.rs`: the Done-when end to end - a `providers.toml` holding a DeepSeek key lists more than one `deepseek/` model, each with a window and a meter, the `models.keys` row agrees with the listing, and the provider with no key stays one row. `crates/tui/src/app/tests/settings.rs` (5): a typed name switches the model and leaves no prompt behind; the card filters as the line is typed and a digit narrows rather than marking a row; a line matching nothing says so and leaves the card up; each row shows its window and price under its provider's heading; the facts are matched by index and dropped whole when the row is short.
 
+## R202 - One event draws two rows, one only the operator sees
+
+**Status:** filed, 2026-11-12.
+
+A reseat put two rows in the conversation: the notice the model was sent ("[reseat] … you can now call …", drawn by a prose reader) and a `reseated` warning row the model never sees. They were drawn in two colours from two tables, which is how the operator noticed. The rule (now in AGENTS.md, the operator's words): "conversation is the same for me and the model. verbosity controls what i see but only hiding layer" - "single row for me and model".
+
+Fix: for every event that sends the model a notice, the transcript holds that notice and nothing else; the operator-only twin (`reseated`, `compacted` and `cleared` beside their summary rows, and any other code whose sentence restates a model-facing notice) leaves the transcript - its facts go to the status line / edge / `/notes`, or into the model's own notice if the operator needs them in the record. Daemon facts the model is not told (a restart, a provider retry) are not transcript rows at all unless the model is told them too. Verbosity stays a hiding layer over the one record. Done when: a test runs a reseat, a compaction and a `/clear` and finds exactly one transcript row per event, byte-equal to what the model received, and a table test lists every warning code that may still be drawn as a transcript row with the reason the model also sees it.
+
 ## R201 - Nothing letibot starts is ever torn down
 
 **Status:** filed, 2026-11-12. Design: `docs/lifecycle.md` (research of six harnesses and the web, and the package split G1-G6). G1 built 2026-11-13 (this entry's last paragraph).

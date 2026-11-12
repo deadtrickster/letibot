@@ -107,6 +107,10 @@ sh scripts/install-gate-build.sh
 
 ## The operator's standing rules
 
+- The conversation is one record for the operator and the model: one event is one row, and that row
+  is exactly what the model was sent, shown verbatim. No operator-only row restates an event the
+  model also got. A daemon fact the model is not told goes to the status line, the edge or `/notes`,
+  not the transcript. Verbosity only hides or folds rows; it never draws a second version.
 - Work in a worktree `~/Projects/letibot/wt-<topic>` beside the main checkout
   (`~/Projects/letibot/letibot`), on a topic branch. Merge to main only with explicit approval.
 - Commits: lowercase subject saying what changed, short optional body, no `Co-Authored-By` or any
