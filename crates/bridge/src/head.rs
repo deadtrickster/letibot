@@ -1875,12 +1875,23 @@ impl Head {
         text: &str,
         attachments: Vec<letibot_sessionlog::protocol::Attachment>,
     ) -> Result<String, String> {
+        self.prompt_with_context(text, attachments, None)
+    }
+
+    /// A prompt with what the operator pointed at beside it. The DAEMON renders the context into one
+    /// more part, so the browser's selection reads exactly as an editor's does.
+    pub fn prompt_with_context(
+        &self,
+        text: &str,
+        attachments: Vec<letibot_sessionlog::protocol::Attachment>,
+        context: Option<letibot_sessionlog::protocol::EditorContext>,
+    ) -> Result<String, String> {
         self.may_write()?;
         let mut c = self.said_client()?;
         // `expected_seq = 0` is what the protocol reads as *I am not claiming a position*,
         // and `Hub::submit` accepts a prompt on a stale seq anyway. A bridge is a second
         // head on a session a person may be typing into, so it must never drop what it was told.
-        c.prompt_attached(0, text, attachments)
+        c.prompt_with_context(0, text, attachments, context)
             .map_err(|e| e.to_string())
     }
 

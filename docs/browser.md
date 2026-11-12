@@ -95,9 +95,12 @@ The picker lists your live top-level sessions: name, project and state (`idle`, 
 change it in the card or the popup. A follow-up typed in the card goes to the same session.
 
 Every ask carries the URL, the title, the selection and the question, and a picture when you sent
-one. It does not carry the page: the session looks at the tab itself (`screen tab read` for its
-text, `shot` for its pixels) when the question needs it, so a conversation about one page does not
-pay for the page on every message. When the site has a `/AGENTS.md` the ask only says so, and the
+one. The selection goes beside the words as the prompt's editor context rather than inside them:
+`harnessd::editor_context` renders it into the same numbered, quarantined block a selection in
+rano's editor becomes, so a page and an editor spell one selection one way. The ask does not carry
+the page: the session looks at the tab itself (`screen tab read` for its text, `shot` for its
+pixels) when the question needs it, so a conversation about one page does not pay for the page on
+every message. When the site has a `/AGENTS.md` the ask only says so, and the
 session fetches it if the site's vocabulary matters. A region carries the DOM text inside the crop,
 or the whole viewport's text when the crop has none. An image carries the text around it. An ask
 with no tab to look at (an older extension) still carries the page as Markdown.
@@ -215,10 +218,12 @@ block out, says so in the card, and the prompt says `[the page's Markdown was no
 - **Top-level sessions only.** Asks go to the operator's own conversations, the same "mine"
   group the session list draws. Subagents, packages, the review queue and one-shots are not
   listed and are refused by id. The listing is re-read on every ask.
-- **The page is data.** The question is the only operator text. The page, the selection, the
+- **The page is data.** The question is the only operator text. The page, the
   text beside an image and AGENTS.md are each fenced in the harness's `UNTRUSTED_TEXT` envelope
   (the one `web_fetch` uses), labelled as data and not instruction, with `<<<` spaced out so the
-  page cannot close the fence. AGENTS.md is marked written by the site, not instructions and not
+  page cannot close the fence. The selection gets that envelope from the daemon instead, which is
+  why the URL and the title are flattened to one line before they are sent: they sit on the line
+  above it. AGENTS.md is marked written by the site, not instructions and not
   citable. The image's `alt`/`title`/`figcaption` are marked as the author's own description.
 - **No decisions.** The bridge's head attaches as `letibot-browser` with `can_decide: false`: it
   prompts and reads, and every permission card goes to your own head.

@@ -7,7 +7,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use letibot_sessionlog::event::{DeltaTarget, Envelope, SessionEvent};
-use letibot_sessionlog::protocol::{Attachment, AttachmentKind};
+use letibot_sessionlog::protocol::{Attachment, AttachmentKind, ContextRef, EditorContext};
 use letibot_tools::result::Envelope as Fence;
 use letibot_transcript::{TranscriptItem, UserPart};
 use serde_json::json;
@@ -155,8 +155,28 @@ fn fence(ask: &str, block: &str, header: &str, body: &str, notes: &mut Vec<Strin
     wrapped
 }
 
-/// The operator prompt an ask becomes. The question is the operator's; the page, its selection,
-/// the site's AGENTS.md and the text beside a picture are each fenced as untrusted data.
+/// What the operator selected on the page, as an editor's context: the DAEMON writes the block, so a
+/// page selection and an editor's selection are one format. `None` when nothing was selected.
+pub fn context(body: &AskBody) -> Option<EditorContext> {
+    if body.selection.trim().is_empty() {
+        return None;
+    }
+    Some(EditorContext {
+        origin: "browser".into(),
+        refs: vec![ContextRef {
+            // Both of these are the page's own words, and the daemon puts them on the line ABOVE
+            // the quarantine fence, where a newline would be a second header.
+            file: one_line(&body.url, 2048),
+            title: one_line(&body.title, 512),
+            text: body.selection.clone(),
+            ..ContextRef::default()
+        }],
+        ..EditorContext::default()
+    })
+}
+
+/// The operator prompt an ask becomes. The question is the operator's; the page, the site's AGENTS.md
+/// and the text beside a picture are each fenced as untrusted data.
 pub fn prompt(ask: &str, body: &AskBody, limits: &Limits) -> String {
     let url = one_line(&body.url, 2048);
     let mut notes = Vec::new();
@@ -173,12 +193,6 @@ pub fn prompt(ask: &str, body: &AskBody, limits: &Limits) -> String {
         body.question.trim()
     );
     let mut page = format!("title: {}\nurl: {url}\n", one_line(&body.title, 512));
-    if !body.selection.trim().is_empty() {
-        page.push_str(&format!(
-            "\n## the operator's selection\n\n{}\n",
-            body.selection.trim()
-        ));
-    }
     // With a tab to look at, the session reads the page itself when it needs it; a copy sent
     // with every message costs context on every turn.
     if body.tab.is_none() && !body.markdown.trim().is_empty() {

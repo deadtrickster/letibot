@@ -402,7 +402,10 @@ fn ask_route(stream: &mut TcpStream, server: &Server, cache: &Mutex<Option<Listi
         .tab
         .map(|t| Look::open(&server.tabs, &row.id, &id, t, &body));
     let text = ask::prompt(&id, &body, &server.limits);
-    if let Err(why) = head.prompt_attached(&text, attachments) {
+    // The selection goes beside the words, not inside them: the daemon renders every editor's
+    // context into one block, so a page's selection and rano's read the same way.
+    let context = ask::context(&body);
+    if let Err(why) = head.prompt_with_context(&text, attachments, context) {
         return http::error(stream, 409, allow, &why);
     }
     if http::sse_head(stream, &server.origin).is_err() {
