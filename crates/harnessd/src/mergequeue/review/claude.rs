@@ -50,7 +50,7 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// How long a stopped run is given to end before `SIGKILL` - the gate's own five seconds, for the
 /// same reason: a reviewer that ignores `SIGINT` must not linger as a process nobody owns.
-const STOP_GRACE_MS: u64 = 5_000;
+pub(super) const STOP_GRACE_MS: u64 = 5_000;
 
 /// What a project said about its Claude reviewers - `[queue.claude]`. Present only when the project
 /// named a binary: naming it IS the switch, and a queue nobody configured runs letibot reviewers
@@ -250,12 +250,13 @@ struct Run {
 
 impl Run {
     /// `SIGINT`, which ends a Claude Code turn cleanly; `SIGTERM` would exit 143, which reads as a
-    /// crash rather than the queue's own act.
+    /// crash rather than the queue's own act. Sent on every request while the run is alive, because
+    /// a shell's own handler consumes one that lands before its command starts (measured, 13 of
+    /// 400) and `stopped` keeps the FIRST request, which is the grace's clock.
     fn end(&mut self, now_ms: u64) {
-        if self.stopped.is_some() {
-            return;
+        if self.stopped.is_none() {
+            self.stopped = Some(now_ms);
         }
-        self.stopped = Some(now_ms);
         let pgid = self.child.id() as i32;
         // SAFETY: the pid is this process's own child, spawned into a group of its own
         // (`process_group(0)`), and `try_wait` said it was alive when the caller asked. A group
@@ -359,7 +360,15 @@ impl Runs {
         };
         match inner[i].child.try_wait() {
             Ok(None) => {
-                if !deadline_ms.is_some_and(|d| now_ms > d) || inner[i].stopped.is_some() {
+                // Already asked to end - by this deadline on an earlier poll, or by a pass that
+                // dropped the row. Ask AGAIN: one `SIGINT` that a shell's handler consumes is gone
+                // for good, and this poll is the only door left, so a run ended once and never
+                // repeated wedges the row here for as long as the process lives.
+                if inner[i].stopped.is_some() {
+                    inner[i].end(now_ms);
+                    return Polled::Running;
+                }
+                if !deadline_ms.is_some_and(|d| now_ms > d) {
                     return Polled::Running;
                 }
                 inner[i].end(now_ms);
@@ -394,8 +403,9 @@ impl Runs {
         }
     }
 
-    /// End a run the queue no longer wants - the row moved on without it. `SIGINT`, once; the run
-    /// stays in the table until its process is gone, when [`Runs::keep`] drops it.
+    /// End a run the queue no longer wants - the row moved on without it. `SIGINT`, repeated on
+    /// every call while it is alive; the run stays in the table until its process is gone, when
+    /// [`Runs::keep`] drops it.
     pub fn stop(&self, handle: &str, now_ms: u64) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(run) = inner.iter_mut().find(|r| r.handle == handle) {

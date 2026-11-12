@@ -831,16 +831,22 @@ fn the_runs_table_holds_a_process_until_it_is_dead() {
         "nothing has been judged while it works"
     );
     // Nobody polls it any more: it is stopped with SIGINT, and stays in the table until it is gone.
-    runs.keep(&[], 2);
+    // A real clock, because the grace is what the escalation to `SIGKILL` is measured against: the
+    // constants 2 and 3 that stood here could never reach it, so a `SIGINT` the stub's shell
+    // swallowed left the run alive for the whole of this loop and the test failed 30 s later.
+    let stopped = now_ms();
+    runs.keep(&[], stopped);
     assert!(runs.owns(&handle), "not forgotten before it is dead");
-    let mut gone = false;
-    for _ in 0..1500 {
-        runs.keep(&[], 3);
-        if !runs.owns(&handle) {
-            gone = true;
-            break;
-        }
+    let mut now = stopped;
+    while now.saturating_sub(stopped) < claude::STOP_GRACE_MS && runs.owns(&handle) {
         std::thread::sleep(Duration::from_millis(20));
+        now = now_ms();
+        runs.keep(&[], now);
     }
-    assert!(gone, "and forgotten once it is");
+    assert!(
+        !runs.owns(&handle),
+        "forgotten once it is - inside the {} ms grace, so the run ended on the SIGINT and not on \
+         the SIGKILL the grace exists for",
+        claude::STOP_GRACE_MS
+    );
 }
