@@ -362,7 +362,14 @@ elif [ "$HOST_OS" = Darwin ]; then
 else
   RUNDIR="/run/user/$(id -u)/letibot"
 fi
-mkdir -p "$RUNDIR"
+# The runtime dir is made where something is written into it, not here: `--help`, `--status`
+# and `--ls` answer on a box whose `/run/user` is missing, and a bare `mkdir -p` under `set -e`
+# in front of the flag is how `--help` died before printing a line.
+rundir() {
+  mkdir -p "$RUNDIR" 2>/dev/null && return 0
+  die "cannot create the runtime directory $RUNDIR
+         set XDG_RUNTIME_DIR to a directory this account can write"
+}
 KEY="$(printf '%s' "$WORKSPACE" | sha12)"
 SOCKET="${LETIBOT_SOCKET:-$RUNDIR/$KEY.sock}"
 RECORD="$RUNDIR/$KEY.json"
@@ -1858,6 +1865,7 @@ version_skew_or_continue() {
 # attach banner. The pid in it is how the daemon is stopped - a name is how
 # every harnessd on the box gets stopped.
 record_write() {
+  rundir
   python3 - "$RECORD" "$WORKSPACE" "$SOCKET" "$1" "$ROLE" "$MODEL" "$DIALECT" "${BASH_ON:-}" "$(answers_now)" <<'PY'
 import json, sys, time
 rec, ws, sock, pid, role, model, dialect, bash, answers = sys.argv[1:10]
@@ -2285,6 +2293,7 @@ room_start() {
 # nothing serves `room`). R102's shape — the launcher writes the record of what it started, so the
 # launcher's own tools can see it.
 room_record_write() { # room_record_write PID
+  rundir
   python3 - "$ROOM_RECORD" "$(dirname "$ROOM_SOCKET")/room-workspace" "$ROOM_SOCKET" "$1" <<'PY'
 import json, sys, time
 rec, ws, sock, pid = sys.argv[1:5]
@@ -3332,6 +3341,7 @@ room_ensure
 # folder's (measured: the second said "already served by a live daemon" and
 # exited before its prompt ran).
 if [ $# -gt 0 ]; then
+  rundir
   ONESHOT_SOCK="$RUNDIR/oneshot-$$.sock"
   # In a scope of its own too, for `detach`'s reason: its tool calls are as able to eat the
   # box as a daemon's, and in the terminal's scope a cap cannot be set at all. A scope runs
@@ -3425,6 +3435,7 @@ if ! live; then
   # with no `--session` (a plain run, and `--new`) the daemon mints a fresh id, which is the
   # fresh session those two verbs mean. `--title` names it when `--new` gave one.
   STARTED=1
+  rundir
   detach letibot-harnessd "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} ${ENDPOINT_ARGS[@]+"${ENDPOINT_ARGS[@]}"} \
     ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
     --role "$ROLE" ${ADJ:+--adjudicator "$ADJ"} ${MODE:+--mode "$MODE"} \
