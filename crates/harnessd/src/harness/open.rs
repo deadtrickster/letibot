@@ -703,6 +703,37 @@ impl Harness {
         hub.warn(UNCONFINED_SESSION, said);
     }
 
+    /// Whether this daemon must withhold the shell seat, saying so once when it does.
+    ///
+    /// No cgroup means no command with a lifetime, and refusing the whole session over a tool it
+    /// has not reached yet is what R192 reports: it opens without `bash` and says why.
+    fn withhold_shell_without_scope(cfg: &mut Config, hub: &Arc<Hub>) -> bool {
+        // The tree's own measurement - a real `mkdir` in this daemon's cgroup - and its root is
+        // taken back before the answer is read, so opening a session leaves no directory behind.
+        let why = match letibot_tools::exec::host_tree() {
+            Ok(tree) => {
+                tree.prune();
+                return false;
+            }
+            Err(e) => e.to_string(),
+        };
+        cfg.allow_bash = false;
+        let said = format!(
+            "this session seats no `bash`: a command runs in a cgroup of its own, and this daemon \
+             cannot make one here - {why}. Nothing else is withheld: its file tools, its model and \
+             this conversation are unchanged, and a session that cannot run commands can still be \
+             talked to. The usual cause is the user manager refusing `systemd-run --user --scope` \
+             (a unit limit, or a manager that has stopped answering), which `scripts/letibot` \
+             prints in the manager's own words - fix that, then `letibot --stop` and start again."
+        );
+        eprintln!("letibot: {said}");
+        // A child inherits the same state, and its parent was told already.
+        if cfg.parent_session_id.is_none() {
+            hub.warn(SHELL_WITHHELD, said);
+        }
+        true
+    }
+
     /// A wide seat that could not be built is a REFUSAL, not a fallback, on every platform: the
     /// alternative is the whole host with the operator's keys readable. Says it, then hands back
     /// the sentence.
@@ -915,6 +946,15 @@ impl Harness {
         // Set by the two arms whose commands run inside a boundary on this box: the seat that
         // fence was built from, so the file tools are fenced with the same one.
         let mut seat: Option<letibot_tools::exec::seat::SeatView> = None;
+        // A shell that cannot be given a cgroup is a shell this daemon does not seat: the session
+        // opens without one rather than being refused over a tool (TODO.md R192). Asked before the
+        // wide seat is built, because the seat's own failure would name bubblewrap either way.
+        let withheld =
+            if cfg.unconfined && cfg.allow_bash && may_exec && !local_vm && remote.is_none() {
+                Self::withhold_shell_without_scope(cfg, hub)
+            } else {
+                false
+            };
         // `backend_confined` is the VM's and nothing else here, and it stops being a guess the line
         // after the substrate is chosen. A remote placement confines nothing by itself, so claiming
         // it did made `Prereq::Confinement` pass for a session that had no boundary.
@@ -936,9 +976,9 @@ impl Harness {
             // go in front of, so it gets the whole host. Said on the hub and in the prompt; the
             // mode is what decides each command, and it is not a boundary.
             whole_host = true;
-            // Said by the top-level session; a child it started inherits the same state. A
-            // boundary that was asked for and refused has already said so itself.
-            if cfg.parent_session_id.is_none() && !(cfg.allow_bash && may_exec) {
+            // Said by the top-level session; a child inherits the same state. A boundary asked for
+            // and refused, and a shell withheld for want of a cgroup, have each said so already.
+            if cfg.parent_session_id.is_none() && !(cfg.allow_bash && may_exec) && !withheld {
                 Self::say_no_boundary(hub);
             }
             // R121: the file tools are still this session's, so they are held to its perimeter -
@@ -5053,8 +5093,11 @@ mod linux_wide_seat_tests {
     }
 
     /// A `leticode` session with a shell on Linux is bounded by the wide seat, or REFUSED: what it
-    /// must never be is this user's rights over the whole host with a warning. Both branches are
-    /// asserted, because a box that cannot nest a namespace can only measure the refusal.
+    /// must never be is this user's rights over the whole host with a warning. Every ending is
+    /// asserted, because a box can only measure the one it gives.
+    ///
+    /// R192 adds a third: a daemon with no delegated cgroup WITHHOLDS the shell and opens the
+    /// session, with one line naming the cause and the fix.
     #[test]
     fn a_leticode_session_with_a_shell_is_bounded_or_refused_and_never_whole_host() {
         let dir = std::env::temp_dir().join(format!("letibot-linuxwide-{}", std::process::id()));
@@ -5070,9 +5113,46 @@ mod linux_wide_seat_tests {
         let placed = Harness::place_the_tools(&mut cfg, &hub, &registry);
         let refused = warned(&hub, BOUNDARY_ABSENT);
         let unconfined = warned(&hub, UNCONFINED_SESSION);
+        let withheld = warned(&hub, SHELL_WITHHELD);
         hub.close();
 
         match placed {
+            Ok(p) if !cfg.allow_bash => {
+                // R192: this daemon could make no cgroup, so no command of its could have a
+                // lifetime - so it seated no shell and said why, once.
+                assert_eq!(
+                    withheld.len(),
+                    1,
+                    "one line, naming the cause: {withheld:?}"
+                );
+                let line = &withheld[0];
+                assert!(line.contains("cgroup"), "the cause: {line}");
+                assert!(line.contains("no `bash`"), "what was withheld: {line}");
+                assert!(
+                    line.contains("letibot --stop"),
+                    "the fix, which a person can do: {line}"
+                );
+                assert!(refused.is_empty(), "nothing was refused: {refused:?}");
+                assert!(
+                    unconfined.is_empty(),
+                    "the withheld line is the one it is told, not both: {unconfined:?}"
+                );
+                // No shell seat, in the very list the prompt is built from: the exec surface is
+                // behind `allow_bash`, so `bash` and the job verbs are not in the role.
+                let seat = role_for(&cfg);
+                for tool in ["bash", "job_wait", "monitor"] {
+                    assert!(
+                        !seat.tools.iter().any(|t| t.as_str() == tool),
+                        "`{tool}` is behind the shell flag: {:?}",
+                        seat.tools
+                    );
+                }
+                // And it opened: the whole host by design, which is what R192 asks for - the
+                // session can be talked to, and the file tools have their fence.
+                assert!(p.whole_host, "{}", p.described);
+                assert!(p.backend.boundary().is_none(), "{}", p.described);
+                assert!(!p.confined, "{}", p.described);
+            }
             Ok(p) => {
                 assert!(p.confined, "a wide seat is a boundary: {}", p.described);
                 assert!(!p.whole_host, "{}", p.described);
@@ -5080,6 +5160,10 @@ mod linux_wide_seat_tests {
                 assert!(
                     unconfined.is_empty(),
                     "it is not unconfined: {unconfined:?}"
+                );
+                assert!(
+                    withheld.is_empty(),
+                    "a boundary was built, so no shell was withheld: {withheld:?}"
                 );
                 let boundary = p.backend.boundary().expect("a measured boundary");
                 assert!(boundary.view.wide, "the view is the machine itself");
@@ -5108,6 +5192,10 @@ mod linux_wide_seat_tests {
                 assert!(
                     unconfined.is_empty(),
                     "a refused session never says it runs unconfined: {unconfined:?}"
+                );
+                assert!(
+                    withheld.is_empty(),
+                    "a cgroup this box HAS is not a reason to withhold the shell: {withheld:?}"
                 );
             }
         }

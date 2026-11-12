@@ -148,6 +148,10 @@ const UNCONFINED_SESSION: &str = "unconfined_session";
 /// refused on every platform, and says so before anything runs.
 const BOUNDARY_ABSENT: &str = "boundary_absent";
 
+/// The warning code for a session whose shell was withheld because this box has no cgroup to give
+/// a command a lifetime. Said once, by the top-level session, with the cause and the fix.
+const SHELL_WITHHELD: &str = "shell_withheld";
+
 /// What a boundary needs on this platform, for a refusal that names it.
 #[cfg(target_os = "macos")]
 const BOUNDARY_NEEDS: &str = "a sandbox-exec profile the startup probe measures refusing a \

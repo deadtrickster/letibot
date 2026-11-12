@@ -299,6 +299,10 @@ pub const TABLE: &[(&str, Class)] = &[
     // command that runs code is decided per command, on Linux the seat is refused. The fix is the
     // operator's.
     ("boundary_absent", Class::Failure),
+    // A session whose shell was withheld because this daemon holds no delegated cgroup: the
+    // session opens (it can be talked to) and cannot run a command until the operator fixes the
+    // user manager or the box's cgroup delegation. A Failure, for `boundary_absent`'s reason.
+    ("shell_withheld", Class::Failure),
     // A session that runs unconfined by design: a `leticode` seat that seats no command, said once
     // by the top-level session. A disclosure of the state the session was asked to be in, so Routine.
     ("unconfined_session", Class::Routine),
@@ -824,15 +828,15 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_82_routine_15_refused_and_96_failures() {
+    fn the_table_is_82_routine_15_refused_and_97_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 193, "the table's size");
+        assert_eq!(TABLE.len(), 194, "the table's size");
         assert_eq!(count(Class::Routine), 82, "the four limits are routine");
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 96);
+        assert_eq!(count(Class::Failure), 97);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);
