@@ -1517,23 +1517,24 @@ fn default_web_search() -> Option<String> {
 }
 
 /// The permission ruleset, two layers in precedence order (last match wins)
-/// `~/.config/letibot/permission.json` - installed from the repository's seed, and where an *Always
-/// allow* answer appends - then `LETIBOT_PERMISSION`. An unparsable file is reported and skipped.
+/// `~/.config/letibot/permission.json` - the seed until the operator's own file is there, and where
+/// an *Always allow* answer appends - then `LETIBOT_PERMISSION`. An unparsable file is reported and
+/// skipped.
+///
+/// Reading only: installing the seed is the daemon's act (`cli::run`, where it has sessions to
+/// serve), because every fixture builds on this and a test must write nothing outside its temp dir.
 fn parse_permission() -> letibot_tools::permission::Ruleset {
     use letibot_tools::permission;
     let mut rules = Vec::new();
     if let Some(path) = permission::file_path() {
-        match permission::install_seed(&path) {
-            Ok(true) => eprintln!(
-                "letibot: installed the preapproved list at {} — it is yours to edit",
-                path.display()
-            ),
-            Ok(false) => {}
-            Err(e) => eprintln!("letibot: the preapproved list was not installed: {e}"),
-        }
         match permission::load_file(&path) {
             Ok(mut r) => rules.append(&mut r),
             Err(e) => eprintln!("letibot: permission file not read: {e}"),
+        }
+        // No file is a fresh box, and a fresh box starts with the seed in force - what installing
+        // it and reading it back gave, without a write on a path a fixture also takes.
+        if !path.exists() {
+            rules = permission::seed();
         }
     }
     if let Some(raw) = std::env::var("LETIBOT_PERMISSION").ok()

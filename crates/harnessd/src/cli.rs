@@ -1232,6 +1232,21 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         return run_query(&cfg, q, scope.as_deref(), tsv, show_archived);
     }
 
+    // A fresh box gets the preapproved list to edit on the first daemon that serves. It is here
+    // and not in the config's own read because a store query is a store query: `--delete` on a
+    // box that never ran a daemon used to leave a file in `~/.config/letibot`, and every test
+    // that builds a `Config` wrote the operator's own. The ruleset is already in force by now.
+    if let Some(path) = letibot_tools::permission::file_path() {
+        match letibot_tools::permission::install_seed(&path) {
+            Ok(true) => eprintln!(
+                "letibot: installed the preapproved list at {} — it is yours to edit",
+                path.display()
+            ),
+            Ok(false) => {}
+            Err(e) => eprintln!("letibot: the preapproved list was not installed: {e}"),
+        }
+    }
+
     // What a corpus replay measured, written beside the store by `--calibrate-write`. Read
     // here, after `--store` is known, and absent/malformed is silently the declared scope, the
     // same fail-open a startup read must have.
