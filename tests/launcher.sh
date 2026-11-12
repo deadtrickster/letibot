@@ -360,10 +360,14 @@ for spec in "--delete|letibot --delete ID" "--session|letibot --session ID" \
 done
 
 # --- and the wall itself lists every verb it answers for ----------------------------------
+# The list is also the five flags the guard used to refuse and the four aliases: a flag this
+# parser reads and the wall never names is the same disagreement from the other side.
 out="$(run "$DEFAULT_ONLY" --help)"
 for verb in --continue --session --sessions --new --rename --delete --migrate --reattach \
   --handover --note --note-continued --revert --list-claude --stop --room --status \
-  --ls --daemons --attach --glm --provider --host --vm --tsv; do
+  --ls --daemons --attach --glm --provider --host --vm --tsv \
+  --web-fetch --no-web-fetch --effort --vm-copy --listen \
+  --list --list-all --claude-sessions --bash; do
   if printf '%s\n' "$out" | grep -q -- "$verb"; then
                                                      echo "ok   --help names $verb"
   else
@@ -1392,6 +1396,67 @@ STUB
     "no room on this box \(.*/room-macbook-pro-45a1c8db.sock\)"
 else
   echo "skip the room cases: no python3 to bind a unix socket"
+fi
+
+# **A VERB OF THE BINARY IS A VERB, NOT A PROMPT.** `stats`, `fb`, `boundary` and `migrate` are
+# commands of `$BIN/letibot`; with no arm for them the first word fell through to the one-shot,
+# so `letibot stats --since 1d` started a session and handed the model the sentence it was
+# meant to answer — a billed turn for a lookup.
+out="$(run "$DEFAULT_ONLY" stats --since 1d)"
+expect "stats is handed to the metrics verb" "$out" "^letibot stats --since 1d$"
+refuse "  ...and no daemon is started for it" "$out" "^harnessd "
+refuse "  ...and nothing is sent as a prompt" "$out" "--prompt"
+
+out="$(run "$DEFAULT_ONLY" fb --session s-1 + good)"
+expect "fb marks the turn through the verb" "$out" "^letibot fb --session s-1 \+ good$"
+
+out="$(run "$DEFAULT_ONLY" boundary --mode read-only)"
+expect "boundary is the boundary verb's" "$out" "^letibot boundary --mode read-only$"
+
+out="$(run "$DEFAULT_ONLY" migrate --help)"
+expect "migrate reaches its own help, with this box's store" "$out" \
+  "^letibot migrate --help --store "
+
+# **`--tsv` IS THE LISTING'S OTHER FORM, NOT A FLAG TO DROP.** The arm took no arguments, so
+# `--sessions --tsv` answered the grouped view and said nothing about the flag.
+out="$(run "$DEFAULT_ONLY" --sessions --tsv)"
+expect "--sessions --tsv hands --tsv on to the listing" "$out" \
+  "^harnessd --store \S+ --list-sessions --tsv$"
+
+# **EVERY FLAG `--help` NAMES IS ONE THIS PARSER READS.** The guard and the help were two
+# hand-kept lists, and five flags that were documented and had arms died "unknown flag" before
+# their arm could run: `--web-fetch`, `--no-web-fetch`, `--effort`, `--vm-copy` and `--listen`.
+# So the help is walked and the launcher asked for each flag it offers, which is the rule the
+# survey's item names: the help is the list the parser reads. A `--` word in this text is not
+# always this launcher's, though: `--vm-arg`'s line quotes what `firecode up` takes and
+# `--handover`'s quotes what `claude` takes. Those are the exclusions, and the rule behind them
+# is that each one is ANOTHER PROGRAM's flag - not that checking it was inconvenient.
+#
+# It runs LAST: several flags here start and stop a daemon, and a record left behind would be
+# read by the cases above.
+flags="$(run "$DEFAULT_ONLY" --help | grep -oE -- '--[a-z][a-z-]*' | sort -u)"
+if [ -z "$flags" ]; then
+  echo "FAIL every flag --help names parsed: --help printed no flag at all"
+  fails=$((fails + 1))
+fi
+bad=0
+for f in $flags; do
+  case "$f" in
+    --mem | --vcpu | --add-dir | --resume) continue ;;
+  esac
+  out="$(run "$DEFAULT_ONLY" "$f")"
+  case "$out" in
+    *"unknown flag: $f"*)
+      echo "FAIL every flag --help names parsed: the help offers $f and the parser refuses it:"
+      printf '%s\n' "$out" | sed 's/^/     /'
+      bad=$((bad + 1))
+      ;;
+  esac
+done
+if [ "$bad" -eq 0 ]; then
+  echo "ok   every flag --help names is one the parser reads ($(printf '%s\n' "$flags" | wc -l | tr -d ' ') of them)"
+else
+  fails=$((fails + bad))
 fi
 
 if [ "$fails" -ne 0 ]; then

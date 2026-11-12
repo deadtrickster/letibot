@@ -728,6 +728,91 @@ EOF
 # became a billed turn, so unknown `--` words are now refused rather than
 # prompted; a one-shot prompt whose first word begins with `--` is rare enough
 # that refusing it with a name of the mistake is the honest trade.
+
+# **THE FLAGS THIS PARSER READS, IN ONE LIST.** `=VALUE` marks one that consumes the next
+# word, which is also what keeps a value like `--mem` from being read as a flag of ours.
+# The guard below reads this list and nothing else, and `tests/launcher.sh` fails if `--help`
+# names a flag it lacks: the guard used to hold a second, hand-kept copy, and five flags that
+# were documented and had arms (`--web-fetch`, `--no-web-fetch`, `--effort`, `--vm-copy`,
+# `--listen`) died "unknown flag" before their arm could run. A new flag is added HERE first.
+KNOWN_FLAGS='
+--help
+  -h
+  help
+--continue
+  -c
+--sessions
+--list
+--tsv
+--list-claude
+--claude-sessions
+--handover
+--note
+--note-continued
+--revert
+--new
+  -n
+--rename=VALUE
+--delete=VALUE
+--migrate
+--reattach
+--to=VALUE
+--copy-keys
+--stop
+--force
+--all
+--room
+--status
+--ls
+--list-all
+--daemons
+--attach
+--listen
+--read-only
+--bash
+--no-bash
+--ask
+--writes
+--web-fetch
+--no-web-fetch
+--effort=VALUE
+--mode=VALUE
+--supervise
+--vm
+--vm-copy
+--vm-arg=VALUE
+--host=VALUE
+--provider=VALUE
+--web-search=VALUE
+--brave-key=VALUE
+--model=VALUE
+--oracle=VALUE
+--oracle-budget-ms=VALUE
+--glm
+--flash
+--dense
+--session=VALUE
+  -s=VALUE
+'
+
+known_flag() { # known_flag WORD -- is WORD one of the flags this parser reads?
+  local entry
+  for entry in $KNOWN_FLAGS; do
+    [ "${entry%%=*}" = "$1" ] && return 0
+  done
+  return 1
+}
+
+flag_takes_value() { # flag_takes_value WORD -- does it consume the word after it?
+  local entry
+  for entry in $KNOWN_FLAGS; do
+    case "$entry" in
+      "$1="*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 usage() {
   cat <<'EOF'
 letibot — one command to start chatting: brings up harnessd if it is not
@@ -780,6 +865,9 @@ already up, then attaches the TUI head to it.
                               what it is. One per box, not one per folder — every run makes
                               sure one exists before it opens a session. `--room --stop` stops
                               it (`--force` SIGKILLs one still there)
+  letibot --listen [WORDS]    which repositories of this folder's sessions hear gate news:
+                              `all`, `only REPO`, `-REPO`, `+REPO`; no words lists the state
+                              and exits (the words run to the next flag)
   letibot rooms [VERB]        the room under socket activation: install, uninstall, start,
                               stop, restart, off, on, status, logs (docs/room.md)
   letibot --status            is it up, and on what
@@ -789,6 +877,10 @@ already up, then attaches the TUI head to it.
   letibot --attach [N|DIR]    connect to this folder's daemon — or another folder's, by its number
                               from `--ls` or by directory — and never start one
 
+  Every verb above also answers to its long alias: `--list` is `--sessions`, `--list-all`
+  is `--ls`, `--claude-sessions` is `--list-claude`, and `--bash` is what `--no-bash`
+  turns off (the shell is already on).
+
   letibot                     the leticode seat: opencode's tools and bash, on this host
                               (LETIBOT_ROLE=coder for the namespace-confined seat, Linux)
   letibot --read-only         no write tools at all (orchestrator seat)
@@ -796,7 +888,8 @@ already up, then attaches the TUI head to it.
   letibot --writes            approve a class once, for the session (default)
   letibot --web-fetch         seat `web_fetch`: curl egress, reader-mode extracted
                               (already the default under `leticode`; --no-web-fetch off)
-  letibot --effort L          GLM reasoning effort: low | high | max (absent = max)
+  letibot --effort L          how hard it thinks: low | high | max, and qwen also takes
+                              medium and xhigh (absent = max, the template's own default)
   letibot --mode N            read-only | always-ask | writes-allowed | automode |
                               automode-edits | allow-all
   letibot --supervise         start supervised: the guard model answers every gated
@@ -828,14 +921,13 @@ already up, then attaches the TUI head to it.
                               Key: --brave-key, $BRAVE_API_KEY, or [brave] key= in
                               ~/.config/letibot/providers.toml
   letibot --model M           the provider's model (default: the preset's)
-  letibot --oracle H:P        the guard model for `--mode supervised` and
-                              `--adjudicator model`: a llama.cpp /completion
-                              endpoint answering "did the operator ask for this".
-                              Its own endpoint, not --endpoint - the guard need
-                              not be the model doing the work. Both refuse by
-                              name without it rather than falling back to a
-                              person, so a session cannot silently be weaker
-                              than the mode it printed
+  letibot --oracle H:P        the guard model under `--supervise`: a llama.cpp
+                              /completion endpoint answering "did the operator ask
+                              for this". Its own endpoint, not the model's -
+                              the guard need not be the model doing the work.
+                              `--supervise` refuses by name without it rather
+                              than falling back to a person, so a session cannot
+                              silently be weaker than the mode it printed
   letibot --oracle-budget-ms N  how long the gate waits for that answer before
                               failing closed (default 400). Measured against a
                               4B on THIS box's CPU; a remote oracle needs its
@@ -901,20 +993,14 @@ for a in "$@"; do
     continue
   fi
   case "$a" in
-    --vm-arg | --host | --provider | --model | --mode | --session | -s | --rename | --delete | --to | \
-      --web-search | --brave-key | --oracle | --oracle-budget-ms) skip=1 ;;
+    --*) ;;
+    *) break ;; # the prompt starts here; nothing after it is a flag
   esac
-  case "$a" in
-    --help | -h | help | --read-only | --writes | --bash | --no-bash | --ask | --supervise | --glm | --flash | --dense | --attach | --daemons | --all | \
-      --sessions | --list | --stop | --status | --continue | -c | --new | -n | --session | -s | \
-      --rename | --delete | --mode | --force | --vm | --vm-arg | --host | --provider | --model | \
-      --migrate | --reattach | --to | --copy-keys | --room | \
-      --list-claude | --claude-sessions | --handover | --note | --note-continued | --revert | --tsv | \
-      --web-search | --brave-key | --oracle | --oracle-budget-ms | --ls | --list-all) ;;
-    --*) die "unknown flag: $a
-         ('$ME --help' lists the flags; a bare prompt needs no flag)" ;;
-    *) break ;;
-  esac
+  known_flag "$a" || die "unknown flag: $a
+         ('$ME --help' lists the flags; a bare prompt needs no flag)"
+  if flag_takes_value "$a"; then
+    skip=1
+  fi
 done
 
 # Qwen is the default because it is what this box serves. Both Qwen models ship a
@@ -1231,7 +1317,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --oracle)
-      [ $# -ge 2 ] || die "--oracle HOST:PORT   the guard model for --mode supervised / automode"
+      [ $# -ge 2 ] || die "--oracle HOST:PORT   the guard model for --supervise / automode"
       ORACLE="$2"
       shift 2
       ;;
@@ -2395,7 +2481,10 @@ fi
 # box whose model server is down -- which is exactly when you want to look.
 case "${1:-}" in
   --sessions | --list)
-    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --list-sessions
+    # `--tsv` is the same verb's plain form, and it was dropped here: the arm took no arguments,
+    # so `--sessions --tsv` answered the grouped listing and said nothing about the flag.
+    shift
+    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --list-sessions "$@"
     ;;
   # **What Claude Code has on this box** (Package H): the ids `letibot --session cc-<id>`
   # takes, so a person can find a uuid without opening the JSONL. No store, no socket.
@@ -2836,6 +2925,21 @@ SESSIONS_EOF
       echo "NOT SERVING"
     fi
     exit 0
+    ;;
+  # **The binary's own verbs, which take words after them.** `stats`, `fb`, `boundary` and
+  # `migrate` are commands of `$BIN/letibot`, and with no arm here the first word fell through to
+  # the one-shot below: `letibot stats --since 1d` started a session and handed the model the
+  # sentence "stats --since 1d", which is a billed turn and not a lookup. Each hands its whole
+  # line on unchanged, and the verb's own parser refuses what it does not know by name.
+  stats | boundary | fb)
+    [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the metrics and boundary verbs live there)"
+    exec "$BIN/letibot" "$@"
+    ;;
+  migrate)
+    # `--store` is appended as the `--migrate` arm does, because the move needs the store this
+    # launcher already resolved and `--help` returns before the flag is read.
+    [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the migration verb lives there)"
+    exec "$BIN/letibot" "$@" --store "$STORE_FILE"
     ;;
   browser)
     # The Chrome extension's bridge (docs/browser.md). Bare, with its flags or one of its verbs
