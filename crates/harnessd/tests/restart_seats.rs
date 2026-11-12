@@ -16,6 +16,7 @@ use letibot_tokencore::store::{
     JobRecord, SessionRecord, StablePrefixRecord, Store, TodoBy, TodoCondition, TodoItem,
     TodoStatus,
 };
+use letibot_tools::builtins::todo::TODO_NAG_AFTER;
 use letibot_transcript::{TranscriptItem, UserPart};
 
 /// The dialect this file configures, named once so the fixture and the config cannot drift.
@@ -272,6 +273,7 @@ fn a_restart_fires_the_row_whose_job_is_gone() {
         .expect("a fresh registry has no session by that name");
     let socket = letibot_sessionlog::testing::socket_path(dir.path(), "harnessd.sock");
     let daemon = Daemon::serve(registry.clone(), &socket).expect("the socket binds");
+    let opening = Instant::now();
     let mut sessions =
         Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
 
@@ -279,10 +281,15 @@ fn a_restart_fires_the_row_whose_job_is_gone() {
     let clock = sessions
         .next_nag_at()
         .expect("the restored session's plan check is armed — the row is Pending");
-    let left = clock.saturating_duration_since(Instant::now());
+    // Armed while the session opened, so bounded by the instants either side of the opening
+    // rather than by how long a loaded host took to get here.
+    let opened = Instant::now();
+    let left = clock.saturating_duration_since(opened);
     assert!(
-        left > Duration::from_secs(55) && left <= Duration::from_secs(60),
-        "the plan check is the only clock this session has, and it is TODO_NAG_AFTER away: {left:?}"
+        clock >= opening + TODO_NAG_AFTER && clock <= opened + TODO_NAG_AFTER,
+        "the plan check is the only clock this session has, and it is TODO_NAG_AFTER away: \
+         {left:?} left, opening took {:?}",
+        opened - opening
     );
     eprintln!(
         "MEASURED: the restored session's only deadline is the idle plan check, {left:?} out — \
