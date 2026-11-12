@@ -351,12 +351,14 @@ pub(crate) const SESSION: SessionKind = SessionKind {
 pub(crate) const WARNING: WarningKind = WarningKind {
     codes: &["target_red"],
     read: warning_card,
+    from_code: true,
 };
 
 /// An unjudged target's hub warnings, `gate_killed` and `gate_setup_failed`.
 pub(crate) const UNJUDGED_WARNING: WarningKind = WarningKind {
     codes: &["gate_killed", "gate_setup_failed"],
     read: unjudged_warning_card,
+    from_code: true,
 };
 
 fn opens_notice(text: &str) -> bool {

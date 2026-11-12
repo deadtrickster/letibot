@@ -110,6 +110,10 @@ pub(crate) struct SessionKind {
 pub(crate) struct WarningKind {
     pub(crate) codes: &'static [&'static str],
     pub(crate) read: fn(&str) -> Option<Card>,
+    /// Whether the card is drawn in its CODE's register. False for the kinds whose verdict is the
+    /// notice's rather than the code's - `restart_restored` is one code for the operator's own
+    /// restart and for a crash that left work running.
+    pub(crate) from_code: bool,
 }
 
 /// Every session notice drawn as a card, in the order they are tried.
@@ -170,13 +174,16 @@ pub(crate) fn session_card(text: &str) -> Option<Card> {
 
 /// The card a hub warning is drawn as, or `None` for a code or a detail no card reads (the
 /// note is then drawn as it always was). Its role is its code's class, not the reader's own: a
-/// reader that hard-coded one is a second answer to the question the log already answered.
+/// reader that hard-coded one is a second answer to the question the log already answered - save
+/// the kinds whose register is per notice, which keep what they read.
 pub(crate) fn warning_card(code: &str, detail: &str) -> Option<Card> {
-    let mut card = WARNING_KINDS
+    let (mut card, from_code) = WARNING_KINDS
         .iter()
         .filter(|k| k.codes.contains(&code))
-        .find_map(|k| (k.read)(detail))?;
-    card.role = crate::ui::severity::role(Some(letibot_sessionlog::warning::role(code)));
+        .find_map(|k| (k.read)(detail).map(|c| (c, k.from_code)))?;
+    if from_code {
+        card.role = crate::ui::severity::role(Some(letibot_sessionlog::warning::role(code)));
+    }
     Some(card)
 }
 

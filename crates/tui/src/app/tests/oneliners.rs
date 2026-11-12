@@ -226,7 +226,7 @@ fn a_hint_outlives_the_facts_at_sixty_eighty_and_a_hundred_and_twenty() {
         ("a verdict", REVIEW_VERDICT, "review ·"),
         ("a refusal", REVIEW_REFUSAL, "review ·"),
         ("a red target", RED_TARGET, "‼ main RED"),
-        ("a restart", RESTARTED, "restarted ·"),
+        ("a restart", RESTARTED, "restarted, stopped by operator"),
     ] {
         let one = |cols: usize| {
             let mut a = with_notice(text);

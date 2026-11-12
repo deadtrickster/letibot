@@ -127,6 +127,7 @@ pub(crate) fn stale_of(detail: &str) -> Option<Stale> {
 pub(crate) const WARNING: WarningKind = WarningKind {
     codes: &["prefix_stale"],
     read: warning_card,
+    from_code: true,
 };
 
 fn warning_card(detail: &str) -> Option<Card> {

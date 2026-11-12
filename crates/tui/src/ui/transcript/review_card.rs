@@ -214,6 +214,7 @@ pub(crate) const WARNING: WarningKind = WarningKind {
         "queue_vm_slots_exhausted",
     ],
     read: warning_card,
+    from_code: true,
 };
 
 fn notice_card(text: &str) -> Option<Card> {

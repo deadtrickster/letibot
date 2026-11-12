@@ -47,43 +47,43 @@ fn every_restart_reads_as_its_one_line() {
             "restart_reminded",
             UNKNOWN_WARNING,
             UNKNOWN_NOTICE,
-            "restarted · stop time unknown · reminded: 1 job · click for details",
+            "crashed, stop time unknown · reminded: 1 job · click for details",
         ),
         (
             "under the threshold, things brought back",
             "restart_restored",
             RESTORED_WARNING,
             RESTORED_NOTICE,
-            "restarted · down 4m12s · restored: 2 subagents, 1 monitor · reminded: 1 job · click \
-             for details",
+            "restarted, stopped by operator · down 4m12s · restored: 2 subagents, 1 monitor · \
+             reminded: 1 job · click for details",
         ),
         (
             "over the threshold, after a crash",
             "restart_reminded",
             LATE_WARNING,
             LATE_NOTICE,
-            "restarted · down ~3h12m · reminded: 1 subagent, 1 monitor, 1 job · click for details",
+            "crashed, down ~3h12m · reminded: 1 subagent, 1 monitor, 1 job · click for details",
         ),
         (
             "under the threshold, only a job",
             "restart_reminded",
             JOBS_ONLY_WARNING,
             JOBS_ONLY_NOTICE,
-            "restarted · down 4s · reminded: 1 job · click for details",
+            "restarted, stopped by operator · down 4s · reminded: 1 job · click for details",
         ),
         (
             "the operator's paste, from the build before",
             "restart_restored",
             PASTED_WARNING,
             PASTED_NOTICE,
-            "restarted · stop time unknown · reminded: 1 job · click for details",
+            "crashed, stop time unknown · reminded: 1 job · click for details",
         ),
         (
             "a restart with nothing to restore",
             "restart_nothing",
             NOTHING_WARNING,
             NOTHING_NOTICE,
-            "restarted · down 4s · click for details",
+            "restarted, stopped by operator · down 4s · click for details",
         ),
     ] {
         let w = warning_restart(warning).unwrap_or_else(|| panic!("{what}: the warning parses"));
@@ -102,6 +102,84 @@ fn every_restart_reads_as_its_one_line() {
     );
 }
 
+/// The store knows an orderly stop from a crash and the card follows it: a restart after
+/// `letibot --stop` is news drawn in no alarm register, and only one nobody asked for needs a
+/// person. Both halves of one event - the hub warning and the session notice - say the same.
+#[test]
+fn an_orderly_restart_is_news_and_only_a_crash_is_attention() {
+    use crate::ui::transcript::line_cards::session_card;
+    use rano::style::Role;
+    for (what, code, warning, notice) in [
+        (
+            "things brought back",
+            "restart_restored",
+            RESTORED_WARNING,
+            RESTORED_NOTICE,
+        ),
+        (
+            "only a job",
+            "restart_reminded",
+            JOBS_ONLY_WARNING,
+            JOBS_ONLY_NOTICE,
+        ),
+        (
+            "nothing running",
+            "restart_nothing",
+            NOTHING_WARNING,
+            NOTHING_NOTICE,
+        ),
+        (
+            "deliveries handed over",
+            "restart_restored",
+            DELIVERED_WARNING,
+            DELIVERED_NOTICE,
+        ),
+    ] {
+        let card = warning_card(code, warning).unwrap_or_else(|| panic!("{what}: no card"));
+        assert_eq!(card.role, Role::Info, "{what}: the warning's register");
+        assert!(
+            card.line.starts_with("restarted, stopped by operator"),
+            "{what}: {}",
+            card.line
+        );
+        let said = session_card(notice).unwrap_or_else(|| panic!("{what}: no session card"));
+        assert_eq!(said.role, Role::Info, "{what}: the notice's register");
+        assert_ne!(
+            said.role,
+            Role::Attention,
+            "{what}: the operator's own restart"
+        );
+    }
+    // A daemon that went down without recording its stop: an estimate from a heartbeat, or no
+    // record at all. That is the one a person is asked to look at.
+    for (what, code, warning, notice) in [
+        (
+            "an estimate from a heartbeat",
+            "restart_reminded",
+            LATE_WARNING,
+            LATE_NOTICE,
+        ),
+        (
+            "no record of the stop",
+            "restart_reminded",
+            UNKNOWN_WARNING,
+            UNKNOWN_NOTICE,
+        ),
+        (
+            "the paste of an older build",
+            "restart_restored",
+            PASTED_WARNING,
+            PASTED_NOTICE,
+        ),
+    ] {
+        let card = warning_card(code, warning).unwrap_or_else(|| panic!("{what}: no card"));
+        assert_eq!(card.role, Role::Attention, "{what}: the warning's register");
+        let said = session_card(notice).unwrap_or_else(|| panic!("{what}: no session card"));
+        assert_eq!(said.role, Role::Attention, "{what}: the notice's register");
+        assert!(said.line.starts_with("crashed, "), "{what}: {}", said.line);
+    }
+}
+
 /// The warning is ONE note line - none of the header's prose, no `/notes` seam - and a click
 /// opens the detail whole.
 #[test]
@@ -109,7 +187,7 @@ fn the_restart_warning_is_one_line_and_opens_whole() {
     let mut a = with_warning("restart_restored", PASTED_WARNING);
     let screen = a.screen(200, 40);
     let joined = screen.join("\n");
-    let line = "restarted · stop time unknown · reminded: 1 job · click for details";
+    let line = "crashed, stop time unknown · reminded: 1 job · click for details";
     assert_eq!(rows_with(&screen, line).len(), 1, "{joined}");
     assert!(!joined.contains("estimated from nothing"), "{joined}");
     assert!(!joined.contains("/notes"), "no `+N lines` seam: {joined}");
@@ -132,7 +210,8 @@ fn the_restart_warning_is_one_line_and_opens_whole() {
     assert_eq!(
         rows_with(
             &screen,
-            "restarted · down 4m12s · restored: 2 subagents, 1 monitor · reminded: 1 job"
+            "restarted, stopped by operator · down 4m12s · restored: 2 subagents, 1 monitor · \
+             reminded: 1 job"
         )
         .len(),
         1,
@@ -148,16 +227,16 @@ fn the_restart_notice_is_one_session_line_and_opens_whole() {
     for (notice, line) in [
         (
             PASTED_NOTICE,
-            "session · restarted · stop time unknown · reminded: 1 job · click for details",
+            "session · crashed, stop time unknown · reminded: 1 job · click for details",
         ),
         (
             UNKNOWN_NOTICE,
-            "session · restarted · stop time unknown · reminded: 1 job · click for details",
+            "session · crashed, stop time unknown · reminded: 1 job · click for details",
         ),
         (
             RESTORED_NOTICE,
-            "session · restarted · down 4m12s · restored: 2 subagents, 1 monitor · reminded: 1 \
-             job · click for details",
+            "session · restarted, stopped by operator · down 4m12s · restored: 2 subagents, 1 \
+             monitor · reminded: 1 job · click for details",
         ),
     ] {
         let mut a = with_notice(notice);
@@ -184,7 +263,11 @@ fn an_empty_restart_notice_is_one_session_line() {
     let screen = a.screen(200, 40);
     let joined = screen.join("\n");
     assert_eq!(
-        rows_with(&screen, "session · restarted · down 4s · click for details").len(),
+        rows_with(
+            &screen,
+            "session · restarted, stopped by operator · down 4s · click for details"
+        )
+        .len(),
         1,
         "{joined}"
     );
@@ -203,7 +286,7 @@ fn an_empty_restart_notice_is_one_session_line() {
 fn a_narrow_screen_cuts_the_restart_line() {
     let mut a = with_warning("restart_restored", RESTORED_WARNING);
     let screen = a.screen(50, 30);
-    let rows = rows_with(&screen, "restarted · down 4m12s");
+    let rows = rows_with(&screen, "restarted, stopped by operator");
     assert_eq!(rows.len(), 1, "{}", screen.join("\n"));
     assert!(rows[0].contains('…'), "{rows:?}");
     for l in &screen {
@@ -320,7 +403,11 @@ fn a_restart_notice_beside_a_job_completion_keeps_both_compact() {
     let screen = a.screen(200, 40);
     let joined = screen.join("\n");
     assert_eq!(
-        rows_with(&screen, "session · restarted · down 4m12s").len(),
+        rows_with(
+            &screen,
+            "session · restarted, stopped by operator · down 4m12s"
+        )
+        .len(),
         1,
         "{joined}"
     );
@@ -377,7 +464,7 @@ fn a_restart_warning_and_its_notice_are_one_line() {
         let screen = a.screen(200, 40);
         let joined = screen.join("\n");
         assert_eq!(
-            rows_with(&screen, "restarted · down 4m12s").len(),
+            rows_with(&screen, "restarted, stopped by operator · down 4m12s").len(),
             1,
             "warning first: {warning_first}\n{joined}"
         );
@@ -472,7 +559,8 @@ fn a_card_popup_keeps_its_text_when_no_row_repeats_its_header() {
 /// counted on its line and in the popup, never drawn as a fold with a line per child under it.
 #[test]
 fn a_restart_and_the_children_it_handed_over_are_one_line() {
-    let line = "restarted · down 2s · restored: 12 subagents · click for details";
+    let line = "restarted, stopped by operator · down 2s · restored: 12 subagents · click for \
+                details";
     assert_eq!(
         warning_restart(DELIVERED_WARNING)
             .expect("the warning parses")
@@ -549,7 +637,7 @@ fn a_restart_and_the_children_it_handed_over_are_one_line() {
         let screen = a.screen(200, 40);
         let joined = screen.join("\n");
         assert_eq!(
-            rows_with(&screen, "restarted · down 2s").len(),
+            rows_with(&screen, "restarted, stopped by operator · down 2s").len(),
             1,
             "warning first: {warning_first}\n{joined}"
         );
@@ -571,7 +659,8 @@ fn a_restart_with_a_job_beside_its_deliveries_keeps_the_job() {
     assert_eq!(
         rows_with(
             &screen,
-            "session · restarted · down 2s · restored: 12 subagents · click for details"
+            "session · restarted, stopped by operator · down 2s · restored: 12 subagents · click \
+             for details"
         )
         .len(),
         1,

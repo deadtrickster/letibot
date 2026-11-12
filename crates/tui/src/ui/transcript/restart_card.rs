@@ -2,16 +2,21 @@
 //! job card opens. The shapes it folds:
 //!
 //! ```text
-//! restarted · down 4m12s · restored: 2 subagents, 1 monitor · reminded: 1 job · click for details
-//! restarted · down ~3h12m · reminded: 1 subagent, 1 monitor, 1 job · click for details
-//! restarted · stop time unknown · reminded: 1 job · click for details
-//! restarted · down 1s · click for details
-//! session · restarted · down 4m12s · restored: 2 subagents, 1 monitor · reminded: 1 job · click for details
+//! restarted, stopped by operator · down 4m12s · restored: 2 subagents, 1 monitor · reminded: 1 job · click for details
+//! crashed, down ~3h12m · reminded: 1 subagent, 1 monitor, 1 job · click for details
+//! crashed, stop time unknown · reminded: 1 job · click for details
+//! restarted, stopped by operator · down 1s · click for details
+//! session · restarted, stopped by operator · down 4m12s · restored: 2 subagents, 1 monitor · reminded: 1 job · click for details
 //! ```
 //!
 //! The counts come from the hub warning or the session notice, whichever opened the row; an unrecognised line is `None` and the popup keeps the text.
+//!
+//! The register follows what the store knows: an orderly `letibot --stop` records its own stop time,
+//! so a down time that is not an estimate is the operator's own act and draws as news. Anything else
+//! - an estimate from a heartbeat, or no record at all - is a daemon that went down unwatched, and
+//! that is the one a person has to look at.
 
-use rano::style::Role;
+use letibot_sessionlog::pane::Role as Meaning;
 
 use crate::ui::transcript::line_cards::{CLICK, Card, SessionKind, WarningKind};
 
@@ -94,16 +99,23 @@ pub(crate) struct Restart {
 }
 
 impl Restart {
-    /// `restarted · down 4m12s`.
+    /// Whether the store has this daemon's own stop time - an orderly `letibot --stop` - rather
+    /// than an estimate from a heartbeat, or no record at all.
+    fn orderly(&self) -> bool {
+        match self.down {
+            Down::Known { estimated, .. } => !estimated,
+            Down::Unknown => false,
+        }
+    }
+
+    /// `restarted, stopped by operator · down 4m12s` - or the crash's own two words.
     fn head(&self) -> String {
         match &self.down {
-            Down::Known { span, estimated } => {
-                format!(
-                    "restarted · down {}{span}",
-                    if *estimated { "~" } else { "" }
-                )
+            Down::Known { span, .. } if self.orderly() => {
+                format!("restarted, stopped by operator · down {span}")
             }
-            Down::Unknown => "restarted · stop time unknown".into(),
+            Down::Known { span, .. } => format!("crashed, down ~{span}"),
+            Down::Unknown => "crashed, stop time unknown".into(),
         }
     }
 
@@ -124,9 +136,21 @@ impl Restart {
     }
 
     fn card(&self) -> Card {
-        // The register is `warning::class`'s when the row came from a hub warning; this is the one
-        // a session notice falls back to, and a restart is news rather than a question.
-        Card::new(self.line(), 0, "restarted", Role::Warning, self.head())
+        // The verdict is this notice's, not the code's: `restart_restored` is one code for the
+        // operator's own restart and for a crash, and only the second is worth a person's eyes.
+        // The colour still comes from the head's one meaning-to-role mapping.
+        let (meaning, word) = if self.orderly() {
+            (Meaning::Info, "restarted")
+        } else {
+            (Meaning::Attention, "crashed")
+        };
+        Card::new(
+            self.line(),
+            0,
+            word,
+            crate::ui::severity::role(Some(meaning)),
+            self.head(),
+        )
     }
 }
 
@@ -292,10 +316,12 @@ pub(crate) const SESSION: SessionKind = SessionKind {
     carries: &["[task] "],
 };
 
-/// And its hub warnings.
+/// And its hub warnings. Its register is the notice's, not the code's: two of the three codes are
+/// raised for an orderly stop and for a crash alike.
 pub(crate) const WARNING: WarningKind = WarningKind {
     codes: &["restart_restored", "restart_reminded", "restart_nothing"],
     read: warning_card,
+    from_code: false,
 };
 
 fn opens_notice(text: &str) -> bool {
