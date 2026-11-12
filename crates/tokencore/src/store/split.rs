@@ -18,9 +18,9 @@ use std::sync::{Arc, Mutex, Weak, mpsc};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
-    CORPUS_INDEXES_SQL, READER_FLOOR_SQL, Result, SCHEMA_SQL, SCHEMA_VERSION, SESSION_INDEXES_SQL,
-    Store, StoreError, citations, leases, marks, modes, pragmas, procs, prompts, queues, seat,
-    subagents, told, writers,
+    CORPUS_INDEXES_SQL, READER_FLOOR_SQL, RECALL_SQL, Result, SCHEMA_SQL, SCHEMA_VERSION,
+    SESSION_INDEXES_SQL, Store, StoreError, citations, leases, marks, modes, pragmas, procs,
+    prompts, queues, seat, subagents, told, writers,
 };
 
 /// The shared file, beside the directory project files are in (§ The shape).
@@ -84,6 +84,9 @@ pub const PROJECT_TABLES: &[&str] = &[
     "subagent_run",
     // written by the session that asked and read back out of this file (§ The corpus)
     "adjudication",
+    // the project's own past conversation, indexed for recall: the folder's history, so the
+    // folder's file, and no key to filter because every row in it is this project's
+    "recall_unit",
 ];
 
 /// Shared file - what is read across folders or arbitrated between daemons. The doc's list plus the
@@ -156,7 +159,7 @@ pub fn tables_in(file: StoreFile) -> impl Iterator<Item = &'static str> {
 
 /// The batches `Store::migrate` builds a fresh file from, in its own order, plus the reader-floor
 /// table its `ensure_reader_floor` runs. One list, so a batch added there is routed or refused here.
-pub(super) fn batches() -> [&'static str; 16] {
+pub(super) fn batches() -> [&'static str; 17] {
     [
         SCHEMA_SQL,
         SESSION_INDEXES_SQL,
@@ -173,6 +176,7 @@ pub(super) fn batches() -> [&'static str; 16] {
         procs::PROCS_SQL,
         leases::LEASES_SQL,
         prompts::PROMPTS_SQL,
+        RECALL_SQL,
         READER_FLOOR_SQL,
     ]
 }

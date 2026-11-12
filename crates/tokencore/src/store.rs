@@ -37,12 +37,14 @@ mod leases;
 mod marks;
 mod procs;
 mod prompts;
+mod recall;
 mod seat;
 pub mod split;
 mod told;
 pub use leases::{Ask, FIRST_PORT, LEASES_SQL, Lease};
 pub use procs::{Check, PROCS_SQL, ProcState, ProcessRecord};
 pub use prompts::{PROMPTS_SQL, QueuedPrompt};
+pub use recall::{RECALL_SQL, RecallUnit};
 pub use seat::SeatJob;
 pub use told::Told;
 
@@ -195,7 +197,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 46;
+pub const SCHEMA_VERSION: i64 = 47;
 
 /// What this row's columns mean. Stamped on every corpus row, because a column can keep its
 /// name and its type while changing what it records, and a trainer that pools two meanings
@@ -1797,6 +1799,7 @@ impl Store {
         self.conn().execute_batch(procs::PROCS_SQL)?;
         self.conn().execute_batch(leases::LEASES_SQL)?;
         self.conn().execute_batch(prompts::PROMPTS_SQL)?;
+        self.conn().execute_batch(recall::RECALL_SQL)?;
         self.conn().execute("DELETE FROM schema_version", [])?;
         self.conn().execute(
             "INSERT INTO schema_version (version) VALUES (?1)",
@@ -2468,6 +2471,12 @@ impl Store {
                     "ALTER TABLE queued_prompt ADD COLUMN context_json TEXT NOT NULL DEFAULT ''",
                 )?;
             }
+        }
+        if from < 47 {
+            // v47: the recall index - a project's past conversation as units, with the tier's
+            // vector for each. Additive: a store never searched for its own history has an empty
+            // table, which is exactly what it had before.
+            self.conn().execute_batch(recall::RECALL_SQL)?;
         }
         Ok(())
     }

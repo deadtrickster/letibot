@@ -857,11 +857,15 @@ pub fn default_section(name: &str, f: &SeatFacts) -> Option<String> {
             }
             if f.has("transcript") {
                 s.push_str(
-                    "If the user refers to something as already settled and you have no record \
-                     of it, read it with `transcript` before asking them to repeat it: a \
-                     compaction replaced those turns with a summary, and the turns are still in \
-                     the store. ",
+                    "When the user refers to past work - \"remember we did that?\", \"like last \
+                     time\", \"have we tried this before?\" - look it up with `transcript` before \
+                     answering from memory or asking them to repeat it: a compaction replaced those \
+                     turns with a summary, and the turns are still in the store",
                 );
+                s.push_str(match f.has("digest") {
+                    true => ", with `digest` when the match is large enough to fold. ",
+                    false => ". ",
+                });
             }
             let web: Vec<&str> = ["`web_search`", "`web_fetch`"]
                 .into_iter()

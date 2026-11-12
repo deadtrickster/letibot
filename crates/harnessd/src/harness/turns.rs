@@ -1864,6 +1864,30 @@ impl Harness {
             true => crate::done_offer::records(&self.cfg.workspace),
             false => Vec::new(),
         };
+        // And what this project already talked about, for the person who asks "remember we did
+        // that?": the index of turns the prompt no longer carries, and the two tools that reach
+        // them. Built once per turn, and not at all when the seat has not got `transcript` - a
+        // hint naming a tool the session cannot call is a round spent on a refusal.
+        let mut recall = crate::recall_offer::Offers::new()
+            .with_tier(self.cfg.tier())
+            .with_tools(seat_tools.iter());
+        recall.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
+        if recall.seated() && !self.compacting && !self.cheap_turn {
+            let model = self
+                .cfg
+                .embedder
+                .get()
+                .map(|e| e.model())
+                .unwrap_or_default();
+            let built = crate::recall_index::build(
+                self.store.as_ref(),
+                &self.cfg.workspace,
+                Some(&self.session.transcript_id),
+                &model,
+                self.cfg.tier().as_ref(),
+            );
+            recall.units(built.units, built.vectors);
+        }
         // The bodies this session was STARTED with are not news to it. The ones its own rounds load
         // are read per round, below, because they are in the transcript only once that round ran.
         skill_offers.skip_names(self.cfg.skills.iter());
@@ -1882,7 +1906,7 @@ impl Harness {
                 let notes =
                     crate::standing_notes::Reader::new(&*self.runtime.backend, &self.cfg.workspace)
                         .with_notes(self.cfg.project_notes());
-                // One subject for all four offers, embedded at most once and only when words
+                // One subject for all five offers, embedded at most once and only when words
                 // leave the score undecided: the model's latest words, then the prompt and results.
                 let shared = Some(
                     letibot_tools::similarity::bounded(&format!(
@@ -1895,7 +1919,8 @@ impl Harness {
                 offers.share_round(shared.clone());
                 skill_offers.share_round(shared.clone());
                 waits.share_round(shared.clone());
-                done.share_round(shared);
+                done.share_round(shared.clone());
+                recall.share_round(shared);
                 offers.compose(
                     &notes,
                     &self.cfg.global_notes(),
@@ -1921,11 +1946,18 @@ impl Harness {
                 let rows = self.open_rows();
                 waits.compose(&rows, &brief);
                 done.compose(&done_records, &brief);
+                // The person's own words are the trigger and the subject is what they are doing:
+                // a back-reference in a tool's output is nobody referring back.
+                recall.compose(
+                    &crate::notes_offer::subject(&self.session.items),
+                    &crate::recall_offer::operator_text(&self.session.items),
+                );
             }
             let mut tail = offers.tail();
             tail.extend(skill_offers.tail());
             tail.extend(waits.tail());
             tail.extend(done.tail());
+            tail.extend(recall.tail());
             // Take the round again when the endpoint is what failed: an inner loop, so a retry does not spend a
             // `max_tool_rounds`, since it produced nothing. And `/models` is ANSWERED here but not APPLIED, because a
             // re-issued round carries the rest of the old turn, which a thinking-mode provider refuses.
@@ -2047,6 +2079,9 @@ impl Harness {
             let mut staged = self.offer_rows(note_offer.as_ref(), &skill_taken);
             waits.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
             done.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
+            // The recall hint's take-up: the round's own `transcript`/`digest` call, matched on the
+            // term the hint named. Logged either way, because the ratio is what tunes the floor.
+            recall.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
             // What the agent says it is doing, recorded before its calls are adjudicated: the sentence in front of its
             // tool calls is what the guard is missing when the operator's instruction names a goal rather than a file.
             // Never an authorisation and never citable.

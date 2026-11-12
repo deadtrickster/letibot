@@ -79,6 +79,8 @@ pub mod plugins;
 pub mod pr_watch;
 pub mod progress;
 pub mod prompt;
+pub mod recall_index;
+pub mod recall_offer;
 pub mod restart;
 pub mod room;
 pub mod selfverbs;
