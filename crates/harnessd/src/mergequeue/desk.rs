@@ -1365,8 +1365,20 @@ mod tests {
         );
 
         // And by its path, which is the same repository.
+        // The two reads are a wall-clock second apart under load, so the age is masked.
         let by_path = desk.status(false, Some(&other)).unwrap();
-        assert_eq!(by_path, said);
+        assert_eq!(without_ages(&by_path), without_ages(&said));
+    }
+
+    /// `text` with every `(... ago)` age cut, so two reads of one state compare equal.
+    fn without_ages(text: &str) -> String {
+        text.lines()
+            .map(|l| match (l.find('('), l.find(" ago)")) {
+                (Some(a), Some(b)) if a < b => format!("{}{}", &l[..a], &l[b + 5..]),
+                _ => l.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// A name that matches two repositories is refused in words that name both - picking one is how a
