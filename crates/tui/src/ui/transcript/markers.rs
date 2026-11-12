@@ -113,20 +113,32 @@ const NO_STRETCH: u32 = u32::MAX;
 impl<'a> RunIndex<'a> {
     /// One pass over the rows, asking the same predicates the per-row walks asked: a stretch is
     /// a maximal run of rows [`row_drawn_at`] refuses, and `hidden` is folded while it grows.
+    ///
+    /// `think` is the thinking fold, and it is the second thing that hides a row: a folded thought
+    /// draws NOTHING - no header, no stub - so one of its rows is hidden at every rung, and a run of
+    /// them must leave its marker. The rung alone cannot say so, and reading only the rung made a
+    /// landed thought vanish from the screen with nothing standing for it.
     pub(crate) fn of(
         items: &'a [SnapshotItem],
         vis: Visibility,
         bound: &std::collections::HashMap<String, String>,
+        think: Fold,
     ) -> RunIndex<'a> {
         let hides = vis.hides_the_working();
+        let folded_thought = think == Fold::Folded;
         let mut of_row = vec![NO_STRETCH; items.len()];
         let mut stretches: Vec<(usize, usize, bool)> = Vec::new();
         let mut by_id = std::collections::HashMap::with_capacity(items.len());
         let mut open: Option<(usize, bool)> = None;
         for (r, it) in items.iter().enumerate() {
             by_id.entry(it.item_id.as_str()).or_insert(r);
-            if hides && !row_drawn_at(vis, bound, it) {
-                let hidden = row_hidden_at(vis, Some(it));
+            let folded = folded_thought
+                && matches!(
+                    it.item,
+                    Some(letibot_transcript::TranscriptItem::Reasoning { .. })
+                );
+            if folded || (hides && !row_drawn_at(vis, bound, it)) {
+                let hidden = folded || row_hidden_at(vis, Some(it));
                 match open.as_mut() {
                     Some((_, h)) => *h |= hidden,
                     None => open = Some((r, hidden)),
@@ -623,15 +635,23 @@ pub(crate) fn hidden_run_marker(
     // Is the work in flight this run's: the fact that decides whether the in-flight counts continue this marker.
     // Computed by the callers through [`run_carries_live`], which is where the two clauses live.
     live_here: bool,
+    // The thinking fold, the second thing that hides a row: a folded thought draws nothing at all, so a run of
+    // them is invisible at every rung and its marker owes the count.
+    think: Fold,
 ) -> Marker {
     let live = facts.live;
     let mut calls = 0usize;
     let mut think_lines = 0usize;
     let mut events = 0usize;
-    // Per row, and only the rows this rung actually hides: a run normally starts at an assistant row with no prose,
+    // Per row, and only the rows this run actually hides: a run normally starts at an assistant row with no prose,
     // which is invisible and not hidden, so a guard keyed on the start would count nothing.
     for r in start..end {
-        if !row_hidden(items, vis, r) {
+        let folded = think == Fold::Folded
+            && matches!(
+                items[r].item.as_ref(),
+                Some(letibot_transcript::TranscriptItem::Reasoning { .. })
+            );
+        if !folded && !row_hidden(items, vis, r) {
             continue;
         }
         match items[r].item.as_ref() {

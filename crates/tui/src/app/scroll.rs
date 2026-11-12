@@ -79,7 +79,12 @@ impl App {
     /// one. Derived state that cannot go stale is cheaper than an invalidation hook every
     /// mutation site would have to remember (R123.3).
     pub(crate) fn runs_index(&self) -> RunIndex<'_> {
-        RunIndex::of(&self.items, self.visibility, &self.bound_prompts)
+        RunIndex::of(
+            &self.items,
+            self.visibility,
+            &self.bound_prompts,
+            self.reasoning,
+        )
     }
 
     /// Where the marker counting row `idx` is drawn: the start of the stretch of undrawn rows it
@@ -217,7 +222,12 @@ impl App {
         // The runs and the ids, once for the whole walk: the questions below are asked per
         // row, and re-deriving them from `items` per row is what made one long hidden run
         // quadratic (R123.3).
-        let runs = RunIndex::of(&self.items, self.visibility, &self.bound_prompts);
+        let runs = RunIndex::of(
+            &self.items,
+            self.visibility,
+            &self.bound_prompts,
+            self.reasoning,
+        );
         // The calls in force and the ids answered, carried down the walk rather than
         // rescanned per row: both hold until the walk crosses the row that changes them,
         // which is the row the scans would have stopped at anyway.
@@ -333,6 +343,7 @@ impl App {
                     newest_run == Some(start),
                     MarkerFacts::of(live, newest_run),
                     live_here,
+                    think,
                 )
             });
             let (body_class, body) = if (open_run || unseen.is_none()) && !skipped {

@@ -1179,8 +1179,7 @@ fn the_thinking_count_never_falls_not_even_when_its_reasoning_lands() {
         },
     );
     let after_landing = shown(&mut a);
-    // The invariant this test names, read off the head rather than off a marker line: the row took
-    // the words over ONCE and the live count did not keep them as well.
+    // The row took the words over ONCE and the live count did not keep them as well.
     let handed = a.turn.as_ref().map(|t| t.reasoned_rows).unwrap_or(0);
     assert!(
         handed >= 1,
@@ -1192,11 +1191,15 @@ fn the_thinking_count_never_falls_not_even_when_its_reasoning_lands() {
             .is_some_and(|t| t.reasoning.raw().is_empty()),
         "the live reasoning still holds what the row carries, so it is counted twice"
     );
-    // And the marker this fixture used to read the count off is NOT drawn here: a lone folded
-    // reasoning row reaches `unseen_run_at` with `hidden == false` and `live.work() == 0`, so no
-    // marker stands for it. That is a defect of the run index and not of this rule and it predates
-    // R202 - the same fixture fails at the parent commit when its `log_gap` note is taken away,
-    // which is all the note was doing here. See R202's row, `left`.
+    // And the count on the GLASS did not fall: a folded thought draws nothing, so its run must
+    // leave a marker standing for it - a row the reader cannot see is a row the record lost. This
+    // assertion is what pinned that: the run index used to read only the rung, so a lone folded
+    // thought left neither the row nor a marker.
+    assert!(
+        after_landing >= last,
+        "the count fell when its reasoning landed as a row — it was counting the same work \
+             twice, and the run left no marker: {last} → {after_landing}"
+    );
 
     // And the next round rebuilds the pane, which is when the inflated number collapsed:
     // the committed row still counts, and nothing else disappears with the pane.

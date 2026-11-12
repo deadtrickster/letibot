@@ -154,7 +154,11 @@ impl App {
         // A marker with no row joins the sentence above it, and the joining happens here: the pane pushes the
         // marker while `hist_lines` is lent to the frame, so the mutation of that buffer's last line is decided
         // one statement before the borrow. The row above must be the model's prose.
+        // The join is taken back so the next walk can make it again - and ONLY while there is live
+        // work to re-join: after hand-over the counts are 0, the walk need not run again, and taking
+        // the line back would leave a folded run with no marker at all (its marker IS this line).
         if let Some((original, marker)) = self.live_join.take()
+            && live.work() > 0
             && let Some(at) = self
                 .hist_lines
                 .iter()
@@ -165,7 +169,12 @@ impl App {
         // Has the walk already carried the in-flight counts? It folds them into the run the current turn is
         // working in, and if it has, a marker here would be a second one for one turn's work.
         // The runs, once: the walk built its own while it held the fields (R123.3).
-        let runs = RunIndex::of(&self.items, self.visibility, &self.bound_prompts);
+        let runs = RunIndex::of(
+            &self.items,
+            self.visibility,
+            &self.bound_prompts,
+            self.reasoning,
+        );
         let walk_carried_live = live.work() > 0
             && facts.run.is_some_and(|start| {
                 unseen_run_at(&runs, live, start).is_some_and(|(s0, e0)| {
@@ -781,7 +790,7 @@ impl App {
         // The runs and the ids, once per frame: the questions below are per row, and
         // re-deriving them from `items` per row is what made a long hidden run
         // quadratic (R123.3).
-        let runs = RunIndex::of(items, *visibility, bound_prompts);
+        let runs = RunIndex::of(items, *visibility, bound_prompts, think);
         // The run `ctrl-t` opens, computed once per frame: the seam names the chord only on the run it acts on,
         // and asking per row would be a scan of the transcript for every row drawn.
         let newest_run = newest_unseen_run(&runs, live);
@@ -992,6 +1001,7 @@ impl App {
                             newest_run == Some(start),
                             MarkerFacts::of(live, newest_run),
                             live_here,
+                            think,
                         );
                         // Glued to the sentence it continues when there is one: the last drawn row is
                         // [`RowClass::Speech`] and the joined line still fits the frame. Otherwise it stands alone,
@@ -1001,7 +1011,17 @@ impl App {
                             hist_lines
                                 .iter()
                                 .rposition(|l| !l.trim().is_empty())
-                                .map(|at| format!("{} {painted}", hist_lines[at].trim_end()))
+                                // Idempotent: a line that already carries this marker is the one
+                                // this head joined on an earlier frame, and a second copy of it
+                                // would count the same run twice.
+                                .map(|at| {
+                                    let base = hist_lines[at].trim_end();
+                                    if base.ends_with(painted.as_str()) {
+                                        base.to_string()
+                                    } else {
+                                        format!("{base} {painted}")
+                                    }
+                                })
                                 .filter(|l| visible_width(l) <= cfg.width)
                         } else {
                             None

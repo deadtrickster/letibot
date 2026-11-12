@@ -4224,7 +4224,7 @@ fn every_fact_the_marker_draws_is_a_fact_the_key_holds() {
     };
     let vis = Visibility::of(Profile::CONVERSATION);
     let paint = |facts: MarkerFacts| {
-        hidden_run_marker(&[], 0, 0, vis, &cfg, true, facts, true).painted(&cfg)
+        hidden_run_marker(&[], 0, 0, vis, &cfg, true, facts, true, Fold::Folded).painted(&cfg)
     };
     let live = |calls: usize, running: usize, think_lines: usize| LiveWork {
         calls,
