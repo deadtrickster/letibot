@@ -615,6 +615,16 @@ pub trait ReviewFloor: Send + Sync {
     fn floor(&self, decision: &str) -> Option<String>;
 }
 
+/// What a close leaves behind that the worker may not be able to reach. A session closed while its
+/// turn is inside a tool call still holds whatever that tool was using - for a VM placement, a
+/// running guest - and a VM nobody brings down is a machine the next session cannot boot on. The
+/// close is served off the worker for that reason, and this is the door it is handed.
+pub trait CloseSettler: Send + Sync {
+    /// The session is closed here. Called on the connection's thread, once per close: it must not
+    /// block, and the work it starts says its own end.
+    fn closed(&self, session_id: &str);
+}
+
 /// Who answers a plugin pane's questions and lists the panes a head needs before it can open
 /// one. A trait for [`SessionSource`]'s reason: the stack belongs to the harness, not here.
 pub trait PaneDriver: Send + Sync {
@@ -836,6 +846,9 @@ pub struct Registry {
     /// The GitHub reviewer seat (R118), set once at startup by the daemon. See [`GithubSeat`].
     /// `None` means a `Github` frame is refused by name and the pane is handed no `github` feed.
     github: Mutex<Option<Arc<dyn GithubSeat>>>,
+    /// Set once at startup by the daemon. See [`CloseSettler`]: a closed session's placement, which
+    /// may have to be settled without the worker that owns its harness.
+    close_settler: Mutex<Option<Arc<dyn CloseSettler>>>,
     /// The daemon's `review_verdict` floor (K5), filled when the review queue's session opens: the
     /// seat is the daemon's and the stack is a session's, so the panel is handed one by a slot.
     /// `None` is a daemon whose panel judges exactly as it did before the hook existed.
@@ -986,6 +999,7 @@ impl Registry {
             suggester: Mutex::new(None),
             terminal: Mutex::new(None),
             github: Mutex::new(None),
+            close_settler: Mutex::new(None),
             review_floor: Mutex::new(None),
             prompts: Mutex::new(std::collections::HashMap::new()),
             pane_drivers: Mutex::new(std::collections::HashMap::new()),
@@ -1304,6 +1318,19 @@ impl Registry {
     /// The GitHub reviewer seat, or `None` on a daemon that was given none.
     pub fn github(&self) -> Option<Arc<dyn GithubSeat>> {
         self.github
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Who settles a close here. See [`CloseSettler`]. Installed once, by the daemon.
+    pub fn set_close_settler(&self, settler: Arc<dyn CloseSettler>) {
+        *self.close_settler.lock().unwrap_or_else(|e| e.into_inner()) = Some(settler);
+    }
+
+    /// What settles a close here, or `None` for a registry nobody gave one.
+    pub fn close_settler(&self) -> Option<Arc<dyn CloseSettler>> {
+        self.close_settler
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()

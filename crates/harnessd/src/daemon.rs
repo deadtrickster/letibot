@@ -375,7 +375,23 @@ impl Daemon {
                     // store. Opened HERE, on the worker, rather than on the connection thread that asked
                     Work::Open(session_id) => {
                         match sessions.open(&session_id) {
-                            Err(e) => eprintln!("  {session_id} · not opened: {e}"),
+                            // Said on the SESSION and not only on stderr: a worker that could not
+                            // open it leaves a head attached to something that will never answer,
+                            // and the sentence is the only thing that tells it why.
+                            Err(e) => {
+                                eprintln!("  {session_id} · not opened: {e}");
+                                if let Some(hub) = self.registry().get(&session_id) {
+                                    hub.warn(
+                                        "open_failed",
+                                        format!(
+                                            "this session did not open, so nothing will run in \
+                                             it: {e}. Nothing of it is lost — its rows are in \
+                                             the store, and `letibot --session {session_id}` \
+                                             opens it again"
+                                        ),
+                                    );
+                                }
+                            }
                             // Already open: the daemon's own first session, whose banner
                             // was printed at startup. Saying it twice would suggest two
                             // resumes happened.

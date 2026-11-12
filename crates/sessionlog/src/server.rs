@@ -1748,7 +1748,13 @@ pub fn serve_conn_rooted(
                 // Closed before it is acked: `--migrate` copies the session the moment it reads
                 // `Accepted`, so the answer has to mean the rows are already written.
                 let seq = seat.hub.head_seq();
-                registry.close_session(&session);
+                let held = registry.close_session(&session);
+                // And then whatever the close left that the worker may never reach: a turn inside a
+                // tool call holds the harness, and the VM that tool was using goes with this answer
+                // rather than with a `Work::Close` the worker cannot serve while it is stuck.
+                if held && let Some(settler) = registry.close_settler() {
+                    settler.closed(&session);
+                }
                 let f = crate::protocol::ServerFrame::Accepted {
                     client_request_id,
                     seq,

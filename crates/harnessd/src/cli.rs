@@ -1343,6 +1343,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         }
     }
     registry.set_terminal(std::sync::Arc::new(terminals));
+    // A close settles its session's placement here when the worker cannot: a turn inside a tool
+    // call holds the harness, and the guest that call is in would otherwise outlive the session.
+    crate::close_settle::install(&registry);
     // The stored row's parent and name come in with the first session, read once
     // here at startup
     let stored = registry.resumable(&cfg.session_id);
