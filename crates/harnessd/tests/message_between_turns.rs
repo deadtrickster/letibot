@@ -1516,13 +1516,13 @@ fn a_message_the_turn_never_read_is_a_row_anyway() {
     // Which door wrote it, said on the log - `message_carried` is the sentence
     // `keep_the_words_it_never_read` publishes and nothing else does; without it the assertions
     // above would also pass on a build where a step boundary appended the item.
-    assert!(
-        warnings(&child)
-            .iter()
-            .any(|(code, detail)| code == "message_carried" && detail.contains(MESSAGE)),
-        "the row was written by the carried-set drain, not by a step boundary: {:#?}",
-        warnings(&child)
-    );
+    // Waited for, not read once: the drain publishes the row, persists it, and only then says so.
+    wait_for(&child, |hub| {
+        warnings(hub)
+            .into_iter()
+            .find(|(code, detail)| code == "message_carried" && detail.contains(MESSAGE))
+            .map(|(_, detail)| detail)
+    });
     // And it is in the store, which is what a resume replays - so a later reader sees the
     // parent spoke, and sees it once.
     let stored = stored_user_rows(&path, &handle);
