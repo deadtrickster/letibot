@@ -349,6 +349,12 @@ impl Ring {
     }
 }
 
+/// The `/models` line, spelled once: the send that waits and the one that does not must reach the
+/// daemon as the same command, or a queued switch and a waited-for one would be two different verbs.
+fn model_line(want: &str) -> String {
+    format!("models {}", want.trim())
+}
+
 /// The first line of a message, cut to `max` characters. Characters rather than
 /// bytes, and the ellipsis counts inside the budget: an entry that overran its own cap to
 /// say it was cut would be the cap lying.
@@ -2027,6 +2033,17 @@ impl Head {
         self.set_model_within(want, MODEL_PATIENCE)
     }
 
+    /// Send the same `/models` line and do not wait for its answer: a session whose worker is still
+    /// opening queues it and applies it, in the order the commands arrived, when it does. A refusal
+    /// is not lost - the daemon says it as a warning on the session, which `leticode_status` shows.
+    pub fn queue_model(&self, want: &str) -> Result<(), String> {
+        self.may_write()?;
+        let mut c = self.said_client()?;
+        c.slash(0, &model_line(want))
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     /// Tell the daemon to put this session out of sight - `archive` on the frame, which closes it
     /// here and writes the row there. Nothing is deleted; the frame's answer is a `Sessions` list
     /// the head applies like any other, so this returns as soon as the frame is written.
@@ -2041,7 +2058,7 @@ impl Head {
     /// [`Head::set_model`] with the wait named, so the silence it reports is testable.
     pub fn set_model_within(&self, want: &str, patience: Duration) -> Result<String, String> {
         self.may_write()?;
-        let line = format!("models {}", want.trim());
+        let line = model_line(want);
         let before = {
             let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
             g.slashes

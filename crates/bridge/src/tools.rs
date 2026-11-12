@@ -380,11 +380,29 @@ impl Bridge {
         // Each session's model is its own, and this is the half that makes it so: the daemon's
         // `--provider` is the DEFAULT, so a session joining a running daemon would otherwise answer
         // every turn on whatever its first session chose. `/models` is per session.
+        //
+        // A session whose tools run somewhere else is QUEUED rather than waited for: its worker
+        // opens the remote tree or boots a guest first, which on a loaded box is minutes, and a
+        // start that waited would give up with the model, the mode and the brief all unsent. The
+        // three go out in that order because the daemon applies one session's commands in the
+        // order they arrived - which is what makes a queued model still the one the brief runs on.
+        let placed = placement.is_vm() || placement.host().is_some();
+        let mut queued: Vec<&str> = Vec::new();
         if let Some(m) = model.filter(|m| !m.trim().is_empty()) {
-            match h.set_model(m) {
-                Ok(said) => {
-                    answer["model"] = json!(m);
+            let set = if placed {
+                h.queue_model(m)
+            } else {
+                h.set_model(m).map(|said| {
                     answer["model_said"] = json!(said);
+                })
+            };
+            match set {
+                Ok(()) => {
+                    answer["model"] = json!(m);
+                    if placed {
+                        answer["model_queued"] = json!(true);
+                        queued.push("model");
+                    }
                 }
                 Err(why) => {
                     // Held: the session exists and a caller that wants to ask why must be able to
@@ -410,12 +428,28 @@ impl Bridge {
             answer["mode_error"] = json!(e);
         } else {
             answer["mode"] = json!(mode);
+            if placed {
+                queued.push("mode");
+            }
         }
-        let queued = h.prompt(brief);
+        let sent = h.prompt(brief);
         // Held even when the send failed: the session exists, and a caller that wants to
         // ask why must be able to reach it by the id it was told.
         self.hold(&h);
-        queued?;
+        sent?;
+        if placed {
+            queued.push("brief");
+            answer["queued"] = json!(queued);
+            // The sentence a caller reads instead of polling: the three went out in the order the
+            // daemon applies them, so no further call is needed to send the brief.
+            answer["state"] = json!(if placement.is_vm() {
+                "queued until the VM is up: the model, the mode and the brief are applied in that \
+                 order when the session's worker opens"
+            } else {
+                "queued until the session is open there: the model, the mode and the brief are \
+                 applied in that order when its worker opens"
+            });
+        }
         Ok(answer)
     }
 
@@ -748,6 +782,21 @@ impl Bridge {
             return Err("`mode` is empty: name the approval point, e.g. `writes-allowed`".into());
         }
         let h = self.head(session)?;
+        // Inside a VM the boundary IS the guest, so `allow-all` there needs nobody - and before the
+        // worker has opened there is nobody who could be asked. The point is queued instead of a
+        // card being put in front of a person who would be answering a question already settled.
+        if in_a_vm(&h) {
+            h.set_mode(mode.trim())?;
+            return Ok(json!({
+                "session": session,
+                "mode": mode.trim(),
+                "queued": true,
+                "answer": "nobody",
+                "said": "queued: a firecode VM is the boundary, so `allow-all` inside one needs no \
+                         confirmation. It is applied, in order behind the model, when the session's \
+                         worker opens",
+            }));
+        }
         let settled = h.ask_mode(mode.trim(), MODE_PATIENCE)?;
         Ok(json!({
             "session": session,
@@ -773,6 +822,18 @@ impl Bridge {
             );
         }
         let h = self.head(session)?;
+        // The same rule as the mode: a session whose worker is opening cannot answer `/models`, and
+        // giving up on it is how a package's brief came to run on the daemon's own model.
+        if in_a_vm(&h) {
+            h.queue_model(model)?;
+            return Ok(json!({
+                "session": session,
+                "model": model,
+                "queued": true,
+                "said": "queued until the VM is up: the switch is applied, in order, when the \
+                         session's worker opens. `leticode_status` names the model it is on",
+            }));
+        }
         let said = h.set_model(model)?;
         Ok(json!({
             "session": session,
@@ -1012,6 +1073,16 @@ fn placement_arg(host: Option<&str>, vm: bool, hosts: &Hosts) -> Result<Placemen
     } else {
         Placement::Remote(name.to_string())
     })
+}
+
+/// Whether this session's tools run in a VM. Two facts ride on it: the guest IS a boundary, so
+/// `allow-all` inside one needs no person, and a worker that is booting one cannot answer a verb
+/// about its own mode or model - so both are queued rather than waited for.
+fn in_a_vm(h: &Head) -> bool {
+    matches!(
+        h.placement,
+        Some(Placement::Firecode) | Some(Placement::RemoteVm(_))
+    )
 }
 
 /// Where a held session's tools run, as an answer's field. `host` for this box and
