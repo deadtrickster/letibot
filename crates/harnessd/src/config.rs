@@ -745,7 +745,7 @@ impl AdjudicatorChoice {
             // one, rather than silently falling back to a person.
             "model" => Ok(AdjudicatorChoice::Model),
             other => Err(format!(
-                "unknown adjudicator `{other}`; this build has head, console"
+                "unknown adjudicator `{other}`; this build has head, console, model"
             )),
         }
     }

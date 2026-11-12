@@ -60,6 +60,23 @@ fn the_sixth_point_is_named_and_reachable() {
     );
 }
 
+/// The launcher's `--mode` help names the six points in this spelling (`read-only |
+/// always-ask | writes-allowed | automode | automode-edits | allow-all`), so each one has to
+/// parse exactly as the help writes it: a help that names a value the parser refuses is a
+/// refusal a person cannot act on.
+#[test]
+fn every_documented_point_parses_in_the_spelling_the_help_uses() {
+    for m in Mode::NAMED {
+        let spelled = m.name.replace(' ', "-");
+        assert_eq!(
+            Mode::parse(&spelled).map(|p| p.name),
+            Ok(m.name),
+            "`--mode {spelled}` must be the point `{}`",
+            m.name
+        );
+    }
+}
+
 /// The two tiers a point on the operator's box may not move, at every such point
 /// including automode. `allow-all` is the one point that is not on the operator's box,
 /// and it is checked the other way below.

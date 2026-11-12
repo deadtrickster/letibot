@@ -52,6 +52,9 @@ struct Args {
     /// Print the version and exit: an installer has to be able to prove the binary it just copied runs, and the
     /// cheapest proof is a question answered without a socket, a model or a store.
     version: bool,
+    /// `-h`/`--help`: print the usage and exit 0. It used to be answered as an error, so a
+    /// help request left with a typo's status and a wrapper could not tell the two apart.
+    help: bool,
     theme_template: bool,
     /// How long `--interrupt-all` waits for the turns to end.
     wait: u64,
@@ -83,6 +86,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         interrupt_all: false,
         list_sessions: false,
         version: false,
+        help: false,
         theme_template: false,
         wait: 30,
         reason: "letibot-tui --interrupt-all".into(),
@@ -131,7 +135,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             // Every role with its default look, as a theme file reads them: the starting point
             // for `~/.config/letibot/themes/NAME.toml`. See `rano::theme`.
             "--theme-template" => a.theme_template = true,
-            "-h" | "--help" => return Err(usage()),
+            "-h" | "--help" => a.help = true,
             other => return Err(format!("unknown argument {other}\n\n{}", usage())),
         }
     }
@@ -163,6 +167,10 @@ pub fn run_with(args: &[String], fleet: Option<letibot_sessionlog::FleetReader>)
             return 2;
         }
     };
+    if args.help {
+        println!("{}", usage());
+        return 0;
+    }
     let cfg = RenderConfig {
         budget: args.budget,
         ..RenderConfig::default()
@@ -994,6 +1002,21 @@ mod exit_tests {
         );
     }
 
+    /// `-h` is a question and not a mistake: it printed the usage and left with 2's status, so
+    /// nothing wrapping this head could tell a help request from a typo.
+    #[test]
+    fn help_is_answered_on_stdout_and_exits_zero() {
+        let help = vec!["-h".to_string()];
+        assert!(parse(&help).expect("parses").help, "-h asks for the usage");
+        assert_eq!(run(&help), 0, "a help request is not a failure");
+        assert_eq!(run(&["--help".to_string()]), 0);
+        assert_eq!(
+            run(&["--nope".to_string()]),
+            2,
+            "a typo keeps the status that says so"
+        );
+    }
+
     /// A head that never seated a session prints nothing at all. An empty line is still a
     /// line: a script reading stdout would take it for an id, and the operator would see a blank
     /// where the answer should be - which is how a refusal comes to look like a bug in the exit.
@@ -1041,6 +1064,7 @@ mod probe_tests {
             interrupt_all: false,
             list_sessions: false,
             version: false,
+            help: false,
             theme_template: false,
             wait: 30,
             reason: "test".into(),

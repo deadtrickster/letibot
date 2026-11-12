@@ -185,7 +185,9 @@ impl ReasoningEffort {
 
     pub fn parse(s: &str) -> Option<ReasoningEffort> {
         match s {
-            "xhigh" | "high" => Some(ReasoningEffort::Xhigh),
+            // `max` is the launcher's word for the top rung (GLM's own spelling, which is what
+            // `--effort`'s help names), so it must not fall silently onto the default here.
+            "xhigh" | "high" | "max" => Some(ReasoningEffort::Xhigh),
             "medium" => Some(ReasoningEffort::Medium),
             "low" => Some(ReasoningEffort::Low),
             _ => None,
@@ -250,6 +252,18 @@ mod tests {
                 .starts_with("Reasoning effort is set to xhigh.")
         );
         assert_eq!(ReasoningEffort::default(), ReasoningEffort::Xhigh);
+    }
+
+    /// The launcher's `--effort` help names the top rung `max`, which is GLM's word for it, so
+    /// the same word has to mean the same rung here rather than falling back to the default.
+    #[test]
+    fn the_launchers_word_for_the_top_rung_means_the_top_rung() {
+        assert_eq!(ReasoningEffort::parse("max"), Some(ReasoningEffort::Xhigh));
+        assert_eq!(
+            ReasoningEffort::parse("max").map(ReasoningEffort::wire),
+            ReasoningEffort::parse("xhigh").map(ReasoningEffort::wire),
+            "one rung, one wire value: the template has no `max` sentence"
+        );
     }
 
     #[test]

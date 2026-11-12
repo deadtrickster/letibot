@@ -1726,7 +1726,7 @@ mod queue_e2e;
 mod tests;
 
 /// The model half of layer B, built from the config, or a refusal naming the missing piece. One function
-/// because two points need it: `--adjudicator model` puts it before the gate alone and `/mode supervised`
+/// because two points need it: `--adjudicator model` puts it before the gate alone and `/supervise`
 /// puts it before a person. `asked_by` names whichever asked, so the refusal names the right flag.
 pub(crate) fn model_adjudicator(
     cfg: &Config,

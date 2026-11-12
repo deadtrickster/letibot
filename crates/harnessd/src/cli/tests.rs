@@ -1033,6 +1033,50 @@ fn continue_skips_the_queues_own_session_by_id() {
     assert_eq!(latest.hidden, 1, "the queue's session is counted as hidden");
 }
 
+/// The usage is drawn by hand, so a continuation that loses its `\n` welds two flags onto one
+/// line: `--room`'s sentence ran into `--reviewers`' for as long as it took somebody to read it.
+/// Every line of the flag section therefore starts its own flag and fits a terminal.
+#[test]
+fn the_usage_keeps_one_flag_per_line() {
+    let text = usage();
+    let body: Vec<&str> = text
+        .lines()
+        .skip_while(|l| !l.contains("what this session may do"))
+        .skip(1)
+        .collect();
+    assert!(body.len() > 20, "the flag section is there: {}", body.len());
+    for line in &body {
+        assert!(
+            line.chars().count() <= 100,
+            "a usage line is {} columns, so two lines were welded together: {line:?}",
+            line.chars().count()
+        );
+    }
+    for flag in [
+        "--parent-seat",
+        "--no-queue",
+        "--room",
+        "--reviewers",
+        "--gate-host",
+        "--reviewers-at-once",
+        "--reviewer-hosts",
+    ] {
+        assert!(
+            body.iter().any(|l| l.starts_with(&format!("  {flag} "))),
+            "`{flag}` must start its own line:\n{text}"
+        );
+    }
+}
+
+/// A help line that names a value the parser refuses is a refusal nobody can act on: `/mode
+/// supervised` was in this text and there is no such command - the flag is `--supervise`.
+#[test]
+fn the_usage_names_the_supervise_command_that_exists() {
+    let text = usage();
+    assert!(text.contains("--supervise"), "{text}");
+    assert!(!text.contains("/mode supervised"), "{text}");
+}
+
 /// `--continue` in a folder whose review queue spoke last reopens the operator's own
 /// conversation, not the queue's session: the queue is seated read-only, so taking it lost
 /// every mutating tool. Its title is re-worded and its seat is a default one, so the rule is its id.

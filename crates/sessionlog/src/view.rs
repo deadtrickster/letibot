@@ -72,9 +72,9 @@ pub struct OpenDecision {
     /// Why the model is stuck, for a question.
     #[serde(default)]
     pub because: String,
-    /// The model's verdict on this permission, at `/mode supervised`. `None`
-    /// everywhere else. Carried into the view so a head attaching mid-question
-    /// renders the same thing a head that was there from the start does.
+    /// The model's verdict on this permission, when supervision is on
+    /// (`--supervise` or `/supervise`). `None` everywhere else. Carried into the view so a head
+    /// attaching mid-question renders the same thing a head that was there from the start does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advice: Option<crate::event::ModelAdvice>,
     pub deadline: Option<u64>,

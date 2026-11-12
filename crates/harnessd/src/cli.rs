@@ -318,23 +318,23 @@ fn usage() -> String {
       \x20                           here, and this daemon's sessions are told no\n\
       \x20                           queue news (a package worker must not be set\n\
       \x20                           to fixing a `main` nobody asked it about). The\n\
-      \x20                           store watcher stays, so a head still moves\
-     \x20 --room                    be the BOX'S ROOM COORDINATOR: a whole daemon\
-     \x20                           whose only job is the room -- its own socket\
-     \x20                           under the data directory, NO store, no project,\
-     \x20                           and one session of its own (`s-room-<host>`,\
-     \x20                           reachable as `--session host`) that arbitrates\
-     \x20                           the queues. One per box: a second is refused by\
-     \x20                           a lease that names the live holder, and it will\
-     \x20                           not start without a model to arbitrate with\
-     \x20                           (`--model`, deepseek by default)\
-     \x20 --reviewers host|vm     where this daemon's REVIEWERS run. `host` (the\
-     \x20                           default) is a reviewer child on this machine, in\
-     \x20                           a checkout of the head it judges -- as the\
-     \x20                           subagents that author the branches already run;\
-     \x20                           `vm` is each reviewer in a firecode microVM,\
-     \x20                           which asks nobody for anything and costs a guest\
-     \x20                           exec per read. The project's `[queue] reviewers`\
+      \x20                           store watcher stays, so a head still moves\n\
+     \x20 --room                    be the BOX'S ROOM COORDINATOR: a whole daemon\n\
+     \x20                           whose only job is the room -- its own socket\n\
+     \x20                           under the data directory, NO store, no project,\n\
+     \x20                           and one session of its own (`s-room-<host>`,\n\
+     \x20                           reachable as `--session host`) that arbitrates\n\
+     \x20                           the queues. One per box: a second is refused by\n\
+     \x20                           a lease that names the live holder, and it will\n\
+     \x20                           not start without a model to arbitrate with\n\
+     \x20                           (`--model`, deepseek by default)\n\
+     \x20 --reviewers host|vm     where this daemon's REVIEWERS run. `host` (the\n\
+     \x20                           default) is a reviewer child on this machine, in\n\
+     \x20                           a checkout of the head it judges -- as the\n\
+     \x20                           subagents that author the branches already run;\n\
+     \x20                           `vm` is each reviewer in a firecode microVM,\n\
+     \x20                           which asks nobody for anything and costs a guest\n\
+     \x20                           exec per read. The project's `[queue] reviewers`\n\
      \x20                           says the same thing, and this flag overrides it\n\
      \x20 --gate-host NAME         run this daemon's MERGE GATE on a machine the\n\
      \x20                           operator declared in hosts.toml, instead of on\n\
@@ -367,7 +367,7 @@ fn usage() -> String {
      \x20                           answers `did the operator ask for this`. Its own\n\
      \x20                           flag, not --endpoint: the guard need not be the\n\
      \x20                           model doing the work. Required by\n\
-     \x20                           --adjudicator model and by /mode supervised;\n\
+     \x20                           --adjudicator model and by /supervise;\n\
      \x20                           both refuse by name without it\n\
      \x20 --supervise               start with the guard model consulted on every\n\
      \x20                           gated call: it answers, then you do, and both\n\

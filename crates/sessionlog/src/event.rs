@@ -1112,8 +1112,8 @@ pub enum SessionEvent {
         /// to derive an answer.
         #[serde(default)]
         because: String,
-        /// What the model already said about this, at `/mode supervised`: a head renders it above
-        /// the options so the person sees it before choosing.
+        /// What the model already said about this, under supervision (`/supervise`): a head renders
+        /// it above the options so the person sees it before choosing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         advice: Option<ModelAdvice>,
         /// Unix millis. `None` means *wait forever*, which is a policy a human head may choose and an

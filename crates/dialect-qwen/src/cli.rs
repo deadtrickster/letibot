@@ -42,13 +42,27 @@ struct FixturePrefix {
     tools: Vec<Value>,
 }
 
+/// The synopsis, also what `--help` prints. One string, because a help and a usage that say
+/// different things are two answers to one question.
+pub const USAGE: &str = "letibot-render-qwen FIXTURE.json [FIXTURE.json …]   > cases.json";
+
 /// Run the renderer over `args`, returning the process exit code.
 ///
 /// `args` is what followed the program name.
 pub fn run(args: &[String]) -> i32 {
+    // A flag is answered before a path is opened: `--help` used to be read as a fixture's name,
+    // so the question panicked on a file that is not there.
+    if let Some(flag) = args.iter().find(|a| a.starts_with('-') && a.len() > 1) {
+        if flag == "-h" || flag == "--help" {
+            println!("{USAGE}");
+            return 0;
+        }
+        eprintln!("{flag} is not a flag of this renderer\n{USAGE}");
+        return 2;
+    }
     let paths: Vec<String> = args.to_vec();
     if paths.is_empty() {
-        eprintln!("letibot-render-qwen FIXTURE.json [FIXTURE.json …]");
+        eprintln!("{USAGE}");
         return 2;
     }
     let mut cases = Vec::new();
@@ -266,4 +280,24 @@ fn user_content(parts: &[UserPart]) -> Value {
             })
             .collect::<Vec<_>>(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--help` is a question about THIS program, not the name of a fixture: it was taken for a
+    /// path and the renderer panicked reading a file nobody has.
+    #[test]
+    fn help_is_answered_instead_of_being_read_as_a_fixture() {
+        assert_eq!(run(&["--help".to_string()]), 0);
+        assert_eq!(run(&["-h".to_string()]), 0);
+    }
+
+    /// A flag that is not help is a mistake about this line: it names the flag, not a file.
+    #[test]
+    fn an_unknown_flag_is_refused_by_name() {
+        assert_eq!(run(&["--nope".to_string()]), 2);
+        assert_eq!(run(&[]), 2, "no argument at all is still a usage request");
+    }
 }
