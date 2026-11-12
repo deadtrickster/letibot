@@ -187,21 +187,38 @@ fn a_click_on_the_emergency_opens_the_whole_notice() {
     assert_eq!(a.screen(120, 30), before);
 }
 
-/// The hub warning is ONE line too, and a click on it opens its detail whole.
+/// The hub warning is ONE line too - read by the table, since the conversation draws only the
+/// model's own row and `/notes` is where a warning's sentence is opened.
 #[test]
-fn the_target_red_warning_draws_as_one_line_and_opens_whole() {
-    let mut a = with_warning("target_red", WARNING);
-    let screen = a.screen(200, 40);
-    let joined = screen.join("\n");
+fn the_target_red_warning_reads_as_one_line_and_is_no_row() {
     let line = "‼ main RED at 60bf819c · firecode · bin/firecode test failed · click for details";
-    assert_eq!(rows_with(&screen, line).len(), 1, "{joined}");
-    assert!(!joined.contains("byte(s) dropped"), "{joined}");
-    assert!(!joined.contains("/notes"), "no `+N lines` seam: {joined}");
-    assert!(!joined.contains("enqueueing"), "{joined}");
-    assert_eq!(a.card_rows.len(), 1, "{:?}", a.card_rows);
-    let (y, _) = a.card_rows[0];
-    assert_eq!(a.key(Key::Click { x: 10, y: y as u16 }), None);
-    let whole = popup_text(&mut a);
+    let card = crate::ui::transcript::line_cards::warning_card("target_red", WARNING)
+        .expect("the table reads the queue's sentence");
+    assert_eq!(card.line, line);
+    let mut a = with_warning("target_red", WARNING);
+    let joined = a.screen(200, 40).join("\n");
+    assert!(
+        !joined.contains(line),
+        "the warning drew a row of the conversation\n{joined}"
+    );
+    assert_eq!(a.card_rows.len(), 0, "{joined}");
+    assert!(
+        a.notes.iter().any(
+            |(place, n)| matches!(n, Note::Warned(w) if w.code == "target_red")
+                && *place == Placed::Before
+        ),
+        "/notes lost it: {:?}",
+        a.notes
+    );
+    // The whole of the daemon's sentence is on the record, wherever it is opened from.
+    let detail = a
+        .notes
+        .iter()
+        .find_map(|(_, n)| match n {
+            Note::Warned(w) if w.code == "target_red" => Some(w.detail.clone()),
+            _ => None,
+        })
+        .expect("the warning is held");
     for needle in [
         "EMERGENCY: `main` is RED at 60bf819c33425f282d547ffa2df5e2d840a75bef in \
          /home/dead/Projects/firecode.",
@@ -210,10 +227,8 @@ fn the_target_red_warning_draws_as_one_line_and_opens_whole() {
         "test scene::tests::case_000 ... ok",
         "[gate memory: peak 1.6 GiB of a 40.9 GiB cap]",
     ] {
-        assert!(holds(&whole, needle), "the popup lost `{needle}`: {whole}");
+        assert!(holds(&detail, needle), "the record lost `{needle}`");
     }
-    assert_eq!(a.key(Key::Esc), None);
-    assert!(a.diff_popup.is_none());
 }
 
 /// The line is drawn in the failure register, its head red.
@@ -264,13 +279,22 @@ fn the_reviewers_warnings_draw_as_one_line() {
             "no fix branch: a person fixes it",
         ),
     ] {
-        let mut a = with_warning("target_red", &detail);
-        let screen = a.screen(200, 30);
         let line = format!(
             "‼ main RED at 60bf819c · gatekeeper-3 finds it broken · {says} · click for details"
         );
-        assert_eq!(rows_with(&screen, &line).len(), 1, "{}", screen.join("\n"));
-        assert_eq!(a.card_rows.len(), 1);
+        let card = crate::ui::transcript::line_cards::warning_card("target_red", &detail)
+            .expect("the reviewer's sentence parses");
+        assert_eq!(card.line, line, "the table reads it");
+        // And it is not a row of the conversation: the model got the same event as the root
+        // session's `EMERGENCY - ` notice, and THAT is the row. See `warning::TWIN`.
+        let mut a = with_warning("target_red", &detail);
+        let screen = a.screen(200, 30);
+        assert!(
+            !screen.join("\n").contains(&line),
+            "the warning drew a row of its own: {}",
+            screen.join("\n")
+        );
+        assert_eq!(a.card_rows.len(), 0);
     }
 }
 
@@ -334,14 +358,21 @@ fn an_extra_sentence_keeps_the_one_line_and_the_popup_shows_it() {
         a.key(Key::Click { x: 10, y: y as u16 });
         assert!(holds(&popup_text(&mut a), EXTRA));
     }
-    // And a warning whose evidence grew a sentence after the output.
+    // And a warning whose evidence grew a sentence after the output: the table still reads it,
+    // and it is still not a row - the notice above is the row for this event.
     let mut a = with_warning("target_red", &format!("{WARNING}\n{EXTRA}"));
     let screen = a.screen(200, 40);
-    assert_eq!(
-        rows_with(&screen, "‼ main RED at 60bf819c · firecode").len(),
-        1,
-        "{}",
+    assert!(
+        !screen.join("\n").contains("‼ main RED at 60bf819c"),
+        "the warning drew a row of its own: {}",
         screen.join("\n")
+    );
+    assert!(
+        a.notes.iter().any(|(place, n)| {
+            matches!(n, Note::Warned(w) if w.code == "target_red") && *place == Placed::Before
+        }),
+        "and it is held beside the conversation: {:?}",
+        a.notes
     );
 }
 
@@ -415,16 +446,20 @@ fn a_shape_the_parser_does_not_know_falls_back() {
         ),
     ] {
         assert!(warning_tip(&detail).is_none(), "{what} parsed");
+        // The table refuses the shape, so `/notes` draws the generic line for it - and it is
+        // still not a row of the conversation, because the model got this event too.
+        assert!(
+            crate::ui::transcript::line_cards::warning_card("target_red", &detail).is_none(),
+            "{what}: the table read a shape it does not know"
+        );
         let mut a = with_warning("target_red", &detail);
         let screen = a.screen(200, 60);
         let joined = screen.join("\n");
-        assert_eq!(
-            rows_with(&screen, "! target_red · ").len(),
-            1,
-            "{what}: drawn as the generic line: {joined}"
-        );
         assert!(!joined.contains("‼"), "{what}: {joined}");
-        assert_eq!(newest_notice(&mut a), detail, "{what}");
+        assert!(
+            !a.hist_lines.join("\n").contains(&detail),
+            "{what}: it drew a row: {joined}"
+        );
     }
     // Another code with the same words is not this card.
     let mut a = with_warning("queue_blocked", WARNING);
@@ -458,44 +493,60 @@ fn a_gate_killed_at_its_cap_is_one_unjudged_line() {
 
     let mut a = with_warning("gate_killed", KILLED_WARNING);
     let screen = a.screen(200, 40);
-    assert_eq!(rows_with(&screen, line).len(), 1, "{}", screen.join("\n"));
-    assert_eq!(a.card_rows.len(), 1, "{:?}", a.card_rows);
-    let (y, _) = a.card_rows[0];
-    assert_eq!(a.key(Key::Click { x: 10, y: y as u16 }), None);
-    let whole = popup_text(&mut a);
+    // Not a row of the conversation: the root session's notice is the row for this event, and
+    // the table reads the warning's shape for `/notes`.
+    assert!(
+        !screen.join("\n").contains(line),
+        "the warning drew a row of its own: {}",
+        screen.join("\n")
+    );
+    assert_eq!(a.card_rows.len(), 0, "{:?}", a.card_rows);
+    let detail = a
+        .notes
+        .iter()
+        .find_map(|(_, n)| match n {
+            Note::Warned(w) if w.code == "gate_killed" => Some(w.detail.clone()),
+            _ => None,
+        })
+        .expect("the warning is held beside the conversation");
     for needle in [
         "peak 24.1 GiB of a 24.9 GiB cap",
-        "`[memory] gate` in providers.toml",
+        "the tip is UNJUDGED, not red",
     ] {
-        assert!(holds(&whole, needle), "the popup lost `{needle}`: {whole}");
+        assert!(holds(&detail, needle), "the record lost `{needle}`");
     }
 }
 
-/// A `gate_killed` warning in a shape this head does not know is the generic line - not read
-/// as unjudged, and still one line with its detail a click away.
+/// A `gate_killed` warning in a shape this head does not know is not read as unjudged - and, like
+/// every twin, it is not a row of the conversation at all: `/notes` holds the daemon's sentence.
 #[test]
 fn an_unknown_gate_killed_warning_falls_back() {
     let mut a = with_warning("gate_killed", "the gate was killed, somehow");
     let screen = a.screen(200, 30);
-    assert_eq!(a.card_rows.len(), 1, "{:?}", a.card_rows);
-    assert_eq!(
-        rows_with(
-            &screen,
-            "! gate_killed · the gate was killed, somehow · `regate` the target · click for \
-             details"
-        )
-        .len(),
-        1,
-        "{}",
-        screen.join("\n")
+    let joined = screen.join("\n");
+    assert_eq!(a.card_rows.len(), 0, "{joined}");
+    assert!(!joined.contains("UNJUDGED"), "{joined}");
+    // Not a row: the sentence is on the status line (a `Failure` is said as it lands) and in
+    // `/notes`, and the conversation has no row for it.
+    assert!(
+        !a.hist_lines
+            .join("\n")
+            .contains("the gate was killed, somehow"),
+        "the warning drew a row: {joined}"
     );
-    assert!(!screen.join("\n").contains("UNJUDGED"));
+    assert!(
+        a.notes.iter().any(|(place, n)| {
+            matches!(n, Note::Warned(w) if w.code == "gate_killed") && *place == Placed::Before
+        }),
+        "and it is held beside the conversation: {:?}",
+        a.notes
+    );
 }
 
-/// One event, one row - a red target's warning and the session's `EMERGENCY` notice
-/// for the same tip are one line, the notice in its popup.
+/// One event, one row - and the row is the NOTICE's: the `target_red` warning twins it, so it is
+/// filed beside the conversation and the notice draws the red card.
 #[test]
-fn a_red_warning_and_its_emergency_notice_are_one_line() {
+fn a_red_warning_and_its_emergency_notice_are_one_row() {
     let mut a = with_notice(NOTICE);
     a.apply(ServerFrame::Event(env(
         3,
@@ -506,102 +557,25 @@ fn a_red_warning_and_its_emergency_notice_are_one_line() {
         },
     )));
     let screen = a.screen(200, 40);
-    assert_eq!(a.notice_rows.len(), 0, "{}", screen.join("\n"));
-    assert_eq!(a.card_rows.len(), 1, "{}", screen.join("\n"));
-    let (y, _) = a.card_rows[0];
+    let joined = screen.join("\n");
+    // ONE row, and it is the notice's: the warning is filed beside the conversation, so the
+    // event is on the screen exactly as often as the notice draws it - once.
+    assert_eq!(a.notice_rows.len(), 1, "{joined}");
+    assert_eq!(a.card_rows.len(), 0, "{joined}");
+    assert_eq!(
+        a.hist_lines
+            .iter()
+            .filter(|l| l.contains("‼ main RED at 60bf819c"))
+            .count(),
+        1,
+        "the event is on the screen once: {}",
+        a.hist_lines.join("\n")
+    );
+    let (y, _) = a.notice_rows[0];
     a.key(Key::Click { x: 10, y: y as u16 });
     let whole = popup_text(&mut a);
     let first = NOTICE.lines().next().unwrap();
     assert!(holds(&whole, first), "the notice is in the popup: {whole}");
-}
-
-/// A fork takes the pairing with the rows it was made on. `absorbed` and the note's seam are
-/// INDICES into a transcript, so a fork that keeps them points them at rows that are gone - the
-/// operator's line then draws nothing and a red card stands in its place.
-#[test]
-fn a_fork_does_not_carry_a_red_cards_pairing_onto_the_operators_next_message() {
-    let assistant = |text: &str| -> TranscriptItem {
-        serde_json::from_value(serde_json::json!({ "type": "assistant", "text": text }))
-            .expect("an assistant row")
-    };
-    let notice = TranscriptItem::User {
-        speaker: letibot_transcript::Speaker::Agent,
-        parts: vec![UserPart::Text {
-            text: NOTICE.into(),
-        }],
-    };
-    let mut a = app();
-    a.apply(hello(
-        "s",
-        vec![brief("s", "one", false)],
-        Hub::new("s").snapshot(),
-    ));
-    shell_row(&mut a, 1, "s.0", "assistant", assistant("an answer before"));
-    shell_row(&mut a, 3, "s.1", "assistant", assistant("another answer"));
-    shell_row(&mut a, 5, "s.2", "user", notice);
-    a.apply(ServerFrame::Event(env(
-        7,
-        SessionEvent::Warning {
-            code: "target_red".into(),
-            detail: WARNING.into(),
-            compaction: None,
-        },
-    )));
-    shell_row(&mut a, 8, "s.3", "assistant", assistant("red by design"));
-    // The premise: the warning's card stands for the notice, which draws nothing of its own.
-    let screen = a.screen(200, 60);
-    assert_eq!(a.card_rows.len(), 1, "{}", screen.join("\n"));
-    assert_eq!(a.notice_rows.len(), 0, "{}", screen.join("\n"));
-    assert!(
-        a.absorbed.contains_key("s.2"),
-        "the premise: row 2 is absorbed"
-    );
-
-    // The compaction: the summary and the newest answer, under the new transcript's ids.
-    a.apply(ServerFrame::Event(env(20, testing::forked("s#t1", "s"))));
-    shell_row(
-        &mut a,
-        21,
-        "s#t1.0",
-        "assistant",
-        assistant("This conversation was compacted: the summary is below."),
-    );
-    shell_row(
-        &mut a,
-        23,
-        "s#t1.1",
-        "assistant",
-        assistant("The formatting gap is fourteen lines"),
-    );
-    a.screen(200, 60);
-    // And the operator speaks: row 2 of the new transcript, then the answer to it.
-    shell_row(
-        &mut a,
-        25,
-        "s#t1.2",
-        "user",
-        operator_row("how we are doing"),
-    );
-    shell_row(
-        &mut a,
-        27,
-        "s#t1.3",
-        "assistant",
-        assistant("Short version: the engine keeps getting better"),
-    );
-    let screen = a.screen(200, 60);
-    let joined = screen.join("\n");
-    assert_eq!(
-        rows_with(&screen, "how we are doing").len(),
-        1,
-        "the operator's message is drawn once:\n{joined}"
-    );
-    // And the card of a row that went is not drawn at a seam of a transcript it was never in.
-    assert_eq!(
-        a.card_rows.len(),
-        0,
-        "the red card of the replaced transcript is drawn in the new one:\n{joined}"
-    );
 }
 
 /// The head splits a row of notices after the closing words the notice carries: the one

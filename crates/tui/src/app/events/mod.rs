@@ -32,8 +32,6 @@ impl App {
     /// Apply one frame. Never sends anything; see the module note on acking.
     pub fn apply(&mut self, frame: ServerFrame) -> Disposition {
         let d = self.apply_frame(frame);
-        // One event, one row - a warning and the session rows that say the same event.
-        self.pair_one_event();
         // The front card is settled after every frame - see
         // [`App::sync_front`].
         self.sync_front();
@@ -262,13 +260,7 @@ impl App {
         self.fetch_asked = None;
         self.fetch_below = None;
         self.no_more_above = false;
-        // A collapse is about a row, so it goes only with the rows that went: the pairing is keyed by `item_id`
-        // and a snapshot hands the same ids back. A retired one outlives even the session, since a hide the
-        // reader asked for must not come back when they return.
-        self.absorbed.retain(|id, key| {
-            self.items.iter().any(|r| &r.item_id == id) || self.dismissed.contains(key)
-        });
-        // And whether this session's store row holds a conversation the head has not got: asked where the rows
+        // Whether this session's store row holds a conversation the head has not got: asked where the rows
         // are replaced, since a snapshot can be the empty one a registered but unopened session is handed. See
         // [`App::rows_the_store_holds`].
         self.restoring = self.rows_the_store_holds();

@@ -1180,26 +1180,35 @@ fn a_compaction_draws_one_row_with_its_unit_and_what_it_kept_and_dropped() {
     });
     feed(&mut a, &hub, &att.head_id);
     let frame = a.screen(150, 30);
-    let rows: Vec<&String> = frame.iter().filter(|l| l.contains("compacted")).collect();
+    // The conversation draws nothing for it: `compacted` twins the fork's own `System` row, which
+    // is the model's, so the warning is filed beside and `/notes` is where its shape is read.
     assert_eq!(
-        rows.len(),
-        1,
-        "one compaction is one row:\n{}",
+        frame.iter().filter(|l| l.contains("compacted")).count(),
+        0,
+        "the twinned warning drew a row:\n{}",
         frame.join("\n")
     );
+    a.command("notes");
+    let listing = a.screen(150, 60).join("\n");
+    let rows: Vec<&str> = listing
+        .lines()
+        .filter(|l| l.contains("compacted"))
+        .collect();
+    assert_eq!(rows.len(), 1, "one compaction is one note:\n{listing}");
     let row = rows[0];
+    // `/notes` lists the daemon's sentence verbatim, with the unit it counted in and both halves
+    // of what it kept - the card the conversation used to draw is gone with the row.
     assert!(
-        row.contains("958k → 100k deepseek tokens"),
+        row.contains("958397 → 100005 deepseek tokens"),
         "the size before and after, in the unit the daemon counted it in: {row:?}"
     );
     assert!(
-        row.contains("kept 12 items + a 13.5k-char summary"),
+        row.contains("kept 12 item(s) verbatim plus a 13532-character summary"),
         "what it kept: {row:?}"
     );
-    assert!(row.contains("2 dropped"), "what it dropped: {row:?}");
     assert!(
-        !row.contains("958397"),
-        "the raw ledger counts are not what a reader reads: {row:?}"
+        row.contains("2 item(s) dropped at the seam"),
+        "what it dropped: {row:?}"
     );
 }
 
@@ -1260,9 +1269,18 @@ fn a_compactions_announcement_is_state_and_the_report_is_the_row() {
     });
     feed(&mut a, &hub, &att.head_id);
     let after = a.screen(140, 30).join("\n");
+    // `compacted` twins the fork's own row, so the report is NOT redrawn here: it is filed beside
+    // the conversation, and the fold's one row is the model's own summary row.
     assert!(
-        after.contains("compacted · 958k → 100k deepseek tokens"),
-        "the report is the one row:\n{after}"
+        !after.contains("compacted · 958k → 100k deepseek tokens"),
+        "the twinned report drew a row:\n{after}"
+    );
+    assert!(
+        a.notes.iter().any(|(place, n)| {
+            matches!(n, Note::Warned(w) if w.code == "compacted") && *place == Placed::Before
+        }),
+        "the report left no record: {:?}",
+        a.notes
     );
     assert!(
         !after.contains("compacting now"),

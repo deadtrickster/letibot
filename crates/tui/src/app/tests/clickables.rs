@@ -224,23 +224,13 @@ fn a_system_row_and_an_offer_open_on_a_click() {
 
 #[test]
 fn every_warning_card_opens_on_a_click() {
-    let warnings: [(&str, &str); 8] = [
-        ("target_red", include_str!("fixtures/red_main_warning.txt")),
-        (
-            "gate_killed",
-            include_str!("fixtures/unjudged_main_killed_warning.txt"),
-        ),
+    // The codes whose row the head draws: a code `warning::TWIN` names is filed BESIDE the
+    // conversation (the model's own row is the one drawn), so it has no row here to click -
+    // `/notes` opens it.
+    let warnings: [(&str, &str); 6] = [
         (
             "prefix_stale",
             include_str!("fixtures/prefix_stale_warning.txt"),
-        ),
-        (
-            "restart_restored",
-            include_str!("fixtures/restart_restored_warning.txt"),
-        ),
-        (
-            "restart_nothing",
-            include_str!("fixtures/restart_nothing_warning.txt"),
         ),
         (
             "queue_needs_human",
@@ -254,8 +244,20 @@ fn every_warning_card_opens_on_a_click() {
             "daemon_stopping",
             "`dead` asked this daemon to stop. Every head detaches.",
         ),
+        (
+            "workspace_gone",
+            "this session's workspace is not there any more: /home/dead/Projects/gone.",
+        ),
+        (
+            "boundary_absent",
+            "this session has no boundary, so nothing confines the sandbox.",
+        ),
     ];
     for (code, detail) in warnings {
+        assert!(
+            letibot_sessionlog::warning::twin(code).is_none(),
+            "`{code}` is filed beside the conversation, so this list cannot click it"
+        );
         every_legend_opens(with_warning(code, detail), code);
     }
 }

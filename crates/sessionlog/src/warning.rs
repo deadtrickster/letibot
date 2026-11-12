@@ -53,6 +53,12 @@ impl Class {
         matches!(self, Class::Failure)
     }
 
+    /// The reader's own line coming back. It is answered on the status line, since the answer
+    /// to what somebody just typed is not a turn of the conversation.
+    pub fn is_refused(self) -> bool {
+        matches!(self, Class::Refused)
+    }
+
     /// The role this register is drawn in - the one place a warning's class picks a colour.
     /// `Routine` asks nothing of the reader, so it is [`pane::Role::Info`]; `Refused` is the
     /// reader's own line coming back, which is worth knowing and is not a fault; only a real
@@ -1040,6 +1046,81 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     ("not_run", Class::Routine, Action::Nothing),
 ];
 
+/// The warning codes that restate an event the model was ALSO sent, each with the model-facing row
+/// that carries it.
+///
+/// **The conversation is one record: one event, one row, that row the model's.** `Hub::warn`
+/// publishes to heads and to no engine, so a warning whose event the model already has is a second
+/// row for one event - and one the model never got. A code in this table is therefore filed BESIDE
+/// the conversation: `/notes` lists the sentence, `/status` counts it, a refusal or a failure is
+/// also said on the status line as it lands, and the MODEL's row is the one drawn. Every other code
+/// is a daemon fact with no model twin, and draws as it always did.
+///
+/// A code belongs here only with the row the model got, named:
+///
+/// ```text
+/// reseated          the `[reseat]` notice (`harness::reseated_for_the_model`)
+/// compacted         the `System` row `Earlier conversation is replaced by this summary`
+/// auto_compact      the same row, from the wall
+/// cleared           the `[cleared]` orientation (`harness::clear`)
+/// restart_*         the `[restart]` notice (`crate::restart::notice`)
+/// target_red        the session's `EMERGENCY - ` notice (`mergequeue::notices::health`)
+/// gate_*            the same notice, for a tip the gate could not judge
+/// ```
+pub const TWIN: &[(&str, &str)] = &[
+    (
+        "reseated",
+        "the `[reseat]` notice the model is sent (`harness::reseated_for_the_model`)",
+    ),
+    (
+        "compacted",
+        "the fork's own `System` row, `Earlier conversation is replaced by this summary`",
+    ),
+    (
+        "auto_compact",
+        "the same `System` row, written by the wall's own fold",
+    ),
+    (
+        "cleared",
+        "the `[cleared]` orientation the cleared conversation opens with (`harness::clear`)",
+    ),
+    (
+        "restart_restored",
+        "the `[restart]` notice (`crate::restart::notice`)",
+    ),
+    (
+        "restart_reminded",
+        "the same `[restart]` notice, for a stop nothing could be brought back from",
+    ),
+    (
+        "restart_nothing",
+        "the same `[restart]` notice - nothing was running, and the notice says so",
+    ),
+    (
+        "target_red",
+        "the root session's `EMERGENCY - ` notice (`mergequeue::notices::health`)",
+    ),
+    (
+        "gate_setup_failed",
+        "the same `health` notice, for a tip the gate's setup never judged",
+    ),
+    (
+        "gate_killed",
+        "the same `health` notice, for a step killed before it judged the code",
+    ),
+    (
+        "target_timed_out",
+        "the same `health` notice, for a gate that ran out of time",
+    ),
+];
+
+/// The model-facing row this warning restates, or `None` for a daemon fact the model was not told.
+/// `Some` is the reason a head must file the sentence beside the conversation - see [`TWIN`].
+pub fn twin(code: &str) -> Option<&'static str> {
+    let code = family(code);
+    TWIN.iter().find(|(c, _)| *c == code).map(|(_, why)| *why)
+}
+
 /// Which register a code is drawn in. See [`TABLE`].
 ///
 /// A code the table does not know is [`Class::Routine`]: an unclassified code is not evidence that
@@ -1149,20 +1230,25 @@ mod tests {
             );
             assert!(to_the_alarm(code), "the table is what `to_the_alarm` reads");
         }
-        // And the rule was not widened to all of `Class::Routine`: these change the
-        // conversation, so they are rows in it.
-        for code in [
-            "compacted",
-            "auto_compact",
-            "compact_half",
-            "reseated",
-            "cleared",
-        ] {
+        // And the rule was not widened to all of `Class::Routine`: these four change the
+        // conversation, so the model's own row is the one that says so - and the fold's own
+        // progress line is not one of them, which is why it is not in `TWIN`.
+        for code in ["compacted", "auto_compact", "reseated", "cleared"] {
             assert!(
                 !to_the_alarm(code),
                 "`{code}` changes the conversation and belongs in the record"
             );
+            assert!(
+                twin(code).is_some(),
+                "`{code}` changes the conversation, and the row that says so is the model's own"
+            );
         }
+        assert!(!to_the_alarm("compact_half"));
+        assert_eq!(
+            twin("compact_half"),
+            None,
+            "the fold's progress is not a model row"
+        );
     }
 
     /// Nothing that is a fault, and nothing the operator did, may go quiet on a timer: a
@@ -1248,7 +1334,56 @@ mod tests {
         assert!(seen.len() > 50, "{} codes classified", seen.len());
     }
 
-    /// Every code says what a reader can do about it, and a row that says nothing is a report.
+    /// The conversation is one record: a code whose event the model was ALSO sent is filed beside the
+    /// conversation, and the table names the model-facing row it twins. Every entry has to be a code
+    /// the table classifies, has to name its row, and the codes that drew a second row before this
+    /// rule are all here so a regression is a red test rather than a reread.
+    #[test]
+    fn a_warning_the_model_also_got_is_never_drawn() {
+        for (code, why) in TWIN {
+            assert!(
+                TABLE.iter().any(|(c, _, _)| c == code),
+                "`{code}` twins a model row and is not a code the table classifies"
+            );
+            assert!(
+                why.len() > 20,
+                "`{code}` is filed beside without naming the row the model got: {why:?}"
+            );
+            assert_eq!(twin(code), Some(*why), "the table is what `twin` reads");
+        }
+        for code in [
+            "reseated",
+            "compacted",
+            "auto_compact",
+            "cleared",
+            "restart_restored",
+            "restart_reminded",
+            "restart_nothing",
+            "target_red",
+            "gate_setup_failed",
+            "gate_killed",
+            "target_timed_out",
+        ] {
+            assert!(
+                twin(code).is_some(),
+                "`{code}` drew a second row for an event the model already had"
+            );
+        }
+        // A code with no model twin is untouched: a daemon fact the model was never told draws as
+        // it always did.
+        for code in [
+            "boundary_absent",
+            "prefix_stale",
+            "queue_blocked",
+            "plugin_layer",
+        ] {
+            assert_eq!(twin(code), None, "`{code}` has no model-facing row");
+        }
+        // A family code answers as its family, like every other question of a code.
+        assert_eq!(twin("denied:r1"), twin("denied"));
+    }
+
+    /// Every warning says what a reader can do about it, and a row that says nothing is a report.
     /// A developer's diagnostic is spelled out rather than left blank, because it is the one
     /// answer that moves the code OUT of the conversation.
     #[test]

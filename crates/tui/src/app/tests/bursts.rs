@@ -149,22 +149,20 @@ fn a_failure_burst_carries_the_failure_register_and_never_expires() {
             &mut a,
             i,
             i * 1_000,
-            "target_red",
-            &format!(
-                "EMERGENCY: `main` is RED at 60bf819{i} in letibot. The merge queue lands nothing."
-            ),
+            "queue_blocked",
+            &format!("the review of agent/{i} could not run: no worktree."),
         );
     }
     let all = a.screen(120, 40).join("\n");
     assert!(
-        all.contains("session · ! 2 targets RED · click for details"),
+        all.contains("session · ! 2 reviews could not run · click for details"),
         "{all}"
     );
     // Not on a timer, an hour later.
     a.clock(3_600_000);
     let later = a.screen(120, 40).join("\n");
     assert!(
-        later.contains("2 targets RED"),
+        later.contains("2 reviews could not run"),
         "a red burst went quiet on a timer:\n{later}"
     );
 

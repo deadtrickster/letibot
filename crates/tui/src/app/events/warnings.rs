@@ -271,6 +271,19 @@ impl App {
                     }));
                     return Disposition::Rendered;
                 }
+                // One record: a warning whose event the model was ALSO sent is filed BESIDE the
+                // conversation - `/notes` lists it, `/status` counts it, a refusal or a failure is
+                // said on the status line as it lands - and the model's own row is the row drawn.
+                // The table names that row for every code this applies to. See `warning::TWIN`.
+                if letibot_sessionlog::warning::twin(&code).is_some() {
+                    if letibot_sessionlog::warning::class(&code).is_refused()
+                        || letibot_sessionlog::warning::class(&code).is_failure()
+                    {
+                        self.say(&detail);
+                    }
+                    self.note_beside(Note::Warned(Warned { code, detail, ts }));
+                    return Disposition::Filtered;
+                }
                 self.note(Note::Warned(Warned { code, detail, ts }));
                 Disposition::Rendered
             }

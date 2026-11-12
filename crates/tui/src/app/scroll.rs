@@ -316,14 +316,6 @@ impl App {
             let joinable = unseen.is_some_and(|(start, _)| run_continues_prose(&self.items, start));
             // A row of an OPEN run draws itself under that header, and a row the click's kind
             // skips draws nothing. A CLOSED run's rows are not lexed at all.
-            let absorbed_here = crate::app::one_event::is_absorbed(
-                &self.absorbed,
-                &self.notes,
-                &self.dismissed,
-                &self.quiet,
-                &self.read_marks,
-                self.items[k].item_id.as_str(),
-            );
             let skipped = open_run && crate::app::runclick::run_skips(self.lift, &self.items[k]);
             // The marker's text, when this row is the first of the run. The joining is the assembly loop's,
             // since forward order exists only there. See [`hidden_run_marker`].
@@ -343,8 +335,7 @@ impl App {
                     live_here,
                 )
             });
-            let (body_class, body) = if (open_run || unseen.is_none()) && !absorbed_here && !skipped
-            {
+            let (body_class, body) = if (open_run || unseen.is_none()) && !skipped {
                 // The same cards the drawing asks for: this walk measures the rows the other one
                 // draws, and a card a layer answered must be as many rows here as it is there.
                 let cards = Cards::row(cards_host, &self.items[k]);

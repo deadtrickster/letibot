@@ -417,10 +417,15 @@ fn ctrl_n_retires_every_note_and_keeps_every_note() {
             "denied: nobody answered before the deadline",
         ),
         ("daemon_stopping", "`dead` asked this daemon to stop"),
-        ("compacted", "compacted: 940188 → 9181 tokens"),
+        // Drawn codes: `compacted` and `auto_compact` twin the fork's own row and are filed
+        // beside the conversation, so they would not be on the screen for this press to clear.
         (
-            "auto_compact",
-            "938065 of 999999 tokens resident — compacting now",
+            "workspace_gone",
+            "this session's workspace is not there any more",
+        ),
+        (
+            "boundary_absent",
+            "this session has no boundary, so nothing confines the sandbox",
         ),
     ] {
         let e = hub.publish(SessionEvent::Warning {
@@ -433,7 +438,7 @@ fn ctrl_n_retires_every_note_and_keeps_every_note() {
     }
     let before = a.screen(100, 30).join("\n");
     assert!(before.contains("gate_timeout"), "{before}");
-    assert!(before.contains("auto_compact"), "{before}");
+    assert!(before.contains("boundary_absent"), "{before}");
 
     // One key, and the wall goes.
     assert_eq!(a.key(Key::CtrlN), None, "the chord is not a daemon action");
@@ -441,8 +446,8 @@ fn ctrl_n_retires_every_note_and_keeps_every_note() {
     for code in [
         "gate_timeout",
         "daemon_stopping",
-        "compacted",
-        "auto_compact",
+        "workspace_gone",
+        "boundary_absent",
     ] {
         assert!(
             !after.contains(code),
@@ -1288,7 +1293,9 @@ fn a_routine_notice_is_not_drawn_in_the_failure_register() {
         ..RenderConfig::default()
     });
     for (code, detail) in [
-        ("compacted", "compacted: 940188 → 9181 tokens"),
+        // A routine code the head draws: `compacted` twins the fork's own row and is filed
+        // beside the conversation, so the register this test is about would be off-screen.
+        ("compact_half", "the fold read the first 90 items"),
         ("context_wall", "stopping this turn after 12 rounds"),
     ] {
         a.apply(ServerFrame::Event(env(
@@ -1309,7 +1316,7 @@ fn a_routine_notice_is_not_drawn_in_the_failure_register() {
             .unwrap_or_else(|| panic!("nothing drew `{needle}`:\n{}", frame.join("\n")))
             .clone()
     };
-    let routine = line("compacted");
+    let routine = line("compact_half");
     assert!(
         !routine.contains(RED),
         "a compaction was painted in the failure colour: {routine:?}"
@@ -2106,32 +2113,45 @@ fn an_edge_bound_warning_raises_the_alarm_and_never_becomes_a_row() {
     );
 
     // The control: a code that changes the conversation is still a row in it. Without
-    // this, a head that swallowed every warning would pass everything above - and the
-    // argument is that compactions are the rows the operator asked to keep seeing.
+    // this, a head that swallowed every warning would pass everything above.
     let mut b = App::new(plain_cfg(80));
     assert_eq!(
         b.apply(ServerFrame::Event(env(
             1,
             SessionEvent::Warning {
+                code: "workspace_gone".into(),
+                detail: "this session's workspace is not there any more: \
+                         /home/dead/Projects/gone. Every call in it refuses."
+                    .into(),
+                compaction: None,
+            },
+        ))),
+        Disposition::Rendered,
+        "a daemon fact the model was not told is a row of the conversation"
+    );
+    let drawn = b.screen(80, 24).join("\n");
+    assert!(
+        drawn.contains("workspace_gone"),
+        "the sentence is not drawn: {drawn}"
+    );
+    // And a twin of a model row is NOT one: the fold's own row is the model's, and the warning is
+    // beside it. See `warning::TWIN`.
+    let mut c = App::new(plain_cfg(80));
+    assert_eq!(
+        c.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Warning {
                 code: "compacted".into(),
-                // The sentence `compaction_said` writes: the figures, then what the summary
-                // stands in for and what was dropped, then the transcript. A detail cut short
-                // is not a shape the daemon sends.
                 detail: "compacted: 940188 → 9181 tokens, kept as a 9000-character summary, \
                          nothing dropped, on transcript s#t25."
                     .into(),
                 compaction: None,
             },
         ))),
-        Disposition::Rendered,
-        "a compaction changes the conversation and is a row in it"
+        Disposition::Filtered,
+        "a compaction's row is the model's own summary row"
     );
-    let drawn = b.screen(80, 24).join("\n");
-    assert!(
-        drawn.contains("940k → 9k tokens"),
-        "the compaction's own figures are not drawn: {drawn}"
-    );
-    assert_eq!(b.slow_first_byte, 0, "a compaction is not the weather");
+    assert_eq!(b.slow_first_byte, 0, "neither is the weather");
     assert!(
         !b.alarmed(),
         "and it raises no triangle, because nothing is wrong"
@@ -2289,44 +2309,42 @@ fn a_compaction_is_one_line_in_the_two_rungs_the_operator_named() {
         let frame = a.screen(100, 30);
         let screen = frame.join("\n");
         let carrying = |needle: &str| frame.iter().filter(|l| l.contains(needle)).count();
+        // `compacted` twins the fork's own `System` row, so it is filed beside the conversation:
+        // no row of its own, at any rung. The fold's one row is the model's record, above.
         assert_eq!(
             carrying("958k → 100k tokens"),
-            1,
-            "a compaction's numbers are on ONE row at `{}`:\n{screen}",
+            0,
+            "the twinned warning drew a row at `{}`:\n{screen}",
             profile.name
         );
-        assert_eq!(
-            carrying("compacted"),
-            1,
-            "and the compaction is one row, not a block at `{}`:\n{screen}",
-            profile.name
-        );
-        // The row says how to read the whole sentence, and a click (or alt-n) opens it  -
-        // It ended `· /notes` and could not be clicked.
-        assert!(
-            screen.contains("click for details"),
-            "the row says how to read the whole sentence at `{}`:\n{screen}",
-            profile.name
-        );
-        assert_eq!(newest_notice(&mut a), a_compacted_said());
-        // The model's record is not on the screen. It is the prompt, not anything that
-        // happened, and this is the half the operator was complaining about.
-        assert!(
-            !screen.contains("THE MODEL'S OWN RECORD"),
-            "the record the model reads was drawn in the conversation at `{}`:\n{screen}",
-            profile.name
-        );
-        // And nothing was swallowed: the whole sentence, record and all, is on `/notes`  -
-        // the unfold the row's seam names.
+        // And nothing was swallowed: the daemon's whole sentence, the model's record and all,
+        // is on `/notes` - and so is the note's own detail, verbatim.
         a.command("notes");
         let listing = a.screen(100, 60).join("\n");
         assert!(
-            listing.contains("THE MODEL'S OWN RECORD"),
-            "the record is not in the listing either, so the row cut it:\n{listing}"
+            listing.contains("compacted"),
+            "a compaction left no note at `{}`:\n{listing}",
+            profile.name
+        );
+        let whole = a
+            .notes
+            .iter()
+            .find_map(|(_, n)| match n {
+                Note::Warned(w) if w.code == "compacted" => Some(w.detail.clone()),
+                _ => None,
+            })
+            .expect("the compaction is held beside the conversation");
+        assert!(
+            whole.contains("958397 → 100005 tokens"),
+            "the note lost the figures: {whole}"
         );
         assert!(
-            listing.contains("ran over a scratch transcript"),
-            "the daemon's sentence is not in the listing whole:\n{listing}"
+            whole.contains("THE MODEL'S OWN RECORD"),
+            "the note lost the record: {whole}"
+        );
+        assert!(
+            whole.contains("ran over a scratch transcript"),
+            "the note lost the daemon's sentence: {whole}"
         );
     }
 }
@@ -2373,8 +2391,8 @@ fn a_compaction_is_one_line_at_every_rung_and_the_forks_row_still_draws() {
             .iter()
             .filter(|l| l.contains("958k → 100k tokens"))
             .count(),
-        1,
-        "the warning is still one row at `loud`:\n{screen}"
+        0,
+        "the twinned warning drew its own row at `loud`:\n{screen}"
     );
     // The fork's row is drawn, as ONE line (a System row was drawn whole, up to 190
     // screen rows of the model's own record), and a click - or alt-n - opens it whole.
@@ -2835,13 +2853,14 @@ fn ctrl_n_then_a_queued_row_draws_no_notice() {
 /// is the screen's.
 #[test]
 fn a_muted_warning_kind_is_never_drawn() {
-    let said = "compacted: 940188 → 9181 tokens, kept as a 9000-character summary, nothing \
-                dropped, on transcript s#t25.";
-    let compacted = || {
+    // A code the head still draws: `compacted` twins the model's own summary row and is filed
+    // beside the conversation, so the drawing half of a mute would have nothing to prove.
+    let said = "this session's workspace is not there any more: /home/dead/Projects/gone.";
+    let gone = || {
         env(
             1,
             SessionEvent::Warning {
-                code: "compacted".into(),
+                code: "workspace_gone".into(),
                 detail: said.into(),
                 compaction: None,
             },
@@ -2851,27 +2870,27 @@ fn a_muted_warning_kind_is_never_drawn() {
     // The premise: with nothing muted the code IS a row in the conversation.
     let mut plain = App::new(plain_cfg(80));
     assert_eq!(
-        plain.apply(ServerFrame::Event(compacted())),
+        plain.apply(ServerFrame::Event(gone())),
         Disposition::Rendered
     );
     assert!(
-        plain.screen(80, 24).join("\n").contains("940k → 9k tokens"),
+        plain.screen(80, 24).join("\n").contains("workspace_gone"),
         "the premise: an unmuted row is drawn"
     );
 
     let mut muted = App::new(plain_cfg(80));
     muted.quiet = Quiet {
-        muted: vec!["compacted".to_string()],
+        muted: vec!["workspace_gone".to_string()],
         coalesce: true,
     };
     assert_eq!(
-        muted.apply(ServerFrame::Event(compacted())),
+        muted.apply(ServerFrame::Event(gone())),
         // Read and filed as always: the mute is the DRAWING's, not the event's.
         Disposition::Rendered
     );
     let drawn = muted.screen(80, 24).join("\n");
     assert!(
-        !drawn.contains("940k → 9k tokens"),
+        !drawn.contains("workspace_gone"),
         "a muted kind was drawn:\n{drawn}"
     );
     // And it is still there: held, counted, and one verb from being read.
@@ -2879,7 +2898,7 @@ fn a_muted_warning_kind_is_never_drawn() {
     assert_eq!(muted.retired_notes(), 1, "and it is not counted as hidden");
     let listed = muted.notes_lines().join("\n");
     assert!(
-        listed.contains("compacted"),
+        listed.contains("workspace_gone"),
         "a muted note left `/notes` as well as the screen: {listed}"
     );
 
@@ -2890,13 +2909,14 @@ fn a_muted_warning_kind_is_never_drawn() {
     other.apply(ServerFrame::Event(env(
         1,
         SessionEvent::Warning {
-            code: "compacted".into(),
-            detail: "compacted: 12 → 3 tokens, kept as a 30-character summary.".into(),
+            code: "workspace_gone".into(),
+            detail: "this session's workspace is not there any more: /home/dead/Projects/other."
+                .into(),
             compaction: None,
         },
     )));
     assert!(
-        !other.screen(80, 24).join("\n").contains("12 → 3 tokens"),
+        !other.screen(80, 24).join("\n").contains("Projects/other"),
         "a second copy of a muted kind was drawn"
     );
 }

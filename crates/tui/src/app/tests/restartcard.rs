@@ -180,44 +180,42 @@ fn an_orderly_restart_is_news_and_only_a_crash_is_attention() {
     }
 }
 
-/// The warning is ONE note line - none of the header's prose, no `/notes` seam - and a click
-/// opens the detail whole.
+/// A restart's warning is no longer a row of the conversation: the model got the `[restart]`
+/// notice, and that is the line. The shape the warning carries is still read - `/notes` opens it -
+/// so its line is asked of the table, and the screen is asked for nothing.
 #[test]
-fn the_restart_warning_is_one_line_and_opens_whole() {
-    let mut a = with_warning("restart_restored", PASTED_WARNING);
-    let screen = a.screen(200, 40);
-    let joined = screen.join("\n");
-    let line = "crashed, stop time unknown · reminded: 1 job · click for details";
-    assert_eq!(rows_with(&screen, line).len(), 1, "{joined}");
-    assert!(!joined.contains("estimated from nothing"), "{joined}");
-    assert!(!joined.contains("/notes"), "no `+N lines` seam: {joined}");
-    assert_eq!(a.card_rows.len(), 1, "{:?}", a.card_rows);
-    let (y, _) = a.card_rows[0];
-    assert_eq!(a.key(Key::Click { x: 10, y: y as u16 }), None);
-    let whole = popup_text(&mut a);
-    for needle in [
-        "[restart] the daemon was down for 0s",
-        "estimated from nothing (no record said when)",
-        "- job `j46`: reminded (not re-run)",
-    ] {
-        assert!(holds(&whole, needle), "the popup lost `{needle}`: {whole}");
-    }
-    assert_eq!(a.key(Key::Esc), None);
-    assert!(a.diff_popup.is_none());
-
-    let mut a = with_warning("restart_restored", RESTORED_WARNING);
-    let screen = a.screen(200, 40);
-    assert_eq!(
-        rows_with(
-            &screen,
+fn the_restart_warning_reads_as_one_line_and_is_no_row() {
+    for (code, detail, line) in [
+        (
+            "restart_restored",
+            PASTED_WARNING,
+            "crashed, stop time unknown · reminded: 1 job · click for details",
+        ),
+        (
+            "restart_restored",
+            RESTORED_WARNING,
             "restarted, stopped by operator · down 4m12s · restored: 2 subagents, 1 monitor · \
-             reminded: 1 job"
-        )
-        .len(),
-        1,
-        "{}",
-        screen.join("\n")
-    );
+             reminded: 1 job · click for details",
+        ),
+    ] {
+        assert_eq!(
+            warning_card(code, detail).map(|c| c.line).as_deref(),
+            Some(line),
+            "the table stopped reading the warning's shape"
+        );
+        let mut a = with_warning(code, detail);
+        let joined = a.screen(200, 40).join("\n");
+        assert!(!joined.contains(line), "the warning drew a row\n{joined}");
+        assert_eq!(a.card_rows.len(), 0, "{joined}");
+        assert!(
+            a.notes
+                .iter()
+                .any(|(place, n)| matches!(n, Note::Warned(w) if w.code == code)
+                    && *place == Placed::Before),
+            "`{code}` left no record beside the conversation: {:?}",
+            a.notes
+        );
+    }
 }
 
 /// The session notice the model got is ONE `session ·` line - not the job's command, not
@@ -284,7 +282,7 @@ fn an_empty_restart_notice_is_one_session_line() {
 /// A narrow screen cuts the line - it never wraps.
 #[test]
 fn a_narrow_screen_cuts_the_restart_line() {
-    let mut a = with_warning("restart_restored", RESTORED_WARNING);
+    let mut a = with_notice(RESTORED_NOTICE);
     let screen = a.screen(50, 30);
     let rows = rows_with(&screen, "restarted, stopped by operator");
     assert_eq!(rows.len(), 1, "{}", screen.join("\n"));
@@ -343,17 +341,9 @@ fn the_stale_prompt_note_is_one_line_pointing_at_the_card() {
 /// generic `<mark> <code> · <first clause>`, the detail a click away. Nothing is guessed.
 #[test]
 fn a_restart_or_stale_shape_this_head_does_not_know_falls_back() {
+    // The codes whose shape no reader knows, and which the head still DRAWS: a twin
+    // (`restart_*`) is filed beside the conversation instead, and that is asserted below.
     for (code, detail) in [
-        (
-            "restart_restored",
-            "[restart] the daemon came back somehow\n  - job `j1`: reminded (not re-run)",
-        ),
-        ("restart_reminded", "the daemon restarted; nothing to say"),
-        // A header with nothing under it this head can count.
-        (
-            "restart_restored",
-            "[restart] the daemon was down for 4s (stopped at x; back at y) — under it:",
-        ),
         ("prefix_stale", "this session's prompt is stale, somehow"),
         (
             "prefix_stale",
@@ -374,6 +364,31 @@ fn a_restart_or_stale_shape_this_head_does_not_know_falls_back() {
             newest_notice(&mut a),
             detail,
             "the popup is the detail verbatim"
+        );
+    }
+    // A restart's shape this head does not know is not drawn at all: the `[restart]` notice the
+    // model got is the row, and the warning is filed beside it.
+    for (code, detail) in [
+        (
+            "restart_restored",
+            "[restart] the daemon came back somehow\n  - job `j1`: reminded (not re-run)",
+        ),
+        ("restart_reminded", "the daemon restarted; nothing to say"),
+        (
+            "restart_restored",
+            "[restart] the daemon was down for 4s (stopped at x; back at y) — under it:",
+        ),
+    ] {
+        assert!(warning_card(code, detail).is_none(), "{code}: {detail}");
+        let mut a = with_warning(code, detail);
+        let screen = a.screen(200, 40);
+        assert_eq!(a.card_rows.len(), 0, "{code}: {}", screen.join("\n"));
+        assert!(
+            a.notes.iter().any(|(place, n)| {
+                matches!(n, Note::Warned(w) if w.code == code) && *place == Placed::Before
+            }),
+            "{code} left no record: {:?}",
+            a.notes
         );
     }
     // The same words under another code are not these cards.
@@ -468,9 +483,11 @@ fn a_restart_warning_and_its_notice_are_one_line() {
             1,
             "warning first: {warning_first}\n{joined}"
         );
-        assert_eq!(a.notice_rows.len(), 0, "{:?}", a.notice_rows);
-        assert_eq!(a.card_rows.len(), 1, "{:?}", a.card_rows);
-        let (y, _) = a.card_rows[0];
+        // ONE row, and it is the notice's: the `restart_reminded` warning twins it and is filed
+        // beside the conversation, whichever order the two arrive in.
+        assert_eq!(a.notice_rows.len(), 1, "{:?}", a.notice_rows);
+        assert_eq!(a.card_rows.len(), 0, "{:?}", a.card_rows);
+        let (y, _) = a.notice_rows[0];
         a.key(Key::Click { x: 10, y: y as u16 });
         let whole = popup_text(&mut a);
         assert!(
@@ -524,8 +541,9 @@ fn a_restart_card_opens_with_its_header_once() {
             a
         };
         let screen = a.screen(200, 40);
-        assert_eq!(a.card_rows.len(), 1, "{}", screen.join("\n"));
-        let (y, _) = a.card_rows[0];
+        assert_eq!(a.notice_rows.len(), 1, "{}", screen.join("\n"));
+        assert_eq!(a.card_rows.len(), 0, "{}", screen.join("\n"));
+        let (y, _) = a.notice_rows[0];
         a.key(Key::Click { x: 10, y: y as u16 });
         let whole = popup_text(&mut a);
         let flat = whole.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -537,22 +555,6 @@ fn a_restart_card_opens_with_its_header_once() {
         assert!(holds(&whole, "To run it again: `bash {"), "{whole}");
         assert!(holds(&whole, "- job `j46`: NOT run again"), "{whole}");
     }
-}
-
-/// A card whose rows open some other way keeps its own text first - only a row that repeats
-/// the card's header replaces it.
-#[test]
-fn a_card_popup_keeps_its_text_when_no_row_repeats_its_header() {
-    use crate::app::one_event::card_popup_text;
-    assert_eq!(
-        card_popup_text("head\n  - a", &["other\nline".into()]),
-        "head\n  - a\n\nother\nline"
-    );
-    assert_eq!(
-        card_popup_text("head\n  - a", &["head\n- a, in more words".into()]),
-        "head\n- a, in more words"
-    );
-    assert_eq!(card_popup_text("head", &[]), "head");
 }
 
 /// A restart and the children it handed over are ONE line. The `[task]` group is the restart's own:
@@ -642,8 +644,9 @@ fn a_restart_and_the_children_it_handed_over_are_one_line() {
             "warning first: {warning_first}\n{joined}"
         );
         assert!(!joined.contains("you-are-reading-part"), "{joined}");
-        assert_eq!(a.notice_rows.len(), 0, "{:?}", a.notice_rows);
-        assert_eq!(a.card_rows.len(), 1, "{:?}", a.card_rows);
+        // One row, the notice's: the warning is filed beside the conversation.
+        assert_eq!(a.notice_rows.len(), 1, "{:?}", a.notice_rows);
+        assert_eq!(a.card_rows.len(), 0, "{:?}", a.card_rows);
     }
 }
 

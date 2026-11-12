@@ -1198,10 +1198,6 @@ pub struct App {
     /// moment the answer left, so a second Enter cannot send it again, and kept until the daemon
     /// settles them or refuses the answer, which puts the card back in front.
     pub(crate) answering: Vec<crate::app::todos::Answering>,
-    /// Rows a warning's card stands for, one event one row: the row's `item_id` to the key of the
-    /// note whose card draws the event, so the row itself draws nothing. Keyed by id, because a
-    /// snapshot renumbers nothing: an index-keyed map had to be cleared on every resync.
-    pub(crate) absorbed: std::collections::HashMap<String, String>,
     /// Todo questions this head has answered whose board has not come back, as `(row, question)`.
     /// [`App::operator_asks`] leaves them out so the card can move on and the resident line counts
     /// what is left; a fresh board clears the list, so a refused answer is asked again.
@@ -1596,7 +1592,6 @@ impl App {
             away: Vec::new(),
             asks_hidden: None,
             answering: Vec::new(),
-            absorbed: std::collections::HashMap::new(),
             todo_answered: Vec::new(),
             model_pending: None,
             retry_series: 0,
@@ -1752,7 +1747,6 @@ pub(crate) mod keyhints;
 mod keys;
 pub(crate) mod links;
 mod notes;
-pub(crate) mod one_event;
 mod panes;
 mod pick;
 mod pictures;

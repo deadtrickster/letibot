@@ -15,7 +15,9 @@ fn the_three_registers_are_three_marks() {
         ..RenderConfig::default()
     });
     for (code, detail) in [
-        ("compacted", "compacted: 940188 → 9181 tokens"),
+        // A routine code the head draws: `compacted` twins the fork's own row and is filed
+        // beside the conversation, so its register would not be on the screen.
+        ("compact_half", "the fold read the first 90 items"),
         (
             "slash_refused",
             "/qwe is not a daemon verb; /help lists the head's",
@@ -45,7 +47,7 @@ fn the_three_registers_are_three_marks() {
             .clone()
     };
     let (routine, refused, failure) = (
-        line("compacted"),
+        line("compact_half"),
         line("slash_refused"),
         line("transcript_store"),
     );
@@ -54,7 +56,7 @@ fn the_three_registers_are_three_marks() {
     // `session` line, and a second one there would read as a stutter.
     assert!(routine.contains("session · "), "{routine:?}");
     assert!(
-        !routine.contains("! compacted") && !routine.contains("× compacted"),
+        !routine.contains("! compact_half") && !routine.contains("× compact_half"),
         "{routine:?}"
     );
     assert!(refused.contains("× slash_refused"), "{refused:?}");

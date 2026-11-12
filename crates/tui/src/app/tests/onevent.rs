@@ -1,6 +1,7 @@
-//! A collapsed notice stays collapsed: the pairing of one event with one row holds across the doors
-//! that replace a transcript and across the reader's own retirement. The pairing is keyed by the
-//! row's `item_id`; keyed by index, every resync, reattach and switch back would clear it.
+//! One event is one row, and that row is the model's: a warning the daemon raises beside a notice
+//! the model was sent is filed BESIDE the conversation (`/notes`, `/status`), never drawn. The
+//! screen with the notice and the screen with the notice plus its warning are byte-identical, which
+//! is the whole of the rule and the only assertion that cannot be satisfied by hiding the row.
 
 use super::*;
 use letibot_transcript::Speaker;
@@ -8,36 +9,32 @@ use letibot_transcript::Speaker;
 /// The daemon's `[reseat]` notice (`harnessd::harness::reseated_for_the_model`), one row.
 const RESEAT_ROW: &str =
     "[reseat] Your system prompt and tools were updated. New: task_start. Carry on.";
-/// The `prefix_stale` sentence that card stands for, cut to its first clause.
-const RESEAT_SAID: &str = "session s was seated 10-08 21:14 with a prompt this daemon would not \
-                            compose now: the tool schemas have changed since.";
+/// The `reseated` warning's own sentence - the twin this file is about.
+const RESEAT_SAID: &str =
+    "this conversation now speaks the prompt this daemon seats: the tool list was rebuilt";
 
-/// The two events a reseat writes, published to a hub so a snapshot carries the same envelope  -
-/// and fed to the head as the same envelopes, which is what makes the note's key identical by
-/// both routes (`(code, ts, detail)`, `note_key`).
-fn reseat(hub: &Hub) -> Vec<letibot_sessionlog::event::Envelope> {
-    let mut out = vec![hub.publish(testing::appended("s.0", "user"))];
-    out.push(hub.publish(SessionEvent::TranscriptContent {
-        item_id: "s.0".into(),
-        item: Box::new(TranscriptItem::User {
-            speaker: Speaker::Agent,
-            parts: vec![UserPart::Text {
-                text: RESEAT_ROW.into(),
-            }],
-        }),
-    }));
-    out.push(hub.publish(SessionEvent::Warning {
-        code: "reseated".into(),
-        detail: RESEAT_SAID.into(),
-        compaction: None,
-    }));
-    out
-}
+/// The model's row for a compaction (`harness::wall`'s fork note), one row.
+const COMPACTED_ROW: &str = "Earlier conversation is replaced by this summary (full history: \
+                             `transcript` tool). The most recent messages follow verbatim.\n\n\
+                             The session read the brief and started the build.";
+/// The `compacted` warning's own sentence.
+const COMPACTED_SAID: &str = "compacted: 41k tokens resident before, 9k after";
 
-/// A head that attached empty and then watched the reseat happen - the row, then the warning,
-/// which is the order the daemon writes them in and the order that files the note at the row's
-/// seam.
-fn watched() -> (App, std::sync::Arc<Hub>) {
+/// The model's row for a `/clear` (`harness::clear::orientation`), one row.
+const CLEARED_ROW: &str = "[cleared] The operator cleared the conversation; assume nothing from \
+                            before - not even a summary.";
+/// The `cleared` warning's own sentence.
+const CLEARED_SAID: &str = "conversation cleared: tr-1 → tr-2. The new conversation is message \
+                            zero plus a 12-line orientation";
+
+/// The model's row for a daemon restart (`restart::notice`), one row.
+const RESTART_ROW: &str = "[restart] The daemon restarted (down 1s). Nothing was running.";
+/// The `restart_restored` warning's own sentence.
+const RESTART_SAID: &str = "restarted (down 1s); nothing was running";
+
+/// A head that attached empty and then watched one model row and one warning arrive, in the order
+/// the daemon writes them: the row first, the warning after.
+fn watched(row: TranscriptItem, code: &str, said: &str) -> App {
     let hub = Hub::new("s");
     hub.publish(testing::turn_started("t1"));
     let mut a = app();
@@ -46,148 +43,206 @@ fn watched() -> (App, std::sync::Arc<Hub>) {
         vec![brief("s", "one", false)],
         Hub::new("s").snapshot(),
     ));
-    for e in reseat(&hub) {
-        a.apply(ServerFrame::Event(e));
-    }
-    (a, hub)
+    a.apply(ServerFrame::Event(
+        hub.publish(testing::appended("s.0", "user")),
+    ));
+    a.apply(ServerFrame::Event(hub.publish(
+        SessionEvent::TranscriptContent {
+            item_id: "s.0".into(),
+            item: Box::new(row),
+        },
+    )));
+    a.apply(ServerFrame::Event(hub.publish(SessionEvent::Warning {
+        code: code.into(),
+        detail: said.into(),
+        compaction: None,
+    })));
+    a
 }
 
 fn screen(a: &mut App) -> String {
     a.screen(120, 40).join("\n")
 }
 
-/// The collapse, as the operator sees it: one card for the warning and NO row of its own.
-/// `notice_rows` is the rows a click opens, so a collapsed row is one that is not in it - asserted
-/// both ways, since a card with the row under it is the duplicate the pairing exists to end.
-fn collapsed(a: &mut App, what: &str) {
-    let s = screen(a);
-    assert_eq!(
-        a.notice_rows.len(),
-        0,
-        "{what}: the row is drawn again\n{s}"
-    );
-    assert_eq!(a.card_rows.len(), 1, "{what}: and its card is not\n{s}");
-}
-
-#[test]
-fn a_reseat_is_one_card_and_no_row() {
-    let (mut a, _hub) = watched();
-    collapsed(&mut a, "the premise");
-    assert_eq!(
-        a.absorbed.len(),
-        1,
-        "the premise: one row is the one the card stands for — {:?}",
-        a.absorbed
-    );
-}
-
-/// `ctrl-n` hides the notice; it does not hand its row back. Retiring the card must not put the
-/// `[reseat]` row on the screen in its place: the reader asked for the wall to go, and the note is
-/// still counted on `/status`.
-#[test]
-fn a_retired_notice_keeps_its_row_collapsed() {
-    let (mut a, _hub) = watched();
-    a.key(Key::CtrlN);
-    let s = screen(&mut a);
-    assert_eq!(
-        a.notice_rows.len(),
-        0,
-        "the row of the notice the reader retired is drawn again\n{s}"
-    );
-    assert_eq!(a.card_rows.len(), 0, "and the card it retired is gone\n{s}");
-    // Retired is not deleted: the note is still held, still counted, still listed.
-    assert_eq!(a.notes.len(), 1, "{:?}", a.notes);
-    assert_eq!(a.retired_notes(), 1);
-    assert!(
-        a.notes_lines().join("\n").contains("reseated"),
-        "`/notes` still names it: {:?}",
-        a.notes_lines()
-    );
-}
-
-/// And it stays retired across the events that replace the transcript: a `/resync`, a reattach and a
-/// switch away and back all re-plant the same note under the same key, and none of them may bring
-/// back the row the reader retired.
-#[test]
-fn a_retired_notice_stays_collapsed_across_a_resync_and_a_switch() {
-    let (mut a, hub) = watched();
-    a.key(Key::CtrlN);
-
-    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
-    let s = screen(&mut a);
-    assert_eq!(a.notice_rows.len(), 0, "a resync drew the row again\n{s}");
-
-    a.apply(hello(
-        "other",
-        vec![brief("other", "two", false)],
-        Hub::new("other").snapshot(),
-    ));
-    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
-    let s = screen(&mut a);
-    assert_eq!(
-        a.notice_rows.len(),
-        0,
-        "a switch away and back drew the row again\n{s}"
-    );
-    assert_eq!(
-        a.card_rows.len(),
-        0,
-        "and the retired card is not back\n{s}"
-    );
-}
-
-/// A note the 64-note cap evicted still holds its row collapsed: the pairing outlives the note it
-/// names, because it is about the reader's retirement. `file_note` drops the oldest note while
-/// `absorbed` keeps a pairing per id, so asking the notes alone hands the row back at a rebuild.
-#[test]
-fn a_retired_notice_whose_note_was_evicted_keeps_its_row_collapsed() {
-    let (mut a, _hub) = watched();
-    a.key(Key::CtrlN);
-    // 64 more of another kind: the reseat's note is the oldest, so the cap drops it.
-    for i in 0..64u64 {
-        a.apply(ServerFrame::Event(env_at(
-            0,
-            10_000 + i,
-            SessionEvent::Warning {
-                code: "queue_blocked".into(),
-                detail: format!("the queue is blocked by row {i}"),
-                compaction: None,
-            },
-        )));
+/// A notice row: a delivery in the harness's voice, which is what every one of these four is.
+fn notice(text: &str) -> TranscriptItem {
+    TranscriptItem::User {
+        speaker: Speaker::Agent,
+        parts: vec![UserPart::Text { text: text.into() }],
     }
+}
+
+/// The rule, for each of the four events that used to draw two rows: the model's row is drawn, the
+/// warning's sentence is not, and the warning is still there to be read - `/notes` lists it.
+///
+/// The transcript is read from `hist_lines`, not the screen: the screen's last lines are the status
+/// line, where a refusal or a failure is said as it lands, and that is not a row of the record.
+fn one_row(row: TranscriptItem, code: &str, said: &str, fingerprint: &str) {
+    let mut a = watched(row, code, said);
+    // Laid out first: `hist_lines` is written by the frame.
+    let drawn = screen(&mut a);
+    let body = a.hist_lines.join("\n");
+    assert!(
+        body.contains(fingerprint),
+        "the model's own row is not drawn, so the event is not on the screen at all: \
+         {fingerprint:?}\n{drawn}"
+    );
+    assert!(
+        !body.contains(said),
+        "the warning `{code}` drew a second row under the model's own\n{body}"
+    );
     assert!(
         !a.notes
             .iter()
-            .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == "reseated")),
-        "the premise — the reseat's note was not evicted: {:?}",
-        a.notes.len()
+            .any(|(place, _)| matches!(place, Placed::Seam(_))),
+        "`{code}` is placed in the conversation: {:?}",
+        a.notes
     );
-    // The rebuild the expansion does, which is the door that draws the cached rows again.
-    a.invalidate_history();
-    let s = screen(&mut a);
-    assert_eq!(
-        a.notice_rows.len(),
-        0,
-        "the evicted note gave its row back\n{s}"
+    assert!(
+        a.notes
+            .iter()
+            .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == code)),
+        "`{code}` left no record at all: {:?}",
+        a.notes
     );
 }
 
-/// A note the reader did NOT retire gives its rows back when its card cannot be drawn: a snapshot's
-/// warnings are history, so a head that attached after the event has no card to stand for the row,
-/// and hiding the row would hide the event.
 #[test]
-fn a_snapshot_warning_with_no_card_gives_its_row_back() {
-    let hub = Hub::new("s");
-    hub.publish(testing::turn_started("t1"));
-    let _ = reseat(&hub);
-    // A head that never watched it: the whole conversation arrives in one snapshot.
-    let mut a = app();
-    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
-    let s = screen(&mut a);
-    assert_eq!(
-        a.notice_rows.len(),
-        1,
-        "the row is the only thing that says the reseat happened\n{s}"
+fn a_reseat_is_the_models_row_and_no_other() {
+    one_row(notice(RESEAT_ROW), "reseated", RESEAT_SAID, "reseated");
+}
+
+#[test]
+fn a_compaction_is_the_summary_row_and_no_other() {
+    let row = TranscriptItem::System {
+        text: COMPACTED_ROW.into(),
+        origin: letibot_transcript::SystemOrigin::Update,
+    };
+    one_row(row, "compacted", COMPACTED_SAID, "compacted summary");
+}
+
+#[test]
+fn a_clear_is_the_orientation_row_and_no_other() {
+    one_row(
+        notice(CLEARED_ROW),
+        "cleared",
+        CLEARED_SAID,
+        "cleared · The operator cleared the conversation",
     );
-    assert_eq!(a.card_rows.len(), 0, "and there is no card for it\n{s}");
+}
+
+#[test]
+fn a_daemon_restart_is_the_notice_row_and_no_other() {
+    one_row(
+        notice(RESTART_ROW),
+        "restart_restored",
+        RESTART_SAID,
+        "restarted, stopped by operator · down 1s",
+    );
+}
+
+/// The head's signals still fire without a row: `prefix_stale` raises the reseat card, and
+/// `reseated` takes it down - and neither writes a line of the conversation.
+#[test]
+fn the_reseat_card_still_moves_and_draws_nothing() {
+    let mut a = watched(notice(RESEAT_ROW), "prefix_stale", RESEAT_SAID);
+    assert!(a.reseat.is_some(), "the premise: the card was raised");
+    let _ = screen(&mut a);
+    assert!(
+        !a.hist_lines.join("\n").contains(RESEAT_SAID),
+        "the stale prompt's note is in the conversation\n{}",
+        a.hist_lines.join("\n")
+    );
+    a.apply(ServerFrame::Event(env_at(
+        0,
+        7,
+        SessionEvent::Warning {
+            code: "reseated".into(),
+            detail: RESEAT_SAID.into(),
+            compaction: None,
+        },
+    )));
+    screen(&mut a);
+    assert!(
+        a.reseat.is_none(),
+        "the card is still up after the re-seat landed"
+    );
+}
+
+/// The whole table, one code at a time: `warning::TWIN` is the answer to "does this code draw?" and
+/// nothing else is. A twin draws nothing (and is held to be read); every other code draws its row
+/// as it always did, because it is a daemon fact the model was never told. A code added to one half
+/// without the other fails here.
+#[test]
+fn the_twin_table_is_the_only_thing_that_stops_a_warning_being_drawn() {
+    let mut beside = 0;
+    let mut drawn = 0;
+    for (code, _, _) in letibot_sessionlog::warning::TABLE {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env_at(
+            1,
+            11,
+            SessionEvent::Warning {
+                code: (*code).into(),
+                detail: format!("the sentence `{code}` is raised with"),
+                compaction: None,
+            },
+        )));
+        let _ = screen(&mut a);
+        let body = a.hist_lines.join("\n");
+        let placed = a
+            .notes
+            .iter()
+            .any(|(place, _)| matches!(place, Placed::Seam(_)));
+        if letibot_sessionlog::warning::twin(code).is_some() {
+            assert!(
+                !body.contains(code) && !placed,
+                "`{code}` twins a model row and drew a row of its own\n{body}"
+            );
+            assert!(
+                a.notes
+                    .iter()
+                    .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == *code)),
+                "`{code}` drew nothing and left no record at all: {:?}",
+                a.notes
+            );
+            beside += 1;
+        } else {
+            drawn += 1;
+        }
+    }
+    assert_eq!(beside, letibot_sessionlog::warning::TWIN.len());
+    assert!(drawn > 40, "{drawn} codes are still drawn");
+}
+
+/// A warning the model was NOT told keeps its row, and the head's own reading of it is `Rendered`
+/// as before: the twin table is the only thing that took a row away.
+#[test]
+fn a_daemon_fact_with_no_model_twin_still_draws() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Event(env_at(
+        1,
+        11,
+        SessionEvent::Warning {
+            code: "boundary_absent".into(),
+            detail: "this session has no boundary".into(),
+            compaction: None,
+        },
+    )));
+    let _ = screen(&mut a);
+    assert!(
+        a.hist_lines.join("\n").contains("no boundary"),
+        "the row went with the twins: {}",
+        a.hist_lines.join("\n")
+    );
 }

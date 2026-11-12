@@ -772,7 +772,6 @@ impl App {
             dismissed,
             quiet,
             read_marks,
-            absorbed,
             sessions_host,
             ..
         } = self;
@@ -832,44 +831,15 @@ impl App {
                         crate::app::Burst::Single => {
                             let n = &notes[*note_upto].1;
                             let lines = note_lines(cfg, n);
-                            let popup = note_card(n).map(|(card, text, _)| {
-                                // The session rows this card stands for, under its own
-                                // text - and the event said once
-                                // (`one_event::card_popup_text`).
-                                let text = crate::app::one_event::card_popup_text(
-                                    &text,
-                                    &crate::app::one_event::absorbed_texts(
-                                        absorbed,
-                                        items,
-                                        &note_key(n),
-                                    ),
-                                );
-                                (text, (card.title, card.role))
-                            });
+                            let popup =
+                                note_card(n).map(|(card, text, _)| (text, (card.title, card.role)));
                             Some((lines, popup))
                         }
                         crate::app::Burst::Counted(members) => {
                             let ns: Vec<&Note> = members.iter().map(|&j| &notes[j].1).collect();
                             let lines = crate::ui::panes::notes::burst_lines(cfg, &ns);
-                            let popup =
-                                crate::ui::panes::notes::burst_card(&ns).map(|(card, text, _)| {
-                                    // The rows a burst stands for are its members' own: the
-                                    // event each member absorbed is under that member's text.
-                                    let rows: Vec<String> = members
-                                        .iter()
-                                        .flat_map(|&j| {
-                                            crate::app::one_event::absorbed_texts(
-                                                absorbed,
-                                                items,
-                                                &note_key(&notes[j].1),
-                                            )
-                                        })
-                                        .collect();
-                                    (
-                                        crate::app::one_event::card_popup_text(&text, &rows),
-                                        (card.title, card.role),
-                                    )
-                                });
+                            let popup = crate::ui::panes::notes::burst_card(&ns)
+                                .map(|(card, text, _)| (text, (card.title, card.role)));
                             Some((lines, popup))
                         }
                     };
@@ -959,87 +929,78 @@ impl App {
                 // A row of an OPEN run draws itself under that header, and a row the click's
                 // kind skips draws nothing (that is what `run_skips` is for). A CLOSED run's rows
                 // are not lexed at all, which is the whole point of the marker.
-                let absorbed_here = crate::app::one_event::is_absorbed(
-                    absorbed,
-                    notes,
-                    dismissed,
-                    quiet,
-                    read_marks,
-                    items[*hist_upto].item_id.as_str(),
-                );
                 let skipped =
                     open_run && crate::app::runclick::run_skips(*lift, &items[*hist_upto]);
-                let (body_class, body) =
-                    if (open_run || unseen.is_none()) && !absorbed_here && !skipped {
-                        // This row's cards, asked of the layer once and kept by the row's id.
-                        let cards = Cards::row(cards_host, &items[*hist_upto]);
-                        item_lines(
-                            &items[*hist_upto],
-                            &ItemCtx {
-                                cards: &cards,
-                                cfg: &row_cfg,
-                                pending: &self.pending_rows,
-                                think: if open_run {
-                                    crate::app::runclick::run_think(*lift, think)
-                                } else {
-                                    think
-                                },
-                                tools: if open_run { *run_tools } else { tool },
-                                raw,
-                                targets: call_targets,
-                                answered: &answered,
-                                subagents: &self.subagents,
-                                job_tails: &self.job_tails,
-                                drawn_live: in_flight.contains(items[*hist_upto].item_id.as_str()),
-                                elapsed_ms: call_ms.get(&items[*hist_upto].item_id).copied(),
-                                edits: call_edits
-                                    .get(&items[*hist_upto].item_id)
-                                    .map(Vec::as_slice)
-                                    .unwrap_or(&[]),
-                                job_edits,
-                                decision: call_decisions.get(&items[*hist_upto].item_id),
-                                workspace: &self.wiring.workspace,
-                                bound: bound_prompts
-                                    .get(&items[*hist_upto].item_id)
-                                    .map(String::as_str),
-                                // A bound row is being drawn, so its mark is never `queued`: see [`echo_mark`]. This
-                                // was the same `_ => QUEUED` as its sibling walk, and it is the one that drew the
-                                // person's own line as still waiting.
-                                echo_mark: bound_prompts
-                                    .get(&items[*hist_upto].item_id)
-                                    .map(String::as_str)
-                                    .map(|t| echo_mark(unconfirmed, t, true))
-                                    .unwrap_or(QUEUED),
-                                echo_open,
-                                // An open run lifts the rung for its own rows, which is what "it opens" means: the
-                                // reader sees the rows the rung was hiding with their own headlines and diffs,
-                                // rather than a second rendering of them.
-                                vis: if open_run {
-                                    Visibility::lifted()
-                                } else {
-                                    *visibility
-                                },
-                                diff_split,
-                                // Rebuilt per row inside the walk, so it cannot be hoisted out of this borrow: it
-                                // reads two fields the walk is holding. Closed for an open run, since that run is
-                                // being read whole.
-                                payload_view: if open_run {
-                                    None
-                                } else {
-                                    payload_sel
-                                        .as_deref()
-                                        .filter(|id| !id.is_empty())
-                                        .map(|id| (id, *payload_page))
-                                },
-                                payload_newest: newest_payload.as_deref(),
-                                payload_max: Some(payload_max),
-                                window_rows: screen_rows.saturating_sub(WINDOW_CHROME),
-                                replied_to: question_before(items, *hist_upto).as_deref(),
+                let (body_class, body) = if (open_run || unseen.is_none()) && !skipped {
+                    // This row's cards, asked of the layer once and kept by the row's id.
+                    let cards = Cards::row(cards_host, &items[*hist_upto]);
+                    item_lines(
+                        &items[*hist_upto],
+                        &ItemCtx {
+                            cards: &cards,
+                            cfg: &row_cfg,
+                            pending: &self.pending_rows,
+                            think: if open_run {
+                                crate::app::runclick::run_think(*lift, think)
+                            } else {
+                                think
                             },
-                        )
-                    } else {
-                        (RowClass::Other, Vec::new())
-                    };
+                            tools: if open_run { *run_tools } else { tool },
+                            raw,
+                            targets: call_targets,
+                            answered: &answered,
+                            subagents: &self.subagents,
+                            job_tails: &self.job_tails,
+                            drawn_live: in_flight.contains(items[*hist_upto].item_id.as_str()),
+                            elapsed_ms: call_ms.get(&items[*hist_upto].item_id).copied(),
+                            edits: call_edits
+                                .get(&items[*hist_upto].item_id)
+                                .map(Vec::as_slice)
+                                .unwrap_or(&[]),
+                            job_edits,
+                            decision: call_decisions.get(&items[*hist_upto].item_id),
+                            workspace: &self.wiring.workspace,
+                            bound: bound_prompts
+                                .get(&items[*hist_upto].item_id)
+                                .map(String::as_str),
+                            // A bound row is being drawn, so its mark is never `queued`: see [`echo_mark`]. This
+                            // was the same `_ => QUEUED` as its sibling walk, and it is the one that drew the
+                            // person's own line as still waiting.
+                            echo_mark: bound_prompts
+                                .get(&items[*hist_upto].item_id)
+                                .map(String::as_str)
+                                .map(|t| echo_mark(unconfirmed, t, true))
+                                .unwrap_or(QUEUED),
+                            echo_open,
+                            // An open run lifts the rung for its own rows, which is what "it opens" means: the
+                            // reader sees the rows the rung was hiding with their own headlines and diffs,
+                            // rather than a second rendering of them.
+                            vis: if open_run {
+                                Visibility::lifted()
+                            } else {
+                                *visibility
+                            },
+                            diff_split,
+                            // Rebuilt per row inside the walk, so it cannot be hoisted out of this borrow: it
+                            // reads two fields the walk is holding. Closed for an open run, since that run is
+                            // being read whole.
+                            payload_view: if open_run {
+                                None
+                            } else {
+                                payload_sel
+                                    .as_deref()
+                                    .filter(|id| !id.is_empty())
+                                    .map(|id| (id, *payload_page))
+                            },
+                            payload_newest: newest_payload.as_deref(),
+                            payload_max: Some(payload_max),
+                            window_rows: screen_rows.saturating_sub(WINDOW_CHROME),
+                            replied_to: question_before(items, *hist_upto).as_deref(),
+                        },
+                    )
+                } else {
+                    (RowClass::Other, Vec::new())
+                };
                 let (class, rows) = match unseen {
                     Some((start, end)) if start == *hist_upto => {
                         // See the backward walk's note: the run holding the turn's
