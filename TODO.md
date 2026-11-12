@@ -635,13 +635,12 @@ Fix: make the build script's freshness depend on the tree it is built from - e.g
 
 ## R198 - Tests that touch the operator's real config and runtime dir
 
-**Status:** filed, 2026-11-12.
-
+**Status:** built, 2026-11-12. The write was the preapproved list: `Config::for_this_box` installed `~/.config/letibot/permission.json` on every config read, so every fixture and every store query wrote the operator's config, and on a fresh box the first `letibot daemon --delete` answered its two-line refusal with a third line. `parse_permission` now only reads (an absent file is the seed in force) and `cli::run` installs it once, where the daemon has sessions to serve. `crates/letibot/tests/dispatch.rs` gives every binary it spawns a temp `HOME`/`XDG_CONFIG_HOME`, and `a_store_query_writes_nothing_into_the_config_dir` pins the rule. `scripts/letibot` makes the runtime dir where something is written into it (`rundir`), so `--help`, `--status` and `--ls` need none. Proved: the dispatch suite with `HOME`/`XDG_CONFIG_HOME` at empty temp dirs, 15/15 on its first run, both left empty and the real `~/.config/letibot` never created; `env -u XDG_RUNTIME_DIR letibot --help` prints help, and `XDG_RUNTIME_DIR` pointing at a directory nothing can create does too.
 From the L9 package: `crates/letibot/tests/dispatch.rs`'s unknown-session test writes into the real `~/.config/letibot`, so it fails once on a fresh box with an extra stderr line and then passes; and `scripts/letibot --help` dies under `set -e` at `mkdir -p /run/user/<uid>/letibot` when `XDG_RUNTIME_DIR` is unset. A test must not write outside its temp dir, and `--help` must not need a runtime dir. Done when: the dispatch suite run with `HOME` and `XDG_CONFIG_HOME` pointed at an empty temp dir passes on its first run and leaves the real config untouched, and `env -u XDG_RUNTIME_DIR letibot --help` prints help.
 
 ## R199 - mergequeue review runs-table test flakes under load
 
-**Status:** filed, 2026-11-12.
+**Status:** built, 2026-11-12. Not the reaping and not the stub: a `SIGINT` sent to a just-spawned shell is sometimes consumed by the shell's own handler (measured 13 of 400, each alive 3 s later, each killed by a retry), and `Runs` sent it once - so the run spent the grace and only `SIGKILL` ended it, or, with the test's constant clock (`2`, `3`), nothing did. `Run::end` now repeats the signal and keeps the first request as the grace's clock, `Runs::poll` repeats it too (a timed-out reviewer whose signal was eaten waited for ever), and the test runs on `now_ms()` bounded by `STOP_GRACE_MS`, so it proves the run ended on the signal. Proved: 100 runs (4 copies x 25 rounds) beside 4 burners, 0 failures; the same harness reproduced the 30 s failure on its first run before the fix.
 
 `mergequeue::review::claude_tests::the_runs_table_holds_a_process_until_it_is_dead` failed once in a full `--lib` run on the loaded host ("and forgotten once it is": the SIGINT'd `sleep 60` stub must be gone within 30 s) and passed 3/3 alone. Same class as the six fixed today: find whether the bound or the reaping is wrong, fix the cause, prove it with repeated runs under load.
 
