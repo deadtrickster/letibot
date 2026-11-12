@@ -1152,6 +1152,9 @@ impl Harness {
                 spec.exec = may_exec;
                 spec.up_args = cfg.vm_args.clone();
                 spec.verify = cfg.vm_verify.clone();
+                // The owner stamp firecode's run directory carries, so a discovery pass can say
+                // whose a VM is with no store (`docs/lifecycle.md` d.4).
+                spec.owner = Some(cfg.session_id.clone());
                 letibot_tools::firecode::FirecodeBackend::up(&spec).map_err(|e| {
                     HarnessError::Setup(format!("placing this session in a firecode VM: {e}"))
                 })?
@@ -1814,6 +1817,42 @@ impl Harness {
         }
     }
 
+    /// What kind of owner this session is (`docs/lifecycle.md` d.1): a child is a subagent, a
+    /// daemon the bridge started for a brief is a package, the merge queue's reviewer is a gate run,
+    /// and anything else is an interactive session nothing closes for idleness.
+    fn owner_kind(cfg: &Config) -> letibot_tokencore::store::OwnerKind {
+        use letibot_tokencore::store::OwnerKind;
+        if cfg.parent_session_id.is_some() {
+            OwnerKind::Subagent
+        } else if cfg.seat == Seat::Gatekeeper {
+            OwnerKind::Gate
+        } else if cfg.parent_seat.is_some() {
+            // The Claude Code seat whose package this daemon serves: `leticode_start`'s sessions.
+            OwnerKind::Package
+        } else {
+            OwnerKind::Session
+        }
+    }
+
+    /// Write this session's owner row and its root. Idempotent: a resume finds the row it left,
+    /// with the operator's hold and the landing kept, and goes back to `live` on it.
+    fn record_owner(
+        store: &letibot_tokencore::store::Store,
+        cfg: &Config,
+    ) -> Result<(), letibot_tokencore::store::StoreError> {
+        let now = letibot_metrics::now_ms() as i64;
+        let mut owner = letibot_tools::lifecycle::owner_for_open(
+            store,
+            &cfg.session_id,
+            Self::owner_kind(cfg),
+            Some(cfg.workspace.display().to_string()),
+            now,
+        )?;
+        owner.parent_id = cfg.parent_session_id.clone();
+        let places = letibot_tools::lifecycle::Places::here();
+        letibot_tools::lifecycle::register(store, &places, &owner)
+    }
+
     pub fn open_with_registry(
         parts: &Parts,
         mut cfg: Config,
@@ -1833,6 +1872,18 @@ impl Harness {
             writer,
         } = Self::open_the_stored(&mut cfg, &mut notes)?;
         Self::say_the_embedder(&hub, &cfg);
+        // The owner row and its root, before anything this session creates: a row with no resource
+        // is harmless, a resource with no row is the leak every reap has to guess at. A store that
+        // refuses this leaves a note rather than failing the open - a session that cannot record
+        // itself is still a session somebody can talk to.
+        if let Some(store) = &store
+            && let Err(e) = Self::record_owner(store, &cfg)
+        {
+            notes.push(format!(
+                "this session's owner row was not written ({e}), so `letibot gc` cannot attribute \
+                 what it creates here"
+            ));
+        }
 
         let mut mode_source = Self::resolve_the_point(
             parts,
