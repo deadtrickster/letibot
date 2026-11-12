@@ -76,7 +76,7 @@ letibot-plugin.workspace = true
 # the price of running a plugin at all — see `crates/plugins-rano`, which the head and the bridge
 # now load their layers with too.
 letibot-plugins-rano.workspace = true
-rano = { git = "https://github.com/deadtrickster/rano", rev = "c12f672b46f2cd3788f6f5307630e81b9575a512" }
+rano = { git = "https://github.com/deadtrickster/rano", rev = "43ee5ee8bff77ddae87b38cbf8b00cbe2c291b2f" }
 # The metrics writer thread and metrics.db (TODO R81): the daemon is the one that writes it.
 letibot-metrics = { workspace = true, features = ["store"] }
 serde.workspace = true
