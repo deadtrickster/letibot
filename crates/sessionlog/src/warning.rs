@@ -467,6 +467,13 @@ pub const TABLE: &[(&str, Class, Action)] = &[
         Class::Failure,
         Action::Do("give it a workspace that exists"),
     ),
+    // A session the daemon could not open: nothing runs in it until it is opened again. Its rows
+    // are kept, so the fix is to deal with the named cause and reopen it.
+    (
+        "open_failed",
+        Class::Failure,
+        Action::Do("fix the cause it names, then reopen the session"),
+    ),
     // A session asked for a boundary and did not get one: on a Mac it runs unconfined and every
     // command that runs code is decided per command, on Linux the seat is refused. The fix is the
     // operator's.
@@ -1324,15 +1331,15 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_83_routine_15_refused_and_98_failures() {
+    fn the_table_is_83_routine_15_refused_and_99_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k, _)| *k == c).count();
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 196, "the table's size");
+        assert_eq!(TABLE.len(), 197, "the table's size");
         assert_eq!(count(Class::Routine), 83, "the four limits are routine");
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 98);
+        assert_eq!(count(Class::Failure), 99);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);
