@@ -54,6 +54,7 @@ use std::process::ExitCode;
 
 mod boundary;
 mod browser;
+mod gc;
 mod github;
 pub mod launcher;
 pub mod migrate;
@@ -286,6 +287,12 @@ fn main() -> ExitCode {
                 };
                 if word == "stats" {
                     stats::run_stats(&tail())
+                } else if word == "holds" {
+                    // What every owner of this box holds, read off the store and the disk: a plan's
+                    // input, and the answer to `letibot gc` being all there is yet.
+                    gc::run_holds(&tail())
+                } else if word == "gc" {
+                    gc::run_gc(&tail())
                 } else if word == "where" || word == "--where" {
                     // Which daemon serves a folder, for a program that drives letibot and must
                     // not re-derive the socket's hash. `scripts/letibot --where` execs it.
@@ -370,6 +377,10 @@ VERBS
   where [FOLDER]              the socket this folder's daemon listens on and whether it is up:
                               `--ensure` starts it, `--json` prints socket, live, project
                               and folder in one object (`letibot --where` is the same verb)
+  holds [OWNER]               what every owner holds on disk - its cgroup with its process
+                              count and memory, its VM, its copies, its worktree and target
+  gc [OWNER]                  the read-only plan: what would be reaped, why, when; `--log`
+                              shows the journal. Nothing in this build removes anything
 
 Every verb answers for itself: `letibot <verb> --help` says what it takes, which
 flags have defaults, and one example. A role is reachable by its own name through a

@@ -3012,6 +3012,12 @@ SESSIONS_EOF
     else
       echo "no daemon for $WORKSPACE"
     fi
+    # **What this folder's owners hold on disk** (docs/lifecycle.md d.9): one `holds:` line per
+    # owner, read from the store and the kernel rather than from the daemon, so it answers while
+    # the daemon is wedged or gone. Read-only; a box with no store yet prints nothing.
+    if [ -x "$BIN/letibot" ]; then
+      "$BIN/letibot" holds --folder "$WORKSPACE" --line 2>/dev/null || true
+    fi
     # The local model server is a separate fact from what answers the turns, so it is
     # reported separately — and labelled for what it is. It said `model`, beside a
     # daemon whose turns go to a provider, which reads as "this is the model": the
@@ -3045,8 +3051,8 @@ SESSIONS_EOF
   # the one-shot below: `letibot stats --since 1d` started a session and handed the model the
   # sentence "stats --since 1d", which is a billed turn and not a lookup. Each hands its whole
   # line on unchanged, and the verb's own parser refuses what it does not know by name.
-  stats | boundary | fb)
-    [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the metrics and boundary verbs live there)"
+  stats | boundary | fb | holds | gc)
+    [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the metrics, boundary and lifecycle verbs live there)"
     exec "$BIN/letibot" "$@"
     ;;
   migrate)
