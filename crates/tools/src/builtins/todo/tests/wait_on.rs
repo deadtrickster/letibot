@@ -30,6 +30,7 @@ fn job(id: &str, slug: Option<&str>, state: JobState) -> JobView {
         memory: None,
         output_file: None,
         env_report: None,
+        holding: None,
     }
 }
 

@@ -137,6 +137,11 @@ pub struct JobView {
     /// was not given one and for one whose trailer has not arrived; the harness observes the
     /// `Ok` pairs and treats an `Err` as a report it cannot believe.
     pub env_report: Option<Result<String, String>>,
+    /// What its cgroup holds at this instant: the processes in it and what they are, what it has
+    /// burned, and how recently the kernel killed one of them at its cap. `None` for a job that is
+    /// not running (its cgroup is gone), for a job of jobs (its work is on other machines) and for
+    /// a backend that cannot read a cgroup at all.
+    pub holding: Option<super::scope::Holding>,
 }
 
 /// What a job is called: the caller's name and the id, or just the id when nobody
@@ -153,14 +158,17 @@ pub fn job_label(slug: Option<&str>, id: &str) -> String {
 }
 
 impl JobView {
-    /// One clause about this job's memory, or `None` unless there is something to say:
-    /// it was killed at its cap, came within a tenth of it, or ran uncapped against an ask.
+    /// One clause about this job's memory, or `None` unless there is something to say. A job that
+    /// is RUNNING always says what it holds: a cap it is living at is the fact a reader needs, and
+    /// `peak` alone cannot tell that job from one the cap ended. An ended job says nothing unless
+    /// the cap is what ended it - the peak on every row was a number to size work by.
     pub fn memory_clause(&self) -> Option<String> {
         match (&self.memory_cap, &self.memory) {
             (MemoryCap::Uncapped { asked, why }, _) => Some(format!(
                 "UNCAPPED ({} was asked for: {why})",
                 super::scope::human_bytes(*asked)
             )),
+            (_, Some(u)) if self.state.is_running() => Some(self.live_memory_clause(u)),
             (_, Some(u)) if u.killed_at_cap() => {
                 Some(format!("{} — KILLED at the cap", u.clause()))
             }
@@ -171,6 +179,72 @@ impl JobView {
         }
     }
 
+    /// `17 GiB now, peak 32 GiB of a 32 GiB cap — 591 processes killed at the cap, last 12.0s
+    /// ago`. The word KILLED belongs to an ending: a running job at its cap is one the kernel is
+    /// killing processes out of, and calling that KILLED is the sentence that lost a fuzz job.
+    fn live_memory_clause(&self, u: &super::scope::MemoryUse) -> String {
+        let mut s = u.live_clause();
+        if u.oom_kills > 0 {
+            let n = u.oom_kills;
+            s.push_str(&format!(
+                " — {n} {} killed at the cap",
+                if n == 1 { "process" } else { "processes" }
+            ));
+            if let Some(since) = self.holding.as_ref().and_then(|h| h.oom_since) {
+                s.push_str(&format!(", last {} ago", super::scope::span(since)));
+            }
+        }
+        if u.at_its_cap() {
+            s.push_str("; it is at its cap and still running");
+        }
+        s
+    }
+
+    /// The state as a row says it. A running job whose leader is gone is still running: the
+    /// cgroup is what a job is here, so the row says both facts rather than the word alone - and
+    /// the processes in it are the ones a `ps` from inside the sandbox could never show.
+    pub fn state_phrase(&self) -> String {
+        match &self.holding {
+            Some(h) if self.state.is_running() && !h.leader_alive && h.processes > 0 => {
+                format!(
+                    "running (leader gone, {n} {} still in it)",
+                    if h.processes == 1 {
+                        "process"
+                    } else {
+                        "processes"
+                    },
+                    n = h.processes
+                )
+            }
+            _ => self.state.word(),
+        }
+    }
+
+    /// The warning a row carries for a running job that has written nothing for a long time.
+    /// `since_last_output` is `None` for a job that never wrote, so the time it has been running
+    /// is the one that counts: a fuzz campaign that prints nothing is what this exists for.
+    pub fn silence_warning(&self) -> Option<String> {
+        if !self.state.is_running() {
+            return None;
+        }
+        let quiet = self.since_last_output.unwrap_or(self.elapsed);
+        if quiet < SILENT_WARNING {
+            return None;
+        }
+        Some(match self.since_last_output {
+            Some(_) => format!(
+                "nothing written for {} — it is still running, so read the `cgroup` and `cpu` \
+                 lines before deciding it is stuck",
+                super::scope::span(quiet)
+            ),
+            None => format!(
+                "nothing written in the {} it has been running — that is not proof it is stuck, \
+                 but read the `cgroup` and `cpu` lines",
+                super::scope::span(quiet)
+            ),
+        })
+    }
+
     /// What this job is called: [`job_label`], which is this method's body. Four
     /// readers need the same string, and a settlement has the name and the id but no
     /// view to hang a method on.
@@ -178,6 +252,11 @@ impl JobView {
         job_label(self.slug.as_deref(), &self.id.0)
     }
 }
+
+/// How long a running job may write nothing before its row says so. A build compiles quietly and
+/// a corpus takes a while, but half an hour of silence is a fact a reader must be told rather than
+/// left to notice.
+pub const SILENT_WARNING: Duration = Duration::from_secs(30 * 60);
 
 /// One job moved from one scope's ownership to another's, with the measurement
 /// that says whether the move is true of every process it claims.
@@ -1604,6 +1683,9 @@ impl HostProcesses {
             // Its bytes were produced on other machines and never passed this host's
             // capture, so there is no trailer to have taken.
             env_report: None,
+            // The work is in other machines' cgroups: a count read here would be this host's
+            // processes, and there are none of them.
+            holding: None,
         }
     }
 
@@ -1638,6 +1720,14 @@ impl HostProcesses {
         let memory = job
             .memory_used()
             .or_else(|| super::scope::memory_use_of(&life.scope));
+        let state = job.state();
+        // Read while it runs and nowhere else: an ended job's cgroup is reaped, and a count of
+        // nothing over a job that is over would be a number a reader could act on by mistake.
+        let holding = if state.is_running() && !life.scope.path.as_os_str().is_empty() {
+            Some(super::scope::holding_of(&life.scope.path, job.pid))
+        } else {
+            None
+        };
         JobView {
             memory_cap: job.memory_cap().clone(),
             memory,
@@ -1649,13 +1739,14 @@ impl HostProcesses {
             cwd: job.cwd.clone(),
             pid: job.pid,
             background: life.background,
-            state: job.state(),
+            state,
             elapsed: job.elapsed(),
             ran_for: job.ran_for(),
             produced: cap.produced(),
             since_last_output: cap.since_last(),
             output_file: cap.output_file(),
             env_report: cap.env_report(),
+            holding,
         }
     }
 

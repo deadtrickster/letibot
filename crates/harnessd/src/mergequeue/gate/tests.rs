@@ -161,6 +161,7 @@ fn the_evidence_line_tells_a_kill_at_the_cap_from_a_peak() {
             cap: Some(64 << 20),
             peak: 64 << 20,
             oom_kills,
+            ..MemoryUse::default()
         })
     };
     let killed = used(1).evidence(0, None).unwrap();
@@ -176,6 +177,7 @@ fn the_evidence_line_tells_a_kill_at_the_cap_from_a_peak() {
         cap: Some(64 << 20),
         peak: 8 << 20,
         oom_kills: 0,
+        ..MemoryUse::default()
     })
     .evidence(0, None)
     .unwrap();
@@ -193,6 +195,7 @@ fn an_evidence_line_counts_in_words_not_a_placeholder() {
         cap: Some(64 << 20),
         peak: 8 << 20,
         oom_kills: 0,
+        ..MemoryUse::default()
     });
     for (leftover, said) in [
         (1, "1 process the step left running"),
@@ -240,6 +243,7 @@ fn measured(oom_kills: u64) -> StepMemory {
         cap: Some((24.9 * GIB as f64) as u64),
         peak: (24.1 * GIB as f64) as u64,
         oom_kills,
+        ..MemoryUse::default()
     })
 }
 /// The end of that step's output: compile warnings, no test result, no `error:`.
@@ -325,6 +329,7 @@ fn failing_code_is_red_and_a_signal_far_from_the_cap_is_unjudged() {
         cap: Some(24 * GIB),
         peak: 6 * GIB,
         oom_kills: 0,
+        ..MemoryUse::default()
     });
     assert_eq!(
         red_cause("merge gate: FAIL\n", StepExit::Code(1), &far),
@@ -363,6 +368,7 @@ fn a_failing_test_beside_a_kill_is_still_red() {
         cap: Some(24 * GIB),
         peak: 6 * GIB,
         oom_kills: 0,
+        ..MemoryUse::default()
     });
     assert_eq!(
         red_cause(out, StepExit::Code(101), &far),
@@ -390,6 +396,7 @@ fn a_child_the_box_killed_far_from_the_cap_is_unjudged_not_red() {
         cap: Some(24 * GIB),
         peak: 6 * GIB,
         oom_kills: 0,
+        ..MemoryUse::default()
     });
     assert_eq!(
         red_cause(out, StepExit::Code(101), &far),

@@ -336,13 +336,16 @@ pub trait ScopeTree: Send + Sync {
     }
 }
 
-/// What a scope's memory did, as the kernel counted it: the cap it ran under, the most it ever
-/// held, and how many of its processes the kernel killed for reaching the cap. `oom_kills` is
-/// what lets a result say killed at its memory cap rather than leaving the model to read `137`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a scope's memory did, as the kernel counted it: the cap it ran under, what it holds, the
+/// most it ever held, and how many of its processes the kernel killed for reaching the cap.
+/// `oom_kills` is what lets a result say killed at its memory cap rather than leaving the model
+/// to read `137`; `current` is what stops a listing calling a running job killed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MemoryUse {
     /// `None` is `memory.max` reading `max`: the scope ran uncapped.
     pub cap: Option<u64>,
+    /// `memory.current`, bytes: what the scope holds at the reading.
+    pub current: u64,
     /// `memory.peak`, bytes.
     pub peak: u64,
     /// `memory.events`' `oom_kill`: processes the kernel killed at the cap.
@@ -391,6 +394,255 @@ impl MemoryUse {
             None => format!("peak {}, uncapped", human_bytes(self.peak)),
         }
     }
+
+    /// The clause a row about a RUNNING job carries: `17 GiB now, peak 32 GiB of a 32 GiB cap`.
+    /// What it holds is the fact a reader needs there, and a peak alone cannot tell a job living
+    /// at its cap from one that was killed by it.
+    pub fn live_clause(&self) -> String {
+        let now = human_bytes(self.current);
+        match self.cap {
+            Some(cap) => format!(
+                "{now} now, peak {} of a {} cap",
+                human_bytes(self.peak),
+                human_bytes(cap)
+            ),
+            None => format!("{now} now, peak {}, uncapped", human_bytes(self.peak)),
+        }
+    }
+
+    /// Whether it is at its cap this instant, which for a running job means the kernel is killing
+    /// its processes one by one and it stays alive between them.
+    pub fn at_its_cap(&self) -> bool {
+        self.cap
+            .is_some_and(|cap| cap > 0 && self.current >= cap.saturating_mul(99) / 100)
+    }
+}
+
+/// How much CPU a scope burned between two readings, and over how long: `cpu.stat` reports a
+/// total for the life of the cgroup, so only a difference says whether anything is working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CpuBurn {
+    /// `usage_usec` now, less what it was at the previous reading.
+    pub used: Duration,
+    /// How long the two readings were apart.
+    pub over: Duration,
+}
+
+impl CpuBurn {
+    /// Whether the scope's processes were working over that interval. A tenth of one core is
+    /// enough to tell a run that is thinking from one that is not - and a job of seventy fuzz
+    /// workers that have written nothing is exactly the case this has to get right.
+    pub fn busy(&self) -> bool {
+        !self.over.is_zero() && self.used.as_micros() * 10 >= self.over.as_micros()
+    }
+
+    /// The clause a row carries: `busy — 4.2s of the last 30.0s`.
+    pub fn clause(&self) -> String {
+        format!(
+            "{} — {} of the last {}",
+            if self.busy() { "busy" } else { "idle" },
+            span(self.used),
+            span(self.over)
+        )
+    }
+}
+
+/// A duration as a row reads it: `0.4s` under a minute, `21m05s` over it.
+pub(crate) fn span(d: Duration) -> String {
+    let s = d.as_secs_f32();
+    if s < 60.0 {
+        format!("{s:.1}s")
+    } else {
+        format!("{:02}m{:02}s", (s / 60.0) as u64, (s % 60.0) as u64)
+    }
+}
+
+/// The most command names a row names.
+pub const TOP_COMMANDS: usize = 3;
+
+/// How long a first reading watches `cpu.stat` for when there is no previous reading to subtract:
+/// long enough to tell a working process from a sleeping one, short enough that one listing does
+/// not stall on it.
+const CPU_SAMPLE: Duration = Duration::from_millis(100);
+
+/// How long a scope's last reading is kept for the next one to subtract. Past this the two are
+/// too far apart to call an interval, and the entry is one more finished job's path in memory.
+const FORGET_AFTER: Duration = Duration::from_secs(30 * 60);
+
+/// What one scope's cgroup holds at one instant, read when a job is listed: the processes in it
+/// and what they are, and the two facts a total cannot give. This is the answer to *is this job
+/// alive* that a shell inside the sandbox cannot get from `ps` - the sandbox has its own PID
+/// namespace, so every pid it can see is a pid that is not the job's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Holding {
+    /// Live processes anywhere under the scope, `cgroup.procs` counted recursively.
+    pub processes: usize,
+    /// Command names, most numerous first, at most [`TOP_COMMANDS`] of them.
+    pub top: Vec<(String, usize)>,
+    /// Whether the leader pid is a process right now. A dead leader over a populated cgroup is a
+    /// job whose shell went and whose work did not, which is not a stale handle.
+    pub leader_alive: bool,
+    /// What the cgroup burned between this reading and the previous one.
+    pub cpu: Option<CpuBurn>,
+    /// How long ago `memory.events`' `oom_kill` was last seen to grow. `None` on the first
+    /// reading of a scope already at its cap: the count says how many, not when.
+    pub oom_since: Option<Duration>,
+    /// The clock and the totals this reading was taken at, which is what makes the next one a
+    /// delta. Private: a caller passes this reading back in and reads the fields above.
+    seen: Seen,
+}
+
+/// The totals one reading leaves behind for the next one to subtract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Seen {
+    at: Instant,
+    cpu_usec: Option<u64>,
+    oom_kills: u64,
+    /// When this reader last saw `oom_kills` grow: a counter says how many, never how recently.
+    oom_moved: Option<Instant>,
+}
+
+impl Holding {
+    /// One reading of `dir`, the cgroup of a job whose leader is `pid`. `prev` is the reading
+    /// this process took of the same directory last - without one, CPU comes from a short sample
+    /// and the OOM count has no recency yet.
+    pub fn read(dir: &Path, pid: u32, prev: Option<&Holding>) -> Holding {
+        Holding::read_in(dir, Path::new("/proc"), pid, prev)
+    }
+
+    /// [`Holding::read`], with the process table's root named: `/proc` on a host, a fixture
+    /// directory in a test, because a fake cgroup tree's pids are not real processes.
+    pub fn read_in(dir: &Path, proc_root: &Path, pid: u32, prev: Option<&Holding>) -> Holding {
+        let mut pids = Vec::new();
+        members_at(dir, &mut pids);
+        pids.sort_unstable();
+        pids.dedup();
+        let top = top_commands(&pids, proc_root);
+        let leader_alive = pid != 0 && proc_root.join(pid.to_string()).exists();
+        let oom_kills = oom_kills_at(dir);
+        let (now, cpu_usec, cpu, oom_moved) = match prev.map(|p| p.seen) {
+            Some(before) => {
+                let now = Instant::now();
+                // Monotonic, so a reading taken later is always the later one.
+                let over = now.saturating_duration_since(before.at);
+                let cpu_usec = cpu_usec_at(dir);
+                let cpu = match (before.cpu_usec, cpu_usec) {
+                    (Some(was), Some(is)) if !over.is_zero() => Some(CpuBurn {
+                        used: Duration::from_micros(is.saturating_sub(was)),
+                        over,
+                    }),
+                    _ => None,
+                };
+                // Growth happened between the two readings, so the newest kill is at most
+                // `over` old: its age is reported from the previous reading, never as zero.
+                let moved = if oom_kills > before.oom_kills {
+                    Some(before.at)
+                } else {
+                    before.oom_moved
+                };
+                (now, cpu_usec, cpu, moved)
+            }
+            None => {
+                let before = cpu_usec_at(dir);
+                let t0 = Instant::now();
+                std::thread::sleep(CPU_SAMPLE);
+                let cpu_usec = cpu_usec_at(dir);
+                let now = Instant::now();
+                let cpu = match (before, cpu_usec) {
+                    (Some(was), Some(is)) => Some(CpuBurn {
+                        used: Duration::from_micros(is.saturating_sub(was)),
+                        over: now.saturating_duration_since(t0),
+                    }),
+                    _ => None,
+                };
+                (now, cpu_usec, cpu, None)
+            }
+        };
+        Holding {
+            processes: pids.len(),
+            top,
+            leader_alive,
+            cpu,
+            oom_since: oom_moved.map(|m| now.saturating_duration_since(m)),
+            seen: Seen {
+                at: now,
+                cpu_usec,
+                oom_kills,
+                oom_moved,
+            },
+        }
+    }
+
+    /// `75 processes — 73 v3rpc.test, 1 go, 1 timeout` - or `0 processes`, which is a cgroup that
+    /// is empty and a leader nobody has to look for.
+    pub fn processes_clause(&self) -> String {
+        let mut s = if self.processes == 1 {
+            "1 process".to_string()
+        } else {
+            format!("{} processes", self.processes)
+        };
+        if !self.top.is_empty() {
+            s.push_str(" — ");
+            let names: Vec<String> = self
+                .top
+                .iter()
+                .map(|(name, n)| format!("{n} {name}"))
+                .collect();
+            s.push_str(&names.join(", "));
+        }
+        s
+    }
+}
+
+/// The readings this process has taken, by scope directory: the other half of every delta, so a
+/// listing says what a job did since the last one instead of what it has done in its life.
+fn readings() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, Holding>> {
+    static READINGS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, Holding>>,
+    > = std::sync::OnceLock::new();
+    READINGS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// [`Holding::read`] for a listing, with the previous reading of this same scope as the delta's
+/// other half. The map is keyed by the scope's directory, never by the job, so a job promotion
+/// that moves processes does not inherit another job's totals.
+pub fn holding_of(dir: &Path, pid: u32) -> Holding {
+    let prev = {
+        let held = readings().lock().unwrap_or_else(|e| e.into_inner());
+        held.get(dir).cloned()
+    };
+    // Outside the lock: the first reading of a scope samples `cpu.stat` across a short sleep.
+    let now = Holding::read(dir, pid, prev.as_ref());
+    {
+        let mut held = readings().lock().unwrap_or_else(|e| e.into_inner());
+        if held.len() >= 256 {
+            let stale = FORGET_AFTER;
+            let at = now.seen.at;
+            held.retain(|_, h| at.saturating_duration_since(h.seen.at) < stale);
+        }
+        held.insert(dir.to_path_buf(), now.clone());
+    }
+    now
+}
+
+/// The most numerous command names among `pids`, by `comm` - the kernel's own name for a process,
+/// which is what `ps` would read as COMMAND and the shortest thing that says what a job is made of.
+/// A pid whose name cannot be read is counted as `?`: it exited between the two reads, and a row
+/// that dropped it would undercount the cgroup.
+fn top_commands(pids: &[u32], proc_root: &Path) -> Vec<(String, usize)> {
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for pid in pids {
+        let name = std::fs::read_to_string(proc_root.join(pid.to_string()).join("comm"))
+            .map(|s| s.trim().to_string())
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "?".to_string());
+        *counts.entry(name).or_default() += 1;
+    }
+    let mut rows: Vec<(String, usize)> = counts.into_iter().collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows.truncate(TOP_COMMANDS);
+    rows
 }
 
 /// Bytes as a person reads them - `64 MiB`, `1.5 GiB`. Binary units, because `memory.max` is set
@@ -732,10 +984,27 @@ pub fn memory_use_of(scope: &ScopeId) -> Option<MemoryUse> {
 /// one live signal that a job printing nothing is still working, which is what a dead check needs:
 /// `None` is *this host cannot say*, never *zero*, and a caller must not end a job on it.
 pub fn cpu_use_of(scope: &ScopeId) -> Option<u64> {
-    let stat = std::fs::read_to_string(scope.path.join("cpu.stat")).ok()?;
+    cpu_usec_at(&scope.path)
+}
+
+/// `cpu.stat`'s `usage_usec` for one cgroup directory.
+fn cpu_usec_at(dir: &Path) -> Option<u64> {
+    let stat = std::fs::read_to_string(dir.join("cpu.stat")).ok()?;
     stat.lines()
         .find_map(|l| l.strip_prefix("usage_usec "))
         .and_then(|n| n.trim().parse().ok())
+}
+
+/// `memory.events`' `oom_kill`: how many of this cgroup's processes the kernel has killed at its
+/// cap over the cgroup's whole life. Zero on a tree with no memory controller, which is the same
+/// reading as a scope nothing has been killed in.
+fn oom_kills_at(dir: &Path) -> u64 {
+    std::fs::read_to_string(dir.join("memory.events"))
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| l.strip_prefix("oom_kill "))
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(0)
 }
 
 /// [`MemoryUse`] for one cgroup directory. `None` when the files are not there - a tree without
@@ -743,16 +1012,12 @@ pub fn cpu_use_of(scope: &ScopeId) -> Option<u64> {
 fn memory_use_at(dir: &Path) -> Option<MemoryUse> {
     let max = std::fs::read_to_string(dir.join("memory.max")).ok()?;
     let peak = std::fs::read_to_string(dir.join("memory.peak")).ok()?;
-    let events = std::fs::read_to_string(dir.join("memory.events")).unwrap_or_default();
-    let oom_kills = events
-        .lines()
-        .find_map(|l| l.strip_prefix("oom_kill "))
-        .and_then(|n| n.trim().parse().ok())
-        .unwrap_or(0);
+    let current = std::fs::read_to_string(dir.join("memory.current")).ok()?;
     Some(MemoryUse {
         cap: max.trim().parse().ok(),
+        current: current.trim().parse().ok()?,
         peak: peak.trim().parse().ok()?,
-        oom_kills,
+        oom_kills: oom_kills_at(dir),
     })
 }
 
@@ -1602,6 +1867,7 @@ mod tests {
     fn memory_is_said_at_a_kill_and_near_the_cap_and_otherwise_as_a_peak() {
         let at = |peak: u64, oom_kills: u64| MemoryUse {
             cap: Some(100 << 20),
+            current: peak,
             peak,
             oom_kills,
         };
@@ -1620,8 +1886,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let cap: u64 = 26_735_965_388;
         let peak: u64 = 25_877_001_011;
+        let current: u64 = 17_000_000_000;
         std::fs::write(dir.join("memory.max"), format!("{cap}\n")).unwrap();
         std::fs::write(dir.join("memory.peak"), format!("{peak}\n")).unwrap();
+        std::fs::write(dir.join("memory.current"), format!("{current}\n")).unwrap();
         let events = |oom: u64, group: u64, kill: u64| {
             format!(
                 "low 0\nhigh 0\nmax 12\noom {oom}\noom_kill {kill}\noom_group_kill {group}\n\
@@ -1634,6 +1902,7 @@ mod tests {
             u,
             MemoryUse {
                 cap: Some(cap),
+                current,
                 peak,
                 oom_kills: 0
             }

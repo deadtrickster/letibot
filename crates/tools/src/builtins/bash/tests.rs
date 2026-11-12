@@ -666,6 +666,7 @@ fn a_finished_call_says_nothing_about_its_peak() {
             cap: Some(64 << 20),
             peak: 12 << 20,
             oom_kills: 0,
+            ..MemoryUse::default()
         }),
     );
     assert_eq!(
@@ -690,6 +691,7 @@ fn an_uncapped_call_names_the_ask_and_the_reason() {
             cap: None,
             peak: 200 << 20,
             oom_kills: 0,
+            ..MemoryUse::default()
         }),
     );
     let note = memory_note(&job).expect("a cap that could not be set is said");

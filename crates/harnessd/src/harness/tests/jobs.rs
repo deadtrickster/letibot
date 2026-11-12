@@ -1230,6 +1230,7 @@ fn only_background_and_still_running_jobs_are_listed() {
         memory: None,
         output_file: None,
         env_report: None,
+        holding: None,
     };
 
     // The case that flooded the screen: finished, never backgrounded.
@@ -1311,6 +1312,7 @@ fn a_named_job_draws_its_name_beside_its_id_and_an_unnamed_one_does_not() {
         memory: None,
         output_file: None,
         env_report: None,
+        holding: None,
     };
 
     let named = Harness::job_row(&view(Some("release-build")));
@@ -1369,6 +1371,7 @@ fn a_job_entry_carries_the_name_it_was_given_and_nothing_when_it_was_not() {
         memory: None,
         output_file: None,
         env_report: None,
+        holding: None,
     };
 
     assert_eq!(
@@ -1434,6 +1437,7 @@ fn the_jobs_a_vm_child_left_running_are_named_to_its_parent() {
         memory: None,
         output_file: None,
         env_report: None,
+        holding: None,
     };
     assert_eq!(vm_jobs_lost_line(&[]), None);
     let said = vm_jobs_lost_line(std::slice::from_ref(&job)).expect("a line");

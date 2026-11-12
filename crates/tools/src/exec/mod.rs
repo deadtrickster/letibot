@@ -52,9 +52,9 @@ pub use pty::Pty;
 #[cfg(target_os = "macos")]
 pub use scope::ProcessGroups;
 pub use scope::{
-    Cgroup2, DAEMON_LEAF, HOST_KILL, MemoryUse, Migration, NoScopes, Reaped, Reaping, ScopeId,
-    ScopeKind, ScopeTree, SiblingScope, cpu_use_of, delegate_memory, host_tree, human_bytes,
-    join_script, live_members, memory_use_of,
+    Cgroup2, CpuBurn, DAEMON_LEAF, HOST_KILL, Holding, MemoryUse, Migration, NoScopes, Reaped,
+    Reaping, ScopeId, ScopeKind, ScopeTree, SiblingScope, TOP_COMMANDS, cpu_use_of,
+    delegate_memory, holding_of, host_tree, human_bytes, join_script, live_members, memory_use_of,
 };
 pub use shell::{ShellConfig, ShellError, ShellSession, Turn};
 pub use term::{TermConfig, TermError, TermSession, TermSink};

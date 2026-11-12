@@ -129,7 +129,9 @@ impl Harness {
         format!(
             "  {}  {}  {} bytes  {}",
             Self::job_name(j),
-            j.state.word(),
+            // Not `state.word()`: a running job whose shell is gone says so on this row too,
+            // or the operator's listing calls a live cgroup a live shell.
+            j.state_phrase(),
             j.produced,
             Self::one_line(&j.command, 60)
         )

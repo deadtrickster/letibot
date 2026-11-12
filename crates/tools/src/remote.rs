@@ -5365,6 +5365,9 @@ impl RemoteProcesses {
             // No trailer is appended to a command on another machine: its report would be
             // the far box's environment, claimed of a spawn this daemon never composes.
             env_report: None,
+            // The job's processes are that host's, and nothing here can read its cgroup: a count
+            // taken on this machine would be about the wrong processes entirely.
+            holding: None,
         }
     }
 

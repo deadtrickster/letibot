@@ -324,6 +324,75 @@ fn job_list_summary(
     }
 }
 
+/// One job's row: the handle, the state, and every fact that tells a job that is working from a
+/// stale handle. Pure, so the words about a job's cgroup can be asserted against a fake cgroup
+/// tree without a host - which is the whole point of a listing.
+fn job_row(j: &JobView) -> String {
+    let running = j.state.is_running();
+    let mut s = format!(
+        "\n{}  [{}]\n  command: {}\n  scope:   {} — {}\n",
+        // The name beside the id, as everywhere ([`JobView::label`]): the listing is
+        // where a model finds the handle, and the name it stated is a handle now.
+        j.label(),
+        j.state_phrase(),
+        clip(&j.command, 160),
+        j.owner,
+        j.owner.kind.reaped_when(),
+    );
+    // A cgroup's pids are the host's, and the model's shell has its own PID namespace: a `ps`
+    // from inside the sandbox answers about a different set of processes, so a job whose pid it
+    // cannot find is not a job that ended.
+    if running {
+        s.push_str(&format!(
+            "  pid:     {} — a host pid, which your shell cannot see (it has its own PID \
+             namespace): `ps` and `kill` prove nothing about this job. Use `job_list` and \
+             `job_kill`.\n",
+            j.pid
+        ));
+    } else {
+        s.push_str(&format!("  pid:     {}\n", j.pid));
+    }
+    s.push_str(&format!(
+        "  elapsed: {}\n  output:  {} bytes{}\n",
+        secs(j.elapsed),
+        j.produced,
+        match j.since_last_output {
+            // Work done, and when it last moved. Not "alive".
+            Some(d) => format!(", last wrote {} ago", secs(d)),
+            None => ", nothing written yet".to_string(),
+        },
+    ));
+    // Where the whole of it is, on every row that has somewhere: the window's
+    // byte count alone would be the one place that did not name the file.
+    if let Some(f) = &j.output_file {
+        s.push_str(&format!("  file:    {} (from byte {})\n", f.path, f.from));
+    }
+    s.push_str(&live_lines(j));
+    s
+}
+
+/// What a running job's cgroup says about it, as the lines every result about it carries: its
+/// listing's, `job_output`'s and `job_wait`'s alike, because the question is one question - is
+/// this job doing anything, or is it a handle whose process is gone.
+fn live_lines(j: &JobView) -> String {
+    let mut s = String::new();
+    if let Some(h) = &j.holding {
+        s.push_str(&format!("  cgroup:  {}\n", h.processes_clause()));
+    }
+    if let Some(cpu) = j.holding.as_ref().and_then(|h| h.cpu) {
+        s.push_str(&format!("  cpu:     {}\n", cpu.clause()));
+    }
+    if let Some(m) = j.memory_clause() {
+        s.push_str(&format!("  memory:  {m}\n"));
+    }
+    // Last, because it is about the two lines above: silence is only a warning beside a count
+    // of processes and a CPU figure that say whether the work is moving.
+    if let Some(w) = j.silence_warning() {
+        s.push_str(&format!("  warning: {w}\n"));
+    }
+    s
+}
+
 pub struct JobList;
 
 impl Tool for JobList {
@@ -338,8 +407,14 @@ impl Tool for JobList {
              by default** — the ones whose completion has not arrived — because a listing \
              that leads with forty finished `grep`s buries the one job anybody acts on; \
              how many were left out is always stated. `all` includes the settled ones, and \
-             `scope` shows one scope's. `ps` lists processes; this lists jobs. It reads cgroup \
-             membership, so it has no pattern that could match the process asking.",
+             `scope` shows one scope's. A running job's row is read from its cgroup: the \
+             processes in it and what they are, whether its leader is still one of them, \
+             what it has burned the CPU for since the last listing, and what its memory is \
+             doing at its cap, including processes the kernel killed there and how recently. \
+             **Those pids are the host's and your shell cannot see them — it has its own PID \
+             namespace — so `ps` and `kill` prove nothing about a job; use `job_list` and \
+             `job_kill`.** This reads cgroup membership, so it has no pattern that could \
+             match the process asking.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -389,34 +464,7 @@ impl Tool for JobList {
         ));
 
         for j in &jobs {
-            body.push_str(&format!(
-                "\n{}  [{}]\n  command: {}\n  scope:   {} — {}\n  pid:     {}\n  \
-                 elapsed: {}\n  output:  {} bytes{}\n{}{}",
-                // The name beside the id, as everywhere ([`JobView::label`]): the listing is
-                // where a model finds the handle, and the name it stated is a handle now.
-                j.label(),
-                j.state.word(),
-                clip(&j.command, 160),
-                j.owner,
-                j.owner.kind.reaped_when(),
-                j.pid,
-                secs(j.elapsed),
-                j.produced,
-                match j.since_last_output {
-                    // Work done, and when it last moved. Not "alive".
-                    Some(d) => format!(", last wrote {} ago", secs(d)),
-                    None => ", nothing written yet".to_string(),
-                },
-                // Where the whole of it is, on every row that has somewhere: the window's
-                // byte count alone would be the one place that did not name the file.
-                j.output_file
-                    .as_ref()
-                    .map(|f| format!("  file:    {} (from byte {})\n", f.path, f.from))
-                    .unwrap_or_default(),
-                j.memory_clause()
-                    .map(|m| format!("  memory:  {m}\n"))
-                    .unwrap_or_default()
-            ));
+            body.push_str(&job_row(j));
         }
 
         // The scopes, so a listing shows what is open and what will reap it.
@@ -587,9 +635,10 @@ impl Tool for JobOutput {
                 format!(
                     "`{label}` is still running ({} elapsed) and has written nothing \
                      yet. That is not evidence that it will not — but there is nothing \
-                     to do here. {}",
+                     to do here. {}\n{}",
                     secs(view.elapsed),
-                    super::DELIVERED
+                    super::DELIVERED,
+                    live_lines(&view)
                 )
             } else if view.state.never_ran() {
                 format!(
@@ -615,9 +664,9 @@ impl Tool for JobOutput {
         }
 
         let mut inv = Invocation::ok(format!(
-            "{}\n[{} — {}]\n{}{}{}",
+            "{}\n[{} — {}]\n{}{}{}{}",
             slice.text(),
-            view.state.word(),
+            view.state_phrase(),
             denominator,
             if view.state.is_running() {
                 format!(
@@ -644,7 +693,10 @@ impl Tool for JobOutput {
                     f.path, f.from
                 ),
                 None => String::new(),
-            }
+            },
+            // What its cgroup says, when it is still in one: read after the window, because
+            // what the job has said and what it is doing are two answers to two questions.
+            live_lines(&view)
         ));
         if let Some(f) = &view.output_file
             && let Some(why) = &f.problem
@@ -798,10 +850,13 @@ fn wait_on_job(
              ends — the daemon is already watching it and, because you asked, will hand you \
              the result the moment it ends, unprompted. Waiting here would hold the floor for \
              a deadline while the answer you want is already in flight.\n  command: \
-             {}\n  output:  {} bytes so far — read it with `job_output` job=\"{id}\"\n\n\
+             {}\n  output:  {} bytes so far — read it with `job_output` job=\"{id}\"\n{}\n\
              Carry on with something else. `job_kill` stops it if you do not want it.",
             clip(&before.command, 160),
-            before.produced
+            before.produced,
+            // What its cgroup says, so *carry on* is a decision a reader can make: a job with
+            // 75 processes and CPU moving is not the same advice as one whose work is gone.
+            live_lines(&before)
         ));
     }
 
@@ -867,7 +922,7 @@ fn wait_on_job(
             payload: format!(
                 "`{label}` is STILL RUNNING after {}. This is not a failure and it is \
                      not a completion.\n  command: {}\n  produced: {produced} bytes so \
-                     far\n  last wrote: {}\n\n{}It was not killed. Wait again with a \
+                     far\n  last wrote: {}\n{}\n{}It was not killed. Wait again with a \
                      longer `timeout_ms`, read what it has with `job_output`, or stop it with \
                      `job_kill`.",
                 secs(took),
@@ -876,6 +931,9 @@ fn wait_on_job(
                     Some(d) => format!("{} ago", secs(d)),
                     None => "never — it has written nothing".into(),
                 },
+                // Re-read at the deadline: the view the wait started from is minutes old, and
+                // a stale process count over a job whose work just changed is a wrong answer.
+                live_lines(after.as_ref().unwrap_or(&before)),
                 unmeasured_note(silent)
             ),
             notes: vec![],
@@ -1554,6 +1612,7 @@ mod tests {
             memory: None,
             output_file: None,
             env_report: None,
+            holding: None,
         }
     }
 
@@ -2048,6 +2107,208 @@ mod tests {
                 .as_str()
                 .is_some_and(|d| d.contains("3600") && d.contains("604800")),
             "{deadline}"
+        );
+    }
+
+    /// A fake cgroup and a fake `/proc`: 75 pids, one of them the leader, a cap the job is living
+    /// at, and the two totals (`cpu.stat`, `memory.events`) a second reading can subtract. The
+    /// pids are not real processes, which is why [`Holding::read_in`] takes the process table's
+    /// root - the whole point of the reading is that a shell inside the sandbox cannot do it.
+    struct FakeCgroup {
+        root: std::path::PathBuf,
+        cgroup: std::path::PathBuf,
+        proc_root: std::path::PathBuf,
+        leader: u32,
+    }
+
+    const CAP: u64 = 32 << 30;
+
+    impl FakeCgroup {
+        /// The brief's live case: 73 `v3rpc.test` fuzz workers under one `go` under one `timeout`.
+        fn new(tag: &str) -> FakeCgroup {
+            let root =
+                std::env::temp_dir().join(format!("letibot-job-row-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            let cgroup = root.join("cgroup");
+            let proc_root = root.join("proc");
+            std::fs::create_dir_all(&cgroup).expect("the fixture's cgroup");
+            let mut pids: Vec<u32> = Vec::new();
+            let mut pid = 40_000u32;
+            for (name, n) in [("v3rpc.test", 73), ("go", 1), ("timeout", 1)] {
+                for _ in 0..n {
+                    let dir = proc_root.join(pid.to_string());
+                    std::fs::create_dir_all(&dir).expect("a fake process");
+                    std::fs::write(dir.join("comm"), format!("{name}\n")).expect("comm");
+                    pids.push(pid);
+                    pid += 1;
+                }
+            }
+            let leader = *pids.last().expect("a leader");
+            let procs: String = pids.iter().map(|p| format!("{p}\n")).collect();
+            std::fs::write(cgroup.join("cgroup.procs"), procs).expect("cgroup.procs");
+            std::fs::write(cgroup.join("cgroup.events"), "populated 1\n").expect("events");
+            std::fs::write(cgroup.join("memory.max"), format!("{CAP}\n")).expect("memory.max");
+            std::fs::write(cgroup.join("memory.peak"), format!("{CAP}\n")).expect("peak");
+            std::fs::write(cgroup.join("memory.current"), format!("{}\n", 17 << 30))
+                .expect("current");
+            std::fs::write(cgroup.join("memory.events"), "low 0\noom 33\noom_kill 0\n")
+                .expect("memory.events");
+            std::fs::write(cgroup.join("cpu.stat"), "usage_usec 1000\n").expect("cpu.stat");
+            FakeCgroup {
+                root,
+                cgroup,
+                proc_root,
+                leader,
+            }
+        }
+
+        fn write(&self, name: &str, text: &str) {
+            std::fs::write(self.cgroup.join(name), text).expect(name);
+        }
+    }
+
+    impl Drop for FakeCgroup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// The row a listing shows for a running job: the processes in its cgroup and what they are,
+    /// what it holds now against its cap, the kills at that cap and how recently they moved - and
+    /// never the word KILLED, which belongs to a job that ended. This is the row whose absence
+    /// cost the etcd seat an hour: it read `KILLED at the cap` over a job with 75 live processes
+    /// and 591 kills, and offered to retire a job that was working.
+    #[test]
+    fn a_running_jobs_row_counts_its_processes_its_memory_and_its_kills_and_never_says_killed() {
+        use crate::exec::{Holding, JobState, MemoryCap, MemoryUse};
+        let fake = FakeCgroup::new("running");
+        let first = Holding::read_in(&fake.cgroup, &fake.proc_root, fake.leader, None);
+        assert_eq!(first.processes, 75);
+        assert!(first.leader_alive, "the fixture's leader is a process");
+        // Nothing has been read twice yet, so there is no OOM recency to report: the count says
+        // how many, never when.
+        assert_eq!(first.oom_since, None);
+
+        // Between the two listings the kernel killed 591 processes and the cgroup burned a third
+        // of a second of CPU. Both are totals; only a second reading makes them an interval.
+        fake.write("memory.events", "low 0\noom 33\noom_kill 591\n");
+        fake.write("cpu.stat", "usage_usec 401000\n");
+        std::thread::sleep(Duration::from_millis(1100));
+        let second = Holding::read_in(&fake.cgroup, &fake.proc_root, fake.leader, Some(&first));
+        let since = second.oom_since.expect("a kill that moved has an age");
+        assert!(since >= Duration::from_secs(1), "{since:?}");
+        let cpu = second.cpu.expect("two readings make a rate");
+        assert!(cpu.used >= Duration::from_micros(400_000), "{cpu:?}");
+        assert!(cpu.busy(), "0.4s over a 1.1s interval is not idle: {cpu:?}");
+
+        let mut job = view("j86454", Some("native-leg-to-rule2"));
+        job.state = JobState::Running;
+        job.pid = fake.leader;
+        job.elapsed = Duration::from_secs(365 * 60 + 45);
+        job.memory_cap = MemoryCap::Capped(CAP);
+        job.memory = Some(MemoryUse {
+            cap: Some(CAP),
+            current: 17 << 30,
+            peak: CAP,
+            oom_kills: 591,
+        });
+        job.holding = Some(second);
+        let row = job_row(&job);
+
+        assert!(
+            row.contains("cgroup:  75 processes — 73 v3rpc.test, 1 go, 1 timeout"),
+            "the count and what they are: {row}"
+        );
+        assert!(row.contains("17 GiB now"), "what it holds: {row}");
+        assert!(row.contains("peak 32 GiB of a 32 GiB cap"), "{row}");
+        assert!(
+            row.contains("591 processes killed at the cap, last ") && row.contains(" ago"),
+            "the count and when it last moved: {row}"
+        );
+        assert!(row.contains("cpu:     busy"), "{row}");
+        assert!(
+            !row.contains("KILLED"),
+            "a job with 75 live processes was reported as killed: {row}"
+        );
+        assert!(
+            row.contains("[running]") && row.contains("a host pid"),
+            "the state and the pid nobody's shell can see: {row}"
+        );
+    }
+
+    /// A dead leader over a cgroup that is not empty is a job whose shell went and whose work did
+    /// not: the state says both, and the count is what says the job is still running.
+    #[test]
+    fn a_dead_leader_over_a_populated_cgroup_is_still_running() {
+        use crate::exec::{Holding, JobState};
+        let fake = FakeCgroup::new("leader");
+        let holding = Holding::read_in(&fake.cgroup, &fake.proc_root, 999_999, None);
+        assert!(!holding.leader_alive, "the fixture has no process 999999");
+        let mut job = view("j1", None);
+        job.state = JobState::Running;
+        job.holding = Some(holding);
+        let row = job_row(&job);
+        assert!(
+            row.contains("[running (leader gone, 75 processes still in it)]"),
+            "{row}"
+        );
+    }
+
+    /// Silence is a warning, not a verdict: a running job that has written nothing for half an
+    /// hour says so beside the processes and the CPU that answer whether it is working, and a job
+    /// that ended is never warned about.
+    #[test]
+    fn a_running_job_silent_for_half_an_hour_says_so_and_a_short_one_does_not() {
+        use crate::exec::JobState;
+        let mut job = view("j9", None);
+        job.state = JobState::Running;
+        job.elapsed = Duration::from_secs(45 * 60);
+        job.since_last_output = Some(Duration::from_secs(31 * 60));
+        let row = job_row(&job);
+        assert!(row.contains("warning: nothing written for 31m00s"), "{row}");
+        assert!(
+            row.contains("read the `cgroup` and `cpu` lines"),
+            "a warning that does not say what to read instead: {row}"
+        );
+
+        // A build that has been quiet for five minutes is ordinary work, not news.
+        job.since_last_output = Some(Duration::from_secs(5 * 60));
+        let quick = job_row(&job);
+        assert!(!quick.contains("warning:"), "{quick}");
+
+        // A job that never wrote: the time it has been running is the one that counts.
+        job.since_last_output = None;
+        let never = job_row(&job);
+        assert!(
+            never.contains("warning: nothing written in the 45m00s it has been running"),
+            "{never}"
+        );
+
+        // And an ending is not silence: what it wrote is what it wrote.
+        job.state = JobState::Exited { code: 0 };
+        let ended = job_row(&job);
+        assert!(!ended.contains("warning:"), "{ended}");
+    }
+
+    /// The listing's own words about pids, which is the half that stops a model reaching for
+    /// `ps`: the sentence is in the tool's description and on every running job's row.
+    #[test]
+    fn the_description_and_the_row_both_say_your_shell_cannot_see_these_pids() {
+        let s = JobList.schema();
+        assert!(
+            s.description.contains("own PID namespace"),
+            "{}",
+            s.description
+        );
+        assert!(
+            s.description.contains("`ps` and `kill` prove nothing"),
+            "{}",
+            s.description
+        );
+        let row = job_row(&view("j1", None));
+        assert!(
+            row.contains("which your shell cannot see (it has its own PID namespace)"),
+            "{row}"
         );
     }
 }

@@ -1119,6 +1119,7 @@ fn a_jobs_process_record_reads_running_then_done() {
         since_last_output: None,
         output_file: None,
         env_report: None,
+        holding: None,
     };
 
     rec.process(&view);
