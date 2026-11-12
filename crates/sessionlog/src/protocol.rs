@@ -39,6 +39,11 @@ pub const MODEL_KEYS_KEY: &str = "models.keys";
 /// `providers.toml`. A second row rather than widening the first.
 pub const MODEL_KEYLESS_KEY: &str = "models.keyless";
 
+/// One line of facts per [`MODEL_KEY`] choice, in the same order: the window and the price this
+/// box's catalogue carries for it. A second row, like the one above, because the `model` row's
+/// `choices` have to stay typeable and these are not things a person types.
+pub const MODEL_FACTS_KEY: &str = "models.facts";
+
 /// One door-tool as the daemon describes it to a head: which field a bare line goes into, and
 /// what that field is, so a head can turn `/web_search` into a call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -23,6 +23,47 @@ pub struct ModelFacts {
     pub inputs: Option<Inputs>,
 }
 
+impl ModelFacts {
+    /// The line the model card draws under a row: the window and the rate per million, the two
+    /// numbers a reader compares between two models of one provider.
+    pub fn card_line(&self) -> String {
+        let window = format!("{} window", tokens(self.context));
+        match self.prices {
+            Some(p) => format!(
+                "{window} · ${} in / ${} out per M",
+                per_million(p.input),
+                per_million(p.output)
+            ),
+            // Unpriced is not free: some models are, some are unlisted, and this line cannot say which.
+            None => format!("{window} · price unlisted"),
+        }
+    }
+
+    /// The line for a model no catalogue carries, which the card still offers because the
+    /// operator named it. Said rather than left blank: an empty line reads as no window at all.
+    pub fn missing_line() -> &'static str {
+        "window and price not in the catalogue"
+    }
+}
+
+/// A token count as a person reads it: `1M`, `393k`, `512`. Rounded down, so a window is never
+/// quoted as larger than it is.
+pub fn tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{}M", n / 1_000_000)
+    } else if n >= 1_000 {
+        format!("{}k", n / 1_000)
+    } else {
+        n.to_string()
+    }
+}
+
+/// One rate in USD per million tokens: `0.15`, `3`, `0.003`. `Display` and not a fixed number of
+/// decimals, because a rate is published to whatever precision the provider chose.
+fn per_million(rate: f64) -> String {
+    format!("{rate}")
+}
+
 /// One model's input modalities as models.dev publishes them. Only the two facts this
 /// harness can act on are kept: nothing here can send audio or video, so a flag for
 /// them would be a switch nothing reads.
@@ -726,6 +767,36 @@ mod tests {
                 .prices
                 .is_none()
         );
+    }
+
+    /// The line a model card row carries: the window and both rates per million, or the price
+    /// said to be unlisted - the two mistakes being an invented window and a free-looking model.
+    #[test]
+    fn a_card_line_names_the_window_and_both_rates_or_says_the_price_is_unlisted() {
+        let c = sample();
+        assert_eq!(
+            c.model("deepseek", "deepseek-chat")
+                .expect("the model")
+                .card_line(),
+            "1M window · $0.15 in / $0.6 out per M"
+        );
+        assert_eq!(
+            c.model("deepseek", "deepseek-legacy")
+                .expect("the model")
+                .card_line(),
+            "64k window · price unlisted"
+        );
+    }
+
+    /// A count as a person reads it, rounded down so a window is never quoted larger than it is.
+    #[test]
+    fn a_window_is_written_in_millions_and_thousands() {
+        assert_eq!(tokens(1_048_576), "1M");
+        assert_eq!(tokens(1_000_000), "1M");
+        assert_eq!(tokens(393_216), "393k");
+        assert_eq!(tokens(999_999), "999k");
+        assert_eq!(tokens(1_000), "1k");
+        assert_eq!(tokens(999), "999");
     }
 
     /// A box with no opencode is a box with no catalogue, and that must not be an error: every
