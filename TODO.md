@@ -573,6 +573,14 @@ Built. **The daemon lists what a provider can answer with.** `crate::config::mod
 
 Tests. `crates/provider/src/catalogue.rs`: the card line with the window and both rates, `price unlisted` where the catalogue prices nothing, and the `1M`/`393k`/`512` spelling. `crates/harnessd/src/config/tests.rs` (4): a keyed provider lists every catalogue model it carries while an unkeyed one lists exactly one and no name appears twice; the fleet's blocks come before the providers and carry their address; the facts row is one line per choice with none empty; a keyed provider the catalogue says nothing about still gets its row rather than vanishing. `crates/harnessd/tests/model_card_rows.rs`: the Done-when end to end - a `providers.toml` holding a DeepSeek key lists more than one `deepseek/` model, each with a window and a meter, the `models.keys` row agrees with the listing, and the provider with no key stays one row. `crates/tui/src/app/tests/settings.rs` (5): a typed name switches the model and leaves no prompt behind; the card filters as the line is typed and a digit narrows rather than marking a row; a line matching nothing says so and leaves the card up; each row shows its window and price under its provider's heading; the facts are matched by index and dropped whole when the row is short.
 
+## R201 - Nothing letibot starts is ever torn down
+
+**Status:** filed, 2026-11-12. Design: `docs/lifecycle.md` (research of six harnesses and the web, and the package split G1-G6).
+
+A package runs, reports, its work lands, and everything around it stays: worktrees and branches, `x-vm-*` fetch branches, firecode VMs that outlive their closed session (R193), idle daemons, VM copy-outs, multi-hundred-gigabyte build targets, 3,800 firecode run directories that made every `firecode in` cost 10 s, remote homes on lubuntu2 (449G) and test processes hung for days, docker containers and volumes nobody can attribute, and memory nobody can attribute. Every reap on 2026-11-12 was done by hand. The operator's words: "we have to clean up stuff forcefully ... a subagent runs, does stuff, reports completion, its work gets incorporated and then just hangs."
+
+The design: ownership is proved by a stamp where the resource lives (cgroup, owner root, ref namespace, docker label, firecode run file), with a `holding` table as index and journal; three lifetimes (compute ends at close, idle lease or TTL; work is archived to `refs/letibot/archive/<owner>/` and then removed; caches by close or quota); a box-level reaper on a systemd user timer that needs no daemon; patterns only report, `--adopt` opts in. Packages G1 (owners, holdings, read-only plan), G2 (compute reap, absorbs R193), G3 (worktrees, branches, archive, restore), G4 (caches, firecode records, remote hosts), G5 (memory), G6 (docker).
+
 ## R191 - A test the gate kills for size dumps core into the operator's desktop
 
 **Status:** filed, 2026-11-12.
