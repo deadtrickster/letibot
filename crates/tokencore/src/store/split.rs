@@ -681,7 +681,10 @@ fn prepare(conn: &Connection, path: &Path, file: StoreFile) -> Result<()> {
         )?;
         return Ok(());
     };
-    if found > SCHEMA_VERSION {
+    // A newer file under a floor this build meets is `Store::open`'s to take, as for one file.
+    if found > SCHEMA_VERSION
+        && !matches!(super::floor::read_floor(conn, "main")?, Some(f) if f <= SCHEMA_VERSION)
+    {
         return Err(too_new(path, found));
     }
     // Older: `Store::open`'s own migration carries it forward, the rule every store file has.

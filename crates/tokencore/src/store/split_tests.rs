@@ -149,6 +149,11 @@ fn a_newer_project_file_is_refused_by_name() {
     let conn = Connection::open(&path).expect("the project file");
     conn.execute("UPDATE schema_version SET version = ?1", params![newer])
         .expect("a newer stamp");
+    conn.execute(
+        "UPDATE schema_reader_floor SET min_reader = ?1",
+        params![newer],
+    )
+    .expect("a floor above this build");
     drop(conn);
     let refused = StoreSet::open(&dir, KEY)
         .err()
@@ -421,4 +426,75 @@ fn an_archived_session_in_a_set_is_the_shared_files_row() {
         .expect("any");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].archived_reason.as_deref(), Some("done"));
+}
+
+/// A newer build's additive migration leaves the floor where it was, and an older daemon still
+/// opens both files: a digest in a long-running daemon must not stop at the store.
+#[test]
+fn a_newer_set_under_the_floor_opens() {
+    let dir = temp("newer-floor");
+    let newer = SCHEMA_VERSION + 1;
+    {
+        let set = StoreSet::open(&dir, KEY).expect("a set");
+        for file in [StoreFile::Shared, StoreFile::Project] {
+            let conn = Connection::open(set.path(file)).expect("a file");
+            conn.execute("UPDATE schema_version SET version = ?1", params![newer])
+                .expect("a newer stamp");
+        }
+    }
+    split::open_handle(&dir, KEY, true).expect("a daemon's door opens a newer set under the floor");
+    split::open_handle(&dir, KEY, false).expect("a reader's door opens it too");
+}
+
+/// A set an older build wrote is migrated file by file, and each arm touches only the file that
+/// holds its table: `session` is the shared file's, `queued_prompt` the project file's.
+#[test]
+fn an_older_set_migrates_both_files() {
+    let dir = temp("older");
+    let paths = {
+        let set = StoreSet::open(&dir, KEY).expect("a set");
+        [set.path(StoreFile::Shared), set.path(StoreFile::Project)]
+    };
+    // Back to v44: drop what v45 and v46 added.
+    let shared = Connection::open(&paths[0]).expect("shared");
+    shared
+        .execute_batch(
+            "ALTER TABLE session DROP COLUMN archived_ms;
+             ALTER TABLE session DROP COLUMN archived_reason;
+             UPDATE schema_version SET version = 44;",
+        )
+        .expect("a v44 shared file");
+    drop(shared);
+    let project = Connection::open(&paths[1]).expect("project");
+    project
+        .execute_batch(
+            "ALTER TABLE queued_prompt DROP COLUMN context_json;
+             UPDATE schema_version SET version = 44;",
+        )
+        .expect("a v44 project file");
+    drop(project);
+
+    split::open_handle(&dir, KEY, true).expect("an older set opens and migrates");
+    for path in &paths {
+        let v: i64 = Connection::open(path)
+            .unwrap()
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION, "{} was not migrated", path.display());
+    }
+    let has = |path: &Path, sql: &str| {
+        Connection::open(path)
+            .unwrap()
+            .prepare(sql)
+            .and_then(|mut st| st.exists([]))
+            .unwrap()
+    };
+    assert!(has(
+        &paths[0],
+        "SELECT 1 FROM pragma_table_info('session') WHERE name = 'archived_ms'"
+    ));
+    assert!(has(
+        &paths[1],
+        "SELECT 1 FROM pragma_table_info('queued_prompt') WHERE name = 'context_json'"
+    ));
 }
