@@ -19,8 +19,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
     CORPUS_INDEXES_SQL, READER_FLOOR_SQL, RECALL_SQL, Result, SCHEMA_SQL, SCHEMA_VERSION,
-    SESSION_INDEXES_SQL, Store, StoreError, citations, leases, marks, modes, owners, pragmas, procs,
-    prompts, queues, seat, subagents, told, writers,
+    SESSION_INDEXES_SQL, Store, StoreError, citations, leases, marks, modes, owners, pragmas,
+    procs, prompts, queues, seat, subagents, told, writers,
 };
 
 /// The shared file, beside the directory project files are in (§ The shape).
