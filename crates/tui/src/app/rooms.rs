@@ -21,6 +21,9 @@ const KEEP: usize = 500;
 /// Request id prefix of a page-back read, so its answer is told from a poll's.
 pub(crate) const OLDER: &str = "older:";
 
+/// Request id prefix of a `/search`, so the room's own hits are told from a poll's.
+pub(crate) const SEARCH: &str = "search:";
+
 /// Messages asked for per page back, the most one read returns.
 const PAGE: u32 = 200;
 
@@ -803,6 +806,7 @@ impl App {
             "history" => {
                 let room = reply.get("room").and_then(Value::as_str).unwrap_or("");
                 if let Ok(r) = serde_json::from_value::<Vec<Msg>>(rows(&reply)) {
+                    let searched = id.starts_with(SEARCH);
                     if id.starts_with(OLDER) {
                         self.rooms.paging.remove(room);
                         if r.is_empty() {
@@ -810,6 +814,11 @@ impl App {
                         }
                     }
                     self.rooms.merge(room, r);
+                    // The hits the room's log answered with are loaded now, so the search may
+                    // step onto them like any other message.
+                    if searched {
+                        self.rooms_search_merged();
+                    }
                     self.rooms.heard = true;
                     self.rooms.error = None;
                     self.rooms_shown();

@@ -292,6 +292,51 @@ fn search_highlights_hits_and_n_steps_through_them() {
     assert_eq!(a.rooms_search_needle(), None);
 }
 
+/// A search is a read of the room's LOG, not of the messages this head happens to hold: the room
+/// is asked, its hits merge into the channel like any other history, and the cursor lands on one
+/// the window never had.
+#[test]
+fn a_search_asks_the_room_and_its_answer_loads_what_the_window_dropped() {
+    let mut a = opened(1_000);
+    channels(&mut a, &[("host", 2, 6, 0)]);
+    reply(
+        &mut a,
+        history("host", vec![msg(6, "host", "s-a", "chat", "lately")]),
+    );
+
+    a.command("search gate");
+    // The room is asked, because the loaded rows have no hit; the answer comes back under the id.
+    let asked = a.take_actions().into_iter().find_map(|x| match x {
+        Action::RoomChat { op, id } if op["type"] == "search" => Some((op, id)),
+        _ => None,
+    });
+    assert_eq!(
+        asked,
+        Some((
+            json!({"type": "search", "room": "host", "text": "gate", "last": 200}),
+            Some("search:host".into())
+        ))
+    );
+
+    // The answer is an ordinary history frame, under the search's own id.
+    reply_as(
+        &mut a,
+        "search:host",
+        history(
+            "host",
+            vec![msg(2, "host", "s-b", "chat", "the gate was green")],
+        ),
+    );
+    assert_eq!(
+        loaded(&a),
+        vec![2, 6],
+        "the log's hit is loaded beside the ring's"
+    );
+    assert_eq!(a.rooms_cursor(), Some(2), "and the cursor lands on it");
+    let said = a.notice.clone().unwrap_or_default();
+    assert!(said.contains("the room's log"), "{said}");
+}
+
 // ─────────────────────────── pictures ───────────────────────────
 
 /// A blob is asked for once per id, however many frames draw it, and once the parts are whole it is

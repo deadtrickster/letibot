@@ -104,6 +104,11 @@ impl App {
         self.nav.search.as_ref().map(|s| s.needle.as_str())
     }
 
+    /// The room answered a `/search` with rows out of its own log: their hits join the ring's.
+    pub(crate) fn rooms_search_merged(&mut self) {
+        search::merged(self);
+    }
+
     /// `y`: the message under the cursor onto the operator's clipboard (OSC 52).
     pub(crate) fn rooms_copy(&mut self) -> std::ops::ControlFlow<Option<Action>> {
         cursor::copy(self)
