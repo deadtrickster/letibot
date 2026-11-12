@@ -156,12 +156,18 @@ impl Fake {
         }
     }
 
-    /// The coordinator hangs up on everybody, as a restart does. What is pushed until the bridge
-    /// redials reaches the log only.
-    fn hang_up(&self) {
+    /// The coordinator hangs up on everybody, and then says something only its log has - a
+    /// message a bridge that was still connected would have had pushed to it. The two are one step
+    /// because the log is what every `inbox` answer waits on: a redial cannot ask between them, get
+    /// a log with nothing new, and never be told the row exists.
+    fn hang_up_then_say(&self, author: &str, kind: &str, room: &str, to: Option<&str>, text: &str) {
+        let mut log = self.log.lock().unwrap();
         for c in self.conns.lock().unwrap().drain(..) {
             c.close();
         }
+        let seq = log.len() as u64 + 1;
+        log.push(json!({"seq": seq, "ts": 0, "room": room, "author": author,
+            "kind": kind, "to": to, "thread": null, "refs": [], "text": text}));
     }
 
     fn frames(&self, kind: &str) -> Vec<Value> {
@@ -453,8 +459,7 @@ fn a_verdict_said_while_the_bridge_redials_still_lands() {
         input.send(&request("abcde"));
         wait_until(|| fake.frames("dm").len() == 1);
         let hellos = fake.frames("hello").len();
-        fake.hang_up();
-        fake.push(
+        fake.hang_up_then_say(
             "operator",
             "operator",
             "dm",

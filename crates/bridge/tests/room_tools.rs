@@ -34,6 +34,9 @@ struct Conn {
     /// How long this coordinator holds its welcome back: a coordinator that is slow to answer a
     /// hello, and the window in which a push could otherwise reach the socket first.
     greet_after: Duration,
+    /// The coordinator start this connection was accepted under. A frame it carries names a store
+    /// that a restart has since replaced, so nothing it asks may move the new one's cursor.
+    born: u64,
 }
 
 struct Out {
@@ -42,7 +45,7 @@ struct Out {
 }
 
 impl Conn {
-    fn new(stream: UnixStream, greet_after: Duration) -> Arc<Conn> {
+    fn new(stream: UnixStream, greet_after: Duration, born: u64) -> Arc<Conn> {
         Arc::new(Conn {
             out: Mutex::new(Out {
                 stream,
@@ -50,6 +53,7 @@ impl Conn {
             }),
             greeted: Condvar::new(),
             greet_after,
+            born,
         })
     }
 
@@ -138,7 +142,11 @@ impl Fake {
         );
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let conn = Conn::new(stream.try_clone().unwrap(), greet_after);
+                let conn = Conn::new(
+                    stream.try_clone().unwrap(),
+                    greet_after,
+                    *instance.lock().unwrap(),
+                );
                 conns.lock().unwrap().push(conn.clone());
                 let (frames, log, cursor, instance, blobs) = (
                     frames.clone(),
@@ -174,12 +182,46 @@ impl Fake {
         m
     }
 
-    /// A coordinator that came back with no store: empty log and cursor, a new instance.
-    fn restart(&self) {
-        self.log.lock().unwrap().clear();
+    /// The coordinator hangs up, and then says something only its log has - the message a bridge
+    /// that was still connected would have had pushed to it. The two are one step because the
+    /// log is what every `inbox` answer waits on: a redial cannot ask between them, get a log
+    /// with nothing new, and never be told the row exists.
+    fn hang_up_then_say(
+        &self,
+        author: &str,
+        kind: &str,
+        room: &str,
+        to: Option<&str>,
+        text: &str,
+    ) -> Value {
+        let mut log = self.log.lock().unwrap();
+        self.drop_connections();
+        let m = json!({"seq": log.len() as u64 + 1, "ts": 0, "room": room, "author": author,
+            "kind": kind, "to": to, "thread": null, "refs": [], "text": text});
+        log.push(m.clone());
+        m
+    }
+
+    /// A coordinator that came back with no store: it hangs up, forgets its log and cursor, names
+    /// a new instance, and holds only the message the test says. One step, for the same reason as
+    /// [`Fake::hang_up_then_say`], and the seq it hands out starts again at 1.
+    fn restart_then_say(
+        &self,
+        author: &str,
+        kind: &str,
+        room: &str,
+        to: Option<&str>,
+        text: &str,
+    ) -> Value {
+        let mut log = self.log.lock().unwrap();
+        self.drop_connections();
+        log.clear();
         *self.cursor.lock().unwrap() = 0;
         *self.instance.lock().unwrap() += 1;
-        self.drop_connections();
+        let m = json!({"seq": 1, "ts": 0, "room": room, "author": author,
+            "kind": kind, "to": to, "thread": null, "refs": [], "text": text});
+        log.push(m.clone());
+        m
     }
 
     fn drop_connections(&self) {
@@ -210,6 +252,7 @@ fn serve_one(
 ) {
     let mut seat = String::from("session");
     let mut name = String::new();
+    let born = conn.born;
     for line in BufReader::new(stream).lines().map_while(Result::ok) {
         let f: Value = serde_json::from_str(&line).unwrap();
         frames.lock().unwrap().push(f.clone());
@@ -303,7 +346,12 @@ fn serve_one(
             }
             "ack" => {
                 let mut c = cursor.lock().unwrap();
-                *c = (*c).max(f["seq"].as_u64().unwrap());
+                // A frame read on a connection of a coordinator that has since RESTARTED: the store
+                // that cursor belongs to is gone, and applying it would mark the new log - whose
+                // seqs begin again - as read past messages nobody was ever told about.
+                if born == *instance.lock().unwrap() {
+                    *c = (*c).max(f["seq"].as_u64().unwrap());
+                }
                 json!({"type": "acked", "cursor": *c})
             }
             // The ask the coordinator holds for this seat: one it owes, and none it asked.
@@ -546,13 +594,7 @@ fn room_say_carries_evidence_as_a_ref() {
 fn a_message_to_claude_code_reaches_the_notification_path() {
     let fake = Fake::start("stream");
     let bridge = Bridge::with_room_socket(&fake.path).streaming_rooms();
-    let input = ChannelInput::new();
-    let out = SharedOut::default();
-    let out2 = out.clone();
-    let t = std::thread::scope(|scope| {
-        let h = scope.spawn(|| {
-            mcp::serve(BufReader::new(input.reader()), out2, &bridge).unwrap();
-        });
+    let (lines, t) = with_client(&bridge, |input, out| {
         input.send(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#);
         input.send(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
         wait_until(|| !fake.conns.lock().unwrap().is_empty());
@@ -566,8 +608,6 @@ fn a_message_to_claude_code_reaches_the_notification_path() {
         );
         fake.push("operator", "operator", "host", None, "status?");
         wait_until(|| out.notifications().len() >= 2);
-        input.close();
-        h.join().unwrap();
         out.notifications()
     });
     assert_eq!(t.len(), 2, "{t:?}");
@@ -586,7 +626,7 @@ fn a_message_to_claude_code_reaches_the_notification_path() {
             .unwrap()
             .contains("status?")
     );
-    let init = out.lines().into_iter().find(|l| l["id"] == 1).unwrap();
+    let init = lines.into_iter().find(|l| l["id"] == 1).unwrap();
     assert!(init["result"]["capabilities"]["experimental"]["claude/channel"].is_object());
 }
 
@@ -594,32 +634,17 @@ fn a_message_to_claude_code_reaches_the_notification_path() {
 fn the_stream_reconnects_and_replays_what_the_gap_held() {
     let fake = Fake::start("redial");
     let bridge = Bridge::with_room_socket(&fake.path).streaming_rooms();
-    let input = ChannelInput::new();
-    let out = SharedOut::default();
-    let out2 = out.clone();
-    std::thread::scope(|scope| {
-        let h = scope.spawn(|| {
-            mcp::serve(BufReader::new(input.reader()), out2, &bridge).unwrap();
-        });
+    let (_, n) = with_client(&bridge, |input, out| {
         input.send(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
         wait_until(|| !fake.conns.lock().unwrap().is_empty());
         fake.push("s-a", "session", "host", Some("claude-code"), "one");
         wait_until(|| out.notifications().len() == 1);
-        // The connection drops, a message lands in the log, the supervisor redials and replays.
-        fake.drop_connections();
-        {
-            let mut log = fake.log.lock().unwrap();
-            let seq = log.len() as u64 + 1;
-            log.push(
-                json!({"seq": seq, "ts": 0, "room": "host", "author": "s-a", "kind": "session",
-                "to": "claude-code", "thread": null, "refs": [], "text": "two"}),
-            );
-        }
+        // The connection drops and a message lands that only the log has: the supervisor redials
+        // and replays it. One step, so a redial cannot ask before the row is there.
+        fake.hang_up_then_say("s-a", "session", "host", Some("claude-code"), "two");
         wait_until(|| out.notifications().len() == 2);
-        input.close();
-        h.join().unwrap();
+        out.notifications()
     });
-    let n = out.notifications();
     assert!(n[1]["params"]["content"].as_str().unwrap().contains("two"));
     assert_eq!(fake.frames("hello").len(), 2);
 }
@@ -664,32 +689,18 @@ fn a_message_behind_a_slow_welcome_does_not_pass_for_one() {
 fn a_restarted_coordinator_resets_the_delivered_mark() {
     let fake = Fake::start("restart");
     let bridge = Bridge::with_room_socket(&fake.path).streaming_rooms();
-    let input = ChannelInput::new();
-    let out = SharedOut::default();
-    let out2 = out.clone();
-    std::thread::scope(|scope| {
-        let h = scope.spawn(|| {
-            mcp::serve(BufReader::new(input.reader()), out2, &bridge).unwrap();
-        });
+    let (_, n) = with_client(&bridge, |input, out| {
         input.send(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
         wait_until(|| !fake.conns.lock().unwrap().is_empty());
         fake.push("s-a", "session", "host", Some("claude-code"), "one");
         fake.push("s-a", "session", "host", Some("claude-code"), "two");
         wait_until(|| out.notifications().len() == 2);
-        // The coordinator lost its log: the next message is seq 1 again.
-        fake.restart();
-        {
-            let mut log = fake.log.lock().unwrap();
-            log.push(
-                json!({"seq": 1, "ts": 0, "room": "host", "author": "s-a", "kind": "session",
-                "to": "claude-code", "thread": null, "refs": [], "text": "after"}),
-            );
-        }
+        // The coordinator lost its log: the next message is seq 1 again, and one step holds it
+        // so a redial cannot ask before the row is there.
+        fake.restart_then_say("s-a", "session", "host", Some("claude-code"), "after");
         wait_until(|| out.notifications().len() == 3);
-        input.close();
-        h.join().unwrap();
+        out.notifications()
     });
-    let n = out.notifications();
     assert!(
         n[2]["params"]["content"]
             .as_str()
@@ -821,6 +832,30 @@ fn wait_until(mut f: impl FnMut() -> bool) {
         assert!(Instant::now() < end, "timed out waiting");
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+/// One MCP session against `bridge`, driven by `body`: every line the bridge wrote, and whatever
+/// `body` answered. A failed assertion still closes the input, because the scope otherwise waits
+/// on `serve` for a reader that will never end and the failure reads as a hang.
+fn with_client<T>(
+    bridge: &Bridge,
+    body: impl FnOnce(&ChannelInput, &SharedOut) -> T,
+) -> (Vec<Value>, T) {
+    let input = ChannelInput::new();
+    let out = SharedOut::default();
+    let out2 = out.clone();
+    let mut answer = None;
+    std::thread::scope(|scope| {
+        let h = scope.spawn(|| mcp::serve(BufReader::new(input.reader()), out2, bridge).unwrap());
+        let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&input, &out)));
+        input.close();
+        h.join().unwrap();
+        match body {
+            Ok(body) => answer = Some(body),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    });
+    (out.lines(), answer.expect("the body ran"))
 }
 
 #[derive(Clone, Default)]
