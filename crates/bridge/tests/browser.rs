@@ -203,7 +203,10 @@ fn take_prompt(registry: &Registry) -> (String, Vec<letibot_sessionlog::protocol
     while Instant::now() < deadline {
         if let WorkOrIdle::Work(Work::Command(id, cmd)) = registry.next_work_until(Some(deadline)) {
             assert_eq!(id, "s-op", "the ask goes to the chosen session");
-            if let CommandKind::Prompt { text, attachments } = cmd.kind {
+            if let CommandKind::Prompt {
+                text, attachments, ..
+            } = cmd.kind
+            {
                 return (text, attachments);
             }
         }
