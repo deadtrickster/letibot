@@ -69,6 +69,10 @@ pub struct RenderConfig {
     /// The terminal said its background is light (OSC 11): colour renders with
     /// [`Palette::Light`].
     pub light: bool,
+    /// The terminal said it draws exact colours (`COLORTERM=truecolor`). Only `Warning` spends
+    /// one - no sixteen-slot palette has an orange - and a terminal that says nothing keeps the
+    /// slots. Read once, at start-up.
+    pub exact: bool,
     /// Inline images (the kitty graphics protocol's Unicode placeholders) are on.
     pub images: bool,
 }
@@ -82,6 +86,7 @@ impl Default for RenderConfig {
             base: None,
             links: None,
             light: false,
+            exact: false,
             images: false,
         }
     }
@@ -225,13 +230,10 @@ impl RenderConfig {
     /// monochrome theme but the `--replay`, pipe and CI case, and its output has to be
     /// byte-identical on every machine.
     pub fn palette(&self) -> Palette {
-        if self.color && self.light {
-            Palette::Light
-        } else if self.color {
-            Palette::Colour
-        } else {
-            Palette::None
+        if !self.color {
+            return Palette::None;
         }
+        Palette::terminal(self.light, self.exact)
     }
 
     /// The same config, rendering inside a block styled as `base`.
@@ -522,6 +524,7 @@ mod tests {
             base: None,
             links: None,
             light: false,
+            exact: false,
             images: false,
         }
     }
@@ -731,6 +734,7 @@ mod tests {
             base: None,
             links: None,
             light: false,
+            exact: false,
             images: false,
         };
         let lines = cache.lines(&md, &cfg, 40);

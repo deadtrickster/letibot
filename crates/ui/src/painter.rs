@@ -9,12 +9,20 @@ use rano::width::text::RESET;
 
 /// Every sequence rano spells, per palette, kept for the life of the process.
 struct Table {
-    open: [[String; Role::ALL.len()]; 3],
-    background: [[String; 16]; 3],
-    reverse: [String; 3],
+    open: [[String; Role::ALL.len()]; 5],
+    background: [[String; 16]; 5],
+    reverse: [String; 5],
 }
 
-const PALETTES: [Palette; 3] = [Palette::Colour, Palette::Light, Palette::None];
+/// Every palette a head may draw with, the two exact-colour ones included: `Warning`'s orange is a
+/// sequence no sixteen-slot palette has, and a lookup that could not spell it would draw it yellow.
+const PALETTES: [Palette; 5] = [
+    Palette::Colour,
+    Palette::Light,
+    Palette::Exact,
+    Palette::ExactLight,
+    Palette::None,
+];
 
 fn table() -> &'static Table {
     static TABLE: OnceLock<Table> = OnceLock::new();
@@ -31,7 +39,9 @@ fn palette_index(p: Palette) -> usize {
     match p {
         Palette::Colour => 0,
         Palette::Light => 1,
-        Palette::None => 2,
+        Palette::Exact => 2,
+        Palette::ExactLight => 3,
+        Palette::None => 4,
     }
 }
 

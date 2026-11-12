@@ -173,6 +173,9 @@ pub fn run_with(args: &[String], fleet: Option<letibot_sessionlog::FleetReader>)
     }
     let cfg = RenderConfig {
         budget: args.budget,
+        // Whether the terminal draws exact colours is the one thing here the environment answers:
+        // the severity table's orange needs one, and a terminal that says nothing keeps the slots.
+        exact: rano::style::Palette::detected(false).is_exact(),
         ..RenderConfig::default()
     };
 
